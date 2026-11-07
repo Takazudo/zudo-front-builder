@@ -7,6 +7,21 @@ category: Concepts
 
 zfb uses **file-system routing** under the `pages/` directory. The router scans `pages/` at build time (and on every change in dev), turning each page source file into a route. The conventions match what you might recognise from Next.js or Astro.
 
+## Which router this page covers
+
+This page describes the **server page router**. zfb scans `pages/` into a route table, and the generated server bundle dispatches each URL to its page module through a page router (`createPageRouter` from `@takazudo/zfb-runtime/server`, built on Hono). That router runs on the build machine while zfb renders static pages and, for routes that set `export const prerender = false`, inside the deployed Worker on each request. It is never shipped to the browser.
+
+The router's contract with a page file has three parts, each covered below:
+
+- **File → route.** The file's path under `pages/` decides its URL pattern; see [File-to-route mapping](#file-to-route-mapping).
+- **Page props.** The page's default export is called with a props object, never with the incoming `Request`: `params` for a dynamic route, plus the props that `paths()` or `getStaticProps()` returned. See [The default export receives props, not the Request](../guides/ssr-and-cloudflare-bindings.mdx#the-default-export-receives-props-not-the-request).
+- **`paths()`.** A dynamic or catchall route that renders at build time lists its concrete URLs; see [The `paths()` export](#the-paths-export).
+
+Two browser-side mechanisms are easy to confuse with it:
+
+- **[ClientRouter](./client-side-routing.mdx)** is optional browser navigation. It fetches the HTML that the server router already produced for the next URL and swaps it into the current document. It does not decide which file serves a URL.
+- **[Hydration](./islands.mdx)** attaches island behavior to HTML that is already on the page. It works with or without ClientRouter; see [Islands with and without ClientRouter](./client-side-routing.mdx#islands-with-and-without-clientrouter).
+
 ## File-to-route mapping
 
 | File | Route | Notes |
