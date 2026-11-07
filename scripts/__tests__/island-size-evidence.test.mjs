@@ -140,6 +140,43 @@ describe("Linux collection orchestration (synthetic outcomes)", () => {
     expect(simulate({}, name).seen).not.toContain(name);
     expect(simulate({ build_binary: "failure" }).seen).not.toContain(name);
   });
+  const fastChecks = [
+    "pnpm format:check",
+    "Wind policy, inventory, accounting and mutation contracts",
+    "Assert md-wasm documentation matches shipped sizes",
+    "Check SSE endpoint literal ownership",
+  ];
+  const rustTests = [
+    "Test jsx_pragma without default features (#3939)",
+    "workspace_nextest",
+    "cargo test --workspace --doc",
+    "cargo nextest run -p zfb-md-extras --features test-utils --profile ci",
+    "cargo clippy -p zfb-md-extras --features test-utils --all-targets -- -D warnings",
+  ];
+  it("still reports the fast checks and the Rust lane after early tests fail", () => {
+    const run = simulate({ workspace_tests: "failure" });
+    for (const id of [...fastChecks, "workspace_clippy", ...rustTests]) {
+      expect(run.seen).toContain(id);
+    }
+    expect(run.result).toBe("failure");
+    for (const id of [...fastChecks, "workspace_clippy", ...rustTests]) {
+      const step = workflow.jobs.health.steps.find((s) => (s.id ?? s.name ?? s.run) === id);
+      expect(step["continue-on-error"]).toBeUndefined();
+    }
+  });
+  it("keeps the clippy short-circuit and the build prerequisite for the Rust tests", () => {
+    const lint = simulate({ workspace_clippy: "failure" });
+    for (const id of rustTests) expect(lint.seen).not.toContain(id);
+    expect(lint.result).toBe("failure");
+    const build = simulate({ build_binary: "failure" });
+    for (const id of ["workspace_clippy", ...rustTests]) expect(build.seen).not.toContain(id);
+    expect(build.result).toBe("failure");
+    const setup = simulate({ native_prerequisites: "failure" });
+    for (const id of [...fastChecks, "workspace_clippy", ...rustTests]) {
+      expect(setup.seen).not.toContain(id);
+    }
+    for (const id of rustTests) expect(simulate({}, id).seen).not.toContain(id);
+  });
   it("retains old-pin-only evidence while red, but withholds other failures", () => {
     const run = simulate({ size_budget: "failure" });
     expect(run.seen).toContain("Upload island-size measurement evidence");
