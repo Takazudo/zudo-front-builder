@@ -6,15 +6,13 @@ import { join } from "node:path";
 import { verifyRustBuildExport } from "./dist-proof.mjs";
 import { sha256 } from "../../scripts/wind-compatibility/reference.mjs";
 
-test("build export re-reads its sidecar, native esbuild and dist bytes", async () => {
+test("build export re-reads its sidecar and dist bytes", async () => {
   const root = await mkdtemp(join(tmpdir(), "zfb-shipping-dist-proof-"));
   try {
     const dist = join(root, "dist");
     await mkdir(join(dist, "assets"), { recursive: true });
     await writeFile(join(dist, "index.html"), "<html></html>");
     await writeFile(join(dist, "assets/styles-test.css"), ".test{display:block}");
-    const esbuild = join(root, "esbuild");
-    await writeFile(esbuild, "native esbuild fixture bytes");
     const build = { binaryPath: join(root, "zfb"), binarySha256: "a".repeat(64) };
     const execution = {
       schemaVersion: 1,
@@ -27,8 +25,6 @@ test("build export re-reads its sidecar, native esbuild and dist bytes", async (
       buildEnvironment: {
         PATH: "",
         NODE_PATH: null,
-        ZFB_ESBUILD_BIN: esbuild,
-        esbuildSha256: sha256(await readFile(esbuild)),
       },
     };
     const sidecar = join(root, "execution.json");

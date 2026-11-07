@@ -593,7 +593,6 @@ async function startDev(project) {
       ...process.env,
       PATH: "",
       NODE_PATH: undefined,
-      ZFB_ESBUILD_BIN: proof.execution.buildEnvironment.ZFB_ESBUILD_BIN,
     },
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
@@ -894,7 +893,6 @@ try {
     nodeFreeDevEnvironment: {
       PATH: "",
       NODE_PATH: null,
-      ZFB_ESBUILD_BIN: proof.execution.buildEnvironment.ZFB_ESBUILD_BIN,
     },
     results: manifest.required.map((row) => {
       const result = results.get(row.id);

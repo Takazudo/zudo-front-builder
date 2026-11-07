@@ -71,7 +71,6 @@ const labels = [
   "md-extras-clippy",
   "no-v8",
   "jsx-no-v8",
-  "env-esbuild",
 ];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -166,22 +165,18 @@ describe("independent Linux Rust verification", () => {
     );
   });
 
-  it("keeps health's complete workspace env filter and zero-retry, fail-empty test commands", () => {
+  it("mirrors health's ignored-lane absence and keeps zero-retry, fail-empty test commands", () => {
     const body = script("Independent Rust checks, zero retries");
-    const expected = health
-      .match(/--run-ignored ignored-only -E '([\s\S]*?)'/)[1]
-      .replace(/\s+/g, " ")
-      .trim();
-    const actual = body.match(/--run-ignored ignored-only -E '([^']*)'/)[1];
-    expect(actual).toBe(expected);
-    expect(body.match(/--profile ci --retries 0 --no-tests=fail/g)).toHaveLength(3);
+    // #4635 removed health's esbuild-only ignored lane; the mirror must not re-add one.
+    expect(health).not.toContain("--run-ignored ignored-only");
+    expect(body).not.toContain("--run-ignored");
+    expect(body.match(/--profile ci --retries 0 --no-tests=fail/g)).toHaveLength(2);
     expect(body).toContain("cargo test --locked --workspace --doc");
     expect(body).toContain(
       "cargo clippy --locked -p zfb-md-extras --features test-utils --all-targets -- -D warnings",
     );
-    expect(job).toContain(
-      "ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild",
-    );
+    expect(job).not.toContain("ZFB_ESBUILD_BIN");
+    expect(job).not.toContain("binaries/esbuild");
   });
 
   it("retains every first result and continues after a genuine failure without retry", () => {
@@ -196,8 +191,8 @@ describe("independent Linux Rust verification", () => {
     );
     for (const label of labels) expect(existsSync(join(f.evidence, `${label}.exit`))).toBe(true);
     expect(readFileSync(join(f.evidence, "clippy.exit"), "utf8").trim()).toBe("42");
-    expect(readFileSync(join(f.evidence, "env-esbuild.exit"), "utf8").trim()).toBe("0");
-    for (const label of ["workspace", "md-extras", "env-esbuild"])
+    expect(readFileSync(join(f.evidence, "md-extras.exit"), "utf8").trim()).toBe("0");
+    for (const label of ["workspace", "md-extras"])
       expect(existsSync(join(f.evidence, `${label}.junit.xml`))).toBe(true);
   });
 
@@ -244,7 +239,7 @@ describe("independent Linux Rust verification", () => {
     for (const suffix of ["exit", "log-exit"])
       writeFileSync(join(f.evidence, `build.${suffix}`), "0\n");
     expect(execute(script("Report missing or failed coverage"), f).status).toBe(0);
-    rmSync(join(f.evidence, "env-esbuild.junit.xml"));
+    rmSync(join(f.evidence, "md-extras.junit.xml"));
     expect(execute(script("Report missing or failed coverage"), f).status).toBe(1);
   });
 });

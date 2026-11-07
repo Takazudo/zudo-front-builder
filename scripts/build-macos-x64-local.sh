@@ -156,33 +156,6 @@ CI=true pnpm install --frozen-lockfile
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
-# Binary slot save/restore (issue #2189, fixing the pollution source behind
-# #2178). The cross-build below overwrites the shared, arch-unqualified
-# crates/zfb/binaries/esbuild/esbuild slot with
-# darwin-x64 binaries (build.rs correctly detects the staged arm64 slots
-# fail the x64 SHA-256 pins). Left alone, that leaves the main repo's slots
-# wrong-arch for the host until something re-runs the build script
-# natively. Save both slots now and restore them immediately after `cargo
-# build` succeeds — not only at script exit, so the packaging/upload steps
-# below don't run any longer than necessary with the slots polluted. An EXIT
-# trap is armed first so a failure mid-build restores them too; it is
-# disarmed again right after the explicit post-build restore so it doesn't
-# fire a second time on normal script exit. Either path, a FAILED restore
-# leaves the backup directory on disk (the helper names it plus a per-slot
-# recovery mapping on stderr) — it is then the only copy of the originals.
-source "${repo_root}/scripts/release-binary-slot-restore.sh"
-save_binary_slots
-
-_slot_restore_on_exit() {
-  local exit_status=$?
-  if ! restore_binary_slots; then
-    echo "ERROR: binary slot restore failed while handling script exit (original exit status ${exit_status}) — repo slots may be left wrong-arch until the next native build" >&2
-    echo "       The pre-build originals were RETAINED (not deleted) at: ${BINARY_SLOT_BACKUP_DIR} — see the per-slot recovery mapping printed above" >&2
-  fi
-  exit "$exit_status"
-}
-trap _slot_restore_on_exit EXIT
-
 echo "==> cargo build -p zfb --release --target ${target}"
 ZFB_RELEASE_VERSION="$semver" cargo build -p zfb --release --target "$target"
 bash scripts/build-css-node.sh "$target"
@@ -191,15 +164,6 @@ bash scripts/build-css-node.sh "$target"
 x64_node="${ZFB_X64_NODE:-node}"
 "$x64_node" -e 'if (process.arch !== "x64" || Number(process.versions.node.split(".")[0]) < 24) { console.error("CSS addon verification requires x64 Node >=24; set ZFB_X64_NODE to its executable path"); process.exit(1) }'
 "$x64_node" scripts/smoke-css-node.mjs packages/zfb-darwin-x64/zfb-css.node
-
-_slot_restore_status=0
-restore_binary_slots || _slot_restore_status=$?
-trap - EXIT
-if [[ "$_slot_restore_status" -ne 0 ]]; then
-  echo "ERROR: failed to restore one or more binary slots to their pre-build state after the cross-target build" >&2
-  echo "       The pre-build originals were RETAINED (not deleted) at: ${BINARY_SLOT_BACKUP_DIR} — see the per-slot recovery mapping printed above" >&2
-  exit 1
-fi
 
 # Resolve the actual cargo target directory rather than assuming "./target".
 # A host-level ~/.cargo/config.toml (or CARGO_TARGET_DIR) can redirect builds
