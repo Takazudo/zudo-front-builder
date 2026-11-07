@@ -497,11 +497,11 @@
       },
       "snapshots": {
         "reached": 230,
-        "total": 622
+        "total": 640
       },
       "packages": {
         "reached": 225,
-        "total": 605
+        "total": 623
       }
     }
   }
