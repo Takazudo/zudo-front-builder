@@ -129,6 +129,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 // Compare canonical paths: a symlinked invocation path (macOS /var -> /private/var) must still run main() (#4465).
 import { realpathSync as realpathSyncForMain } from "node:fs";
+import { BUNDLER_SCHEMA_VERSION } from "../research/v3-island-size/check-budget.mjs";
 
 import {
   IDENTITY_NORMALIZATION_VERSION,
@@ -349,7 +350,12 @@ export function validateDarwinEvidence(
     errors.push("contract is not the Darwin arm64 contract");
   }
   const requires = REASONS[reason]?.requires;
-  const schemas = REASONS[reason] ? acceptedSchemas(reason) : [];
+  // The Darwin arm64 contract still pins the esbuild producer: its evidence
+  // checks are esbuild-shaped and no Darwin bundler-backend reason exists yet,
+  // so a schemaVersion-4 Darwin contract is refused until that reason lands.
+  const schemas = REASONS[reason]
+    ? acceptedSchemas(reason).filter((schema) => schema !== BUNDLER_SCHEMA_VERSION)
+    : [];
   if (reason === METRIC_MIGRATION) {
     if (contract?.schemaVersion !== requires || Object.hasOwn(contract ?? {}, "metric")) {
       errors.push("contract is not a schemaVersion " + requires + " actual-gzip contract");

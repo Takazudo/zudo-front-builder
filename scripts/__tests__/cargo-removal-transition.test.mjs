@@ -137,7 +137,7 @@ describe("cargo-removal (#4388) proof", () => {
       outcome: "cargo-removal-transition",
       heading: "cargo-removal transition",
       requires: 3,
-      accepts: [3],
+      accepts: [3, 4],
     });
     expect(PAIRED_REASONS).toContain("cargo-removal");
     expect(SOURCE_BOUND_REASONS).toContain("cargo-removal");
@@ -997,7 +997,8 @@ describe("cargo-removal (#4388) end to end", () => {
         delete c.dependencyFingerprint;
         c.schemaVersion = 2;
       },
-      message: /--reason cargo-removal needs a schemaVersion 3 contract, found schemaVersion 2/,
+      message:
+        /--reason cargo-removal needs a schemaVersion 3 or 4 contract, found schemaVersion 2/,
     },
     {
       name: "a contract pinning the new lock already",

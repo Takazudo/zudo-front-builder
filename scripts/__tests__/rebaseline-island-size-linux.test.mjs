@@ -362,7 +362,7 @@ describe("rebaseline-island-size-linux", () => {
       /--reason metric-migration needs a schemaVersion 1 contract, found schemaVersion 2/,
     );
     expect(() => rebaselineContract(legacy, totals, evidence, "release-bump")).toThrow(
-      /--reason release-bump needs a schemaVersion 2 or 3 contract, found schemaVersion 1/,
+      /--reason release-bump needs a schemaVersion 2, 3 or 4 contract, found schemaVersion 1/,
     );
   });
 
@@ -1221,7 +1221,7 @@ describe("fingerprint-helper (#4198)", () => {
       "a schemaVersion 2 contract",
       (c) => (c.darwin = asSchemaV2(c.darwin)),
       (p) => p,
-      /needs a schemaVersion 3 contract, found 2 in research\/v3-island-size\/decision\.json; migrate with `fingerprint-migration` first/,
+      /needs a schemaVersion 3 or 4 contract, found 2 in research\/v3-island-size\/decision\.json; migrate with `fingerprint-migration` first/,
     ],
     [
       "an unchanged helper",
@@ -1728,7 +1728,7 @@ describe("cargo-producer-lock (#4214)", () => {
 
   it("refuses a schemaVersion 2 contract and a lock that did not move", () => {
     expect(() => transition(undefined, asSchemaV2(v3))).toThrow(
-      /--reason cargo-producer-lock needs a schemaVersion 3 contract, found schemaVersion 2/,
+      /--reason cargo-producer-lock needs a schemaVersion 3 or 4 contract, found schemaVersion 2/,
     );
     const pinnedNew = structuredClone(v3);
     pinnedNew.toolchain.cargoLockSha256 = NEW;
@@ -2573,7 +2573,8 @@ describe("dependency-graph (#4218)", () => {
         delete c.dependencyFingerprint;
         c.schemaVersion = 2;
       },
-      message: /--reason dependency-graph needs a schemaVersion 3 contract, found schemaVersion 2/,
+      message:
+        /--reason dependency-graph needs a schemaVersion 3 or 4 contract, found schemaVersion 2/,
     },
     {
       name: "a wrong-platform artifact",
@@ -3357,7 +3358,7 @@ describe("fingerprint-policy (#4218)", () => {
         c.schemaVersion = 2;
       },
       message:
-        "--reason fingerprint-policy needs a schemaVersion 3 contract, found schemaVersion 2",
+        "--reason fingerprint-policy needs a schemaVersion 3 or 4 contract, found schemaVersion 2",
     },
     {
       name: "a wrong-platform artifact",
@@ -4739,7 +4740,7 @@ describe("cargo-internal-rewire (#4258)", () => {
           c.schemaVersion = 2;
         },
         message:
-          /--reason cargo-internal-rewire needs a schemaVersion 3 contract, found schemaVersion 2/,
+          /--reason cargo-internal-rewire needs a schemaVersion 3 or 4 contract, found schemaVersion 2/,
       },
       {
         name: "a contract pinning the new lock already",

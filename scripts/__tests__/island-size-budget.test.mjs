@@ -1361,6 +1361,153 @@ describe("island shipped-size budget", () => {
     expect(validate(state)).toEqual({ errors: [], passed: true });
   });
 
+  // A synthetic esbuild-free state shaped like the live schemaVersion-4 Linux
+  // contract; its checkout-bound pins are re-derived. Never a native receipt.
+  function linuxV4State() {
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.schemaVersion).toBe(4);
+    const contract = withCheckoutPins(live);
+    return makeState(contract.platform, contract, contract.toolchain.packageVersion);
+  }
+  function repinEvidence(state, patch = {}) {
+    const provenance = state.packed.measurement.provenance;
+    return {
+      version: state.contract.toolchain.packageVersion,
+      pnpmLockSha256: state.contract.toolchain.pnpmLockSha256,
+      normalizerSha256: state.localInputs.normalizerSha256,
+      sourceSha: state.sourceSha,
+      headSha: state.sourceSha,
+      runId: 1,
+      jobId: 2,
+      runLabel: "Synthetic re-pin",
+      identity: measuredIdentity(provenance),
+      artifactFingerprint: provenance.dependencyFingerprint,
+      dependencyFingerprint: checkoutFingerprint(),
+      dependencyFingerprintError: null,
+      // Test fixture: a digest-only previous-contract reference (#4219).
+      previousContract: { sha256: "d".repeat(64) },
+      ...patch,
+    };
+  }
+  const stateTotals = (state) =>
+    measuredTotals({
+      workspace: state.workspace.normalized.results,
+      packed: state.packed.normalized.results,
+    });
+
+  it("accepts a schemaVersion-4 contract written by the release re-pin helper", () => {
+    const state = linuxV4State();
+    expect(validate(state)).toEqual({ errors: [], passed: true });
+    const before = structuredClone(state.contract);
+    const { contract } = rebaselineContract(
+      state.contract,
+      stateTotals(state),
+      repinEvidence(state),
+      "release-bump",
+    );
+    expect(contract.schemaVersion).toBe(4);
+    expect(contract.outcome).toBe("release-version-stamp");
+    expect(contract.toolchain).not.toHaveProperty("esbuildVersion");
+    expect(contract.toolchain.bundlerIdentity).toBe(before.toolchain.bundlerIdentity);
+    expect(Object.keys(contract.toolchain)).toEqual(Object.keys(before.toolchain));
+    expect(contract.ceilings).toEqual(before.ceilings);
+    expect(contract.dependencyFingerprint).toEqual(before.dependencyFingerprint);
+    expect(contract.runnerSha256).toEqual(before.runnerSha256);
+    state.contract = contract;
+    expect(validate(state)).toEqual({ errors: [], passed: true });
+
+    const runtime = linuxV4State();
+    expect(
+      rebaselineContract(
+        runtime.contract,
+        stateTotals(runtime),
+        repinEvidence(runtime),
+        "runtime-identity",
+      ).contract.schemaVersion,
+    ).toBe(4);
+  });
+
+  it("enforces the dependency fingerprint on a schemaVersion-4 release re-pin", () => {
+    for (const reason of ["release-bump", "runtime-identity"]) {
+      const moved = linuxV4State();
+      moved.contract.dependencyFingerprint.sha256 = "1".repeat(64);
+      expect(() =>
+        rebaselineContract(moved.contract, stateTotals(moved), repinEvidence(moved), reason),
+      ).toThrow("--reason " + reason + " cannot move the dependency fingerprint (sha256 differ");
+
+      const artifact = linuxV4State();
+      expect(() =>
+        rebaselineContract(
+          artifact.contract,
+          stateTotals(artifact),
+          repinEvidence(artifact, {
+            artifactFingerprint: { policyVersion: 1, sha256: "2".repeat(64) },
+          }),
+          reason,
+        ),
+      ).toThrow(/artifact dependency fingerprint sha256 differs from this checkout's/);
+    }
+  });
+
+  it("refuses to move a schemaVersion-3 contract to the esbuild-free producer under any other reason", () => {
+    for (const reason of [
+      "release-bump",
+      "runtime-identity",
+      "dependency-graph",
+      "fingerprint-policy",
+      "cargo-producer-lock",
+      "cargo-internal-rewire",
+      "cargo-removal",
+    ]) {
+      const state = makeState(
+        baseContract.platform,
+        v3Contract(),
+        baseContract.toolchain.packageVersion,
+        null,
+        true,
+      );
+      expect(() =>
+        rebaselineContract(state.contract, stateTotals(state), repinEvidence(state), reason),
+      ).toThrow(
+        "--reason " +
+          reason +
+          ": the artifact measured the esbuild-free producer (bundler rolldown-24bc2d0) but the contract is schemaVersion 3; only `--reason bundler-backend` moves a contract to schemaVersion 4",
+      );
+    }
+  });
+
+  it("refuses an esbuild or foreign-bundler artifact against a schemaVersion-4 contract", () => {
+    const esbuild = linuxV4State();
+    const evidence = repinEvidence(esbuild);
+    delete evidence.identity.toolchain.bundlerIdentity;
+    evidence.identity.toolchain.esbuildVersion = "0.25.12";
+    expect(() =>
+      rebaselineContract(esbuild.contract, stateTotals(esbuild), evidence, "release-bump"),
+    ).toThrow(
+      "--reason release-bump: the artifact measured an esbuild producer (esbuild 0.25.12) but the schemaVersion 4 contract pins the embedded bundler rolldown-24bc2d0; refusing",
+    );
+
+    const foreign = linuxV4State();
+    const other = repinEvidence(foreign);
+    other.identity.toolchain.bundlerIdentity = "rolldown-0000000";
+    expect(() =>
+      rebaselineContract(foreign.contract, stateTotals(foreign), other, "dependency-graph"),
+    ).toThrow(
+      "--reason dependency-graph: the artifact measured bundler rolldown-0000000 but the schemaVersion 4 contract pins rolldown-24bc2d0; refusing",
+    );
+
+    // bundler-backend itself stays a schemaVersion 3 -> 4 move only.
+    const again = linuxV4State();
+    expect(() =>
+      rebaselineContract(
+        again.contract,
+        stateTotals(again),
+        repinEvidence(again),
+        "bundler-backend",
+      ),
+    ).toThrow(/--reason bundler-backend needs a schemaVersion 3 contract, found schemaVersion 4/);
+  });
+
   it("accepts a schemaVersion-3 contract pinned by the dependency fingerprint", () => {
     const state = v3State();
     expect(validate(state)).toEqual({ errors: [], passed: true });
