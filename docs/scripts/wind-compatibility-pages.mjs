@@ -213,8 +213,11 @@ function localizedNote(value, locale, field) {
 // and zfb-toolchain-pins); no record is added or removed and none is reachable from zudo-wind.
 // #4632 config compilation: dependency lists only (zfb-config-loader swaps zfb-build for
 // zfb-compiler-worker + zfb-rolldown-prototype; zfb-server gains zfb-compiler-worker).
+// #4635 esbuild removal: Cargo.lock only (tar, xattr and zfb-binfetch leave with zfb's esbuild
+// staging, zfb-rolldown-prototype is renamed zfb-bundler); none is reachable from zudo-wind, and
+// crates/zudo-wind and Cargo.toml are unchanged.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "fad2383ff4c92e33c327462b0cc5fd30226d5dd765c11f6b97f62181e6e7a7eb";
+  "221d360bb1aa1f3fe222cbf8719a606de830b0111b89817c2c1bb95020240a7f";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];
