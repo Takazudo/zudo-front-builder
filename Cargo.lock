@@ -7021,6 +7021,7 @@ dependencies = [
  "zfb-md-ast",
  "zfb-plugin-resolver",
  "zfb-render",
+ "zfb-rolldown-prototype",
  "zfb-router",
  "zfb-server",
  "zfb-test-utils",
