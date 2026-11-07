@@ -20,6 +20,16 @@ const { css, diagnostics, warnings } = await compileCss({
 
 Here `input` is relative to the invocation directory; `sources` is relative to `preview`. The CSS entry can contain authored CSS and imports, including CSS package exports. Compilation preserves zudo-wind utility placement, tokens, reset, dark mode, breakpoints, source extraction, manifests, and framework highlight styles. This API compiles global CSS; it does not enable CSS Modules.
 
+In short:
+
+- **Node only.** It runs in Node.js 24 or newer. It is not a browser, Worker, or edge runtime entry, and it is not part of what a zfb site ships to the browser.
+- **Asynchronous.** `compileCss` returns a promise; await it.
+- **In-process native compiler.** It loads zfb's native CSS compiler, the same one `zfb css` uses, from the installed platform package into the current Node process. It does not spawn the `zfb` CLI.
+- **Already-evaluated configuration.** You pass a configuration object. It never discovers, loads, or evaluates `zfb.config.ts` or any other config file.
+- **A file path as input.** `input` names a CSS file on disk. It is not a CSS source string.
+
+Use [`zfb css`](cli.mdx#zfb-css) for the same compilation from a shell. For the meaning of `wind` options and how classes are found in sources, see [zudo-wind configuration](../zudo-wind/configuration.mdx) and [Sources and candidates](../zudo-wind/sources-and-candidates.mdx).
+
 ## Runtime and installation
 
 Use Node.js **24.0.0 or newer** and install `@takazudo/zfb` with optional dependencies enabled. The matching, same-version native carrier supplies the addon:
@@ -117,3 +127,9 @@ try {
 `CssCompileError` exposes `diagnostics` and available primary `code`, `severity`, and `origin`. Failures reject without returning partial successful CSS or stale output. Unresolved directives and companion assets that cannot be emitted as a single CSS result remain errors. Corrected calls can succeed after failure, and concurrent calls keep their roots, configuration, and output paths independent.
 
 Return-only calls write no config, output, cache, or interchange files and do not spawn a subprocess or start a watcher. Explicit output uses atomic replacement and rejects an input/output pair resolving to the same file. Compilation failure preserves a previous output; temporary atomic-write files are used only when output was requested.
+
+## See also
+
+- [`zfb css`](cli.mdx#zfb-css)
+- [zudo-wind configuration](../zudo-wind/configuration.mdx)
+- [Sources and candidates](../zudo-wind/sources-and-candidates.mdx)
