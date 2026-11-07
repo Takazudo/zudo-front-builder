@@ -31,25 +31,9 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle, bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_test_utils::locate_esbuild;
 
 const HOOKS_MJS: &str = "export const HOOKS_MARKER = \"REAL_INSTALLED_HOOKS_3185\";\n\
                          export function useState(value) { return [value, () => {}]; }\n";
-
-fn esbuild_or_skip() -> Option<PathBuf> {
-    let esbuild = locate_esbuild();
-    if esbuild.is_none() {
-        assert!(
-            std::env::var_os("CI").is_none(),
-            "[bundler_linked_package_alias_target_esbuild_regression] no esbuild binary under CI: \
-             a skip is not a pass"
-        );
-        eprintln!(
-            "[bundler_linked_package_alias_target_esbuild_regression] no esbuild binary; skipping."
-        );
-    }
-    esbuild
-}
 
 fn write(path: &Path, contents: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -163,7 +147,7 @@ fn walkdir_files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     files
 }
 
-fn input(fixture: &Fixture, esbuild: PathBuf, mode: BundleMode) -> BundlerInput {
+fn input(fixture: &Fixture, mode: BundleMode) -> BundlerInput {
     let site = &fixture.site;
     let mut input = BundlerInput::for_project(site.clone(), mode, site.join("dist"), None);
     input.zudo_react_island_names = Some(vec![]);
@@ -171,7 +155,6 @@ fn input(fixture: &Fixture, esbuild: PathBuf, mode: BundleMode) -> BundlerInput 
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
-    input.esbuild_binary = Some(esbuild);
     input.node_modules_dir = Some(site.join("node_modules"));
     input.tsconfig_paths = BTreeMap::from([(
         "~/*".to_string(),
@@ -218,14 +201,11 @@ fn assert_bundle_serves_real_files(bundle_path: &Path, when: &str) {
 
 #[test]
 fn build_stages_alias_target_inside_linked_package_without_touching_the_install() {
-    let Some(esbuild) = esbuild_or_skip() else {
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = fs::canonicalize(tmp.path()).unwrap();
     let fixture = write_fixture(&ws);
 
-    let out = bundle(input(&fixture, esbuild, BundleMode::Production))
+    let out = bundle(input(&fixture, BundleMode::Production))
         .unwrap_or_else(|e| panic!("#3185: the build must succeed: {e:#}"));
 
     assert_install_untouched(&fixture, "after zfb build");
@@ -234,9 +214,6 @@ fn build_stages_alias_target_inside_linked_package_without_touching_the_install(
 
 #[test]
 fn dev_session_keeps_the_linked_package_and_the_install_across_ticks() {
-    let Some(esbuild) = esbuild_or_skip() else {
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = fs::canonicalize(tmp.path()).unwrap();
     let fixture = write_fixture(&ws);
@@ -249,11 +226,8 @@ fn dev_session_keeps_the_linked_package_and_the_install_across_ticks() {
         .join("apps/site/node_modules/vendor-lib");
     for tick in 1..=2 {
         let when = format!("dev tick {tick}");
-        let out = bundle_with_session(
-            input(&fixture, esbuild.clone(), BundleMode::Development),
-            Some(&mut session),
-        )
-        .unwrap_or_else(|e| panic!("#3185: {when} must succeed: {e:#}"));
+        let out = bundle_with_session(input(&fixture, BundleMode::Development), Some(&mut session))
+            .unwrap_or_else(|e| panic!("#3185: {when} must succeed: {e:#}"));
 
         // Proof the linked-package path was taken (not a skipped scenario):
         // the shadow's vendor-lib is a LINK to the installed package, never a

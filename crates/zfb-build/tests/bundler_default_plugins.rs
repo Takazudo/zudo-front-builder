@@ -72,7 +72,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec};
-use zfb_test_utils::locate_esbuild;
 
 /// Build a minimal user-project tree exercising all three marker plugin
 /// paths. Returns the project root.
@@ -149,21 +148,11 @@ fn write_fixture_project(root: &std::path::Path) {
 
 #[test]
 fn bundler_threads_default_plugins_through_mdx_compile() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_default_plugins] no esbuild binary available; \
-             set ZFB_ESBUILD_BIN, place the binary at \
-             crates/zfb/binaries/esbuild/esbuild, or install esbuild on PATH \
-             to enable this test. Skipping."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root);
 
-    let input = make_input(&root, &esbuild, "dist");
+    let input = make_input(&root, "dist");
     let out = bundle(input).expect("bundle should succeed");
 
     assert!(out.bundle_path.exists(), "bundle.mjs should exist");
@@ -224,7 +213,7 @@ fn bundler_threads_default_plugins_through_mdx_compile() {
     // `crates/zfb-content/src/mdx_jsx_emit.rs` near `cache_for_lookup`),
     // so this is a determinism / regression check on the feature-aware
     // default emit itself, not a cache-path check.
-    let second_input = make_input(&root, &esbuild, "dist2");
+    let second_input = make_input(&root, "dist2");
     let second_out = bundle(second_input).expect("second bundle should succeed");
     let second_body = fs::read_to_string(&second_out.bundle_path).expect("read second bundle");
     // Compare with the inherently-random shadow tempdir collapsed out (see
@@ -279,19 +268,11 @@ fn write_mermaid_fixture(root: &std::path::Path) {
 /// was parsed but dropped on the floor).
 #[test]
 fn bundler_threads_markdown_features_through_mdx_compile() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_default_plugins] no esbuild binary available; skipping \
-             markdown.features wiring test."
-        );
-        return;
-    };
-
     // features.mermaid: true → the mermaid wrapper is emitted.
     let tmp_on = tempfile::tempdir().expect("tempdir");
     let root_on = tmp_on.path().to_path_buf();
     write_mermaid_fixture(&root_on);
-    let mut input_on = make_input(&root_on, &esbuild, "dist");
+    let mut input_on = make_input(&root_on, "dist");
     input_on.pipeline_spec.features = Some(zfb_content::MarkdownFeaturesConfig {
         mermaid: Some(zfb_content::FeatureToggle::Bool(true)),
         ..Default::default()
@@ -309,7 +290,7 @@ fn bundler_threads_markdown_features_through_mdx_compile() {
     let tmp_off = tempfile::tempdir().expect("tempdir");
     let root_off = tmp_off.path().to_path_buf();
     write_mermaid_fixture(&root_off);
-    let mut input_off = make_input(&root_off, &esbuild, "dist");
+    let mut input_off = make_input(&root_off, "dist");
     input_off.pipeline_spec.features = Some(zfb_content::MarkdownFeaturesConfig {
         mermaid: Some(zfb_content::FeatureToggle::Bool(false)),
         ..Default::default()
@@ -323,11 +304,7 @@ fn bundler_threads_markdown_features_through_mdx_compile() {
     );
 }
 
-fn make_input(
-    root: &std::path::Path,
-    esbuild: &std::path::Path,
-    outdir_name: &str,
-) -> BundlerInput {
+fn make_input(root: &std::path::Path, outdir_name: &str) -> BundlerInput {
     BundlerInput {
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
@@ -354,8 +331,7 @@ fn make_input(
         outdir: root.join(outdir_name),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.to_path_buf()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,

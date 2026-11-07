@@ -7,5 +7,5 @@ pub mod request;
 #[doc(hidden)]
 pub use native::module_specifiers::module_specifiers;
 #[cfg(feature = "native")]
-pub use native::{bundle, enabled, generate, run_prepared};
+pub use native::{bundle, generate, run_prepared};
 pub use request::*;

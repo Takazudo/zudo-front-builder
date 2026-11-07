@@ -28,20 +28,9 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_test_utils::locate_esbuild;
 
 #[test]
 fn escaping_relative_import_from_workspace_sibling_gets_actionable_boundary_error() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_out_of_root_import_workspace] no esbuild binary available; \
-             set ZFB_ESBUILD_BIN, place the binary at \
-             crates/zfb/binaries/esbuild/esbuild, or install esbuild on PATH \
-             to enable this test. Skipping."
-        );
-        return;
-    };
-
     // outer/                         <- OUTSIDE the workspace entirely
     //   workspace/                   <- first_party_root (pnpm-workspace.yaml)
     //     pnpm-workspace.yaml
@@ -100,7 +89,6 @@ fn escaping_relative_import_from_workspace_sibling_gets_actionable_boundary_erro
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime/server".into(),
     ];
-    input.esbuild_binary = Some(esbuild);
     input.tsconfig_paths = BTreeMap::from([(
         "@shared/*".to_string(),
         vec![shared_dir.join("*").to_string_lossy().into_owned()],

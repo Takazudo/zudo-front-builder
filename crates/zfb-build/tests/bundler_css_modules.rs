@@ -18,17 +18,14 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_test_utils::locate_esbuild;
 
 /// Construct a `BundlerInput` for the project at `root` with the given
 /// CSS Modules class maps. Keeps the test focused on the one field
 /// under test; everything else is the minimal viable config.
 fn make_input(
     root: &std::path::Path,
-    esbuild: PathBuf,
     class_maps: HashMap<PathBuf, HashMap<String, String>>,
 ) -> BundlerInput {
     BundlerInput {
@@ -54,8 +51,7 @@ fn make_input(
         outdir: root.join("dist"),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -78,14 +74,6 @@ fn make_input(
 
 #[test]
 fn css_module_import_resolves_to_scoped_class_name() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_css_modules] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     fs::create_dir_all(root.join("pages")).unwrap();
@@ -116,8 +104,8 @@ fn css_module_import_resolves_to_scoped_class_name() {
     let mut class_maps: HashMap<PathBuf, HashMap<String, String>> = HashMap::new();
     class_maps.insert(module_css.clone(), names);
 
-    let out = bundle(make_input(&root, esbuild.clone(), class_maps))
-        .expect("bundle with CSS Modules should succeed");
+    let out =
+        bundle(make_input(&root, class_maps)).expect("bundle with CSS Modules should succeed");
 
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
 
@@ -134,26 +122,11 @@ fn css_module_import_resolves_to_scoped_class_name() {
 
     // Re-parse with esbuild to prove the bundle is well-formed JS —
     // the `.module.css` → JS rewrite must not produce broken syntax.
-    let parse = Command::new(&esbuild)
-        .arg(&out.bundle_path)
-        .arg("--bundle=false")
-        .arg("--log-level=warning")
-        .output()
-        .expect("re-parse via esbuild");
-    assert!(
-        parse.status.success(),
-        "bundle is not parseable by esbuild: stderr={}",
-        String::from_utf8_lossy(&parse.stderr)
-    );
+    assert_parses_as_module(&out.bundle_path);
 }
 
 #[test]
 fn unmapped_css_module_degrades_to_empty_object_not_crash() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_css_modules] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     fs::create_dir_all(root.join("pages")).unwrap();
@@ -178,7 +151,7 @@ fn unmapped_css_module_degrades_to_empty_object_not_crash() {
     .unwrap();
 
     // Empty class map — the .module.css file is not in it.
-    let out = bundle(make_input(&root, esbuild.clone(), HashMap::new()))
+    let out = bundle(make_input(&root, HashMap::new()))
         .expect("bundle with unmapped CSS Module should still succeed");
 
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
@@ -188,15 +161,30 @@ fn unmapped_css_module_degrades_to_empty_object_not_crash() {
         "raw CSS bytes must not survive in the JS bundle"
     );
 
-    let parse = Command::new(&esbuild)
-        .arg(&out.bundle_path)
-        .arg("--bundle=false")
-        .arg("--log-level=warning")
-        .output()
-        .expect("re-parse via esbuild");
+    assert_parses_as_module(&out.bundle_path);
+}
+
+/// Parses `path` as an ES module, proving the bundle is well-formed JS.
+fn assert_parses_as_module(path: &std::path::Path) {
+    use swc_core::common::{sync::Lrc, FileName, SourceMap};
+    use swc_core::ecma::ast::EsVersion;
+    use swc_core::ecma::parser::{parse_file_as_module, EsSyntax, Syntax};
+    let source = std::fs::read_to_string(path).expect("read bundle");
+    let cm: Lrc<SourceMap> = Default::default();
+    let fm = cm.new_source_file(FileName::Anon.into(), source);
+    let mut recovered = Vec::new();
+    let parsed = parse_file_as_module(
+        &fm,
+        Syntax::Es(EsSyntax::default()),
+        EsVersion::latest(),
+        None,
+        &mut recovered,
+    );
     assert!(
-        parse.status.success(),
-        "unmapped-module bundle is not parseable: stderr={}",
-        String::from_utf8_lossy(&parse.stderr)
+        parsed.is_ok() && recovered.is_empty(),
+        "bundle {} is not a parseable ES module: {:?} {:?}",
+        path.display(),
+        parsed.err(),
+        recovered
     );
 }

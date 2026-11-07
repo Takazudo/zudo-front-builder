@@ -48,7 +48,6 @@ use zfb_build::{
     bundle, BundleMode, BundlerInput, ContentCollectionSpec, OnBrokenLinks,
     ResolveMarkdownLinksRoute, ResolveMarkdownLinksSpec,
 };
-use zfb_test_utils::locate_esbuild;
 
 // ---------------------------------------------------------------------------
 // Helpers shared by zzmod_all_five_migration_fixes_compose only.
@@ -414,7 +413,7 @@ fn write_full_fixture(root: &std::path::Path) {
 }
 
 /// Build the bundler input for the full integration fixture.
-fn make_full_fixture_input(root: &std::path::Path, esbuild: &std::path::Path) -> BundlerInput {
+fn make_full_fixture_input(root: &std::path::Path) -> BundlerInput {
     BundlerInput {
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
@@ -438,8 +437,7 @@ fn make_full_fixture_input(root: &std::path::Path, esbuild: &std::path::Path) ->
         outdir: root.join("dist"),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.to_path_buf()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -501,19 +499,11 @@ fn make_full_fixture_input(root: &std::path::Path, esbuild: &std::path::Path) ->
 /// in concert must not prevent the bundler from succeeding.
 #[test]
 fn full_fixture_bundles_without_error() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[migration_fixes_integration_confirm] no esbuild binary; \
-             set ZFB_ESBUILD_BIN or place at crates/zfb/binaries/esbuild/esbuild. Skipping."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_full_fixture(&root);
 
-    let input = make_full_fixture_input(&root, &esbuild);
+    let input = make_full_fixture_input(&root);
     let out = bundle(input).expect(
         "full integration fixture must bundle without error — \
          check individual Wave 1+2 test suites for the failing feature",
@@ -526,16 +516,11 @@ fn full_fixture_bundles_without_error() {
 /// Exercises sub #194 / #188 (syntect theme via config).
 #[test]
 fn full_fixture_bundle_contains_inspiredgithub_class() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[migration_fixes_integration_confirm] no esbuild binary; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_full_fixture(&root);
 
-    let input = make_full_fixture_input(&root, &esbuild);
+    let input = make_full_fixture_input(&root);
     let out = bundle(input).expect("bundle should succeed");
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
 
@@ -555,16 +540,11 @@ fn full_fixture_bundle_contains_inspiredgithub_class() {
 /// Exercises sub #196 / #185 Gap 1 (resolve-links in bundle).
 #[test]
 fn full_fixture_bundle_rewrites_good_mdx_link() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[migration_fixes_integration_confirm] no esbuild binary; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_full_fixture(&root);
 
-    let input = make_full_fixture_input(&root, &esbuild);
+    let input = make_full_fixture_input(&root);
     let out = bundle(input).expect("bundle should succeed with onBrokenLinks: warn");
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
 
@@ -591,16 +571,11 @@ fn full_fixture_bundle_rewrites_good_mdx_link() {
 /// Exercises sub #195 / #135 (directive-label titles at the bundler level).
 #[test]
 fn full_fixture_bundle_contains_admonition_title() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[migration_fixes_integration_confirm] no esbuild binary; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_full_fixture(&root);
 
-    let input = make_full_fixture_input(&root, &esbuild);
+    let input = make_full_fixture_input(&root);
     let out = bundle(input).expect("bundle should succeed");
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
 
@@ -619,16 +594,11 @@ fn full_fixture_bundle_contains_admonition_title() {
 /// Exercises sub #193 / #136 (table emit at bundler level).
 #[test]
 fn full_fixture_bundle_contains_gfm_table_components() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[migration_fixes_integration_confirm] no esbuild binary; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_full_fixture(&root);
 
-    let input = make_full_fixture_input(&root, &esbuild);
+    let input = make_full_fixture_input(&root);
     let out = bundle(input).expect("bundle should succeed");
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
 
@@ -721,13 +691,6 @@ fn zzmod_all_five_migration_fixes_compose() {
     // -----------------------------------------------------------------------
     // Part B — ONE esbuild-gated bundle exercising #662/#664/#665/#666/#677.
     // -----------------------------------------------------------------------
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[migration_confirm_all_five] no esbuild binary; \
-             set ZFB_ESBUILD_BIN or install esbuild in node_modules. Skipping part B."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
@@ -823,7 +786,6 @@ fn zzmod_all_five_migration_fixes_compose() {
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
-    input.esbuild_binary = Some(esbuild);
     input.node_modules_dir = Some(root.join("node_modules"));
     input.tsconfig_paths = paths; // #666 — non-empty → branch 4 (copy_mode + rebase)
     input.pipeline_spec.hard_breaks = true; // #662

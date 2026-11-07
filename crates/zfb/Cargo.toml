@@ -33,8 +33,7 @@ path = "src/lib.rs"
 # Default JS runtime (#4390); the deno_core host was removed in #4395.
 direct-v8 = ["zfb-render/direct-v8", "zfb-build/direct-v8", "zfb-server/direct-v8", "zfb-config-loader/direct-v8"]
 
-rolldown-prototype = ["zfb-build/rolldown-prototype", "zfb-islands/rolldown-prototype"]
-default = ["direct-v8", "rolldown-prototype"]
+default = ["direct-v8"]
 
 [dependencies]
 zfb-diagnostics = { path = "../zfb-diagnostics" }
@@ -150,6 +149,7 @@ tar = "0.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+zfb-rolldown-prototype = { path = "../zfb-rolldown-prototype", features = ["native"] }
 cssparser = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 # Async client for the dev E2E harness (dev_serve_e2e.rs, #1018): HTTP

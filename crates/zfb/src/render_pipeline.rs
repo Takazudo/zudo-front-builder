@@ -2799,21 +2799,6 @@ mod tests {
     #[test]
     #[ignore = "heavy: run with --ignored — boots real esbuild + V8"]
     fn eval_deferred_paths_via_worker_embedded_v8_non_literal_paths() {
-        // Self-skip only when the toolchain is genuinely absent would be a
-        // pass-by-skip — the acceptance criteria require a genuine PASS, so
-        // panic loudly instead (mirrors the #1007 "slot binary present but
-        // unresolved must panic, not skip" rule already applied elsewhere in
-        // this crate, e.g. `config.rs`'s `zfb_test_utils::locate_esbuild()`
-        // callers).
-        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
-            panic!(
-                "eval_deferred_paths_via_worker_embedded_v8_non_literal_paths requires a \
-                 real esbuild binary to genuinely PASS (not pass-by-skip) — set \
-                 ZFB_ESBUILD_BIN or stage the workspace slot binary before running with \
-                 --ignored"
-            );
-        };
-
         let project_tmp = tempdir().unwrap();
         let project_root = project_tmp.path();
         std::fs::create_dir_all(project_root.join("pages/blog")).unwrap();
@@ -2891,8 +2876,7 @@ export default function PostPage({ title, params }: Props) {
             outdir: dist_tmp.path().to_path_buf(),
             mode: zfb_build::BundleMode::Production,
             minify: false,
-            esbuild_binary: Some(esbuild),
-            mock_subprocess_output: None,
+            mock_bundle_output: None,
             content_snapshot_json: Some(snap_json),
             node_modules_dir: Some(node_modules_path),
             node_modules_preserve_symlinks: true,

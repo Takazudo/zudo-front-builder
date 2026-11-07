@@ -1,14 +1,14 @@
 //! Internal #318 probe: real production CLI, second rebundle, local adapter, existing V8.
 //! Runs on the default direct-v8 host.
-#[cfg(all(feature = "direct-v8", feature = "rolldown-prototype", unix))]
+#[cfg(all(feature = "direct-v8", unix))]
 fn main() -> anyhow::Result<()> {
     probe::run()
 }
-#[cfg(not(all(feature = "direct-v8", feature = "rolldown-prototype", unix)))]
+#[cfg(not(all(feature = "direct-v8", unix)))]
 fn main() {
-    panic!("requires Unix, rolldown-prototype and the direct-v8 host");
+    panic!("requires Unix and the direct-v8 host");
 }
-#[cfg(all(feature = "direct-v8", feature = "rolldown-prototype", unix))]
+#[cfg(all(feature = "direct-v8", unix))]
 mod probe {
     use anyhow::{ensure, Result};
     use serde_json::{json, Value};
@@ -155,11 +155,7 @@ mod probe {
             .parent()
             .unwrap()
             .to_path_buf();
-        let backend = if std::env::var("ZFB_BUNDLER").as_deref() != Ok("esbuild") {
-            "rolldown"
-        } else {
-            "esbuild"
-        };
+        let backend = "rolldown";
         let base = repo.join("target/rolldown-production").join(backend);
         if base.exists() {
             fs::remove_dir_all(&base)?;

@@ -26,7 +26,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_test_utils::locate_esbuild;
 
 /// A minimal user project: one TSX page under `pages/` carrying a unique
 /// marker so we can prove the user page survives into the bundle even when an
@@ -67,7 +66,6 @@ fn stage_injected_root(modules: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf)
 
 fn make_input(
     root: &Path,
-    esbuild: &Path,
     outdir_name: &str,
     injected_pages_root: Option<PathBuf>,
     plugin_virtual_modules: Vec<(String, String)>,
@@ -96,8 +94,7 @@ fn make_input(
         // Development mode — the dev bundle is what S2 targets.
         mode: BundleMode::Development,
         minify: false,
-        esbuild_binary: Some(esbuild.to_path_buf()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -125,11 +122,6 @@ fn make_input(
 /// dropped by the additive root).
 #[test]
 fn injected_root_adds_module_and_resolves_virtual_without_dropping_user_pages() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_injected_pages_root] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     write_user_project(root);
@@ -149,13 +141,7 @@ export default function PresetAbout() {\n\
         "export const presetTitle = \"VIRTUAL_PRESET_META_MARKER\";\n".to_string(),
     )];
 
-    let input = make_input(
-        root,
-        &esbuild,
-        "dist-injected",
-        Some(injected_root),
-        plugin_vms,
-    );
+    let input = make_input(root, "dist-injected", Some(injected_root), plugin_vms);
     let out = bundle(input).expect(
         "dev bundle with an additive injected_pages_root (static route importing a \
          virtual: module) must bundle successfully",
@@ -190,16 +176,11 @@ export default function PresetAbout() {\n\
 /// page; contains no injected marker).
 #[test]
 fn no_injected_root_is_user_pages_only() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_injected_pages_root] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     write_user_project(root);
 
-    let input = make_input(root, &esbuild, "dist-parity", None, vec![]);
+    let input = make_input(root, "dist-parity", None, vec![]);
     let out = bundle(input).expect("user-only dev bundle must succeed");
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
 

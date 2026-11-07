@@ -1,13 +1,13 @@
-//! #318 L3 runtime probe. Run with rolldown-prototype on the default direct-v8 build.
-#[cfg(all(feature = "direct-v8", feature = "rolldown-prototype"))]
+//! #318 L3 runtime probe. Runs on the default direct-v8 build.
+#[cfg(feature = "direct-v8")]
 fn main() -> anyhow::Result<()> {
     probe::run()
 }
-#[cfg(not(all(feature = "direct-v8", feature = "rolldown-prototype")))]
+#[cfg(not(feature = "direct-v8"))]
 fn main() {
-    panic!("requires rolldown-prototype and the direct-v8 host");
+    panic!("requires the direct-v8 host");
 }
-#[cfg(all(feature = "direct-v8", feature = "rolldown-prototype"))]
+#[cfg(feature = "direct-v8")]
 mod probe {
     use anyhow::{ensure, Result};
     use std::{
@@ -25,11 +25,6 @@ mod probe {
         );
         input.zudo_react_island_names = Some(vec!["Counter".into()]);
         input.node_modules_dir = Some(root.join("node_modules"));
-        input.esbuild_binary = Some(
-            std::env::var_os("ZFB_ESBUILD_BIN")
-                .expect("ZFB_ESBUILD_BIN")
-                .into(),
-        );
         input.tsconfig_paths.insert(
             "@fixture/message".into(),
             vec![root
@@ -47,11 +42,7 @@ mod probe {
     }
     pub fn run() -> Result<()> {
         let root = PathBuf::from(std::env::args().nth(1).expect("project root")).canonicalize()?;
-        let backend = if zfb_rolldown_prototype::enabled() {
-            "rolldown"
-        } else {
-            "esbuild"
-        };
+        let backend = "rolldown";
         let mut prior = None;
         let mut timings = Vec::new();
         let mut last = None;

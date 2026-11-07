@@ -4,23 +4,24 @@
 //! project (`site\node_modules\@acme\linked` -> `room\packages-ws\linked`), the
 //! linked package reaches its transitive dependency through a pnpm-isolated
 //! junction, and tsconfig `paths` sends the build down the live-link route
-//! (`<shadow>\node_modules` is a junction to `site\node_modules`). esbuild then
-//! walks two reparse hops. Each case pairs a link creator (libuv junction, as
+//! (`<shadow>\node_modules` is a junction to `site\node_modules`). The bundler
+//! then walks two reparse hops. Each case pairs a link creator (libuv junction, as
 //! pnpm's symlink-dir makes it, or `directory_link::create`) with a short or
 //! long target spelling, and runs two layers:
 //!
-//! - L1: raw esbuild in a fake shadow, without and with `--preserve-symlinks`.
+//! - L1: the raw native bundler in a fake shadow, without and with preserved
+//!   symlinks.
 //! - L2: zfb `bundle()`, two `bundle_with_session` ticks and a `bundle.exclude`
 //!   transition on one session.
 //!
 //! Every layer runs before the case fails, so one Windows run shows which hop
-//! breaks. Missing esbuild, node or 8.3 names fail the case; they never skip it.
+//! breaks. Missing node or 8.3 names fail the case; they never skip it.
 //!
 //! pnpm writes a `link:` entry as a RELATIVE symbolic link (`..\..\..\packages-ws\x`),
 //! and Windows resolves a relative target against the path as traversed. Reached
 //! through the `<shadow>\node_modules` junction it climbs out of the shadow, not
 //! the project (direct-v8 run 40195192600). The `relative_symlink` case pins that:
-//! its L1 rows only record what raw esbuild does through a plain junction, and
+//! its L1 rows only record what the raw bundler does through a plain junction, and
 //! its L2 rows must pass.
 
 use std::{
@@ -38,6 +39,7 @@ use std::{
 use zfb_types::{directory_link, long_path::long_path_spelling};
 
 use super::{bundle, bundle_with_session, BundleMode, BundlerInput, ShadowSession};
+use zfb_rolldown_prototype::{BundleRequest, OutputLayout, Platform};
 
 const LINKED_ROOT: &str = "linked-root-marker-4545";
 const LINKED_SUB: &str = "linked-sub-marker-4545";
@@ -119,9 +121,7 @@ struct Fixture {
     transitive_link: PathBuf,
 }
 
-fn preconditions() -> PathBuf {
-    let esbuild =
-        zfb_test_utils::locate_esbuild().expect("windows-lib-tests stages ZFB_ESBUILD_BIN");
+fn preconditions() {
     let node = Command::new("node")
         .arg("--version")
         .output()
@@ -132,7 +132,6 @@ fn preconditions() -> PathBuf {
         node.status,
         String::from_utf8_lossy(&node.stderr)
     );
-    esbuild
 }
 
 fn assert_short_names_available(room: &Path) {
@@ -451,9 +450,9 @@ fn missing_markers(body: &str, markers: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// L1: esbuild alone, in a fake shadow whose `node_modules` is a
+/// L1: the native bundler alone, in a fake shadow whose `node_modules` is a
 /// `directory_link::create` junction to `site\node_modules`.
-fn raw_esbuild(esbuild: &Path, fixture: &Fixture, preserve_symlinks: bool) -> Result<(), String> {
+fn raw_bundle(fixture: &Fixture, preserve_symlinks: bool) -> Result<(), String> {
     let shadow_dir = tempfile::tempdir().unwrap();
     let shadow = long_path_spelling(shadow_dir.path());
     assert!(
@@ -472,40 +471,34 @@ fn raw_esbuild(esbuild: &Path, fixture: &Fixture, preserve_symlinks: bool) -> Re
     let out_dir = tempfile::tempdir().unwrap();
     let outfile = long_path_spelling(out_dir.path()).join("out.mjs");
 
-    let mut command = Command::new(esbuild);
-    command.current_dir(&shadow).args([
-        "--bundle",
-        "--platform=neutral",
-        "--format=esm",
-        "--log-level=verbose",
-    ]);
-    if preserve_symlinks {
-        command.arg("--preserve-symlinks");
-    }
-    let mut outfile_arg = OsString::from("--outfile=");
-    outfile_arg.push(&outfile);
-    command.arg(outfile_arg).arg("entry.mjs");
-    let output = command.output().expect("spawn esbuild");
+    let mut request = BundleRequest::new(
+        &shadow,
+        "entry.mjs",
+        OutputLayout::file(outfile.clone()),
+        Platform::Neutral,
+    );
+    request.resolve.preserve_symlinks = preserve_symlinks;
+    let result = zfb_rolldown_prototype::bundle(&request);
 
     let body = fs::read_to_string(&outfile).unwrap_or_default();
     let missing = missing_markers(&body, &[LINKED_ROOT, LINKED_SUB, TRANSITIVE]);
-    if output.status.success() && missing.is_empty() {
+    if result.is_ok() && missing.is_empty() {
         return Ok(());
     }
     Err(format!(
-        "esbuild exit {} (cwd {}, preserve_symlinks={preserve_symlinks}); missing markers {missing:?}\n\
-         hops:\n{}\n{}\n\
-         --- esbuild stdout ---\n{}\n--- esbuild stderr (verbose) ---\n{}",
-        output.status,
+        "native bundle {} (cwd {}, preserve_symlinks={preserve_symlinks}); missing markers {missing:?}\n\
+         hops:\n{}\n{}",
+        match &result {
+            Ok(_) => "succeeded".to_string(),
+            Err(error) => format!("failed: {error:#}"),
+        },
         shadow.display(),
         describe_hop(&shadow_nm),
         describe_fixture_hops(fixture),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
     ))
 }
 
-fn zfb_input(fixture: &Fixture, esbuild: &Path, mode: BundleMode) -> BundlerInput {
+fn zfb_input(fixture: &Fixture, mode: BundleMode) -> BundlerInput {
     let site = &fixture.site;
     let mut input = BundlerInput::for_project(site.clone(), mode, site.join("dist"), None);
     input.zudo_react_island_names = Some(vec![]);
@@ -513,8 +506,7 @@ fn zfb_input(fixture: &Fixture, esbuild: &Path, mode: BundleMode) -> BundlerInpu
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
-    input.esbuild_binary = Some(esbuild.to_path_buf());
-    input.mock_subprocess_output = None;
+    input.mock_bundle_output = None;
     input.node_modules_dir = Some(site.join("node_modules"));
     input.tsconfig_paths = BTreeMap::from([(
         "~/*".to_string(),
@@ -599,11 +591,11 @@ fn check_run(
 }
 
 /// L2: zfb's own bundler on the long project spelling.
-fn zfb_layer(esbuild: &Path, fixture: &Fixture) -> Result<(), String> {
+fn zfb_layer(fixture: &Fixture) -> Result<(), String> {
     let integrity = Integrity::capture(fixture);
     let mut failures = Vec::new();
 
-    let result = bundle(zfb_input(fixture, esbuild, BundleMode::Production));
+    let result = bundle(zfb_input(fixture, BundleMode::Production));
     failures.extend(check_run(
         "sessionless bundle()",
         result,
@@ -624,7 +616,7 @@ fn zfb_layer(esbuild: &Path, fixture: &Fixture) -> Result<(), String> {
         ("session tick 4 (bundle.exclude back to empty)", Vec::new()),
     ];
     for (when, exclude) in ticks {
-        let mut input = zfb_input(fixture, esbuild, BundleMode::Development);
+        let mut input = zfb_input(fixture, BundleMode::Development);
         input.bundle_exclude = exclude;
         let result = bundle_with_session(input, Some(&mut session));
         failures.extend(check_run(
@@ -644,26 +636,22 @@ fn zfb_layer(esbuild: &Path, fixture: &Fixture) -> Result<(), String> {
 }
 
 fn run_case(case: Case) {
-    let esbuild = preconditions();
+    preconditions();
     let room = tempfile::tempdir().unwrap();
     assert_short_names_available(room.path());
     let fixture = write_fixture(room.path(), case);
 
     // A relative symlink reached through a plain junction is broken by Windows
-    // itself, so its raw-esbuild rows are recorded, not required.
+    // itself, so its raw-bundler rows are recorded, not required.
     let l1_required = !matches!(case.creator, LinkCreator::RelativeSymlink);
     let results = [
+        ("L1 raw bundler", l1_required, raw_bundle(&fixture, false)),
         (
-            "L1 raw esbuild",
+            "L1 raw bundler preserve_symlinks",
             l1_required,
-            raw_esbuild(&esbuild, &fixture, false),
+            raw_bundle(&fixture, true),
         ),
-        (
-            "L1 raw esbuild --preserve-symlinks",
-            l1_required,
-            raw_esbuild(&esbuild, &fixture, true),
-        ),
-        ("L2 zfb", true, zfb_layer(&esbuild, &fixture)),
+        ("L2 zfb", true, zfb_layer(&fixture)),
     ];
     let summary = results
         .iter()

@@ -1066,11 +1066,10 @@ export default {
 // #4449 (epic #4448, source bug #4444): production renames only the islands
 // entry (`islands.js` -> `islands-<hash>.js`) and writes chunks verbatim, so a
 // chunk importing the entry 404s. The emitted `dist/` is the oracle; nothing
-// here predicts how either bundler splits the graph.
+// here predicts how the bundler splits the graph.
 // ---------------------------------------------------------------------------
 // The specifier oracle is the Rolldown crate's parser helper, re-exported by
-// zfb-islands only when `rolldown-prototype` (a default feature) is on.
-#[cfg(feature = "rolldown-prototype")]
+// zfb-islands.
 mod lazy_shared_island {
     use super::*;
 
@@ -1112,12 +1111,11 @@ mod lazy_shared_island {
                 && file.ends_with(".js"))
     }
 
-    fn run_lazy_shared_build(root: &Path, esbuild: &Path, bundler: &str) {
+    fn run_lazy_shared_build(root: &Path, bundler: &str) {
         let output = Command::new(zfb_binary!())
             .arg("build")
             .current_dir(root)
-            .env("ZFB_ESBUILD_BIN", esbuild)
-            .env("ZFB_BUNDLER", bundler)
+            .env_remove("ZFB_BUNDLER")
             .env_remove("ZFB_ROLLDOWN_PROTOTYPE")
             .output()
             .expect("spawn real `zfb build`");
@@ -1131,13 +1129,13 @@ mod lazy_shared_island {
         );
     }
 
-    fn assert_no_chunk_imports_the_islands_entry(bundler: &str, esbuild: &Path) {
+    fn assert_no_chunk_imports_the_islands_entry(bundler: &str) {
         let temp = tempfile::tempdir().expect("create lazy-shared tempdir");
         let root = temp.path().join("app");
         let fixture =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lazy-shared-island");
         copy_fixture(&fixture, &root).expect("copy lazy-shared-island fixture");
-        run_lazy_shared_build(&root, esbuild, bundler);
+        run_lazy_shared_build(&root, bundler);
         let dist = read_dist_inventory(&root);
         let render_js = || -> String {
             dist.iter()
@@ -1256,20 +1254,6 @@ mod lazy_shared_island {
     #[test]
     fn rolldown_lazy_chunks_never_import_the_fingerprinted_islands_entry() {
         let _guard = BUILD_LOCK.lock().unwrap();
-        let Some(esbuild) = locate_esbuild() else {
-            eprintln!("[build_reproducibility_e2e] no esbuild binary available; skipping");
-            return;
-        };
-        assert_no_chunk_imports_the_islands_entry("rolldown", &esbuild);
-    }
-
-    #[test]
-    fn esbuild_lazy_chunks_never_import_the_fingerprinted_islands_entry() {
-        let _guard = BUILD_LOCK.lock().unwrap();
-        let Some(esbuild) = locate_esbuild() else {
-            eprintln!("[build_reproducibility_e2e] no esbuild binary available; skipping");
-            return;
-        };
-        assert_no_chunk_imports_the_islands_entry("esbuild", &esbuild);
+        assert_no_chunk_imports_the_islands_entry("rolldown");
     }
 }

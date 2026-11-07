@@ -13,20 +13,9 @@
 use std::fs;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_test_utils::locate_esbuild;
 
 #[test]
 fn escaping_relative_import_gets_actionable_boundary_error() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_out_of_root_import] no esbuild binary available; \
-             set ZFB_ESBUILD_BIN, place the binary at \
-             crates/zfb/binaries/esbuild/esbuild, or install esbuild on PATH \
-             to enable this test. Skipping."
-        );
-        return;
-    };
-
     // workspace/
     //   app/           <- project_root passed to the bundler
     //     pages/index.tsx  <- imports "../../outside/shared.ts"
@@ -70,7 +59,6 @@ fn escaping_relative_import_gets_actionable_boundary_error() {
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime/server".into(),
     ];
-    input.esbuild_binary = Some(esbuild);
 
     let err = bundle(input).expect_err(
         "the escaping relative import must still fail to bundle — owner \
