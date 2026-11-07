@@ -19,11 +19,14 @@ mod splitting_tests;
 mod symlink_cwd_tests;
 mod trailing_paths;
 #[cfg(test)]
+mod typed_request_tests;
+#[cfg(test)]
 mod unresolved_tests;
 mod verbatim_specifiers;
 #[cfg(test)]
 mod warning_tests;
 mod windows_path;
+use crate::request::{BundleRequest, Generated, BACKEND_IDENTITY};
 use anyhow::{bail, Context, Result};
 use prepared::Request;
 use rolldown::plugin::{
@@ -190,11 +193,32 @@ impl Plugin for GraphPlugin {
     }
 }
 
-/// Execute one selected prepared job in process. Runtime construction is isolated
-/// on a scoped thread, so callers already running a Tokio/V8 host remain valid.
+/// Generates one typed bundle job in process without writing anything.
+/// Runtime construction is isolated on a scoped thread, so callers already
+/// running a Tokio/V8 host remain valid. Native warnings and graph validation
+/// can reject an otherwise generated bundle, so the result is complete and
+/// validated before any byte becomes visible.
+pub fn generate(request: &BundleRequest) -> Result<Generated> {
+    run_planned(Request::plan(request)?)
+}
+
+/// [`generate`], then publish every file.
+pub fn bundle(request: &BundleRequest) -> Result<Generated> {
+    let generated = generate(request)?;
+    generated.publish()?;
+    Ok(generated)
+}
+
+/// Legacy prepared-argv entry: decodes the esbuild-shaped command into a
+/// typed request and runs [`bundle`]. Removed with its last caller (#4631).
 pub fn run_prepared(cmd: &Command) -> Result<()> {
-    let request = Request::decode(cmd)?;
-    let files = std::thread::scope(|scope| {
+    let generated = run_planned(Request::decode(cmd)?)?;
+    generated.publish()?;
+    Ok(())
+}
+
+fn run_planned(request: Request) -> Result<Generated> {
+    std::thread::scope(|scope| {
         scope
             .spawn(move || {
                 tokio::runtime::Builder::new_multi_thread()
@@ -205,19 +229,7 @@ pub fn run_prepared(cmd: &Command) -> Result<()> {
             })
             .join()
             .map_err(|_| anyhow::anyhow!("Rolldown prototype thread panicked"))?
-    })?;
-    // Native warnings and graph validation may reject an otherwise generated
-    // bundle. Publish only validated bytes after the scoped worker and its
-    // private runtime have actually joined. This synchronous adapter does not
-    // provide the standalone probe's supervisor or cancellation deadlines.
-    for (path, bytes) in files {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, bytes)
-            .with_context(|| format!("write native output {}", path.display()))?;
-    }
-    Ok(())
+    })
 }
 /// Re-render unresolved imports in esbuild's shape, with paths relative to the
 /// job's working directory, so the callers' existing esbuild diagnostic mapping
@@ -306,7 +318,7 @@ fn lexical_normal(path: &Path) -> PathBuf {
     out
 }
 
-async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
+async fn run(request: Request) -> Result<Generated> {
     let start = Instant::now();
     let inputs = Arc::new(Mutex::new(BTreeMap::new()));
     let copy_outputs = Arc::new(Mutex::new(BTreeMap::new()));
@@ -505,13 +517,9 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     for warning in &warnings {
         eprintln!("Rolldown warning: {warning}");
     }
+    let graph = json!({"inputs":inputs,"outputs":outputs,"zfbBackend":BACKEND_IDENTITY,"warnings":warnings});
     if let Some(path) = request.metafile {
-        files.push((
-            path,
-            serde_json::to_vec_pretty(
-                &json!({"inputs":inputs,"outputs":outputs,"zfbBackend":"rolldown-24bc2d0","warnings":warnings}),
-            )?,
-        ));
+        files.push((path, serde_json::to_vec_pretty(&graph)?));
     }
     if std::env::var_os("ZFB_DEV_TIMING").is_some() {
         eprintln!(
@@ -519,7 +527,11 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
             post.elapsed().as_micros()
         );
     }
-    Ok(files)
+    Ok(Generated {
+        files,
+        graph,
+        warnings,
+    })
 }
 
 /// Spells `path` the way esbuild's metafile does: relative to `cwd`, with `..`
