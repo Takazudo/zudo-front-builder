@@ -340,7 +340,8 @@ function groupHasMembers(child) {
 // gets SIGTERM, then SIGKILL after the grace period; the promise settles only
 // once the child has exited and every holder of its output pipes has closed.
 // After a deadline, a group that still has members when the pipes close is
-// SIGKILLed at the end of the grace before the promise settles.
+// re-probed until it empties; members left at the end of the grace are
+// SIGKILLed before the promise settles.
 export function runBounded({
   command,
   args = [],
@@ -354,6 +355,7 @@ export function runBounded({
     let tail = "";
     let timedOut = false;
     let killTimer;
+    let emptyProbe;
     const child = spawn(command, args, {
       env: env ?? process.env,
       detached: true,
@@ -374,6 +376,7 @@ export function runBounded({
     const settle = ({ exitCode, signal }) => {
       clearTimeout(deadline);
       clearTimeout(killTimer);
+      clearInterval(emptyProbe);
       activeChildren.delete(child);
       resolve({
         exitCode: spawnError ? null : exitCode,
@@ -389,7 +392,8 @@ export function runBounded({
       killGroup(child, "SIGTERM");
       killTimer = setTimeout(() => {
         killed = true;
-        killGroup(child, "SIGKILL");
+        // Re-probe first: an emptied group's pgid may already belong to another group.
+        if (groupHasMembers(child)) killGroup(child, "SIGKILL");
         if (closed) settle(closed);
       }, killGraceMs);
     }, timeoutMs);
@@ -401,8 +405,14 @@ export function runBounded({
       clearTimeout(deadline);
       // A descendant that ignored SIGTERM and released the pipes still belongs
       // to the group: keep its SIGKILL instead of settling past it (#4614).
-      if (timedOut && !killed && groupHasMembers(child)) closed = { exitCode, signal };
-      else settle({ exitCode, signal });
+      // Members still exiting from SIGTERM (or awaiting a reaper) empty the
+      // group on their own, so settle as soon as a short re-probe sees it empty.
+      if (timedOut && !killed && groupHasMembers(child)) {
+        closed = { exitCode, signal };
+        emptyProbe = setInterval(() => {
+          if (!groupHasMembers(child)) settle(closed);
+        }, 25);
+      } else settle({ exitCode, signal });
     });
   });
 }

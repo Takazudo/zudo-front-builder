@@ -888,9 +888,10 @@ async function waitForTerminalState(
 // The observation deadline sits inside the existing liveness envelope: a run
 // settles in under 10 s (the durationMs bound below) and the scripts-subprocess
 // project guard is 90 s, so settle + 2 s observation fails with the pid and
-// state named here, not as a bare project timeout. #4614 measured the exit tail
-// after the pipes close at <= 8.8 ms even with ~19k fds widening it, so 2 s is
-// a hang guard, not a budget.
+// state named here, not as a bare project timeout. The exit tail after the pipes
+// close measured <= 8.8 ms even with ~19k fds widening it (receipt:
+// https://github.com/Takazudo/zudo-front-builder/issues/4614#issuecomment-6705926701),
+// so 2 s is a hang guard, not a budget.
 const OBSERVE_DEADLINE_MS = 2_000;
 
 const errno = (code) => Object.assign(new Error(code), { code });
@@ -995,6 +996,17 @@ describe("bounded subprocess", () => {
     expect(result.durationMs).toBeLessThan(10_000);
   });
 
+  it("settles once a SIGTERMed group empties instead of waiting out the grace", async () => {
+    const timeoutMs = 300;
+    const killGraceMs = 10_000;
+    const result = await runBounded({ command: slowGroup(), timeoutMs, killGraceMs, echo: false });
+    expect(result.timedOut).toBe(true);
+    // The orphaned grandchild dies of SIGTERM at once but stays a group member
+    // until its reaper collects the zombie (measured ~1.7 s on a host whose init
+    // reaps on a ~2 s cycle); waiting for the SIGKILL timer would take 10.3 s.
+    expect(result.durationMs).toBeLessThan(timeoutMs + killGraceMs - 5_000);
+  });
+
   it("reports a missing command as a failure, never a success", async () => {
     const result = await runBounded({
       command: "/nonexistent/apt-get",
@@ -1090,7 +1102,8 @@ describe("bounded subprocess", () => {
       leftovers.push(pid);
       expect(result.timedOut).toBe(true);
       // Settlement waited for the grace period instead of cancelling SIGKILL.
-      expect(result.durationMs).toBeGreaterThanOrEqual(timeoutMs + killGraceMs);
+      // -1: a Node timer can fire 1 ms early as measured by Date.now().
+      expect(result.durationMs).toBeGreaterThanOrEqual(timeoutMs + killGraceMs - 1);
       expect(result.durationMs).toBeLessThan(10_000);
       // sleep 60 ignoring SIGTERM can only have stopped by the SIGKILL.
       const { state } = await waitForTerminalState(pid, { deadlineMs: OBSERVE_DEADLINE_MS });
