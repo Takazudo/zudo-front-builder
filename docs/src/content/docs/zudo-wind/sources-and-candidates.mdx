@@ -14,11 +14,11 @@ function ActionButton({ active }: { active: boolean }) {
     ? "bg-accent text-white"
     : "bg-muted text-white";
 
-  return <button className={buttonClass}>Continue</button>;
+  return <button class={buttonClass}>Continue</button>;
 }
 ~~~
 
-A finite conditional exposes both complete alternatives. A runtime prefix joined to a value does not form a candidate. Put a complete app-owned candidate that cannot appear in source in an owner-keyed <code>wind.safelist</code>.
+A finite conditional exposes both complete alternatives. A runtime prefix joined to a value does not form a candidate. Put a complete app-owned candidate that cannot appear in source in an owner-keyed <code>wind.safelist</code>. The `accent`, `muted`, and `white` colors are not built in: zudo-wind ships no default palette, so the configuration shown with the preview below defines them.
 
 | Need | Use |
 | --- | --- |
@@ -195,6 +195,84 @@ Expected diagnostics: `ZW010 (warning)`
 {/* wind-preview:end */}
 
 The extractor does not execute application code or infer classes from runtime values.
+
+## Finding a candidate is not resolving it
+
+zudo-wind handles a class in two separate steps:
+
+1. **Finding.** The extractor reads source text and collects complete candidate strings. This step does not use your configuration: it does not check whether a string is a utility, and it never builds a string out of pieces.
+2. **Resolving.** The compiler checks each found candidate against the utility grammar and the configured tokens, breakpoints, and dark mode. Only a candidate that resolves generates CSS.
+
+A class can therefore be found without resolving. `bg-info` is a complete candidate, but it generates nothing until `wind.tokens.colors` defines `info`. Where the candidate was found decides how that is reported: an unresolved candidate in a class position fails the build, while the same string elsewhere in source is information for `zfb wind audit`. See [Class positions and confidence](#class-positions-and-confidence).
+
+## Complete alternatives, not constructed fragments
+
+Write every alternative as a whole class string. A map or conditional of complete strings works:
+
+~~~tsx
+const tone = {
+  info: "bg-info text-white",
+  danger: "bg-danger text-white",
+};
+
+function Badge({ kind }: { kind: keyof typeof tone }) {
+  return <span class={tone[kind]}>{kind}</span>;
+}
+~~~
+
+Each value is a complete literal, so the extractor finds `bg-info`, `bg-danger`, and `text-white`. The configuration must define the colors they name:
+
+~~~ts
+wind: {
+  tokens: {
+    colors: { info: "#155eef", danger: "#b42318", white: "#ffffff" },
+  },
+}
+~~~
+
+A class assembled from a fragment cannot be found:
+
+~~~tsx
+function Badge({ color }: { color: string }) {
+  // Not a candidate: the extractor sees only the fragment "bg-".
+  return <span class={`bg-${color}`}>{color}</span>;
+}
+~~~
+
+`bg-` is a fragment and is never expanded, and the value of `color` is unknown when the source is read, so no CSS is generated for this span. Rewrite it as a map or conditional of complete strings. When the possible values truly cannot appear in source, for example class names that arrive from a CMS at runtime, list them in a safelist.
+
+Values read from a map by index, as in `tone[kind]`, count as literals rather than class positions, because index access is not traced. A literal that resolves still generates CSS, but a misspelled map entry is reported by `zfb wind audit` instead of failing the build. Run the audit, or use a conditional whose branches reach the `class` attribute, when you want misspellings to fail.
+
+## Explicit candidates: safelist, manifests, and authored classes
+
+Three configuration inputs look alike but do different jobs:
+
+| Input | What it does | Generates CSS? |
+| --- | --- | --- |
+| `wind.safelist` | Adds complete app candidates that never appear in scanned source, grouped under an owner ID | Yes, for each entry that resolves |
+| `wind.manifests` | Adds the candidates a package published in its versioned manifest; the consumer still configures every token they use | Yes, for each entry that resolves |
+| `wind.authoredClasses` | Reserves exact class names that your own CSS defines, so zudo-wind leaves them alone | No |
+
+A safelist maps an owner ID to an array of complete candidates. There are no patterns, ranges, or wildcards; list each class:
+
+~~~ts
+wind: {
+  tokens: {
+    colors: { info: "#155eef", danger: "#b42318" },
+  },
+  safelist: {
+    "cms-badges": ["bg-info", "bg-danger"],
+  },
+}
+~~~
+
+Safelisted entries are resolved like found candidates, so every token they name must be configured. The owner ID keeps entries from different origins apart: a preset and the project can each supply their own owners, and for the same owner the project's array replaces the preset's.
+
+`authoredClasses` does the opposite of a safelist. A listed spelling is never treated as a utility: zudo-wind does not validate it, emits no rule for it, and reports no diagnostic for it. The CSS for that class comes from your stylesheet. See [Authored classes](#authored-classes).
+
+zudo-wind is not a Tailwind CSS implementation. Its configuration keys, defaults, and token names are its own, and a Tailwind config or default palette does not carry over; see [Coming from Tailwind](./coming-from-tailwind.mdx).
+
+The extractor also reads `className` attributes, so it can find candidates in source written for another JSX runtime, for example while migrating. That does not make `className` valid in zudo-react, whose JSX uses `class`.
 
 <Details title="Technical reference">
 

@@ -45,6 +45,10 @@ zfb css --input src/styles.css --output dist/app.css --project-root .
 
 ソース発見で見つからない完全なアプリ候補はセーフリストに追加します。パッケージ所有の候補はマニフェストとして公開します。CSS がユーティリティ基部と重なる名前を所有する場合は、完全な表記を <code>authoredClasses</code> に予約します。
 
+これらの入力は役割が異なります。`safelist` の項目とマニフェストの候補は、ソースで見つかったクラスと同じように解決され、解決できれば CSS を生成します。そのため、名指しするトークンはすべてここで設定する必要があります。`authoredClasses` は何も生成しません。正確なクラス名を自分の CSS に任せるよう zudo-wind に伝えるだけです。上の例では、`sm` が設定済みのブレークポイントで `panel` が設定済みの色なので `sm:hover:bg-panel` は解決され、`legacy-panel` のスタイルは手書きの CSS だけが提供します。完全な候補の規則は、[断片を組み立てず完全な候補を書く](./sources-and-candidates.mdx#断片を組み立てず完全な候補を書く)と[明示的な候補](./sources-and-candidates.mdx#明示的な候補-セーフリスト-マニフェスト-手書きのクラス)を参照してください。
+
+`wind` キーは zudo-wind 独自の設定であり、Tailwind の設定ではありません。デフォルトのパレットやスペーシングスケールはなく、`theme` や `content` のような Tailwind のオプションを含め、未知のキーは検証エラーになります。
+
 {/* wind-preview: guide-configuration/configured-panel "トークンを使うユーティリティの出力" */}
 
 <WindPreviewEnhancer />

@@ -62,6 +62,27 @@ Passing a signal creates a live binding. Reading its value while JSX is being cr
 
 In this example, the first child is reactive. The second child is the number read during setup and stays that number. This rule also applies when values are passed through component props.
 
+## Use zudo-react outside a zfb site
+
+zudo-react is not a separate npm package. It ships inside **@takazudo/zfb**, so a host that is not a zfb site, such as an application built with another bundler, a test runner, or a Node script, installs `@takazudo/zfb` and imports these public subpaths:
+
+| Subpath | What it provides |
+| --- | --- |
+| `@takazudo/zfb/zudo-react` | The core entry: `signal`, `computed`, `h`, `Fragment`, `Show`, `For`, `ErrorBoundary`, `batch`, `flush`, `getScope` |
+| `@takazudo/zfb/zudo-react/jsx-runtime` | The automatic JSX transform target for production builds |
+| `@takazudo/zfb/zudo-react/jsx-dev-runtime` | The automatic JSX transform target for development builds |
+| `@takazudo/zfb/zudo-react/server` | `renderToString`, `islandRoot`, `serializeProps` |
+| `@takazudo/zfb/zudo-react/client` | `hydrate`, `mount`, `parseProps` |
+| `@takazudo/zfb/zudo-react/testing` | `createIslandTest` and `withIslandTestContext` |
+
+Inside a zfb site, `zfb build` and `zfb dev` transform JSX, register island boundaries, schedule hydration, and carry props from server to client. An external host does not get those steps; it owns them:
+
+- **JSX transformation.** Configure the host's own transform with the automatic runtime and `@takazudo/zfb/zudo-react` as the JSX import source. Elements created by another JSX runtime are not zudo-react descriptions.
+- **The mount boundary and its lifecycle.** The host creates and connects the wrapper element, calls `mount` or `hydrate` from `@takazudo/zfb/zudo-react/client` with an identity that matches the wrapper, handles a `null` result, and calls `dispose()` or `unmount()` when it removes the boundary. See [Mount from a host you own](./hydration.mdx#mount-from-a-host-you-own).
+- **Server rendering, when used.** `renderToString` from `@takazudo/zfb/zudo-react/server` renders HTML anywhere. Rendering SDK `<Island>` boundaries outside a zfb build needs extra identity setup; see [Rendering Islands outside a zfb build](./server-rendering.mdx#rendering-islands-outside-a-zfb-build).
+
+Components keep the same contract everywhere: `class` and `on:click` attributes, signals created during setup, and a setup function that runs once.
+
 ## Where to go next
 
 The remaining pages cover JSX descriptions, reactive updates, scopes, server rendering, hydration, forms, and structural regions. For the zfb side of island scheduling and persistence, see the island guides.

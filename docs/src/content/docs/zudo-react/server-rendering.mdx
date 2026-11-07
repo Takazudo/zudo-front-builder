@@ -6,7 +6,7 @@ sidebar_position: 5
 
 ## Render a page
 
-The server entry is **@takazudo/zfb/zudo-react/server**. Its **renderToString** function renders a synchronous description tree to HTML. It accepts strings, numbers, empty values, arrays, descriptions, and scalar-valued reactive children. A string passed directly to the renderer is escaped text.
+The server entry is **@takazudo/zfb/zudo-react/server**. Its **renderToString** function renders a synchronous description tree to HTML. It accepts strings, numbers, empty values, arrays, descriptions, and scalar-valued reactive children. A string passed directly to the renderer is escaped text. `renderToString` does not depend on a zfb build: any host that compiles JSX with `@takazudo/zfb/zudo-react` as its import source can call it. See [Use zudo-react outside a zfb site](./overview.mdx#use-zudo-react-outside-a-zfb-site) for the subpaths and what such a host owns.
 
 ~~~tsx
 import { renderToString } from "@takazudo/zfb/zudo-react/server";
@@ -116,6 +116,8 @@ Since v3.0.0, `Island` validates its child before rendering. The build identity 
 ~~~text
 ZR_ISLAND_IDENTITY: ThemeToggle has no build identity
 ~~~
+
+In this setup the caller owns three things that a zfb build would otherwise supply: the island identity metadata (next section), function names that survive its own bundler, and an identity that matches whichever client later hydrates the output.
 
 ### Supply the identity with `withIslandTestContext`
 
