@@ -211,7 +211,8 @@ max-threads = 1
 # covering the healthy baseline, the injected-dynamic-route regression #2097
 # fixed, and an out-of-root control, each in both boot modes; like
 # `wasm_ssr_dev_smoke_e2e`/`embedded_host_request_time_e2e` above, NOT
-# `#[ignore]`d — self-skips via `locate_esbuild()`, and its measured runtime
+# `#[ignore]`d — it once self-skipped via `locate_esbuild()` (retired by #4635)
+# and now always runs; its measured runtime
 # (92.53s/7 cells) is well under this crate's un-ignored e2e budgets, so
 # neither the `env-gate:` nor `heavy:` rule fires per zudo-test-wisdom's
 # classification rules; membership here is for CPU/memory serialization only.
@@ -227,8 +228,8 @@ max-threads = 1
 # (issue #2105, the epic's closing confirm sub), proving a real SIGINT
 # exits 0 and persists `.zfb/graph.bin`. None of the three carry an
 # `#[ignore]` attribute — like `dev_serve_e2e`/`embedded_host_request_time_e2e`
-# above, the binary self-skips via `locate_esbuild()` when esbuild isn't
-# staged, so it runs on T1 whenever esbuild is present rather than being
+# above, the binary once self-skipped via `locate_esbuild()` (retired by
+# #4635); it always runs on T1 rather than being
 # relegated to the weekly quarantine lane. Membership in the locked lane is for
 # CPU/memory serialization only. `plugin_watch_hook_confirm_2170_e2e`
 # (issue #2170, Plugin Watch Hook epic #2166 — the confirm pass over
@@ -239,7 +240,8 @@ max-threads = 1
 # outside every default watch root, proving an edit to that file both
 # broadcasts an SSE `page` event and — the central assertion — reaches the
 # served page's rendered content, not just triggers a re-render. Not
-# `#[ignore]`d — self-skips via `locate_esbuild()` like its siblings.
+# `#[ignore]`d — always runs, like its siblings (its `locate_esbuild()`
+# self-skip was retired by #4635).
 #
 # **Authoritative recount (issue #2105, 2026-07)**: this sub re-measured
 # the whole group from scratch — `cargo nextest show-config test-groups -p
@@ -279,8 +281,8 @@ max-threads = 1
 # real `zfb dev` confirm pass over #2354's wiring) added
 # `ssr_contract_dev_warning_e2e` to the flock-adopting bucket, bringing the
 # total to **37** (24 flock-adopting, 13 build-only). Two real
-# `zfb dev --port 0` E2E tests, neither `#[ignore]`d (self-skips via
-# `locate_esbuild()` like its siblings): the positive fixture proves the
+# `zfb dev --port 0` E2E tests, neither `#[ignore]`d (they always run, like
+# their siblings; the `locate_esbuild()` self-skip was retired by #4635): the positive fixture proves the
 # Strong-tier SSR-contract warning (`render_ssr_request_param_finding`,
 # `crates/zfb/src/render_pipeline.rs`) reaches captured stderr during boot
 # for a `prerender = false` route whose default export is `(request:
@@ -307,9 +309,9 @@ max-threads = 1
 # `.zfb-plugin-bundle-*.mjs` file next to the plugin's `.ts` source and
 # asserts the whole fixture tree carries no such file after a clean build
 # exit — the pre-planted one via #2371's sweep, this run's own via
-# `StagedPluginBundle`'s `Drop` guard. Not `#[ignore]`d — self-skips via
-# `locate_esbuild()` plus a `node`-on-PATH check, like its build-only
-# siblings.
+# `StagedPluginBundle`'s `Drop` guard. Not `#[ignore]`d — self-skips only
+# when `node` is not on PATH (its `locate_esbuild()` gate was retired by
+# #4635).
 #
 # Issue #2427 (2026-08, Render Artifact Export epic #2421, Wave 3 —
 # CONFIRM, the central real-`zfb build` integration pass over Waves 1-2)
@@ -335,7 +337,8 @@ max-threads = 1
 # builds over a sibling-document collection fixture (the WalkDir
 # traversal-order slug-allocation trap, zfb#187) must emit a byte-identical
 # `dist/` tree, `dist/__zfb/render/**` artifacts included. Neither binary is
-# `#[ignore]`d — both self-skip via `locate_esbuild()`, like their
+# `#[ignore]`d — both always run (their `locate_esbuild()` self-skip was
+# retired by #4635), like their
 # build-only siblings.
 #
 # Issue #2600 (2026-08, CSS Entrypoint epic #2594, Wave 3) added the
