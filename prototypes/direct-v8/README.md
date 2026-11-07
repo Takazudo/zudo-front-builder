@@ -125,8 +125,11 @@ refuses anything that is not the intended executable:
 ```sh
 python3 -I -B prototypes/direct-v8/accept.py --output target/direct-v8-accept-<n> \
   --guard <this-host-published-heavy-guard> \
-  --generated --esbuild <pinned esbuild 0.25.12> --chromium <installed browser>
+  --generated --chromium <installed browser>
 ```
+
+Since #4635 the normal CLI embeds its bundler, so no esbuild binary is passed;
+receipts recorded before that still name the esbuild 0.25.12 they used.
 
 It verifies the vendored, checksum-pinned ICU data, builds the baseline and candidate
 runners with their exact feature commands (plus the outer-config example),

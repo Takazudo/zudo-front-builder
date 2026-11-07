@@ -31,7 +31,7 @@ the invoked gates themselves assert. Python only orchestrates and compares.
 Usage (from the repository root):
   python3 prototypes/direct-v8/accept.py --output target/direct-v8-accept-1 \
     [--guard $HOME/.claude/scripts/heavy-guard.sh] \
-    [--generated --esbuild <esbuild 0.25.12> --chromium <browser> [--node <node>] [--rustc <rustc>]]
+    [--generated --chromium <browser> [--node <node>] [--rustc <rustc>]]
 """
 import argparse
 import hashlib
@@ -80,7 +80,7 @@ WRAPPER_TEST_BUILD = ["cargo", "test", "--locked", "-p", "zfb", "--lib", "--no-r
                       "--message-format=json"]
 RECORDED_ENV = ("RUSTUP_TOOLCHAIN", "CARGO_BUILD_JOBS", "CARGO_INCREMENTAL", "CARGO_TARGET_DIR",
                 "CARGO_PROFILE_DEV_DEBUG", "CARGO_PROFILE_TEST_DEBUG",
-                "ZFB_ESBUILD_BIN", "ZFB_NODE_BIN")
+                "ZFB_NODE_BIN")
 
 
 def sha(path):
@@ -455,7 +455,6 @@ def main():
     parser.add_argument("--output", type=Path, required=True, help="New directory below repository target/")
     parser.add_argument("--guard", type=Path, help="heavy-guard.sh to wrap Rust builds and gates")
     parser.add_argument("--generated", action="store_true", help="Also run the generated-input gate")
-    parser.add_argument("--esbuild", type=Path, help="Pinned esbuild binary (generated gate)")
     parser.add_argument("--chromium", type=Path, help="Installed browser executable (generated gate)")
     parser.add_argument("--node", type=Path, help="Node executable (generated gate); default: PATH")
     parser.add_argument("--rustc", type=Path, help="rustc executable (generated gate); default: rustup which rustc")
@@ -463,8 +462,8 @@ def main():
     out = args.output.resolve()
     if not out.is_relative_to(ROOT / "target") or out == ROOT / "target" or out.exists():
         parser.error("--output must be a new directory below this repository's ignored target/")
-    if args.generated and not (args.esbuild and args.chromium):
-        parser.error("--generated needs --esbuild and --chromium")
+    if args.generated and not args.chromium:
+        parser.error("--generated needs --chromium")
     out.mkdir(parents=True)
     acceptance = Acceptance(args)
     acceptance.logs.mkdir()
@@ -546,12 +545,10 @@ def main():
             postprocessor = examples / "direct_v8_postprocess"
             runners["postprocessor"] = record_executable(postprocessor, "postprocessor")
             unchanged("postprocessor build")
-            zfb_build = acceptance.run("build-zfb", ZFB_BUILD, guarded=True,
-                                       env={"ZFB_ESBUILD_BIN": str(args.esbuild.resolve())})
+            zfb_build = acceptance.run("build-zfb", ZFB_BUILD, guarded=True)
             runners["zfb"] = record_executable(target / "debug" / "zfb", "zfb")
             unchanged("zfb build")
-            wrapper_json = acceptance.run("build-wrapper-test", WRAPPER_TEST_BUILD, guarded=True,
-                                          env={"ZFB_ESBUILD_BIN": str(args.esbuild.resolve())})
+            wrapper_json = acceptance.run("build-wrapper-test", WRAPPER_TEST_BUILD, guarded=True)
             wrapper = discover_wrapper_test_binary(wrapper_json.stdout)
             runners["wrapper_test_binary"] = record_executable(wrapper, "wrapper_test_binary")
             # The all-targets trap also applies to the already pinned helpers.
@@ -560,11 +557,11 @@ def main():
             rustc = args.rustc or subprocess.run(["rustup", "which", "rustc"], capture_output=True,
                                                   text=True, check=True, env=acceptance.env).stdout.strip()
             build_record = json.dumps({"argv": zfb_build.args if hasattr(zfb_build, "args") else ZFB_BUILD,
-                                       "env": {k: acceptance.env[k] for k in RECORDED_ENV if k in acceptance.env},
-                                       "ZFB_ESBUILD_BIN": str(args.esbuild.resolve())}, sort_keys=True)
+                                       "env": {k: acceptance.env[k] for k in RECORDED_ENV if k in acceptance.env}},
+                                      sort_keys=True)
             generated = out / "generated"
             acceptance.run("prepare-fixtures", [sys.executable, "-I", "-B", HERE / "prepare-fixtures.py",
-                           "--zfb", target / "debug" / "zfb", "--esbuild", args.esbuild.resolve(),
+                           "--zfb", target / "debug" / "zfb",
                            "--wrapper-test-binary", wrapper, "--rustc", rustc, "--node", node,
                            "--producer-build-command", build_record, "--output", generated], guarded=True)
             unchanged("fixture preparation")

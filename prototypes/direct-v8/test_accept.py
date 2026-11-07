@@ -184,7 +184,7 @@ class AcceptanceIntegrityTest(unittest.TestCase):
             argv = ["accept.py", "--output", str(out)]
             if generated:
                 # These paths are not executed: only engine-probe shell stand-ins run.
-                argv += ["--generated", "--esbuild", "/unused/esbuild", "--chromium", "/unused/chromium",
+                argv += ["--generated", "--chromium", "/unused/chromium",
                          "--node", "/unused/node", "--rustc", "/unused/rustc"]
             with mock.patch.object(accept, "ROOT", root), \
                     mock.patch.object(accept.Acceptance, "environment", return_value={"fixture": True}), \
