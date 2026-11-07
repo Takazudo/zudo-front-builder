@@ -43,7 +43,7 @@ const WORKER_PROJECT_PARENT_ENV: &str = "ZFB_FRAMEWORK_CACHE_WORKER_PROJECT_PARE
 
 #[test]
 fn owned_subpaths_resolve_from_embedded_tree_in_both_bundle_modes() {
-    use zfb_rolldown_prototype::{BundleRequest, Jsx, JsxRuntime, OutputLayout, Platform};
+    use zfb_bundler::{BundleRequest, Jsx, JsxRuntime, OutputLayout, Platform};
     let project = tempfile::tempdir().unwrap();
     let (lease, embedded) = embedded_node_modules().expect("extract embedded packages");
     let source = r#"
@@ -69,7 +69,7 @@ fn owned_subpaths_resolve_from_embedded_tree_in_both_bundle_modes() {
             import_source: Some("@takazudo/zfb/zudo-react".into()),
         };
         request.resolve.extra_module_dirs.push(embedded.clone());
-        if let Err(error) = zfb_rolldown_prototype::bundle(&request) {
+        if let Err(error) = zfb_bundler::bundle(&request) {
             panic!("{mode} embedded resolution failed: {error:#}");
         }
         assert!(project.path().join(&out).exists());

@@ -1,7 +1,8 @@
-//! Esbuild-silent native warnings stay silent for the same prepared argv (#4404).
-use super::run_prepared;
+//! Esbuild-silent native warnings stay silent for the same typed request (#4404).
+use super::bundle;
+use crate::request::{BundleRequest, External, JsxRuntime, OutputLayout, Platform};
 use serde_json::Value;
-use std::{fs, process::Command};
+use std::fs;
 
 #[test]
 fn island_marker_and_tsconfig_jsx_source_add_no_warnings_but_others_remain() {
@@ -19,19 +20,18 @@ fn island_marker_and_tsconfig_jsx_source_add_no_warnings_but_others_remain() {
         "\"use client\";\nexport const view = () => <p>{eval(\"1\")}</p>;\n",
     )
     .unwrap();
-    let mut cmd = Command::new("unused-prepared-esbuild");
-    cmd.current_dir(&dir).args([
+    let mut request = BundleRequest::new(
+        &dir,
         "entry.tsx",
-        "--bundle",
-        "--format=esm",
-        "--jsx=automatic",
-        "--jsx-import-source=preact",
-        "--external:preact",
-        "--tsconfig=tsconfig.json",
-        "--outfile=out/bundle.mjs",
-        "--metafile=out/meta.json",
-    ]);
-    run_prepared(&cmd).unwrap();
+        OutputLayout::file("out/bundle.mjs"),
+        Platform::Browser,
+    );
+    request.jsx.runtime = Some(JsxRuntime::Automatic);
+    request.jsx.import_source = Some("preact".into());
+    request.externals.push(External::Package("preact".into()));
+    request.tsconfig = Some("tsconfig.json".into());
+    request.graph = Some("out/meta.json".into());
+    bundle(&request).unwrap();
     let meta: Value =
         serde_json::from_str(&fs::read_to_string(dir.join("out/meta.json")).unwrap()).unwrap();
     let warnings: Vec<&str> = meta["warnings"]

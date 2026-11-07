@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 const EXPECTED_WRANGLER_VERSION: &str = "4.85.0";
 const SSG_WASM_VALUE: u8 = 17;
@@ -191,11 +191,10 @@ fn scaffold_fixture(adapter_package: &Path) -> (tempfile::TempDir, tempfile::Tem
     (temp, node_modules_handle, root)
 }
 
-fn run_build(root: &Path, esbuild: &Path) {
+fn run_build(root: &Path) {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn `zfb build`");
 
@@ -349,13 +348,6 @@ fn assert_pinned_wrangler_version(wrangler: &Path) {
 /// the runtime module through its bundle and static-assets exclusion list.
 #[test]
 fn build_keeps_ssg_and_ssr_wasm_assets_in_their_respective_passes() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[wasm_ssr_adapter_e2e] no esbuild binary available; skipping. \\
-             Set ZFB_ESBUILD_BIN to the pinned native binary."
-        );
-        return;
-    };
     if !pnpm_available() {
         eprintln!("[wasm_ssr_adapter_e2e] pnpm is not available; skipping.");
         return;
@@ -363,7 +355,7 @@ fn build_keeps_ssg_and_ssr_wasm_assets_in_their_respective_passes() {
 
     let adapter = workspace_adapter_package();
     let (_temp, _node_modules, root) = scaffold_fixture(&adapter);
-    run_build(&root, &esbuild);
+    run_build(&root);
     let _runtime_asset = assert_wasm_two_pass_contract(&root);
 }
 
@@ -380,13 +372,6 @@ fn wrangler_dry_run_attaches_runtime_wasm_as_compiled_module() {
         );
         return;
     };
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[wasm_ssr_adapter_e2e] no esbuild binary available; skipping wrangler env-gate. \\
-             Set ZFB_ESBUILD_BIN to the pinned native binary."
-        );
-        return;
-    };
     if !pnpm_available() {
         eprintln!("[wasm_ssr_adapter_e2e] pnpm is not available; skipping wrangler env-gate.");
         return;
@@ -395,7 +380,7 @@ fn wrangler_dry_run_attaches_runtime_wasm_as_compiled_module() {
     assert_pinned_wrangler_version(&wrangler);
     let adapter = workspace_adapter_package();
     let (_temp, _node_modules, root) = scaffold_fixture(&adapter);
-    run_build(&root, &esbuild);
+    run_build(&root);
     let runtime_asset = assert_wasm_two_pass_contract(&root);
 
     // `--no-bundle` makes Wrangler list its module attachments. The normal

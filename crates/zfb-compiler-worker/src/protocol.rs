@@ -2,7 +2,7 @@
 //! stdin, one JSON response on stdout.
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use zfb_rolldown_prototype::BundleRequest;
+use zfb_bundler::BundleRequest;
 
 pub(crate) const PROTOCOL_VERSION: u32 = 1;
 

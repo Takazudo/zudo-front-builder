@@ -16,9 +16,8 @@
 //! (`mock_bundle_output`) bypasses `run_esbuild` entirely, so it
 //! cannot exercise esbuild's path-mapping pipeline. Esbuild gating
 //! follows the precedence used by sibling integration tests
-//! (`bundler_strip_md_ext.rs`): `ZFB_ESBUILD_BIN` env var →
-//! `crates/zfb/binaries/esbuild/esbuild` slot → `which esbuild` PATH
-//! fallback. Skips with a printed note when no binary is present.
+//! (`bundler_strip_md_ext.rs`): bundling runs in-process through native
+//! Rolldown (#4635), with no external bundler binary to skip on.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;

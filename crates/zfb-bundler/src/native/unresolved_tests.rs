@@ -60,16 +60,14 @@ fn bundle_optional(name: &str, source: &str) -> (anyhow::Result<()>, String) {
     fs::create_dir(&dir).unwrap();
     let cwd = fs::canonicalize(dir).unwrap();
     fs::write(cwd.join("optional.ts"), source).unwrap();
-    let mut cmd = std::process::Command::new("unused-prepared-esbuild");
-    cmd.current_dir(&cwd).args([
+    let mut request = crate::request::BundleRequest::new(
+        &cwd,
         "optional.ts",
-        "--bundle",
-        "--format=esm",
-        "--platform=neutral",
-        "--outfile=out/bundle.mjs",
-        "--metafile=out/meta.json",
-    ]);
-    let result = super::run_prepared(&cmd);
+        crate::request::OutputLayout::file("out/bundle.mjs"),
+        crate::request::Platform::Neutral,
+    );
+    request.graph = Some("out/meta.json".into());
+    let result = super::bundle(&request).map(drop);
     let output = fs::read_to_string(cwd.join("out/bundle.mjs")).unwrap_or_default();
     fs::remove_dir_all(&cwd).unwrap();
     (result, output)

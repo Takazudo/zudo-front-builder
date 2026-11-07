@@ -69,8 +69,7 @@
 //!
 //! ## Skip behaviour
 //!
-//! Uses the embedded esbuild/V8 runtime (`direct-v8` default feature) — no
-//! `ZFB_ESBUILD_BIN` pinning needed, matching `end_to_end_basic_blog_build.rs`
+//! Uses the embedded native-Rolldown/V8 runtime (`direct-v8` default feature), matching `end_to_end_basic_blog_build.rs`
 //! / `content_snapshot_no_deferred.rs`. Guards a non-zero exit for a
 //! known-skip indicator (missing embedded runtime) before treating it as a
 //! real failure.

@@ -61,10 +61,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked -p zfb-rolldown-prototype --features native --example plugin_prebundle 2>&1 | tee target/plugin-publication-evidence/native-tests.log
-          cargo test --locked -p zfb-rolldown-prototype --features native --lib 2>&1 | tee target/plugin-publication-evidence/library-tests.log
-          cargo check --locked -p zfb-rolldown-prototype --no-default-features --all-targets 2>&1 | tee target/plugin-publication-evidence/feature-off.log
-          cargo build --locked -p zfb-rolldown-prototype --features native --example plugin_prebundle 2>&1 | tee target/plugin-publication-evidence/build.log
+          cargo test --locked -p zfb-bundler --features native --example plugin_prebundle 2>&1 | tee target/plugin-publication-evidence/native-tests.log
+          cargo test --locked -p zfb-bundler --features native --lib 2>&1 | tee target/plugin-publication-evidence/library-tests.log
+          cargo check --locked -p zfb-bundler --no-default-features --all-targets 2>&1 | tee target/plugin-publication-evidence/feature-off.log
+          cargo build --locked -p zfb-bundler --features native --example plugin_prebundle 2>&1 | tee target/plugin-publication-evidence/build.log
       - name: Replay every native semantic contract
         shell: bash
         run: |

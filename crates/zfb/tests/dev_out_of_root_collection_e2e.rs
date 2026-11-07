@@ -99,7 +99,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
 // Serialises this binary's single spawning test against itself (a no-op
 // today, kept for parity with the sibling e2e files in case a second
@@ -231,7 +231,7 @@ fn parse_ready_port(log: &str) -> Option<u16> {
 /// Spawn `zfb dev --port 0` over the already-prepared fixture project root,
 /// in its own process group, with stdout/stderr captured to files. Callers
 /// copy and extend the fixture BEFORE calling this.
-fn spawn_dev(root: PathBuf, esbuild: &Path, extra_env: &[(&str, &str)]) -> DevSession {
+fn spawn_dev(root: PathBuf, extra_env: &[(&str, &str)]) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log file");
@@ -242,7 +242,6 @@ fn spawn_dev(root: PathBuf, esbuild: &Path, extra_env: &[(&str, &str)]) -> DevSe
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
@@ -566,13 +565,6 @@ async fn e2e_out_of_root_edit_narrows_rerender_and_discovers_new_entry() {
     // the lock-ordering note in zfb-test-utils/src/cross_binary_lock.rs.
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[out_of_root_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("create tempdir for dev-out-of-root-basic fixture");
     let tmp_root = tmp.path().canonicalize().expect("canonicalize tempdir");
@@ -593,7 +585,7 @@ async fn e2e_out_of_root_edit_narrows_rerender_and_discovers_new_entry() {
     // candidate derivation — the exact machinery #1550 fixed — is shared
     // between eager and lazy dispatch; only the write timing differs, so this
     // still exercises the code path under test.
-    let mut session = spawn_dev(project_root, &esbuild, &[("ZFB_DEV_EAGER", "1")]);
+    let mut session = spawn_dev(project_root, &[("ZFB_DEV_EAGER", "1")]);
     let pgid = session.guard.pgid;
 
     let body = async {

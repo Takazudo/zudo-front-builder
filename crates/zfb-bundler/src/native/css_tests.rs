@@ -1,5 +1,6 @@
 //! Real native negative contract: raw CSS never grants publication authority.
-use super::run_prepared;
+use super::bundle;
+use crate::request::{BundleRequest, Loader, OutputLayout, Platform};
 use std::{
     fs,
     path::PathBuf,
@@ -19,16 +20,15 @@ impl Fixture {
         fs::create_dir(&path).unwrap();
         Self(fs::canonicalize(path).unwrap())
     }
-    fn command(&self) -> Command {
-        let mut cmd = Command::new("unused-prepared-esbuild");
-        cmd.current_dir(&self.0).args([
+    fn request(&self) -> BundleRequest {
+        let mut request = BundleRequest::new(
+            &self.0,
             "entry.js",
-            "--bundle",
-            "--format=esm",
-            "--outfile=out/bundle.mjs",
-            "--metafile=out/meta.json",
-        ]);
-        cmd
+            OutputLayout::file("out/bundle.mjs"),
+            Platform::Browser,
+        );
+        request.graph = Some("out/meta.json".into());
+        request
     }
 }
 impl Drop for Fixture {
@@ -41,7 +41,7 @@ impl Drop for Fixture {
 fn raw_css_default_and_custom_loaders_reject_without_publication() {
     for (filename, loader) in [
         ("style.css", None),
-        ("style.theme", Some("--loader:.theme=css")),
+        ("style.theme", Some((".theme", Loader::Css))),
     ] {
         let fixture = Fixture::new();
         fs::write(
@@ -50,9 +50,9 @@ fn raw_css_default_and_custom_loaders_reject_without_publication() {
         )
         .unwrap();
         fs::write(fixture.0.join(filename), ".raw { color: red; }").unwrap();
-        let mut cmd = fixture.command();
-        if let Some(loader) = loader {
-            cmd.arg(loader);
+        let mut request = fixture.request();
+        if let Some((extension, loader)) = loader {
+            request.loaders.push((extension.into(), loader));
         }
         for existing in [false, true] {
             if existing {
@@ -60,7 +60,7 @@ fn raw_css_default_and_custom_loaders_reject_without_publication() {
                 fs::write(fixture.0.join("out/bundle.mjs"), "other owner bundle").unwrap();
                 fs::write(fixture.0.join("out/meta.json"), "other owner metadata").unwrap();
             }
-            let error = run_prepared(&cmd).expect_err("raw CSS must fail closed");
+            let error = bundle(&request).expect_err("raw CSS must fail closed");
             let message = format!("{error:#}");
             assert!(
                 message.contains("ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED"),
@@ -93,7 +93,7 @@ fn raw_css_default_and_custom_loaders_reject_without_publication() {
 
 #[test]
 fn css_explicitly_loaded_as_text_or_file_remains_a_resource() {
-    for loader in ["--loader:.css=text", "--loader:.css=file"] {
+    for loader in [Loader::Text, Loader::File] {
         let fixture = Fixture::new();
         fs::write(
             fixture.0.join("entry.js"),
@@ -101,9 +101,9 @@ fn css_explicitly_loaded_as_text_or_file_remains_a_resource() {
         )
         .unwrap();
         fs::write(fixture.0.join("style.css"), ".resource { color: blue; }").unwrap();
-        let mut cmd = fixture.command();
-        cmd.arg(loader);
-        run_prepared(&cmd).expect("explicit resource loader must remain supported");
+        let mut request = fixture.request();
+        request.loaders.push((".css".into(), loader));
+        bundle(&request).expect("explicit resource loader must remain supported");
         assert!(fixture.0.join("out/bundle.mjs").is_file());
         assert!(fixture.0.join("out/meta.json").is_file());
     }
@@ -150,7 +150,7 @@ fn assert_bundle_throws_the_page_error(fixture: &Fixture, bundle: &str) {
 #[test]
 fn unminified_top_level_throw_keeps_exported_bindings() {
     let fixture = top_level_throw_fixture(ROUTES_ENTRY);
-    run_prepared(&fixture.command()).unwrap();
+    bundle(&fixture.request()).unwrap();
     let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
     // The pinned DCE-only pass emitted `export { routes }` with no declaration.
     assert!(bundle.contains("const routes ="), "{bundle}");
@@ -167,9 +167,9 @@ fn minified_top_level_throw_keeps_exported_bindings() {
          export {{ shared }} from './lib.js';\n"
     ));
     fs::write(fixture.0.join("lib.js"), "export const shared = 2;\n").unwrap();
-    let mut cmd = fixture.command();
-    cmd.arg("--minify");
-    run_prepared(&cmd).unwrap();
+    let mut request = fixture.request();
+    request.minify = true;
+    bundle(&request).unwrap();
     let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
     assert_bundle_throws_the_page_error(&fixture, &bundle);
 }

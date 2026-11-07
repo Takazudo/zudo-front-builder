@@ -47,7 +47,7 @@
 //! zudo-test-wisdom's mechanical, first-match `#[ignore]` classification
 //! rules, none of the 6 fire here. Rule 1 (`env-gate:` — needs an env var
 //! / external binary the PR runner cannot provide) does NOT apply: every
-//! one of these functions already self-skips via `locate_esbuild()` at
+//! one of these functions then self-skipped via `locate_esbuild()` (retired by #4635) at
 //! its own top (`let Some(esbuild) = locate_esbuild() else { ...; return; }`),
 //! exactly the convention `wasm_ssr_dev_smoke_e2e` and
 //! `embedded_host_request_time_e2e` use — both of which are documented in
@@ -112,8 +112,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use zfb_test_utils::{
-    decode_utf8_incremental, locate_esbuild, next_sse_event_name, open_sse, zfb_binary,
-    CrossBinaryE2eLock,
+    decode_utf8_incremental, next_sse_event_name, open_sse, zfb_binary, CrossBinaryE2eLock,
 };
 
 // Sub #2094 (variant matrix) additions below use these directly rather
@@ -234,7 +233,7 @@ fn parse_ready_port(log: &str) -> Option<u16> {
 
 /// `boot_lazy` sets `ZFB_DEV_BOOT_LAZY` explicitly (e.g. `Some("cold")`);
 /// `None` removes the var entirely, i.e. the ordinary default boot mode.
-fn spawn_dev(root: PathBuf, esbuild: &Path, boot_lazy: Option<&str>) -> DevSession {
+fn spawn_dev(root: PathBuf, boot_lazy: Option<&str>) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
@@ -246,7 +245,6 @@ fn spawn_dev(root: PathBuf, esbuild: &Path, boot_lazy: Option<&str>) -> DevSessi
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         // Surfaces `[zfb-timing] tick(): kinds=[<file>:<Kind>]` on stderr
         // (`crates/zfb-build/src/orchestrator.rs`) — proof a filesystem
         // event reached the orchestrator, independent of whatever the
@@ -790,14 +788,6 @@ enum ScenarioOutcome {
 /// mode (`None` = default, `Some("cold")` = Cold boot); `label` tags every
 /// assertion/log line so a failure names which boot mode it came from.
 async fn run_scenario(boot_lazy: Option<&str>, label: &str) {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dev_content_reload_2063_e2e] [{label}] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let temp = tempfile::tempdir().expect("create tempdir for dev-content-reload fixture");
     let root = temp
         .path()
@@ -805,7 +795,7 @@ async fn run_scenario(boot_lazy: Option<&str>, label: &str) {
         .expect("canonicalize fixture root");
     copy_dir(&fixture_dir(), &root).expect("copy dev-content-reload fixture");
 
-    let mut session = spawn_dev(root, &esbuild, boot_lazy);
+    let mut session = spawn_dev(root, boot_lazy);
     let pgid = session.guard.pgid;
     let body = async {
         let warmup_path = session.root.join("content/posts/__warmup.mdx");
@@ -1010,14 +1000,6 @@ fn matrix_family_dir(name: &str) -> PathBuf {
 /// here (bounded quiet window, exactly-one-`page`-event discipline,
 /// freshness check regardless of SSE outcome).
 async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, label: &str) {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dev_content_reload_2063_e2e] [{label}] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let temp = tempfile::tempdir().expect("create tempdir for matrix fixture");
     let family_root = temp
         .path()
@@ -1030,7 +1012,7 @@ async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, l
     let warmup_path = family_root.join(fixture.warmup_rel);
     let entry_path = family_root.join(fixture.entry_rel);
 
-    let mut session = spawn_dev(project_root, &esbuild, boot_lazy);
+    let mut session = spawn_dev(project_root, boot_lazy);
     let pgid = session.guard.pgid;
     let body = async {
         let Some((base, client)) = boot_and_handshake(&mut session, &warmup_path).await else {
@@ -1222,14 +1204,6 @@ async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, l
 // ----------------------------------------------------------------------------
 
 async fn run_injected_matrix_scenario(boot_lazy: Option<&str>, label: &str) {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dev_content_reload_2063_e2e] [{label}] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let temp = tempfile::tempdir().expect("create tempdir for injected matrix fixture");
     let family_root = temp
         .path()
@@ -1244,7 +1218,7 @@ async fn run_injected_matrix_scenario(boot_lazy: Option<&str>, label: &str) {
     let project_root = family_root.join("project");
     let entry_path = family_root.join("shared-content/posts/alpha.mdx");
 
-    let mut session = spawn_dev(project_root, &esbuild, boot_lazy);
+    let mut session = spawn_dev(project_root, boot_lazy);
     let pgid = session.guard.pgid;
     let body = async {
         let Some(port) = wait_for_ready_port(&mut session).await else {

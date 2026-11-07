@@ -14037,17 +14037,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "env-gate: esbuild binary — cargo test -p zfb --lib \
-                commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild \
-                -- --ignored (ZFB_ESBUILD_BIN or staged workspace slot)"]
     fn preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild() {
-        let Some(_esbuild) = zfb_test_utils::locate_esbuild() else {
-            panic!(
-                "preprocessing shadow regression requires a pinned real esbuild binary; set \
-                 ZFB_ESBUILD_BIN or stage crates/zfb/binaries/esbuild/esbuild"
-            );
-        };
-
         let tmp = tempdir().unwrap();
         let root = tmp.path();
         for dir in [
@@ -14413,18 +14403,8 @@ mod tests {
     /// of silently succeeding.
     #[cfg(unix)]
     #[test]
-    #[ignore = "env-gate: esbuild binary — cargo test -p zfb --lib \
-                commands::build::tests::root_workspace_islands_stage_escape_audit_is_now_armed_and_undeclared_child_escape_is_rejected \
-                -- --ignored (ZFB_ESBUILD_BIN or staged workspace slot)"]
     fn root_workspace_islands_stage_escape_audit_is_now_armed_and_undeclared_child_escape_is_rejected(
     ) {
-        if zfb_test_utils::locate_esbuild().is_none() {
-            panic!(
-                "root-workspace islands stage-escape regression requires a pinned real esbuild \
-                 binary; set ZFB_ESBUILD_BIN or stage crates/zfb/binaries/esbuild/esbuild"
-            );
-        }
-
         let tmp = tempdir().unwrap();
         let root = tmp.path();
 
@@ -14682,24 +14662,12 @@ mod tests {
     ///
     /// ### Flip protocol
     ///
-    /// This test needs a staged real esbuild binary (env-gate), so #2090
-    /// REPLACED the `pending-feature` tag below with the normal
-    /// `#[ignore = "env-gate: esbuild — …"]` tag — never a bare delete —
-    /// per epic #2078's corrected flip protocol, and dropped the matching
-    /// `--skip` from `health.yml`'s `commands::build:: -- --ignored` step in
-    /// the same commit so the flipped test genuinely runs in CI again.
+    /// #2090 flipped this from `pending-feature` to an `env-gate: esbuild`
+    /// tag per epic #2078's corrected flip protocol; #4635 removed esbuild,
+    /// so the test now runs un-ignored in the ordinary nextest lane.
     #[cfg(unix)]
     #[test]
-    #[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb --lib commands::build::tests::bare_package_consume_from_source_sibling_glob_macro_reaches_islands_bundle_unexpanded -- --ignored"]
     fn bare_package_consume_from_source_sibling_glob_macro_reaches_islands_bundle_unexpanded() {
-        if zfb_test_utils::locate_esbuild().is_none() {
-            panic!(
-                "bare-package consume-from-source glob-sibling regression requires a pinned \
-                 real esbuild binary; set ZFB_ESBUILD_BIN or stage \
-                 crates/zfb/binaries/esbuild/esbuild"
-            );
-        }
-
         let tmp = tempdir().unwrap();
         let root = tmp.path();
 
@@ -14878,11 +14846,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "env-gate: esbuild binary — plugin alias is the only preprocessing edge"]
     fn plugin_alias_only_client_preprocessing_triggers_shadow_with_real_esbuild() {
-        let Some(_esbuild) = zfb_test_utils::locate_esbuild() else {
-            panic!("plugin-alias preprocessing regression requires a pinned real esbuild binary");
-        };
         let tmp = tempdir().unwrap();
         let root = tmp.path();
         std::fs::create_dir_all(root.join("pages/client")).unwrap();

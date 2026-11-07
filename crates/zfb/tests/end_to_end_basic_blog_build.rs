@@ -40,9 +40,8 @@
 //! `zfb build` needs no project-level `node_modules`: when none is present,
 //! the embedded `@takazudo/zfb` and `@takazudo/zfb-runtime` packages
 //! (staged into the binary by `crates/zfb/build.rs`) are extracted on demand
-//! (`render_pipeline::embedded_node_modules`), and the embedded esbuild
-//! helper binary is extracted the same way
-//! (`render_pipeline::embedded_binary`); wind runs inside `zfb`. This mirrors
+//! (`render_pipeline::embedded_node_modules`); bundling (Rolldown) and wind
+//! run inside `zfb`. This mirrors
 //! `content_snapshot_no_deferred.rs`, which
 //! runs `zfb build` with no extra env vars for the same reason.
 //!

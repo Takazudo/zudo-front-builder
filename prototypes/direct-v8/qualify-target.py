@@ -61,7 +61,7 @@ BINARY_FORMATS = {
     "x86_64-pc-windows-msvc": ("PE", "x86_64"),
 }
 MACHINE_ALIASES = {"amd64": "x86_64", "x64": "x86_64", "aarch64": "arm64"}
-ROLLDOWN_MARKERS = (b"zfb_rolldown_prototype", b"zfb-rolldown-prototype")
+ROLLDOWN_MARKERS = (b"zfb_bundler", b"zfb-bundler")
 LIFECYCLE_TIMEOUT = 1800  # above check-cli-lifecycle.py's summed internal deadlines (~420 s)
 
 

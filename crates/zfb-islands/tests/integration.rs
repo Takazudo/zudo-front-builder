@@ -1,16 +1,8 @@
 //! Integration-style tests for the public surface of `zfb-islands` (Sub 2).
 //!
-//! These exercise the bundler trait, the subprocess engine, and the URL
-//! helper. Tests that need the real esbuild binary are gated by `#[ignore]`
-//! (`env-gate:`, see crates/CLAUDE.md's taxonomy) — `crates/zfb/build.rs` stages
-//! the pinned esbuild binary at `crates/zfb/binaries/esbuild/esbuild` as a
-//! side effect of building the `zfb` crate, and `.github/workflows/health.yml`
-//! runs this suite with `--ignored` right after asserting that staging step
-//! (issue #1337 / #638). Run locally with
-//! `ZFB_ESBUILD_BIN=<absolute path to esbuild 0.25.12> cargo test -p \
-//! zfb-islands -- --ignored` (the default relative binary_path only
-//! resolves when the test process's CWD is the workspace root — it is not,
-//! `cargo test` runs test binaries from the package directory).
+//! These exercise the bundler trait, the native Rolldown engine, and the URL
+//! helper. Since #4635 nothing here needs an external bundler binary, so the
+//! whole suite runs in the ordinary T1 nextest step.
 
 use std::path::{Path, PathBuf};
 
@@ -294,9 +286,6 @@ fn bundle_output_bytes_carries_js_in_memory() {
 }
 
 #[test]
-#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
-            (ZFB_ESBUILD_BIN, absolute path, or the staged \
-            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn subprocess_bundler_against_real_binary() {
     let tmp = tempfile::tempdir().expect("tempdir");
     // Production mode wraps every island in the shared-bundle entry, which
@@ -358,9 +347,6 @@ fn subprocess_bundler_against_real_binary() {
 /// Pre-fix this test would have the second island missing from the
 /// bundle.
 #[test]
-#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
-            (ZFB_ESBUILD_BIN, absolute path, or the staged \
-            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn shared_bundle_keeps_islands_with_no_top_level_side_effect() {
     let tmp = tempfile::tempdir().expect("tempdir");
     // Production mode wraps every island in the shared-bundle entry, which
@@ -495,9 +481,6 @@ fn stage_minimal_node_modules(root: &Path) {
 /// to prove a REAL esbuild run lands in the audited set at all.
 #[cfg(unix)]
 #[test]
-#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
-            (ZFB_ESBUILD_BIN, absolute path, or the staged \
-            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn stage_escape_audit_rejects_workspace_package_symlink_escape() {
     let root = tempfile::tempdir().expect("tempdir");
     let app_dir = root.path().join("app");
@@ -591,9 +574,6 @@ fn stage_escape_audit_rejects_workspace_package_symlink_escape() {
 /// root trivially and never reach the discriminator this test proves.
 #[cfg(unix)]
 #[test]
-#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
-            (ZFB_ESBUILD_BIN, absolute path, or the staged \
-            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn stage_escape_audit_accepts_staged_symlink_through_symlink_aliased_working_dir() {
     let root = tempfile::tempdir().expect("tempdir");
     let base = root.path().canonicalize().expect("canonicalize tempdir");
@@ -669,13 +649,8 @@ fn stage_escape_audit_accepts_staged_symlink_through_symlink_aliased_working_dir
 /// Also the real-backend proof for the entry-import guard (#4464): `bundle`
 /// fails unless exactly one output in the real `meta.json` resolves to the
 /// synthesized islands entry and no other output imports it, so a passing
-/// run shows the backend's real metafile spelling classifies correctly. A
-/// default build is esbuild; with `--features rolldown-prototype` the same
-/// test runs on Rolldown native.
+/// run shows the native Rolldown metafile spelling classifies correctly.
 #[test]
-#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
-            (ZFB_ESBUILD_BIN, absolute path, or the staged \
-            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn splitting_emits_chunk_for_dynamic_import() {
     let tmp = tempfile::tempdir().expect("tempdir");
     stage_minimal_node_modules(tmp.path());
@@ -788,9 +763,6 @@ fn splitting_emits_chunk_for_dynamic_import() {
 /// materialized under a random temp-file name, so the chunk (and the entry's
 /// import of it) was renamed on every build.
 #[test]
-#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
-            (ZFB_ESBUILD_BIN, absolute path, or the staged \
-            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn virtual_module_chunk_name_is_stable_across_identical_rebuilds() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
@@ -856,9 +828,6 @@ fn virtual_module_chunk_name_is_stable_across_identical_rebuilds() {
 /// exactly one output file — the entry, zero chunks — so non-splitting
 /// projects carry zero new complexity.
 #[test]
-#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
-            (ZFB_ESBUILD_BIN, absolute path, or the staged \
-            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn no_dynamic_import_yields_single_file() {
     let tmp = tempfile::tempdir().expect("tempdir");
     stage_minimal_node_modules(tmp.path());
@@ -903,10 +872,6 @@ fn no_dynamic_import_yields_single_file() {
 /// with their esbuild-owned names preserved in the entry. This deliberately
 /// uses only generic files; it does not depend on the md-wasm package build.
 #[test]
-#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands --test integration \
-            shared_bundle_discovers_marked_glue_and_wasm_resources -- --ignored \
-            (ZFB_ESBUILD_BIN, absolute path, or the staged \
-            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn shared_bundle_discovers_marked_glue_and_wasm_resources() {
     let tmp = tempfile::tempdir().expect("tempdir");
     stage_minimal_node_modules(tmp.path());
@@ -987,9 +952,6 @@ export default function ResourceIsland() {
 /// carries the stable URL/relative-path shape with every dynamic import
 /// inlined (`--splitting=false` — no chunk shipping in v1).
 #[test]
-#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
-            (ZFB_ESBUILD_BIN, absolute path, or the staged \
-            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn client_script_real_esbuild_bundles_discovered_entry() {
     use std::collections::BTreeMap;
     use zfb_islands::{
@@ -1089,9 +1051,6 @@ fn client_script_real_esbuild_bundles_discovered_entry() {
 /// The parent entry is entirely staged. Only the declared worker reaches a
 /// first-party file outside the stage, so this catches missing per-worker audit.
 #[test]
-#[ignore = "env-gate: pinned esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb-islands --test integration \
-            client_script_worker_stage_escape_audit_rejects_dependency -- --ignored"]
 fn client_script_worker_stage_escape_audit_rejects_dependency() {
     use zfb_islands::ClientScriptWorkerEntry;
 
@@ -1145,9 +1104,6 @@ fn client_script_worker_stage_escape_audit_rejects_dependency() {
 /// and worker must discover that physical config and resolve aliases to the
 /// shadow copies, never to untouched real-project files.
 #[test]
-#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb-islands --test integration \
-            client_script_shadow_jobs_resolve_project_tsconfig_aliases -- --ignored"]
 fn client_script_shadow_jobs_resolve_project_tsconfig_aliases() {
     use zfb_islands::{module_worker_filename, ClientScriptWorkerEntry};
 
@@ -1256,9 +1212,6 @@ fn client_script_shadow_jobs_resolve_project_tsconfig_aliases() {
 // -----------------------------------------------------------------------------
 
 #[test]
-#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb-islands --test integration \
-            islands_shadow_raw_import_bundles_text -- --ignored"]
 fn islands_shadow_raw_import_bundles_text() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -1317,9 +1270,6 @@ fn islands_shadow_raw_import_bundles_text() {
 }
 
 #[test]
-#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb-islands --test integration \
-            islands_shadow_alias_raw_import_bundles_text -- --ignored"]
 fn islands_shadow_alias_raw_import_bundles_text() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -1400,9 +1350,6 @@ fn islands_shadow_alias_raw_import_bundles_text() {
 }
 
 #[test]
-#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb-islands --test integration \
-            client_script_raw_import_bundles_text -- --ignored"]
 fn client_script_raw_import_bundles_text() {
     use zfb_islands::{build_production_client_scripts, ClientScriptEntry};
 
@@ -1465,9 +1412,6 @@ fn client_script_raw_import_bundles_text() {
 // -----------------------------------------------------------------------------
 
 #[test]
-#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb-islands --test integration \
-            island_module_worker_emits_contract_companion_and_dev_layout -- --ignored"]
 fn island_module_worker_emits_contract_companion_and_dev_layout() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -1622,7 +1566,6 @@ fn island_module_worker_emits_contract_companion_and_dev_layout() {
 }
 
 #[test]
-#[ignore = "env-gate: pinned esbuild binary — verifies define-only worker cache invalidation"]
 fn module_worker_define_only_change_updates_query_and_emitted_bytes() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -1682,7 +1625,6 @@ fn module_worker_define_only_change_updates_query_and_emitted_bytes() {
 }
 
 #[test]
-#[ignore = "env-gate: pinned esbuild binary — verifies package-metadata-only worker cache invalidation"]
 fn module_worker_package_config_switch_updates_query_and_emitted_bytes() {
     let project = tempfile::tempdir().unwrap();
     let workspace = project.path();
@@ -1775,7 +1717,6 @@ fn module_worker_package_config_switch_updates_query_and_emitted_bytes() {
 }
 
 #[test]
-#[ignore = "env-gate: pinned esbuild binary — verifies plugin resolver cache/emission parity"]
 fn module_worker_plugin_inputs_update_query_closure_and_emitted_bytes() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -1880,9 +1821,6 @@ fn module_worker_plugin_inputs_update_query_closure_and_emitted_bytes() {
 /// without error under the `--loader:.css=empty` policy in
 /// `build_esbuild_args_with_entry_name`.
 #[test]
-#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
-            (ZFB_ESBUILD_BIN, absolute path, or the staged \
-            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn island_css_import_bundles_without_error() {
     let tmp = tempfile::tempdir().expect("tempdir");
     stage_minimal_node_modules(tmp.path());
@@ -1941,9 +1879,6 @@ fn island_css_import_bundles_without_error() {
 /// than a scoped class-name map. This test only pins "does not fail the
 /// build"; it deliberately does not assert a class-name map.
 #[test]
-#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
-            (ZFB_ESBUILD_BIN, absolute path, or the staged \
-            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn island_module_css_import_bundles_without_error() {
     let tmp = tempfile::tempdir().expect("tempdir");
     stage_minimal_node_modules(tmp.path());
@@ -2381,9 +2316,6 @@ fn stage_glob_island_shadow() -> (tempfile::TempDir, tempfile::TempDir, PathBuf)
 }
 
 #[test]
-#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
-            (ZFB_ESBUILD_BIN, absolute path, or the staged \
-            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn islands_shadow_expands_glob_and_executes() {
     let (proj, _shadow, shadow_island) = stage_glob_island_shadow();
     let proj_root = proj.path();
@@ -2453,9 +2385,6 @@ fn islands_shadow_expands_glob_and_executes() {
 }
 
 #[test]
-#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
-            (ZFB_ESBUILD_BIN, absolute path, or the staged \
-            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn islands_shadow_preserve_symlinks_is_load_bearing() {
     // Same shadow, but bundled WITHOUT --preserve-symlinks: esbuild
     // canonicalises the symlinked island file back to the REAL project tree
@@ -2504,9 +2433,6 @@ fn node_available() -> bool {
 /// project root may still be feeding one to esbuild (that half of the contract
 /// is pinned by the unit tests in `src/esbuild.rs`).
 #[test]
-#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb-islands --test integration \
-            working_dir_is_clean_after_multi_entry_bundle -- --ignored"]
 fn working_dir_is_clean_after_multi_entry_bundle() {
     let project = tempfile::tempdir().expect("tempdir");
     let root = project.path();
@@ -2625,10 +2551,6 @@ fn recognized_temp_leftovers(root: &Path) -> Vec<String> {
 /// below), and the virtual module's source materializes to a
 /// `.zfb-virtual-*.mjs` file via `zfb_plugin_resolver::build_resolver_inputs`.
 #[test]
-#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb-islands --test integration \
-            all_four_temp_classes_are_reaped_with_plugin_alias_virtual_module_and_worker \
-            -- --ignored"]
 fn all_four_temp_classes_are_reaped_with_plugin_alias_virtual_module_and_worker() {
     let project = tempfile::tempdir().expect("tempdir");
     let root = project.path();
@@ -2735,10 +2657,6 @@ fn all_four_temp_classes_are_reaped_with_plugin_alias_virtual_module_and_worker(
 /// so it directly proves the newly-wired call site reaps strays for a
 /// project that never runs an islands build at all.
 #[test]
-#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb-islands --test integration \
-            client_script_only_project_reaps_all_four_stranded_temp_classes_before_any_islands_operation \
-            -- --ignored"]
 fn client_script_only_project_reaps_all_four_stranded_temp_classes_before_any_islands_operation() {
     use zfb_islands::{module_worker_filename, ClientScriptWorkerEntry};
 

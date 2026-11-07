@@ -322,28 +322,6 @@ jobs:
         with:
           prefix-key: "v3-zfb-smoke-${{ matrix.platform.target }}"
 
-      # Staged-binaries cache (issue 2385) — see health.yml's identically
-      # named step for the full rationale. Keyed on matrix.platform.target
-      # because the build script downloads binaries for the TARGET platform
-      # (the arm64 leg stages arm64 binaries into the same slot paths). Both
-      # cross legs work host-side: cross mounts the workspace into its
-      # container, so a restored slot is visible to the build script and its
-      # SHA check skips the download. The x86_64 leg's key matches health.yml
-      # so those jobs share one cache entry.
-      - name: Cache staged esbuild binary (issue 2385)
-        if: ${{ env.BUILD_BINARY == 'true' }}
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        continue-on-error: true
-        with:
-          # Only the gitignored executable slot — never the whole dir:
-          # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
-          # and an exact-key restore would untar stale cached copies of those
-          # over the checkout whenever a PR edits them without touching the
-          # hashed pin files (codex review, zfb#2385 PR).
-          path: |
-            crates/zfb/binaries/esbuild/esbuild
-          key: zfb-staged-binaries-v1-${{ matrix.platform.target }}-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
-
       # Install cross-rs for both legs (same as release.yml). cross wraps cargo
       # build inside the Docker container Cross.toml pins per target: the aarch64
       # image provides the cross sysroot, and the x86_64 image (Amazon Linux 2023,
@@ -461,7 +439,7 @@ jobs:
   # CodeBuild, and RHEL 9-class distros run, and the one the previous 2.35
   # floor locked out (#3584). It reuses run.sh verbatim (scaffold → build →
   # dev → hot-reload), so a real `zfb build` exercises the embedded V8 and the
-  # staged esbuild on that glibc. Deliberately a plain `docker run` rather
+  # native bundler on that glibc. Deliberately a plain `docker run` rather
   # than a second Dockerfile or a FROM build-arg — #395 rejected
   # parameterizing the smoke image, and this needs no image of its own.
   # NOT in ruleset 18452968 (see CLAUDE.md); a red run still blocks its author.

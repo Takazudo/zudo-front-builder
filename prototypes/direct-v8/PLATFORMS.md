@@ -185,7 +185,7 @@ Each row run:
   selection (no feature flags for `native-default`), and runs
   `packed-consumer.py` for the `win32-x64-msvc` carrier (the cross-platform
   counterpart of the smoke script, which stays the Linux required check);
-- on Windows x64, runs `cargo test -p zfb-rolldown-prototype
+- on Windows x64, runs `cargo test -p zfb-bundler
   --features native --lib`, the only tests that see Windows verbatim canonical
   paths (log: `rolldown-prototype-lib-tests.log`).
 

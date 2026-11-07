@@ -3,11 +3,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use zfb_bundler::{OutputLayout, Platform};
 use zfb_compiler_worker::{
     BundleRequest, CompileJob, CompilerWorker, TestHook, WorkerError, WorkerLauncher, PRIVATE_ARG,
     TEST_HOOKS_ENV,
 };
-use zfb_rolldown_prototype::{OutputLayout, Platform};
 
 const HANG: Duration = Duration::from_millis(3000);
 const SHORT_DEADLINE: Duration = Duration::from_millis(700);

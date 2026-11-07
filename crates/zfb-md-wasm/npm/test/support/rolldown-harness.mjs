@@ -1,6 +1,6 @@
 // Dev-only Rolldown harness for this package's tests and browser benchmark
 // (#4634). It mirrors zfb's native Rolldown file-resource contract
-// (crates/zfb-rolldown-prototype/src/native.rs, `GraphPlugin`): a resource
+// (crates/zfb-bundler/src/native.rs, `GraphPlugin`): a resource
 // import (`?url` suffix allowed) is emitted as an asset file and becomes a
 // relative `./<file>` URL string resolved by the consumer against
 // import.meta.url.

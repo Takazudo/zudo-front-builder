@@ -9,7 +9,6 @@
  * bash "$HOME/.codex/scripts/heavy-guard.sh" -- node scripts/verify-design-seed-exports.mjs
  *
  * No npm install, old installed CLI, network fetch or browser is used here.
- * ZFB_ESBUILD_BIN is honored by the supplied binary when needed.
  * ZFB_DESIGN_EXPORT_ARTIFACT_DIR optionally selects an empty evidence directory
  * outside the checkout; otherwise artifacts remain in a fresh /tmp directory.
  */
@@ -271,11 +270,6 @@ export function verifyDesignSeedExports(env = process.env) {
       realArtifacts,
       join(realArtifacts, "binary-version.log"),
     ).trim();
-    if (env.ZFB_ESBUILD_BIN)
-      metadata.esbuild = {
-        path: realpathSync(env.ZFB_ESBUILD_BIN),
-        sha256: hash(readFileSync(env.ZFB_ESBUILD_BIN)),
-      };
     for (const preset of Object.keys(PRESETS))
       for (const edited of [false, true]) {
         const state = createState(preset);

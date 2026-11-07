@@ -146,7 +146,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked -p zfb-rolldown-prototype --features native --lib 2>&1 | tee "$EVIDENCE/library-tests.log"
+          cargo test --locked -p zfb-bundler --features native --lib 2>&1 | tee "$EVIDENCE/library-tests.log"
 
       - name: Prepare probe project
         shell: bash
@@ -159,7 +159,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked -p zfb -p zfb-build -p zfb-islands -p zfb-rolldown-prototype --features zfb-rolldown-prototype/native --bin zfb --example rolldown_production --example rolldown_ssr --example rolldown_browser --example prepared --example plugin_prebundle 2>&1 | tee "$EVIDENCE/native-build.log"
+          cargo build --locked -p zfb -p zfb-build -p zfb-islands -p zfb-bundler --features zfb-bundler/native --bin zfb --example rolldown_production --example rolldown_ssr --example rolldown_browser --example prepared --example plugin_prebundle 2>&1 | tee "$EVIDENCE/native-build.log"
 
       - name: Prepared SSR and browser probe (verify.mjs)
         shell: bash

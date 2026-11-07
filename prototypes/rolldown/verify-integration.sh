@@ -31,7 +31,7 @@ run previews node docs/scripts/wind-preview-assets.mjs --compiler "$PWD/target/d
 run wind-en node docs/scripts/generate-wind-reference.mjs --locale en --check
 run wind-ja node docs/scripts/generate-wind-reference.mjs --locale ja --check
 run wasm-docs node scripts/assert-md-wasm-size-docs.mjs
-run native-build cargo build --locked -p zfb -p zfb-build -p zfb-islands -p zfb-rolldown-prototype --features zfb-rolldown-prototype/native --bin zfb --example rolldown_production --example rolldown_ssr --example rolldown_browser --example prepared --example plugin_prebundle
+run native-build cargo build --locked -p zfb -p zfb-build -p zfb-islands -p zfb-bundler --features zfb-bundler/native --bin zfb --example rolldown_production --example rolldown_ssr --example rolldown_browser --example prepared --example plugin_prebundle
 sha256sum target/debug/zfb > target/rolldown-integration-evidence/native-binary.txt
 cargo tree --locked -p zfb -e normal,build,features > target/rolldown-integration-evidence/native-graph.txt
 if ! grep -q rolldown target/rolldown-integration-evidence/native-graph.txt; then

@@ -14,10 +14,8 @@
 //!
 //! ## Esbuild gating
 //!
-//! Same precedence as the other bundler integration tests:
-//! `ZFB_ESBUILD_BIN` env var → `crates/zfb/binaries/esbuild/esbuild` slot →
-//! `which esbuild` PATH fallback. If no binary is available, the test prints
-//! a skip note and returns early rather than failing.
+//! Bundling runs in-process through native Rolldown (#4635), so these tests
+//! never skip for a missing bundler binary.
 //!
 //! ## What is tested
 //!

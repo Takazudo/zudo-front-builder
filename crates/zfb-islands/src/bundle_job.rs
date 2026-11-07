@@ -1,5 +1,5 @@
 //! Production [`ClientBundler`] implementation on zfb's in-process native
-//! bundler (`zfb_rolldown_prototype`).
+//! bundler (`zfb_bundler`).
 //!
 //! The trait + shared types ([`crate::bundler::ClientBundler`],
 //! [`crate::bundler::Island`], [`crate::bundler::BundleConfig`],
@@ -42,7 +42,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use zfb_build::metafile_deps::audit_metafile_stage_escape_at_path;
-use zfb_rolldown_prototype::{BundleRequest, External, JsxRuntime, Loader, OutputLayout, Platform};
+use zfb_bundler::{BundleRequest, External, JsxRuntime, Loader, OutputLayout, Platform};
 use zfb_types::json_string;
 
 use crate::bundler::{
@@ -882,7 +882,7 @@ fn run_native_entry(
         request.tsconfig = Some(config.path().to_path_buf());
     }
     // Keep the config owner alive through native generation and runtime teardown.
-    zfb_rolldown_prototype::bundle(&request)?;
+    zfb_bundler::bundle(&request)?;
     drop(config);
     Ok(())
 }
@@ -1163,10 +1163,7 @@ impl IslandsBundler {
         let output = self.bundle_one_entry(&entry, &probe, true, "identity probe", true)?;
         let mut digest = Sha256::new();
         digest.update(b"zfb-islands-resolved-executable/1\n");
-        hash_identity_part(
-            &mut digest,
-            zfb_rolldown_prototype::BACKEND_IDENTITY.as_bytes(),
-        );
+        hash_identity_part(&mut digest, zfb_bundler::BACKEND_IDENTITY.as_bytes());
         hash_identity_part(&mut digest, compiler_version.as_bytes());
         digest.update([
             config.mode.is_prod() as u8,
@@ -2397,7 +2394,7 @@ pub(crate) fn build_bundle_request(
         .push(("zfb".to_string(), "@takazudo/zfb".to_string()));
     request.minify = config.minify;
     if config.sourcemap {
-        request.source_map = zfb_rolldown_prototype::SourceMap::Linked;
+        request.source_map = zfb_bundler::SourceMap::Linked;
     }
     // Issue #1404/#1413: keep resolution anchored at each importer's on-disk
     // location when the islands shadow uses symlink mode. Copy-mode shadows

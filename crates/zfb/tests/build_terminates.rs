@@ -71,7 +71,7 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 /// Wall-clock deadline for the build.
 ///
@@ -228,14 +228,6 @@ fn zfb_build_terminates_with_adapter_and_ssr_route() {
 
     // --- skip-guards ---
 
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[build_terminates] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     if !pnpm_available() {
         eprintln!("[build_terminates] pnpm not found on PATH; skipping.");
         return;
@@ -269,7 +261,6 @@ fn zfb_build_terminates_with_adapter_and_ssr_route() {
     let mut cmd = Command::new(zfb_binary!());
     cmd.arg("build")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
 

@@ -78,7 +78,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 const BOOT_DEADLINE: Duration = Duration::from_secs(120);
 const BOOT_CONTENT_DEADLINE: Duration = Duration::from_secs(60);
@@ -131,7 +131,7 @@ impl DevSession {
 
 /// Spawn `zfb dev --port 0` with `ZFB_DEV_TIMING=1` (surfaces both the
 /// `watch-extra registered:` and `tick():` signals) and esbuild pinned.
-fn spawn_dev(root: &Path, esbuild: &Path) -> DevSession {
+fn spawn_dev(root: &Path) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout = fs::File::create(&stdout_path).expect("create dev stdout log");
@@ -142,7 +142,6 @@ fn spawn_dev(root: &Path, esbuild: &Path) -> DevSession {
         .arg("--port")
         .arg("0")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .env("ZFB_DEV_TIMING", "1")
         .env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
@@ -330,22 +329,15 @@ fn write_sibling_mdx_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir)
 /// can never be misread as a CSS-rerun regression.
 ///
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: esbuild — run with ZFB_ESBUILD_BIN and --ignored"]
+#[ignore = "heavy: run with --ignored — spawns a real zfb build/dev e2e (native Rolldown + V8)"]
 async fn sibling_mdx_utility_class_reaches_dev_css_scan() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[mirror_css_scan_mdx] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let workspace = tempfile::tempdir().expect("mirror-css-scan-mdx fixture tempdir");
     let (project, _nm_handle) = write_sibling_mdx_dev_fixture(workspace.path());
     let sibling_mdx = workspace.path().join("lib/ushared-mdx/notes.mdx");
 
-    let mut session = spawn_dev(&project, &esbuild);
+    let mut session = spawn_dev(&project);
     let Some(port) = wait_for_ready(&mut session).await else {
         return; // environmental skip (no V8/esbuild)
     };

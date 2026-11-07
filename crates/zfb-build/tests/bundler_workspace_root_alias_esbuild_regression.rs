@@ -125,7 +125,6 @@ fn bundle_text(path: &Path) -> String {
 }
 
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_workspace_root_alias_esbuild_regression -- --ignored"]
 fn real_esbuild_stages_workspace_root_alias_graph_with_sibling_and_dot_paths() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (workspace, project) = write_workspace(temp.path());
@@ -267,7 +266,6 @@ fn real_esbuild_stages_workspace_root_alias_graph_with_sibling_and_dot_paths() {
 /// a staged input apart from a live-tree fallback.
 #[cfg(unix)]
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_workspace_root_alias_esbuild_regression -- --ignored"]
 fn real_esbuild_combines_all_next_92_residual_stage_escape_classes() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (workspace, project) = write_workspace(temp.path());
@@ -489,7 +487,6 @@ fn real_esbuild_combines_all_next_92_residual_stage_escape_classes() {
 }
 
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_workspace_root_alias_esbuild_regression -- --ignored"]
 fn parent_relative_root_tree_crossing_stays_rejected_even_when_alias_target_is_legal() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (workspace, project) = write_workspace(temp.path());
@@ -535,7 +532,6 @@ fn parent_relative_root_tree_crossing_stays_rejected_even_when_alias_target_is_l
 }
 
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_workspace_root_alias_esbuild_regression -- --ignored"]
 fn real_metafile_guard_b_rejects_genuinely_unstaged_workspace_input() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (workspace, project) = write_workspace(temp.path());

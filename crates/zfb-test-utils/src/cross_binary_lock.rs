@@ -1,4 +1,4 @@
-//! Cross-binary advisory lock serializing the heavy V8/esbuild-booting e2e
+//! Cross-binary advisory lock serializing the heavy V8-booting e2e
 //! test binaries (issue #1339).
 //!
 //! ## Why this exists
@@ -6,14 +6,14 @@
 //! Plain `cargo test --workspace` normally runs each integration-test
 //! *binary* to completion before starting the next one. Before issue #1339,
 //! that incidental sequential scheduling was the only thing keeping the 8
-//! V8+esbuild-booting flock adopters (`dev_serve_e2e`,
+//! V8-booting flock adopters (`dev_serve_e2e`,
 //! `dev_bind_before_walk_e2e`, `dev_build_static_parity`,
 //! `dev_serve_injected_routes_e2e`, `dev_public_large_tree_smoke_e2e`,
 //! `dev_dep_invalidation_1284_e2e`, `build_terminates`,
 //! `client_bundling_cross_pipeline`) from booting
 //! concurrently. CI now uses `cargo nextest`, which schedules test *binaries*
 //! concurrently by default. Several real `zfb dev`/`zfb build` processes
-//! (each embedding a V8 host and shelling out to esbuild) booting at once would
+//! (each embedding a V8 host and the native bundler) booting at once would
 //! starve each other's CPU/memory and turn generous boot-deadline watchdogs
 //! flaky. The nextest
 //! `e2e-heavy` group is runner-level defense in depth; this advisory lock is
@@ -84,7 +84,7 @@ use std::time::{Duration, Instant};
 /// Default deadline for acquiring the lock before failing loudly.
 ///
 /// Generous on purpose: a single heavy e2e scenario can legitimately hold
-/// the lock for minutes (V8 + esbuild boot plus a dozen render ticks).
+/// the lock for minutes (V8 boot and native bundling plus a dozen render ticks).
 /// This must comfortably exceed the slowest single scenario watchdogs
 /// (`dev_content_aggregate_cold_boot_e2e.rs` and
 /// `dev_dep_invalidation_1284_e2e.rs` each use 300s) so that tripping this
@@ -162,8 +162,8 @@ impl CrossBinaryE2eLock {
                              binaries is very likely still holding it (see the \
                              `e2e-heavy-locked` inventory in crates/CLAUDE.md). Check for a \
                              wedged `zfb dev` / `zfb build` \
-                             process (or a hung/killed prior test run that left a V8 host or \
-                             esbuild child alive) with `ps aux | grep zfb` and kill it, or — if \
+                             process (or a hung/killed prior test run that left a V8 host \
+                             alive) with `ps aux | grep zfb` and kill it, or — if \
                              this is a legitimately slow machine — call \
                              CrossBinaryE2eLock::acquire_with_timeout with a longer deadline.",
                             path.display()

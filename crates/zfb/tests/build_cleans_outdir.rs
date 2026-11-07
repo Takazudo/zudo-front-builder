@@ -33,7 +33,7 @@ use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::process::Command;
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -69,28 +69,22 @@ fn write_minimal_fixture(root: &Path) {
 
 /// Run `zfb build` in `root` with the supplied esbuild path.
 /// Returns the output struct so callers can inspect stdout/stderr/status.
-fn run_zfb_build(root: &Path, esbuild: &Path) -> std::process::Output {
+fn run_zfb_build(root: &Path) -> std::process::Output {
     Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn `zfb build`")
 }
 
 /// Run `zfb build` in `root` with the supplied esbuild path, also passing
 /// `--outdir <outdir_arg>`.
-fn run_zfb_build_with_outdir(
-    root: &Path,
-    esbuild: &Path,
-    outdir_arg: &str,
-) -> std::process::Output {
+fn run_zfb_build_with_outdir(root: &Path, outdir_arg: &str) -> std::process::Output {
     Command::new(zfb_binary!())
         .arg("build")
         .arg("--outdir")
         .arg(outdir_arg)
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn `zfb build`")
 }
@@ -111,14 +105,6 @@ fn dump(output: &std::process::Output) -> String {
 /// With no CLI override, `zfb build` writes to the configured `outDir`.
 #[test]
 fn config_outdir_is_used_when_cli_flag_is_absent() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[build_cleans_outdir] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     write_minimal_fixture_with_config(
@@ -127,7 +113,7 @@ fn config_outdir_is_used_when_cli_flag_is_absent() {
 "#,
     );
 
-    let out = run_zfb_build(root, &esbuild);
+    let out = run_zfb_build(root);
     assert!(
         out.status.success(),
         "build with configured outDir failed\n{}",
@@ -146,14 +132,6 @@ fn config_outdir_is_used_when_cli_flag_is_absent() {
 /// An explicit CLI `--outdir` wins over a different configured `outDir`.
 #[test]
 fn cli_outdir_overrides_config_outdir() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[build_cleans_outdir] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     write_minimal_fixture_with_config(
@@ -162,7 +140,7 @@ fn cli_outdir_overrides_config_outdir() {
 "#,
     );
 
-    let out = run_zfb_build_with_outdir(root, &esbuild, "cli-out");
+    let out = run_zfb_build_with_outdir(root, "cli-out");
     assert!(
         out.status.success(),
         "build with CLI outdir override failed\n{}",
@@ -186,20 +164,12 @@ fn cli_outdir_overrides_config_outdir() {
 /// are gone after the build; fresh outputs are present.
 #[test]
 fn stale_assets_and_orphan_html_are_removed_on_rebuild() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[build_cleans_outdir] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     write_minimal_fixture(root);
 
     // First build — creates dist/.
-    let out = run_zfb_build(root, &esbuild);
+    let out = run_zfb_build(root);
     assert!(out.status.success(), "first build failed\n{}", dump(&out));
 
     let dist = root.join("dist");
@@ -221,7 +191,7 @@ fn stale_assets_and_orphan_html_are_removed_on_rebuild() {
     );
 
     // Second build — wipe must remove the stale files.
-    let out2 = run_zfb_build(root, &esbuild);
+    let out2 = run_zfb_build(root);
     assert!(
         out2.status.success(),
         "second build failed\n{}",
@@ -254,14 +224,6 @@ fn stale_assets_and_orphan_html_are_removed_on_rebuild() {
 /// keep the symlink intact and replace the target's contents with fresh output.
 #[test]
 fn dist_as_symlink_survives_with_fresh_target_contents() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[build_cleans_outdir] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     write_minimal_fixture(root);
@@ -275,7 +237,7 @@ fn dist_as_symlink_survives_with_fresh_target_contents() {
     let dist_link = root.join("dist");
     symlink(&real_dist, &dist_link).unwrap();
 
-    let out = run_zfb_build(root, &esbuild);
+    let out = run_zfb_build(root);
     assert!(
         out.status.success(),
         "build with dist-as-symlink failed\n{}",
@@ -310,20 +272,12 @@ fn dist_as_symlink_survives_with_fresh_target_contents() {
 /// wipe. Its target file must remain untouched.
 #[test]
 fn child_symlink_in_dist_is_unlinked_target_untouched() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[build_cleans_outdir] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     write_minimal_fixture(root);
 
     // First build — creates dist/.
-    let out = run_zfb_build(root, &esbuild);
+    let out = run_zfb_build(root);
     assert!(out.status.success(), "first build failed\n{}", dump(&out));
 
     let dist = root.join("dist");
@@ -335,7 +289,7 @@ fn child_symlink_in_dist_is_unlinked_target_untouched() {
     symlink(&external_target, &child_link).unwrap();
 
     // Second build — the wipe must remove the link, not follow it.
-    let out2 = run_zfb_build(root, &esbuild);
+    let out2 = run_zfb_build(root);
     assert!(
         out2.status.success(),
         "second build failed\n{}",
@@ -371,14 +325,6 @@ fn child_symlink_in_dist_is_unlinked_target_untouched() {
 /// `preBuild`, not after (see build.rs ordering comment for zfb#805).
 #[test]
 fn prebuild_plugin_emitted_file_survives_wipe() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[build_cleans_outdir] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     if Command::new("node")
         .arg("--version")
         .output()
@@ -431,7 +377,7 @@ export default {
     )
     .unwrap();
 
-    let out = run_zfb_build(root, &esbuild);
+    let out = run_zfb_build(root);
     assert!(
         out.status.success(),
         "build with preBuild plugin failed\n{}",
@@ -465,14 +411,6 @@ export default {
 /// must still be present.
 #[test]
 fn outdir_equal_to_project_root_is_rejected() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[build_cleans_outdir] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     write_minimal_fixture(root);
@@ -482,7 +420,7 @@ fn outdir_equal_to_project_root_is_rejected() {
     fs::write(&canary, b"do not delete").unwrap();
 
     // `--outdir .` resolves to the project root — must be rejected.
-    let out = run_zfb_build_with_outdir(root, &esbuild, ".");
+    let out = run_zfb_build_with_outdir(root, ".");
     assert!(
         !out.status.success(),
         "`zfb build --outdir .` must exit non-zero; got success\n{}",
@@ -510,14 +448,6 @@ fn outdir_equal_to_project_root_is_rejected() {
 /// clear error. Uses a nested directory so the ancestor check fires cleanly.
 #[test]
 fn outdir_as_ancestor_of_project_root_is_rejected() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[build_cleans_outdir] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     // project root is nested one level down so `..` is a real existing ancestor.
     let root = tmp.path().join("project");
@@ -529,7 +459,7 @@ fn outdir_as_ancestor_of_project_root_is_rejected() {
     fs::write(&canary, b"ancestor-level do not delete").unwrap();
 
     // `--outdir ..` resolves to the parent of the project root — must be rejected.
-    let out = run_zfb_build_with_outdir(&root, &esbuild, "..");
+    let out = run_zfb_build_with_outdir(&root, "..");
     assert!(
         !out.status.success(),
         "`zfb build --outdir ..` must exit non-zero; got success\n{}",

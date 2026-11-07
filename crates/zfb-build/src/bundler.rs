@@ -84,25 +84,6 @@
 //! `import.meta.env.PROD` and `import.meta.env.DEV` are always emitted
 //! (driven by [`BundlerInput::mode`]). See [`BundleMode`] and the
 //! `server_secrets_are_not_bundled` test for the contract.
-//!
-//! ## Esbuild binary resolution
-//!
-//! Handled by the shared resolver [`resolve_esbuild_binary_with_env`], which
-//! is also used by `zfb::config` (the config-loader). The lookup order for
-//! this (bundler) call site is:
-//!
-//! 1. [`BundlerInput::esbuild_binary`] (explicit override).
-//! 2. `ZFB_ESBUILD_BIN` environment variable.
-//! 3. `crates/zfb/binaries/esbuild/esbuild` ([`DEFAULT_ESBUILD_SLOT`] —
-//!    release-tarball slot; see that directory's README).
-//!
-//! The config-loader call site additionally inserts an embedded-extraction
-//! tier (tier 3 of 4) between the env var and the slot; see
-//! [`resolve_esbuild_binary_with_env`] for the full superset documentation.
-//!
-//! If the resolved path does not exist, [`bundle`] returns a clear error
-//! instructing the operator to either set the env var or stage the
-//! binary in the slot.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -145,7 +126,7 @@ use zfb_types::{
     REGION_ID_ATTR, RENDER_REGION_ATTR,
 };
 
-use zfb_rolldown_prototype::{BundleRequest, External, Loader, OutputLayout, Platform, SourceMap};
+use zfb_bundler::{BundleRequest, External, Loader, OutputLayout, Platform, SourceMap};
 // The `import.meta.glob` expansion helpers moved to their own `pub` module
 // (issue #1402) so #1404's downstream orchestration in `crates/zfb` can
 // reuse them without `zfb-islands` gaining a `zfb-build` dependency. Only
@@ -1461,14 +1442,6 @@ fn public_env_defines(
     }
     args
 }
-
-/// Default release-tarball slot for the esbuild binary. Mirrors
-/// `zfb_islands::EsbuildSubprocessConfig::default`'s default — kept in
-/// sync deliberately, both crates resolve the same slot.
-///
-/// This is the canonical definition; `crates/zfb/src/config.rs` formerly
-/// kept a private duplicate that has been removed in favour of this one.
-pub const DEFAULT_ESBUILD_SLOT: &str = "crates/zfb/binaries/esbuild/esbuild";
 
 /// `ZFB_DEV_TIMING` gate for the per-call [`bundle`] phase-split line
 /// (issue #993 Step 0 — extends the #991 instrumentation INSIDE the
@@ -4745,7 +4718,7 @@ pub fn bundle_with_session(
     // Build the shared materialisation context from the fields of `input`
     // that are invariant across every materialise_shadow / materialise_collection
     // call in this bundle invocation.
-    let worker_build_context = ModuleWorkerBuildContext::from_esbuild_loader_args(
+    let worker_build_context = ModuleWorkerBuildContext::from_loader_args(
         input.mode.is_prod(),
         &input.extra_loader_args,
         &input.define_vars,
@@ -7339,7 +7312,7 @@ mod esbuild_module_label_tests {
             Platform::Neutral,
         );
         request.graph = Some("meta.json".into());
-        zfb_rolldown_prototype::bundle(&request).unwrap();
+        zfb_bundler::bundle(&request).unwrap();
         let bundle = fs::read_to_string(shadow.join("bundle.mjs")).unwrap();
         let metafile: serde_json::Value =
             serde_json::from_slice(&fs::read(shadow.join("meta.json")).unwrap()).unwrap();
@@ -15945,7 +15918,7 @@ fn run_native_bundle(
         extra_aliases,
         inherited_node_path_dirs(),
     )?;
-    let result = zfb_rolldown_prototype::bundle(&request);
+    let result = zfb_bundler::bundle(&request);
     // The virtual-module `.mjs` temp files are no longer needed once the
     // bundle is generated; their `NamedTempFile`s delete themselves on drop.
     drop(resolver_inputs);
@@ -16319,94 +16292,6 @@ fn friendly_bundle_error(
         out.push_str(&notes.join("\n\n"));
     }
     out
-}
-
-/// Shared esbuild binary resolver used by both the bundler and the config
-/// loader. Home crate: `zfb-build` (lowest crate that both consumers depend
-/// on; `zfb-types` is excluded because it is a zero-dep leaf).
-///
-/// ## Lookup order (documented superset)
-///
-/// 1. **Explicit path** (`explicit`) — if `Some`, validated and returned
-///    immediately; an absent file is a hard error.
-/// 2. **`ZFB_ESBUILD_BIN` env var** — read via `env_getter("ZFB_ESBUILD_BIN")`.
-///    Injected as a closure so tests can drive this tier without mutating
-///    `std::env` (which is `unsafe` in a multi-threaded test runner under
-///    Rust 2024).
-/// 3. **Embedded extraction** (`embedded_getter`) — optional callback tried
-///    *before* the workspace slot. The config-loader caller (`zfb` crate)
-///    passes `Some(|| crate::render_pipeline::embedded_binary("esbuild"))` so
-///    a `cargo install`-ed binary (which has no workspace) still resolves.
-///    The bundler passes `None` here because it has no access to the
-///    `EMBEDDED_VENDOR` snapshot that lives in the `zfb` crate.
-/// 4. **Workspace slot** — `slot_override.unwrap_or(DEFAULT_ESBUILD_SLOT)`.
-///    `slot_override` is an escape hatch for unit tests that need to point the
-///    slot at a tempdir without chdir-ing.
-///
-/// ## Return value
-///
-/// `(Option<tempfile::TempDir>, PathBuf)` — the `TempDir` is `Some` only when
-/// the embedded extraction tier was taken. The caller **must** hold the handle
-/// alive for the lifetime of any subprocess that references the returned
-/// `PathBuf`; dropping the handle removes the tempdir and the binary.
-pub fn resolve_esbuild_binary_with_env<F, E>(
-    explicit: Option<&Path>,
-    env_getter: F,
-    embedded_getter: Option<E>,
-    slot_override: Option<&Path>,
-) -> Result<(Option<tempfile::TempDir>, PathBuf)>
-where
-    F: Fn(&str) -> Option<std::ffi::OsString>,
-    E: FnOnce() -> Option<(tempfile::TempDir, PathBuf)>,
-{
-    // Tier 1: explicit path override.
-    if let Some(p) = explicit {
-        if !p.exists() {
-            bail!(
-                "bundler: esbuild binary not found at explicit path {}",
-                p.display()
-            );
-        }
-        return Ok((None, p.to_path_buf()));
-    }
-    // Tier 2: ZFB_ESBUILD_BIN env var. An empty value (set but blank) is
-    // treated the same as unset, mirroring the build-time override
-    // contract in `crates/zfb/build.rs` / `BUILDING.md` — otherwise a
-    // blank env var that build.rs treats as "no override" would still
-    // trip this tier and fail to resolve a binary at runtime.
-    if let Some(env) = env_getter("ZFB_ESBUILD_BIN").filter(|v| !v.is_empty()) {
-        let p = PathBuf::from(env);
-        if !p.exists() {
-            bail!(
-                "bundler: esbuild binary not found at ZFB_ESBUILD_BIN={}",
-                p.display()
-            );
-        }
-        return Ok((None, p));
-    }
-    // Tier 3: embedded extraction (config-loader caller only; None for bundler).
-    if let Some(getter) = embedded_getter {
-        if let Some((handle, path)) = getter() {
-            return Ok((Some(handle), path));
-        }
-        // getter returned None → fall through to the workspace slot.
-    }
-    // Tier 4: workspace-relative staging slot.
-    let slot = slot_override
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_ESBUILD_SLOT));
-    if !slot.exists() {
-        return Err(anyhow!(
-            "bundler: esbuild binary not found at default slot {}. \
-             Evaluating a `zfb.config.ts` needs an esbuild CLI binary: set \
-             ZFB_ESBUILD_BIN to one (or, in a workspace checkout, stage the \
-             binary at that slot path). If you are embedding zfb-server as a \
-             library, prefer shipping a `zfb.config.json` instead — the JSON \
-             config path needs no esbuild at all.",
-            slot.display(),
-        ));
-    }
-    Ok((None, slot))
 }
 
 #[cfg(test)]
@@ -21869,7 +21754,7 @@ mod tests {
             OutputLayout::file(output.clone()),
             Platform::Neutral,
         );
-        zfb_rolldown_prototype::bundle(&request).expect("SSR-like native bundle");
+        zfb_bundler::bundle(&request).expect("SSR-like native bundle");
         let bundled = fs::read_to_string(output).unwrap();
         assert!(bundled.contains("worker-components-s-search-d-worker-d-ts.js?v="));
         assert!(!bundled.contains("BROWSER_ONLY_SENTINEL"), "{bundled}");
@@ -25341,51 +25226,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn missing_esbuild_binary_returns_actionable_error() {
-        // When neither an explicit override nor the env var nor the
-        // default slot is present, the bundler must error with a
-        // pointer to every escape hatch: `ZFB_ESBUILD_BIN`, the
-        // release-tarball slot, AND (for out-of-repo embedders) the
-        // `zfb.config.json` path that needs no esbuild (#1040). This
-        // keeps both workspace operators and library embedders unstuck.
-        //
-        // Drive the env path via an injected getter and the slot path
-        // via `slot_override` so the test does not mutate `std::env`
-        // and does not chdir — both are `unsafe` / racy under a
-        // multi-threaded test runner.
-        let tmp = tempfile::tempdir().unwrap();
-        let missing_slot = tmp.path().join("crates/zfb/binaries/esbuild/esbuild");
-
-        let err = resolve_esbuild_binary_with_env(
-            None,
-            |_| None,
-            None::<fn() -> Option<(tempfile::TempDir, PathBuf)>>,
-            Some(&missing_slot),
-        )
-        .unwrap_err();
-        let msg = format!("{err}");
-
-        assert!(msg.contains("ZFB_ESBUILD_BIN"), "msg: {msg}");
-        // This substring comes from the interpolated slot path
-        // (`slot.display()` = the `DEFAULT_ESBUILD_SLOT`-shaped path), not
-        // the error prose — the prose no longer names the workspace slot.
-        assert!(msg.contains("crates/zfb/binaries/esbuild"), "msg: {msg}");
-        assert!(msg.contains("zfb.config.json"), "msg: {msg}");
-    }
-
-    #[test]
-    fn explicit_missing_binary_is_reported() {
-        let err = resolve_esbuild_binary_with_env(
-            Some(Path::new("/nonexistent/zfb-bundler-please-do-not-create")),
-            |_| None,
-            None::<fn() -> Option<(tempfile::TempDir, PathBuf)>>,
-            None,
-        )
-        .unwrap_err();
-        assert!(format!("{err}").contains("not found at explicit path"));
-    }
-
     // -----------------------------------------------------------------------
     // bracket_to_hono tests — verify FS bracket notation → Hono colon syntax.
     // -----------------------------------------------------------------------
@@ -26120,7 +25960,7 @@ mod tests {
     ///     (the mock-mode path exercises the struct-construction code path;
     ///     the real esbuild emission is covered by the end-to-end bundler
     ///     integration tests in `crates/zfb-build/tests/bundler_integration.rs`
-    ///     which run when `ZFB_ESBUILD_BIN` is available).
+    ///     which bundle through native Rolldown).
     #[test]
     fn plugin_alias_and_virtual_module_fields_are_accepted_in_bundler_input() {
         let tmp = tempfile::tempdir().unwrap();

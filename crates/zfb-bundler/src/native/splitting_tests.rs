@@ -4,21 +4,21 @@
 //! a chunk importing `./islands.js` 404s in production (#4444/#4448).
 //! The bundles below are the oracle; nothing here predicts Rolldown's chunking.
 use super::prepared::Request;
-use std::{collections::BTreeMap, fs, process::Command};
+use crate::request::{BundleRequest, OutputLayout, Platform};
+use std::{collections::BTreeMap, fs};
 
 const ENTRY: &str = "islands.js";
 
 #[test]
 fn split_builds_do_not_fold_shared_code_into_an_already_loaded_entry() {
-    let mut cmd = Command::new("unused-prepared-esbuild");
-    cmd.current_dir(std::env::temp_dir()).args([
+    let mut request = BundleRequest::new(
+        std::env::temp_dir(),
         "entry.js",
-        "--bundle",
-        "--format=esm",
-        "--splitting",
-        "--outdir=out",
-    ]);
-    let request = Request::decode(&cmd).unwrap();
+        OutputLayout::dir("out"),
+        Platform::Browser,
+    );
+    request.splitting = true;
+    let request = Request::plan(&request).unwrap();
     let optimization = request
         .options
         .experimental
@@ -34,7 +34,7 @@ fn specifiers(name: &str, source: &str) -> Vec<String> {
 }
 
 /// Bundles `entry.js` from `files` exactly as zfb's shared islands pass asks
-/// (`--splitting`, stable entry name, self-hashed flat chunks) and returns
+/// (splitting, stable entry name, self-hashed flat chunks) and returns
 /// every emitted JS file by name.
 fn bundle_split(name: &str, files: &[(&str, &str)]) -> BTreeMap<String, String> {
     let dir = std::env::temp_dir().join(format!("zfb-native-split-{name}-{}", std::process::id()));
@@ -44,19 +44,20 @@ fn bundle_split(name: &str, files: &[(&str, &str)]) -> BTreeMap<String, String> 
     for (path, source) in files {
         fs::write(dir.join(path), source).unwrap();
     }
-    let mut cmd = Command::new("unused-prepared-esbuild");
-    cmd.current_dir(&dir).args([
+    let mut request = BundleRequest::new(
+        &dir,
         "entry.js",
-        "--bundle",
-        "--format=esm",
-        "--platform=browser",
-        "--splitting=true",
-        "--outdir=out",
-        "--entry-names=islands",
-        "--chunk-names=islands-chunk-[hash]",
-        "--metafile=out/meta.json",
-    ]);
-    let result = super::run_prepared(&cmd);
+        OutputLayout::Dir {
+            dir: "out".into(),
+            entry_names: Some("islands".into()),
+            chunk_names: Some("islands-chunk-[hash]".into()),
+            asset_names: None,
+        },
+        Platform::Browser,
+    );
+    request.splitting = true;
+    request.graph = Some("out/meta.json".into());
+    let result = super::bundle(&request);
     let mut emitted = BTreeMap::new();
     if let Ok(entries) = fs::read_dir(dir.join("out")) {
         for entry in entries {

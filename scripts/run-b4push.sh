@@ -31,9 +31,6 @@ set -uo pipefail
 #  14. cargo nextest run -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
 #  15. cargo clippy -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
 #  16. cargo check --no-default-features -p zfb --tests    — opt-in (B4PUSH_FULL=1)
-#  17. cargo test -p zfb-islands --tests -- --ignored (esbuild env-gate)  — opt-in (B4PUSH_FULL=1)
-#  18. cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored (esbuild env-gate) — opt-in (B4PUSH_FULL=1)
-#  19. cargo test -p zfb --lib commands::build:: -- --ignored (esbuild env-gates) — opt-in (B4PUSH_FULL=1)
 #
 # Steps 12 and 14 use cargo-nextest (nextest's DEFAULT profile, retries = 0) when
 # it is installed, matching CI's runner; they fall back to plain `cargo test`
@@ -49,24 +46,15 @@ set -uo pipefail
 # (health.yml:219). Without them, "B4PUSH_FULL=1 pnpm b4push passed" did not
 # imply "health.yml will pass."
 #
-# Steps 17-19 maintain parity with health.yml's dedicated esbuild env-gated lanes. The
-# zfb-islands esbuild-gated lane (added by #1337) had no B4PUSH_FULL
-# counterpart, so a green B4PUSH_FULL=1 run did not imply that lane would pass
-# in CI — the exact
-# gap #1332 closed for the md-extras/no-v8 lanes, reopened when #1337 added the
-# islands step to health.yml without updating b4push. Step 17 restores it;
-# step 18 mirrors #1504's real-zfb cross-pipeline acceptance lane.
-# Step 19 runs the remaining command-layer esbuild env-gates under the
-# staged esbuild slot. It sets an absolute path because cargo test starts
-# the test binary with the owning package directory as its working directory.
+# The former steps 17-19 (esbuild env-gated suites run with --ignored) were
+# removed by #4635: those tests are no longer ignored, so step 12 runs them.
 #
 # Env overrides:
 #   B4PUSH_SKIP_CLIPPY=1   — skip clippy (step 10); use on a cold tree to stay bounded
 #   B4PUSH_SKIP_JS_TEST=1  — skip the vitest suites (step 9)
-#   B4PUSH_FULL=1          — additionally run steps 11-19 (syntect packdump
+#   B4PUSH_FULL=1          — additionally run steps 11-16 (syntect packdump
 #                            freshness gate, full workspace test,
-#                            zfb-md-extras test-utils lane, no-V8 cargo check,
-#                            esbuild env-gate suites)
+#                            zfb-md-extras test-utils lane, no-V8 cargo check)
 #   HEAVY_GUARD=/path      — override the machine-wide heavy-guard executable
 
 START_TIME=$(date +%s)
@@ -138,19 +126,6 @@ run_heavy() {
 
 heavy() { run_heavy "$@"; }
 
-# Run an environment-injected command through the same queue without using an
-# assignment prefix on the function call (Bash would scope state set by the
-# function and hide whether a guard actually returned exit 75).
-heavy_env() {
-  local -a command_env=()
-  while [ "$1" != "--" ]; do
-    command_env+=("$1")
-    shift
-  done
-  shift
-  run_heavy env "${command_env[@]}" "$@"
-}
-
 # Exit 75 means queue contention and the command never ran. Keep it out of the
 # check-failure list and make the overall b4push result non-green below.
 heavy_failure() {
@@ -170,7 +145,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
 # Prefer cargo-nextest for the B4PUSH_FULL Rust lanes (issue #1340): it matches
-# what CI runs and serializes the heavy V8/esbuild e2e binaries via the
+# what CI runs and serializes the heavy V8/bundler e2e binaries via the
 # `e2e-heavy` test-group in .config/nextest.toml. We use nextest's DEFAULT
 # profile locally (retries = 0 — local dev does not want CI's retry budget
 # masking a genuine failure), unlike CI's `--profile ci` (retries = 1). If
@@ -421,62 +396,6 @@ if [ "${B4PUSH_FULL:-}" = "1" ]; then
   fi
 else
   skip "No-V8 cargo check (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
-fi
-
-# ── zfb-islands esbuild env-gate suite (opt-in) ─────────
-# Restores b4push/health.yml parity (issue #1393) — see the header comment for
-# why. Guarded on the staged binary existing: a tree that never ran
-# `cargo build --workspace --all-targets` (e.g. B4PUSH_SKIP_CLIPPY=1 on a cold
-# checkout) may not have triggered crates/zfb/build.rs's esbuild download yet.
-ESBUILD_SLOT="${ROOT_DIR}/crates/zfb/binaries/esbuild/esbuild"
-step "zfb-islands esbuild env-gate suite (cargo test -p zfb-islands --tests -- --ignored)"
-if [ "${B4PUSH_FULL:-}" = "1" ]; then
-  if [ -x "$ESBUILD_SLOT" ]; then
-    if heavy_env "ZFB_ESBUILD_BIN=$ESBUILD_SLOT" -- cargo test -p zfb-islands --tests -- --ignored; then
-      pass "zfb-islands esbuild env-gate suite"
-    else
-      heavy_failure "zfb-islands esbuild env-gate suite" "$?"
-    fi
-  else
-    skip "zfb-islands esbuild env-gate suite ($ESBUILD_SLOT not staged — run \`cargo build --workspace --all-targets\` first)"
-  fi
-else
-  skip "zfb-islands esbuild env-gate suite (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
-fi
-
-# ── zfb cross-pipeline esbuild env-gate (opt-in) ─────────
-# Mirrors health.yml's dedicated #1504 acceptance lane. It is intentionally
-# separate from the zfb-islands suite because it spawns the real zfb binary,
-# runs both build and dev --port 0, and exercises SSR plus both client pipelines.
-step "zfb client-bundling cross-pipeline acceptance test"
-if [ "${B4PUSH_FULL:-}" = "1" ]; then
-  if [ -x "$ESBUILD_SLOT" ]; then
-    if heavy_env "ZFB_ESBUILD_BIN=$ESBUILD_SLOT" -- cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored; then
-      pass "zfb client-bundling cross-pipeline acceptance test"
-    else
-      heavy_failure "zfb client-bundling cross-pipeline acceptance test" "$?"
-    fi
-  else
-    skip "zfb client-bundling cross-pipeline acceptance test ($ESBUILD_SLOT not staged — run \`cargo build --workspace --all-targets\` first)"
-  fi
-else
-  skip "zfb client-bundling cross-pipeline acceptance test (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
-fi
-
-# ── zfb command-layer esbuild env-gates (opt-in) ──────
-step "zfb command-layer env-gates (cargo test -p zfb --lib commands::build:: -- --ignored)"
-if [ "${B4PUSH_FULL:-}" = "1" ]; then
-  if [ -x "$ESBUILD_SLOT" ]; then
-    if heavy_env "ZFB_ESBUILD_BIN=$ESBUILD_SLOT" -- cargo test -p zfb --lib commands::build:: -- --ignored; then
-      pass "zfb command-layer env-gates"
-    else
-      heavy_failure "zfb command-layer env-gates" "$?"
-    fi
-  else
-    skip "zfb command-layer env-gates (esbuild slot not staged — run \`cargo build --workspace --all-targets\` first)"
-  fi
-else
-  skip "zfb command-layer env-gates (set B4PUSH_FULL=1 to run; CI runs them on every PR)"
 fi
 
 # ── Summary ──────────────────────────────────────────

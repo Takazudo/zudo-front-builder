@@ -51,8 +51,7 @@
 // Shared harness (local copy of the helpers from dev_serve_e2e.rs, adapted
 // for all scenarios). The helpers are private to that file's binary;
 // Rust integration tests are separate binaries and cannot import each other's
-// private items. zfb-test-utils (already a dev-dep) provides locate_esbuild,
-// next_sse_event_name, and the zfb_binary! macro.
+// private items. zfb-test-utils (already a dev-dep) provides // next_sse_event_name, and the zfb_binary! macro.
 // ---------------------------------------------------------------------------
 
 #![cfg(unix)]
@@ -65,7 +64,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
 // Serialise the four tests: each boots a full V8 + esbuild + wind dev
 // session; running them concurrently would double/triple memory and produce
@@ -268,7 +267,7 @@ fn parse_ready_port(log: &str) -> Option<u16> {
 /// Spawn `zfb dev --port 0` over the already-prepared fixture root, in its own
 /// process group, with stdout/stderr captured to files. Callers copy and extend
 /// the fixture BEFORE calling this.
-fn spawn_dev(root: PathBuf, esbuild: &Path, extra_env: &[(&str, &str)]) -> DevSession {
+fn spawn_dev(root: PathBuf, extra_env: &[(&str, &str)]) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log file");
@@ -279,7 +278,6 @@ fn spawn_dev(root: PathBuf, esbuild: &Path, extra_env: &[(&str, &str)]) -> DevSe
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
@@ -538,13 +536,6 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
 async fn e2e_src_component_edit_rerenders_route() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dep_inval_e2e symptom-A] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     // Build a dev-loop-basic-derived fixture that has `src/components/Widget.tsx`
     // imported by `pages/index.tsx`. The `src/` directory is in DEFAULT_WATCH_ROOTS
@@ -617,7 +608,7 @@ export default function HomePage({ posts }: Props) {
     )
     .expect("write extended pages/index.tsx");
 
-    let mut session = spawn_dev(root, &esbuild, &[]);
+    let mut session = spawn_dev(root, &[]);
     let pgid = session.guard.pgid;
 
     let body = async {
@@ -757,13 +748,6 @@ export default function HomePage({ posts }: Props) {
 async fn e2e_transitive_css_import_refreshes_stylesheet() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dep_inval_e2e symptom-B] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     // Build the fixture.
     let tmp = tempfile::tempdir().expect("create tempdir for symptom-B fixture");
@@ -826,7 +810,7 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
     )
     .expect("write styles/global.css");
 
-    let mut session = spawn_dev(root, &esbuild, &[]);
+    let mut session = spawn_dev(root, &[]);
     let pgid = session.guard.pgid;
 
     // `pkg_dir` must outlive the session — the symlink's real target must
@@ -957,13 +941,6 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
 async fn e2e_package_css_export_remap_refreshes_stylesheet() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dep_inval_e2e package-css-export] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("create tempdir for package CSS export fixture");
     let root = tmp
@@ -1011,7 +988,7 @@ async fn e2e_package_css_export_remap_refreshes_stylesheet() {
     )
     .expect("write styles/global.css");
 
-    let mut session = spawn_dev(root, &esbuild, &[]);
+    let mut session = spawn_dev(root, &[]);
     let pgid = session.guard.pgid;
     // Keep the canonical package target alive while the server watches it.
     let _pkg_dir = pkg_dir;
@@ -1110,13 +1087,6 @@ async fn e2e_package_css_export_remap_refreshes_stylesheet() {
 async fn e2e_new_utility_class_in_component_is_emitted() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dep_inval_e2e symptom-C] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     // Build the fixture.
     let tmp = tempfile::tempdir().expect("create tempdir for symptom-C fixture");
@@ -1205,7 +1175,7 @@ export default function HomePage({ posts }: Props) {
     )
     .expect("write extended pages/index.tsx");
 
-    let mut session = spawn_dev(root, &esbuild, &[]);
+    let mut session = spawn_dev(root, &[]);
     let pgid = session.guard.pgid;
 
     let css_url_fn = |base: &str| format!("{base}/assets/styles.css");

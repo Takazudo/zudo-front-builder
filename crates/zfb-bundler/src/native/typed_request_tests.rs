@@ -1,7 +1,7 @@
-//! Typed requests (#4629) drive the same planner the legacy argv decoder
-//! feeds, and `generate` publishes nothing until the caller asks.
+//! Typed requests (#4629) drive the planner, and `generate` publishes nothing
+//! until the caller asks.
 use crate::request::*;
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, path::PathBuf};
 
 fn temp_dir(label: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,84 +14,6 @@ fn temp_dir(label: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     fs::canonicalize(dir).unwrap()
-}
-
-#[test]
-fn typed_and_argv_requests_plan_identically() {
-    let mut cmd = Command::new("unused");
-    cmd.current_dir("/srv/site").args([
-        "pages/index.tsx",
-        "--bundle",
-        "--format=esm",
-        "--platform=neutral",
-        "--target=es2022",
-        "--outdir=out",
-        "--entry-names=[name]",
-        "--chunk-names=c-[hash]",
-        "--asset-names=a-[name]-[hash]",
-        "--splitting",
-        "--minify",
-        "--keep-names",
-        "--sourcemap=linked",
-        "--preserve-symlinks",
-        "--jsx=automatic",
-        "--jsx-import-source=preact",
-        "--conditions=worker,browser",
-        "--main-fields=module,main",
-        "--alias:#a=./a.mjs",
-        "--define:X=\"1\"",
-        "--loader:.svg=file",
-        "--loader:.txt=text",
-        "--loader:.wasm=copy",
-        "--external:node:*",
-        "--external:pkg",
-        "--metafile=out/meta.json",
-    ]);
-    cmd.env("NODE_PATH", "/srv/hoist");
-    let decoded = super::prepared::decode_argv_for_tests(&cmd).unwrap();
-    let typed = BundleRequest {
-        cwd: "/srv/site".into(),
-        entry: "pages/index.tsx".into(),
-        output: OutputLayout::Dir {
-            dir: "out".into(),
-            entry_names: Some("[name]".into()),
-            chunk_names: Some("c-[hash]".into()),
-            asset_names: Some("a-[name]-[hash]".into()),
-        },
-        format: Format::Esm,
-        platform: Platform::Neutral,
-        target: Some("es2022".into()),
-        jsx: Jsx {
-            runtime: Some(JsxRuntime::Automatic),
-            import_source: Some("preact".into()),
-        },
-        tsconfig: None,
-        resolve: Resolve {
-            aliases: vec![("#a".into(), "./a.mjs".into())],
-            conditions: Some(vec!["worker".into(), "browser".into()]),
-            main_fields: Some(vec!["module".into(), "main".into()]),
-            preserve_symlinks: true,
-            extra_module_dirs: vec!["/srv/hoist".into()],
-            packages: Packages::Bundle,
-        },
-        defines: vec![("X".into(), "\"1\"".into())],
-        loaders: vec![
-            (".svg".into(), Loader::File),
-            (".txt".into(), Loader::Text),
-            (".wasm".into(), Loader::Copy),
-        ],
-        externals: vec![
-            External::Prefix("node:".into()),
-            External::Package("pkg".into()),
-        ],
-        splitting: true,
-        minify: true,
-        keep_names: true,
-        source_map: SourceMap::Linked,
-        banner: None,
-        graph: Some("out/meta.json".into()),
-    };
-    assert_eq!(decoded, typed);
 }
 
 #[test]
@@ -191,24 +113,6 @@ fn every_loader_name_round_trips() {
 
 #[test]
 fn single_file_output_keeps_the_asset_name_pattern() {
-    let mut cmd = Command::new("unused");
-    cmd.current_dir("/srv/site").args([
-        "entry.ts",
-        "--bundle",
-        "--format=esm",
-        "--outfile=dist/server/entry.mjs",
-        "--asset-names=../assets/[name]-[hash]",
-        "--loader:.wasm=file",
-    ]);
-    let decoded = super::prepared::decode_argv_for_tests(&cmd).unwrap();
-    assert_eq!(
-        decoded.output,
-        OutputLayout::File {
-            file: "dist/server/entry.mjs".into(),
-            asset_names: Some("../assets/[name]-[hash]".into()),
-        }
-    );
-
     let dir = temp_dir("file-assets");
     fs::write(dir.join("data.wasm"), b"\0asm\x01\0\0\0").unwrap();
     fs::write(

@@ -72,7 +72,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
 /// Overall wall-clock watchdog. A clean run is boot (V8 + esbuild, slow in
 /// debug) plus a handful of request-time renders.
@@ -253,7 +253,7 @@ export default function GuideShadow() {
 /// (with the S3 injected preset), in its own process group, output to
 /// files. Returns the session + the canonical root + the node_modules
 /// TempDir handle (must outlive the session).
-fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path) -> (DevSession, PathBuf, tempfile::TempDir) {
+fn spawn_dev(tmp: &tempfile::TempDir) -> (DevSession, PathBuf, tempfile::TempDir) {
     let root = tmp
         .path()
         .canonicalize()
@@ -278,7 +278,6 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path) -> (DevSession, PathBuf, t
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     // Control the render mode exclusively (lazy default); strip inherited
@@ -395,20 +394,13 @@ async fn poll_until_200_not_redirect(
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_static_injected_route_renders() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[injected_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
     if !node_available() {
         eprintln!("[injected_e2e] node not on PATH; skipping.");
         return;
     }
 
     let tmp = tempfile::tempdir().expect("create tempdir for consumer fixture");
-    let (mut session, _root, _nm) = spawn_dev(&tmp, &esbuild);
+    let (mut session, _root, _nm) = spawn_dev(&tmp);
     let pgid = session.guard.pgid;
 
     let body = async {
@@ -652,13 +644,6 @@ export default function IslandPage() {
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_package_route_island_with_no_host_importer_reaches_islands_bundle() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[islands_seed_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
     if !node_available() {
         eprintln!("[islands_seed_e2e] node not on PATH; skipping.");
         return;
@@ -687,7 +672,6 @@ async fn dev_e2e_package_route_island_with_no_host_importer_reaches_islands_bund
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
@@ -918,13 +902,6 @@ export {{ CssPage as default }};
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_package_route_only_utility_class_reaches_dev_css() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[package_css_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
     if !node_available() {
         eprintln!("[package_css_e2e] node not on PATH; skipping.");
         return;
@@ -949,7 +926,6 @@ async fn dev_e2e_package_route_only_utility_class_reaches_dev_css() {
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
@@ -1137,13 +1113,6 @@ export default function VmodulePage() {
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_virtual_module_only_import_reaches_islands_bundle() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[vmodule_islands_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
     if !node_available() {
         eprintln!("[vmodule_islands_e2e] node not on PATH; skipping.");
         return;
@@ -1172,7 +1141,6 @@ async fn dev_e2e_virtual_module_only_import_reaches_islands_bundle() {
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
@@ -1440,13 +1408,6 @@ export default function HelpOptional({ label }: { label: string }) {
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_dynamic_injected_route_renders() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dynamic_injected_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
     if !node_available() {
         eprintln!("[dynamic_injected_e2e] node not on PATH; skipping.");
         return;
@@ -1477,7 +1438,6 @@ async fn dev_e2e_dynamic_injected_route_renders() {
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
@@ -1890,13 +1850,6 @@ async fn subscribe_sse(base: &str) -> reqwest::Response {
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_injected_route_hmr_content_edit_refreshes() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[hmr_injected_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
     if !node_available() {
         eprintln!("[hmr_injected_e2e] node not on PATH; skipping.");
         return;
@@ -1928,7 +1881,6 @@ async fn dev_e2e_injected_route_hmr_content_edit_refreshes() {
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
@@ -2222,13 +2174,6 @@ export default {
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_trailing_slash_parity() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[trailing_slash_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
     if !node_available() {
         eprintln!("[trailing_slash_e2e] node not on PATH; skipping.");
         return;
@@ -2257,7 +2202,6 @@ async fn dev_e2e_trailing_slash_parity() {
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
@@ -2468,13 +2412,6 @@ export default function RootShadow() {
 /// user-index case proves the existing shape-key precedence remains intact.
 async fn run_root_injecting_dev_case(with_user_index: bool) {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[injected_root_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
     if !node_available() {
         eprintln!("[injected_root_e2e] node not on PATH; skipping.");
         return;
@@ -2512,7 +2449,6 @@ async fn run_root_injecting_dev_case(with_user_index: bool) {
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
@@ -2836,7 +2772,7 @@ export { DocsPage as default, paths };
 /// Spawn the prepared #1518 fixture with the same process-group discipline as
 /// the other real-dev tests in this binary. `CrossBinaryE2eLock` is acquired by
 /// the caller before this process starts.
-fn spawn_zero_pages_dev(root: &Path, esbuild: &Path) -> DevSession {
+fn spawn_zero_pages_dev(root: &Path) -> DevSession {
     let stdout_path = root.join(".zfb-dev-zero-pages-stdout.log");
     let stderr_path = root.join(".zfb-dev-zero-pages-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create zero-pages stdout log");
@@ -2847,7 +2783,6 @@ fn spawn_zero_pages_dev(root: &Path, esbuild: &Path) -> DevSession {
         .arg("--port")
         .arg("0")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
@@ -2868,11 +2803,10 @@ fn spawn_zero_pages_dev(root: &Path, esbuild: &Path) -> DevSession {
 /// Run the build half of the confirmation. A missing local V8/esbuild setup
 /// follows the existing binary's explicit skip convention; every other build
 /// failure is a test failure with captured output.
-fn run_zero_pages_build(root: &Path, esbuild: &Path) -> bool {
+fn run_zero_pages_build(root: &Path) -> bool {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("run zero-pages `zfb build`");
     if output.status.success() {
@@ -2907,13 +2841,6 @@ fn run_zero_pages_build(root: &Path, esbuild: &Path) -> bool {
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_and_build_e2e_confirm_zero_pages_compiled_node_modules_routes() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[zero_pages_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
     if !node_available() {
         eprintln!("[zero_pages_e2e] node not on PATH; skipping.");
         return;
@@ -2935,7 +2862,7 @@ async fn dev_and_build_e2e_confirm_zero_pages_compiled_node_modules_routes() {
     );
 
     let dev_completed = {
-        let mut session = spawn_zero_pages_dev(&dev_root, &esbuild);
+        let mut session = spawn_zero_pages_dev(&dev_root);
         let pgid = session.guard.pgid;
         let stdout_path = session.stdout_path.clone();
         let stderr_path = session.stderr_path.clone();
@@ -3038,7 +2965,7 @@ async fn dev_and_build_e2e_confirm_zero_pages_compiled_node_modules_routes() {
         return;
     }
 
-    if !run_zero_pages_build(&build_root, &esbuild) {
+    if !run_zero_pages_build(&build_root) {
         return;
     }
     for (relative_path, marker) in [

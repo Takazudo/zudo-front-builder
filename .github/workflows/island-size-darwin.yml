@@ -683,14 +683,8 @@ jobs:
           printf '%s\n' "${statuses[0]}" > "$RUST_EVIDENCE_DIR/build.exit"
           printf '%s\n' "${statuses[1]}" > "$RUST_EVIDENCE_DIR/build.log-exit"
           test "${statuses[0]}" = 0 && test "${statuses[1]}" = 0
-      - name: Assert staged esbuild
-        run: |
-          test -x crates/zfb/binaries/esbuild/esbuild
-          crates/zfb/binaries/esbuild/esbuild --version
-          sha256sum crates/zfb/binaries/esbuild/esbuild > "$RUST_EVIDENCE_DIR/esbuild.txt"
       - name: Independent Rust checks, zero retries
         env:
-          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
           ZFB_DEFAULT_LAYOUT_EVIDENCE_DIR: ${{ runner.temp }}/rust-default-layout
         run: |
           failed=0
@@ -709,7 +703,7 @@ jobs:
             if [[ "$rc" != 0 || "${statuses[1]}" != 0 ]]; then failed=1; fi
             printf '%s\n' "${statuses[1]}" > "$RUST_EVIDENCE_DIR/$label.log-exit"
             case "$label" in
-              workspace|md-extras|env-esbuild)
+              workspace|md-extras)
                 if [[ -s target/nextest/ci/junit.xml ]]; then
                   mv target/nextest/ci/junit.xml "$RUST_EVIDENCE_DIR/$label.junit.xml"
                 else
@@ -727,7 +721,6 @@ jobs:
           run_check md-extras-clippy cargo clippy --locked -p zfb-md-extras --features test-utils --all-targets -- -D warnings
           run_check no-v8 cargo check --locked --no-default-features -p zfb --tests
           run_check jsx-no-v8 cargo test --locked -p zfb-build --no-default-features --lib jsx_pragma
-          run_check env-esbuild cargo nextest run --locked --workspace --profile ci --retries 0 --no-tests=fail --run-ignored ignored-only -E '(package(zfb-islands) & binary(=integration)) | (package(zfb) & binary(=client_bundling_cross_pipeline)) | (package(zfb-build) & binary(=bundler_dot_path_staging_esbuild_regression)) | (package(zfb-build) & binary(=bundler_workspace_root_alias_esbuild_regression)) | (package(zfb-build) & binary(=bundler_consume_from_source_esbuild_regression)) | (package(zfb-build) & binary(=bundler_root_workspace_stage_escape_audit_armed_regression)) | (package(zfb-build) & binary(=bundler_root_workspace_stage_escape_audit_disarm_pin)) | (package(zfb-build) & binary(=bundler_root_workspace_loose_file_alias_esbuild_regression)) | (package(zfb) & ( test(=commands::build::tests::bare_package_consume_from_source_sibling_glob_macro_reaches_islands_bundle_unexpanded) | test(=commands::build::tests::plugin_alias_only_client_preprocessing_triggers_shadow_with_real_esbuild) | test(=commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild) | test(=commands::build::tests::root_workspace_islands_stage_escape_audit_is_now_armed_and_undeclared_child_escape_is_rejected) ))'
           exit "$failed"
       - name: Report missing or failed coverage
         if: always()
@@ -738,7 +731,7 @@ jobs:
             echo 'Independent Linux Rust verification; live admission is not evaluated here.'
             echo '| Check | Exit (missing means not completed) |'
             echo '| --- | --- |'
-            for label in build inventory clippy workspace doctests md-extras md-extras-clippy no-v8 jsx-no-v8 env-esbuild; do
+            for label in build inventory clippy workspace doctests md-extras md-extras-clippy no-v8 jsx-no-v8; do
               rc=missing
               if [[ -f "$RUST_EVIDENCE_DIR/$label.exit" ]]; then
                 rc=$(cat "$RUST_EVIDENCE_DIR/$label.exit")
@@ -754,7 +747,7 @@ jobs:
                 failed=1
               fi
             done
-            for label in workspace md-extras env-esbuild; do
+            for label in workspace md-extras; do
               if [[ ! -s "$RUST_EVIDENCE_DIR/$label.junit.xml" ]]; then
                 echo "Missing fresh JUnit: $label"
                 failed=1

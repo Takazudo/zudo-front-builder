@@ -135,8 +135,7 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use zfb_test_utils::{
-    locate_esbuild, next_sse_event_name, open_sse, probe_module_entries, zfb_binary,
-    CrossBinaryE2eLock,
+    next_sse_event_name, open_sse, probe_module_entries, zfb_binary, CrossBinaryE2eLock,
 };
 
 /// Serializes the spawning tests in this file: each boots a full V8 +
@@ -383,7 +382,7 @@ fn prepare_dev_root_from_fixture(tmp: &tempfile::TempDir, fixture_name: &str) ->
 
 /// Spawn `zfb dev --port 0` over an ALREADY-PREPARED root (see
 /// `prepare_dev_root`), captured to log files, in its own process group.
-fn spawn_dev_in_root(root: &Path, esbuild: &Path, extra_env: &[(&str, &str)]) -> DevSession {
+fn spawn_dev_in_root(root: &Path, extra_env: &[(&str, &str)]) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log file");
@@ -394,7 +393,6 @@ fn spawn_dev_in_root(root: &Path, esbuild: &Path, extra_env: &[(&str, &str)]) ->
         .arg("--port")
         .arg("0")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     // Each test controls the mode exclusively through `extra_env`
@@ -426,9 +424,9 @@ fn spawn_dev_in_root(root: &Path, esbuild: &Path, extra_env: &[(&str, &str)]) ->
 
 /// Spawn `zfb dev --port 0` over a fresh copy of the fixture, captured
 /// to log files, in its own process group.
-fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, extra_env: &[(&str, &str)]) -> DevSession {
+fn spawn_dev(tmp: &tempfile::TempDir, extra_env: &[(&str, &str)]) -> DevSession {
     let root = prepare_dev_root(tmp);
-    spawn_dev_in_root(&root, esbuild, extra_env)
+    spawn_dev_in_root(&root, extra_env)
 }
 
 /// Wait for the listening banner and return the ephemeral port, or `None`
@@ -846,10 +844,6 @@ async fn subscribe_sse(base: &str) -> reqwest::Response {
 async fn dev_binds_and_serves_before_slow_deferred_step() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let slow = SLOW_DIGEST_MS.to_string();
@@ -859,7 +853,6 @@ async fn dev_binds_and_serves_before_slow_deferred_step() {
     let spawn_t = Instant::now();
     let mut session = spawn_dev(
         &tmp,
-        &esbuild,
         &[
             ("ZFB_DEV_TEST_SLOW_DIGEST_MS", slow.as_str()),
             ("ZFB_DEV_EAGER", "1"),
@@ -952,10 +945,6 @@ async fn dev_binds_and_serves_before_slow_deferred_step() {
 async fn eager_request_before_render_serves_controlled_body() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let release_dir = tempfile::tempdir().expect("digest release tempdir");
     let release = release_dir.path().join("release");
@@ -967,7 +956,6 @@ async fn eager_request_before_render_serves_controlled_body() {
     let boot_deadline = tokio::time::Instant::now() + BANNER_DEADLINE;
     let mut session = spawn_dev_in_root(
         &root,
-        &esbuild,
         &[
             (
                 "ZFB_DEV_TEST_DIGEST_RELEASE_FILE",
@@ -1065,10 +1053,6 @@ async fn eager_request_before_render_serves_controlled_body() {
 async fn early_shutdown_before_digest_skips_graph_save() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let release_dir = tempfile::tempdir().expect("digest release tempdir");
@@ -1081,7 +1065,6 @@ async fn early_shutdown_before_digest_skips_graph_save() {
     let boot_deadline = tokio::time::Instant::now() + BANNER_DEADLINE;
     let mut session = spawn_dev_in_root(
         &root,
-        &esbuild,
         &[(
             "ZFB_DEV_TEST_DIGEST_RELEASE_FILE",
             release.to_str().expect("release path"),
@@ -1231,10 +1214,6 @@ async fn early_shutdown_before_digest_skips_graph_save() {
 async fn dev_binds_and_serves_before_slow_islands_step() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let slow = SLOW_ISLANDS_MS.to_string();
@@ -1243,7 +1222,6 @@ async fn dev_binds_and_serves_before_slow_islands_step() {
     let spawn_t = Instant::now();
     let mut session = spawn_dev(
         &tmp,
-        &esbuild,
         &[
             ("ZFB_DEV_TEST_SLOW_ISLANDS_MS", slow.as_str()),
             ("ZFB_DEV_EAGER", "1"),
@@ -1322,10 +1300,6 @@ async fn dev_binds_and_serves_before_slow_islands_step() {
 async fn dev_200_document_declares_and_serves_islands_module() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = prepare_dev_root_from_fixture(&tmp, "dev-islands-entry-probe");
@@ -1340,7 +1314,6 @@ async fn dev_200_document_declares_and_serves_islands_module() {
     let slow_post_islands = HELD_POST_ISLANDS_MS.to_string();
     let mut session = spawn_dev_in_root(
         &root,
-        &esbuild,
         &[
             ("ZFB_DEV_TEST_SLOW_ISLANDS_MS", slow_islands.as_str()),
             (
@@ -1500,10 +1473,6 @@ async fn dev_200_document_declares_and_serves_islands_module() {
 async fn dev_retains_previous_islands_chunk_generations_for_open_documents() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
-        return;
-    };
 
     const ISLANDS_MARKER: &str = "[zfb-timing] tick: islands published";
     const PAGE_MARKER: &str = "[zfb-timing] tick: page write complete";
@@ -1512,11 +1481,7 @@ async fn dev_retains_previous_islands_chunk_generations_for_open_documents() {
     let root = prepare_dev_root_from_fixture(&tmp, "dev-islands-chunk-retention");
     let lazy_part_path = root.join("components/lazy-part.tsx");
     let page_note_path = root.join("content/page-note.txt");
-    let mut session = spawn_dev_in_root(
-        &root,
-        &esbuild,
-        &[("ZFB_DEV_EAGER", "1"), ("ZFB_DEV_TIMING", "1")],
-    );
+    let mut session = spawn_dev_in_root(&root, &[("ZFB_DEV_EAGER", "1"), ("ZFB_DEV_TIMING", "1")]);
 
     let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // known-skip
@@ -1682,10 +1647,6 @@ async fn dev_retains_previous_islands_chunk_generations_for_open_documents() {
 async fn dev_tick_client_script_publication_add_remove_ordering() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = prepare_dev_root(&tmp);
@@ -1708,7 +1669,7 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
     );
     let order_source = "export const ORDER_CLIENT_MARKER = \"ORDER_CLIENT_V1\";\n";
 
-    let mut session = spawn_dev_in_root(&root, &esbuild, &[("ZFB_DEV_TIMING", "1")]);
+    let mut session = spawn_dev_in_root(&root, &[("ZFB_DEV_TIMING", "1")]);
     let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // known-skip
     };
@@ -2004,10 +1965,6 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
 async fn dev_binds_and_serves_before_slow_bundle_step() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
 
@@ -2032,7 +1989,6 @@ async fn dev_binds_and_serves_before_slow_bundle_step() {
     let spawn_t = Instant::now();
     let mut session = spawn_dev(
         &tmp,
-        &esbuild,
         &[
             ("ZFB_DEV_TEST_SLOW_BUNDLE_MS", slow.as_str()),
             ("ZFB_DEV_BOOT_LAZY", "1"),
@@ -2173,10 +2129,6 @@ async fn dev_binds_and_serves_before_slow_bundle_step() {
 async fn cold_lazy_binds_and_serves_dev_404_during_held_bundle_window() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     // No dist/ seed written: cold-lazy is seedless by design (issue #1806).
@@ -2184,7 +2136,6 @@ async fn cold_lazy_binds_and_serves_dev_404_during_held_bundle_window() {
     let spawn_t = Instant::now();
     let mut session = spawn_dev(
         &tmp,
-        &esbuild,
         &[
             ("ZFB_DEV_TEST_SLOW_BUNDLE_MS", slow.as_str()),
             ("ZFB_DEV_BOOT_LAZY", "cold"),
@@ -2297,16 +2248,11 @@ async fn cold_lazy_binds_and_serves_dev_404_during_held_bundle_window() {
 async fn cold_lazy_deferred_publish_broadcasts_sse_and_serves_fresh_200() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let hold = SSE_SUBSCRIBE_HOLD_MS.to_string();
     let mut session = spawn_dev(
         &tmp,
-        &esbuild,
         &[
             ("ZFB_DEV_TEST_SLOW_BUNDLE_MS", hold.as_str()),
             ("ZFB_DEV_BOOT_LAZY", "cold"),
@@ -2444,10 +2390,6 @@ async fn cold_lazy_deferred_publish_broadcasts_sse_and_serves_fresh_200() {
 async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
 
@@ -2463,7 +2405,7 @@ async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
     fs::write(&index_path, "export default function HomePage( {\n")
         .expect("write deliberately-broken pages/index.tsx");
 
-    let mut session = spawn_dev_in_root(&root, &esbuild, &[("ZFB_DEV_BOOT_LAZY", "cold")]);
+    let mut session = spawn_dev_in_root(&root, &[("ZFB_DEV_BOOT_LAZY", "cold")]);
 
     let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // known-skip
@@ -2637,10 +2579,6 @@ async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
 async fn cold_template_ready_banner_follows_route_registration() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp
         .path()
@@ -2671,7 +2609,6 @@ async fn cold_template_ready_banner_follows_route_registration() {
     let release_value = release.to_str().expect("UTF-8 release path");
     let mut session = spawn_dev_in_root(
         &root,
-        &esbuild,
         &[("ZFB_DEV_TEST_BUNDLE_RELEASE_FILE", release_value)],
     );
     let Some(port) = wait_for_binding_port(&mut session).await else {

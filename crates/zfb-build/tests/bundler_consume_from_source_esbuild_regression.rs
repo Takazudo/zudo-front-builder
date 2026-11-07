@@ -221,7 +221,6 @@ fn bundle_text(path: &Path) -> String {
 /// to isolate. The emitted markers prove the sibling's source really was
 /// bundled, not merely tolerated.
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored"]
 fn nested_member_consume_from_source_sibling_is_accepted_as_declared_first_party_source() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
@@ -278,7 +277,6 @@ fn nested_member_consume_from_source_sibling_is_accepted_as_declared_first_party
 /// resolves package identity from the canonical path instead, so the build
 /// stays GREEN, identically to the `--preserve-symlinks` case.
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored"]
 fn nested_member_consume_from_source_sibling_accepted_via_canonicalized_key_under_copy_mode() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
@@ -326,7 +324,6 @@ fn nested_member_consume_from_source_sibling_accepted_via_canonicalized_key_unde
 /// classification under test is unaffected — both keys are still
 /// `node_modules/@acme/built/...`, i.e. case-2 shaped.
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored"]
 fn nested_member_undeclared_deep_import_into_dist_shipping_sibling_stays_rejected() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
@@ -376,7 +373,6 @@ fn nested_member_undeclared_deep_import_into_dist_shipping_sibling_stays_rejecte
 /// the identical import shape that hard-fails for the nested member above
 /// builds clean here, purely by omission of the guard rather than by design.
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored"]
 fn root_project_consume_from_source_sibling_builds_clean_today_for_the_identical_shape() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();

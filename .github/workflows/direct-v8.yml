@@ -112,14 +112,6 @@ jobs:
       # V8-linked target tree would compete with health's caches for the repo's
       # 10 GB Actions cache budget.
 
-      - name: Cache staged esbuild binary (issue 2385)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        continue-on-error: true
-        with:
-          path: |
-            crates/zfb/binaries/esbuild/esbuild
-          key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
-
       # crates/zfb/build.rs embeds Hono from node_modules/.pnpm at compile time.
       - run: pnpm install --frozen-lockfile
 
@@ -377,7 +369,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p "$ROW_DIR"
-          cargo test --locked -p zfb-rolldown-prototype --features native --lib 2>&1 \
+          cargo test --locked -p zfb-bundler --features native --lib 2>&1 \
             | tee "$ROW_DIR/rolldown-prototype-lib-tests.log"
 
       # release.yml's native cargo build of the Windows carrier, here with the

@@ -36,7 +36,7 @@
 //! V8 + a real esbuild subprocess, polls it over HTTP, and is serialized with
 //! the other heavy zfb process-spawning binaries by the nextest `e2e-heavy`
 //! test-group. Run locally with
-//! `ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb --test dev_sibling_watch_1678_e2e -- --ignored`.
+//! `cargo test -p zfb --test dev_sibling_watch_1678_e2e -- --ignored`.
 //!
 //! **Scenario E** (issue #1805, epic #1799 gap (a) confirm pass) lives in its
 //! own test function below, `e2e_dev_sibling_wind_utility_class_refreshes_served_css`,
@@ -90,7 +90,7 @@ use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 const BOOT_DEADLINE: Duration = Duration::from_secs(120);
 // Boot CONTENT polls happen after the ready banner, when the eager boot bundle
@@ -176,19 +176,14 @@ impl DevSession {
 
 /// Spawn `zfb dev --port 0` in its own process group with `ZFB_DEV_TIMING=1`
 /// (so the `watch-extra registered:` signal is emitted) and logs captured.
-fn spawn_dev(root: &Path, esbuild: &Path) -> DevSession {
-    spawn_dev_with_env(root, esbuild, &[], "")
+fn spawn_dev(root: &Path) -> DevSession {
+    spawn_dev_with_env(root, &[], "")
 }
 
 /// [`spawn_dev`] plus extra child env vars (issue #3163's deferred-boot
 /// scenario sets `ZFB_DEV_BOOT_LAZY=cold`) and a log-file tag, so a restarted
 /// session over the same root keeps the first session's logs readable.
-fn spawn_dev_with_env(
-    root: &Path,
-    esbuild: &Path,
-    extra_env: &[(&str, &str)],
-    log_tag: &str,
-) -> DevSession {
+fn spawn_dev_with_env(root: &Path, extra_env: &[(&str, &str)], log_tag: &str) -> DevSession {
     let stdout_path = root.join(format!(".zfb-dev{log_tag}-stdout.log"));
     let stderr_path = root.join(format!(".zfb-dev{log_tag}-stderr.log"));
     let stdout = fs::File::create(&stdout_path).expect("create dev stdout log");
@@ -199,7 +194,6 @@ fn spawn_dev_with_env(
         .arg("--port")
         .arg("0")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .env("ZFB_DEV_TIMING", "1")
         .env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
@@ -413,20 +407,13 @@ fn worker_companion_filename(host_root: &Path) -> String {
 async fn e2e_dev_watches_workspace_sibling_raw_and_worker_sources() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dev_sibling_watch_1678] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let workspace = tempfile::tempdir().expect("dev-sibling-watch fixture tempdir");
     copy_fixture(&fixture_dir(), workspace.path()).expect("copy dev-sibling-watch fixture");
     let host_root = workspace.path().join("sub/host");
     let shared_dir = workspace.path().join("sub/shared");
 
-    let mut session = spawn_dev(&host_root, &esbuild);
+    let mut session = spawn_dev(&host_root);
     let Some(port) = wait_for_ready(&mut session).await else {
         return; // environmental skip (no V8/esbuild)
     };
@@ -663,23 +650,16 @@ fn write_wind_sibling_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir
 /// filesystem event the orchestrator ever sees, and `edit_until_served`
 /// times out on `SCENARIO_DEADLINE` instead of observing the new class.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: esbuild — run with ZFB_ESBUILD_BIN and --ignored"]
+#[ignore = "heavy: run with --ignored — spawns a real zfb build/dev e2e (native Rolldown + V8)"]
 async fn e2e_dev_sibling_wind_utility_class_refreshes_served_css() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dev_sibling_watch_1678 scenario E] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let workspace = tempfile::tempdir().expect("scenario E fixture tempdir");
     let (project, _nm_handle) = write_wind_sibling_dev_fixture(workspace.path());
     let sibling_badge = workspace.path().join("lib/ushared/Badge.tsx");
 
-    let mut session = spawn_dev(&project, &esbuild);
+    let mut session = spawn_dev(&project);
     let Some(port) = wait_for_ready(&mut session).await else {
         return; // environmental skip (no V8/esbuild)
     };
@@ -757,10 +737,6 @@ async fn e2e_dev_sibling_wind_utility_class_refreshes_served_css() {
 async fn e2e_dev_declared_project_root_edit_refreshes_served_css() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[declared_project_root] no esbuild binary available; skipping");
-        return;
-    };
 
     let workspace = tempfile::tempdir().expect("declared-root fixture tempdir");
     let (project, _nm_handle) = write_wind_sibling_dev_fixture(workspace.path());
@@ -779,7 +755,7 @@ async fn e2e_dev_declared_project_root_edit_refreshes_served_css() {
     )
     .unwrap();
 
-    let mut session = spawn_dev(&project, &esbuild);
+    let mut session = spawn_dev(&project);
     let Some(port) = wait_for_ready(&mut session).await else {
         return; // environmental skip (no V8/esbuild)
     };
@@ -992,11 +968,10 @@ fn write_nested_workspace_3163(ws: &Path, deps: &[&str]) -> (PathBuf, tempfile::
 
 async fn boot_3163(
     project: &Path,
-    esbuild: &Path,
     extra_env: &[(&str, &str)],
     log_tag: &str,
 ) -> Option<(DevSession, String)> {
-    let mut session = spawn_dev_with_env(project, esbuild, extra_env, log_tag);
+    let mut session = spawn_dev_with_env(project, extra_env, log_tag);
     let port = wait_for_ready(&mut session).await?;
     Some((session, format!("http://localhost:{port}/")))
 }
@@ -1039,13 +1014,9 @@ async fn stop_gracefully(session: &mut DevSession) {
 async fn e2e_3163_root_site_ssr_workspace_json_edit_is_served() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_sibling_watch_1678 #3163 (a)] no esbuild binary available; skipping.");
-        return;
-    };
     let workspace = tempfile::tempdir().expect("#3163 (a) fixture tempdir");
     let _runtime = write_root_site_3163(workspace.path());
-    let Some((session, page_url)) = boot_3163(workspace.path(), &esbuild, &[], "").await else {
+    let Some((session, page_url)) = boot_3163(workspace.path(), &[], "").await else {
         return;
     };
     let client = loopback_client();
@@ -1086,10 +1057,6 @@ async fn e2e_3163_root_site_ssr_workspace_json_edit_is_served() {
 async fn e2e_3163_nested_site_ssr_workspace_deps_including_post_boot_import_are_served() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_sibling_watch_1678 #3163 (b)] no esbuild binary available; skipping.");
-        return;
-    };
     let workspace = tempfile::tempdir().expect("#3163 (b) fixture tempdir");
     let ws = workspace.path();
     let (site, _runtime) = write_nested_workspace_3163(ws, &["data", "late"]);
@@ -1105,7 +1072,7 @@ async fn e2e_3163_nested_site_ssr_workspace_deps_including_post_boot_import_are_
     )
     .expect("write pages/index.tsx");
 
-    let Some((session, page_url)) = boot_3163(&site, &esbuild, &[], "").await else {
+    let Some((session, page_url)) = boot_3163(&site, &[], "").await else {
         return;
     };
     let client = loopback_client();
@@ -1170,10 +1137,6 @@ async fn e2e_3163_nested_site_ssr_workspace_deps_including_post_boot_import_are_
 async fn e2e_3163_nested_site_compiled_dist_sibling_edit_is_served() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_sibling_watch_1678 #3163 (c)] no esbuild binary available; skipping.");
-        return;
-    };
     let workspace = tempfile::tempdir().expect("#3163 (c) fixture tempdir");
     let ws = workspace.path();
     let (site, _runtime) = write_nested_workspace_3163(ws, &["lib"]);
@@ -1205,7 +1168,7 @@ async fn e2e_3163_nested_site_compiled_dist_sibling_edit_is_served() {
     )
     .expect("write pages/index.tsx");
 
-    let Some((session, page_url)) = boot_3163(&site, &esbuild, &[], "").await else {
+    let Some((session, page_url)) = boot_3163(&site, &[], "").await else {
         return;
     };
     let client = loopback_client();
@@ -1242,16 +1205,11 @@ async fn e2e_3163_nested_site_compiled_dist_sibling_edit_is_served() {
 async fn e2e_3163_restart_serves_ssr_workspace_edit_made_before_the_stop() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_sibling_watch_1678 #3163 (d)] no esbuild binary available; skipping.");
-        return;
-    };
     let workspace = tempfile::tempdir().expect("#3163 (d) fixture tempdir");
     let _runtime = write_root_site_3163(workspace.path());
     let client = loopback_client();
 
-    let Some((mut first, page_url)) = boot_3163(workspace.path(), &esbuild, &[], "-first").await
-    else {
+    let Some((mut first, page_url)) = boot_3163(workspace.path(), &[], "-first").await else {
         return;
     };
     poll_body(
@@ -1275,8 +1233,7 @@ async fn e2e_3163_restart_serves_ssr_workspace_edit_made_before_the_stop() {
         first.logs(),
     );
 
-    let Some((second, page_url)) = boot_3163(workspace.path(), &esbuild, &[], "-second").await
-    else {
+    let Some((second, page_url)) = boot_3163(workspace.path(), &[], "-second").await else {
         return;
     };
     let body = poll_body(
@@ -1308,19 +1265,10 @@ async fn e2e_3163_restart_serves_ssr_workspace_edit_made_before_the_stop() {
 async fn e2e_3163_deferred_cold_boot_ssr_workspace_json_edit_is_served() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_sibling_watch_1678 #3163 (e)] no esbuild binary available; skipping.");
-        return;
-    };
     let workspace = tempfile::tempdir().expect("#3163 (e) fixture tempdir");
     let _runtime = write_root_site_3163(workspace.path());
-    let Some((session, page_url)) = boot_3163(
-        workspace.path(),
-        &esbuild,
-        &[("ZFB_DEV_BOOT_LAZY", "cold")],
-        "",
-    )
-    .await
+    let Some((session, page_url)) =
+        boot_3163(workspace.path(), &[("ZFB_DEV_BOOT_LAZY", "cold")], "").await
     else {
         return;
     };
@@ -1408,14 +1356,10 @@ async fn first_edit_right_after_bind_3190(
     extra_env: &[(&str, &str)],
     label: &str,
 ) -> Option<(DevSession, String, Duration)> {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_sibling_watch_1678 #3190] no esbuild binary available; skipping.");
-        return None;
-    };
     // These regressions specifically exercise the eager read-before-watch window.
     let mut env = vec![("ZFB_DEV_BOOT_LAZY", "0")];
     env.extend_from_slice(extra_env);
-    let mut session = spawn_dev_with_env(workspace, &esbuild, &env, "");
+    let mut session = spawn_dev_with_env(workspace, &env, "");
     let port = wait_for_binding_port(&mut session).await?;
     let page_url = format!("http://localhost:{port}/");
     let latency = write_once_until_served(
@@ -1551,14 +1495,10 @@ async fn single_edit_before_watch_arm_is_served(
     marker: &str,
     label: &str,
 ) -> bool {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_sibling_watch_1678 #3202] no esbuild binary available; skipping.");
-        return false;
-    };
     let before = fs::read_to_string(edited).expect("read the file to edit");
     let after = edit(before.clone());
     assert_ne!(before, after, "{label}: the edit must change the file");
-    let mut session = spawn_dev_with_env(root, &esbuild, &SLOW_WATCH_ARM_ENV, "");
+    let mut session = spawn_dev_with_env(root, &SLOW_WATCH_ARM_ENV, "");
     let Some(port) = wait_for_binding_port(&mut session).await else {
         return false;
     };
@@ -1754,9 +1694,6 @@ async fn e2e_3210_injected_route_entrypoint_edit_before_the_watcher_is_armed_is_
 async fn e2e_3239_root_claimed_workspace_json_first_edit() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        return;
-    };
     let workspace = tempfile::tempdir().unwrap();
     let root = workspace.path();
     write_zfb_project_shell(root, "workspace-json-site", &["@fixture/data"]);
@@ -1803,7 +1740,7 @@ export default function SlowPage() {
     let scratch = root.join(".zfb-build/dev-pages");
     fs::create_dir_all(&scratch).unwrap();
     fs::write(scratch.join("index.html"), "PRIOR_PROCESS_SENTINEL").unwrap();
-    let (session, url) = boot_3163(root, &esbuild, &[], "-3239").await.unwrap();
+    let (session, url) = boot_3163(root, &[], "-3239").await.unwrap();
     fs::write(&json, json_value(ROOT_DATA_V2)).unwrap();
     let client = loopback_client();
     let start = Instant::now();
@@ -1848,9 +1785,6 @@ export default function SlowPage() {
 async fn e2e_3926_ignored_undeclared_sibling_writes_do_not_tick() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        return;
-    };
     let workspace = tempfile::tempdir().unwrap();
     let ws = workspace.path();
     let app = ws.join("app");
@@ -1887,7 +1821,7 @@ async fn e2e_3926_ignored_undeclared_sibling_writes_do_not_tick() {
         ssr_page("import { value } from 'widget';\n", &["value"]),
     )
     .unwrap();
-    let Some((session, url)) = boot_3163(&app, &esbuild, &[], "-3926").await else {
+    let Some((session, url)) = boot_3163(&app, &[], "-3926").await else {
         return;
     };
     let client = loopback_client();

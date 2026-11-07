@@ -14958,8 +14958,7 @@ mod tests {
         };
         let err = format!("{err:#}");
         assert!(
-            err.contains("re-bundle failed")
-                && (err.contains("esbuild exited") || err.contains("Rolldown could not bundle")),
+            err.contains("re-bundle failed") && err.contains("bundler: could not bundle"),
             "the refresh must fail at the bundle step, got: {err}"
         );
         assert!(

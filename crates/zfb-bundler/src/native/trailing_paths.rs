@@ -179,11 +179,11 @@ fn file_candidate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::request::{BundleRequest, OutputLayout, Platform};
     use serde_json::{json, Value};
     use std::{
         fs,
         path::PathBuf,
-        process::Command,
         sync::atomic::{AtomicUsize, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -231,18 +231,16 @@ mod tests {
 
         fn run(&self, entry: &str) -> Result<(String, Value)> {
             self.write("entry.js", entry);
-            let mut cmd = Command::new("unused-esbuild");
-            cmd.current_dir(&self.0).args([
-                "--bundle",
-                "--platform=neutral",
-                "--format=esm",
-                "--main-fields=main",
-                "--tsconfig=tsconfig.json",
-                "--outfile=out.js",
-                "--metafile=meta.json",
+            let mut request = BundleRequest::new(
+                &self.0,
                 "entry.js",
-            ]);
-            crate::native::run_prepared(&cmd)?;
+                OutputLayout::file("out.js"),
+                Platform::Neutral,
+            );
+            request.resolve.main_fields = Some(vec!["main".into()]);
+            request.tsconfig = Some("tsconfig.json".into());
+            request.graph = Some("meta.json".into());
+            crate::native::bundle(&request)?;
             Ok((
                 fs::read_to_string(self.0.join("out.js"))?,
                 serde_json::from_slice(&fs::read(self.0.join("meta.json"))?)?,

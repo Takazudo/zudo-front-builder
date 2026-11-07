@@ -52,7 +52,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -65,11 +65,10 @@ fn is_known_skip(combined: &str) -> bool {
     combined.contains("direct-v8 = off") || combined.contains("no esbuild")
 }
 
-fn run_zfb_build(root: &Path, esbuild: &Path) -> std::process::Output {
+fn run_zfb_build(root: &Path) -> std::process::Output {
     Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn `zfb build`")
 }
@@ -273,11 +272,6 @@ export default function Home({ entries }) {
 
 #[test]
 fn render_artifact_contract_and_region_rules_on_real_build() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[render_artifact_confirm] no esbuild; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     // minify OFF here so the assertions below (heading id substrings,
@@ -285,7 +279,7 @@ fn render_artifact_contract_and_region_rules_on_real_build() {
     // the minify x flag matrix is Test B's job.
     write_fixture(root, true, false);
 
-    let output = run_zfb_build(root, &esbuild);
+    let output = run_zfb_build(root);
     let combined = combined_output(&output);
     if !output.status.success() {
         if is_known_skip(&combined) {
@@ -420,11 +414,6 @@ fn render_artifact_contract_and_region_rules_on_real_build() {
 
 #[test]
 fn render_artifact_flag_on_vs_off_byte_identity_across_minify_states() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[render_artifact_confirm] no esbuild; skipping byte-identity test.");
-        return;
-    };
-
     let mut trees: BTreeMap<(bool, bool), BTreeMap<String, Vec<u8>>> = BTreeMap::new();
     for emit in [false, true] {
         for minify in [false, true] {
@@ -432,7 +421,7 @@ fn render_artifact_flag_on_vs_off_byte_identity_across_minify_states() {
             let root = tmp.path();
             write_fixture(root, emit, minify);
 
-            let output = run_zfb_build(root, &esbuild);
+            let output = run_zfb_build(root);
             let combined = combined_output(&output);
             if !output.status.success() {
                 if is_known_skip(&combined) {

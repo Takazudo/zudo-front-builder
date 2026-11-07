@@ -43,21 +43,17 @@ setup_fixture() {
   FIXTURE_HOME="$CASE_DIR/home"
   SYSTEM_PATH="$CASE_DIR/system-bin"
   mkdir -p "$FIXTURE_ROOT/scripts" "$FIXTURE_ROOT/tests/unit" \
-    "$FIXTURE_ROOT/crates/zfb/binaries/esbuild" "$FIXTURE_ROOT/crates/zfb/binaries" \
+    "$FIXTURE_ROOT/crates/zfb/binaries" \
     "$FIXTURE_BIN" "$FIXTURE_HOME" "$SYSTEM_PATH"
   for system_command in bash dirname env; do
     ln -s "$(command -v "$system_command")" "$SYSTEM_PATH/$system_command"
   done
   cp "$SOURCE_SCRIPT" "$FIXTURE_ROOT/scripts/run-b4push.sh"
   : > "$FIXTURE_ROOT/install.sh"
-  : > "$FIXTURE_ROOT/crates/zfb/binaries/esbuild/esbuild"
-  chmod +x "$FIXTURE_ROOT/crates/zfb/binaries/esbuild/esbuild"
 
   cat > "$FIXTURE_BIN/cargo" <<'MOCK_CARGO'
 #!/bin/sh
 printf 'CALL: cargo %s\n' "$*" >> "$MOCK_CARGO_LOG"
-printf 'ENV: ZFB_ESBUILD_BIN=%s\n' \
-  "${ZFB_ESBUILD_BIN:-}" >> "$MOCK_CARGO_ENV_LOG"
 if [ -n "${MOCK_CARGO_FAIL_MATCH:-}" ]; then
   case " $* " in
     *"$MOCK_CARGO_FAIL_MATCH"*) exit "${MOCK_CARGO_FAIL_STATUS:-1}" ;;
@@ -134,7 +130,6 @@ run_b4push() {
     PATH="$FIXTURE_BIN:$SYSTEM_PATH" \
     HOME="$FIXTURE_HOME" \
     MOCK_CARGO_LOG="$CASE_DIR/cargo.log" \
-    MOCK_CARGO_ENV_LOG="$CASE_DIR/cargo-env.log" \
     MOCK_PNPM_LOG="$CASE_DIR/pnpm.log" \
     MOCK_GIT_LOG="$CASE_DIR/git.log" \
     MOCK_EXPLICIT_LOG="$CASE_DIR/explicit-guard.log" \
@@ -159,9 +154,8 @@ run_b4push HEAVY_GUARD="$CASE_DIR/selected-guard" B4PUSH_FULL=1 \
 assert_status "explicit override b4push succeeds" 0 "$RUN_STATUS"
 assert_contains "$CASE_DIR/explicit-guard.log" 'CALL: -- cargo nextest run --workspace' "nextest workspace args preserved"
 assert_contains "$CASE_DIR/explicit-guard.log" 'CALL: -- cargo test --workspace --doc' "nextest doctest args preserved"
-assert_contains "$CASE_DIR/explicit-guard.log" "CALL: -- env ZFB_ESBUILD_BIN=$FIXTURE_ROOT/crates/zfb/binaries/esbuild/esbuild cargo test -p zfb-islands --tests -- --ignored" "esbuild lane args and env preserved"
-assert_contains "$CASE_DIR/explicit-guard.log" "CALL: -- env ZFB_ESBUILD_BIN=$FIXTURE_ROOT/crates/zfb/binaries/esbuild/esbuild cargo test -p zfb --lib commands::build:: -- --ignored" "command-layer esbuild lane args and env preserved"
-assert_contains "$CASE_DIR/cargo-env.log" "ENV: ZFB_ESBUILD_BIN=$FIXTURE_ROOT/crates/zfb/binaries/esbuild/esbuild" "esbuild environment reaches cargo"
+assert_not_contains "$CASE_DIR/explicit-guard.log" 'ZFB_ESBUILD_BIN' "no esbuild lane remains (#4635)"
+assert_not_contains "$CASE_DIR/explicit-guard.log" '-- --ignored' "no ignored-only lane remains (#4635)"
 assert_not_contains "$CASE_DIR/claude-guard.log" 'CALL:' "explicit guard takes precedence over Claude"
 assert_not_contains "$CASE_DIR/codex-guard.log" 'CALL:' "explicit guard takes precedence over Codex"
 assert_not_contains "$CASE_DIR/explicit-guard.log" 'CALL: -- cargo clippy' "lint stays outside the queue"

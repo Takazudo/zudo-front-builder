@@ -35,7 +35,7 @@ direct-v8 = ["zfb-render/direct-v8"]
 default = ["direct-v8"]
 
 [dependencies]
-zfb-rolldown-prototype = { path = "../zfb-rolldown-prototype", features = ["native"] }
+zfb-bundler = { path = "../zfb-bundler", features = ["native"] }
 # Compiles `.ts`/`.tsx`/`.mts`/`.cts` plugin entries (plugin_bundler.rs).
 zfb-compiler-worker = { path = "../zfb-compiler-worker" }
 zfb-watcher = { path = "../zfb-watcher" }
@@ -57,7 +57,6 @@ zfb-render = { path = "../zfb-render", default-features = false }
 # on-disk filenames the emitter adapters write. `zfb-types` is a
 # zero-zfb-dep leaf crate, so this introduces no transitive cost.
 zfb-types = { path = "../zfb-types" }
-zfb-toolchain-pins = { path = "../zfb-toolchain-pins" }
 # Shared helper that turns plugin-registered aliases + virtual modules
 # into exact-match `compilerOptions.paths` entries for the synthetic
 # tsconfig. Replaces the prefix-with-slash `--alias` flag emission so
@@ -157,9 +156,7 @@ zfb-router = { path = "../zfb-router" }
 # `prod_asset_graph_with_real_wind_engine_against_fixture` exercises the
 # in-process compiler without a helper CLI binary.
 zfb-css = { path = "../zfb-css" }
-# Shared test utilities: locate_esbuild() and zfb_binary!(). Replaces
-# the duplicated locate_esbuild() bodies that previously lived in each
-# integration test file.
+# Shared test utilities: zfb_binary!() and the cross-binary e2e lock.
 zfb-test-utils = { path = "../zfb-test-utils" }
 # Captures `tracing` output in-test via `#[traced_test]` / `logs_contain`
 # (issue #1838's dangling-symlink warning assertion). Same version already

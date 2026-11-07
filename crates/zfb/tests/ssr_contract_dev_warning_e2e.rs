@@ -46,7 +46,7 @@
 //!
 //! ## Self-skip convention (no `#[ignore]`)
 //!
-//! Gated on `zfb_test_utils::locate_esbuild()`, exactly like
+//! Formerly gated on the retired `locate_esbuild()` (#4635 removed it), exactly like
 //! `dev_serve_e2e`/`wasm_ssr_dev_smoke_e2e`/`dev_supervision_e2e`/
 //! `dev_content_reload_2063_e2e` (`crates/CLAUDE.md`'s self-skip
 //! convention): health.yml always stages a pinned esbuild, so this runs,
@@ -67,7 +67,7 @@ use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 const BOOT_DEADLINE: Duration = Duration::from_secs(90);
 const RESPONSE_DEADLINE: Duration = Duration::from_secs(60);
@@ -181,7 +181,7 @@ fn parse_ready_port(log: &str) -> Option<u16> {
 
 /// Copy `fixture` into a fresh tempdir and spawn `zfb dev --port 0` over
 /// it, stdout/stderr captured to files.
-fn spawn_dev(fixture: &Path, tmp: &tempfile::TempDir, esbuild: &Path) -> DevSession {
+fn spawn_dev(fixture: &Path, tmp: &tempfile::TempDir) -> DevSession {
     let root = tmp
         .path()
         .canonicalize()
@@ -199,7 +199,6 @@ fn spawn_dev(fixture: &Path, tmp: &tempfile::TempDir, esbuild: &Path) -> DevSess
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .env_remove("ZFB_DEV_BOOT_LAZY")
         .env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
@@ -323,16 +322,9 @@ async fn positive_fixture_warns_on_boot_and_serves_normally() {
     // flock-adopting dev e2e in this crate (issue #1339).
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[ssr_contract_dev_warning_e2e:positive] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN to the pinned native binary."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("create positive fixture tempdir");
-    let mut session = spawn_dev(&positive_fixture_dir(), &tmp, &esbuild);
+    let mut session = spawn_dev(&positive_fixture_dir(), &tmp);
 
     let port = match wait_for_ready(&mut session, "positive").await {
         BootOutcome::Ready(port) => port,
@@ -408,16 +400,9 @@ async fn positive_fixture_warns_on_boot_and_serves_normally() {
 async fn negative_fixture_boots_without_warning() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[ssr_contract_dev_warning_e2e:negative] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN to the pinned native binary."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("create negative fixture tempdir");
-    let mut session = spawn_dev(&negative_fixture_dir(), &tmp, &esbuild);
+    let mut session = spawn_dev(&negative_fixture_dir(), &tmp);
 
     let port = match wait_for_ready(&mut session, "negative").await {
         BootOutcome::Ready(port) => port,

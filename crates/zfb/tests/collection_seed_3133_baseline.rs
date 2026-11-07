@@ -112,13 +112,11 @@
 //! the dev test — see `crates/CLAUDE.md`'s heavy-binary manifest. The `zfb
 //! build` test is not `#[ignore]`d: the embedded V8 / esbuild toolchain
 //! built into the `zfb` binary itself means no external esbuild slot is
-//! needed (unlike the `locate_esbuild()`-gated tests), matching
+//! needed, matching
 //! `end_to_end_basic_blog_build`'s self-skip convention for the one
 //! exceptional environment (no `direct-v8` feature / stripped CI image) via
-//! [`is_known_skip`]. The `zfb dev` test self-skips the same way it does in
-//! `dev_out_of_root_collection_e2e.rs`: via [`locate_esbuild`] returning
-//! `None`, not an `#[ignore]` attribute — `zfb dev`'s client bundling always
-//! shells out to esbuild, unlike `zfb build`'s embedded-V8-only SSR path.
+//! [`is_known_skip`]. Since #4635 the `zfb dev` test no longer self-skips
+//! for a missing esbuild: client bundling is native Rolldown inside `zfb`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -137,7 +135,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 #[cfg(unix)]
-use zfb_test_utils::{locate_esbuild, CrossBinaryE2eLock};
+use zfb_test_utils::CrossBinaryE2eLock;
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -634,7 +632,7 @@ struct DevReadyOutcome {
 /// matching `is_known_skip`'s convention above and
 /// `dev_out_of_root_collection_e2e.rs`'s `boot_and_handshake`.
 #[cfg(unix)]
-async fn boot_dev_and_wait_ready(project_root: &Path, esbuild: &Path) -> Option<DevReadyOutcome> {
+async fn boot_dev_and_wait_ready(project_root: &Path) -> Option<DevReadyOutcome> {
     let stdout_path = project_root.join(".zfb-dev-stdout.log");
     let stderr_path = project_root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log file");
@@ -645,7 +643,6 @@ async fn boot_dev_and_wait_ready(project_root: &Path, esbuild: &Path) -> Option<
         .arg("--port")
         .arg("0")
         .current_dir(project_root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .env("ZFB_STAGING_STATS", "1")
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
@@ -738,16 +735,10 @@ async fn boot_dev_and_wait_ready(project_root: &Path, esbuild: &Path) -> Option<
 #[ignore = "verification: one-time measurement of the control dev-ready distribution recorded \
             on #3146 (#3143, #3149); re-run only when proposing a latency bound"]
 async fn measure_control_dev_ready_distribution() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[collection_seed_3133_baseline] no esbuild binary available; skipping measurement."
-        );
-        return;
-    };
     let mut samples = Vec::new();
     for i in 0..5 {
         let (_tmp, project_root) = materialise_fixture(&Variant::Control);
-        let Some(outcome) = boot_dev_and_wait_ready(&project_root, &esbuild).await else {
+        let Some(outcome) = boot_dev_and_wait_ready(&project_root).await else {
             eprintln!("[measure] run {i}: known-skip; aborting measurement.");
             return;
         };
@@ -779,17 +770,10 @@ async fn zfb_dev_becomes_ready_within_deadline_and_matches_staging_stats() {
     // lock-ordering note in zfb-test-utils/src/cross_binary_lock.rs.
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = DEV_SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[collection_seed_3133_baseline] no esbuild binary available; skipping dev \
-             confirmation. Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     for variant in [Variant::Control, Variant::WithCollection] {
         let (_tmp, project_root) = materialise_fixture(&variant);
-        let Some(outcome) = boot_dev_and_wait_ready(&project_root, &esbuild).await else {
+        let Some(outcome) = boot_dev_and_wait_ready(&project_root).await else {
             eprintln!(
                 "[collection_seed_3133_baseline] `zfb dev` exited with a known-skip indicator \
                  for the {} variant; skipping test.",

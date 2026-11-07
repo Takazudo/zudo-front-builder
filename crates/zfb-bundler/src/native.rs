@@ -44,7 +44,6 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    process::Command,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -203,14 +202,6 @@ pub fn bundle(request: &BundleRequest) -> Result<Generated> {
     let generated = generate(request)?;
     generated.publish()?;
     Ok(generated)
-}
-
-/// Legacy prepared-argv entry: decodes the esbuild-shaped command into a
-/// typed request and runs [`bundle`]. Removed with its last caller (#4631).
-pub fn run_prepared(cmd: &Command) -> Result<()> {
-    let generated = run_planned(Request::decode(cmd)?)?;
-    generated.publish()?;
-    Ok(())
 }
 
 fn run_planned(request: Request) -> Result<Generated> {

@@ -14,8 +14,8 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use zfb_test_utils::{
-    locate_esbuild, next_sse_event_name, open_sse, watcher_live_handshake, zfb_binary,
-    CrossBinaryE2eLock, HandshakeOpts,
+    next_sse_event_name, open_sse, watcher_live_handshake, zfb_binary, CrossBinaryE2eLock,
+    HandshakeOpts,
 };
 
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -114,7 +114,7 @@ impl DevSession {
     }
 }
 
-fn spawn_dev(root: PathBuf, esbuild: &Path) -> DevSession {
+fn spawn_dev(root: PathBuf) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout = fs::File::create(&stdout_path).expect("create zfb dev stdout log");
@@ -125,7 +125,6 @@ fn spawn_dev(root: PathBuf, esbuild: &Path) -> DevSession {
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .env_remove("ZFB_DEV_EAGER")
@@ -349,10 +348,6 @@ fn remove_manifest_declaration(root: &Path) {
 async fn warm_source_sequence_matches_a_fresh_dev_session_byte_for_byte() {
     let _cross_binary_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[wind_clean_warm_identity_e2e] no esbuild; skipping.");
-        return;
-    };
 
     let warm_temp = tempfile::tempdir().expect("create warm project tempdir");
     let warm_root = warm_temp.path().join("project");
@@ -365,7 +360,7 @@ async fn warm_source_sequence_matches_a_fresh_dev_session_byte_for_byte() {
     )
     .expect("create initial package candidate manifest");
     let _warm_node_modules = link_embedded_framework_packages(&warm_root);
-    let mut warm_session = spawn_dev(warm_root.clone(), &esbuild);
+    let mut warm_session = spawn_dev(warm_root.clone());
     let Some((warm_base, warm_client, warm_marker_count)) =
         boot_and_handshake(&mut warm_session).await
     else {
@@ -562,7 +557,7 @@ async fn warm_source_sequence_matches_a_fresh_dev_session_byte_for_byte() {
     let clean_root = clean_temp.path().join("project");
     copy_source_tree(&warm_root, &clean_root).expect("copy final warm source tree");
     let _clean_node_modules = link_embedded_framework_packages(&clean_root);
-    let mut clean_session = spawn_dev(clean_root, &esbuild);
+    let mut clean_session = spawn_dev(clean_root);
     let Some((clean_base, clean_client, clean_marker_count)) =
         boot_and_handshake(&mut clean_session).await
     else {

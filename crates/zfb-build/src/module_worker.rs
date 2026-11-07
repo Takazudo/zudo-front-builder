@@ -84,9 +84,9 @@ impl ModuleWorkerBuildContext {
         }
     }
 
-    /// Construct from the already-validated esbuild loader argv used by the
-    /// SSR bundler. Sorting makes equivalent config maps hash identically.
-    pub fn from_esbuild_loader_args(
+    /// Construct from the already-validated loader map used by the SSR
+    /// bundler. Sorting makes equivalent config maps hash identically.
+    pub fn from_loader_args(
         production: bool,
         loader_args: &[String],
         define: &BTreeMap<String, String>,
@@ -160,11 +160,11 @@ impl ModuleWorkerBuildContext {
             aggregate.extend_from_slice(value);
         }
 
-        field(aggregate, b"abi", b"zfb-module-worker-cache-v2");
+        field(aggregate, b"abi", b"zfb-module-worker-cache-v3");
         field(
             aggregate,
-            b"esbuild",
-            zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION.as_bytes(),
+            b"backend",
+            zfb_bundler::BACKEND_IDENTITY.as_bytes(),
         );
         field(
             aggregate,
@@ -3339,7 +3339,7 @@ mod tests {
             .iter()
             .map(|(extension, loader)| format!("--loader:{extension}={loader}"))
             .collect::<Vec<_>>();
-        let ssr = ModuleWorkerBuildContext::from_esbuild_loader_args(true, &loader_args, &define)
+        let ssr = ModuleWorkerBuildContext::from_loader_args(true, &loader_args, &define)
             .with_plugins(plugins, virtuals)
             .with_output_semantics(true, false);
         assert_eq!(browser, ssr);

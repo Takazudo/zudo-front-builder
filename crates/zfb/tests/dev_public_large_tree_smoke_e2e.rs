@@ -50,7 +50,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 /// Generous wall-clock boot deadline reused from `dev_serve_e2e.rs`. Boot
 /// involves V8 + esbuild bundling and an initial render — generous cap so
@@ -197,7 +197,7 @@ fn fixture_root(tmp: &tempfile::TempDir) -> PathBuf {
 
 /// Spawn `zfb dev --port 0` over a copy of the fixture that already has
 /// the large public tree staged, in its own process group.
-fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path) -> DevSession {
+fn spawn_dev(tmp: &tempfile::TempDir) -> DevSession {
     let root = fixture_root(tmp);
     copy_dir(&fixture_dir(), &root).expect("copy fixture into tempdir");
     // Stage the large public tree AFTER copying the fixture so we don't
@@ -219,7 +219,6 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path) -> DevSession {
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
@@ -256,16 +255,9 @@ async fn dev_boots_and_serves_under_large_public_tree() {
     // cross-binary lock still applies (issue #1339). See
     // zfb-test-utils/src/cross_binary_lock.rs.
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dev_public_large_tree_smoke_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("create tempdir for large-public-tree fixture");
-    let mut session = spawn_dev(&tmp, &esbuild);
+    let mut session = spawn_dev(&tmp);
     let pgid = session.guard.pgid;
 
     eprintln!(
