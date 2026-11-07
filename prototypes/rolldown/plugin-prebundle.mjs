@@ -7,13 +7,9 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 const native = resolve("target/debug/examples/plugin_prebundle");
-const esbuild = process.env.ZFB_ESBUILD_BIN;
-assert.ok(esbuild, "ZFB_ESBUILD_BIN must name the pinned executable");
 const out = resolve("target/rolldown-plugin-probe");
 mkdirSync(out, { recursive: true });
 const root = mkdtempSync(join(out, "fixture-"));
-const banner =
-  'import { createRequire as __zfbCreateRequire } from "node:module"; const require = __zfbCreateRequire(import.meta.url);';
 const put = (path, text) => {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, text);
@@ -174,7 +170,6 @@ const report = {
   platform: process.platform,
   arch: process.arch,
   nativeSha256: hash(native),
-  esbuildSha256: hash(esbuild),
   cargoLockSha256: hash("Cargo.lock"),
   fixture: root,
   scope: "isolated native options; unchanged production caller and Node host",
@@ -194,87 +189,64 @@ const run = (executable, args, timeout, log) => {
   return result;
 };
 let failures = 0;
+const backend = "rolldown";
 for (const test of rows) {
   const { name, source, expected } = test;
   const entry = join(root, test.entry);
   put(entry, source);
-  for (const backend of ["esbuild", "rolldown"]) {
-    const outfile = join(dirname(entry), `.zfb-plugin-probe-${backend}-${name}.mjs`);
-    const row = { name, backend, expected, result: "failed" };
-    try {
-      if (test.latePackage) rmSync(lateDep, { recursive: true, force: true });
-      const args =
-        backend === "esbuild"
-          ? [
-              entry,
-              "--bundle",
-              "--format=esm",
-              "--platform=node",
-              "--target=node22",
-              "--packages=external",
-              "--sourcemap=inline",
-              "--log-level=warning",
-              "--color=false",
-              `--banner:js=${banner}`,
-              `--outfile=${outfile}`,
-            ]
-          : [entry, outfile];
-      const build = run(
-        backend === "esbuild" ? esbuild : native,
-        args,
-        30000,
-        `${name}-${backend}-build.log`,
-      );
-      row.buildStatus = build.status;
-      if (test.buildError) {
-        assert.notEqual(build.status, 0, "invalid input must fail at build time");
-        assert.match(build.stderr, test.buildError);
+  const outfile = join(dirname(entry), `.zfb-plugin-probe-${backend}-${name}.mjs`);
+  const row = { name, backend, expected, result: "failed" };
+  try {
+    if (test.latePackage) rmSync(lateDep, { recursive: true, force: true });
+    const build = run(native, [entry, outfile], 30000, `${name}-${backend}-build.log`);
+    row.buildStatus = build.status;
+    if (test.buildError) {
+      assert.notEqual(build.status, 0, "invalid input must fail at build time");
+      assert.match(build.stderr, test.buildError);
+    } else {
+      assert.equal(build.status, 0, build.stderr);
+      assert.match(build.stderr, /zfb-plugin-probe: native rolldown 24bc2d0/);
+      assert.match(readFileSync(outfile, "utf8"), /sourceMappingURL=data:/);
+      if (test.latePackage) pkg(lateDep, expected);
+      const expression = `const m = await import(${JSON.stringify(pathToFileURL(outfile).href)}); console.log(JSON.stringify(typeof m.default === 'function' ? await m.default() : m.default));`;
+      const execute = (suffix) =>
+        run(
+          process.execPath,
+          ["--enable-source-maps", "--input-type=module", "-e", expression],
+          10000,
+          `${name}-${backend}-${suffix}.log`,
+        );
+      const execution = execute("execute");
+      row.executeStatus = execution.status;
+      if (test.throws) {
+        assert.notEqual(execution.status, 0);
+        assert.match(execution.stderr, test.throws);
+        assert.match(execution.stderr, /throw\.ts:3:/, "mapped authored line required");
       } else {
-        assert.equal(build.status, 0, build.stderr);
-        if (backend === "rolldown")
-          assert.match(build.stderr, /zfb-plugin-probe: native rolldown 24bc2d0/);
-        assert.match(readFileSync(outfile, "utf8"), /sourceMappingURL=data:/);
-        if (test.latePackage) pkg(lateDep, expected);
-        const expression = `const m = await import(${JSON.stringify(pathToFileURL(outfile).href)}); console.log(JSON.stringify(typeof m.default === 'function' ? await m.default() : m.default));`;
-        const execute = (suffix) =>
-          run(
-            process.execPath,
-            ["--enable-source-maps", "--input-type=module", "-e", expression],
-            10000,
-            `${name}-${backend}-${suffix}.log`,
-          );
-        const execution = execute("execute");
-        row.executeStatus = execution.status;
-        if (test.throws) {
-          assert.notEqual(execution.status, 0);
-          assert.match(execution.stderr, test.throws);
-          assert.match(execution.stderr, /throw\.ts:3:/, "mapped authored line required");
-        } else {
-          assert.equal(execution.status, 0, execution.stderr);
-          row.actual = JSON.parse(execution.stdout.trim());
-          assert.deepEqual(row.actual, expected);
-          if (test.mutation) {
-            // Change the dependency AFTER bundling, then use a fresh Node host.
-            // Equality before mutation alone would allow accidental inlining.
-            pkg(test.mutation.path, test.mutation.value);
-            const changed = execute("after-package-edit");
-            assert.equal(changed.status, 0, changed.stderr);
-            row.afterPackageEdit = JSON.parse(changed.stdout.trim());
-            assert.deepEqual(row.afterPackageEdit, test.mutation.value);
-          }
+        assert.equal(execution.status, 0, execution.stderr);
+        row.actual = JSON.parse(execution.stdout.trim());
+        assert.deepEqual(row.actual, expected);
+        if (test.mutation) {
+          // Change the dependency AFTER bundling, then use a fresh Node host.
+          // Equality before mutation alone would allow accidental inlining.
+          pkg(test.mutation.path, test.mutation.value);
+          const changed = execute("after-package-edit");
+          assert.equal(changed.status, 0, changed.stderr);
+          row.afterPackageEdit = JSON.parse(changed.stdout.trim());
+          assert.deepEqual(row.afterPackageEdit, test.mutation.value);
         }
       }
-      row.result = "passed";
-    } catch (error) {
-      failures += 1;
-      row.error = String(error);
-    } finally {
-      if (test.mutation) pkg(test.mutation.path, test.mutation.original);
-      if (test.latePackage) rmSync(lateDep, { recursive: true, force: true });
     }
-    report.rows.push(row);
-    console.log(`${backend} ${name}: ${row.result}`);
+    row.result = "passed";
+  } catch (error) {
+    failures += 1;
+    row.error = String(error);
+  } finally {
+    if (test.mutation) pkg(test.mutation.path, test.mutation.original);
+    if (test.latePackage) rmSync(lateDep, { recursive: true, force: true });
   }
+  report.rows.push(row);
+  console.log(`${backend} ${name}: ${row.result}`);
 }
 report.failures = failures;
 writeFileSync(join(out, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
