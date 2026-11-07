@@ -59,8 +59,10 @@ function simulate(overrides = {}, cancelBefore) {
     const id = step.id ?? step.name ?? step.run ?? step.uses;
     if (id === cancelBefore) cancelled = true;
     const expression = String(step.if ?? "success()").replace(/^\$\{\{\s*|\s*\}\}$/g, "");
+    // Conditions over prior step outcomes/outputs and status functions are
+    // evaluated; ones that read event, input or other contexts stay skipped.
     const relevant =
-      !step.if || /steps\.(native_prerequisites|build_binary|size_)/.test(expression);
+      !step.if || !/\b(github|inputs|env|needs|matrix|runner|hashFiles)\b/.test(expression);
     let run = !failed && !cancelled;
     if (relevant && step.if) {
       const explicit = /\b(success|failure|cancelled|always)\(/.test(expression);
@@ -163,6 +165,36 @@ describe("Linux collection orchestration (synthetic outcomes)", () => {
       const step = workflow.jobs.health.steps.find((s) => (s.id ?? s.name ?? s.run) === id);
       expect(step["continue-on-error"]).toBeUndefined();
     }
+  });
+  it("evaluates the Scanner and SDK-alias browser consumers on their own prerequisites", () => {
+    const scanner = "Scanner boundary acceptance (Chromium)";
+    const sdk = "SDK alias packed consumer and dev rebundle (#3939)";
+    const early = simulate({ workspace_tests: "failure" });
+    expect(early.seen).toContain(scanner);
+    expect(early.seen).toContain(sdk);
+    expect(early.result).toBe("failure");
+    const nextest = simulate({ workspace_nextest: "failure" });
+    expect(nextest.seen).not.toContain(scanner);
+    expect(nextest.seen).toContain(sdk);
+    const chromium = simulate({ chromium: "failure" });
+    expect(chromium.seen).not.toContain(scanner);
+    expect(chromium.seen).not.toContain(sdk);
+    const build = simulate({ build_binary: "failure" });
+    expect(build.seen).not.toContain(scanner);
+    expect(build.seen).not.toContain(sdk);
+    for (const id of [scanner, sdk]) expect(simulate({}, id).seen).not.toContain(id);
+  });
+  it("does not start a fast check or clippy after cancellation", () => {
+    for (const id of [...fastChecks, "workspace_clippy"]) {
+      const run = simulate({}, id);
+      expect(run.seen).not.toContain(id);
+      expect(run.result).toBe("cancelled");
+    }
+  });
+  it("lints and tests nothing after a stale packdump", () => {
+    const run = simulate({ packdump: "failure" });
+    for (const id of ["workspace_clippy", ...rustTests]) expect(run.seen).not.toContain(id);
+    expect(run.result).toBe("failure");
   });
   it("keeps the clippy short-circuit and the build prerequisite for the Rust tests", () => {
     const lint = simulate({ workspace_clippy: "failure" });

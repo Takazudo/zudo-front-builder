@@ -447,6 +447,7 @@ jobs:
       # its crate-root CWD and uses normalized relative paths, keeping the dump
       # bytes independent of the checkout location that ran this step.
       - name: Verify syntect syntax-set.packdump is fresh
+        id: packdump
         if: ${{ !cancelled() && steps.build_binary.outcome == 'success' }}
         run: |
           DUMP=crates/zfb-content/assets/syntax-set.packdump
@@ -464,10 +465,12 @@ jobs:
       # toolchain can surface new lints on a future toolchain bump — accepted
       # cost; a future maintainer seeing a red gate with no code change should
       # check if a toolchain pin bump introduced new lints. The Rust test steps
-      # below keep that short-circuit through steps.workspace_clippy.
+      # below keep that short-circuit through steps.workspace_clippy. A stale
+      # packdump exits before its mtime restore and leaves regenerated,
+      # uncommitted bytes in the tree, so nothing downstream may lint or test them.
       - run: cargo clippy --workspace --all-targets -- -D warnings
         id: workspace_clippy
-        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.packdump.outcome == 'success' }}
 
       # The SDK-alias confirm must exercise jsx_pragma without zfb-build's
       # default V8 feature; the normal workspace nextest lane below uses the
