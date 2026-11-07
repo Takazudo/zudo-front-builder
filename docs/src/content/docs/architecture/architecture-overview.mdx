@@ -22,11 +22,11 @@ imports and in these docs:
 
 | Part | What you import or run | What it is responsible for |
 | --- | --- | --- |
-| **zfb** (CLI and build engine) | the `zfb` command, installed through `@takazudo/zfb` | Reads your project, bundles it, renders pages, writes `dist/`. A native binary delivered by platform-specific carrier packages. |
+| **zfb** (CLI and build engine) | the `zfb` command, installed through `@takazudo/zfb` | Reads your project, bundles it, renders pages, writes `dist/`. A native binary delivered by *carrier packages* — one small npm package per platform (for example `@takazudo/zfb-linux-x64-gnu`) that contains the prebuilt binary. |
 | **Pages and content pipeline** | files under `pages/`, MDX/Markdown, content collections | File-system routes, `paths()` for dynamic routes, collections read with `getCollection()`. |
 | **zudo-react** | `@takazudo/zfb/zudo-react` and its subpaths | zfb's JSX runtime and signal-based component model. It is not React and not a separate npm package. |
 | **zudo-wind** | the top-level `wind` key; `zfb css`; `@takazudo/zfb/css` | zfb's utility-CSS compiler. It finds class candidates in your source and generates CSS for the ones your configuration defines. |
-| **Browser runtime** | `@takazudo/zfb-runtime` | The optional `<ClientRouter />` for in-page navigation, and the server page router (`@takazudo/zfb-runtime/server`) that maps URLs to pages. |
+| **Runtime package** | `@takazudo/zfb-runtime` | Runtime code on both sides: the server page router (`@takazudo/zfb-runtime/server`) that maps URLs to pages on the build machine and the Worker, and the optional `<ClientRouter />` for in-page navigation in the browser. |
 | **Deployment adapter** | `@takazudo/zfb-adapter-cloudflare` | Wraps request-time pages as a Cloudflare Worker and provides `getCloudflareContext()`. |
 
 **zudo-doc**, the framework this documentation site runs on, is built on top
@@ -305,6 +305,12 @@ function BrokenBadge(props: { color: string }) {
 }
 ```
 
+To fix a constructed class, write every possible value out completely — in a
+conditional like `StatusBadge`, or in a map such as
+`{ accent: "bg-accent", muted: "bg-muted" }[props.color]`. Use `wind.safelist`
+only when the values genuinely cannot appear in any scanned file. See
+[Complete alternatives, not constructed fragments](../zudo-wind/sources-and-candidates.mdx#complete-alternatives-not-constructed-fragments).
+
 Finding a candidate is only the first step. A candidate becomes CSS only when
 it resolves against the utilities and tokens your configuration defines.
 zudo-wind is not Tailwind: it does not read Tailwind's configuration, and it
@@ -318,8 +324,8 @@ import { defineConfig } from "zfb/config";
 
 export default defineConfig({
   wind: {
-    spec: 1,
-    reset: "minimal-v1",
+    spec: 1, // the zudo-wind language version; 1 is the only (and default) value
+    reset: "minimal-v1", // a small built-in CSS reset; the default is "none"
     tokens: {
       colors: { accent: "var(--app-accent)", muted: "var(--app-muted)" },
     },
@@ -346,15 +352,18 @@ Three inputs that look alike do different jobs:
 - **Package manifests** (`wind.manifests`) let a package publish the candidates
   its own components use, so your build does not have to scan its source.
 - **`authoredClasses`** reserves exact class names for rules you write in CSS
-  yourself. It *suppresses* utility generation for those names; it never
-  generates CSS.
+  yourself. You need it when one of your own class names overlaps a utility
+  spelling — say your stylesheet defines `.bg-hero` (a hand-written background
+  image) and you do not want zudo-wind to treat it as a utility. It *suppresses* utility generation for
+  those names; it never generates CSS.
 
 One more boundary: zudo-wind also recognizes `className` attributes when it
 scans source, because packages and HTML from elsewhere use that spelling. That
 does not make `className` valid zudo-react JSX. Read
 [Sources and candidates](../zudo-wind/sources-and-candidates.mdx),
 [Configuration](../zudo-wind/configuration.mdx) and
-[Tokens](../zudo-wind/tokens.mdx) for the complete rules.
+[Tokens](../zudo-wind/tokens.mdx) for the complete rules; every `wind` field is
+listed in [Configuration — Fields](../zudo-wind/configuration.mdx#fields).
 
 ## Using parts without a zfb site
 
@@ -373,8 +382,16 @@ and
 The [zudo-react overview](../zudo-react/overview.mdx) explains the component
 model.
 
-**CSS only.** `zfb css` compiles a stylesheet from the command line. From
-Node.js code, use `compileCss` from `@takazudo/zfb/css`:
+**CSS only.** The input is an ordinary CSS file: your authored CSS and
+`@import`s, with no Tailwind directives — zudo-wind adds the generated
+utilities. From the command line, `zfb css` compiles it:
+
+```sh
+zfb css --input styles/main.css --output dist/main.css
+```
+
+See [`zfb css`](../api/cli.mdx#zfb-css) for all flags. From Node.js code, use
+`compileCss` from `@takazudo/zfb/css`:
 
 ```ts
 import { compileCss } from "@takazudo/zfb/css";
@@ -388,8 +405,12 @@ const { css, diagnostics, warnings } = await compileCss({
 });
 ```
 
-`compileCss` is asynchronous and Node-only (Node.js 24 or newer). It runs the
-native compiler in-process from the installed platform package. `input` is a
+`compileCss` is asynchronous and Node-only. The `@takazudo/zfb` npm package,
+including `@takazudo/zfb/css`, targets Node.js 24 or newer; the standalone
+`zfb` binary needs no Node at all. Installing `@takazudo/zfb` with optional
+dependencies enabled brings in the matching carrier package for your
+platform, and `compileCss` runs that native compiler in-process. (zudo-react
+itself is plain TypeScript/JavaScript and does not need the native carrier.) `input` is a
 path to a CSS file, not a string of CSS, and `config` is configuration you have
 already evaluated — `compileCss` does not load `zfb.config.ts`. It is not a
 browser or Worker entry point. See [`compileCss`](../api/compile-css.mdx).
