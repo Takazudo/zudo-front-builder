@@ -714,3 +714,52 @@ test("built pages carry one sidebar context per editorial forest", async ({ requ
     expect(new Set(Object.values(ids)).size).toBe(Object.keys(ids).length);
   }
 });
+
+// Native category sections stay inside their own category: neither the landing
+// page nor a child page offers Broaden up to the full-site navigation.
+for (const width of [1440, 390])
+  for (const ja of [false, true])
+    test(`native category sidebars never broaden to the full site ${ja ? "JA" : "EN"} ${width}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 950 });
+      const failures = watchErrors(page);
+      for (const [slug, owner] of [
+        ["markdown-features", "markdown-features"],
+        ["markdown-features/directives", "markdown-features"],
+        ["guides", "guides"],
+        ["recipes", "recipes"],
+      ]) {
+        await page.goto(route(slug, ja));
+        const side = await sidebarOf(page, width);
+        await expect(treeOf(side).locator(linkTo(slug, ja))).toHaveAttribute(
+          "aria-current",
+          "page",
+        );
+        await expect(side.locator("[data-sidebar-broaden]")).toHaveCount(0);
+        for (const href of await treeHrefs(side))
+          expect(href.startsWith(route(owner, ja)), `${slug}: ${href}`).toBe(true);
+        if (width < 1024) await page.keyboard.press("Escape");
+      }
+      expect(failures).toEqual([]);
+    });
+
+// MDX wrapped the inline discovery markup in stray paragraphs, which put an
+// empty first cell in the miniature grid; the cards must share one row.
+test("playground discovery card keeps its copy and three miniatures in place", async ({ page }) => {
+  for (const ja of [false, true]) {
+    await page.goto(route("playground", ja));
+    const card = page.locator(".design-discovery");
+    await expect(card).toHaveCount(1);
+    await expect(card.locator("p:empty")).toHaveCount(0);
+    expect(await card.evaluate((el) => [...el.children].map((child) => child.className))).toEqual([
+      "design-discovery-copy",
+      "design-discovery-miniatures",
+    ]);
+    const tops = await card
+      .locator(".design-discovery-mini")
+      .evaluateAll((minis) => minis.map((mini) => Math.round(mini.getBoundingClientRect().top)));
+    expect(tops).toHaveLength(3);
+    expect(new Set(tops).size).toBe(1);
+  }
+});
