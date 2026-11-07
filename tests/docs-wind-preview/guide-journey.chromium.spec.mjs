@@ -70,9 +70,10 @@ for (const width of [1440, 390]) {
       expect(title.length).toBeGreaterThan(0);
 
       const side = await sidebarOf(page, width);
-      await expect(
-        side.locator("[data-sidebar-tree-root]").locator(guideLink(side, ja).first()),
-      ).toHaveAttribute("aria-current", "page");
+      await expect(guideLink(side.locator("[data-sidebar-tree-root]"), ja).first()).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
       if (width < 1024) await page.keyboard.press("Escape");
 
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
