@@ -1189,6 +1189,10 @@ async function transition(
   }
 }
 
+function routerEligible(): boolean {
+  return supportsViewTransitions || getFallback() !== "none";
+}
+
 let navigateOnServerWarned = false;
 
 export async function navigate(href: string, options?: Options) {
@@ -1205,7 +1209,9 @@ export async function navigate(href: string, options?: Options) {
     }
     return;
   }
-  if (!supportsViewTransitions && getFallback() === "none") {
+  // A formData navigation is a request body, not a URL: a document load would
+  // send a GET without it, so it keeps the routed (simulated) path.
+  if (!routerEligible() && !options?.formData) {
     const url = new URL(href, location.href);
     // Honor the history option on the full-load fallback path: "replace"
     // must not leave a back-button entry, so use location.replace().
@@ -1786,7 +1792,11 @@ function handleSubmit(ev: SubmitEvent): void {
     !isHtmlFormElement(form) ||
     ev.defaultPrevented ||
     contentAttribute(form, "data-zfb-reload") !== null ||
-    clickedWithKeys
+    clickedWithKeys ||
+    // A page that became ineligible (no native view transitions, fallback
+    // "none", e.g. after a soft navigation) would only get a document load
+    // from navigate(), which turns a POST into a GET; leave it native.
+    !routerEligible()
   ) {
     return;
   }
@@ -1892,7 +1902,7 @@ export function init(_options?: InitOptions): void {
   // an ineligible early call (fallback "none" and no native view transitions)
   // must not permanently latch `initialized`, or a later legitimately-eligible
   // init() would no-op forever.
-  if (!supportsViewTransitions && getFallback() === "none") return;
+  if (!routerEligible()) return;
 
   initialized = true;
 

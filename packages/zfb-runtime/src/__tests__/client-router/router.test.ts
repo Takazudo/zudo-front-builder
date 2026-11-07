@@ -809,6 +809,29 @@ describe("navigate() — fallback=none + no View Transitions → full page load 
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("still sends a formData navigation as a POST instead of a bodyless document load", async () => {
+    expect(supportsViewTransitions).toBe(false);
+    const fallbackMeta = document.createElement("meta");
+    fallbackMeta.setAttribute("name", "zfb-view-transitions-fallback");
+    fallbackMeta.setAttribute("content", "none");
+    document.head.appendChild(fallbackMeta);
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Submitted", "posted content")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { assigned } = captureLoads();
+
+    const formData = new FormData();
+    formData.append("k", "v");
+    await navigate("/submit-target", { formData });
+
+    expect(assigned).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const init = fetchMock.mock.calls[0]![1];
+    expect(init?.method).toBe("POST");
+    expect((init?.body as FormData).get("k")).toBe("v");
+  });
+
   it("uses location.replace (not href) when options.history is 'replace'", async () => {
     expect(supportsViewTransitions).toBe(false);
 
@@ -2175,6 +2198,30 @@ describe("handleSubmit — form intercept (#1400)", () => {
       expect(String(url)).toBe(expected.href);
       expect(init?.method).toBe("POST");
       expect((init?.body as FormData).get("q")).toBe("value");
+    },
+  );
+
+  it.each(["post", "get"])(
+    "leaves a %s submit native once the page has fallback none without view transitions",
+    async (method) => {
+      expect(supportsViewTransitions).toBe(false);
+      const fallbackMeta = document.createElement("meta");
+      fallbackMeta.setAttribute("name", "zfb-view-transitions-fallback");
+      fallbackMeta.setAttribute("content", "none");
+      document.head.appendChild(fallbackMeta);
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const { assigned, replaced } = captureLoads();
+
+      const form = createForm({ action: "/submit-target", method, fields: { k: "v" } });
+      const submit = new SubmitEvent("submit", { bubbles: true, cancelable: true });
+      form.dispatchEvent(submit);
+      await drain();
+
+      expect(submit.defaultPrevented).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(assigned).toEqual([]);
+      expect(replaced).toEqual([]);
     },
   );
 
