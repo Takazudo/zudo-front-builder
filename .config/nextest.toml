@@ -9,8 +9,8 @@
 # `cargo test --workspace --doc` step; this config governs everything EXCEPT
 # doctests. Do not assume a green nextest run covers doctest examples.
 # 2026-09-28 (#3266): all ten css-only tests now run in normal discovery;
-# the build-parity test also runs normally and self-skips locally only when
-# esbuild is unavailable. Keep css_command in e2e-heavy-unlocked because parity
+# the build-parity test also runs normally (its esbuild self-skip was
+# removed by #4635). Keep css_command in e2e-heavy-unlocked because parity
 # launches a real zfb build.
 # 2026-09-28 (#3282): owned SSR build binary joins e2e-heavy-unlocked.
 # 2026-09-28 (#3269): W-A04's dev binary joins e2e-heavy-locked and the
@@ -25,7 +25,10 @@
 # 2026-10-05 (#3777): `build_warnings_json` joins e2e-heavy-unlocked;
 # its real `zfb build` invocations do not take the cross-binary flock.
 
-# ── Two-lane admission control for process and V8/esbuild e2e tests ──────
+# ── Two-lane admission control for process and V8/bundler e2e tests ──────
+# #4635 removed esbuild: every `locate_esbuild()` self-skip mentioned below is
+# retired and those tests now always run; "esbuild" below means the native
+# Rolldown bundling that replaced it.
 # Of these 52 integration-test binaries (all in package `zfb`), 51 spawn a
 # real `zfb dev` / `zfb build` / `zfb preview` process that embeds a V8 host
 # and/or shells out to esbuild. The remaining preview-signal binary spawns a
@@ -201,7 +204,7 @@ max-threads = 1
 # a real `zfb dev` E2E, `#[ignore]`d `heavy`; written RED in Wave 1 and
 # inverted green in Wave 4), `ssr_reload_self_heal_e2e` (issues
 # #2000/#2002/#2005, same epic — two real `zfb dev` E2E tests, `#[ignore]`d
-# `env-gate: esbuild`; written RED in Wave 1, inverted green in Wave 2, and
+# `env-gate: esbuild`, retagged `heavy` by #4635; written RED in Wave 1, inverted green in Wave 2, and
 # registered here in Wave 6 — it was previously missing from this filter
 # despite spawning `zfb dev`), and `dev_content_reload_2063_e2e` (issue
 # #2098, MDX Reload Fix epic #2092 Wave 5 — six real `zfb dev` E2E tests,
@@ -367,7 +370,7 @@ max-threads = 1
 #
 # ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the unlocked lane:
 # `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` boots a real
-# esbuild subprocess + embedded V8 isolate (see crates/CLAUDE.md's `#[ignore]`
+# native Rolldown bundle + embedded V8 isolate (see crates/CLAUDE.md's `#[ignore]`
 # manifest, tagged `heavy`) but is NOT its own binary — it lives inside the
 # `zfb` crate's shared lib-test target (`render_pipeline::tests`) alongside
 # hundreds of ordinary, non-heavy unit tests, so `binary(=...)` cannot target

@@ -79,8 +79,7 @@
 //! ## Tiering
 //!
 //! NOT `#[ignore]`d — like `wasm_ssr_dev_smoke_e2e.rs`, this test
-//! self-skips at runtime when esbuild is unavailable
-//! (`locate_esbuild()` returns `None`) or when `zfb dev`/`zfb build`
+//! self-skips at runtime when `zfb dev`/`zfb build`
 //! exits with a known environment-gate indicator (`direct-v8` cfg off,
 //! "no esbuild"). It spawns a real `zfb dev` AND a real `zfb build`, so
 //! it joins the flock-adopting bucket of `.config/nextest.toml`'s
@@ -111,7 +110,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 const BOOT_DEADLINE: Duration = Duration::from_secs(90);
 const RESPONSE_DEADLINE: Duration = Duration::from_secs(60);
@@ -326,7 +325,7 @@ fn parse_ready_port(log: &str) -> Option<u16> {
     None
 }
 
-fn spawn_dev(root: &Path, esbuild: &Path) -> DevSession {
+fn spawn_dev(root: &Path) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log file");
@@ -338,7 +337,6 @@ fn spawn_dev(root: &Path, esbuild: &Path) -> DevSession {
         .arg("--port")
         .arg("0")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
         .env_remove("ZFB_DEV_DEFER_BUNDLE")
@@ -484,13 +482,6 @@ async fn dev_serves_request_time_fetch_and_web_crypto() {
     // `cross_binary_lock.rs`'s documented lock ordering, and held for the
     // whole test (this file has only one spawning test).
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[embedded_host_request_time_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN to the pinned native binary."
-        );
-        return;
-    };
 
     let loopback = LoopbackServer::spawn("loopback-ok").await;
     // Kept alive (not dropped) until immediately before the refused-case
@@ -508,7 +499,7 @@ async fn dev_serves_request_time_fetch_and_web_crypto() {
         .expect("canonicalize fixture root");
     stage_dev_fixture(&root, loopback.port(), refused_port);
 
-    let mut session = spawn_dev(&root, &esbuild);
+    let mut session = spawn_dev(&root);
     let Some(port) = boot_dev_or_skip(&mut session).await else {
         return;
     };
@@ -697,12 +688,6 @@ async fn dev_serves_request_time_fetch_and_web_crypto() {
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_rejects_untyped_raw_html_children_at_runtime() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[embedded_host_request_time_e2e] no esbuild binary available; skipping the rawHtml runtime-negative case."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("create untyped rawHtml fixture tempdir");
     let root = tmp
@@ -712,7 +697,7 @@ async fn dev_rejects_untyped_raw_html_children_at_runtime() {
     copy_dir(&raw_html_invalid_runtime_fixture_dir(), &root)
         .expect("copy untyped rawHtml runtime-negative fixture");
 
-    let mut session = spawn_dev(&root, &esbuild);
+    let mut session = spawn_dev(&root);
     let Some(port) = boot_dev_or_skip(&mut session).await else {
         return;
     };
@@ -742,14 +727,6 @@ async fn dev_rejects_untyped_raw_html_children_at_runtime() {
 #[tokio::test(flavor = "multi_thread")]
 async fn build_still_denies_network_at_ssg_time() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[embedded_host_request_time_e2e] no esbuild binary available; skipping \
-             the build-time SSG-denial case. Set ZFB_ESBUILD_BIN to the pinned native \
-             binary."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("create ssg fixture tempdir");
     let root = tmp
@@ -761,7 +738,6 @@ async fn build_still_denies_network_at_ssg_time() {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn `zfb build`");
 

@@ -8,7 +8,6 @@ description = "zfb islands runtime: \"use client\" AST scanner, native client bu
 [lib]
 
 [features]
-rolldown-prototype = []
 default = []
 
 [dependencies]

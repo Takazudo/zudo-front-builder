@@ -156,9 +156,7 @@ zfb-router = { path = "../zfb-router" }
 # `prod_asset_graph_with_real_wind_engine_against_fixture` exercises the
 # in-process compiler without a helper CLI binary.
 zfb-css = { path = "../zfb-css" }
-# Shared test utilities: locate_esbuild() and zfb_binary!(). Replaces
-# the duplicated locate_esbuild() bodies that previously lived in each
-# integration test file.
+# Shared test utilities: zfb_binary!() and the cross-binary e2e lock.
 zfb-test-utils = { path = "../zfb-test-utils" }
 # Captures `tracing` output in-test via `#[traced_test]` / `logs_contain`
 # (issue #1838's dangling-symlink warning assertion). Same version already

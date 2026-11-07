@@ -78,9 +78,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use zfb_test_utils::{
-    locate_esbuild, next_sse_event_name, open_sse, zfb_binary, CrossBinaryE2eLock,
-};
+use zfb_test_utils::{next_sse_event_name, open_sse, zfb_binary, CrossBinaryE2eLock};
 
 /// Serialises this binary's single spawning test against itself (a no-op
 /// today, kept for parity with every sibling e2e file) and, via
@@ -250,7 +248,7 @@ fn parse_ready_port(log: &str) -> Option<u16> {
 /// masquerades as a hang, `build_terminates.rs`'s finding). Callers copy and
 /// extend the fixture (and call `enable_poll_backend`/`backdate`) BEFORE
 /// calling this.
-fn spawn_dev(root: PathBuf, esbuild: &Path, extra_env: &[(&str, &str)]) -> DevSession {
+fn spawn_dev(root: PathBuf, extra_env: &[(&str, &str)]) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log file");
@@ -261,7 +259,6 @@ fn spawn_dev(root: PathBuf, esbuild: &Path, extra_env: &[(&str, &str)]) -> DevSe
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     // Strip any inherited lazy-render switches so a shell/CI environment
@@ -477,13 +474,6 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
 async fn e2e_poll_backend_content_edit_and_new_entry_discovery() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[poll_backend_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("create tempdir for poll-backend fixture");
     let root = tmp
@@ -507,7 +497,7 @@ async fn e2e_poll_backend_content_edit_and_new_entry_discovery() {
     // this test silently green even though the poll backend was never
     // actually selected. The timing line is the only way to prove WHICH
     // backend a session picked, not merely that something observed the FS.
-    let mut session = spawn_dev(root, &esbuild, &[("ZFB_DEV_TIMING", "1")]);
+    let mut session = spawn_dev(root, &[("ZFB_DEV_TIMING", "1")]);
     let pgid = session.guard.pgid;
 
     let body = async {

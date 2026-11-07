@@ -246,7 +246,6 @@ fn base_input(project: &Path, node_modules: std::path::PathBuf) -> BundlerInput 
 /// below; this test only records that the build no longer succeeds, without
 /// inspecting the diagnostic.
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored"]
 fn real_copy_staging_under_active_bundle_exclude_stages_a_real_copy_and_arms_eligibility() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
@@ -325,12 +324,9 @@ fn node_modules_child_dir(node_modules: &Path) -> std::path::PathBuf {
 /// surfaced the separate classification gap #2127 (see this file's header
 /// for both halves). Retagged to `#2127`, then flipped by #2127's
 /// `metafile_deps.rs` fix and — per epic #2078's corrected flip protocol —
-/// tagged with the ordinary `env-gate: esbuild` reason rather than having its
-/// `#[ignore]` deleted: this binary needs a staged esbuild, so deleting the
-/// attribute would drop it out of the `-- --ignored` lanes that run it
-/// entirely. `health.yml`'s matching `--skip` was removed in the same commit.
+/// tagged with the ordinary `env-gate: esbuild` reason. #4635 removed esbuild,
+/// so the test now runs un-ignored in the ordinary nextest lane.
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored"]
 fn real_copy_staging_under_active_bundle_exclude_rejects_the_undeclared_escape() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
@@ -378,7 +374,6 @@ fn real_copy_staging_under_active_bundle_exclude_rejects_the_undeclared_escape()
 /// `metafile_deps.rs`'s
 /// `stage_escape_allows_consume_from_source_sibling_staged_as_a_real_copy`.
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored"]
 fn real_copy_staging_under_active_bundle_exclude_accepts_the_declared_sibling() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
@@ -426,7 +421,6 @@ fn real_copy_staging_under_active_bundle_exclude_accepts_the_declared_sibling() 
 /// become true at a root-claimed workspace (see header). Not a bug pin, no
 /// RED twin: there is nothing for #2087 to fix here.
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored"]
 fn empty_exclude_workspace_package_exact_staging_does_not_disarm_the_audit_at_root_claimed_workspace(
 ) {
     let temp = tempfile::tempdir().expect("tempdir");

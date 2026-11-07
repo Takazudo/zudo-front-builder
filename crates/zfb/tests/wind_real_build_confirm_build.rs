@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{LazyLock, Mutex};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 static BUILD_SERIAL: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 const PACKAGE_ASSETS: &[(&str, &str)] = &[
@@ -97,19 +97,18 @@ fn copy_wind_v3_fixture_to_temp(label: &str) -> (tempfile::TempDir, PathBuf, tem
     (temp, root, embedded_node_modules)
 }
 
-fn run_build_output(root: &Path, esbuild: &Path) -> std::process::Output {
+fn run_build_output(root: &Path) -> std::process::Output {
     Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .env("PATH", "")
         .env_remove("NODE_PATH")
         .output()
         .expect("spawn `zfb build`")
 }
 
-fn run_build(root: &Path, esbuild: &Path, label: &str) -> Option<String> {
-    let output = run_build_output(root, esbuild);
+fn run_build(root: &Path, label: &str) -> Option<String> {
+    let output = run_build_output(root);
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let combined = format!("{stdout}{stderr}");
@@ -374,12 +373,8 @@ fn w_a05_client_only_literal_and_authored_classes_are_audited() {
     let _serial = BUILD_SERIAL
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[wind_real_build_confirm_build] no esbuild; skipping.");
-        return;
-    };
     let (_temp, root, _embedded_node_modules) = copy_fixture_to_temp();
-    let Some(_build_log) = run_build(&root, &esbuild, "W-A05/W-A06 default base") else {
+    let Some(_build_log) = run_build(&root, "W-A05/W-A06 default base") else {
         return;
     };
 
@@ -443,7 +438,7 @@ fn remove_assembled_class_probe(root: &Path) {
         .expect("remove unrelated dynamic-class probe for W-A06");
 }
 
-fn copy_first_build_dist_for_browser(dist: &Path, esbuild: &Path) {
+fn copy_first_build_dist_for_browser(dist: &Path) {
     if let Some(destination) = std::env::var_os("ZFB_WIND_REAL_BUILD_DIST") {
         let destination = PathBuf::from(destination);
         if destination.exists() {
@@ -472,8 +467,6 @@ fn copy_first_build_dist_for_browser(dist: &Path, esbuild: &Path) {
                 "buildEnvironment": {
                     "PATH": "",
                     "NODE_PATH": null,
-                    "ZFB_ESBUILD_BIN": esbuild,
-                    "esbuildSha256": format!("{:x}", Sha256::digest(fs::read(esbuild).expect("read native esbuild"))),
                 },
             });
             fs::write(
@@ -553,18 +546,14 @@ fn w_a06_real_build_preserves_package_assets_and_css_modules() {
     let _serial = BUILD_SERIAL
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[wind_real_build_confirm_build] no esbuild; skipping.");
-        return;
-    };
     let (_temp, root, _embedded_node_modules) = copy_fixture_to_temp();
     remove_assembled_class_probe(&root);
-    let Some(_build_log) = run_build(&root, &esbuild, "W-A06 default base") else {
+    let Some(_build_log) = run_build(&root, "W-A06 default base") else {
         return;
     };
 
     let dist = root.join("dist");
-    copy_first_build_dist_for_browser(&dist, &esbuild);
+    copy_first_build_dist_for_browser(&dist);
     let (stylesheet, css) = read_stylesheet(&dist);
     assert_modules_and_global_css(&dist, &css);
     assert_authored_and_package_assets(&stylesheet, &css);
@@ -574,7 +563,7 @@ fn w_a06_real_build_preserves_package_assets_and_css_modules() {
     // that prefix, while authored CSS URLs retain their explicitly authored
     // prefix; package companions remain relative to the hashed stylesheet.
     configure_base_build(&root);
-    let Some(_base_build_log) = run_build(&root, &esbuild, "W-A06 base path") else {
+    let Some(_base_build_log) = run_build(&root, "W-A06 base path") else {
         return;
     };
     let base_dist = root.join("dist");
@@ -619,13 +608,9 @@ fn w_a08_strict_wind_commands_report_hints_for_authored_and_malformed_classes() 
     let _serial = BUILD_SERIAL
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[wind_real_build_confirm_build] no esbuild; skipping W-A08 strict CLI proof.");
-        return;
-    };
     let (_temp, root, _embedded_node_modules) = copy_wind_v3_fixture_to_temp("invalid");
 
-    let build = run_build_output(&root, &esbuild);
+    let build = run_build_output(&root);
     let build_output = output_text(&build);
     if !build.status.success()
         && (build_output.contains("direct-v8 = off") || build_output.contains("no esbuild"))
@@ -691,10 +676,6 @@ fn w_a08_real_build_css_explain_and_audit_agree_on_transition_timing() {
     let _serial = BUILD_SERIAL
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[wind_real_build_confirm_build] no esbuild; skipping W-A08 command parity.");
-        return;
-    };
 
     for (label, configured_timing, expected_timing) in [
         ("default", None, "ease"),
@@ -707,7 +688,7 @@ fn w_a08_real_build_css_explain_and_audit_agree_on_transition_timing() {
             set_default_transition_timing_function(&root, timing);
         }
 
-        let Some(_build_log) = run_build(&root, &esbuild, &format!("W-A08 {label} build")) else {
+        let Some(_build_log) = run_build(&root, &format!("W-A08 {label} build")) else {
             return;
         };
         let dist = root.join("dist");

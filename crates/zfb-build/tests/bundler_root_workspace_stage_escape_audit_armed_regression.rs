@@ -91,7 +91,6 @@ fn base_input(project: &Path, node_modules: std::path::PathBuf) -> BundlerInput 
 
 #[cfg(unix)]
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_armed_regression -- --ignored"]
 fn real_esbuild_now_rejects_root_workspace_child_package_escape_through_node_modules_symlink() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();

@@ -27,8 +27,6 @@
 //!
 //! The test skips (prints a note, returns early) when:
 //!
-//! - No esbuild binary is available (resolves via `ZFB_ESBUILD_BIN`,
-//!   `crates/zfb/binaries/esbuild/esbuild`, or the pnpm store).
 //! - The pnpm store is missing the runtime deps the bundle needs
 //!   (`hono`) — run `pnpm install`
 //!   at the repo root.

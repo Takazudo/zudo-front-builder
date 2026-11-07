@@ -14,7 +14,6 @@ use std::path::PathBuf;
 use std::process::Command;
 
 #[cfg(unix)]
-use zfb_test_utils::locate_esbuild;
 use zfb_test_utils::zfb_binary;
 
 fn fixture(name: &str) -> PathBuf {
@@ -480,13 +479,6 @@ fn scaffold_build_fixture(name: &str) -> (tempfile::TempDir, tempfile::TempDir, 
 #[test]
 #[cfg(unix)]
 fn ssr_request_param_positive_build_warns_and_succeeds() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[check_command] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
     if !pnpm_available() {
         eprintln!("[check_command] pnpm is not available; skipping.");
         return;
@@ -496,7 +488,6 @@ fn ssr_request_param_positive_build_warns_and_succeeds() {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn zfb build");
     let combined = combined_output(&output);
@@ -522,13 +513,6 @@ fn ssr_request_param_positive_build_warns_and_succeeds() {
 #[test]
 #[cfg(unix)]
 fn ssr_request_param_negative_build_is_silent_and_succeeds() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[check_command] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
     if !pnpm_available() {
         eprintln!("[check_command] pnpm is not available; skipping.");
         return;
@@ -538,7 +522,6 @@ fn ssr_request_param_negative_build_is_silent_and_succeeds() {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn zfb build");
     let combined = combined_output(&output);

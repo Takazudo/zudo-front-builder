@@ -28,7 +28,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DepKind, DependencyGraph, PageDeps, PageId};
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
@@ -196,7 +196,7 @@ enum DevMode {
 /// `boot_lazy` sets `ZFB_DEV_BOOT_LAZY` explicitly (e.g. `Some("cold")`);
 /// `None` keeps the pre-epic-#1806 default of removing the var entirely
 /// (Off), matching every pre-existing test in this binary.
-fn spawn_dev(root: PathBuf, esbuild: &Path, mode: DevMode, boot_lazy: Option<&str>) -> DevSession {
+fn spawn_dev(root: PathBuf, mode: DevMode, boot_lazy: Option<&str>) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
@@ -208,7 +208,6 @@ fn spawn_dev(root: PathBuf, esbuild: &Path, mode: DevMode, boot_lazy: Option<&st
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
         .env_remove("ZFB_DEV_BOOT_LAZY")
@@ -701,13 +700,6 @@ enum ScenarioOutcome {
 async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[content_aggregate_cold_boot_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let temp = tempfile::tempdir().expect("create tempdir for cold-boot fixture");
     let root = temp
@@ -720,7 +712,7 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
         "fixture must have no persisted dev graph or prior render output before cold boot"
     );
 
-    let mut session = spawn_dev(root, &esbuild, DevMode::Eager, None);
+    let mut session = spawn_dev(root, DevMode::Eager, None);
     let pgid = session.guard.pgid;
     let body = async {
         let Some((base, _client)) = boot_and_handshake(&mut session).await else {
@@ -1040,13 +1032,6 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
 async fn cold_boot_zero_prior_requests_content_edit_refreshes_entry_and_aggregates() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[content_aggregate_cold_boot_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let temp = tempfile::tempdir().expect("create tempdir for cold zero-request fixture");
     let root = temp
@@ -1074,7 +1059,7 @@ async fn cold_boot_zero_prior_requests_content_edit_refreshes_entry_and_aggregat
     // strategy) is required for boot-lazy to activate at all
     // (`boot_lazy_decision`); it is also this binary's default when
     // `ZFB_DEV_EAGER` is unset.
-    let mut session = spawn_dev(root, &esbuild, DevMode::Lazy, Some("cold"));
+    let mut session = spawn_dev(root, DevMode::Lazy, Some("cold"));
     let pgid = session.guard.pgid;
     let body = async {
         let Some((base, client)) =
@@ -1225,13 +1210,6 @@ async fn cold_boot_zero_prior_requests_content_edit_refreshes_entry_and_aggregat
 async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[content_aggregate_cold_boot_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let temp = tempfile::tempdir().expect("create tempdir for restart fixture");
     let root = temp
@@ -1244,7 +1222,7 @@ async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
         .expect("write initial data cache probe");
 
     let body = async {
-        let mut first = spawn_dev(root.clone(), &esbuild, DevMode::Lazy, None);
+        let mut first = spawn_dev(root.clone(), DevMode::Lazy, None);
         let Some((first_base, first_client)) = boot_and_handshake(&mut first).await else {
             return ScenarioOutcome::Skipped;
         };
@@ -1313,7 +1291,7 @@ async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
         // provenance from its fresh worker rather than trusting it.
         prepare_stale_persisted_content_graph(&root);
 
-        let mut second = spawn_dev(root.clone(), &esbuild, DevMode::Lazy, None);
+        let mut second = spawn_dev(root.clone(), DevMode::Lazy, None);
         let Some((second_base, second_client)) = boot_and_handshake(&mut second).await else {
             return ScenarioOutcome::Skipped;
         };
@@ -1547,9 +1525,6 @@ async fn poll_sequence_deleted_detail(client: &reqwest::Client, url: &str) -> Re
 async fn run_deleted_collection_entry_sequence(sequence: DeletionSequence) {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        panic!("[deletion-sequence] no esbuild binary available for required {sequence:?} case");
-    };
 
     let temp = tempfile::tempdir().expect("create deletion-sequence fixture root");
     let root = temp
@@ -1595,7 +1570,7 @@ async fn run_deleted_collection_entry_sequence(sequence: DeletionSequence) {
     fs::write(&probe, "{\"revision\":0}\n").expect("seed watcher probe");
     // Keep the source report's workspace/app topology while using this
     // checkout's compiled zfb binary instead of installing published packages.
-    let mut session = spawn_dev(app_root, &esbuild, DevMode::Lazy, Some("cold"));
+    let mut session = spawn_dev(app_root, DevMode::Lazy, Some("cold"));
     let pgid = session.guard.pgid;
     let body = async {
         let Some((base, client)) = boot_and_handshake_banner_only(&mut session, &probe).await

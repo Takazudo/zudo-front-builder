@@ -168,7 +168,6 @@ fn metafile_input_keys(shadow: &Path) -> Vec<String> {
 /// spelling — never the live-root fallback the audit rejects as case 4.
 #[cfg(unix)]
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_loose_file_alias_esbuild_regression -- --ignored"]
 fn real_esbuild_accepts_root_workspace_loose_file_reached_via_broad_alias() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
@@ -219,7 +218,6 @@ fn real_esbuild_accepts_root_workspace_loose_file_reached_via_broad_alias() {
 /// no longer appears among the offenders.
 #[cfg(unix)]
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_loose_file_alias_esbuild_regression -- --ignored"]
 fn undeclared_bare_package_name_escape_stays_rejected_beside_loose_file_staging() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();

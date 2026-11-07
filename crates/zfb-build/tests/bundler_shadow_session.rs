@@ -16,10 +16,8 @@
 //!
 //! ## Esbuild gating
 //!
-//! The byte-equivalence and dirty-reset tests need a real esbuild binary
-//! and self-skip when none is available (`ZFB_ESBUILD_BIN` → workspace
-//! slot → pnpm store → PATH), matching the other bundler integration
-//! tests. The prune and diagnostics-replay tests run everywhere via
+//! The byte-equivalence and dirty-reset tests run a real native Rolldown
+//! bundle (#4635 removed the esbuild self-skip). The prune and diagnostics-replay tests run everywhere via
 //! `mock_bundle_output`.
 
 use std::fs;

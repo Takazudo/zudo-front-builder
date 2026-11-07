@@ -1120,8 +1120,8 @@ fn l_unreachable_unsupported_worker_form_in_mirror_root_does_not_fail_the_build(
 // The desired post-fix behavior (delivered by #2085's provenance threading)
 // is: this build stays GREEN — the broken match warns and is skipped, same
 // as case (l)'s own tolerance. Tagged `pending-feature` per epic #2078's
-// corrected flip protocol: this binary self-skips via `locate_esbuild()` and
-// is NOT env-gate-`#[ignore]`d, so the flipping sub DELETES this attribute
+// corrected flip protocol: this binary (which then self-skipped via the
+// retired `locate_esbuild()`) is NOT env-gate-`#[ignore]`d, so the flipping sub DELETES this attribute
 // entirely rather than swapping it for an `env-gate:` tag.
 // ---------------------------------------------------------------------------
 

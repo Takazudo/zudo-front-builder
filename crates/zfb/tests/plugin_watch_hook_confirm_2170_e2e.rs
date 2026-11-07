@@ -197,7 +197,7 @@
 //!
 //! ## Self-skip, not `#[ignore]` (per `crates/CLAUDE.md`'s taxonomy)
 //!
-//! Self-skips via `locate_esbuild()` like every other real `zfb dev` e2e in
+//! Formerly self-skipped via the retired `locate_esbuild()` like every other real `zfb dev` e2e in
 //! this crate (`dev_serve_e2e`, `dev_content_reload_2063_e2e`,
 //! `dev_supervision_e2e`, ...) — health.yml always stages a pinned esbuild,
 //! so the self-skip is a local-dev convenience only, not a CI blocker; none
@@ -221,8 +221,8 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use zfb_test_utils::{
-    locate_esbuild, next_sse_event_name, open_sse, watcher_live_handshake, zfb_binary,
-    CrossBinaryE2eLock, HandshakeOpts,
+    next_sse_event_name, open_sse, watcher_live_handshake, zfb_binary, CrossBinaryE2eLock,
+    HandshakeOpts,
 };
 
 /// Serializes the spawning test in this file against any other test in the
@@ -342,7 +342,7 @@ impl DevSession {
 /// process group, with stdout/stderr captured to FILES (never pipes — a
 /// piped child that outgrows the OS pipe buffer blocks on write and
 /// masquerades as a hang, `build_terminates.rs` pattern).
-fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path) -> DevSession {
+fn spawn_dev(tmp: &tempfile::TempDir) -> DevSession {
     // macOS /tmp is a symlink to /private/tmp; notify reports canonical
     // paths, and the plugin preset joins `projectRoot` (this canonical
     // path) with `plugin-watched/note.txt` — every path the dev process,
@@ -364,7 +364,6 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path) -> DevSession {
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         // Surfaces `[zfb-timing] tick(): kinds=[...]`,
         // `[zfb-timing] watch-extra registered: ...`, and
         // `[zfb-timing] plugin-refresh: pre-tick refresh completed ok=...`
@@ -531,15 +530,8 @@ enum ScenarioOutcome {
 }
 
 async fn run_scenario() -> ScenarioOutcome {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[plugin_watch_hook_confirm_2170_e2e] no esbuild binary available; skipping. Set \
-             ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return ScenarioOutcome::Skipped;
-    };
     let tmp = tempfile::tempdir().expect("create tempdir for plugin-watch-hook-confirm fixture");
-    let mut session = spawn_dev(&tmp, &esbuild);
+    let mut session = spawn_dev(&tmp);
 
     let Some((base, client)) = boot_and_wait_ready(&mut session).await else {
         return ScenarioOutcome::Skipped;

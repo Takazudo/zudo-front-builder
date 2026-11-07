@@ -250,7 +250,7 @@ fn snippet(s: &str) -> String {
 /// This mirrors the `import.meta.env.PROD` substitution test: build a fixture
 /// that globs a sibling directory, bundle it, and assert (a) the literal macro
 /// text is ABSENT from the emitted bundle and (b) the expanded relative keys
-/// are present. Gated on `locate_esbuild()`; self-skips when no binary.
+/// are present.
 #[test]
 fn import_meta_glob_eager_is_expanded_before_esbuild() {
     let tmp = tempfile::tempdir().expect("tempdir");

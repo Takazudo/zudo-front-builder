@@ -25960,7 +25960,7 @@ mod tests {
     ///     (the mock-mode path exercises the struct-construction code path;
     ///     the real esbuild emission is covered by the end-to-end bundler
     ///     integration tests in `crates/zfb-build/tests/bundler_integration.rs`
-    ///     which run when `ZFB_ESBUILD_BIN` is available).
+    ///     which bundle through native Rolldown).
     #[test]
     fn plugin_alias_and_virtual_module_fields_are_accepted_in_bundler_input() {
         let tmp = tempfile::tempdir().unwrap();

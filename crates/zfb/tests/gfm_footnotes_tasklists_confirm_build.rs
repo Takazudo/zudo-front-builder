@@ -100,8 +100,8 @@
 //!
 //! Level 4 (real `zfb build` process e2e). No external binary is required —
 //! the fixture has no utility CSS config and no "use client" islands, so the
-//! build never invokes esbuild (confirmed empirically: a local run with
-//! no `ZFB_ESBUILD_BIN` set succeeds and logs "no islands found; skipping
+//! build never bundles islands (confirmed empirically: a local run
+//! succeeds and logs "no islands found; skipping
 //! islands bundle"). Not
 //! `#[ignore]`d, matching `end_to_end_basic_blog_build.rs`'s own
 //! no-external-binary tier. Added to `.config/nextest.toml`'s `e2e-heavy`

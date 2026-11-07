@@ -200,7 +200,6 @@ fn metafile_input_keys(shadow: &Path) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_dot_path_staging_esbuild_regression -- --ignored"]
 fn real_esbuild_resolves_dot_path_staged_spellings_and_passes_stage_escape_audit() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let (_ws_root, project) = write_workspace(tmp.path());
@@ -330,7 +329,6 @@ fn write_injected_entrypoint_fixture(project: &Path) -> PathBuf {
 /// Restoring the `injected_route_entrypoints` assignment made the test pass
 /// again (GREEN).
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_dot_path_staging_esbuild_regression -- --ignored"]
 fn real_esbuild_resolves_injected_route_entrypoint_staged_spelling_and_passes_stage_escape_audit() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let (_ws_root, project) = write_workspace(tmp.path());
@@ -383,7 +381,6 @@ fn real_esbuild_resolves_injected_route_entrypoint_staged_spelling_and_passes_st
 /// #3037: the real SSR remap must receive the filtered, materialized closure,
 /// including a helper that was never itself an injected entrypoint.
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_dot_path_staging_esbuild_regression -- --ignored"]
 fn real_esbuild_virtual_imports_only_accept_materialized_injected_route_files() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let (_ws_root, project) = write_workspace(tmp.path());

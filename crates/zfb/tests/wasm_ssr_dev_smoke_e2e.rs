@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 // `i32.const` uses signed LEB128, so a one-byte positive immediate is <= 63.
 const WASM_ANSWER: u8 = 37;
@@ -153,7 +153,7 @@ fn parse_ready_port(log: &str) -> Option<u16> {
 }
 
 /// Copy the source fixture and stage the binary module it imports.
-fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path) -> DevSession {
+fn spawn_dev(tmp: &tempfile::TempDir) -> DevSession {
     let root = tmp
         .path()
         .canonicalize()
@@ -173,7 +173,6 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path) -> DevSession {
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
         .env_remove("ZFB_DEV_DEFER_BUNDLE")
@@ -199,16 +198,9 @@ async fn dev_serves_wasm_importing_ssr_route() {
     // acquired before any local state so it serializes against every other
     // flock-adopting dev/build e2e binary (issue #1339).
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[wasm_ssr_dev_smoke_e2e] no esbuild binary available; skipping. \\
-             Set ZFB_ESBUILD_BIN to the pinned native binary."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("create Wasm dev fixture tempdir");
-    let mut session = spawn_dev(&tmp, &esbuild);
+    let mut session = spawn_dev(&tmp);
 
     let boot_start = Instant::now();
     let port = loop {

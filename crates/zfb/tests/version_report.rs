@@ -7,8 +7,8 @@
 
 use std::process::Command;
 
-use zfb_test_utils::zfb_binary;
 use zfb_rolldown_prototype::BACKEND_IDENTITY;
+use zfb_test_utils::zfb_binary;
 
 #[test]
 fn long_version_reports_embedded_toolchain_and_short_version_stays_single_line() {

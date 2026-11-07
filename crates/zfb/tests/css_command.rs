@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use tempfile::TempDir;
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 fn fixture_dir(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -845,13 +845,6 @@ fn css_command_atomic_success_replaces_and_failure_preserves_output() {
 
 #[test]
 fn css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[css_command_build_parity] no esbuild binary available; skipping. Set ZFB_ESBUILD_BIN or stage crates/zfb/binaries/esbuild/esbuild."
-        );
-        return;
-    };
-
     let outer = tempfile::tempdir().expect("create parity parent tempdir");
     let build_project = outer.path().join("build-project");
     let css_project = outer.path().join("css-project");
@@ -863,7 +856,6 @@ fn css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan() {
     let build = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(&build_project)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn `zfb build` for CSS parity");
     assert_success(&build, "build-parity zfb build");
@@ -906,10 +898,6 @@ fn css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan() {
 
 #[test]
 fn declared_project_root_matches_build_css_and_both_audit_plans() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[declared_project_root] no esbuild binary available; skipping");
-        return;
-    };
     let temp = copied_fixture("css-build-parity");
     let project = temp.path();
     fs::write(
@@ -932,7 +920,6 @@ fn declared_project_root_matches_build_css_and_both_audit_plans() {
     let build = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(project)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn build with declared root");
     assert_success(&build, "declared-root build");
@@ -1135,11 +1122,6 @@ fn write_root_package_isolation_json(app: &Path, root_package: Option<bool>) {
 
 #[test]
 fn root_package_wind_source_isolation_is_scoped_and_keeps_other_inputs() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[root_package_wind_source_isolation] no esbuild binary available; skipping.");
-        return;
-    };
-
     let temp = tempfile::tempdir().expect("create root-package isolation workspace");
     let workspace = temp.path().canonicalize().unwrap();
     let app = root_package_isolation_fixture(&workspace);
@@ -1147,7 +1129,6 @@ fn root_package_wind_source_isolation_is_scoped_and_keeps_other_inputs() {
         Command::new(zfb_binary!())
             .arg("build")
             .current_dir(project)
-            .env("ZFB_ESBUILD_BIN", &esbuild)
             .output()
             .expect("spawn root-package isolation `zfb build`")
     };
@@ -1156,8 +1137,7 @@ fn root_package_wind_source_isolation_is_scoped_and_keeps_other_inputs() {
         command
             .args(["wind", "audit", "--plan", plan, "--project-root"])
             .arg(project)
-            .current_dir(project)
-            .env("ZFB_ESBUILD_BIN", &esbuild);
+            .current_dir(project);
         if fail_on_error {
             command.args(["--fail-on", "error"]);
         }
@@ -1988,10 +1968,6 @@ fn wind_token_override_is_explainable_and_audit_info_only() {
 
 #[test]
 fn wind_token_override_does_not_warn_or_fail_a_real_build() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[wind_token_override_build] no esbuild binary available; skipping");
-        return;
-    };
     let temp = copied_fixture("css-build-parity");
     fs::write(
         temp.path().join("zfb.config.json"),
@@ -2007,7 +1983,6 @@ fn wind_token_override_does_not_warn_or_fail_a_real_build() {
     let build = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(temp.path())
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn zfb build for token override fixture");
     let stdout = process_stdout(&build);
@@ -3142,10 +3117,10 @@ fn wind_library_manifest_reaches_a_packed_consumer() {
         .arg("--version")
         .output()
         .is_ok_and(|output| output.status.success());
-    let Some(esbuild) = locate_esbuild().filter(|_| npm) else {
-        eprintln!("[wind_library_consumer] esbuild or npm unavailable; skipping");
+    if !npm {
+        eprintln!("[wind_library_consumer] npm unavailable; skipping");
         return;
-    };
+    }
     let temp = tempfile::Builder::new()
         .prefix("zfb packed consumer with spaces ")
         .tempdir()
@@ -3256,7 +3231,6 @@ fn wind_library_manifest_reaches_a_packed_consumer() {
             .args(["css", "--input", input, "--output", "dist/app.css"])
             .args(["--no-auto-source", "--source", "src/**/*.tsx"])
             .current_dir(&consumer)
-            .env("ZFB_ESBUILD_BIN", &esbuild)
             .output()
             .expect("spawn consumer `zfb css`")
     };

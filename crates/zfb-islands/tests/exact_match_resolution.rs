@@ -11,10 +11,8 @@
 //!    `("virtual:foo", "...")` behaves the same way —
 //!    `virtual:foo/bar` is unresolved.
 //!
-//! Esbuild gating follows the precedence used by the zfb-build
-//! integration tests: `ZFB_ESBUILD_BIN` env var → workspace slot →
-//! `which esbuild`. Skips with a printed note when no binary is
-//! present.
+//! Bundling runs in-process through native Rolldown (#4635), so these tests
+//! never skip for a missing bundler binary.
 
 use std::fs;
 use std::path::PathBuf;

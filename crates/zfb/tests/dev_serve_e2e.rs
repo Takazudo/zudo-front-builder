@@ -96,8 +96,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use zfb_test_utils::{
-    assert_frame_has_data, locate_esbuild, next_sse_event_name, open_sse, zfb_binary,
-    CrossBinaryE2eLock,
+    assert_frame_has_data, next_sse_event_name, open_sse, zfb_binary, CrossBinaryE2eLock,
 };
 
 /// Serializes the spawning tests in this file (each boots a full V8 +
@@ -265,7 +264,7 @@ impl DevSession {
 /// own process group, with stdout/stderr captured to files (NEVER
 /// pipes: a piped child that outgrows the ~64KB OS pipe buffer blocks
 /// on write and masquerades as a hang — build_terminates.rs pattern).
-fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, extra_env: &[(&str, &str)]) -> DevSession {
+fn spawn_dev(tmp: &tempfile::TempDir, extra_env: &[(&str, &str)]) -> DevSession {
     // macOS /tmp is a symlink to /private/tmp; notify reports canonical
     // paths, so every path the dev process and this test compare must
     // agree on the canonical form (watch_add_confirm.rs:266-271).
@@ -285,7 +284,6 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, extra_env: &[(&str, &str)]
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     // Strip any inherited lazy-render switches (codex review, #1027):
@@ -486,16 +484,9 @@ async fn dev_e2e_edit_to_serve_loop() {
     // the lock-ordering note in zfb-test-utils/src/cross_binary_lock.rs.
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dev_serve_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("create tempdir for dev-loop-basic fixture");
-    let mut session = spawn_dev(&tmp, &esbuild, &[]);
+    let mut session = spawn_dev(&tmp, &[]);
     let pgid = session.guard.pgid;
 
     let scenarios = async {
@@ -535,16 +526,9 @@ async fn dev_e2e_eager_escape_hatch() {
     // the lock-ordering note in zfb-test-utils/src/cross_binary_lock.rs.
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dev_serve_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("create tempdir for dev-loop-basic fixture");
-    let mut session = spawn_dev(&tmp, &esbuild, &[("ZFB_DEV_EAGER", "1")]);
+    let mut session = spawn_dev(&tmp, &[("ZFB_DEV_EAGER", "1")]);
     let pgid = session.guard.pgid;
 
     let scenarios = async {
@@ -605,13 +589,6 @@ async fn dev_e2e_edit_during_boot_render_window_is_observed() {
     // the lock-ordering note in zfb-test-utils/src/cross_binary_lock.rs.
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dev_serve_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("create tempdir for dev-loop-basic fixture");
     let window = BOOT_RENDER_WINDOW_MS.to_string();
@@ -622,7 +599,6 @@ async fn dev_e2e_edit_during_boot_render_window_is_observed() {
     // exactly the window Finding 2 is about.
     let mut session = spawn_dev(
         &tmp,
-        &esbuild,
         &[
             ("ZFB_DEV_EAGER", "1"),
             ("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS", window.as_str()),
@@ -783,16 +759,9 @@ async fn dev_e2e_decoy_export_syntax_strings_in_ssr_body_do_not_confuse_wrapper(
     // the lock-ordering note in zfb-test-utils/src/cross_binary_lock.rs.
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dev_serve_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("create tempdir for dev-loop-basic fixture");
-    let mut session = spawn_dev(&tmp, &esbuild, &[]);
+    let mut session = spawn_dev(&tmp, &[]);
     let pgid = session.guard.pgid;
 
     let body = async {

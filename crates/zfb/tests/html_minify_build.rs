@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 fn node_available() -> bool {
     Command::new("node")
@@ -23,12 +23,9 @@ fn is_known_skip(combined: &str) -> bool {
     combined.contains("direct-v8 = off") || combined.contains("no esbuild")
 }
 
-fn run_zfb_build(root: &Path, esbuild: &Path, extra_args: &[&str]) -> std::process::Output {
+fn run_zfb_build(root: &Path, extra_args: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(zfb_binary!());
-    cmd.arg("build")
-        .args(extra_args)
-        .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild);
+    cmd.arg("build").args(extra_args).current_dir(root);
     cmd.output().expect("spawn `zfb build`")
 }
 
@@ -156,19 +153,12 @@ fn production_html_minification_real_build_path() {
         eprintln!("[html_minify_build] node not on PATH; skipping postBuild fixture test.");
         return;
     }
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[html_minify_build] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     write_fixture(root);
 
-    let output = run_zfb_build(root, &esbuild, &[]);
+    let output = run_zfb_build(root, &[]);
     if assert_build_success_or_skip(output, "enabled").is_none() {
         return;
     }
@@ -217,7 +207,7 @@ fn production_html_minification_real_build_path() {
         "non-HTML SSG output should not be HTML-minified:\n{feed}",
     );
 
-    let output = run_zfb_build(root, &esbuild, &["--no-minify-html"]);
+    let output = run_zfb_build(root, &["--no-minify-html"]);
     assert_build_success_or_skip(output, "cli-disable")
         .expect("second build should only skip when first build skipped");
     let disabled = fs::read_to_string(dist.join("index.html")).expect("read disabled index");

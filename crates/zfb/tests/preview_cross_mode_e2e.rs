@@ -86,7 +86,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 /// Overall wall-clock watchdog covering the build step plus both spawned
 /// servers plus all scenario assertions. Comfortably under
@@ -331,7 +331,7 @@ fn spawn_zfb(
 /// answers 200. Panics if the process exits prematurely, or the deadline
 /// is exceeded, with the captured logs attached — there is no
 /// "known-skip indicator" branch here (unlike `dev_serve_e2e.rs`): by
-/// the time this is called, `locate_esbuild()`/`node_available()` have
+/// the time this is called, `node_available()` has
 /// already gated the whole test, so a premature exit is a real failure,
 /// not an environment gap.
 async fn boot_and_get_port(
@@ -398,11 +398,10 @@ async fn boot_and_get_port(
 /// with a known-skip indicator (V8/esbuild absent) — matches the
 /// `dev_build_static_parity.rs::run_build` convention. Sync on purpose;
 /// the caller hops to `spawn_blocking` so the async runtime isn't parked.
-fn run_build(root: &Path, esbuild: &Path) -> bool {
+fn run_build(root: &Path) -> bool {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn `zfb build`");
 
@@ -765,11 +764,7 @@ async fn run_shared_post_scenarios(client: &reqwest::Client, base: &str, session
 // The test
 // ---------------------------------------------------------------------------
 
-async fn run_cross_mode_case(
-    case: CrossModeCase,
-    client: &reqwest::Client,
-    esbuild: &Path,
-) -> bool {
+async fn run_cross_mode_case(case: CrossModeCase, client: &reqwest::Client) -> bool {
     // ── Build once, for the preview half ──────────────────────────
     let preview_tmp = tempfile::tempdir().expect("tempdir for preview root");
     let preview_root = preview_tmp
@@ -781,8 +776,7 @@ async fn run_cross_mode_case(
 
     let build_ok = {
         let root = preview_root.clone();
-        let esbuild = esbuild.to_path_buf();
-        tokio::task::spawn_blocking(move || run_build(&root, &esbuild))
+        tokio::task::spawn_blocking(move || run_build(&root))
             .await
             .expect("join zfb build task")
     };
@@ -845,15 +839,7 @@ async fn run_cross_mode_case(
     drop(preview_session);
 
     // ── Dev half — same scenarios, same expected literal values ────
-    let mut dev_session = spawn_zfb(
-        &dev_root,
-        &["dev", "--port", "0"],
-        &[(
-            "ZFB_ESBUILD_BIN",
-            esbuild.to_str().expect("esbuild path is UTF-8"),
-        )],
-        case.dev_label(),
-    );
+    let mut dev_session = spawn_zfb(&dev_root, &["dev", "--port", "0"], &[], case.dev_label());
     let dev_port = boot_and_get_port(
         &mut dev_session,
         client,
@@ -885,13 +871,6 @@ async fn preview_and_dev_agree_on_redirects_and_plugin_middleware() {
     // to layer underneath it.
     let _e2e_lock = CrossBinaryE2eLock::acquire();
 
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[preview_cross_mode_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
     if !node_available() {
         eprintln!(
             "[preview_cross_mode_e2e] node not on PATH; skipping (the plugin host needs it)."
@@ -907,10 +886,10 @@ async fn preview_and_dev_agree_on_redirects_and_plugin_middleware() {
             .build()
             .expect("build reqwest client");
 
-        if !run_cross_mode_case(CrossModeCase::Default, &client, &esbuild).await {
+        if !run_cross_mode_case(CrossModeCase::Default, &client).await {
             return;
         }
-        run_cross_mode_case(CrossModeCase::CustomBase, &client, &esbuild).await;
+        run_cross_mode_case(CrossModeCase::CustomBase, &client).await;
     };
 
     tokio::time::timeout(OVERALL_DEADLINE, overall)

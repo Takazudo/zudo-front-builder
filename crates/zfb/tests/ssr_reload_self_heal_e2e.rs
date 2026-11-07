@@ -95,9 +95,10 @@
 //!
 //! ## Status
 //!
-//! GREEN as of #2002. Kept `#[ignore]`d as `env-gate: esbuild` (they spawn
-//! a real `zfb dev` and need the pinned native binary); wiring them into a
-//! CI lane is Wave 5/6's call (#2005, #2007), not theirs to self-promote.
+//! GREEN as of #2002. Kept `#[ignore]`d as `heavy:` (they spawn a real
+//! `zfb dev`; #4635 retagged them from the retired esbuild env-gate); wiring
+//! them into a CI lane is Wave 5/6's call (#2005, #2007), not theirs to
+//! self-promote.
 
 #![cfg(unix)]
 
@@ -107,9 +108,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{
-    locate_esbuild, next_sse_event_name, open_sse, zfb_binary, CrossBinaryE2eLock,
-};
+use zfb_test_utils::{next_sse_event_name, open_sse, zfb_binary, CrossBinaryE2eLock};
 
 const BOOT_DEADLINE: Duration = Duration::from_secs(90);
 const SIGNAL_DEADLINE: Duration = Duration::from_secs(60);
@@ -215,7 +214,7 @@ fn recovery_fixed_page_source() -> String {
     )
 }
 
-fn spawn_dev(root: &Path, esbuild: &Path, extra_env: &[(&str, &str)]) -> DevSession {
+fn spawn_dev(root: &Path, extra_env: &[(&str, &str)]) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log file");
@@ -227,7 +226,6 @@ fn spawn_dev(root: &Path, esbuild: &Path, extra_env: &[(&str, &str)]) -> DevSess
         .arg("--port")
         .arg("0")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     command
@@ -397,20 +395,13 @@ async fn poll_until_contains(
 /// publish tells an already-open tab to reload, at the same moment the SSR
 /// route becomes servable.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: esbuild — cargo test -p zfb --test ssr_reload_self_heal_e2e \
+#[ignore = "heavy: cargo test -p zfb --test ssr_reload_self_heal_e2e \
             -- --ignored --exact ssr_only_healthy_deferred_publish_reloads_open_tab \
-            (ZFB_ESBUILD_BIN or the staged crates/zfb/binaries/esbuild slot). GREEN as \
-            of issue #2002 — see epic #1999 / issue #1826."]
+            (spawns a real zfb dev). GREEN as of issue #2002 — see epic #1999 / \
+            issue #1826."]
 async fn ssr_only_healthy_deferred_publish_reloads_open_tab() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[ssr_reload_self_heal] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN to the pinned native binary."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("ssr-reload-self-heal healthy fixture tempdir");
     let root = tmp
@@ -424,7 +415,6 @@ async fn ssr_only_healthy_deferred_publish_reloads_open_tab() {
     // short enough to keep the test's wall clock reasonable.
     let mut session = spawn_dev(
         &root,
-        &esbuild,
         &[
             ("ZFB_DEV_BOOT_LAZY", "cold"),
             ("ZFB_DEV_TEST_SLOW_BUNDLE_MS", "4000"),
@@ -529,20 +519,13 @@ async fn ssr_only_healthy_deferred_publish_reloads_open_tab() {
 /// `ssr_routes_published` bit through the same seam the healthy path uses,
 /// so the two heal identically rather than one healing better.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: esbuild — cargo test -p zfb --test ssr_reload_self_heal_e2e \
+#[ignore = "heavy: cargo test -p zfb --test ssr_reload_self_heal_e2e \
             -- --ignored --exact ssr_only_cold_bootstrap_recovery_reloads_open_tab \
-            (ZFB_ESBUILD_BIN or the staged crates/zfb/binaries/esbuild slot). GREEN as \
-            of issue #2002 — see epic #1999 / issue #1826 / issue #1809."]
+            (spawns a real zfb dev). GREEN as of issue #2002 — see epic #1999 / \
+            issue #1826 / issue #1809."]
 async fn ssr_only_cold_bootstrap_recovery_reloads_open_tab() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[ssr_reload_self_heal] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN to the pinned native binary."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("ssr-reload-self-heal recovery fixture tempdir");
     let root = tmp
@@ -556,7 +539,7 @@ async fn ssr_only_cold_bootstrap_recovery_reloads_open_tab() {
     fs::create_dir_all(trigger_path.parent().expect("trigger parent")).expect("create src/");
     fs::write(&trigger_path, "export const trigger = ;\n").expect("write recovery trigger module");
 
-    let mut session = spawn_dev(&root, &esbuild, &[("ZFB_DEV_BOOT_LAZY", "cold")]);
+    let mut session = spawn_dev(&root, &[("ZFB_DEV_BOOT_LAZY", "cold")]);
     let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // environmental skip
     };

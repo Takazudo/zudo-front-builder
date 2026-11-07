@@ -24,8 +24,12 @@ fn prepared_build(
     for (path, source) in files {
         fs::write(dir.join(path), source).unwrap();
     }
-    let mut request =
-        BundleRequest::new(&dir, "entry.js", OutputLayout::dir("out"), Platform::Neutral);
+    let mut request = BundleRequest::new(
+        &dir,
+        "entry.js",
+        OutputLayout::dir("out"),
+        Platform::Neutral,
+    );
     request.splitting = true;
     request.graph = Some("out/meta.json".into());
     customize(&mut request);
@@ -323,7 +327,9 @@ fn real_build_with_an_external_spelled_like_the_entry_is_indistinguishable() {
             if let OutputLayout::Dir { entry_names, .. } = &mut request.output {
                 *entry_names = Some("islands".into());
             }
-            request.externals.push(External::Package("./islands.js".into()));
+            request
+                .externals
+                .push(External::Package("./islands.js".into()));
         },
     );
     result.expect("an external spelled like the entry no longer fails the build");
