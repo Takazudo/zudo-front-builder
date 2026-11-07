@@ -88,22 +88,24 @@ jobs:
         with:
           prefix-key: "v2-wind-computed-style-zfb-ssr"
 
-      # rust-cache v2.9.1's partial-restore pre-clean deletes at most one
-      # build-script output dir per profile without its fingerprint, so cargo
-      # skips re-running that script (seen: v8 losing librusty_v8.a, #4638).
-      # Drop each build-script-run fingerprint whose output dir is gone.
-      - name: Drop fingerprints of missing build-script outputs
+      # rusty_v8's build script copies librusty_v8.a into target/<profile>/,
+      # a location rust-cache v2.9.1 never keeps. An exact restore reuses the
+      # v8 rlib (the archive is bundled in it); a partial restore can recompile
+      # v8 while its build script stays fresh, so the link fails (#4638).
+      # Without the archive, drop v8's build-script-run fingerprints.
+      - name: Re-run the v8 build script when its archive is absent
         run: |
           shopt -s nullglob
-          for fingerprint in target/*/.fingerprint/*/; do
-            fingerprint="${fingerprint%/}"
-            runs=("$fingerprint"/run-build-script-*)
-            (( ${#runs[@]} )) || continue
-            profile="${fingerprint%/.fingerprint/*}"
-            if [[ ! -d "$profile/build/$(basename "$fingerprint")" ]]; then
-              echo "rerun build script: $fingerprint"
-              rm -rf "$fingerprint"
-            fi
+          for profile in target/*/; do
+            profile="${profile%/}"
+            [[ -d "$profile/.fingerprint" && ! -f "$profile/librusty_v8.a" ]] || continue
+            for fingerprint in "$profile"/.fingerprint/v8-*/; do
+              runs=("$fingerprint"run-build-script-*)
+              if (( ${#runs[@]} )); then
+                echo "re-run v8 build script: $fingerprint"
+                rm -rf "$fingerprint"
+              fi
+            done
           done
 
       - name: Install project dependencies
