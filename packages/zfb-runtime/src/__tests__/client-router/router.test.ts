@@ -2141,6 +2141,144 @@ describe("handleSubmit — form intercept (#1400)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(config.routed ? 1 : 0);
   });
 
+  // #4617: native submission targets the form's current node document, so a
+  // form moved into another document is declined without preventDefault() at
+  // both checkpoints (before and after the router's own FormData).
+  describe("form moved into another document", () => {
+    // happy-dom 15 never updates a node's document on a cross-document insert
+    // (and adoptNode only defines an own property), so model the browser's node
+    // document on the Node.prototype getter the router reads. Keyed by
+    // isSameNode: happy-dom dispatches with a form's raw target, not its Proxy.
+    let nodeDocuments: [Node, Document][] = [];
+    const nativeOwnerDocument = Object.getOwnPropertyDescriptor(Node.prototype, "ownerDocument")!;
+    beforeEach(() => {
+      Object.defineProperty(Node.prototype, "ownerDocument", {
+        ...nativeOwnerDocument,
+        get(this: Node) {
+          const entry = nodeDocuments.find(([node]) => node.isSameNode(this));
+          return entry ? entry[1] : nativeOwnerDocument.get!.call(this);
+        },
+      });
+    });
+    afterEach(() => {
+      Object.defineProperty(Node.prototype, "ownerDocument", nativeOwnerDocument);
+      nodeDocuments = [];
+    });
+    function moveTo(other: Document, form: HTMLFormElement): void {
+      other.body.append(form);
+      nodeDocuments.push([form, other]);
+    }
+
+    // A target-phase form listener runs before the router's document listener,
+    // whose place in the dispatch path was fixed when the event started.
+    function submitMovedBy(move: (form: HTMLFormElement) => void): {
+      form: HTMLFormElement;
+      event: SubmitEvent;
+      routerSaw: () => boolean;
+    } {
+      const form = createForm({ action: "/results", method: "post", fields: { q: "value" } });
+      form.addEventListener("submit", () => move(form), { once: true });
+      let reached = false;
+      document.addEventListener("submit", () => (reached = true), { once: true });
+      const event = new SubmitEvent("submit", { bubbles: true, cancelable: true });
+      form.dispatchEvent(event);
+      return { form, event, routerSaw: () => reached };
+    }
+
+    it("declines before FormData when a submit listener moved the form", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const formDataSpy = vi.spyOn(globalThis, "FormData");
+      const other = document.implementation.createHTMLDocument("other");
+      const { form, event, routerSaw } = submitMovedBy((form) => moveTo(other, form));
+      await drain();
+      expect(routerSaw()).toBe(true);
+      expect(form.isConnected).toBe(true);
+      expect(event.defaultPrevented).toBe(false);
+      expect(formDataSpy).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+      formDataSpy.mockRestore();
+    });
+
+    it("declines after FormData when entry-list construction moved the form", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const other = document.implementation.createHTMLDocument("other");
+      const form = createForm({ action: "/results", method: "post", fields: { q: "value" } });
+      const Original = FormData;
+      let constructed = 0;
+      // Stands in for a formdata listener: happy-dom fires no formdata event.
+      // Moves the form's Proxy; the router holds the raw event target.
+      vi.stubGlobal(
+        "FormData",
+        class extends Original {
+          constructor(target?: HTMLFormElement, submitter?: HTMLElement | null) {
+            super(target, submitter);
+            constructed += 1;
+            moveTo(other, form);
+          }
+        },
+      );
+      const event = new SubmitEvent("submit", { bubbles: true, cancelable: true });
+      form.dispatchEvent(event);
+      await drain();
+      expect(constructed).toBe(1);
+      expect(form.isConnected).toBe(true);
+      expect(event.defaultPrevented).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("declines a moved form whose ownerDocument control claims this document", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const formDataSpy = vi.spyOn(globalThis, "FormData");
+      const other = document.implementation.createHTMLDocument("other");
+      const { form, event, routerSaw } = submitMovedBy((form) => {
+        moveTo(other, form);
+        Object.defineProperty(form, "ownerDocument", { value: document, configurable: true });
+      });
+      await drain();
+      expect(routerSaw()).toBe(true);
+      expect(form.ownerDocument).toBe(document);
+      expect(event.defaultPrevented).toBe(false);
+      expect(formDataSpy).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+      formDataSpy.mockRestore();
+    });
+
+    it("routes an in-document form whose ownerDocument control claims another document", async () => {
+      const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+        htmlResponse(pageHtml("Results", "done")),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const other = document.implementation.createHTMLDocument("other");
+      const form = createForm({ action: "/results", method: "post", fields: { q: "value" } });
+      Object.defineProperty(form, "ownerDocument", { value: other, configurable: true });
+      const event = new SubmitEvent("submit", { bubbles: true, cancelable: true });
+      form.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      await drain();
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect((fetchMock.mock.calls[0]![1]?.body as FormData).get("q")).toBe("value");
+    });
+
+    it("routes a form moved into another document and back before submission", async () => {
+      const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+        htmlResponse(pageHtml("Results", "done")),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const other = document.implementation.createHTMLDocument("other");
+      const { event } = submitMovedBy((form) => {
+        moveTo(other, form);
+        document.body.append(form);
+        nodeDocuments = [];
+      });
+      expect(event.defaultPrevented).toBe(true);
+      await drain();
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+  });
+
   it("routes a plain Event('submit') that carries no submitter property", async () => {
     const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
       htmlResponse(pageHtml("Results", "done")),

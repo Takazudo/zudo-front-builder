@@ -1614,6 +1614,19 @@ function isConnectedNode(node: Node): boolean {
   }
 }
 
+// Native submission targets the navigable of the form's current node document,
+// so a form moved into another document is no longer this router's. Read through
+// Node.prototype: a control named "ownerDocument" shadows the form's own property.
+function inThisDocument(node: Node): boolean {
+  let owner: unknown;
+  try {
+    owner = Reflect.get(Node.prototype, "ownerDocument", node);
+  } catch {
+    return false;
+  }
+  return isSameNodeAs(owner as object | null, document);
+}
+
 function formOwnerOf(source: EventTarget | null | undefined): HTMLFormElement | null {
   if (isHtmlFormElement(source)) return source;
   if (source == null || typeof source !== "object") return null;
@@ -1792,15 +1805,17 @@ function handleSubmit(ev: SubmitEvent): void {
   // after the submit event and again after building the entry list; a formdata
   // listener can remove it during construction. Decline without preventDefault()
   // so the browser applies its own abort. No latch: a reinserted form proceeds.
+  // A form moved into another document is declined at both checkpoints too, so
+  // the browser submits it from that document (#4617).
   // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
-  if (!isConnectedNode(form)) return;
+  if (!isConnectedNode(form) || !inThisDocument(form)) return;
   // Decline an invalidated submitter before FormData and preventDefault(); the
   // browser's own submission still owns it. happy-dom reports the form itself
   // as the submitter of a submitter-less requestSubmit(); browsers report null.
   const entrySubmitter = submitter !== null && isSameNodeAs(submitter, form) ? null : submitter;
   if (entrySubmitter !== null && !isSubmitButtonOf(entrySubmitter, form)) return;
   const formData = new FormData(form, entrySubmitter ?? undefined);
-  if (!isConnectedNode(form)) return;
+  if (!isConnectedNode(form) || !inThisDocument(form)) return;
   const options: import("./types.js").Options = { sourceElement: submitter ?? form };
   if (method === "get") {
     action.search = urlEncodedFormEntries(formData).toString();
