@@ -13,13 +13,13 @@ Choose where to start:
 
 ## Who this is for
 
-Use zfb for documentation, blogs and content inside applications when you want small APIs that compose. Read [Design philosophy](../architecture/design-philosophy.mdx) for the rationale and [Deploy & Embed](../deploy-embed/index.mdx) for delivery choices.
+Use zfb for documentation, blogs and content inside applications when you want small APIs that compose. Read [Design philosophy](../architecture/design-philosophy.mdx) for the rationale, [Three ways to run zfb](../architecture/three-ways-to-run-zfb.mdx) for the deployment shapes, and [Deploy & Embed](../deploy-embed/index.mdx) for delivery choices.
 
 ## What zfb provides
 
 For the "why this shape" answer — narrow scope, recipes-over-plugins, no middleware layer — see [Design philosophy](../architecture/design-philosophy.mdx).
 
-- **Embedded V8 worker** — pages render through a Rust-embedded V8 runtime. No separate Node process is required at build time.
+- **Embedded V8 rendering** — at build time, pages render inside the V8 JavaScript engine embedded in the `zfb` binary. No separate Node process is required.
 - **Atomic writes** — generated files are written atomically per file, so readers never observe a half-written HTML file. `zfb build` wipes the output directory before it starts writing, so a failed build does not guarantee the previous `dist/` remains intact.
 - **Per-page incremental rebuild** — changing a shared layout touches only the pages that import it, not the whole site. Dev-loop latency stays in the tens of milliseconds even on large sites.
 - **Opt-in islands** — a `"use client"` module makes exports eligible as targets; a reachable `<Island>` boundary activates an island. Pages without islands can still load [independent client scripts](../guides/client-scripts.mdx).
@@ -28,7 +28,7 @@ For the "why this shape" answer — narrow scope, recipes-over-plugins, no middl
 - **MDX components** — import any TSX component into `.mdx` content and use it as JSX.
 - **Non-HTML pages** — a page file can export a `contentType` to produce JSON, XML, RSS, or any other text format instead of HTML.
 - **Content-query bridge** — `getCollection()` is available inside MDX files and inside `paths()`, not only in page components.
-- **Single-binary distribution** — zfb ships as one Rust binary. No `node_modules` for the framework itself, no plugin registry to audit.
+- **Single-binary engine** — the engine is one native binary: install it standalone without Node, or through `@takazudo/zfb`, which delivers the same binary through a platform-specific package. There is no plugin registry to audit.
 
 ## Familiar from Astro
 
@@ -72,5 +72,5 @@ The `@takazudo/zfb-runtime` package ships a `<ClientRouter />` component that in
 ## What to read next
 
 [How zfb works: a guide for frontend developers](../architecture/architecture-overview.mdx) gives the overall model before the detailed pages.
-[Installation](./installation.mdx) covers building and installing the CLI.
+[Installation](./installation.mdx) covers installing the CLI with npm / pnpm or as a standalone binary.
 [Your first site](./your-first-site.mdx) walks through scaffolding a project and running a build end to end.
