@@ -7011,6 +7011,7 @@ dependencies = [
  "walkdir",
  "zfb-binfetch",
  "zfb-build",
+ "zfb-compiler-worker",
  "zfb-config-loader",
  "zfb-content",
  "zfb-css",
@@ -7071,6 +7072,19 @@ dependencies = [
  "zfb-toolchain-pins",
  "zfb-types",
  "zfb-watcher",
+]
+
+[[package]]
+name = "zfb-compiler-worker"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "zfb-rolldown-prototype",
 ]
 
 [[package]]

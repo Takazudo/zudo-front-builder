@@ -3,13 +3,18 @@ use clap::Parser;
 use zfb::cli::{Cli, Command};
 use zfb::commands;
 
-fn main() {
+fn main() -> std::process::ExitCode {
+    // Must stay first: the compiler worker mode initializes nothing else.
+    if let Some(code) = zfb_compiler_worker::run_if_requested() {
+        return code;
+    }
     #[cfg(feature = "direct-v8")]
     if let Err(error) = zfb_render::initialize_v8() {
         eprintln!("V8 initialization failed: {error}");
         std::process::exit(1);
     }
     run();
+    std::process::ExitCode::SUCCESS
 }
 
 #[tokio::main]
