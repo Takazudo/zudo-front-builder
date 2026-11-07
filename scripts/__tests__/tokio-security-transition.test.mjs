@@ -48,9 +48,17 @@ describe("exact tokio security replacement (#4569)", () => {
     );
     expect(TOKIO_SECURITY_TRANSITION.oldLockSha256).toBe(oxcEdge.newCargoLockSha256);
   });
-  it("matches the committed Cargo.lock byte for byte", () => {
-    const live = readFileSync(new URL("../../Cargo.lock", import.meta.url), "utf8");
-    expect(sha(live)).toBe(TOKIO_SECURITY_TRANSITION.newLockSha256);
+  // The #4569 new lock is the #4635 esbuild-removal transition's frozen old lock.
+  it("matches the #4635 esbuild-removal transition's frozen old lock byte for byte", () => {
+    const next = readFileSync(
+      new URL(
+        "../../research/v3-island-size/cargo-transitions/esbuild-removal-4635.old.lock",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(sha(next)).toBe(TOKIO_SECURITY_TRANSITION.newLockSha256);
+    expect(next).toBe(newText);
   });
   it("admits only the approved pair and records the decision", () => {
     expect(proof()).toMatchObject({
