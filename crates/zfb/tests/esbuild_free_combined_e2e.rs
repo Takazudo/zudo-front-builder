@@ -685,20 +685,19 @@ async fn wait_for_ready(session: &mut DevSession) -> String {
 /// Polls `url` until a 200 body contains `needle`, returning that body.
 async fn wait_for_body(session: &mut DevSession, url: &str, needle: &str, phase: &str) -> String {
     let started = Instant::now();
-    let mut last = String::from("no response");
     loop {
         session.assert_alive(phase);
-        match reqwest::get(url).await {
+        let last = match reqwest::get(url).await {
             Ok(response) => {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
                 if status.is_success() && body.contains(needle) {
                     return body;
                 }
-                last = format!("HTTP {status}: {body}");
+                format!("HTTP {status}: {body}")
             }
-            Err(error) => last = error.to_string(),
-        }
+            Err(error) => error.to_string(),
+        };
         assert!(
             started.elapsed() < SCENARIO_DEADLINE,
             "{phase}: {url} did not serve {needle:?} within {}s; last: {last}\n{}",
