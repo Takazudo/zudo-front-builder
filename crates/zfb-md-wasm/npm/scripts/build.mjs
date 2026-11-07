@@ -72,7 +72,7 @@ const crateName = "zfb-md-wasm";
 // wasm-bindgen requires an EXACT version match between this CLI and the
 // `wasm-bindgen` crate resolved in the workspace Cargo.lock -- pinned here,
 // following crates/zfb-toolchain-pins' "pin + verify at use-time" pattern
-// used for esbuild and wrangler. Bump procedure: update this
+// used for wrangler. Bump procedure: update this
 // constant to match `grep -A1 '^name = "wasm-bindgen"$' Cargo.lock`, then
 // `cargo install wasm-bindgen-cli --version <new> --locked --force`.
 const EXPECTED_WASM_BINDGEN_VERSION = "0.2.121";
@@ -636,7 +636,7 @@ function buildWasmArtifact({ env, label, cargoFeatureArgs, outName, srcOutDir, w
   const resourceGlueDeclarationPath = resolve(srcOutDir, `${outName}_glue.zfb-resource.d.mts`);
 
   // One canonical generated runtime serves both variants of this entry. The
-  // marker turns the browser variant's static import into an esbuild file
+  // marker turns the browser variant's static import into a bundler file
   // resource, while the direct variant dynamically imports this same module.
   renameSync(gluePath, resourceGluePath);
   renameSync(glueDeclarationPath, resourceGlueDeclarationPath);

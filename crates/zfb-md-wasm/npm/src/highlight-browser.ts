@@ -8,8 +8,8 @@ import { createWasmApi } from "./runtime.js";
 // and why `compile`/`renderHtml` are absent here.
 //
 // `?url` is the explicit cross-bundler asset contract: both Vite and zfb's
-// pinned esbuild file loaders replace these imports with URL strings. Resolving
-// them from the final entry keeps relative esbuild output correct while also
+// bundler file loaders replace these imports with URL strings. Resolving
+// them from the final entry keeps relative bundler output correct while also
 // accepting Vite's base-prefixed URLs.
 const GLUE_URL = new URL(glueHref, import.meta.url);
 const WASM_URL = new URL(wasmHref, import.meta.url);
