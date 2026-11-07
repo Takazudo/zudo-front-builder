@@ -3,10 +3,19 @@ name = "zfb-config-loader"
 version = "0.0.0"
 edition = "2021"
 license = "MIT"
-description = "zfb TS-config evaluator: bundle zfb.config.ts with esbuild and evaluate it (in-process V8 on default builds, node subprocess on slim builds)."
+description = "zfb TS-config evaluator: bundle zfb.config.ts through the supervised native compiler worker and evaluate it (in-process V8 on default builds, node subprocess on slim builds)."
 publish = false
 
 [lib]
+
+# Test-only embedding host for this crate's tests: a worker host whose
+# executable is not the zfb CLI. Binaries of a dependency crate are never
+# built or installed with zfb.
+[[bin]]
+name = "config-loader-test-worker"
+path = "src/bin/config-loader-test-worker.rs"
+test = false
+doc = false
 
 # Feature-propagation seam for the V8 gate (issue #371, sub-task 4.1a).
 #
@@ -25,12 +34,16 @@ direct-v8 = ["zfb-render/direct-v8"]
 default = ["direct-v8"]
 
 [dependencies]
-# Shared esbuild binary resolver (resolve_esbuild_binary_with_env) and the
-# DEFAULT_ESBUILD_SLOT constant. `default-features = false` for the V8 gate —
-# this crate's runtime features are the single place V8 inclusion is decided here.
-zfb-build = { path = "../zfb-build", default-features = false }
-# In-process V8 config evaluator (ThreadedConfigEvaluator), behind the runtime features.
-zfb-render = { path = "../zfb-render", default-features = false }
+# Supervised native compiler worker that bundles `zfb.config.ts` (#4632).
+zfb-compiler-worker = { path = "../zfb-compiler-worker" }
+# Typed request fields (`OutputLayout`, `Platform`); the engine-neutral request
+# types need no `native` feature here.
+zfb-rolldown-prototype = { path = "../zfb-rolldown-prototype" }
+# In-process V8 config evaluator (ThreadedConfigEvaluator), behind the runtime
+# features. zfb-render's default-off build selects no syntect regex backend;
+# this native crate picks the default native one (zfb-build used to supply it
+# through feature unification).
+zfb-render = { path = "../zfb-render", default-features = false, features = ["syntect-onig"] }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1,6 +1,6 @@
-//! The `zfb.config.ts` evaluator: bundle with esbuild, evaluate (in-process
-//! V8 on default builds, `node` subprocess on slim builds), and resolve
-//! plugin module specifiers.
+//! The `zfb.config.ts` evaluator: bundle through the supervised native
+//! compiler worker, evaluate (in-process V8 on default builds, `node`
+//! subprocess on slim builds), and resolve plugin module specifiers.
 //!
 //! This module is config-shape-agnostic — it returns the user's `default`
 //! export as a [`serde_json::Value`] plus the resolved plugin specifiers
@@ -11,10 +11,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context as _, Result};
-// tokio::process::Command is used on both paths:
-//   - default (direct-v8): esbuild spawn in load_ts_via_inprocess_v8
-//   - slim (no direct-v8): esbuild + node spawns in load_ts_via_subprocess
 use tokio::process::Command;
+use zfb_compiler_worker::{BundleRequest, CompileJob, CompilerWorker, WorkerError, WorkerLauncher};
+use zfb_rolldown_prototype::{OutputLayout, Platform};
 
 // Only the in-process V8 path resolves plugins in Rust (the slim subprocess
 // path resolves them inside config-loader.mjs), so this import is gated to
@@ -35,33 +34,24 @@ const CONFIG_LOADER_MJS: &str = include_str!("../js/config-loader.mjs");
 /// Stub for the `zfb/config` (and `@takazudo/zfb/config`) import that user
 /// TS configs reach for. We alias both the unscoped bare form (`zfb/config`)
 /// and the full npm-package form (`@takazudo/zfb/config`) to this stub at
-/// esbuild time so either spelling works without installing the npm package.
+/// bundle time so either spelling works without installing the npm package.
 const CONFIG_STUB_MJS: &str = include_str!("../js/zfb-config-stub.mjs");
 
-/// Boxed callback that extracts an embedded `esbuild` binary into a tempdir.
-///
-/// The config-loader's esbuild resolver tries this tier (between the
-/// `ZFB_ESBUILD_BIN` env var and the workspace slot) so a `cargo install`-ed
-/// `zfb` binary — which has no `crates/zfb/binaries/` workspace dir — still
-/// resolves esbuild. The `zfb` bin crate supplies a getter backed by its
-/// compile-time `EMBEDDED_VENDOR` snapshot; consumers without that snapshot
-/// (e.g. `zfb-server`'s embed API) pass `None` and rely on the env / slot
-/// tiers. Returning `None` is treated as a miss (fall through to the
-/// workspace slot); the returned `TempDir` must outlive the spawned esbuild.
-pub type EmbeddedEsbuildGetter = Box<dyn Fn() -> Option<(tempfile::TempDir, PathBuf)>>;
-
-/// Knobs that tweak loader behaviour. `Default` is the production path with
-/// no overrides (plugins ARE resolved — the CLI / `zfb` bin relies on it).
+/// Knobs that tweak loader behaviour. `Default` resolves plugins and has no
+/// compiler worker launcher, so a real load needs
+/// [`compiler_worker`](Self::compiler_worker) set by the host.
 pub struct LoadOptions {
-    /// Override the esbuild binary path. `None` falls back to
-    /// `ZFB_ESBUILD_BIN`, then the embedded getter (if any), then
-    /// `zfb_build::DEFAULT_ESBUILD_SLOT`.
-    pub esbuild_binary: Option<PathBuf>,
-    /// Override the `node` binary. `None` uses `node` from `PATH`.
+    /// How to start the supervised compiler worker that bundles the config.
+    /// Only the host executable knows whether it can serve worker mode, so
+    /// the library never derives one: the zfb CLI passes
+    /// [`WorkerLauncher::zfb_cli`], an embedder passes a launcher for its
+    /// own executable whose `main` calls
+    /// `zfb_compiler_worker::run_if_requested()` first. `None` fails a
+    /// `.ts` load with an actionable error.
+    pub compiler_worker: Option<WorkerLauncher>,
+    /// Override the `node` binary. `None` uses `node` from `PATH`. Only the
+    /// slim (no `direct-v8`) build evaluates through `node`.
     pub node_binary: Option<OsString>,
-    /// Optional embedded-esbuild extraction tier (see
-    /// [`EmbeddedEsbuildGetter`]). `None` skips the tier.
-    pub embedded_esbuild_getter: Option<EmbeddedEsbuildGetter>,
     /// Resolve each `config.plugins[]` entry to a `file://` URL before
     /// returning. Defaults to `true` — the CLI / `zfb` bin path needs the
     /// resolved specifiers to load plugins, and must not change.
@@ -74,10 +64,10 @@ pub struct LoadOptions {
     /// those entries and succeeds. When `false`, resolution is skipped
     /// entirely and `resolved_plugins` comes back empty.
     pub resolve_plugins: bool,
-    /// Test-only escape hatch: when `Some`, skip the esbuild + node
-    /// subprocesses entirely and treat this string as the JSON form
-    /// of the loader envelope (or a bare `default` export object) from
-    /// the user's `zfb.config.ts`. Production code leaves this `None`.
+    /// Test-only escape hatch: when `Some`, skip bundling and evaluation
+    /// entirely and treat this string as the JSON form of the loader
+    /// envelope (or a bare `default` export object) from the user's
+    /// `zfb.config.ts`. Production code leaves this `None`.
     #[doc(hidden)]
     pub test_default_export_json: Option<String>,
 }
@@ -85,9 +75,8 @@ pub struct LoadOptions {
 impl Default for LoadOptions {
     fn default() -> Self {
         Self {
-            esbuild_binary: None,
+            compiler_worker: None,
             node_binary: None,
-            embedded_esbuild_getter: None,
             // Production / CLI default: resolve plugins. Embed callers
             // opt out explicitly with `resolve_plugins: false`.
             resolve_plugins: true,
@@ -113,12 +102,13 @@ pub struct LoadedTsConfig {
     pub resolved_plugins: Vec<String>,
 }
 
-/// Evaluate a single `zfb.config.ts` file: bundle it with esbuild, evaluate
-/// it (via embedded V8 on default features, via node on slim builds), and
-/// resolve each plugin entry's module specifier.
+/// Evaluate a single `zfb.config.ts` file: bundle it through the compiler
+/// worker, evaluate it (via embedded V8 on default features, via node on
+/// slim builds), and resolve each plugin entry's module specifier.
 ///
-/// `ts_path` is the config file; `dir` is the project root (esbuild cwd and
-/// the anchor for path-relative + bare-specifier plugin resolution).
+/// `ts_path` is the config file; `dir` is the project root (the bundle's
+/// working directory and the anchor for path-relative + bare-specifier
+/// plugin resolution).
 ///
 /// Returns the user's `default` export as a [`LoadedTsConfig`]. The caller
 /// deserialises the value into its own config shape — this crate is
@@ -141,6 +131,213 @@ pub async fn load_from_ts_file(
         let json = load_ts_via_subprocess(ts_path, dir, opts).await?;
         parse_loader_envelope(&json, ts_path)
     }
+}
+
+/// A bundled config: the single self-contained ESM file plus the private
+/// directory that owns it (dropping it removes the bundle and the stub).
+struct BundledConfig {
+    dir: tempfile::TempDir,
+    bundle_path: PathBuf,
+    graph: serde_json::Value,
+}
+
+/// Bundle `ts_path` (local imports, helper aliases and all) into one ESM
+/// file inside a fresh private temp directory, through the supervised
+/// compiler worker. The job deadline is [`CONFIG_SUBPROCESS_TIMEOUT`].
+async fn bundle_config(
+    ts_path: &Path,
+    dir: &Path,
+    opts: &LoadOptions,
+    platform: Platform,
+) -> Result<BundledConfig> {
+    let worker = CompilerWorker::require(opts.compiler_worker.clone()).map_err(|error| {
+        anyhow!(
+            "config loader: cannot bundle {}: {error}. Set \
+             `zfb_config_loader::LoadOptions::compiler_worker` to such a launcher",
+            ts_path.display()
+        )
+    })?;
+
+    // The worker resolves relative request paths against its own working
+    // directory, so hand it absolute paths in the caller's spelling.
+    let cwd = std::path::absolute(dir)
+        .with_context(|| format!("config loader: cannot resolve {}", dir.display()))?;
+    let entry = std::path::absolute(ts_path)
+        .with_context(|| format!("config loader: cannot resolve {}", ts_path.display()))?;
+
+    let tmp = tempfile::Builder::new()
+        .prefix("zfb-config-")
+        .tempdir()
+        .context("config loader: failed to allocate temp directory")?;
+    let stub_path = tmp.path().join("zfb-config-stub.mjs");
+    let bundle_path = tmp.path().join("zfb-config-bundle.mjs");
+    tokio::fs::write(&stub_path, CONFIG_STUB_MJS)
+        .await
+        .context("config loader: failed to stage zfb-config-stub.mjs")?;
+
+    let stub = stub_path.to_string_lossy().into_owned();
+    let mut request = BundleRequest::new(
+        cwd,
+        entry,
+        OutputLayout::file(bundle_path.clone()),
+        platform,
+    );
+    request.target = Some("esnext".to_owned());
+    // Both spellings must work: the documented bare `zfb/config` and the
+    // published-package form `@takazudo/zfb/config` real projects use.
+    request.resolve.aliases = vec![
+        ("zfb/config".to_owned(), stub.clone()),
+        ("@takazudo/zfb/config".to_owned(), stub),
+    ];
+
+    let output = worker
+        .compile(CompileJob::new(request, CONFIG_SUBPROCESS_TIMEOUT))
+        .await
+        .map_err(|error| bundle_error(ts_path, platform, error))?;
+
+    Ok(BundledConfig {
+        dir: tmp,
+        bundle_path,
+        graph: output.graph,
+    })
+}
+
+fn bundle_error(ts_path: &Path, platform: Platform, error: WorkerError) -> anyhow::Error {
+    match error {
+        WorkerError::Compile { diagnostic } => {
+            if platform == Platform::Neutral {
+                let builtins = unresolved_node_builtins(&diagnostic);
+                if !builtins.is_empty() {
+                    return node_builtin_error(ts_path, &builtins);
+                }
+            }
+            anyhow!(
+                "config loader: failed to bundle {}:\n{}",
+                ts_path.display(),
+                diagnostic.trim_end()
+            )
+        }
+        other => anyhow!(
+            "config loader: compiler worker failed to bundle {}: {other}",
+            ts_path.display()
+        ),
+    }
+}
+
+/// Node's builtin module names (`module.builtinModules`, unprefixed). A
+/// `node:`-prefixed specifier is a builtin whatever follows the prefix.
+const NODE_BUILTINS: &[&str] = &[
+    "assert",
+    "async_hooks",
+    "buffer",
+    "child_process",
+    "cluster",
+    "console",
+    "constants",
+    "crypto",
+    "dgram",
+    "diagnostics_channel",
+    "dns",
+    "domain",
+    "events",
+    "fs",
+    "http",
+    "http2",
+    "https",
+    "inspector",
+    "module",
+    "net",
+    "os",
+    "path",
+    "perf_hooks",
+    "process",
+    "punycode",
+    "querystring",
+    "readline",
+    "repl",
+    "stream",
+    "string_decoder",
+    "sys",
+    "timers",
+    "tls",
+    "trace_events",
+    "tty",
+    "url",
+    "util",
+    "v8",
+    "vm",
+    "wasi",
+    "worker_threads",
+    "zlib",
+];
+
+fn is_node_builtin(specifier: &str) -> bool {
+    if specifier.starts_with("node:") {
+        return true;
+    }
+    let root = specifier.split('/').next().unwrap_or(specifier);
+    NODE_BUILTINS.contains(&root)
+}
+
+/// Every external `node:*` or bare Node builtin import recorded in the
+/// bundle graph, in first-seen order.
+fn external_node_builtins(graph: &serde_json::Value) -> Vec<String> {
+    let mut found = Vec::new();
+    let sections = ["inputs", "outputs"];
+    for section in sections {
+        let Some(entries) = graph.get(section).and_then(|v| v.as_object()) else {
+            continue;
+        };
+        for entry in entries.values() {
+            let Some(imports) = entry.get("imports").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for import in imports {
+                if import.get("external").and_then(|v| v.as_bool()) != Some(true) {
+                    continue;
+                }
+                let Some(path) = import.get("path").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                if is_node_builtin(path) && !found.iter().any(|seen| seen == path) {
+                    found.push(path.to_owned());
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Node builtins named by `Could not resolve "<specifier>"` lines of a
+/// native diagnostic, in first-seen order.
+fn unresolved_node_builtins(diagnostic: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for line in diagnostic.lines() {
+        let Some((_, rest)) = line.split_once("Could not resolve ") else {
+            continue;
+        };
+        let rest = rest.trim();
+        let Some(quote) = rest.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+            continue;
+        };
+        let Some(specifier) = rest[1..].split(quote).next() else {
+            continue;
+        };
+        if is_node_builtin(specifier) && !found.iter().any(|seen| seen == specifier) {
+            found.push(specifier.to_owned());
+        }
+    }
+    found
+}
+
+fn node_builtin_error(ts_path: &Path, builtins: &[String]) -> anyhow::Error {
+    anyhow!(
+        "config loader: {} must be self-contained data config; it imports {}. Node \
+         builtins are not available while zfb evaluates its config: compute the value \
+         without them, or move the work into a plugin or a build step",
+        ts_path.display(),
+        builtins.join(", ")
+    )
 }
 
 /// Boxed future returned by an attempt closure passed to [`output_bounded_with`].
@@ -230,18 +427,19 @@ where
 pub const ETXTBSY_MAX_RETRIES: u32 = 5;
 pub const ETXTBSY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 
-/// Generous backstop timeout for config-loader subprocesses. Mirrors the 300 s
-/// used by `run_capturing` in `zfb-build` (see #648/#651) — a wedge guard, not
-/// a performance bound.
+/// Generous backstop deadline for config-loader child processes: the compiler
+/// worker job and the slim build's `node` evaluator. Mirrors the 300 s used by
+/// `run_capturing` in `zfb-build` (see #648/#651) — a wedge guard, not a
+/// performance bound.
 pub const CONFIG_SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// Bundle `ts_path` with esbuild (`--platform=neutral`) and evaluate it
-/// in-process using the embedded V8 isolate. Returns the resolved
-/// [`LoadedTsConfig`].
+/// Bundle `ts_path` for the neutral platform and evaluate it in-process using
+/// the embedded V8 isolate. Returns the resolved [`LoadedTsConfig`].
 ///
-/// `--platform=neutral` means any `node:*` import becomes a bundle-time
-/// error from esbuild (not a silent external + runtime crash). This is the
-/// explicit data-config contract: `zfb.config.ts` must be self-contained.
+/// This is the data-config contract: `zfb.config.ts` must be self-contained.
+/// Any `node:*` or bare Node builtin import is rejected from the bundle graph
+/// (or from the native unresolved-import failure) before V8 evaluates
+/// anything.
 #[cfg(feature = "direct-v8")]
 async fn load_ts_via_inprocess_v8(
     ts_path: &Path,
@@ -250,66 +448,21 @@ async fn load_ts_via_inprocess_v8(
 ) -> Result<LoadedTsConfig> {
     use zfb_render::ThreadedConfigEvaluator;
 
-    let (_esbuild_embed_guard, esbuild) = resolve_esbuild_binary_with_handle(opts)?;
-
-    let tmp = tempfile::Builder::new()
-        .prefix("zfb-config-")
-        .tempdir()
-        .context("config loader: failed to allocate temp directory")?;
-    let stub_path = tmp.path().join("zfb-config-stub.mjs");
-    let bundle_path = tmp.path().join("zfb-config-bundle.mjs");
-    tokio::fs::write(&stub_path, CONFIG_STUB_MJS)
-        .await
-        .context("config loader: failed to stage zfb-config-stub.mjs")?;
-    // CONFIG_LOADER_MJS is NOT staged here — V8 evaluates the bundle
-    // directly; the slim-build subprocess path is the only consumer.
-
-    // Bundle with --platform=neutral so node:* imports are bundle-time
-    // errors rather than silent externals that explode inside V8.
-    // data-config contract: zfb.config.ts must not import Node builtins.
-    let alias_arg = format!("--alias:zfb/config={}", stub_path.display());
-    let alias_scoped_arg = format!("--alias:@takazudo/zfb/config={}", stub_path.display());
-    let outfile_arg = format!("--outfile={}", bundle_path.display());
-    let mut cmd = Command::new(&esbuild);
-    cmd.current_dir(dir);
-    cmd.arg("--bundle");
-    cmd.arg("--format=esm");
-    cmd.arg("--platform=neutral");
-    cmd.arg("--target=esnext");
-    cmd.arg("--log-level=warning");
-    cmd.arg(&alias_arg);
-    cmd.arg(&alias_scoped_arg);
-    cmd.arg(&outfile_arg);
-    cmd.arg(ts_path);
-
-    // Bounded wait — guards against the unbounded-output() hang class (#648/#651).
-    let esbuild_out = output_bounded(&mut cmd, CONFIG_SUBPROCESS_TIMEOUT, "esbuild (neutral)")
-        .await?
-        .with_context(|| {
-            format!(
-                "config loader: failed to spawn esbuild at {}",
-                esbuild.display()
-            )
-        })?;
-    if !esbuild_out.status.success() {
-        let stderr = String::from_utf8_lossy(&esbuild_out.stderr);
-        bail!(
-            "config loader: esbuild failed to bundle {} ({}): {}",
-            ts_path.display(),
-            esbuild_out.status,
-            stderr.trim()
-        );
+    let bundled = bundle_config(ts_path, dir, opts, Platform::Neutral).await?;
+    let builtins = external_node_builtins(&bundled.graph);
+    if !builtins.is_empty() {
+        return Err(node_builtin_error(ts_path, &builtins));
     }
 
-    // Read the bundle off disk, then hand off to V8.
-    let bundle_src = tokio::fs::read_to_string(&bundle_path)
+    let bundle_src = tokio::fs::read_to_string(&bundled.bundle_path)
         .await
         .with_context(|| {
             format!(
-                "config loader: failed to read esbuild output at {}",
-                bundle_path.display()
+                "config loader: failed to read the config bundle at {}",
+                bundled.bundle_path.display()
             )
         })?;
+    drop(bundled.dir);
 
     // Evaluate in a dedicated OS thread so V8 startup doesn't pin a
     // tokio worker (V8 boot can take hundreds of ms).
@@ -465,115 +618,22 @@ fn parse_loader_envelope(json: &str, ts_path: &Path) -> Result<LoadedTsConfig> {
     })
 }
 
-/// Resolve the esbuild binary path, delegating to the shared resolver in
-/// `zfb_build`. Lookup order (superset — see
-/// [`zfb_build::resolve_esbuild_binary_with_env`] for the canonical
-/// documentation):
+/// Bundle `ts_path` for the Node platform through the compiler worker, then
+/// run `node` to pull the default export back as JSON (envelope shape).
 ///
-/// 1. `LoadOptions::esbuild_binary` explicit override
-/// 2. `ZFB_ESBUILD_BIN` environment variable
-/// 3. Embedded extraction via `LoadOptions::embedded_esbuild_getter` (the
-///    `zfb` bin crate supplies an `EMBEDDED_VENDOR`-backed getter; consumers
-///    without that snapshot pass `None`)
-/// 4. The staged slot under `crates/zfb/binaries/esbuild/` (in-workspace
-///    dev fallback)
-///
-/// The caller MUST hold the returned `TempDir` handle alive for as long as
-/// the returned `PathBuf` is referenced by a running subprocess — dropping
-/// the handle removes the tempdir and the binary along with it.
-pub fn resolve_esbuild_binary_with_handle(
-    opts: &LoadOptions,
-) -> Result<(Option<tempfile::TempDir>, PathBuf)> {
-    // Delegate to the single shared resolver in zfb-build. The embedded
-    // extraction tier (tier 3) is passed as a closure so zfb-build's resolver
-    // can slot it in between the env tier (2) and the workspace slot tier (4).
-    // A `None` getter, or a getter that returns `None`, is treated as a miss —
-    // the resolver falls through to the workspace slot tier (the expected path
-    // during in-workspace development where no vendor snapshot was staged).
-    zfb_build::resolve_esbuild_binary_with_env(
-        opts.esbuild_binary.as_deref(),
-        |name| std::env::var_os(name),
-        opts.embedded_esbuild_getter
-            .as_ref()
-            .map(|getter| move || getter()),
-        None,
-    )
-}
-
-/// Run esbuild + node to compile `ts_path` to ESM and pull the default
-/// export back as JSON (envelope shape).
-///
-/// Slim-build fallback: available only when `direct-v8` is disabled so the
-/// node subprocess path is preserved for the slim-build audience.
+/// Slim-build fallback: available only when `direct-v8` is disabled. Node
+/// evaluates the bundle, so builtins stay external and remain usable here,
+/// exactly as before.
 #[cfg(not(feature = "direct-v8"))]
 async fn load_ts_via_subprocess(ts_path: &Path, dir: &Path, opts: &LoadOptions) -> Result<String> {
-    // The TempDir handle (when the embedded extraction tier is taken) must
-    // outlive every subprocess spawn below — esbuild and node both reference
-    // the extracted binary path. Drop only happens at function return.
-    let (_esbuild_embed_guard, esbuild) = resolve_esbuild_binary_with_handle(opts)?;
-
-    // Stage the embedded helper scripts and esbuild output into a
-    // tempdir that vanishes at the end of this function.
-    let tmp = tempfile::Builder::new()
-        .prefix("zfb-config-")
-        .tempdir()
-        .context("config loader: failed to allocate temp directory")?;
-    let stub_path = tmp.path().join("zfb-config-stub.mjs");
-    let loader_path = tmp.path().join("config-loader.mjs");
-    let bundle_path = tmp.path().join("zfb-config-bundle.mjs");
-    tokio::fs::write(&stub_path, CONFIG_STUB_MJS)
-        .await
-        .context("config loader: failed to stage zfb-config-stub.mjs")?;
+    let bundled = bundle_config(ts_path, dir, opts, Platform::Node).await?;
+    let loader_path = bundled.dir.path().join("config-loader.mjs");
     tokio::fs::write(&loader_path, CONFIG_LOADER_MJS)
         .await
         .context("config loader: failed to stage config-loader.mjs")?;
 
-    // 1. Bundle the user's TS file. Run with `dir` as cwd so any
-    //    relative imports the user wrote (e.g. `./constants`) resolve
-    //    against the project root.
-    //
-    // Alias both the bare `zfb/config` form (the documented convention in
-    // the zfb docs) and the full npm-package form `@takazudo/zfb/config`
-    // (what users naturally write when they know the package is published
-    // as `@takazudo/zfb`). Both spellings must work; the scoped form is
-    // the convention used in real zfb projects (e.g. the standalone demo).
-    let alias_arg = format!("--alias:zfb/config={}", stub_path.display());
-    let alias_scoped_arg = format!("--alias:@takazudo/zfb/config={}", stub_path.display());
-    let outfile_arg = format!("--outfile={}", bundle_path.display());
-    let mut cmd = Command::new(&esbuild);
-    cmd.current_dir(dir);
-    cmd.arg("--bundle");
-    cmd.arg("--format=esm");
-    cmd.arg("--platform=node");
-    cmd.arg("--target=esnext");
-    cmd.arg("--log-level=warning");
-    cmd.arg(&alias_arg);
-    cmd.arg(&alias_scoped_arg);
-    cmd.arg(&outfile_arg);
-    cmd.arg(ts_path);
-
-    // Bounded wait — guards against the unbounded-output() hang class (#648/#651).
-    let esbuild_out = output_bounded(&mut cmd, CONFIG_SUBPROCESS_TIMEOUT, "esbuild (node)")
-        .await?
-        .with_context(|| {
-            format!(
-                "config loader: failed to spawn esbuild at {}",
-                esbuild.display()
-            )
-        })?;
-    if !esbuild_out.status.success() {
-        let stderr = String::from_utf8_lossy(&esbuild_out.stderr);
-        bail!(
-            "config loader: esbuild failed to bundle {} ({}): {}",
-            ts_path.display(),
-            esbuild_out.status,
-            stderr.trim()
-        );
-    }
-
-    // 2. Run node against the loader script to print JSON of the default
-    //    export. Same cwd so any runtime resolution that escapes the
-    //    bundle (it shouldn't) still anchors at the project root.
+    // Same cwd as the bundle so any runtime resolution that escapes the
+    // bundle (it shouldn't) still anchors at the project root.
     let node_bin: OsString = opts
         .node_binary
         .clone()
@@ -581,7 +641,7 @@ async fn load_ts_via_subprocess(ts_path: &Path, dir: &Path, opts: &LoadOptions) 
     let mut node_cmd = Command::new(&node_bin);
     node_cmd.current_dir(dir);
     node_cmd.arg(&loader_path);
-    node_cmd.arg(&bundle_path);
+    node_cmd.arg(&bundled.bundle_path);
     // Project root — the loader uses this for path-relative plugin
     // resolution and for bare-specifier `node_modules` lookup.
     node_cmd.arg(dir);
@@ -598,8 +658,8 @@ async fn load_ts_via_subprocess(ts_path: &Path, dir: &Path, opts: &LoadOptions) 
         Ok(o) => o,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             bail!(
-                "config loader: `{}` was not found in PATH. zfb requires \
-                 Node.js to load `zfb.config.ts` (and to run esbuild / prettier). \
+                "config loader: `{}` was not found in PATH. This zfb build (without the \
+                 embedded V8 evaluator) requires Node.js to load `zfb.config.ts`. \
                  Install Node.js — https://nodejs.org/ \
                  — or point zfb at a node binary by setting the `ZFB_NODE_BIN` \
                  env var on a future zfb release.",
@@ -703,7 +763,7 @@ mod tests {
 
     #[tokio::test]
     async fn load_from_ts_file_uses_test_override_envelope() {
-        // The test override short-circuits esbuild/V8/node entirely.
+        // The test override short-circuits bundling/V8/node entirely.
         let tmp = TempDir::new().unwrap();
         let ts_path = tmp.path().join("zfb.config.ts");
         tokio::fs::write(&ts_path, "export default {};\n")
@@ -735,7 +795,7 @@ mod tests {
 
     /// Slim-build (`--no-default-features`) regression for the embed opt-out
     /// (issue #1037): drive the staged `config-loader.mjs` with node directly
-    /// — no esbuild, no V8 — against a config that lists a bare plugin that
+    /// — no bundling, no V8 — against a config that lists a bare plugin that
     /// cannot resolve. Without the flag the loader FAILS at resolution; with
     /// `--no-resolve-plugins` it succeeds and emits an empty `plugins` array,
     /// which is exactly the embed path's behaviour. The 4 scalar config
@@ -758,7 +818,7 @@ mod tests {
         tokio::fs::write(&loader_path, CONFIG_LOADER_MJS)
             .await
             .unwrap();
-        // A pre-bundled ESM module standing in for esbuild's output: a config
+        // A pre-bundled ESM module standing in for the compiler worker output: a config
         // whose `plugins[]` names a bare specifier with no `node_modules`
         // entry anywhere under the (empty) project root — unresolvable.
         let bundle_path = tmp.path().join("bundle.mjs");
