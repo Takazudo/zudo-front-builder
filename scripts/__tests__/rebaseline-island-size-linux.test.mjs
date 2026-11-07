@@ -99,7 +99,16 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const liveContract = JSON.parse(
   readFileSync(join(root, "research/v3-island-size/decision-linux-x64.json"), "utf8"),
 );
-const contract = asSchemaV2(liveContract);
+// Verbatim v5.2.2 release Linux contract (7ea8f771): the last schemaVersion-3
+// contract that pins the esbuild producer, before the #4635 bundler-backend
+// transition. The esbuild-producer scenarios below start from it.
+const esbuildContract = JSON.parse(
+  readFileSync(
+    join(root, "scripts/__tests__/fixtures/island-size-linux-x64-v5.2.2-release.json"),
+    "utf8",
+  ),
+);
+const contract = asSchemaV2(esbuildContract);
 // Verbatim released v4.5.3 Linux contract (main d70dd6d9): a genuine contract
 // that predates any cargo-internal-rewire, now that the live one carries one.
 const preRewireContract = JSON.parse(
@@ -280,7 +289,7 @@ describe("rebaseline-island-size-linux", () => {
   });
 
   it("matches the live Linux contract's own head/source record", () => {
-    const { baselineSourceSha, baselineEvidence } = liveContract;
+    const { baselineSourceSha, baselineEvidence } = esbuildContract;
     expect(baselineEvidence.note).toContain(
       baselineEvidence.sourceSha === baselineSourceSha
         ? "source " + baselineSourceSha
@@ -1110,7 +1119,7 @@ describe("fingerprint-helper (#4198)", () => {
     dependencyFingerprint: { ...fingerprint },
     outcome: "release-version-stamp",
   });
-  const contracts = () => ({ linux: pinnedTo(liveContract), darwin: pinnedTo(darwinLive) });
+  const contracts = () => ({ linux: pinnedTo(esbuildContract), darwin: pinnedTo(darwinLive) });
   const inventory = {
     importers: ["packages/zfb"],
     snapshots: ["hono@4.12.25"],
@@ -1313,7 +1322,7 @@ describe("fingerprint-helper (#4198)", () => {
         "main",
       ]),
     ).toThrow("--base-ref is only for --reason fingerprint-helper");
-    expect(() => rebaselineContract(liveContract, {}, evidence, "fingerprint-helper")).toThrow(
+    expect(() => rebaselineContract(esbuildContract, {}, evidence, "fingerprint-helper")).toThrow(
       /takes no artifact/,
     );
   });
@@ -1440,7 +1449,7 @@ describe("cargo-producer-lock (#4214)", () => {
   const ADDED = ["ctor@0.2.9", "zfb-css-node@0.0.0"];
   // Test fixture: the verified git source of the old lock (readCargoLockEvidence).
   const SOURCE = { commit: "a".repeat(40), path: "Cargo.lock", sha256: OLD };
-  const v3 = structuredClone(liveContract);
+  const v3 = structuredClone(esbuildContract);
   v3.toolchain.cargoLockSha256 = OLD;
   const fingerprint = v3.dependencyFingerprint;
   const cargoEvidence = {
@@ -1944,20 +1953,20 @@ describe("git-backed provenance (#4219)", () => {
       newCargoLock: newText,
       prepare: (checkout) => {
         artifact = join(checkout.root, "artifact");
-        writeRuns(artifact, Object.keys(liveContract.ceilings.workspace), (mode) => ({
+        writeRuns(artifact, Object.keys(esbuildContract.ceilings.workspace), (mode) => ({
           sourceSha: "b".repeat(40),
           mode,
           platform: { os: "linux", arch: "x64" },
-          fixtureVersion: liveContract.fixtureVersion,
+          fixtureVersion: esbuildContract.fixtureVersion,
           fixtureSha256: checkout.fixtureSha256,
           runnerSha256: checkout.runnerSha256,
           packageVersion: checkout.version,
           runtimePackageVersion: checkout.version,
-          honoPackageVersion: liveContract.toolchain.honoVersion,
-          esbuildVersion: liveContract.toolchain.esbuildVersion,
-          nodeVersion: liveContract.toolchain.nodeVersion,
-          zlibVersion: liveContract.toolchain.zlibVersion,
-          compression: liveContract.compression,
+          honoPackageVersion: esbuildContract.toolchain.honoVersion,
+          esbuildVersion: esbuildContract.toolchain.esbuildVersion,
+          nodeVersion: esbuildContract.toolchain.nodeVersion,
+          zlibVersion: esbuildContract.toolchain.zlibVersion,
+          compression: esbuildContract.compression,
           repeats: 2,
           pnpmLockSha256: checkout.pnpmLockSha256,
           dependencyFingerprint: {
@@ -1966,7 +1975,7 @@ describe("git-backed provenance (#4219)", () => {
           },
           cargoLockSha256: checkout.cargoLockSha256,
         }));
-        pinned = structuredClone(liveContract);
+        pinned = structuredClone(esbuildContract);
         pinned.ceilings = ceilingsOf(artifact);
         pinned.fixtureSha256 = { ...checkout.fixtureSha256 };
         pinned.runnerSha256 = { ...checkout.runnerSha256 };
@@ -2359,21 +2368,21 @@ describe("dependency-graph (#4218)", () => {
   // provenance and `tamper` the saved files afterwards.
   function linuxArtifact(edit, tamper) {
     const dir = tempDir("zfb-graph-artifact-");
-    writeRuns(dir, Object.keys(liveContract.ceilings.workspace), (mode) => {
+    writeRuns(dir, Object.keys(esbuildContract.ceilings.workspace), (mode) => {
       const provenance = {
         sourceSha: SOURCE,
         mode,
         platform: { os: "linux", arch: "x64" },
-        fixtureVersion: liveContract.fixtureVersion,
+        fixtureVersion: esbuildContract.fixtureVersion,
         fixtureSha256: repo.fixtureSha256,
         runnerSha256: repo.runnerSha256,
         packageVersion: repo.version,
         runtimePackageVersion: repo.version,
-        honoPackageVersion: liveContract.toolchain.honoVersion,
-        esbuildVersion: liveContract.toolchain.esbuildVersion,
-        nodeVersion: liveContract.toolchain.nodeVersion,
-        zlibVersion: liveContract.toolchain.zlibVersion,
-        compression: liveContract.compression,
+        honoPackageVersion: esbuildContract.toolchain.honoVersion,
+        esbuildVersion: esbuildContract.toolchain.esbuildVersion,
+        nodeVersion: esbuildContract.toolchain.nodeVersion,
+        zlibVersion: esbuildContract.toolchain.zlibVersion,
+        compression: esbuildContract.compression,
         repeats: 2,
         pnpmLockSha256: repo.pnpmLockSha256,
         dependencyFingerprint: {
@@ -2948,21 +2957,21 @@ describe("fingerprint-policy (#4218)", () => {
   // provenance and `tamper` the saved files afterwards.
   function artifactAt(checkout, edit, tamper) {
     const dir = tempDir("zfb-policy-artifact-");
-    writeRuns(dir, Object.keys(liveContract.ceilings.workspace), (mode) => {
+    writeRuns(dir, Object.keys(esbuildContract.ceilings.workspace), (mode) => {
       const provenance = {
         sourceSha: SOURCE,
         mode,
         platform: { os: "linux", arch: "x64" },
-        fixtureVersion: liveContract.fixtureVersion,
+        fixtureVersion: esbuildContract.fixtureVersion,
         fixtureSha256: checkout.fixtureSha256,
         runnerSha256: checkout.runnerSha256,
         packageVersion: checkout.version,
         runtimePackageVersion: checkout.version,
-        honoPackageVersion: liveContract.toolchain.honoVersion,
-        esbuildVersion: liveContract.toolchain.esbuildVersion,
-        nodeVersion: liveContract.toolchain.nodeVersion,
-        zlibVersion: liveContract.toolchain.zlibVersion,
-        compression: liveContract.compression,
+        honoPackageVersion: esbuildContract.toolchain.honoVersion,
+        esbuildVersion: esbuildContract.toolchain.esbuildVersion,
+        nodeVersion: esbuildContract.toolchain.nodeVersion,
+        zlibVersion: esbuildContract.toolchain.zlibVersion,
+        compression: esbuildContract.compression,
         repeats: 2,
         pnpmLockSha256: checkout.pnpmLockSha256,
         dependencyFingerprint: {
@@ -4266,21 +4275,21 @@ describe("cargo-internal-rewire (#4258)", () => {
     };
     const linuxArtifact = (edit, tamper) => {
       const dir = tempDir("zfb-rewire-artifact-");
-      writeRuns(dir, Object.keys(liveContract.ceilings.workspace), (mode) => {
+      writeRuns(dir, Object.keys(esbuildContract.ceilings.workspace), (mode) => {
         const provenance = {
           sourceSha: SOURCE_SHA,
           mode,
           platform: { os: "linux", arch: "x64" },
-          fixtureVersion: liveContract.fixtureVersion,
+          fixtureVersion: esbuildContract.fixtureVersion,
           fixtureSha256: repo.fixtureSha256,
           runnerSha256: repo.runnerSha256,
           packageVersion: repo.version,
           runtimePackageVersion: repo.version,
-          honoPackageVersion: liveContract.toolchain.honoVersion,
-          esbuildVersion: liveContract.toolchain.esbuildVersion,
-          nodeVersion: liveContract.toolchain.nodeVersion,
-          zlibVersion: liveContract.toolchain.zlibVersion,
-          compression: liveContract.compression,
+          honoPackageVersion: esbuildContract.toolchain.honoVersion,
+          esbuildVersion: esbuildContract.toolchain.esbuildVersion,
+          nodeVersion: esbuildContract.toolchain.nodeVersion,
+          zlibVersion: esbuildContract.toolchain.zlibVersion,
+          compression: esbuildContract.compression,
           repeats: 2,
           pnpmLockSha256: repo.pnpmLockSha256,
           dependencyFingerprint: {
@@ -4913,5 +4922,102 @@ describe("cargo-internal-rewire (#4258)", () => {
       );
       unchanged(live());
     });
+  });
+});
+
+// #4636: the live Linux contract is schemaVersion 4 (embedded bundler). A
+// release bump must re-pin it end to end without regaining esbuildVersion.
+// Synthetic esbuild-free runs, never a native receipt.
+describe("release-bump on the schemaVersion-4 live Linux contract (#4636)", () => {
+  const roots = [];
+  const CONTRACT = "research/v3-island-size/decision-linux-x64.json";
+  const TEST = "scripts/__tests__/island-size-budget.test.mjs";
+  let repo;
+  let artifact;
+  let pinned;
+  const at = (relative) => join(repo.root, relative);
+  beforeAll(() => {
+    expect(liveContract.schemaVersion).toBe(4);
+    repo = makeGitCheckout(roots, {
+      prepare: (checkout) => {
+        artifact = join(checkout.root, "artifact");
+        writeRuns(artifact, Object.keys(liveContract.ceilings.workspace), (mode) => ({
+          sourceSha: "b".repeat(40),
+          mode,
+          platform: { os: "linux", arch: "x64" },
+          fixtureVersion: liveContract.fixtureVersion,
+          fixtureSha256: checkout.fixtureSha256,
+          runnerSha256: checkout.runnerSha256,
+          packageVersion: checkout.version,
+          runtimePackageVersion: checkout.version,
+          honoPackageVersion: liveContract.toolchain.honoVersion,
+          bundlerIdentity: liveContract.toolchain.bundlerIdentity,
+          nodeVersion: liveContract.toolchain.nodeVersion,
+          zlibVersion: liveContract.toolchain.zlibVersion,
+          compression: liveContract.compression,
+          repeats: 2,
+          pnpmLockSha256: checkout.pnpmLockSha256,
+          dependencyFingerprint: {
+            policyVersion: checkout.dependencyFingerprint.policyVersion,
+            sha256: checkout.dependencyFingerprint.sha256,
+          },
+          cargoLockSha256: checkout.cargoLockSha256,
+        }));
+        pinned = structuredClone(liveContract);
+        pinned.ceilings = ceilingsOf(artifact);
+        pinned.fixtureSha256 = { ...checkout.fixtureSha256 };
+        pinned.runnerSha256 = { ...checkout.runnerSha256 };
+        pinned.toolchain.packageVersion = checkout.version;
+        pinned.toolchain.pnpmLockSha256 = checkout.pnpmLockSha256;
+        pinned.toolchain.cargoLockSha256 = checkout.cargoLockSha256;
+        pinned.dependencyFingerprint = { ...checkout.dependencyFingerprint };
+        writeFileSync(join(checkout.root, CONTRACT), JSON.stringify(pinned, null, 2) + "\n");
+      },
+    });
+  });
+  afterAll(() => {
+    for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  const run = (reason) =>
+    main(
+      [
+        "--artifact",
+        artifact,
+        "--run-id",
+        "61",
+        "--job-id",
+        "62",
+        "--head-sha",
+        "c".repeat(40),
+        "--reason",
+        reason,
+        "--previous-contract-ref",
+        "HEAD",
+      ],
+      repo.root,
+    );
+
+  it("keeps the schemaVersion-4 shape and pins the fingerprint", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await run("release-bump");
+    } finally {
+      vi.restoreAllMocks();
+    }
+    const next = JSON.parse(readFileSync(at(CONTRACT), "utf8"));
+    expect(next.schemaVersion).toBe(4);
+    expect(next.outcome).toBe("release-version-stamp");
+    expect(next.toolchain).toEqual(pinned.toolchain);
+    expect(next.toolchain).not.toHaveProperty("esbuildVersion");
+    expect(next.ceilings).toEqual(pinned.ceilings);
+    expect(next.dependencyFingerprint).toEqual(pinned.dependencyFingerprint);
+    expect(next.baselineEvidence.repinnedFrom).toMatchObject({
+      schemaVersion: 4,
+      outcome: pinned.outcome,
+      contract: { commit: repo.commit, path: CONTRACT },
+    });
+    expect(readFileSync(at(TEST), "utf8")).toContain(
+      "expect(linuxContract.schemaVersion).toBe(4);",
+    );
   });
 });
