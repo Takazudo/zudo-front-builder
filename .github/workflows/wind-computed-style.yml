@@ -88,6 +88,24 @@ jobs:
         with:
           prefix-key: "v2-wind-computed-style-zfb-ssr"
 
+      # rust-cache v2.9.1's partial-restore pre-clean deletes at most one
+      # build-script output dir per profile without its fingerprint, so cargo
+      # skips re-running that script (seen: v8 losing librusty_v8.a, #4638).
+      # Drop each build-script-run fingerprint whose output dir is gone.
+      - name: Drop fingerprints of missing build-script outputs
+        run: |
+          shopt -s nullglob
+          for fingerprint in target/*/.fingerprint/*/; do
+            fingerprint="${fingerprint%/}"
+            runs=("$fingerprint"/run-build-script-*)
+            (( ${#runs[@]} )) || continue
+            profile="${fingerprint%/.fingerprint/*}"
+            if [[ ! -d "$profile/build/$(basename "$fingerprint")" ]]; then
+              echo "rerun build script: $fingerprint"
+              rm -rf "$fingerprint"
+            fi
+          done
+
       - name: Install project dependencies
         run: pnpm install --frozen-lockfile
 
