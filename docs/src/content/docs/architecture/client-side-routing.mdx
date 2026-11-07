@@ -147,6 +147,7 @@ The submitter's `formenctype` wins when that attribute is present, even if its v
 `navigate(url, { formData })` does not fall back to a native submission. With no source form, or with no encoding attribute, that call still sends `FormData`.
 
 - **A submitted request is never sent twice** — a `formData` navigation writes its history entry once, after `zfb:before-swap` has settled the final URL and before the old page is torn down, so it always runs through the simulated transition (the page's `zfb-view-transitions-fallback` setting) rather than a native View Transition. If the browser rejects that history write, the navigation ends with `zfb:navigation-aborted` and the current page left as it was; the router does not resubmit the form or reload its response URL.
+- **An unusable response also ends the navigation** — when the router has sent the `formData` request but cannot use what comes back (a response that is not HTML, a failed fetch, or a redirect to another origin), it ends with `zfb:navigation-aborted` and keeps the current page. It does not follow up with a browser load of the action URL, because that would be a second request.
 
 ### Opting out of a soft form submission
 
@@ -406,7 +407,7 @@ event.formData        // FormData | undefined — set for POST form submissions
 event.loader          // () => Promise<void> — call to execute the default fetch; replace to use a custom loader
 ```
 
-Call `event.preventDefault()` to stop the navigation; the router will then trigger a full browser load to the destination.
+Call `event.preventDefault()` to stop the navigation; the router will then trigger a full browser load to the destination. The default loader also prevents the event when it cannot use a fetched page; for a `formData` navigation it has already sent the request, so the router ends the navigation without that browser load (see [Form submissions](#form-submissions)).
 
 ### `zfb:before-swap` event properties
 
