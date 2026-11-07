@@ -135,13 +135,13 @@ The Cloudflare Workers deploy workflows expect the following GitHub Actions secr
 
 ## External tool version pins
 
-zfb shells out to esbuild to compile `zfb.config.ts` and plugins (and to bundle pages and islands under `ZFB_BUNDLER=esbuild`), and uses wrangler/workerd for Cloudflare Workers preview. Rolldown, the default page and island bundler, is a Rust dependency pinned to a git revision in `crates/zfb-rolldown-prototype/Cargo.toml`. These external tools are **exact-pinned** so the same source tree produces reproducible output regardless of when or where it is built. CSS utility generation runs in-process through zudo-wind; it does not download or stage a separate CLI binary.
+zfb shells out to esbuild to compile `zfb.config.ts`, and uses wrangler/workerd for Cloudflare Workers preview. Rolldown, the only bundler for pages, islands, client scripts and plugins, is a Rust dependency pinned to a git revision in `crates/zfb-rolldown-prototype/Cargo.toml`. These external tools are **exact-pinned** so the same source tree produces reproducible output regardless of when or where it is built. CSS utility generation runs in-process through zudo-wind; it does not download or stage a separate CLI binary.
 
 The pin sources are:
 
 | Tool        | Version source                                                                                  | Checksum / lock source                                                                                                      | Package-side pin                                      |
 | ----------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| esbuild     | `EXPECTED_ESBUILD_VERSION` in `crates/zfb-toolchain-pins/src/lib.rs`                            | `EXPECTED_ESBUILD_SHA256` 5-platform `cfg` block in `crates/zfb-islands/src/esbuild.rs`; matching `ESBUILD_SHA256_*` constants in `crates/zfb/build.rs` | No root `package.json` pin; `build.rs` downloads the matching `@esbuild/<platform>` tarball |
+| esbuild     | `EXPECTED_ESBUILD_VERSION` in `crates/zfb-toolchain-pins/src/lib.rs`                            | `ESBUILD_SHA256_*` constants in `crates/zfb/build.rs` | No root `package.json` pin; `build.rs` downloads the matching `@esbuild/<platform>` tarball |
 | wrangler    | `EXPECTED_WRANGLER_VERSION` in `crates/zfb-toolchain-pins/src/lib.rs`                           | `pnpm-lock.yaml`                                                                                                            | Exact `wrangler` devDependency in root `package.json` |
 | workerd     | `EXPECTED_WORKERD_VERSION` in `crates/zfb-toolchain-pins/src/lib.rs`                            | `pnpm-lock.yaml` transitive dependency from wrangler                                                                         | Transitive only                                       |
 
@@ -166,13 +166,8 @@ esbuild is shipped as a Go-built standalone CLI binary. The binary is **not** co
 
 1. Pick the new esbuild version (the latest stable 0.x at release-cut time; see <https://github.com/evanw/esbuild/releases>).
 2. Edit `EXPECTED_ESBUILD_VERSION` in `crates/zfb-toolchain-pins/src/lib.rs`.
-3. Compute the SHA-256 of the extracted binary in each supported `@esbuild/*` package (`linux-x64`, `linux-arm64`, `darwin-arm64`, `darwin-x64`, `win32-x64`) and update the corresponding entries in the `EXPECTED_ESBUILD_SHA256` 5-platform `cfg` block in `crates/zfb-islands/src/esbuild.rs`.
-4. Update the matching `ESBUILD_SHA256_LINUX_X64`, `ESBUILD_SHA256_LINUX_ARM64`, `ESBUILD_SHA256_MACOS_ARM64`, `ESBUILD_SHA256_MACOS_X64`, and `ESBUILD_SHA256_WIN_X64` constants in `crates/zfb/build.rs` in the same commit.
-5. Update the `## esbuild Version` table in `crates/zfb-islands/README.md`.
-6. Run `cargo build --workspace --all-targets` so the host-platform binary is downloaded, SHA-256-verified, and staged by `build.rs`.
-7. Run `cargo test -p zfb-islands` — the unit tests use the mock-subprocess code path and do not require the real binary.
-
-The verification gate is implemented in `ensure_binary_verified` in `crates/zfb-islands/src/esbuild.rs` and runs once per binary path per process: it spawns `esbuild --version`, asserts the reported version equals `EXPECTED_ESBUILD_VERSION`, and (when populated) hashes the binary and asserts the SHA-256 equals `EXPECTED_ESBUILD_SHA256`. A mismatch on either gate aborts with a clear, actionable error pointing back at this section.
+3. Compute the SHA-256 of the extracted binary in each supported `@esbuild/*` package (`linux-x64`, `linux-arm64`, `darwin-arm64`, `darwin-x64`, `win32-x64`) and update the matching `ESBUILD_SHA256_LINUX_X64`, `ESBUILD_SHA256_LINUX_ARM64`, `ESBUILD_SHA256_MACOS_ARM64`, `ESBUILD_SHA256_MACOS_X64`, and `ESBUILD_SHA256_WIN_X64` constants in `crates/zfb/build.rs` in the same commit.
+4. Run `cargo build --workspace --all-targets` so the host-platform binary is downloaded, SHA-256-verified, and staged by `build.rs`. A checksum mismatch on a downloaded binary fails the build.
 
 ## Supply chain
 

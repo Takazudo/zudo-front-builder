@@ -11,7 +11,7 @@ Almost all everyday frontend development in one CLI: create, develop, check, bui
 
 ## Install without Node
 
-No Node.js required. zfb ships as a self-contained binary: Rolldown bundles pages and islands in process, an embedded esbuild executable compiles `zfb.config.ts` and plugins, and CSS generation uses the Rust-native zudo-wind engine. For the full install guide including Homebrew, Windows, and which features still need Node as an escape hatch, see the **[Install without Node](https://zfb.takazudomodular.com/docs/getting-started/installation/#standalone-installation)** docs page.
+No Node.js required. zfb ships as a self-contained binary: Rolldown bundles pages, islands, client scripts and plugins in process, an embedded esbuild executable compiles `zfb.config.ts`, and CSS generation uses the Rust-native zudo-wind engine. For the full install guide including Homebrew, Windows, and which features still need Node as an escape hatch, see the **[Install without Node](https://zfb.takazudomodular.com/docs/getting-started/installation/#standalone-installation)** docs page.
 
 **Linux / macOS (curl):**
 
