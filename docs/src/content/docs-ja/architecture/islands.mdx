@@ -319,7 +319,7 @@ export default function ThemeToggle() {
 dist/assets/islands.js
 ```
 
-すべての島は単一のバンドラー（デフォルトは Rolldown、`ZFB_BUNDLER=esbuild` なら esbuild）のエントリポイントへ静的にインポートされるため、共有バンドルにはすべての島コンポーネントが含まれます。その後 `ProductionAssetPipeline` が、最終出力を書き出す前にコンテンツハッシュ付きのファイル名へとリネームします。
+すべての島はネイティブの Rolldown バンドラーの単一のエントリポイントへ静的にインポートされるため、共有バンドルにはすべての島コンポーネントが含まれます。その後 `ProductionAssetPipeline` が、最終出力を書き出す前にコンテンツハッシュ付きのファイル名へとリネームします。
 
 ```
 dist/assets/islands-<hash>.js

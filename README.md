@@ -11,7 +11,7 @@ Almost all everyday frontend development in one CLI: create, develop, check, bui
 
 ## Install without Node
 
-No Node.js required. zfb ships as a self-contained binary: Rolldown bundles pages, islands, client scripts and plugins in process, an embedded esbuild executable compiles `zfb.config.ts`, and CSS generation uses the Rust-native zudo-wind engine. For the full install guide including Homebrew, Windows, and which features still need Node as an escape hatch, see the **[Install without Node](https://zfb.takazudomodular.com/docs/getting-started/installation/#standalone-installation)** docs page.
+No Node.js required. zfb ships as a self-contained binary: Rolldown bundles pages, islands, client scripts, plugins and `zfb.config.ts` in process, and CSS generation uses the Rust-native zudo-wind engine. For the full install guide including Homebrew, Windows, and which features still need Node as an escape hatch, see the **[Install without Node](https://zfb.takazudomodular.com/docs/getting-started/installation/#standalone-installation)** docs page.
 
 **Linux / macOS (curl):**
 
@@ -73,7 +73,7 @@ See [`architecture/choosing-zfb.mdx`](./docs/src/content/docs/architecture/choos
 
 ## What ships, what is experimental, what is planned
 
-**In the current release** (see the [changelog](https://zfb.takazudomodular.com/docs/changelog/) and [GitHub Releases](https://github.com/Takazudo/zudo-front-builder/releases)): the `zfb` commands `new`, `dev`, `check`, `build`, `preview`, `css` and `wind`; the direct V8 host in `crates/zfb-js-host`, which drives the pinned `v8` crate (147.4.0) without deno_core, loads `zfb.config.ts` and renders pages; Rolldown as the default page and island bundler (`ZFB_BUNDLER=esbuild` switches back to esbuild); TSX, MDX, Markdown and HTML pages; content collections; the islands pipeline with zudo-react, whose shipped bytes stay stable across unrelated edits; zudo-wind utility CSS; `syntect`-backed syntax highlighting; the client router with view transitions; the dev server; and the Cloudflare Workers adapter. There is no runtime switch; `cargo build -p zfb --no-default-features` gives a slim build without V8 (see [BUILDING.md](BUILDING.md#direct-v8-developer-tooling)).
+**In the current release** (see the [changelog](https://zfb.takazudomodular.com/docs/changelog/) and [GitHub Releases](https://github.com/Takazudo/zudo-front-builder/releases)): the `zfb` commands `new`, `dev`, `check`, `build`, `preview`, `css` and `wind`; the direct V8 host in `crates/zfb-js-host`, which drives the pinned `v8` crate (147.4.0) without deno_core, loads `zfb.config.ts` and renders pages; Rolldown as the only bundler for pages, islands, client scripts, plugins and `zfb.config.ts` (zfb no longer ships or runs esbuild); TSX, MDX, Markdown and HTML pages; content collections; the islands pipeline with zudo-react, whose shipped bytes stay stable across unrelated edits; zudo-wind utility CSS; `syntect`-backed syntax highlighting; the client router with view transitions; the dev server; and the Cloudflare Workers adapter. There is no runtime switch; `cargo build -p zfb --no-default-features` gives a slim build without V8 (see [BUILDING.md](BUILDING.md#direct-v8-developer-tooling)).
 
 **Known limits of the direct host:** interrupting CPU-bound JavaScript is not supported, and the qualification harness drains a killed child's output only on a best-effort basis ([#4289](https://github.com/Takazudo/zudo-front-builder/issues/4289)). See [`prototypes/direct-v8/WATCHDOG-4289.md`](prototypes/direct-v8/WATCHDOG-4289.md).
 

@@ -43,7 +43,7 @@ zfb の対象読者は、すでに TSX を知っている frontend 開発者で�
 
 ## 今日動いているもの
 
-`zfb build` / `zfb dev` では、Rust のオーケストレーターが `zfb-js-host` クレートの direct V8 ホストを介してインプロセスの V8 アイソレートを生成します。それは `@takazudo/zfb-runtime` が esbuild でビルドする workerd 形のバンドルを読み込みます。ルートごとの props は JSON として渡され、アイソレートは合成された `Request` でバンドルの `fetch` エントリを呼び、`Response`（HTML）を集めて返します。オーケストレーターは素の HTML を `dist/` に書き込みます。サブプロセスは生成されず、Node.js も不要です。
+`zfb build` / `zfb dev` では、Rust のオーケストレーターが `zfb-js-host` クレートの direct V8 ホストを介してインプロセスの V8 アイソレートを生成します。それは zfb がページと `@takazudo/zfb-runtime` からネイティブの Rolldown バンドラーでビルドする workerd 形のバンドルを読み込みます。ルートごとの props は JSON として渡され、アイソレートは合成された `Request` でバンドルの `fetch` エントリを呼び、`Response`（HTML）を集めて返します。オーケストレーターは素の HTML を `dist/` に書き込みます。サブプロセスは生成されず、Node.js も不要です。
 
 V8 自体はプロセスごとに 1 回、CLI が Tokio やホストのスレッドを起動する前にメインスレッドで初期化されます（`zfb-js-host::process::initialize`）。1 つのスレッドで同時に生きていられるホストは 1 つだけです。
 
@@ -141,6 +141,6 @@ direct ホストの既知の制限:
 
 ラベルで起動する必須ではない CI レーン（`direct-v8.yml`）が、Linux x64、Linux arm64、Windows x64 のネイティブ行を記録します。Darwin の行は Mac 上で手作業で実行します。コントリビューター向けの詳細は [`prototypes/direct-v8/CLI.md`](https://github.com/Takazudo/zudo-front-builder/blob/main/prototypes/direct-v8/CLI.md) にあります。
 
-ページ、アイランド、クライアントスクリプト、プラグインは、ネイティブの Rolldown コンパイラがバンドルします。esbuild のバンドラーバックエンドはありません。`ZFB_BUNDLER` または `ZFB_ROLLDOWN_PROTOTYPE` をどの値に設定してもエラーになります。`zfb.config.ts` のコンパイルには引き続き esbuild を使います。
+ページ、アイランド、クライアントスクリプト、プラグイン、`zfb.config.ts` は、ネイティブの Rolldown コンパイラがバンドルします。zfb は esbuild をもう同梱も実行もしません。`ZFB_BUNDLER` または `ZFB_ROLLDOWN_PROTOTYPE` をどの値に設定してもエラーになります。
 
 `zfb preview` は再ビルドせず、ビルド済み出力を配信します。Cloudflare アダプターでは Wrangler に委譲します。一般に組み込み V8 でページを再レンダリングするコマンドではありません。

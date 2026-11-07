@@ -43,7 +43,7 @@ Pure-Rust SSG (Boa/QuickJS) and no-V8-at-runtime (build-time-only V8) are real f
 
 ## What runs today
 
-At `zfb build` / `zfb dev`, the Rust orchestrator creates an in-process V8 isolate through the direct V8 host in the `zfb-js-host` crate. It loads the workerd-shape bundle that `@takazudo/zfb-runtime` builds with esbuild. Per-route props are passed as JSON; the isolate invokes the bundle's `fetch` entry with a synthetic `Request`, collects the `Response` (HTML), and returns it. The orchestrator writes plain HTML to `dist/`. No subprocess is spawned; no Node.js is required.
+At `zfb build` / `zfb dev`, the Rust orchestrator creates an in-process V8 isolate through the direct V8 host in the `zfb-js-host` crate. It loads the workerd-shape bundle that zfb builds from your pages and `@takazudo/zfb-runtime` with the native Rolldown bundler. Per-route props are passed as JSON; the isolate invokes the bundle's `fetch` entry with a synthetic `Request`, collects the `Response` (HTML), and returns it. The orchestrator writes plain HTML to `dist/`. No subprocess is spawned; no Node.js is required.
 
 V8 itself is initialized once per process, on the main thread, before the CLI starts Tokio or any host thread (`zfb-js-host::process::initialize`). Only one host may be alive on a thread at a time.
 
@@ -141,6 +141,6 @@ Known limitations of the direct host:
 
 A label-triggered, non-required CI lane (`direct-v8.yml`) records native rows on Linux x64, Linux arm64 and Windows x64. Darwin rows are run by hand on a Mac. The contributor-side details are in [`prototypes/direct-v8/CLI.md`](https://github.com/Takazudo/zudo-front-builder/blob/main/prototypes/direct-v8/CLI.md).
 
-The native Rolldown compiler bundles pages, islands, client scripts and plugins; there is no esbuild bundler backend. Setting `ZFB_BUNDLER` or `ZFB_ROLLDOWN_PROTOTYPE` to any value is an error. esbuild still compiles `zfb.config.ts`.
+The native Rolldown compiler bundles pages, islands, client scripts, plugins and `zfb.config.ts`; zfb no longer ships or runs esbuild. Setting `ZFB_BUNDLER` or `ZFB_ROLLDOWN_PROTOTYPE` to any value is an error.
 
 `zfb preview` does not rebuild: it serves built output, or delegates to Wrangler with the Cloudflare adapter. It does not generally render pages through the embedded V8 host.

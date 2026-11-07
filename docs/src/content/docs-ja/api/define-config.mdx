@@ -164,7 +164,7 @@ declare module "zfb/zudo-react/testing" {
 
 ブラウザ向けの islands、クライアントスクリプト、module worker の各パスは、ページ / SSR パスと同じモード・loader・define 設定を使います。これにより、サーバーとブラウザのグラフで共有されるコードの意味が、バンドル境界をまたいでも変わりません。
 
-これらの設定は esbuild のオプション名とセマンティクス（`--platform=neutral`、`--main-fields`、loader、生の `define` 式）を使います。デフォルトの Rolldown バンドラーは同じ設定を受け取ってすべてのパスに適用し、`ZFB_BUNDLER=esbuild` の場合はそのまま esbuild に渡されます。
+zfb はすべてのパスを Rolldown でネイティブにバンドルし、ほかのバンドラーバックエンドはありません。以下の設定は、そのバンドラーのオプション（プラットフォーム中立のページ / SSR パス、明示的な main-fields リスト、external、拡張子ごとの loader、生の `define` 式）へ変換されます。
 
 ### バンドルモード
 
@@ -179,7 +179,7 @@ zfb は次の 3 つのコンパイル時置換を所有します。値は minify
 
 ### `bundle.exclude`、`bundle.mainFields`、`bundle.external`
 
-ページ / SSR パスは esbuild の `--platform=neutral` でバンドルします。これは意図的に最小限で、`main-fields` の解決リストはデフォルトで空であり、CJS 専用の `require()` 経路でしか解決できないパッケージを拒否します。これら 3 つのフィールドは、neutral パスに到達する CJS 専用の依存（直接インポートされるか、eager な `import.meta.glob(...)` の展開で新たに取り込まれるもの）向けのエスケープハッチです。3 つともデフォルトでは未設定 / 空であり、このつまみを使わないビルドとバイト単位で同一です。
+ページ / SSR パスはプラットフォーム中立のターゲット向けにバンドルします。これは意図的に最小限で、暗黙の `main` フィールドも Node の組み込みモジュールも適用しないため、使える `exports` マップを持たないパッケージはデフォルトでは解決できません。これら 3 つのフィールドは、neutral パスに到達するそうした依存（典型的には CJS 専用パッケージ。直接インポートされるか、eager な `import.meta.glob(...)` の展開で新たに取り込まれるもの）向けのエスケープハッチです。3 つともデフォルトでは未設定 / 空であり、このつまみを使わないビルドとバイト単位で同一です。
 
 `bundle.exclude` — バンドラーがバンドルグラフへ決して取り込んではいけないソースファイルを指定する、プロジェクト相対の glob パターン（gitignore スタイル。プロジェクトルートからの相対パスに対して POSIX 形式でマッチ）。マッチしたファイルはシャドウツリーへステージングされることも、eager な `import.meta.glob(...)` で展開されることもありません。`CollectionDef.exclude`（バンドルではなくコンテンツのフィルタリング）とは無関係です。
 
@@ -195,7 +195,7 @@ export default defineConfig({
 
 変更前: あるルートの `import.meta.glob("./components/**/*.tsx")` が `Button.stories.tsx` を拾い、それが CJS 専用のテストモック用パッケージをインポートするため、neutral プラットフォームのビルドがそれを解決できずに失敗します。変更後: glob は `*.stories.tsx` ファイルを完全にスキップし、ビルドが成功します。
 
-`bundle.mainFields` — neutral パス向けの明示的な esbuild `--main-fields` リスト。例えば `["main", "module"]` を設定すると、`main` / `module` しか提供しない（`exports` マップを持たない）依存を解決できます。`neutral` はそうしなければ main-fields をまったく参照しないためです。
+`bundle.mainFields` — neutral パス向けの明示的なパッケージ main-fields リスト。例えば `["main", "module"]` を設定すると、`main` / `module` しか提供しない（`exports` マップを持たない）依存を解決できます。`neutral` はそうしなければ main-fields をまったく参照しないためです。
 
 ```ts
 import { defineConfig } from "zfb/config";
@@ -207,9 +207,9 @@ export default defineConfig({
 });
 ```
 
-変更前: `The "main" field here was ignored. Main fields must be configured explicitly when using the "neutral" platform.` 変更後: esbuild は `main` そして `module` を参照し、依存を解決します。
+変更前: `main` / `module` しか公開しない依存が neutral パスで解決できません。変更後: バンドラーは `main` そして `module` を参照し、依存を解決します。`exports` マップは常に優先されます。
 
-`bundle.external` — neutral パス向けに `--external` としてマークするベア specifier。esbuild はそれらの解決を試みる代わりに、バンドルせずそのまま残します。`mainFields` だけでは満たせない CJS 専用の依存向けのもう 1 つのエスケープハッチです。zfb 自身が提供する external specifier に追加されます。
+`bundle.external` — neutral パス向けに external としてマークするベア specifier。バンドラーはそれらの解決を試みる代わりに、バンドルせずそのまま残します。各エントリは specifier 自体とそのサブパスに適用されます。末尾に 1 つだけ `*` を付けると前方一致になり、それ以外の位置の `*` はエラーです。`mainFields` だけでは満たせない CJS 専用の依存向けのもう 1 つのエスケープハッチです。zfb 自身が提供する external specifier に追加されます。
 
 ```ts
 import { defineConfig } from "zfb/config";
@@ -221,11 +221,11 @@ export default defineConfig({
 });
 ```
 
-変更前: esbuild は `--platform=neutral` の下で `some-cjs-only-package` の解決を試みて失敗します。変更後: esbuild はそのベアインポートを解決せず external としてマークします。
+変更前: バンドラーは neutral パスで `some-cjs-only-package` の解決を試みて失敗します。変更後: そのベアインポートを解決せず external のまま残します。
 
 ### `bundle.loaders`
 
-`loaders` を使うと、追加の loader（esbuild と同じ名前）をファイル拡張子へ割り当てられます。
+`loaders` を使うと、追加の loader をファイル拡張子へ割り当てられます。
 
 ```ts
 import { defineConfig } from "zfb/config";
@@ -246,7 +246,7 @@ export default defineConfig({
 
 ### `bundle.define`
 
-`define` の値は自動的に引用符が付く文字列ではなく、esbuild の生の置換式です。
+`define` の値は自動的に引用符が付く文字列ではなく、生の JavaScript 置換式です。
 
 ```ts
 import { defineConfig } from "zfb/config";

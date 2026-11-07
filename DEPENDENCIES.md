@@ -16,7 +16,9 @@ separate in [SECURITY-DEPS.md](./SECURITY-DEPS.md).
 The nine declarations below had no call sites after a crate-wide search of
 `src/`, `tests/`, and `benches/`. The `zfb` manifest was intentionally not part
 of this deletion: its `flate2`, `tar`, `hex`, and `zfb-binfetch` declarations
-are used by `crates/zfb/build.rs`.
+were then used by `crates/zfb/build.rs` to download the esbuild binary. #4635
+removed that download together with those four `zfb` declarations and the
+`zfb-binfetch` crate.
 
 | Crate | Removed declaration | Evidence | Actual lock-file result |
 | --- | --- | --- | --- |
@@ -96,20 +98,20 @@ declaration is removable even if its package remains in `Cargo.lock`.
 
 ### Rust dependencies
 
-* **`hex` — terminal KEEP; do not revisit.** A production-only search finds 21
-  `hex::` call sites across `zfb`, `zfb-build`, `zfb-content`, `zfb-css`,
-  `zfb-islands`, `zfb-md-ast`, and `zfb-types` (tests add separate coverage).
-  It is also required by `crates/zfb/build.rs`: `sha256_hex` calls
-  `hex::encode` at line 169, `sha256_hex_file` calls it at line 187, and the
-  helpers verify the downloaded esbuild binary. Removing it would require
-  hand-rolled encoding while buying no package reduction; keep the maintained
-  crate.
+* **`hex` — terminal KEEP; do not revisit.** Production code in `zfb-build`,
+  `zfb-compiler-worker`, `zfb-content`, `zfb-css`, `zfb-islands`, `zfb-md-ast`,
+  and `zfb-types` calls `hex::` directly (tests add separate coverage). The
+  `zfb` crate itself no longer declares it: its only use was the
+  `crates/zfb/build.rs` esbuild download check, which #4635 removed. Removing
+  it would require hand-rolled encoding while buying no package reduction;
+  keep the maintained crate.
 * **`reqwest` — KEEP.** The five principal non-optional consumers in the audit
-  are `zfb`, `zfb-build`, `zfb-binfetch`, `zfb-server`, and `zfb-test-utils`;
+  were `zfb`, `zfb-build`, `zfb-binfetch`, `zfb-server`, and `zfb-test-utils`;
+  #4635 later deleted `zfb-binfetch` with the esbuild download.
   `zfb-render` also has a required optional edge for its embedded-V8 fetch
   transport. The current lock resolves `reqwest 0.12.28`. It shares `hyper`
-  with `axum`, `zfb-binfetch` needs real HTTPS to download from GitHub, and the
-  call sites span build, server, test, binary-fetch, and request-time paths, so
+  with `axum`, and the call sites span build, server, test, and request-time
+  paths, so
   replacing it would be a large refactor with little payoff. This register does
   not assign an undefined “largest contributor” ranking to its graph weight.
   The actionable sliver was the unused `zfb-build` `json` feature, handled in
