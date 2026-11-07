@@ -918,6 +918,15 @@ async function transition(
     return;
   }
 
+  function markSubmittedRequestUnusable(href: string) {
+    submittedRequestUnusable = true;
+    // biome-ignore lint/suspicious/noConsole: allowed
+    console.warn(
+      "[zfb] submitted request to",
+      href,
+      "returned a response the router cannot display; the navigation was aborted and the request was not resent.",
+    );
+  }
   async function defaultLoader(preparationEvent: TransitionBeforePreparationEvent) {
     const href = preparationEvent.to.href;
     const init: RequestInit = { signal: preparationEvent.signal };
@@ -941,9 +950,10 @@ async function transition(
           : preparationEvent.formData;
     }
     const response = await fetchHTML(href, init);
-    // If there is a problem fetching the new page, just do an MPA navigation to it.
+    // If there is a problem fetching the new page, just do an MPA navigation to
+    // it, unless the formData request was already sent (see markSubmittedRequestUnusable).
     if (response === null) {
-      if (preparationEvent.formData) submittedRequestUnusable = true;
+      if (preparationEvent.formData) markSubmittedRequestUnusable(href);
       preparationEvent.preventDefault();
       return;
     }
@@ -952,7 +962,7 @@ async function transition(
       const redirectedTo = new URL(response.redirected);
       // but do not redirect cross origin
       if (redirectedTo.origin !== preparationEvent.to.origin) {
-        if (preparationEvent.formData) submittedRequestUnusable = true;
+        if (preparationEvent.formData) markSubmittedRequestUnusable(href);
         preparationEvent.preventDefault();
         return;
       }
