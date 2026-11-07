@@ -704,6 +704,85 @@ describe("non-HTML response degrade", () => {
   });
 });
 
+describe("submitted request whose response cannot be used (#4622)", () => {
+  async function submitWith(fetchImpl: () => Promise<Response>) {
+    const fetchMock = vi.fn(fetchImpl);
+    vi.stubGlobal("fetch", fetchMock);
+    const seenAfterSwap = vi.fn();
+    const seenNavigationAborted = vi.fn();
+    document.addEventListener("zfb:after-swap", seenAfterSwap);
+    document.addEventListener("zfb:navigation-aborted", seenNavigationAborted);
+    const { assigned } = captureLoads();
+    const before = location.href;
+    const formData = new FormData();
+    formData.append("k", "v");
+    try {
+      await navigate("/api/submit", { formData });
+    } finally {
+      document.removeEventListener("zfb:after-swap", seenAfterSwap);
+      document.removeEventListener("zfb:navigation-aborted", seenNavigationAborted);
+    }
+    return { fetchMock, seenAfterSwap, seenNavigationAborted, assigned, before };
+  }
+
+  it.each([
+    [
+      "a non-HTML response",
+      async () =>
+        new Response('{"ok":true}', {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    ],
+    [
+      "a failed fetch",
+      async () => {
+        throw new TypeError("Failed to fetch");
+      },
+    ],
+    [
+      "a cross-origin redirect",
+      async () => {
+        const res = new Response("<html></html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        });
+        Object.defineProperty(res, "redirected", { value: true });
+        Object.defineProperty(res, "url", { value: "https://pay.example.test/checkout" });
+        return res;
+      },
+    ],
+  ])("ends the navigation without a second request after %s", async (_label, impl) => {
+    const { fetchMock, seenAfterSwap, seenNavigationAborted, assigned, before } =
+      await submitWith(impl);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0]![1]).toMatchObject({ method: "POST" });
+    expect(seenAfterSwap).not.toHaveBeenCalled();
+    expect(seenNavigationAborted).toHaveBeenCalledOnce();
+    expect(assigned).toEqual([]);
+    expect(location.href).toBe(before);
+  });
+
+  it("still hands a listener-prevented submission to a browser load (no request sent yet)", async () => {
+    const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Never", "never")));
+    vi.stubGlobal("fetch", fetchMock);
+    const prevent = (e: Event) => e.preventDefault();
+    document.addEventListener("zfb:before-preparation", prevent);
+    const { assigned } = captureLoads();
+    const formData = new FormData();
+    formData.append("k", "v");
+    try {
+      await navigate("/api/submit", { formData });
+    } finally {
+      document.removeEventListener("zfb:before-preparation", prevent);
+    }
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(assigned.at(-1)).toContain("/api/submit");
+  });
+});
+
 describe("navigate() — fallback=none + no View Transitions → full page load (no fetch)", () => {
   it("sets location.href directly and does not call fetch when fallback is none and VT is unsupported", async () => {
     // supportsViewTransitions is already false under happy-dom (document.startViewTransition absent).

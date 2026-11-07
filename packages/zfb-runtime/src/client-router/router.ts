@@ -893,6 +893,9 @@ async function transition(
     }
   }
 
+  // Set when the default loader already sent a formData request and cannot use
+  // its response: a fallback load would be a second request (#4622).
+  let submittedRequestUnusable = false;
   const prepEvent = await doPreparation(
     from,
     to,
@@ -907,7 +910,7 @@ async function transition(
   if (prepEvent.defaultPrevented || prepEvent.signal.aborted) {
     if (currentNavigation === mostRecentNavigation) mostRecentNavigation = undefined;
     notifyNavigationAborted(currentNavigation);
-    if (!prepEvent.signal.aborted) {
+    if (!prepEvent.signal.aborted && !submittedRequestUnusable) {
       // not aborted -> delegate to browser
       location.href = to.href;
     }
@@ -940,6 +943,7 @@ async function transition(
     const response = await fetchHTML(href, init);
     // If there is a problem fetching the new page, just do an MPA navigation to it.
     if (response === null) {
+      if (preparationEvent.formData) submittedRequestUnusable = true;
       preparationEvent.preventDefault();
       return;
     }
@@ -948,6 +952,7 @@ async function transition(
       const redirectedTo = new URL(response.redirected);
       // but do not redirect cross origin
       if (redirectedTo.origin !== preparationEvent.to.origin) {
+        if (preparationEvent.formData) submittedRequestUnusable = true;
         preparationEvent.preventDefault();
         return;
       }
