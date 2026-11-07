@@ -7282,6 +7282,7 @@ dependencies = [
  "rolldown",
  "rolldown_common",
  "rolldown_resolver",
+ "serde",
  "serde_json",
  "tokio",
 ]

@@ -3,11 +3,12 @@
 //! These are zfb's own types. No upstream Rolldown type appears here, so the
 //! engine can move without changing callers. Every option a caller used to
 //! spell as esbuild argv is an explicit field.
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// One bundle job: a single entry, its output layout and the policies the
 /// caller owns.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleRequest {
     /// Working directory in the caller's spelling. Relative paths in this
     /// request resolve against it, and graph keys are spelled relative to it.
@@ -72,7 +73,7 @@ impl BundleRequest {
 }
 
 /// Output layout. A single file never splits; a directory may.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OutputLayout {
     /// One output file, relative to `cwd` or absolute.
     File(PathBuf),
@@ -99,12 +100,12 @@ impl OutputLayout {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Format {
     Esm,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Platform {
     Browser,
     /// No platform defaults: no implicit `main` fields and no Node builtins.
@@ -112,7 +113,7 @@ pub enum Platform {
     Node,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Jsx {
     /// `Some(Automatic)` selects the automatic runtime; `None` leaves it to
     /// the tsconfig or the engine default.
@@ -120,12 +121,12 @@ pub struct Jsx {
     pub import_source: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JsxRuntime {
     Automatic,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Resolve {
     /// Ordered `(key, target)` aliases. A key matches the exact specifier and
     /// its `key/` subpaths; a trailing `$` matches the exact specifier only and
@@ -143,7 +144,7 @@ pub struct Resolve {
 }
 
 /// How files with an extension are loaded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Loader {
     Js,
     Jsx,
@@ -200,7 +201,7 @@ impl Loader {
 }
 
 /// A specifier left unbundled.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum External {
     /// The specifier itself and its `spec/` subpaths.
     Package(String),
@@ -208,7 +209,7 @@ pub enum External {
     Prefix(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceMap {
     None,
     /// A sibling `.map` file referenced by a `sourceMappingURL` comment.
@@ -219,7 +220,7 @@ pub enum SourceMap {
 
 /// A generated, validated bundle that is not yet visible to anyone. Nothing
 /// is written until [`Generated::publish`].
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Generated {
     /// Output files (bundles, chunks, copied resources, maps) and, when
     /// requested, the graph file, in the caller's path spelling.
