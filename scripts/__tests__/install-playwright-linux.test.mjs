@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -826,20 +827,165 @@ describe("provisioning flow", () => {
   });
 });
 
+// ── /proc state observation (test support) ────────────────────────────────
+
+// Only these mean "no longer runs": gone (no /proc entry), zombie, dead.
+// Every other state, including R/S/D/T, is live and fails the wait.
+const TERMINAL_STATES = new Set(["gone", "Z", "X"]);
+
+// Reads the state letter from /proc/<pid>/stat in one read (no exists-then-read
+// TOCTOU). Only ENOENT/ESRCH mean the process is gone; any other error, or
+// content that is not a stat line for this pid, throws. It never signals.
+function readProcState(pid, readFile = readFileSync) {
+  let text;
+  try {
+    text = readFile(`/proc/${pid}/stat`, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ESRCH") return "gone";
+    throw error;
+  }
+  // comm may itself contain ") ", so the greedy match anchors on the last one.
+  const match = /^(\d+) \(.*\) ([A-Za-z]) /s.exec(text);
+  if (!match || Number(match[1]) !== pid)
+    throw new Error(`malformed /proc/${pid}/stat: ${JSON.stringify(text.slice(0, 200))}`);
+  return match[2];
+}
+
+// Bounded condition wait for a terminal state. It proves the process reached
+// gone/Z/X within deadlineMs after the call, not that it was already terminal
+// when the caller started waiting.
+async function waitForTerminalState(
+  pid,
+  {
+    deadlineMs,
+    intervalMs = 5,
+    read = readProcState,
+    now = () => performance.now(),
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  },
+) {
+  const started = now();
+  let state = "unread";
+  for (;;) {
+    try {
+      state = read(pid);
+    } catch (error) {
+      throw new Error(
+        `pid ${pid}: /proc read failed after ${(now() - started).toFixed(1)} ms (last state ${state}): ${error.message}`,
+        { cause: error },
+      );
+    }
+    const elapsedMs = now() - started;
+    if (TERMINAL_STATES.has(state)) return { state, elapsedMs };
+    if (elapsedMs >= deadlineMs)
+      throw new Error(
+        `pid ${pid} still in state ${state} after ${elapsedMs.toFixed(1)} ms (deadline ${deadlineMs} ms)`,
+      );
+    await sleep(intervalMs);
+  }
+}
+
+// The observation deadline sits inside the existing liveness envelope: a run
+// settles in under 10 s (the durationMs bound below) and the scripts-subprocess
+// project guard is 90 s, so settle + 2 s observation fails with the pid and
+// state named here, not as a bare project timeout. The exit tail after the pipes
+// close measured <= 8.8 ms even with ~19k fds widening it (receipt:
+// https://github.com/Takazudo/zudo-front-builder/issues/4614#issuecomment-6705926701),
+// so 2 s is a hang guard, not a budget.
+const OBSERVE_DEADLINE_MS = 2_000;
+
+const errno = (code) => Object.assign(new Error(code), { code });
+const fakeClock = () => {
+  let t = 0;
+  return { now: () => t, sleep: async (ms) => void (t += ms) };
+};
+const statLine = (pid, comm, state) => `${pid} (${comm}) ${state} 1 ${pid} ${pid} 0 -1\n`;
+
+describe("/proc state observer", () => {
+  it("accepts a transient live state that becomes terminal within the deadline", async () => {
+    const states = ["R", "R", "Z"];
+    const result = await waitForTerminalState(42, {
+      deadlineMs: 100,
+      read: () => states.shift(),
+      ...fakeClock(),
+    });
+    expect(result).toEqual({ state: "Z", elapsedMs: 10 });
+  });
+
+  it.each(["R", "S", "D", "T"])(
+    "fails a process that stays in %s, naming pid, state and time",
+    async (live) => {
+      await expect(
+        waitForTerminalState(42, { deadlineMs: 50, read: () => live, ...fakeClock() }),
+      ).rejects.toThrow(`pid 42 still in state ${live} after 50.0 ms (deadline 50 ms)`);
+    },
+  );
+
+  it("counts a process that disappears during the read as gone", async () => {
+    const reads = [
+      () => statLine(42, "sleep", "R"),
+      () => {
+        throw errno("ESRCH");
+      },
+    ];
+    const read = (pid) => readProcState(pid, () => reads.shift()());
+    const result = await waitForTerminalState(42, { deadlineMs: 100, read, ...fakeClock() });
+    expect(result.state).toBe("gone");
+    expect(
+      readProcState(42, () => {
+        throw errno("ENOENT");
+      }),
+    ).toBe("gone");
+  });
+
+  it("fails on an unexpected read error instead of treating it as gone", async () => {
+    const read = (pid) =>
+      readProcState(pid, () => {
+        throw errno("EACCES");
+      });
+    await expect(
+      waitForTerminalState(42, { deadlineMs: 100, read, ...fakeClock() }),
+    ).rejects.toThrow("pid 42: /proc read failed after 0.0 ms (last state unread): EACCES");
+  });
+
+  it("fails on malformed or mismatched stat content", () => {
+    expect(() => readProcState(42, () => "")).toThrow("malformed /proc/42/stat");
+    expect(() => readProcState(42, () => "42 sleep R 1\n")).toThrow("malformed /proc/42/stat");
+    expect(() => readProcState(42, () => statLine(43, "sleep", "Z"))).toThrow(
+      "malformed /proc/42/stat",
+    );
+  });
+
+  it("parses the state after a comm that contains ') '", () => {
+    expect(readProcState(42, () => statLine(42, "a) S (b", "Z"))).toBe("Z");
+  });
+});
+
+// ── bounded subprocess ────────────────────────────────────────────────────
+
+const onLinux = process.platform === "linux";
+
 describe("bounded subprocess", () => {
   const directories = [];
   afterEach(() => {
     for (const directory of directories.splice(0))
       rmSync(directory, { recursive: true, force: true });
   });
-
-  it("terminates the whole process group at the deadline before settling", async () => {
+  const scratch = () => {
     const directory = mkdtempSync(join(tmpdir(), "bounded-run-"));
     directories.push(directory);
-    const script = join(directory, "slow.sh");
-    writeFileSync(script, '#!/bin/sh\nsleep 60 &\necho "child $!"\nwait\n', { mode: 0o755 });
+    return directory;
+  };
+  const writeScript = (name, body) => {
+    const file = join(scratch(), name);
+    writeFileSync(file, body, { mode: 0o755 });
+    return file;
+  };
+  const slowGroup = () => writeScript("slow.sh", '#!/bin/sh\nsleep 60 &\necho "child $!"\nwait\n');
+
+  it("times out a slow process group and settles within the liveness bound", async () => {
     const result = await runBounded({
-      command: script,
+      command: slowGroup(),
       timeoutMs: 300,
       killGraceMs: 200,
       echo: false,
@@ -848,12 +994,17 @@ describe("bounded subprocess", () => {
     // Settling waits for every holder of the output pipes, so a surviving
     // grandchild would hold this open for its full 60 seconds.
     expect(result.durationMs).toBeLessThan(10_000);
-    const childPid = Number(result.stdout.match(/child (\d+)/)[1]);
-    // Gone, or a zombie awaiting a reaper: either way it no longer runs.
-    const state = existsSync(`/proc/${childPid}/stat`)
-      ? readFileSync(`/proc/${childPid}/stat`, "utf8").replace(/^.*\) /, "")[0]
-      : "gone";
-    expect(["gone", "Z", "X"]).toContain(state);
+  });
+
+  it("settles once a SIGTERMed group empties instead of waiting out the grace", async () => {
+    const timeoutMs = 300;
+    const killGraceMs = 10_000;
+    const result = await runBounded({ command: slowGroup(), timeoutMs, killGraceMs, echo: false });
+    expect(result.timedOut).toBe(true);
+    // The orphaned grandchild dies of SIGTERM at once but stays a group member
+    // until its reaper collects the zombie (measured ~1.7 s on a host whose init
+    // reaps on a ~2 s cycle); waiting for the SIGKILL timer would take 10.3 s.
+    expect(result.durationMs).toBeLessThan(timeoutMs + killGraceMs - 5_000);
   });
 
   it("reports a missing command as a failure, never a success", async () => {
@@ -863,5 +1014,100 @@ describe("bounded subprocess", () => {
       echo: false,
     });
     expect(result.exitCode).not.toBe(0);
+  });
+
+  // Only these read /proc. On Linux an unusable /proc fails the first case
+  // instead of skipping, and absence of /proc never counts as exit proof.
+  describe.skipIf(!onLinux)("on Linux /proc", () => {
+    // Fixture-owned cleanup: runs after the assertions have decided the
+    // outcome, only signals a pid that still runs `sleep`, and asserts nothing.
+    const leftovers = [];
+    afterEach(() => {
+      for (const pid of leftovers.splice(0)) {
+        try {
+          const state = readProcState(pid);
+          if (
+            !TERMINAL_STATES.has(state) &&
+            readFileSync(`/proc/${pid}/comm`, "utf8").trim() === "sleep"
+          )
+            process.kill(pid, "SIGKILL");
+        } catch {
+          // already gone
+        }
+      }
+    });
+
+    it("is usable: this process reads as live", () => {
+      expect(["R", "S"]).toContain(readProcState(process.pid));
+    });
+
+    it("rejects a deliberately live process (negative control)", async () => {
+      const live = spawn("sleep", ["60"], { stdio: "ignore" });
+      leftovers.push(live.pid);
+      try {
+        await expect(waitForTerminalState(live.pid, { deadlineMs: 200 })).rejects.toThrow(
+          new RegExp(
+            `^pid ${live.pid} still in state [RS] after \\d+\\.\\d ms \\(deadline 200 ms\\)$`,
+          ),
+        );
+      } finally {
+        live.kill("SIGKILL");
+      }
+    });
+
+    it("after the deadline, the grandchild reaches a terminal state within the observation bound", async () => {
+      const result = await runBounded({
+        command: slowGroup(),
+        timeoutMs: 300,
+        killGraceMs: 200,
+        echo: false,
+      });
+      expect(result.timedOut).toBe(true);
+      expect(result.durationMs).toBeLessThan(10_000);
+      const childPid = Number(result.stdout.match(/child (\d+)/)[1]);
+      leftovers.push(childPid);
+      // #4614: a task releases its pipes in do_exit before it is a zombie, so
+      // one read straight after settling can still see R. This bounded wait
+      // proves the grandchild stopped running within the observation bound
+      // after settlement; it does not prove it was already terminal at the
+      // moment the promise settled.
+      const { state } = await waitForTerminalState(childPid, { deadlineMs: OBSERVE_DEADLINE_MS });
+      expect([...TERMINAL_STATES]).toContain(state);
+    });
+
+    it("still SIGKILLs a TERM-resistant descendant that released the output pipes", async () => {
+      const directory = scratch();
+      const ready = join(directory, "ready");
+      // The descendant ignores SIGTERM, then records its pid (readiness) and
+      // swaps its stdout/stderr away from runBounded's pipes. Once the shell
+      // dies of SIGTERM nothing holds the pipes, so `close` fires while the
+      // descendant still runs in the group.
+      const script = writeScript(
+        "resist.sh",
+        `#!/bin/sh\nsh -c 'trap "" TERM; echo $$ > "${ready}.tmp"; mv "${ready}.tmp" "${ready}"; exec sleep 60 >/dev/null 2>&1' &\nwait\n`,
+      );
+      const timeoutMs = 1_000;
+      const killGraceMs = 300;
+      const started = performance.now();
+      const pending = runBounded({ command: script, timeoutMs, killGraceMs, echo: false });
+      let readyAt = null;
+      while (readyAt === null && performance.now() - started < timeoutMs) {
+        if (existsSync(ready)) readyAt = performance.now() - started;
+        else await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const result = await pending;
+      // Readiness (trap installed) had to be seen before the SIGTERM deadline.
+      expect(readyAt, `descendant not ready within ${timeoutMs} ms`).not.toBeNull();
+      const pid = Number(readFileSync(ready, "utf8"));
+      leftovers.push(pid);
+      expect(result.timedOut).toBe(true);
+      // Settlement waited for the grace period instead of cancelling SIGKILL.
+      // -1: a Node timer can fire 1 ms early as measured by Date.now().
+      expect(result.durationMs).toBeGreaterThanOrEqual(timeoutMs + killGraceMs - 1);
+      expect(result.durationMs).toBeLessThan(10_000);
+      // sleep 60 ignoring SIGTERM can only have stopped by the SIGKILL.
+      const { state } = await waitForTerminalState(pid, { deadlineMs: OBSERVE_DEADLINE_MS });
+      expect([...TERMINAL_STATES]).toContain(state);
+    });
   });
 });
