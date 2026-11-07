@@ -32,6 +32,7 @@ import {
 import { budgetAllowsRetention } from "../island-size-evidence.mjs";
 import { asSchemaV2 } from "./fixtures/island-size-checkout.mjs";
 import { reviewedCargoLock } from "./fixtures/reviewed-cargo-transition.mjs";
+import { esbuildRemovalLock } from "./fixtures/esbuild-removal-transition.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../..");
@@ -929,6 +930,190 @@ describe("island shipped-size budget", () => {
     expect(validate(v3DeclaresBundler).errors).toEqual([
       "contract: schemaVersion 3 pins the esbuild producer and cannot declare bundlerIdentity",
     ]);
+  });
+
+  // #4635 bundler-backend: synthetic esbuild-free saved bytes against a
+  // schemaVersion-3 contract that pins an older measure-real.mjs digest. Never
+  // a native receipt or a live re-pin.
+  function bundlerBackendState() {
+    const state = makeState(
+      baseContract.platform,
+      v3Contract(),
+      baseContract.toolchain.packageVersion,
+      null,
+      true,
+    );
+    state.contract.runnerSha256["measure-real.mjs"] = "0".repeat(64);
+    return state;
+  }
+  function bundlerBackendEvidence(state, patch = {}) {
+    const provenance = state.packed.measurement.provenance;
+    return {
+      version: state.contract.toolchain.packageVersion,
+      pnpmLockSha256: provenance.pnpmLockSha256,
+      normalizerSha256: state.localInputs.normalizerSha256,
+      sourceSha: state.sourceSha,
+      headSha: state.sourceSha,
+      runId: 1,
+      jobId: 2,
+      runLabel: "Synthetic bundler-backend transition",
+      identity: measuredIdentity(provenance),
+      artifactFingerprint: provenance.dependencyFingerprint,
+      dependencyFingerprint: checkoutFingerprint(),
+      dependencyFingerprintError: null,
+      checkoutBundlerIdentity: state.localInputs.bundlerIdentity,
+      // Test fixture: a digest-only previous-contract reference (#4219).
+      previousContract: { sha256: "d".repeat(64) },
+      ...patch,
+    };
+  }
+  const bundlerTotals = (state) =>
+    measuredTotals({
+      workspace: state.workspace.normalized.results,
+      packed: state.packed.normalized.results,
+    });
+
+  it("moves a schemaVersion-3 contract to schemaVersion 4 only by the bundler-backend transition", () => {
+    const state = bundlerBackendState();
+    const before = structuredClone(state.contract);
+    const { contract } = rebaselineContract(
+      state.contract,
+      bundlerTotals(state),
+      bundlerBackendEvidence(state),
+      "bundler-backend",
+    );
+    expect(contract.schemaVersion).toBe(4);
+    expect(contract.toolchain).not.toHaveProperty("esbuildVersion");
+    expect(contract.toolchain.bundlerIdentity).toBe("rolldown-24bc2d0");
+    expect(Object.keys(contract.toolchain)).toEqual(
+      Object.keys(before.toolchain).map((key) =>
+        key === "esbuildVersion" ? "bundlerIdentity" : key,
+      ),
+    );
+    expect(contract.runnerSha256).toEqual(state.localInputs.runnerSha256);
+    expect(contract.ceilings).toEqual(before.ceilings);
+    expect(contract.allowance).toEqual(before.allowance);
+    expect(contract.dependencyFingerprint).toEqual(before.dependencyFingerprint);
+    expect(contract.toolchain.cargoLockSha256).toBe(before.toolchain.cargoLockSha256);
+    expect(contract.outcome).toBe("bundler-backend-transition");
+    expect(contract.baselineEvidence.bundlerBackend).toEqual({
+      schemaVersion: { from: 3, to: 4 },
+      from: { esbuildVersion: "0.25.12" },
+      to: { bundlerIdentity: "rolldown-24bc2d0" },
+      runner: {
+        file: "measure-real.mjs",
+        beforeSha256: "0".repeat(64),
+        afterSha256: state.localInputs.runnerSha256["measure-real.mjs"],
+      },
+      pnpmLockSha256: {
+        before: before.toolchain.pnpmLockSha256,
+        after: state.packed.measurement.provenance.pnpmLockSha256,
+      },
+    });
+    expect(contract.baselineEvidence).not.toHaveProperty("cargoTransition");
+    // The written contract admits the esbuild-free run it was measured from.
+    state.contract = contract;
+    expect(validate(state)).toEqual({ errors: [], passed: true });
+  });
+
+  it("refuses a bundler-backend transition that moves anything else", () => {
+    const run = (mutate, patch) => {
+      const state = bundlerBackendState();
+      const totals = bundlerTotals(state);
+      const evidence = bundlerBackendEvidence(state, patch);
+      mutate?.(state, totals, evidence);
+      return () => rebaselineContract(state.contract, totals, evidence, "bundler-backend");
+    };
+    expect(
+      run((_state, totals) => {
+        totals.workspace["event-only"].gzipNormalized += 1;
+      }),
+    ).toThrow(/gzipNormalized totals changed/);
+    expect(
+      run((_state, totals) => {
+        totals.packed["event-only"].raw -= 1;
+      }),
+    ).toThrow(/raw totals changed/);
+    expect(
+      run((_state, _totals, evidence) => {
+        evidence.identity.runnerSha256 = {
+          ...evidence.identity.runnerSha256,
+          "measure.mjs": "1".repeat(64),
+        };
+      }),
+    ).toThrow(/runnerSha256\.measure\.mjs differ/);
+    expect(run(null, { version: "9.9.9" })).toThrow(/packageVersion differ/);
+    expect(run(null, { normalizerSha256: "1".repeat(64) })).toThrow(/normalizerSha256 differ/);
+    expect(
+      run((_state, _totals, evidence) => {
+        evidence.identity.toolchain.nodeVersion = "v0.0.0";
+      }),
+    ).toThrow(/toolchain\.nodeVersion differ/);
+    expect(
+      run((_state, _totals, evidence) => {
+        evidence.identity.toolchain.bundlerIdentity = "rolldown-0000000";
+      }),
+    ).toThrow(/not the reviewed rolldown-24bc2d0/);
+    expect(run(null, { checkoutBundlerIdentity: "rolldown-0000000" })).toThrow(
+      /checkout's BACKEND_IDENTITY is rolldown-0000000/,
+    );
+    expect(
+      run((_state, _totals, evidence) => {
+        evidence.identity.toolchain.esbuildVersion = "0.25.12";
+      }),
+    ).toThrow(/measured an esbuild producer/);
+    expect(
+      run((_state, _totals, evidence) => {
+        evidence.identity.cargoLockSha256 = "1".repeat(64);
+      }),
+    ).toThrow(/pass the reviewed transition's Cargo arguments/);
+    expect(run(null, { cargoLock: { reviewedTransitionText: "{}" } })).toThrow(
+      /Cargo\.lock is unchanged; drop the Cargo arguments/,
+    );
+    expect(
+      run((state) => {
+        state.contract.dependencyFingerprint.sha256 = "1".repeat(64);
+      }),
+    ).toThrow(/cannot move the dependency fingerprint/);
+    expect(
+      run((state) => {
+        state.contract.schemaVersion = 2;
+      }),
+    ).toThrow(/needs a schemaVersion 3 contract, found schemaVersion 2/);
+  });
+
+  it("moves Cargo.lock under bundler-backend only through the reviewed #4635 transition", () => {
+    const lock = esbuildRemovalLock();
+    const cargoEvidence = (patch = {}) => ({
+      expectedOldSha: lock.expectedOldSha,
+      expectedNewSha: lock.expectedNewSha,
+      added: lock.added,
+      oldText: lock.oldText,
+      newText: lock.newText,
+      oldLockSource: lock.oldLockSource,
+      reviewedTransitionText: lock.reviewedTransitionText,
+      ...patch,
+    });
+    const run = (cargoLock) => {
+      const state = bundlerBackendState();
+      state.contract.toolchain.cargoLockSha256 = lock.expectedOldSha;
+      const evidence = bundlerBackendEvidence(state, { cargoLock });
+      evidence.identity.cargoLockSha256 = lock.expectedNewSha;
+      return () =>
+        rebaselineContract(state.contract, bundlerTotals(state), evidence, "bundler-backend");
+    };
+    const { contract } = run(cargoEvidence())();
+    expect(contract.toolchain.cargoLockSha256).toBe(lock.expectedNewSha);
+    expect(contract.baselineEvidence.cargoTransition).toMatchObject({
+      oldSha: lock.expectedOldSha,
+      newSha: lock.expectedNewSha,
+      added: ["zfb-bundler@0.0.0", "zfb-compiler-worker@0.0.0"],
+      review: { id: "esbuild-removal-4635" },
+    });
+    expect(run(cargoEvidence({ reviewedTransitionText: undefined }))).toThrow(
+      /only through --reviewed-cargo-transition/,
+    );
+    expect(run(cargoEvidence({ added: ["zfb-bundler@0.0.0"] }))).toThrow(/added-packages differs/);
   });
 
   it("allows lockstep release specifiers but still detects other lockfile drift", () => {
