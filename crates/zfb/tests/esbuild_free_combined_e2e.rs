@@ -742,10 +742,11 @@ async fn subscribe(base: &str) -> reqwest::Response {
     response
 }
 
-/// Reads the SSE stream until a `page` event arrives. One tick can also
-/// broadcast `islands` or `css` around its `page` event in either order (the
-/// same set `dev_content_reload_2063_e2e` accepts), so those may come first;
-/// any other event name, or no `page` event within `SSE_DEADLINE`, fails.
+/// Reads the SSE stream until a `page` event arrives. `css`/`islands` events
+/// from other emissions (e.g. the cold-bootstrap recovery path appends its
+/// `page` after the tick's own events) may arrive before the reload's `page`;
+/// that is the set `dev_content_reload_2063_e2e` accepts. Any other event
+/// name, or no `page` event within `SSE_DEADLINE`, fails.
 async fn expect_page_event(mut sse: reqwest::Response, session: &DevSession, phase: &str) {
     let deadline = Instant::now() + SSE_DEADLINE;
     let mut buf = Vec::<u8>::new();
