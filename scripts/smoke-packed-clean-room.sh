@@ -460,6 +460,20 @@ pass "store-installed and linked-directory builds emit byte-identical dist/"
 
 echo "All packed-clean-room smoke assertions passed."
 
+# ── Optional: export the packed tarballs (issue #4636) ──────────────────────
+# Opt-in, after every assertion, and NON-FATAL for the same reason as the
+# dist export below: it only feeds the non-required esbuild-free artifact
+# job (scripts/smoke-esbuild-free-artifact.sh), so a failed copy must never
+# redden the required Scaffold E2E check. That job fails on its own
+# download-artifact instead.
+if [[ -n "${ZFB_SMOKE_TARBALL_OUT:-}" ]]; then
+  if mkdir -p "$ZFB_SMOKE_TARBALL_OUT" && cp "$TARBALL_DIR"/*.tgz "$ZFB_SMOKE_TARBALL_OUT/"; then
+    pass "exported packed tarballs to $ZFB_SMOKE_TARBALL_OUT"
+  else
+    echo "::warning::failed to export packed tarballs to $ZFB_SMOKE_TARBALL_OUT — the esbuild-free artifact job will fail on its download-artifact step, but this smoke test's assertions all passed." >&2
+  fi
+fi
+
 # ── Optional: export the built dist for a downstream consumer (issue #2280) ──
 # Opt-in only, and deliberately the LAST thing this script does: once every
 # Stage-6 assertion above has passed, copy the just-built site's dist/ out to
