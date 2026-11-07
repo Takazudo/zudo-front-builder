@@ -159,6 +159,7 @@ A submit falls through to a normal, full browser form submission when any of the
 - the resolved action URL is cross-origin
 - the submit was triggered by a modifier-key click (Cmd/Ctrl/Shift/Alt) or a non-primary mouse button on the submitter
 - another handler already called `event.preventDefault()` on the `submit` event
+- the current page is not router-eligible: the browser has no native View Transitions and the page's `fallback` is `"none"` (for example after a soft navigation to such a page)
 
 `event.formData` on [`zfb:before-preparation`](#navigation-lifecycle-events) is set only for a form-triggered navigation (`undefined` for link clicks and for programmatic `navigate()` calls that don't pass one) — listen there to inspect or react to a submission before it's sent.
 
