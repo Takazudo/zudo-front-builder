@@ -553,7 +553,7 @@ mod tests {
             .unwrap();
         }
         std::fs::write(cwd.join("common.js"), "export const common = 42;\n").unwrap();
-        use zfb_rolldown_prototype::{BundleRequest, OutputLayout, Platform};
+        use zfb_bundler::{BundleRequest, OutputLayout, Platform};
         let mut request = BundleRequest::new(
             cwd,
             &entry,
@@ -567,7 +567,7 @@ mod tests {
         );
         request.splitting = true;
         request.graph = Some("out/meta.json".into());
-        zfb_rolldown_prototype::bundle(&request).unwrap();
+        zfb_bundler::bundle(&request).unwrap();
         let inspected =
             audit_entry_imports_at_path(&cwd.join("out/meta.json"), cwd, &entry).unwrap();
         assert!(

@@ -14,7 +14,7 @@ test = false
 doc = false
 
 [dependencies]
-zfb-rolldown-prototype = { path = "../zfb-rolldown-prototype", features = ["native"] }
+zfb-bundler = { path = "../zfb-bundler", features = ["native"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"

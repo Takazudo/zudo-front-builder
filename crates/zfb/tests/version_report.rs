@@ -7,7 +7,7 @@
 
 use std::process::Command;
 
-use zfb_rolldown_prototype::BACKEND_IDENTITY;
+use zfb_bundler::BACKEND_IDENTITY;
 use zfb_test_utils::zfb_binary;
 
 #[test]

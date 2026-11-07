@@ -51,7 +51,7 @@ export PLAYWRIGHT_BROWSERS_PATH="$PWD/target/rolldown-browsers"
 node prototypes/rolldown/prepare.mjs
 export CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0
 bash "$HOME/.codex/scripts/heavy-guard.sh" -- cargo build --locked -p zfb-build -p zfb-islands --features rolldown-prototype --example rolldown_ssr --example rolldown_browser
-bash "$HOME/.codex/scripts/heavy-guard.sh" -- cargo build --locked -p zfb-rolldown-prototype --features native --example prepared
+bash "$HOME/.codex/scripts/heavy-guard.sh" -- cargo build --locked -p zfb-bundler --features native --example prepared
 node prototypes/rolldown/gate.mjs
 ```
 

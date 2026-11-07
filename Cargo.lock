@@ -6986,6 +6986,7 @@ dependencies = [
  "url",
  "walkdir",
  "zfb-build",
+ "zfb-bundler",
  "zfb-compiler-worker",
  "zfb-config-loader",
  "zfb-content",
@@ -6996,7 +6997,6 @@ dependencies = [
  "zfb-md-ast",
  "zfb-plugin-resolver",
  "zfb-render",
- "zfb-rolldown-prototype",
  "zfb-router",
  "zfb-server",
  "zfb-test-utils",
@@ -7029,17 +7029,31 @@ dependencies = [
  "url",
  "wait-timeout",
  "walkdir",
+ "zfb-bundler",
  "zfb-compiler-worker",
  "zfb-content",
  "zfb-css",
  "zfb-graph",
  "zfb-plugin-resolver",
  "zfb-render",
- "zfb-rolldown-prototype",
  "zfb-router",
  "zfb-test-utils",
  "zfb-types",
  "zfb-watcher",
+]
+
+[[package]]
+name = "zfb-bundler"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "oxc",
+ "rolldown",
+ "rolldown_common",
+ "rolldown_resolver",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -7052,7 +7066,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
- "zfb-rolldown-prototype",
+ "zfb-bundler",
 ]
 
 [[package]]
@@ -7066,9 +7080,9 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+ "zfb-bundler",
  "zfb-compiler-worker",
  "zfb-render",
- "zfb-rolldown-prototype",
 ]
 
 [[package]]
@@ -7164,8 +7178,8 @@ dependencies = [
  "tracing",
  "walkdir",
  "zfb-build",
+ "zfb-bundler",
  "zfb-plugin-resolver",
- "zfb-rolldown-prototype",
  "zfb-types",
 ]
 
@@ -7252,20 +7266,6 @@ dependencies = [
  "zfb-js-host",
  "zfb-router",
  "zfb-types",
-]
-
-[[package]]
-name = "zfb-rolldown-prototype"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "oxc",
- "rolldown",
- "rolldown_common",
- "rolldown_resolver",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]

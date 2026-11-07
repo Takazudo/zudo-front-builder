@@ -88,7 +88,7 @@ fn serve() -> Result<ExitCode, String> {
         _ => {}
     }
 
-    let (outcome, code) = match zfb_rolldown_prototype::generate(&request.request) {
+    let (outcome, code) = match zfb_bundler::generate(&request.request) {
         Ok(generated) => (
             Outcome::Generated {
                 files: write_private_files(private_dir, &generated.files, hook.as_ref())?,

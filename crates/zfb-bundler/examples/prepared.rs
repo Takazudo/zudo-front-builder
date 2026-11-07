@@ -9,9 +9,9 @@ fn main() -> anyhow::Result<()> {
     };
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("read {}", std::path::Path::new(&path).display()))?;
-    let request: zfb_rolldown_prototype::BundleRequest =
+    let request: zfb_bundler::BundleRequest =
         serde_json::from_str(&text).context("parse typed bundle request")?;
-    zfb_rolldown_prototype::bundle(&request)?;
+    zfb_bundler::bundle(&request)?;
     Ok(())
 }
 #[cfg(not(feature = "native"))]

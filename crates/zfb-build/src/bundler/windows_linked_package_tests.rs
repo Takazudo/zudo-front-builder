@@ -39,7 +39,7 @@ use std::{
 use zfb_types::{directory_link, long_path::long_path_spelling};
 
 use super::{bundle, bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_rolldown_prototype::{BundleRequest, OutputLayout, Platform};
+use zfb_bundler::{BundleRequest, OutputLayout, Platform};
 
 const LINKED_ROOT: &str = "linked-root-marker-4545";
 const LINKED_SUB: &str = "linked-sub-marker-4545";
@@ -478,7 +478,7 @@ fn raw_bundle(fixture: &Fixture, preserve_symlinks: bool) -> Result<(), String> 
         Platform::Neutral,
     );
     request.resolve.preserve_symlinks = preserve_symlinks;
-    let result = zfb_rolldown_prototype::bundle(&request);
+    let result = zfb_bundler::bundle(&request);
 
     let body = fs::read_to_string(&outfile).unwrap_or_default();
     let missing = missing_markers(&body, &[LINKED_ROOT, LINKED_SUB, TRANSITIVE]);

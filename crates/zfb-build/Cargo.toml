@@ -35,7 +35,7 @@ direct-v8 = ["zfb-render/direct-v8"]
 default = ["direct-v8"]
 
 [dependencies]
-zfb-rolldown-prototype = { path = "../zfb-rolldown-prototype", features = ["native"] }
+zfb-bundler = { path = "../zfb-bundler", features = ["native"] }
 # Compiles `.ts`/`.tsx`/`.mts`/`.cts` plugin entries (plugin_bundler.rs).
 zfb-compiler-worker = { path = "../zfb-compiler-worker" }
 zfb-watcher = { path = "../zfb-watcher" }

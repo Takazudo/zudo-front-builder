@@ -2266,13 +2266,13 @@ fn owned_signal_definition_identity_detects_a_duplicated_runtime_copy() {
             format!("import {{ signal as first }} from {first};\nimport {{ signal as second }} from {second};\nexport const values = [first('a'), second('b')];\n"),
         )
         .unwrap();
-        let request = zfb_rolldown_prototype::BundleRequest::new(
+        let request = zfb_bundler::BundleRequest::new(
             temp.path(),
             &entry,
-            zfb_rolldown_prototype::OutputLayout::file(&out),
-            zfb_rolldown_prototype::Platform::Browser,
+            zfb_bundler::OutputLayout::file(&out),
+            zfb_bundler::Platform::Browser,
         );
-        zfb_rolldown_prototype::bundle(&request)
+        zfb_bundler::bundle(&request)
             .unwrap_or_else(|error| panic!("native bundle failed: {error:#}"));
         fs::read_to_string(out)
             .unwrap()

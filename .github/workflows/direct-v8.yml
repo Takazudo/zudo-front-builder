@@ -369,7 +369,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p "$ROW_DIR"
-          cargo test --locked -p zfb-rolldown-prototype --features native --lib 2>&1 \
+          cargo test --locked -p zfb-bundler --features native --lib 2>&1 \
             | tee "$ROW_DIR/rolldown-prototype-lib-tests.log"
 
       # release.yml's native cargo build of the Windows carrier, here with the

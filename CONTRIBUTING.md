@@ -135,7 +135,7 @@ The Cloudflare Workers deploy workflows expect the following GitHub Actions secr
 
 ## External tool version pins
 
-zfb shells out to esbuild to compile `zfb.config.ts`, and uses wrangler/workerd for Cloudflare Workers preview. Rolldown, the only bundler for pages, islands, client scripts and plugins, is a Rust dependency pinned to a git revision in `crates/zfb-rolldown-prototype/Cargo.toml`. These external tools are **exact-pinned** so the same source tree produces reproducible output regardless of when or where it is built. CSS utility generation runs in-process through zudo-wind; it does not download or stage a separate CLI binary.
+zfb shells out to esbuild to compile `zfb.config.ts`, and uses wrangler/workerd for Cloudflare Workers preview. Rolldown, the only bundler for pages, islands, client scripts and plugins, is a Rust dependency pinned to a git revision in `crates/zfb-bundler/Cargo.toml`. These external tools are **exact-pinned** so the same source tree produces reproducible output regardless of when or where it is built. CSS utility generation runs in-process through zudo-wind; it does not download or stage a separate CLI binary.
 
 The pin sources are:
 

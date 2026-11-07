@@ -13,7 +13,7 @@
 
 use std::process::Command;
 
-use zfb_rolldown_prototype::BACKEND_IDENTITY;
+use zfb_bundler::BACKEND_IDENTITY;
 
 /// Compile and run `zfb --version` with `ZFB_RELEASE_VERSION` set to a
 /// well-known test value and assert the output reflects that value.

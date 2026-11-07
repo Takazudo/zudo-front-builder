@@ -55,7 +55,7 @@ The native example's 2 Linux unit tests and the prototype library's 4 tests pass
 
 ## Audited lock and Wind provenance repair
 
-Cargo.lock adds only `rolldown_resolver` to `zfb-rolldown-prototype`'s root dependencies. The resolver already exists at the same pinned version in the lock. The manifest exposes it only through the optional native feature so the hook can distinguish typed resolution errors. Parsed before/after lockfiles differ in exactly that one package record; no version, checksum or source pin changes.
+Cargo.lock adds only `rolldown_resolver` to `zfb-bundler`'s root dependencies. The resolver already exists at the same pinned version in the lock. The manifest exposes it only through the optional native feature so the hook can distinguish typed resolution errors. Parsed before/after lockfiles differ in exactly that one package record; no version, checksum or source pin changes.
 
 The reviewed Wind source closure includes all 98 files under crates/zudo-wind plus root Cargo.toml and Cargo.lock. Its original 100-path digest was first validated, then all before/after file identities were compared. Only Cargo.lock changed. Wind sources, catalog, support pin and locked package records are unchanged; both actual Wind and ordinary no-V8 dependency graphs contain no Rolldown.
 
@@ -71,10 +71,10 @@ Run from the integrated PR checkout with the recorded toolchain, using the repos
 
 ```sh
 npm install --prefix "$PWD/target/rolldown-plugin-tools" --no-audit --no-fund @esbuild/linux-x64@0.25.12
-cargo build --locked -p zfb-rolldown-prototype --features native --example plugin_prebundle
-cargo test --locked -p zfb-rolldown-prototype --features native --example plugin_prebundle
-cargo test --locked -p zfb-rolldown-prototype --features native --lib
-cargo check --locked -p zfb-rolldown-prototype --no-default-features --all-targets
+cargo build --locked -p zfb-bundler --features native --example plugin_prebundle
+cargo test --locked -p zfb-bundler --features native --example plugin_prebundle
+cargo test --locked -p zfb-bundler --features native --lib
+cargo check --locked -p zfb-bundler --no-default-features --all-targets
 ZFB_PROBE_SOURCE="$(git rev-parse HEAD)" ZFB_ESBUILD_BIN="$PWD/target/rolldown-plugin-tools/node_modules/@esbuild/linux-x64/bin/esbuild" node prototypes/rolldown/plugin-prebundle.mjs
 cargo test --locked -p zudo-wind --lib
 env -u ZFB_ESBUILD_BIN cargo build --locked -p zfb --no-default-features

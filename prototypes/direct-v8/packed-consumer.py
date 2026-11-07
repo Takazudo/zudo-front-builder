@@ -47,7 +47,7 @@ CONSUMER_OVERRIDES = ["zfb", "zfb-slugify", "zfb-runtime"]
 SITE_NAME = "packed-e2e-site"
 # Retired backend selectors the CLI rejects at any value (#4628); never forwarded.
 REMOVED_BUNDLER_SELECTORS = ("ZFB_BUNDLER", "ZFB_ROLLDOWN_PROTOTYPE")
-# Printed by crates/zfb-rolldown-prototype/src/native.rs when ZFB_DEV_TIMING is set.
+# Printed by crates/zfb-bundler/src/native.rs when ZFB_DEV_TIMING is set.
 ROLLDOWN_TIMING_LINE = "[zfb-timing] rolldown-prototype:"
 # Stage 7 (smoke-packed-clean-room.sh): extracted workspace members, and the two the site `link:`s.
 LINKED_WORKSPACE_PACKAGES = ["zfb", "zfb-runtime", "zfb-slugify"]

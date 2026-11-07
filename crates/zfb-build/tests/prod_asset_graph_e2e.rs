@@ -808,7 +808,7 @@ fn dev_mode_renderer_path_does_not_inject_head_assets() {
 #[test]
 fn worker_bundle_does_not_inline_legacy_css_marker_after_s5() {
     use zfb_build::bundler::SSR_LOADERS;
-    use zfb_rolldown_prototype::Loader;
+    use zfb_bundler::Loader;
 
     assert!(
         SSR_LOADERS.contains(&(".css", Loader::Empty)),

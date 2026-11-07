@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use tokio::process::Command;
+use zfb_bundler::{OutputLayout, Platform};
 use zfb_compiler_worker::{BundleRequest, CompileJob, CompilerWorker, WorkerError, WorkerLauncher};
-use zfb_rolldown_prototype::{OutputLayout, Platform};
 
 // Only the in-process V8 path resolves plugins in Rust (the slim subprocess
 // path resolves them inside config-loader.mjs), so this import is gated to

@@ -39,7 +39,7 @@ default = ["direct-v8"]
 zfb-diagnostics = { path = "../zfb-diagnostics" }
 zfb-toolchain-pins = { path = "../zfb-toolchain-pins" }
 # `zfb --version` reports the native bundler backend identity.
-zfb-rolldown-prototype = { path = "../zfb-rolldown-prototype", features = ["native"] }
+zfb-bundler = { path = "../zfb-bundler", features = ["native"] }
 # TS-config evaluator, hoisted out of this crate (issue #1037) into a leaf
 # crate so `zfb-server` can call it too without a dependency cycle. This crate
 # re-exports / wraps it in `config.rs`. `default-features = false` for the V8

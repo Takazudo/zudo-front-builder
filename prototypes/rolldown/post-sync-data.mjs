@@ -145,7 +145,7 @@ if (process.argv.includes("--prepare-tree")) {
     "prototypes/rolldown/post-sync-data.mjs",
     "prototypes/rolldown/plugin-prebundle.mjs",
     "prototypes/rolldown/POST-SYNC.md",
-    "crates/zfb-rolldown-prototype/examples/plugin_prebundle.rs",
+    "crates/zfb-bundler/examples/plugin_prebundle.rs",
     ".github/workflows/rolldown-post-sync-data.yml",
   ];
   for (const path of changed)

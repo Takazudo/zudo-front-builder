@@ -164,7 +164,7 @@ impl ModuleWorkerBuildContext {
         field(
             aggregate,
             b"backend",
-            zfb_rolldown_prototype::BACKEND_IDENTITY.as_bytes(),
+            zfb_bundler::BACKEND_IDENTITY.as_bytes(),
         );
         field(
             aggregate,

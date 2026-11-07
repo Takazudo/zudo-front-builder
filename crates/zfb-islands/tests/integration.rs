@@ -649,9 +649,7 @@ fn stage_escape_audit_accepts_staged_symlink_through_symlink_aliased_working_dir
 /// Also the real-backend proof for the entry-import guard (#4464): `bundle`
 /// fails unless exactly one output in the real `meta.json` resolves to the
 /// synthesized islands entry and no other output imports it, so a passing
-/// run shows the backend's real metafile spelling classifies correctly. A
-/// default build is esbuild; with `--features rolldown-prototype` the same
-/// test runs on Rolldown native.
+/// run shows the native Rolldown metafile spelling classifies correctly.
 #[test]
 fn splitting_emits_chunk_for_dynamic_import() {
     let tmp = tempfile::tempdir().expect("tempdir");

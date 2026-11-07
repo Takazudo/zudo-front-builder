@@ -38,7 +38,7 @@ default = ["direct-v8"]
 zfb-compiler-worker = { path = "../zfb-compiler-worker" }
 # Typed request fields (`OutputLayout`, `Platform`); the engine-neutral request
 # types need no `native` feature here.
-zfb-rolldown-prototype = { path = "../zfb-rolldown-prototype" }
+zfb-bundler = { path = "../zfb-bundler" }
 # In-process V8 config evaluator (ThreadedConfigEvaluator), behind the runtime
 # features. zfb-render's default-off build selects no syntect regex backend;
 # this native crate picks the default native one (zfb-build used to supply it

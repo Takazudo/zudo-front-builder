@@ -126,7 +126,7 @@ use zfb_types::{
     REGION_ID_ATTR, RENDER_REGION_ATTR,
 };
 
-use zfb_rolldown_prototype::{BundleRequest, External, Loader, OutputLayout, Platform, SourceMap};
+use zfb_bundler::{BundleRequest, External, Loader, OutputLayout, Platform, SourceMap};
 // The `import.meta.glob` expansion helpers moved to their own `pub` module
 // (issue #1402) so #1404's downstream orchestration in `crates/zfb` can
 // reuse them without `zfb-islands` gaining a `zfb-build` dependency. Only
@@ -7312,7 +7312,7 @@ mod esbuild_module_label_tests {
             Platform::Neutral,
         );
         request.graph = Some("meta.json".into());
-        zfb_rolldown_prototype::bundle(&request).unwrap();
+        zfb_bundler::bundle(&request).unwrap();
         let bundle = fs::read_to_string(shadow.join("bundle.mjs")).unwrap();
         let metafile: serde_json::Value =
             serde_json::from_slice(&fs::read(shadow.join("meta.json")).unwrap()).unwrap();
@@ -15918,7 +15918,7 @@ fn run_native_bundle(
         extra_aliases,
         inherited_node_path_dirs(),
     )?;
-    let result = zfb_rolldown_prototype::bundle(&request);
+    let result = zfb_bundler::bundle(&request);
     // The virtual-module `.mjs` temp files are no longer needed once the
     // bundle is generated; their `NamedTempFile`s delete themselves on drop.
     drop(resolver_inputs);
@@ -21754,7 +21754,7 @@ mod tests {
             OutputLayout::file(output.clone()),
             Platform::Neutral,
         );
-        zfb_rolldown_prototype::bundle(&request).expect("SSR-like native bundle");
+        zfb_bundler::bundle(&request).expect("SSR-like native bundle");
         let bundled = fs::read_to_string(output).unwrap();
         assert!(bundled.contains("worker-components-s-search-d-worker-d-ts.js?v="));
         assert!(!bundled.contains("BROWSER_ONLY_SENTINEL"), "{bundled}");

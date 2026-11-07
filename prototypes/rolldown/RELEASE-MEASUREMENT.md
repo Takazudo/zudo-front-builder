@@ -10,10 +10,10 @@ Use the prerequisites in [README.md](README.md) and [PRODUCTION.md](PRODUCTION.m
 node prototypes/rolldown/prepare.mjs
 export CARGO_BUILD_JOBS=4
 bash "$HOME/.codex/scripts/heavy-guard.sh" -- cargo build --release --locked \
-  -p zfb -p zfb-build -p zfb-islands -p zfb-rolldown-prototype \
-  --features zfb/rolldown-prototype,zfb-build/rolldown-prototype,zfb-islands/rolldown-prototype,zfb-rolldown-prototype/native \
+  -p zfb -p zfb-build -p zfb-islands -p zfb-bundler \
+  --features zfb/rolldown-prototype,zfb-build/rolldown-prototype,zfb-islands/rolldown-prototype,zfb-bundler/native \
   --bin zfb --example rolldown_production --example rolldown_ssr --example rolldown_browser --example prepared
-bash "$HOME/.codex/scripts/heavy-guard.sh" -- cargo test --release --locked -p zfb-rolldown-prototype --features native --lib
+bash "$HOME/.codex/scripts/heavy-guard.sh" -- cargo test --release --locked -p zfb-bundler --features native --lib
 bash "$HOME/.codex/scripts/heavy-guard.sh" -- node prototypes/rolldown/benchmark.mjs
 ZFB_PROTOTYPE_PROFILE=release bash "$HOME/.codex/scripts/heavy-guard.sh" -- node prototypes/rolldown/verify.mjs
 ```

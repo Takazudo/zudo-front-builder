@@ -11,7 +11,7 @@ description = "zfb islands runtime: \"use client\" AST scanner, native client bu
 default = []
 
 [dependencies]
-zfb-rolldown-prototype = { path = "../zfb-rolldown-prototype", features = ["native"] }
+zfb-bundler = { path = "../zfb-bundler", features = ["native"] }
 # Stable asset-URL / on-disk-path constants shared with zfb-render
 # (head injection, S1) and zfb-build (production pipeline, S4).
 # zfb-types is a zero-zfb-dep leaf crate, so this introduces no

@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use zfb_rolldown_prototype::{BundleRequest, OutputLayout};
+use zfb_bundler::{BundleRequest, OutputLayout};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);

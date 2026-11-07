@@ -33,7 +33,7 @@ pub mod scanner;
 
 /// Test oracle for emitted bundler output (#4449); not a public API.
 #[doc(hidden)]
-pub use zfb_rolldown_prototype::module_specifiers;
+pub use zfb_bundler::module_specifiers;
 
 pub use bundle_job::{
     hash_8, is_zfb_islands_temp_file, render_shared_bundle_entry_source, ClientScriptBundleOutput,
@@ -60,7 +60,7 @@ pub use scanner::{
     FsResolver, InMemoryResolver, IslandsSet, ModuleWorkerEdge, RawImportEdge,
     ReachableModulesMeta, Resolver, ScanError, ScanMeta, ScanResult, WorkspacePackageImportEdge,
 };
-pub use zfb_rolldown_prototype::External;
+pub use zfb_bundler::External;
 pub use zfb_types::{
     module_worker_content_hash, module_worker_filename, module_worker_url_specifier,
     ModuleWorkerPathError, MODULE_WORKER_CSP_GLOB, MODULE_WORKER_FILENAME_PREFIX,
