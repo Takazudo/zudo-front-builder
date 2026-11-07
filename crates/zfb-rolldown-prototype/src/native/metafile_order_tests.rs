@@ -1,9 +1,10 @@
 //! Metafile imports keep source order, as esbuild's do: island graph identity
 //! walks them in this order, so a path sort would make the build token depend
 //! on where packages are installed (#4231).
-use super::run_prepared;
+use super::bundle;
+use crate::request::{BundleRequest, OutputLayout, Platform};
 use serde_json::Value;
-use std::{fs, process::Command};
+use std::fs;
 
 #[test]
 fn metafile_imports_follow_source_order_not_path_order() {
@@ -18,15 +19,14 @@ fn metafile_imports_follow_source_order_not_path_order() {
         "import \"./zeta.js\";\nimport \"./alpha.js\";\n",
     )
     .unwrap();
-    let mut cmd = Command::new("unused-prepared-esbuild");
-    cmd.current_dir(&dir).args([
+    let mut request = BundleRequest::new(
+        &dir,
         "entry.js",
-        "--bundle",
-        "--format=esm",
-        "--outfile=out/bundle.mjs",
-        "--metafile=out/meta.json",
-    ]);
-    run_prepared(&cmd).unwrap();
+        OutputLayout::file("out/bundle.mjs"),
+        Platform::Browser,
+    );
+    request.graph = Some("out/meta.json".into());
+    bundle(&request).unwrap();
     let meta: Value =
         serde_json::from_str(&fs::read_to_string(dir.join("out/meta.json")).unwrap()).unwrap();
     fs::remove_dir_all(&dir).unwrap();

@@ -2,12 +2,12 @@
 //! emitted chunk imports omit `external` and carry the outdir-joined path
 //! (#4476, #4506).
 use super::external_imports::{copied_input_edge, edge, import_entry};
+use crate::request::{BundleRequest, External, Loader, OutputLayout, Platform};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::Path,
-    process::Command,
 };
 
 /// Runs a splitting ESM build of `entry.js` in a fresh temp dir and returns
@@ -15,7 +15,7 @@ use std::{
 fn prepared_build(
     name: &str,
     files: &[(&str, &str)],
-    extra_args: &[String],
+    customize: impl FnOnce(&mut BundleRequest),
 ) -> (anyhow::Result<()>, String) {
     let dir = std::env::temp_dir().join(format!("zfb-native-ext-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -24,40 +24,42 @@ fn prepared_build(
     for (path, source) in files {
         fs::write(dir.join(path), source).unwrap();
     }
-    let mut cmd = Command::new("unused-prepared-esbuild");
-    cmd.current_dir(&dir).args([
-        "entry.js",
-        "--bundle",
-        "--format=esm",
-        "--platform=neutral",
-        "--splitting=true",
-        "--outdir=out",
-        "--metafile=out/meta.json",
-    ]);
-    cmd.args(extra_args);
-    let result = super::run_prepared(&cmd);
+    let mut request =
+        BundleRequest::new(&dir, "entry.js", OutputLayout::dir("out"), Platform::Neutral);
+    request.splitting = true;
+    request.graph = Some("out/meta.json".into());
+    customize(&mut request);
+    let result = super::bundle(&request).map(drop);
     let meta = fs::read_to_string(dir.join("out/meta.json")).unwrap_or_default();
     fs::remove_dir_all(&dir).unwrap();
     (result, meta)
 }
 
 /// Bundles `entry.js` with splitting and returns the parsed metafile.
-fn bundle_meta(name: &str, files: &[(&str, &str)], extra_args: &[&str]) -> Value {
-    let mut args = vec!["--chunk-names=chunk-[hash]".to_string()];
-    args.extend(extra_args.iter().map(|arg| arg.to_string()));
-    let (result, meta) = prepared_build(name, files, &args);
+fn bundle_meta(
+    name: &str,
+    files: &[(&str, &str)],
+    customize: impl FnOnce(&mut BundleRequest),
+) -> Value {
+    let (result, meta) = prepared_build(name, files, |request| {
+        if let OutputLayout::Dir { chunk_names, .. } = &mut request.output {
+            *chunk_names = Some("chunk-[hash]".into());
+        }
+        customize(request);
+    });
     result.unwrap();
     serde_json::from_str(&meta).unwrap()
 }
 
 /// Bundles `entry.js` with splitting and returns every metafile output import.
 fn bundle_imports(name: &str, files: &[(&str, &str)], externals: &[&str]) -> Vec<Value> {
-    let args: Vec<_> = externals
-        .iter()
-        .map(|external| format!("--external:{external}"))
-        .collect();
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    bundle_meta(name, files, &args)["outputs"]
+    bundle_meta(name, files, |request| {
+        request.externals.extend(
+            externals
+                .iter()
+                .map(|external| External::Package(external.to_string())),
+        );
+    })["outputs"]
         .as_object()
         .unwrap()
         .values()
@@ -169,7 +171,10 @@ fn every_internal_output_import_is_its_output_key_byte_for_byte() {
             ),
             ("logo.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"/>\n"),
         ],
-        &["--loader:.svg=file", "--external:ext-pkg"],
+        |request| {
+            request.loaders.push((".svg".into(), Loader::File));
+            request.externals.push(External::Package("ext-pkg".into()));
+        },
     );
     let outputs = meta["outputs"].as_object().unwrap();
     let (mut statics, mut dynamics, mut copies, mut externals) = (0, 0, 0, 0);
@@ -314,10 +319,12 @@ fn real_build_with_an_external_spelled_like_the_entry_is_indistinguishable() {
             "entry.js",
             "export const load = () => import(\"./islands.js\");\n",
         )],
-        &[
-            "--entry-names=islands".to_string(),
-            "--external:./islands.js".to_string(),
-        ],
+        |request| {
+            if let OutputLayout::Dir { entry_names, .. } = &mut request.output {
+                *entry_names = Some("islands".into());
+            }
+            request.externals.push(External::Package("./islands.js".into()));
+        },
     );
     result.expect("an external spelled like the entry no longer fails the build");
 }

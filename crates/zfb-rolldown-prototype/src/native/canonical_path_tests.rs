@@ -1,14 +1,14 @@
-//! Canonical shadow spellings that reach Rolldown outside the prepared argv.
+//! Canonical shadow spellings that reach Rolldown outside the typed request.
 //! ZFB writes `fs::canonicalize` results into tsconfig `paths`, rewritten
 //! import specifiers, and out-of-cwd inputs; on Windows those are verbatim
-//! (`\\?\C:\…`), which the argv decoder never sees (#4336 ZFB-RD-007, B2).
+//! (`\\?\C:\…`), which never pass through the request planner (#4336 ZFB-RD-007, B2).
 //! Elsewhere these pass as ordinary absolute-path regressions.
-use super::run_prepared;
+use super::bundle;
+use crate::request::{BundleRequest, OutputLayout, Platform};
 use serde_json::Value;
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::atomic::{AtomicUsize, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -36,16 +36,15 @@ impl Drop for Dir {
     }
 }
 
-fn prepared(cwd: &Path) -> Command {
-    let mut cmd = Command::new("unused-prepared-esbuild");
-    cmd.current_dir(cwd).args([
+fn prepared(cwd: &Path) -> BundleRequest {
+    let mut request = BundleRequest::new(
+        cwd,
         "entry.js",
-        "--bundle",
-        "--format=esm",
-        "--outfile=out/bundle.mjs",
-        "--metafile=out/meta.json",
-    ]);
-    cmd
+        OutputLayout::file("out/bundle.mjs"),
+        Platform::Browser,
+    );
+    request.graph = Some("out/meta.json".into());
+    request
 }
 
 /// A JS string literal for `path`, as the shadow rewriter emits it.
@@ -98,9 +97,9 @@ fn tsconfig_paths_to_a_canonical_target_resolve() {
         "import { m } from '@lib/marker.js'; export default m;\n",
     )
     .unwrap();
-    let mut cmd = prepared(&site.0);
-    cmd.arg("--tsconfig=tsconfig.json");
-    run_prepared(&cmd).unwrap();
+    let mut request = prepared(&site.0);
+    request.tsconfig = Some("tsconfig.json".into());
+    bundle(&request).unwrap();
     let (bundle, inputs) = bundle_and_inputs(&site.0);
     assert!(bundle.contains("TSCONFIG_MARKER"), "{bundle}");
     assert!(inputs.contains(&"lib/marker.js".to_string()), "{inputs:?}");
@@ -123,7 +122,7 @@ fn rewritten_absolute_import_of_a_canonical_path_resolves() {
         ),
     )
     .unwrap();
-    run_prepared(&prepared(&site.0)).unwrap();
+    bundle(&prepared(&site.0)).unwrap();
     let (bundle, inputs) = bundle_and_inputs(&site.0);
     assert!(bundle.contains("ABSOLUTE_MARKER"), "{bundle}");
     assert!(inputs.contains(&"dep.js".to_string()), "{inputs:?}");
@@ -144,7 +143,7 @@ fn input_outside_cwd_is_keyed_relative_to_cwd_like_esbuild() {
         ),
     )
     .unwrap();
-    run_prepared(&prepared(&site.0)).unwrap();
+    bundle(&prepared(&site.0)).unwrap();
     let (bundle, inputs) = bundle_and_inputs(&site.0);
     assert!(bundle.contains("OUTSIDE_MARKER"), "{bundle}");
     assert_no_verbatim(&inputs);

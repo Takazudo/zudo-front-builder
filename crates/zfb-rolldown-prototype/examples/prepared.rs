@@ -1,10 +1,18 @@
-//! Minimal native capability/reproduction runner: arguments are a prepared ZFB job.
+//! Minimal native capability/reproduction runner: the single argument is a
+//! JSON-serialized typed `BundleRequest`. An empty `cwd` means the process cwd.
 #[cfg(feature = "native")]
 fn main() -> anyhow::Result<()> {
-    let mut job = std::process::Command::new("unused-esbuild");
-    job.current_dir(std::env::current_dir()?)
-        .args(std::env::args_os().skip(1));
-    zfb_rolldown_prototype::run_prepared(&job)
+    use anyhow::Context;
+    let mut args = std::env::args_os().skip(1);
+    let (Some(path), None) = (args.next(), args.next()) else {
+        anyhow::bail!("usage: prepared <bundle-request.json>");
+    };
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("read {}", std::path::Path::new(&path).display()))?;
+    let request: zfb_rolldown_prototype::BundleRequest =
+        serde_json::from_str(&text).context("parse typed bundle request")?;
+    zfb_rolldown_prototype::bundle(&request)?;
+    Ok(())
 }
 #[cfg(not(feature = "native"))]
 fn main() {

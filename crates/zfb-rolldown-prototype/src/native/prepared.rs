@@ -1,6 +1,4 @@
 //! Plans a typed [`BundleRequest`] into private engine options (#4629).
-//! The legacy prepared-argv decoder feeds the same planner until its last
-//! caller is gone; it fails closed on unknown options.
 use super::windows_path;
 use crate::request::{self, BundleRequest, Format, Loader, OutputLayout, SourceMap};
 use anyhow::{anyhow, bail, Context, Result};
@@ -10,12 +8,10 @@ use std::{
     borrow::Cow,
     collections::BTreeMap,
     path::{Path, PathBuf},
-    process::Command,
     sync::Arc,
 };
 
-/// Owned boundary: the already prepared job's policies, not a public backend API.
-/// The argv decoder intentionally rejects options outside this prototype's scope.
+/// Owned boundary: the planned job's policies, not a public backend API.
 pub(super) struct Request {
     /// The caller's spelling of the working directory. Every user-visible path
     /// (output files, metafile keys) keeps it.
@@ -33,16 +29,6 @@ pub(super) struct Request {
 }
 
 impl Request {
-    /// Legacy esbuild-argv entry (#4629): decodes the argv into a typed
-    /// [`BundleRequest`] and plans it. Removed with the last argv caller.
-    pub(super) fn decode(cmd: &Command) -> Result<Self> {
-        Self::decode_for_host(cmd, cfg!(windows))
-    }
-
-    fn decode_for_host(cmd: &Command, windows: bool) -> Result<Self> {
-        Self::plan_for_host(&decode_argv(cmd)?, windows)
-    }
-
     pub(super) fn plan(request: &BundleRequest) -> Result<Self> {
         Self::plan_for_host(request, cfg!(windows))
     }
@@ -314,129 +300,6 @@ impl Request {
     }
 }
 
-#[cfg(test)]
-pub(super) fn decode_argv_for_tests(cmd: &Command) -> Result<BundleRequest> {
-    decode_argv(cmd)
-}
-
-/// Decodes zfb's legacy prepared esbuild argv into a typed request. Fails
-/// closed on any option outside the contract the callers used.
-fn decode_argv(cmd: &Command) -> Result<BundleRequest> {
-    let cwd = cmd
-        .get_current_dir()
-        .map(Path::to_path_buf)
-        .unwrap_or(std::env::current_dir()?);
-    let mut request = BundleRequest::new(
-        cwd,
-        PathBuf::new(),
-        OutputLayout::file(PathBuf::new()),
-        request::Platform::Browser,
-    );
-    let mut platform = None;
-    let mut entry = None;
-    let mut file = None;
-    let mut dir = None;
-    let (mut entry_names, mut chunk_names, mut asset_names) = (None, None, None);
-    let mut loaders = BTreeMap::new();
-    for arg in cmd.get_args() {
-        let arg = arg
-            .to_str()
-            .context("prototype requires UTF-8 prepared arguments")?;
-        if let Some(value) = arg.strip_prefix("--define:") {
-            let (k, v) = value.split_once('=').context("define")?;
-            request.defines.push((k.to_string(), v.to_string()));
-        } else if let Some(value) = arg.strip_prefix("--loader:") {
-            let (k, v) = value.split_once('=').context("loader")?;
-            let loader = Loader::parse(v).with_context(|| format!("Unknown module type: {v}"))?;
-            loaders.insert(k.to_string(), loader);
-        } else if let Some(value) = arg.strip_prefix("--alias:") {
-            let (k, v) = value.split_once('=').context("alias")?;
-            request.resolve.aliases.push((k.to_string(), v.to_string()));
-        } else if let Some(value) = arg.strip_prefix("--external:") {
-            request.externals.push(match value.strip_suffix('*') {
-                Some(prefix) if !prefix.contains('*') => request::External::Prefix(prefix.into()),
-                _ if value.contains('*') => {
-                    bail!("Rolldown prototype only supports suffix external wildcards: {value}")
-                }
-                _ => request::External::Package(value.into()),
-            });
-        } else if let Some(value) = arg.strip_prefix("--outfile=") {
-            file = Some(PathBuf::from(value));
-        } else if let Some(value) = arg.strip_prefix("--outdir=") {
-            dir = Some(PathBuf::from(value));
-        } else if let Some(value) = arg.strip_prefix("--entry-names=") {
-            entry_names = Some(value.to_string());
-        } else if let Some(value) = arg.strip_prefix("--chunk-names=") {
-            chunk_names = Some(value.to_string());
-        } else if let Some(value) = arg.strip_prefix("--asset-names=") {
-            asset_names = Some(value.to_string());
-        } else if let Some(value) = arg.strip_prefix("--metafile=") {
-            request.graph = Some(PathBuf::from(value));
-        } else if let Some(value) = arg.strip_prefix("--tsconfig=") {
-            request.tsconfig = Some(PathBuf::from(value));
-        } else if let Some(value) = arg.strip_prefix("--target=") {
-            request.target = Some(value.to_string());
-        } else if let Some(value) = arg.strip_prefix("--jsx-import-source=") {
-            request.jsx.import_source = Some(value.to_string());
-        } else if let Some(value) = arg.strip_prefix("--conditions=") {
-            request.resolve.conditions = Some(value.split(',').map(str::to_string).collect());
-        } else if let Some(value) = arg.strip_prefix("--main-fields=") {
-            request.resolve.main_fields = Some(value.split(',').map(str::to_string).collect());
-        } else {
-            match arg {
-                "--bundle" | "--tree-shaking=true" | "--log-level=warning" | "--log-limit=0" => {}
-                "--format=esm" => request.format = Format::Esm,
-                "--platform=browser" => platform = Some(request::Platform::Browser),
-                "--platform=neutral" => platform = Some(request::Platform::Neutral),
-                "--splitting" | "--splitting=true" => request.splitting = true,
-                "--splitting=false" => request.splitting = false,
-                "--keep-names" => request.keep_names = true,
-                "--minify" => request.minify = true,
-                "--sourcemap=linked" => request.source_map = SourceMap::Linked,
-                "--preserve-symlinks" => request.resolve.preserve_symlinks = true,
-                "--jsx=automatic" => request.jsx.runtime = Some(request::JsxRuntime::Automatic),
-                _ if !arg.starts_with('-') && entry.is_none() => entry = Some(PathBuf::from(arg)),
-                _ => bail!("Rolldown prototype does not implement prepared option {arg:?}"),
-            }
-        }
-    }
-    request.entry = entry.context("prepared entry")?;
-    // Without --platform the engine's own default applied; browser matches it.
-    request.platform = platform.unwrap_or(request::Platform::Browser);
-    request.output = match (file, dir) {
-        // A file wins over a directory, as the engine applied both before.
-        (Some(file), _) => OutputLayout::File { file, asset_names },
-        (None, Some(dir)) => OutputLayout::Dir {
-            dir,
-            entry_names,
-            chunk_names,
-            asset_names,
-        },
-        (None, None) => bail!("output location"),
-    };
-    request.loaders = loaders.into_iter().collect();
-    if let Some(value) = subprocess_node_path(cmd, std::env::var_os("NODE_PATH")) {
-        request.resolve.extra_module_dirs = std::env::split_paths(&value).collect();
-    }
-    Ok(request)
-}
-
-/// The `NODE_PATH` the esbuild subprocess would see: the command's own setting
-/// or removal, otherwise the inherited value. The package manager's bin shim
-/// exports one naming its hidden-hoist store (`node_modules/.pnpm/node_modules`),
-/// which is how esbuild under `--preserve-symlinks` finds a dependency of a
-/// package reached through a symlink outside the project (#4430).
-fn subprocess_node_path(
-    cmd: &Command,
-    inherited: Option<std::ffi::OsString>,
-) -> Option<std::ffi::OsString> {
-    match cmd.get_envs().find(|(key, _)| *key == "NODE_PATH") {
-        Some((_, value)) => value.map(ToOwned::to_owned),
-        None => inherited,
-    }
-    .filter(|value| !value.is_empty())
-}
-
 /// Esbuild applies a `--tsconfig` override's JSX settings to every module,
 /// while Rolldown's per-file tsconfig lookup skips paths inside `node_modules`
 /// (#4407). Lift the JSX fields argv left unset into the explicit transform
@@ -608,23 +471,31 @@ fn engine_spelling(value: String, windows: bool) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::Request;
+    use crate::request::{BundleRequest, JsxRuntime, OutputLayout, Platform};
     use std::path::{Path, PathBuf};
-    use std::process::Command;
 
-    fn prepared(cwd: &str) -> Command {
-        let mut cmd = Command::new("esbuild");
-        cmd.current_dir(cwd)
-            .args(["entry.mjs", "--bundle", "--format=esm", "--outdir=out"])
-            .args(["--outfile=out/route.js", "--tsconfig=tsconfig.json"])
-            .arg(r"--alias:#shadow=\\?\C:\shadow\alias.mjs")
-            // A verbatim UNC entry has no ':' or ';', so it splits the same way on every host.
-            .env("NODE_PATH", r"\\?\UNC\host\share\node_modules");
-        cmd
+    fn prepared(cwd: &str) -> BundleRequest {
+        let mut request = BundleRequest::new(
+            cwd,
+            "entry.mjs",
+            OutputLayout::file("out/route.js"),
+            Platform::Browser,
+        );
+        request.tsconfig = Some("tsconfig.json".into());
+        request
+            .resolve
+            .aliases
+            .push(("#shadow".into(), r"\\?\C:\shadow\alias.mjs".into()));
+        request
+            .resolve
+            .extra_module_dirs
+            .push(r"\\?\UNC\host\share\node_modules".into());
+        request
     }
 
     #[test]
     fn windows_host_hands_rolldown_the_ordinary_shadow_spelling() {
-        let request = Request::decode_for_host(&prepared(r"\\?\C:\shadow"), true).unwrap();
+        let request = Request::plan_for_host(&prepared(r"\\?\C:\shadow"), true).unwrap();
         let options = &request.options;
         assert_eq!(request.cwd, PathBuf::from(r"C:\shadow"));
         assert_eq!(options.cwd.as_deref(), Some(Path::new(r"C:\shadow")));
@@ -634,7 +505,6 @@ mod tests {
             &Path::new(r"C:\shadow").join("entry.mjs").to_string_lossy()
         );
         let joined = |rel: &str| Path::new(r"C:\shadow").join(rel);
-        // A file output wins over a directory output; the typed request holds one.
         assert_eq!(options.dir, None);
         assert_eq!(
             options.file.as_deref(),
@@ -652,15 +522,17 @@ mod tests {
         );
     }
 
-    fn aliases(cmd: &Command, windows: bool) -> Vec<(String, Vec<Option<String>>)> {
-        let request = Request::decode_for_host(cmd, windows).unwrap();
+    fn aliases(request: &BundleRequest, windows: bool) -> Vec<(String, Vec<Option<String>>)> {
+        let request = Request::plan_for_host(request, windows).unwrap();
         request.options.resolve.unwrap().alias.unwrap()
     }
 
     #[test]
     fn windows_host_splits_a_bare_package_alias_into_exact_and_wildcard_entries() {
         let mut cmd = prepared(r"\\?\C:\shadow");
-        cmd.arg("--alias:zfb=@takazudo/zfb");
+        cmd.resolve
+            .aliases
+            .push(("zfb".into(), "@takazudo/zfb".into()));
         let entry = |key: &str, target: &str| (key.to_string(), vec![Some(target.to_string())]);
         assert_eq!(
             aliases(&cmd, true),
@@ -717,17 +589,17 @@ mod tests {
             "import { root } from 'short';\nimport { sub } from 'short/sub';\nconsole.log(root, sub);\n",
         )
         .unwrap();
-        let mut cmd = Command::new("unused-prepared-esbuild");
-        cmd.current_dir(&cwd).args([
+        let mut request = BundleRequest::new(
+            &cwd,
             "entry.mjs",
-            "--bundle",
-            "--format=esm",
-            "--platform=neutral",
-            "--outfile=out/bundle.mjs",
-            "--alias:short$=@scope/pkg",
-            "--alias:short/*=@scope/pkg/*",
-        ]);
-        let result = super::super::run_prepared(&cmd);
+            OutputLayout::file("out/bundle.mjs"),
+            Platform::Neutral,
+        );
+        request.resolve.aliases = vec![
+            ("short$".into(), "@scope/pkg".into()),
+            ("short/*".into(), "@scope/pkg/*".into()),
+        ];
+        let result = super::super::bundle(&request);
         let output = std::fs::read_to_string(cwd.join("out/bundle.mjs")).unwrap_or_default();
         std::fs::remove_dir_all(&cwd).unwrap();
         result.unwrap();
@@ -763,13 +635,16 @@ mod tests {
             std::fs::write(dir.join("tsconfig.json"), tsconfig).unwrap();
             Self(dir)
         }
-        fn decode(&self, flags: &[&str]) -> anyhow::Result<Request> {
-            let mut cmd = Command::new("esbuild");
-            cmd.current_dir(&self.0)
-                .args(["entry.mjs", "--bundle", "--tsconfig=tsconfig.json"])
-                .arg("--outfile=out.js")
-                .args(flags);
-            Request::decode_for_host(&cmd, false)
+        fn plan(&self, customize: impl FnOnce(&mut BundleRequest)) -> anyhow::Result<Request> {
+            let mut request = BundleRequest::new(
+                &self.0,
+                "entry.mjs",
+                OutputLayout::file("out.js"),
+                Platform::Browser,
+            );
+            request.tsconfig = Some("tsconfig.json".into());
+            customize(&mut request);
+            Request::plan_for_host(&request, false)
         }
     }
     impl Drop for TsconfigDir {
@@ -789,15 +664,17 @@ mod tests {
         r#"{"compilerOptions":{"jsx":"react-jsx","jsxImportSource":"@takazudo/zfb/zudo-react"}}"#;
 
     #[test]
-    fn tsconfig_jsx_fields_argv_leaves_unset_become_explicit() {
+    fn tsconfig_jsx_fields_the_request_leaves_unset_become_explicit() {
         let dir = TsconfigDir::new("promote", SYNTHETIC);
-        let request = dir.decode(&[]).unwrap();
+        let request = dir.plan(|_| {}).unwrap();
         assert_eq!(jsx(&request).runtime.as_deref(), Some("automatic"));
         assert_eq!(
             jsx(&request).import_source.as_deref(),
             Some("@takazudo/zfb/zudo-react")
         );
-        let request = dir.decode(&["--jsx=automatic"]).unwrap();
+        let request = dir
+            .plan(|request| request.jsx.runtime = Some(JsxRuntime::Automatic))
+            .unwrap();
         assert_eq!(
             jsx(&request).import_source.as_deref(),
             Some("@takazudo/zfb/zudo-react")
@@ -805,10 +682,13 @@ mod tests {
     }
 
     #[test]
-    fn explicit_jsx_flags_win_without_reading_the_tsconfig() {
-        let dir = TsconfigDir::new("explicit", "{ // JSONC the decoder must not parse\n}");
+    fn explicit_jsx_options_win_without_reading_the_tsconfig() {
+        let dir = TsconfigDir::new("explicit", "{ // JSONC the planner must not parse\n}");
         let request = dir
-            .decode(&["--jsx=automatic", "--jsx-import-source=preact"])
+            .plan(|request| {
+                request.jsx.runtime = Some(JsxRuntime::Automatic);
+                request.jsx.import_source = Some("preact".into());
+            })
             .unwrap();
         assert_eq!(jsx(&request).import_source.as_deref(), Some("preact"));
     }
@@ -822,7 +702,7 @@ mod tests {
             ("jsonc", "{ // comment\n}"),
         ] {
             let dir = TsconfigDir::new(name, tsconfig);
-            let error = format!("{:#}", dir.decode(&[]).err().expect(name));
+            let error = format!("{:#}", dir.plan(|_| {}).err().expect(name));
             assert!(error.contains("tsconfig.json"), "{name}: {error}");
         }
     }
@@ -830,35 +710,14 @@ mod tests {
     #[test]
     fn a_tsconfig_without_jsx_fields_adds_no_jsx_options() {
         let dir = TsconfigDir::new("plain", r#"{"compilerOptions":{"baseUrl":"."}}"#);
-        let request = dir.decode(&[]).unwrap();
+        let request = dir.plan(|_| {}).unwrap();
         assert!(request.options.transform.as_ref().unwrap().jsx.is_none());
-    }
-
-    #[test]
-    fn node_path_follows_what_the_esbuild_subprocess_would_inherit() {
-        use super::subprocess_node_path;
-        let inherited = || Some(std::ffi::OsString::from("/store/.pnpm/node_modules"));
-        let plain = Command::new("esbuild");
-        assert_eq!(subprocess_node_path(&plain, inherited()), inherited());
-        assert_eq!(subprocess_node_path(&plain, None), None);
-        let mut set = Command::new("esbuild");
-        set.env("NODE_PATH", "/lease/node_modules");
-        assert_eq!(
-            subprocess_node_path(&set, inherited()),
-            Some("/lease/node_modules".into())
-        );
-        let mut removed = Command::new("esbuild");
-        removed.env_remove("NODE_PATH");
-        assert_eq!(subprocess_node_path(&removed, inherited()), None);
-        let mut empty = Command::new("esbuild");
-        empty.env("NODE_PATH", "");
-        assert_eq!(subprocess_node_path(&empty, inherited()), None);
     }
 
     #[test]
     fn windows_host_refuses_a_verbatim_shadow_it_cannot_rewrite() {
         let long = format!(r"\\?\C:\{}", "a".repeat(300));
-        let error = Request::decode_for_host(&prepared(&long), true)
+        let error = Request::plan_for_host(&prepared(&long), true)
             .err()
             .expect("an extended-length shadow must not reach Rolldown");
         assert!(format!("{error:#}").contains("longer than MAX_PATH"));
@@ -866,7 +725,7 @@ mod tests {
 
     #[test]
     fn other_hosts_keep_backslash_question_names_verbatim() {
-        let request = Request::decode_for_host(&prepared(r"\\?\C:\shadow"), false).unwrap();
+        let request = Request::plan_for_host(&prepared(r"\\?\C:\shadow"), false).unwrap();
         assert_eq!(request.cwd, PathBuf::from(r"\\?\C:\shadow"));
         assert_eq!(
             request
@@ -956,15 +815,17 @@ mod tests {
         }
 
         #[test]
-        fn decode_spells_an_outside_cwd_outdir_physically() {
-            let tree = Tree::new("decode");
+        fn plan_spells_an_outside_cwd_outdir_physically() {
+            let tree = Tree::new("plan");
             fs::create_dir(tree.at("cwd")).unwrap();
             let outdir = tree.at("link/build/../dist");
-            let mut cmd = super::Command::new("esbuild");
-            cmd.current_dir(tree.at("cwd"))
-                .args(["entry.mjs", "--bundle"])
-                .arg(format!("--outdir={}", outdir.display()));
-            let request = super::Request::decode_for_host(&cmd, false).unwrap();
+            let request = super::BundleRequest::new(
+                tree.at("cwd"),
+                "entry.mjs",
+                super::OutputLayout::dir(&outdir),
+                super::Platform::Browser,
+            );
+            let request = super::Request::plan_for_host(&request, false).unwrap();
             let expected = tree.at("real/dist");
             assert_eq!(
                 request.options.dir.as_deref(),

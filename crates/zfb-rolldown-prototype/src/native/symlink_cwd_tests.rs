@@ -3,13 +3,13 @@
 //! path, while every user-visible path keeps the caller's spelling (#4479).
 //! Rolldown spells module ids relative to its cwd inside the hashed chunk
 //! bytes, so a logical engine cwd put the random temp dir name into chunk names.
-use super::{prepared::Request, run_prepared};
+use super::{bundle, prepared::Request};
+use crate::request::{BundleRequest, OutputLayout, Platform};
 use serde_json::Value;
 use std::{
     fs,
     os::unix::fs::symlink,
     path::{Path, PathBuf},
-    process::Command,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -60,27 +60,30 @@ struct Built {
     meta: Value,
 }
 
-fn split_args<'a>(outdir: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
-    let mut args = vec![
+/// The shared islands split request; `cwd` is filled in by [`build`].
+fn split_request(outdir: impl Into<PathBuf>, preserve_symlinks: bool) -> BundleRequest {
+    let mut request = BundleRequest::new(
+        PathBuf::new(),
         "entry.js",
-        "--bundle",
-        "--format=esm",
-        "--platform=browser",
-        "--splitting=true",
-        outdir,
-        "--entry-names=islands",
-        "--chunk-names=islands-chunk-[hash]",
-        "--metafile=out/meta.json",
-    ];
-    args.extend_from_slice(extra);
-    args
+        OutputLayout::Dir {
+            dir: outdir.into(),
+            entry_names: Some("islands".into()),
+            chunk_names: Some("islands-chunk-[hash]".into()),
+            asset_names: None,
+        },
+        Platform::Browser,
+    );
+    request.splitting = true;
+    request.graph = Some("out/meta.json".into());
+    request.resolve.preserve_symlinks = preserve_symlinks;
+    request
 }
 
-fn build(cwd: &Path, args: &[&str]) -> anyhow::Result<Built> {
+fn build(cwd: &Path, request: &BundleRequest) -> anyhow::Result<Built> {
     let _ = fs::remove_dir_all(cwd.join("out"));
-    let mut cmd = Command::new("unused-prepared-esbuild");
-    cmd.current_dir(cwd).args(args);
-    run_prepared(&cmd)?;
+    let mut request = request.clone();
+    request.cwd = cwd.to_path_buf();
+    bundle(&request)?;
     let mut js: Vec<_> = fs::read_dir(cwd.join("out"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -141,11 +144,11 @@ fn assert_caller_spelling(built: &Built, outdir: &Path) {
 
 #[test]
 fn a_symlinked_cwd_emits_the_chunks_its_physical_path_does() {
-    for extra in [&[][..], &["--preserve-symlinks"][..]] {
+    for extra in [false, true] {
         let project = Project::new("split", SPLIT);
-        let args = split_args("--outdir=out", extra);
-        let via_link = build(&project.link, &args).unwrap();
-        let via_real = build(&project.real, &args).unwrap();
+        let request = split_request("out", extra);
+        let via_link = build(&project.link, &request).unwrap();
+        let via_real = build(&project.real, &request).unwrap();
         assert_eq!(
             chunk_names(&via_link).len(),
             1,
@@ -170,26 +173,22 @@ fn a_symlinked_cwd_emits_the_chunks_its_physical_path_does() {
 fn relative_and_absolute_output_arguments_keep_the_callers_spelling() {
     let project = Project::new("outdir", SPLIT);
     let outdir = project.link.join("out");
-    let absolute = format!("--outdir={}", outdir.display());
-    let relative = build(&project.link, &split_args("--outdir=out", &[])).unwrap();
-    let explicit = build(&project.link, &split_args(&absolute, &[])).unwrap();
+    let relative = build(&project.link, &split_request("out", false)).unwrap();
+    let explicit = build(&project.link, &split_request(&outdir, false)).unwrap();
     assert_eq!(relative.js, explicit.js);
     assert_caller_spelling(&relative, &outdir);
     assert_caller_spelling(&explicit, &outdir);
 
-    for outfile in [
-        "--outfile=out/bundle.mjs".to_string(),
-        format!("--outfile={}", outdir.join("bundle.mjs").display()),
-    ] {
-        let mut cmd = Command::new("unused-prepared-esbuild");
-        cmd.current_dir(&project.link).args([
+    for outfile in [PathBuf::from("out/bundle.mjs"), outdir.join("bundle.mjs")] {
+        let mut request = BundleRequest::new(
+            &project.link,
             "heavy.js",
-            "--bundle",
-            "--format=esm",
-            &outfile,
-            "--metafile=out/meta.json",
-        ]);
-        run_prepared(&cmd).unwrap();
+            OutputLayout::file(&outfile),
+            Platform::Browser,
+        );
+        request.graph = Some("out/meta.json".into());
+        bundle(&request).unwrap();
+        let outfile = outfile.display();
         let meta: Value =
             serde_json::from_slice(&fs::read(outdir.join("meta.json")).unwrap()).unwrap();
         let bundle = outdir.join("bundle.mjs").to_string_lossy().into_owned();
@@ -206,14 +205,14 @@ fn relative_and_absolute_output_arguments_keep_the_callers_spelling() {
 #[test]
 fn the_engine_gets_the_physical_cwd_and_the_caller_keeps_its_own() {
     let project = Project::new("decode", SPLIT);
-    let mut cmd = Command::new("unused-prepared-esbuild");
-    cmd.current_dir(&project.link).args([
+    let mut request = BundleRequest::new(
+        &project.link,
         "entry.js",
-        "--bundle",
-        "--outdir=out",
-        "--metafile=out/meta.json",
-    ]);
-    let request = Request::decode(&cmd).unwrap();
+        OutputLayout::dir("out"),
+        Platform::Browser,
+    );
+    request.graph = Some("out/meta.json".into());
+    let request = Request::plan(&request).unwrap();
     assert_eq!(request.cwd, project.link);
     assert_eq!(request.physical_cwd, project.real);
     assert_eq!(request.outdir, Some(project.link.join("out")));
@@ -238,10 +237,13 @@ fn a_symlinked_subdirectory_inside_the_cwd_keeps_its_spelling() {
     fs::create_dir(&staged).unwrap();
     fs::write(staged.join("entry.js"), "export const A = 1;\n").unwrap();
     symlink(&staged, project.real.join("src")).unwrap();
-    let mut cmd = Command::new("unused-prepared-esbuild");
-    cmd.current_dir(&project.link)
-        .args(["src/entry.js", "--bundle", "--outdir=out"]);
-    let request = Request::decode(&cmd).unwrap();
+    let request = BundleRequest::new(
+        &project.link,
+        "src/entry.js",
+        OutputLayout::dir("out"),
+        Platform::Browser,
+    );
+    let request = Request::plan(&request).unwrap();
     assert_eq!(
         request.options.input.as_ref().unwrap()[0].import,
         project.real.join("src/entry.js").to_string_lossy()
@@ -261,17 +263,17 @@ fn a_handled_import_through_a_symlinked_cwd_stays_external() {
         )],
     );
     assert!(!process_cwd.starts_with(&handled.link) && !process_cwd.starts_with(&handled.real));
-    let args = [
-        "entry.js",
-        "--bundle",
-        "--format=esm",
-        "--platform=neutral",
-        "--outfile=out/bundle.mjs",
-        "--metafile=out/meta.json",
-    ];
-    let mut cmd = Command::new("unused-prepared-esbuild");
-    cmd.current_dir(&handled.link).args(args);
-    run_prepared(&cmd).unwrap();
+    let request = |cwd: &Path| {
+        let mut request = BundleRequest::new(
+            cwd,
+            "entry.js",
+            OutputLayout::file("out/bundle.mjs"),
+            Platform::Neutral,
+        );
+        request.graph = Some("out/meta.json".into());
+        request
+    };
+    bundle(&request(&handled.link)).unwrap();
     let output = fs::read_to_string(handled.link.join("out/bundle.mjs")).unwrap();
     assert!(
         output.contains("import(\"not-installed-optional-peer\")"),
@@ -285,9 +287,7 @@ fn a_handled_import_through_a_symlinked_cwd_stays_external() {
             "export const load = () => import(\"not-installed-optional-peer\");\n",
         )],
     );
-    let mut cmd = Command::new("unused-prepared-esbuild");
-    cmd.current_dir(&unhandled.link).args(args);
-    let error = format!("{:#}", run_prepared(&cmd).unwrap_err());
+    let error = format!("{:#}", bundle(&request(&unhandled.link)).unwrap_err());
     assert!(
         error.contains("Could not resolve \"not-installed-optional-peer\"\n\n    entry.js:1:"),
         "{error}"

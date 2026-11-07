@@ -1,11 +1,10 @@
-//! The prepared `--tsconfig` JSX options govern dependency TSX too, as under
-//! esbuild's override (#4407).
-use super::run_prepared;
+//! The request's explicit tsconfig JSX options govern dependency TSX too, as
+//! under esbuild's `--tsconfig` override (#4407).
+use crate::request::{BundleRequest, External, OutputLayout, Platform};
 use serde_json::Value;
 use std::{
     fs,
     path::PathBuf,
-    process::Command,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -37,22 +36,22 @@ impl Fixture {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, body).unwrap();
     }
-    /// The argv `zfb_build::bundler::run_esbuild` prepares: `--tsconfig` only,
-    /// no `--jsx` / `--jsx-import-source`.
-    fn ssr_command(&self) -> Command {
-        let mut cmd = Command::new("unused-prepared-esbuild");
-        cmd.current_dir(&self.0).args([
+    /// The request the SSR pass prepares: a tsconfig only, no explicit JSX
+    /// runtime or import source.
+    fn ssr_request(&self) -> BundleRequest {
+        let mut request = BundleRequest::new(
+            &self.0,
             "entry.mjs",
-            "--bundle",
-            "--format=esm",
-            "--platform=neutral",
-            "--external:@takazudo/zfb/*",
-            "--external:preact/*",
-            "--tsconfig=tsconfig.json",
-            "--outfile=out/bundle.mjs",
-            "--metafile=out/meta.json",
-        ]);
-        cmd
+            OutputLayout::file("out/bundle.mjs"),
+            Platform::Neutral,
+        );
+        request.externals = vec![
+            External::Prefix("@takazudo/zfb/".into()),
+            External::Prefix("preact/".into()),
+        ];
+        request.tsconfig = Some("tsconfig.json".into());
+        request.graph = Some("out/meta.json".into());
+        request
     }
     fn bundle(&self) -> String {
         fs::read_to_string(self.0.join("out/bundle.mjs")).unwrap()
@@ -97,7 +96,7 @@ fn dependency_tsx_uses_the_prepared_tsconfig_jsx_import_source() {
         "local.tsx",
         "export default function Local() { return <p>local</p>; }\n",
     );
-    run_prepared(&fixture.ssr_command()).unwrap();
+    super::bundle(&fixture.ssr_request()).unwrap();
     let bundle = fixture.bundle();
     assert!(
         bundle.contains(&format!("\"{OWNED_SOURCE}/jsx-runtime\"")),
@@ -118,7 +117,7 @@ fn a_file_pragma_still_overrides_the_prepared_import_source() {
         "node_modules/pkg/view.tsx",
         "/** @jsxImportSource preact */\nexport default function View() { return <p>v</p>; }\n",
     );
-    run_prepared(&fixture.ssr_command()).unwrap();
+    super::bundle(&fixture.ssr_request()).unwrap();
     let bundle = fixture.bundle();
     assert!(bundle.contains("preact/jsx-runtime"), "{bundle}");
     assert!(!bundle.contains(OWNED_SOURCE), "{bundle}");
