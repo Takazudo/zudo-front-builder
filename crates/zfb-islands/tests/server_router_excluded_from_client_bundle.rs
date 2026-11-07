@@ -41,10 +41,6 @@
 //!   `Could not resolve "hono"`; post-fix the islands build succeeds because
 //!   the client graph never even attempts to resolve the buried `hono`.
 //!
-//! Esbuild gating mirrors the other islands integration tests: locate a
-//! binary via `zfb_test_utils::locate_esbuild()` and skip with a printed note
-//! when none is present (NOT `#[ignore]`).
-//!
 //! ## RED-before-green (verified manually during implementation)
 //!
 //! Restoring the pre-fix barrel shape in the stub — a runtime
@@ -53,14 +49,12 @@
 //! `Could not resolve "hono"` #1298 error. Re-applying the fix makes them
 //! pass.
 
-use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 
 use zfb_islands::{
-    BundleConfig, ClientBundler, EsbuildSubprocessBundler, EsbuildSubprocessConfig, Island,
+    BundleConfig, ClientBundler, External, Island, IslandsBundler, IslandsBundlerConfig,
 };
-use zfb_test_utils::locate_esbuild;
 
 const TEST_BUILD_TOKEN: &str = "0123456789abcdef";
 
@@ -135,16 +129,13 @@ fn write_island(root: &Path) -> std::path::PathBuf {
 /// `@takazudo/zfb-runtime`, which must be bundled so esbuild walks into the
 /// stub barrel. The external flags keep the third-party sample package separate
 /// while esbuild follows the owned zfb entry points.
-fn shared_externals() -> Vec<OsString> {
-    [
-        "--external:vendor-lib",
-        "--external:vendor-lib/*",
-        "--external:@takazudo/zfb",
-        "--external:@takazudo/zfb/*",
+fn shared_externals() -> Vec<External> {
+    vec![
+        External::Package("vendor-lib".to_string()),
+        External::Prefix("vendor-lib/".to_string()),
+        External::Package("@takazudo/zfb".to_string()),
+        External::Prefix("@takazudo/zfb/".to_string()),
     ]
-    .into_iter()
-    .map(OsString::from)
-    .collect()
 }
 
 /// Assert the bundle body carries none of the server-router poison. Also
@@ -173,11 +164,6 @@ fn assert_no_server_router(body: &str) {
 /// `createPageRouter`, proves the root barrel excludes the server router.
 #[test]
 fn root_barrel_import_excludes_server_router_and_hono() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[server_router_excluded] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
@@ -185,18 +171,17 @@ fn root_barrel_import_excludes_server_router_and_hono() {
     RuntimeStub::write_into(&root.join("node_modules/@takazudo/zfb-runtime"));
     let island_path = write_island(root);
 
-    let cfg = EsbuildSubprocessConfig {
-        extra_args: shared_externals(),
-        ..EsbuildSubprocessConfig::default()
+    let cfg = IslandsBundlerConfig {
+        externals: shared_externals(),
+        ..IslandsBundlerConfig::default()
     }
-    .with_binary_path(esbuild)
     .with_working_dir(root);
 
     let bundle_cfg = BundleConfig::default()
         .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(root.join("dist"));
 
-    let bundler = EsbuildSubprocessBundler::new(cfg);
+    let bundler = IslandsBundler::new(cfg);
     let out = bundler
         .bundle(&[Island::new("Counter", &island_path)], &bundle_cfg)
         .expect(
@@ -222,11 +207,6 @@ fn root_barrel_import_excludes_server_router_and_hono() {
 #[cfg(unix)]
 #[test]
 fn literal_1298_pnpm_store_layout_islands_build_succeeds() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[server_router_excluded/pnpm] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
@@ -254,18 +234,17 @@ fn literal_1298_pnpm_store_layout_islands_build_succeeds() {
 
     let island_path = write_island(root);
 
-    let cfg = EsbuildSubprocessConfig {
-        extra_args: shared_externals(),
-        ..EsbuildSubprocessConfig::default()
+    let cfg = IslandsBundlerConfig {
+        externals: shared_externals(),
+        ..IslandsBundlerConfig::default()
     }
-    .with_binary_path(esbuild)
     .with_working_dir(root);
 
     let bundle_cfg = BundleConfig::default()
         .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(root.join("dist"));
 
-    let bundler = EsbuildSubprocessBundler::new(cfg);
+    let bundler = IslandsBundler::new(cfg);
     let out = bundler
         .bundle(&[Island::new("Counter", &island_path)], &bundle_cfg)
         .expect(

@@ -1358,7 +1358,6 @@ async fn real_binary_build_and_dev_cover_client_bundling_contract() {
     let production = tempfile::tempdir().expect("production fixture tempdir");
     copy_fixture(&fixture_dir(), production.path()).expect("copy production fixture");
     let build_stderr = run_and_assert_production(production.path(), &esbuild);
-    #[cfg(feature = "rolldown-prototype")]
     {
         use std::collections::BTreeSet;
 
@@ -1395,22 +1394,13 @@ async fn real_binary_build_and_dev_cover_client_bundling_contract() {
                 (job.to_string(), kind.to_string())
             })
             .collect::<Vec<_>>();
-        if rolldown_selected() {
-            assert_eq!(
-                observed.len(),
-                expected.len(),
-                "one timing line per client job: {build_stderr}"
-            );
-            assert_eq!(observed.into_iter().collect::<BTreeSet<_>>(), expected);
-        } else {
-            assert!(
-                observed.is_empty(),
-                "native client jobs appeared without opt-in: {build_stderr}"
-            );
-        }
+        assert_eq!(
+            observed.len(),
+            expected.len(),
+            "one timing line per client job: {build_stderr}"
+        );
+        assert_eq!(observed.into_iter().collect::<BTreeSet<_>>(), expected);
     }
-    #[cfg(not(feature = "rolldown-prototype"))]
-    let _ = build_stderr;
 
     let development = tempfile::tempdir().expect("development fixture tempdir");
     copy_fixture(&fixture_dir(), development.path()).expect("copy development fixture");
@@ -2001,14 +1991,4 @@ async fn real_binary_build_rejects_root_claimed_undeclared_sibling_escape_on_bot
         islands_logs.contains("@scope/child"),
         "islands-leg rejection must name the escaped @scope/child input: {islands_logs}"
     );
-}
-
-/// Mirrors `zfb_rolldown_prototype::enabled()` for the child `zfb` binary this
-/// test spawns: Rolldown unless the env selects esbuild.
-#[cfg(feature = "rolldown-prototype")]
-fn rolldown_selected() -> bool {
-    match std::env::var_os("ZFB_BUNDLER") {
-        Some(value) => value != "esbuild",
-        None => std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").is_none_or(|value| value != "0"),
-    }
 }

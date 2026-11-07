@@ -7197,8 +7197,6 @@ dependencies = [
  "zfb-build",
  "zfb-plugin-resolver",
  "zfb-rolldown-prototype",
- "zfb-test-utils",
- "zfb-toolchain-pins",
  "zfb-types",
 ]
 
