@@ -4,13 +4,28 @@ description: How zfb hosts JavaScript execution server-side via an embedded V8 i
 sidebar_position: 31
 ---
 
-zfb renders TSX server-side via an embedded V8 isolate — a Rust-hosted V8 engine running a Hono-style worker bundle built from `@takazudo/zfb-runtime`.
+This page is the implementation-detail reference for zfb's current backends — the bundler and JSX transform, the V8 host — and how they got here. For the reader-level model, start with [How zfb works](./architecture-overview.mdx).
+
+**Today:** on the build machine, `zfb build` and `zfb dev` run your server-side JavaScript in **V8**, embedded in the `zfb` binary through zfb's own Rust host layer (the "direct V8 host" in the `zfb-js-host` crate). V8 is the engine; the direct host is only the layer between zfb and V8. In production, request-time pages run in Cloudflare's **workerd**, and browser code runs in the visitor's **browser engine**. Rendering in all of these is done by zudo-react, zfb's own component model. The details are in [What runs today](#what-runs-today) and [Current defaults and experiments](#current-defaults-and-experiments); the sections between them that describe the evaluation are **history**.
 
 ## How the runtime choice was reached
 
-The V8 embedding decision came through a measured evaluation of available JS hosts. Early iterations used an in-process `deno_core` isolate (ratified after spiking three candidates: `deno_core`, `ssr_rs`, and `rquickjs`), then moved to a Node-hosted miniflare worker to achieve runtime parity with the Cloudflare Workers production target. Tauri distribution ultimately reversed that choice: shipping zfb as a desktop app requires a single binary with no Node.js dependency on end-user machines, and miniflare is a Node package. V8 embedding via `deno_core` was re-adopted — accepting the binary-size and first-build-time costs — because it is the only path that satisfies the no-Node single-binary constraint. Later, zfb replaced `deno_core` with its own host that drives the `v8` crate directly: [#4390](https://github.com/Takazudo/zudo-front-builder/issues/4390) made it the default, and [#4395](https://github.com/Takazudo/zudo-front-builder/issues/4395) removed the `deno_core` host. V8 is still embedded; only the layer between zfb and V8 changed.
+<Note title="Historical context">
 
-The stable production contract throughout has been the _bundle shape_ (`export default { fetch }`), not the build-time engine. The same bundle that zfb renders at build time deploys unchanged to Cloudflare Workers for runtime SSR.
+This section and [Why a JS engine at all](#why-a-js-engine-at-all-—-and-why-v8-specifically) record how the engine was chosen. Some of that evaluation predates zudo-react and used Preact components as test cases; it does not describe the current rendering model.
+
+</Note>
+
+The V8 embedding decision came through a measured evaluation of available JS hosts. In order:
+
+1. Early iterations embedded V8 in-process through `deno_core`, chosen after spiking three candidates: `deno_core`, `ssr_rs`, and `rquickjs`.
+2. zfb then moved to a Node-hosted miniflare worker to get runtime parity with the Cloudflare Workers production target.
+3. Tauri distribution reversed that: shipping zfb as a desktop app requires a single binary with no Node.js dependency on end-user machines, and miniflare is a Node package. Embedding V8 through `deno_core` was therefore adopted again — accepting the binary-size and first-build-time costs — because it was the only path that satisfied the no-Node single-binary constraint. Released binaries up to v4.6.0 use this host.
+4. Later, zfb replaced `deno_core` with its own host that drives the `v8` crate directly: [#4390](https://github.com/Takazudo/zudo-front-builder/issues/4390) made it the default, and [#4395](https://github.com/Takazudo/zudo-front-builder/issues/4395) removed the `deno_core` host.
+
+V8 has been the embedded engine since step 3; only the layer between zfb and V8 changed in step 4.
+
+The stable production contract throughout has been the _bundle shape_ (`export default { fetch }`), not the build-time engine. The build-time bundle and the bundle deployed to Cloudflare Workers for runtime SSR share that shape, but they are not the same bytes: with an adapter configured, zfb runs a second bundle pass limited to the `prerender = false` routes, and that bundle is what deploys (see [The `fetch` contract across hosts](#the-fetch-contract-across-hosts)).
 
 ## Why a JS engine at all — and why V8 specifically
 
@@ -22,32 +37,81 @@ SWC, oxc, and esbuild all compile JSX to `h(...)` calls — none of them need a 
 
 ### Layer 2 — The compiled JS still needs to run
 
-Once JSX becomes `h(...)`, something must _evaluate_ that code: walk the call tree to produce a VDOM, then invoke `renderToString` to produce HTML. Evaluation needs a JS engine somewhere — but not necessarily V8. Two lightweight alternatives exist:
+Once JSX becomes `h(...)`, something must _evaluate_ that code and turn the result into HTML. (At the time of this evaluation that meant building a Preact VDOM and calling `renderToString`; today zudo-react runs each component once and renders its description directly, with no tree reconciliation — see the [zudo-react overview](../zudo-react/overview.mdx).) Evaluation needs a JS engine somewhere — but not necessarily V8. Two lightweight alternatives exist:
 
 - **Boa** (pure Rust, ~30 s incremental build) — a JS engine written entirely in Rust with no C++ toolchain; tracks the ECMA spec but trails V8 on coverage of newer features.
 - **rquickjs** (Rust bindings to QuickJS, ~210 KB binary contribution) — fast to compile, minimal footprint.
 
-During the original JS-host evaluation, both worked well for SSR of a simple, self-contained Preact component. The broader problem was "any frontend dev's TSX with whatever npm packages they imported." When a user added a calendar library, an i18n helper, or a component that used a Proxy-based state store, Boa's ECMA gaps and QuickJS's limited ES2022+ surface could produce silent wrong output or hard panics — failure modes that were extremely hard to diagnose. V8 was the safe bet for arbitrary ecosystem code because it is the same engine Node.js and Chromium run against.
+During the original JS-host evaluation, both worked well for SSR of the simple, self-contained Preact component used as a test case. The broader problem was "any frontend dev's TSX with whatever npm packages they imported." When a user added a calendar library, an i18n helper, or a component that used a Proxy-based state store, Boa's ECMA gaps and QuickJS's limited ES2022+ surface could produce silent wrong output or hard panics — failure modes that were extremely hard to diagnose. V8 was the safe bet for arbitrary ecosystem code because it is the same engine Node.js and Chromium run against.
 
 Research is open on both lighter-engine paths — see [#344 — feature-gated V8 in the production runtime](https://github.com/Takazudo/zudo-front-builder/issues/344) and [#345 — Boa / QuickJS as the SSG-only JS engine](https://github.com/Takazudo/zudo-front-builder/issues/345).
 
 ### Layer 3 — Rust templating compiles out the JS entirely
 
-Leptos and Yew take JSX-like syntax (RSX) and compile it to Rust at build time. No JS engine is needed at runtime or build time. The catch: they borrowed the syntax, not the language. There is no `import` for arbitrary npm packages, no JS closures over runtime values, and no drop-in Preact component from GitHub. A Leptos project is a Rust project — you write Rust, you depend on Rust crates. That breaks the core audience promise: a frontend developer's existing TSX and npm knowledge would not transfer.
+Leptos and Yew take JSX-like syntax (RSX) and compile it to Rust at build time. No JS engine is needed at runtime or build time. The catch: they borrowed the syntax, not the language. There is no `import` for arbitrary npm packages and no JS closures over runtime values. A Leptos project is a Rust project — you write Rust, you depend on Rust crates. That breaks the core audience promise: a frontend developer's existing TSX and npm knowledge would not transfer.
 
 ### The audience tradeoff
 
-zfb's target audience is frontend developers who already know TSX. V8 is the price of admission for that audience — it is what makes "your existing component just works" a true statement rather than a best-effort approximation. The [design philosophy](../architecture/design-philosophy.mdx) section explains this audience-first framing in full.
+zfb's target audience is frontend developers who already know TSX and npm. V8 is the price of admission for that audience: it gives the compiled page and the npm code it imports full, standard JavaScript semantics, so language-level behavior does not silently differ from what the same code does in Node.js or a browser. That is a statement about the *language*, not about APIs or component libraries. V8 does not make Node.js APIs available (see [host APIs](#transformation-engine-host-apis-and-rendering)), and it does not make React or Preact components work — zfb renders zudo-react, which is its own component model. The [design philosophy](../architecture/design-philosophy.mdx) section explains this audience-first framing in full.
 
 Pure-Rust SSG (Boa/QuickJS) and no-V8-at-runtime (build-time-only V8) are real future directions — see [#344](https://github.com/Takazudo/zudo-front-builder/issues/344) and [#345](https://github.com/Takazudo/zudo-front-builder/issues/345) — but they are optimizations on top of the default, not the default itself.
 
 ## What runs today
 
-At `zfb build` / `zfb dev`, the Rust orchestrator creates an in-process V8 isolate through the direct V8 host in the `zfb-js-host` crate. It loads the workerd-shape bundle that zfb builds from your pages and `@takazudo/zfb-runtime` with the native Rolldown bundler. Per-route props are passed as JSON; the isolate invokes the bundle's `fetch` entry with a synthetic `Request`, collects the `Response` (HTML), and returns it. The orchestrator writes plain HTML to `dist/`. No subprocess is spawned; no Node.js is required.
+At `zfb build` / `zfb dev`, the Rust orchestrator creates an in-process V8 isolate through the direct V8 host in the `zfb-js-host` crate. It loads the workerd-shape bundle that the bundler builds around `createPageRouter` from `@takazudo/zfb-runtime/server` (the native Rolldown bundler; see [Current defaults and experiments](#current-defaults-and-experiments)). Per-route props are passed as JSON; the isolate invokes the bundle's `fetch` entry with a synthetic `Request`, collects the `Response` (HTML), and returns it. The orchestrator writes plain HTML to `dist/`. No subprocess is spawned; no Node.js is required.
 
 V8 itself is initialized once per process, on the main thread, before the CLI starts Tokio or any host thread (`zfb-js-host::process::initialize`). Only one host may be alive on a thread at a time.
 
-The same bundle (`export default { fetch }`) deploys unchanged to Cloudflare Workers for runtime SSR of `prerender = false` routes. workerd executes it on request. The production path is unaware of which build-time engine produced the bundle.
+For runtime SSR of `prerender = false` routes, a bundle of the same `export default { fetch }` shape deploys to Cloudflare Workers, where workerd executes it on request. It is the adapter's narrowed second bundle, not the bytes the embedded host rendered at build time. The production path is unaware of which build-time engine produced the bundle.
+
+## Transformation, engine, host APIs and rendering
+
+"zfb runs my TSX" covers four responsibilities that are worth keeping apart:
+
+| Responsibility | What it is | Where it happens in zfb |
+| --- | --- | --- |
+| **Transformation** | Parsing TSX/JSX/MDX and bundling it into JavaScript modules. A pure syntax operation; no engine is involved. | The native Rolldown bundler embedded in the `zfb` CLI, using zudo-react's automatic JSX runtime (`@takazudo/zfb/zudo-react/jsx-runtime`). SWC is used for some source analysis. |
+| **JavaScript engine** | The thing that executes the transformed JavaScript. | V8 everywhere: the CLI's embedded V8 on the build machine, the V8 inside workerd on a Worker, and the browser's engine in the browser. zfb's direct V8 host is a host *around* V8, not a different engine. |
+| **Host APIs** | The globals and built-in modules the host chooses to expose. | The embedded host implements module loading and the Web request/response services the page router needs. Its `node:fs`, `node:fs/promises`, `node:path`, `node:url`, `node:buffer` and `node:async_hooks` modules are stubs that throw `node:* is not available under the SSG runtime` when used (`crates/zfb-js-host/src/shims.rs`). On a Worker, Cloudflare's runtime decides, and the adapter requires `nodejs_compat` for `node:async_hooks`. The browser provides the DOM. |
+| **UI rendering** | Turning components into HTML strings and live DOM. | zudo-react: `renderToString` from `@takazudo/zfb/zudo-react/server` in the page router; `hydrate`/`mount` from `@takazudo/zfb/zudo-react/client` in the browser. |
+
+Each layer constrains a different thing. Language support is the engine's job;
+which APIs exist is the host's; which component model works is the renderer's.
+So "V8 runs it" does not imply "Node.js APIs are available", and neither implies
+"React components render".
+
+## The `fetch` contract across hosts
+
+The bundle shape — `export default { fetch }` — is the contract a Cloudflare
+Workers deployment expects, and it is also what the embedded host drives at
+build time. The routing core (`createPageRouter` from
+`@takazudo/zfb-runtime/server`) is built on [Hono](https://hono.dev/), a small Web-standard router library, and follows its adapter pattern: one router,
+multiple entry adapters. The build-time host feeds it synthetic `Request`
+objects and collects `Response` bodies; the Cloudflare adapter registers it as
+the Worker's `fetch` handler through `_worker.js`. The router does not know
+which host is driving it.
+
+Fixing the shape as the stable contract keeps zfb decoupled from which JS
+engine host executes it: the build-time host is the embedded V8 isolate, the
+production host is workerd. What is shared is the shape, not the bytes. When
+the project sets `adapter: "@takazudo/zfb-adapter-cloudflare"`, `zfb build`
+runs a second bundle pass whose entry imports only the `prerender = false`
+routes (and drops content-collection imports and the content snapshot), and
+the adapter wraps that bundle. See
+[SSR on a Worker](./ssr-on-a-worker.mdx#what-the-build-actually-emits) for the
+emitted files.
+
+The layering this contract allows:
+
+| Layer | What it owns | What it does NOT own |
+|-------|-------------|----------------------|
+| **Your source** | Pages, components, content, styles | Build mechanics |
+| **zfb** | The build contract — route table, page props shape, island protocol, client-script pipeline, `dist/` layout | Which bundler, which JS host |
+| **Tools** | The bundler (Rolldown), the embedded V8 host (build-time evaluation) | Your code's semantics |
+
+The bundler and the embedded V8 host are implementation details that can be
+swapped without touching user code: the bundler behind the `zfb-bundler` crate's typed bundle request, the host
+behind the `RenderHost` trait ([The boundary](#the-boundary)).
 
 ## The need
 

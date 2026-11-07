@@ -7,7 +7,9 @@ category: Concepts
 
 zfb pages render to static HTML by default. **Islands** are the escape hatch — small components that ship JavaScript to the browser and hydrate on the client, while the rest of the page stays as plain HTML.
 
-The mental model is straightforward: most of your page is a static document. A few interactive bits — a counter, a search box, a theme toggle — are islands embedded inside that document, hydrated in the browser from a single shared bundle.
+The mental model is straightforward: most of your page is a static document. A few interactive bits — a counter, a search box, a theme toggle — are islands embedded inside that document, hydrated in the browser from a single shared bundle. *Hydration* means attaching behavior, such as event listeners and reactive updates, to HTML that is already on the page instead of rendering that HTML again.
+
+This page starts with a basic island, then shows what the build emits for it and how the browser loads and hydrates it. The advanced material follows: how the build discovers boundary targets, factory-provided targets, the composition seam for package islands, third-party widgets, and bundle features such as `?raw`, module workers and `import.meta.glob`. For where islands sit among the other parts of zfb, see [the architecture overview](./architecture-overview.mdx).
 
 ## What an island is
 
@@ -30,7 +32,198 @@ export default function Counter() {
 
 `"use client"` makes a module's exports eligible as island targets. A function is registered for hydration only when a reachable page uses it as the single component child of the SDK's `<Island>` boundary. A client module may re-export a function defined elsewhere; imports and resources used by a registered function still reach the browser through the normal bundle graph.
 
+### Use the island from a page
+
+Wrap the component in the SDK's `<Island>` boundary where a page or layout renders it. The boundary takes exactly one component child:
+
+```tsx
+// pages/index.tsx
+import { Island } from "@takazudo/zfb";
+import Counter from "../components/counter";
+
+export default function Home() {
+  return (
+    <main>
+      <h1>Plain HTML heading</h1>
+      <Island>
+        <Counter />
+      </Island>
+    </main>
+  );
+}
+```
+
+The heading and `<main>` stay static HTML. Only `Counter` ships JavaScript. The default `basic-blog` starter template uses the same shape: its `layouts/default.tsx` imports `Island` and wraps a `"use client"` theme toggle.
+
+### What happens from build to browser
+
+1. **Render.** zfb renders the page to HTML (at build time for a static page, or per request for an SSR route), including the counter's initial output (`Count: 0`), and wraps that output in a `<div data-zfb-island="Counter" …>` element that carries the island's identity and props.
+2. **Bundle.** Every registered island target goes into one shared browser bundle, `islands-<hash>.js`, and a single module `<script>` that loads it is added to `<head>`. See [What the bundler produces for N islands](#what-the-bundler-produces-for-n-islands).
+3. **Load.** In the browser, the bundle calls `mountIslands()`. For each wrapper, the runtime waits for the wrapper's `data-when` timing (`load` by default), checks its identity and JSON props, and hydrates the existing child DOM; the button gets its `on:click` listener without being rendered again. See [How islands are loaded](#how-islands-are-loaded).
+4. **Mounted.** The wrapper receives `data-zfb-island-mounted` after the client root mounts. See [Observing mount state](#how-islands-are-loaded-observing-mount-state).
+
+Hydration does not need [`<ClientRouter />`](./client-side-routing.mdx). Without it, every link is an ordinary full page load and each page mounts its own islands. With it, the router unmounts the old page's islands before each body swap and mounts the incoming page's islands after it; see [Islands with and without ClientRouter](./client-side-routing.mdx#islands-with-and-without-clientrouter).
+
+## What the bundler produces for N islands
+
+For a project with three islands (`Counter`, `ThemeToggle`, `SearchBox`), the islands build step emits **one shared bundle**:
+
+```
+dist/assets/islands.js
+```
+
+All islands are statically imported into a single bundler entry point (the current bundler backend is described in [JS runtime](./js-runtime.mdx)), so the shared bundle contains every island component. The build's production asset step then renames it to a content-hashed filename before writing the final output:
+
+```
+dist/assets/islands-<hash>.js
+```
+
+If any island uses a dynamic `import()` internally, the bundler may also emit code-split chunks alongside it:
+
+```
+dist/assets/islands-chunk-<hash>.js
+```
+
+The bundle registers each island by its static marker name and calls `mountIslands()` at the end of the module. The runtime checks each wrapper's identity and schedules the corresponding client entry to adopt its child DOM.
+
+**One build step owns the hashing.** The bundler writes a stable `islands.js` first; the production asset step then performs the hash-rename and rewrites the injected script URL in the emitted HTML. Nothing downstream has to guess the filename.
+
+## How islands are loaded
+
+After render, each island's server-rendered HTML is wrapped in a `<div>` that carries its component identity and transport metadata. The wrapper and `data-zfb-island*` boundary attributes remain part of zfb's island contract; runtime comment regions are confined to the child subtree:
+
+```html
+<div data-zfb-island="ThemeToggle"
+     data-when="load"
+     data-zfb-transport="json/1"
+     data-zfb-protocol="zudo-react/1"
+     data-zfb-build="build-identity"
+     data-props="{}">
+  <!-- zudo-react's child-subtree markers live here -->
+  <button type="button" aria-pressed="false" aria-label="Switch to dark mode">Dark mode</button>
+</div>
+```
+
+The `data-when` attribute controls when the client entry runs. It is always present and defaults to `"load"`; the other strategies are `"visible"`, `"idle"`, and `"media"`. The JSX API is the [`<Island>` wrapper](../api/island.mdx); for media-query adoption, pass both `when="media"` and a `media` query:
+
+```tsx
+import { Island } from "@takazudo/zfb";
+import MobileMenu from "./MobileMenu";
+
+export default function Header() {
+  return (
+    <Island when="media" media="(max-width: 768px)">
+      <MobileMenu />
+    </Island>
+  );
+}
+```
+
+The `"visible"`, `"idle"`, and `"media"` strategies each emit a `data-when` attribute; `"media"` also emits a companion `data-media` attribute carrying the CSS query string:
+
+```html
+<!-- visible timing -->
+<div data-zfb-island="SearchBox" data-when="visible" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
+
+<!-- idle timing -->
+<div data-zfb-island="Counter" data-when="idle" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
+
+<!-- media timing — hydrates when (max-width: 768px) first matches -->
+<div data-zfb-island="MobileMenu" data-when="media" data-media="(max-width: 768px)" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
+```
+
+On builds that include at least one island, **one `<script>` tag** is injected project-wide into `<head>`:
+
+```html
+<script type="module" src="/assets/islands-<hash>.js"></script>
+```
+
+The shared islands bundle (`islands-<hash>.js`) contains registered island targets and their required bundle dependencies. It registers each target by the static marker name the scanner discovered (`data-zfb-island` attribute value), then calls `mountIslands()`, which checks wrapper metadata, reads the JSON `data-props`, and adopts the existing child DOM when the scheduled entry runs.
+
+### Observing mount state
+
+The runtime exposes a post-mount marker, `data-zfb-island-mounted`, on both kinds of island
+element: the hydrated `data-zfb-island` marker and the SSR-skip
+`data-zfb-island-skip-ssr` marker. It appears only after the generated `mount()` function
+returns. A delayed island therefore has no mounted marker while its `data-when` condition is
+waiting, so a consumer can gate its pre-hydration styling with the selector it would write in
+CSS:
+
+```css
+[data-zfb-island]:not([data-zfb-island-mounted]) {
+  opacity: 0.7;
+}
+```
+
+The marker means **"the client root was successfully mounted"**. It is observational; the live
+root handle is the runtime's duplicate-mount guard. A mounted marker does not mean that later
+asynchronous application work has completed.
+
+The marker is removed when an island is unmounted. During the real client-router body-swap
+sequence, an unchanged persisted island keeps its marker and mounted instance when its
+`data-zfb-transition-persist` id is present in the incoming body; a discarded island loses its
+marker and is mounted again from the incoming markup. If a persisted island's props change, the
+runtime removes the marker while it tears down the old instance and adds it again after the
+forced remount returns. A fresh runtime module also strips a stale marker from an element that
+it has not mounted before, then writes its own marker after mounting.
+
+## Consequences of the shared-bundle model
+
+Because all islands are bundled together into a single file:
+
+- **Every page loads all islands' code.** The single `islands-<hash>.js` bundle contains every island component in the project. A page that only uses `ThemeToggle` still downloads the code for `Counter` and `SearchBox`. This trades per-page load granularity for a simpler build pipeline and better cache efficiency across pages.
+- **On a build with islands, pages without islands load the bundle too.** The islands `<script>` is injected into the `<head>` of every prerendered page, including a page with no island markers. The bundle then finds no wrapper to mount on that page. A build with no islands at all emits no islands bundle and no tag. This applies to the HTML that `zfb build` writes; request-time SSR responses are not post-processed this way (see [SSR on a Worker](./ssr-on-a-worker.mdx)). Other client-script mechanisms, if used, can still add JavaScript.
+- **Any island change rehashes the single bundle.** Adding or modifying any island component produces a new content hash, which invalidates the browser's cached bundle for all pages. The tradeoff is that one cache entry covers all islands — once the bundle is cached, every page in the project benefits from the same cache hit.
+
+### Measured shared-bundle baseline
+
+The shared bundle's size is measured and guarded against regressions in CI. In the recorded study (zfb 3.0.0), a page with one event-only island shipped about 50 KB of island JavaScript (about 17 KB gzip); the current contracts cap the same page at 64,535 raw / 22,195 gzip bytes. The full measurement, its toolchain pins, and the procedure for changing a contract are kept below for maintainers.
+
+<Details title="Measurement details and the size contract">
+
+The controlled v3 fixture study found **no JavaScript reduction**; it preserves the current bundle as a regression baseline. It exercised eight real consumer pages in workspace and packed-package resolution on Darwin arm64 and Linux x64: no island, event-only, scalar signal, Show/For, modelValue, blog menu plus theme toggle, JSON API, and a two-island page. Each platform's contract has zero raw and gzip allowance.
+
+| Fixture | Darwin workspace raw / gzip | Darwin packed raw / gzip | Linux workspace raw / gzip | Linux packed raw / gzip |
+| --- | ---: | ---: | ---: | ---: |
+| no-island | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| event-only | 49,830 / 17,004 | 49,892 / 17,027 | 49,830 / 17,003 | 49,892 / 17,030 |
+| scalar-signal | 49,838 / 17,009 | 49,900 / 17,037 | 49,838 / 17,005 | 49,900 / 17,036 |
+| Show/For | 49,985 / 17,082 | 50,047 / 17,111 | 49,985 / 17,081 | 50,047 / 17,111 |
+| modelValue | 49,829 / 17,012 | 49,891 / 17,045 | 49,829 / 17,014 | 49,891 / 17,046 |
+| blog menu plus theme toggle | 50,180 / 17,138 | 50,242 / 17,166 | 50,180 / 17,137 | 50,242 / 17,167 |
+| JSON API | 49,984 / 17,096 | 50,046 / 17,127 | 49,984 / 17,098 | 50,046 / 17,123 |
+| two islands | 50,106 / 17,103 | 50,168 / 17,132 | 50,106 / 17,098 | 50,168 / 17,134 |
+
+Each platform and mode built every fixture twice and compared the complete emitted dist inventory. The recorded non-empty fixtures each produced one entry and no later chunk; the size contract still counts every emitted entry, shared, and lazy JavaScript file if splitting produces them. Raw size is the sum of file bytes. Gzip is computed separately for each file with node:zlib gzipSync at level 9 and mtime 0, then summed; HTTP transfer compression may differ.
+
+The study pinned @takazudo/zfb 3.0.0, Node v24.14.0, zlib 1.3.1-e00f703, esbuild 0.25.12, and lockfile Hono 4.12.25. The Darwin baseline source was 897f288c013e24ff4fde01483a55d8a1945fc964. The Linux x64 probe ran in GitHub Actions health run 36831966429 at pull-request merge ref afa523768b3de897859521e1bf940179191f50ab (PR head 99726c74a48df1a0658cd6d9f5c494d06d4f2d40), not at the historical Darwin commit. Linux raw totals match Darwin, but gzip totals differ and every real island JavaScript file has a different SHA-256. This is a pair of platform-specific size baselines, not a claim of byte-identical output or semantic equivalence across platforms. The Linux result covers one pinned GitHub Actions run on x64; it does not establish behavior for other Linux architectures or future toolchains.
+
+The live contracts have moved on since the study. Both keep the study's Node, zlib and Hono versions. The Darwin arm64 contract, `research/v3-island-size/decision.json`, pins @takazudo/zfb 5.2.0 and still records esbuild 0.25.12, because it has not yet been re-pinned for the esbuild-free producer. The Linux x64 contract, `decision-linux-x64.json`, pins 5.2.2 and records the embedded bundler `rolldown-24bc2d0` in place of esbuild. Their exact ceilings are in those files; for example, the one-island event-only page is capped at 66,691 raw / 21,252 normalized gzip bytes in workspace mode on both platforms. The allowance is still zero.
+
+A contract changes only through a reviewed transition. When `Cargo.lock` changes in a way the contracts have not admitted, the island-size check in `health.yml` fails until fresh native evidence is collected and the affected contracts are re-pinned (`--stage`, then `--apply`). Linux x64 evidence comes from a GitHub Actions artifact. Darwin arm64 evidence comes from the native `island-size-darwin.yml` workflow, or from an owner-attested run on a local Mac that `scripts/island-size-local-evidence.mjs` accepts for two reviewed reasons only: internal Cargo rewires and the rustls security lock transition. Neither route changes a ceiling or the allowance by itself.
+
+Use the repository's [measurement and replay commands](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/README.md) to reproduce the two real matrices. The guard selects `decision.json` on Darwin arm64 and `decision-linux-x64.json` on Linux x64, and rejects unsupported hosts or platform-mismatched artifacts. After both runs, check the saved files against the selected contract:
+
+```sh
+node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" --packed "$ZFB_SIZE_OUT/real-packed/measurement.json"
+```
+
+</Details>
+
+## One runtime
+
+Every island uses zudo-react, the runtime shipped with `@takazudo/zfb`. Its
+components create signals during setup, and the client adopts the island's
+existing child DOM after checking the wrapper identity and strict JSON props.
+There is no per-project framework setting or compatibility alias. Start with
+the [zudo-react overview](../zudo-react/overview.mdx) for its JSX dialect and
+component model.
+
+For the server/client boundary details, see [The zudo-react runtime](../architecture/framework-adapters.mdx).
+
 ## Boundary discovery and migration
+
+The sections from here on are reference material for cases beyond the basic example: exactly which functions the build's static scanner registers, how wrappers, factories and package islands are resolved, and how to migrate wrapper and component-map shapes that the scanner rejects. The scanner reads source files without running them.
 
 Only concrete targets of reachable `<Island>` boundaries receive public markers. Exporting a function from a client module, capitalizing its name, or returning JSX does not register it by itself. Unused helpers can keep the same name in multiple modules; they do not need renaming.
 
@@ -425,157 +618,6 @@ export default function ThemeToggle() {
 }
 ```
 
-## What the bundler produces for N islands
-
-For a project with three islands (`Counter`, `ThemeToggle`, `SearchBox`), the islands build step emits **one shared bundle**:
-
-```
-dist/assets/islands.js
-```
-
-All islands are statically imported into a single entry point of the native Rolldown bundler, so the shared bundle contains every island component. `ProductionAssetPipeline` then renames it to a content-hashed filename before writing the final output:
-
-```
-dist/assets/islands-<hash>.js
-```
-
-If any island uses a dynamic `import()` internally, the bundler may also emit code-split chunks alongside it:
-
-```
-dist/assets/islands-chunk-<hash>.js
-```
-
-The bundle registers each island by its static marker name and calls `mountIslands()` at the end of the module. The runtime checks each wrapper's identity and schedules the corresponding client entry to adopt its child DOM.
-
-**The `ProductionAssetPipeline` is the single source of truth for hashing** — the bundler writes a stable `islands.js` first, and the pipeline performs the hash-rename and rewrites the injected script URL in the emitted HTML. Nothing downstream has to guess the filename.
-
-## How islands are loaded
-
-After render, each island's server-rendered HTML is wrapped in a `<div>` that carries its component identity and transport metadata. The wrapper and `data-zfb-island*` boundary attributes remain part of zfb's island contract; runtime comment regions are confined to the child subtree:
-
-```html
-<div data-zfb-island="ThemeToggle"
-     data-when="load"
-     data-zfb-transport="json/1"
-     data-zfb-protocol="zudo-react/1"
-     data-zfb-build="build-identity"
-     data-props="{}">
-  <!-- zudo-react's child-subtree markers live here -->
-  <button type="button" aria-pressed="false" aria-label="Switch to dark mode">Dark mode</button>
-</div>
-```
-
-The `data-when` attribute controls when the client entry runs. It is always present and defaults to `"load"`; the other strategies are `"visible"`, `"idle"`, and `"media"`. The JSX API is the [`<Island>` wrapper](../api/island.mdx); for media-query adoption, pass both `when="media"` and a `media` query:
-
-```tsx
-import { Island } from "@takazudo/zfb";
-import MobileMenu from "./MobileMenu";
-
-export default function Header() {
-  return (
-    <Island when="media" media="(max-width: 768px)">
-      <MobileMenu />
-    </Island>
-  );
-}
-```
-
-The `"visible"`, `"idle"`, and `"media"` strategies each emit a `data-when` attribute; `"media"` also emits a companion `data-media` attribute carrying the CSS query string:
-
-```html
-<!-- visible timing -->
-<div data-zfb-island="SearchBox" data-when="visible" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
-
-<!-- idle timing -->
-<div data-zfb-island="Counter" data-when="idle" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
-
-<!-- media timing — hydrates when (max-width: 768px) first matches -->
-<div data-zfb-island="MobileMenu" data-when="media" data-media="(max-width: 768px)" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
-```
-
-On builds that include at least one island, **one `<script>` tag** is injected project-wide into `<head>`:
-
-```html
-<script type="module" src="/assets/islands-<hash>.js"></script>
-```
-
-The shared islands bundle (`islands-<hash>.js`) contains registered island targets and their required bundle dependencies. It registers each target by the static marker name the scanner discovered (`data-zfb-island` attribute value), then calls `mountIslands()`, which checks wrapper metadata, reads the JSON `data-props`, and adopts the existing child DOM when the scheduled entry runs.
-
-### Observing mount state
-
-The runtime exposes a post-mount marker, `data-zfb-island-mounted`, on both kinds of island
-element: the hydrated `data-zfb-island` marker and the SSR-skip
-`data-zfb-island-skip-ssr` marker. It appears only after the generated `mount()` function
-returns. A delayed island therefore has no mounted marker while its `data-when` condition is
-waiting, so a consumer can gate its pre-hydration styling with the selector it would write in
-CSS:
-
-```css
-[data-zfb-island]:not([data-zfb-island-mounted]) {
-  opacity: 0.7;
-}
-```
-
-The marker means **"the client root was successfully mounted"**. It is observational; the live
-root handle is the runtime's duplicate-mount guard. A mounted marker does not mean that later
-asynchronous application work has completed.
-
-The marker is removed when an island is unmounted. During the real client-router body-swap
-sequence, an unchanged persisted island keeps its marker and mounted instance when its
-`data-zfb-transition-persist` id is present in the incoming body; a discarded island loses its
-marker and is mounted again from the incoming markup. If a persisted island's props change, the
-runtime removes the marker while it tears down the old instance and adds it again after the
-forced remount returns. A fresh runtime module also strips a stale marker from an element that
-it has not mounted before, then writes its own marker after mounting.
-
-## Consequences of the shared-bundle model
-
-Because all islands are bundled together into a single file:
-
-- **Every page with any island loads all islands' code.** The single `islands-<hash>.js` bundle contains every island component in the project. A page that only uses `ThemeToggle` still downloads the code for `Counter` and `SearchBox`. This trades per-page load granularity for a simpler build pipeline and better cache efficiency across pages.
-- **Pages with no islands get no islands script.** If a page contains no island markers, the build pipeline skips the shared islands `<script>` injection for that page. Other client-script mechanisms, if used, can still add JavaScript.
-- **Any island change rehashes the single bundle.** Adding or modifying any island component produces a new content hash, which invalidates the browser's cached bundle for all pages. The tradeoff is that one cache entry covers all islands — once the bundle is cached, every page in the project benefits from the same cache hit.
-
-### Measured shared-bundle baseline
-
-The controlled v3 fixture study found **no JavaScript reduction**; it preserves the current bundle as a regression baseline. It exercised eight real consumer pages in workspace and packed-package resolution on Darwin arm64 and Linux x64: no island, event-only, scalar signal, Show/For, modelValue, blog menu plus theme toggle, JSON API, and a two-island page. Each platform's contract has zero raw and gzip allowance.
-
-| Fixture | Darwin workspace raw / gzip | Darwin packed raw / gzip | Linux workspace raw / gzip | Linux packed raw / gzip |
-| --- | ---: | ---: | ---: | ---: |
-| no-island | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
-| event-only | 49,830 / 17,004 | 49,892 / 17,027 | 49,830 / 17,003 | 49,892 / 17,030 |
-| scalar-signal | 49,838 / 17,009 | 49,900 / 17,037 | 49,838 / 17,005 | 49,900 / 17,036 |
-| Show/For | 49,985 / 17,082 | 50,047 / 17,111 | 49,985 / 17,081 | 50,047 / 17,111 |
-| modelValue | 49,829 / 17,012 | 49,891 / 17,045 | 49,829 / 17,014 | 49,891 / 17,046 |
-| blog menu plus theme toggle | 50,180 / 17,138 | 50,242 / 17,166 | 50,180 / 17,137 | 50,242 / 17,167 |
-| JSON API | 49,984 / 17,096 | 50,046 / 17,127 | 49,984 / 17,098 | 50,046 / 17,123 |
-| two islands | 50,106 / 17,103 | 50,168 / 17,132 | 50,106 / 17,098 | 50,168 / 17,134 |
-
-Each platform and mode built every fixture twice and compared the complete emitted dist inventory. The recorded non-empty fixtures each produced one entry and no later chunk; the size contract still counts every emitted entry, shared, and lazy JavaScript file if splitting produces them. Raw size is the sum of file bytes. Gzip is computed separately for each file with node:zlib gzipSync at level 9 and mtime 0, then summed; HTTP transfer compression may differ.
-
-The study pinned @takazudo/zfb 3.0.0, Node v24.14.0, zlib 1.3.1-e00f703, esbuild 0.25.12, and lockfile Hono 4.12.25. The Darwin baseline source was 897f288c013e24ff4fde01483a55d8a1945fc964. The Linux x64 probe ran in GitHub Actions health run 36831966429 at pull-request merge ref afa523768b3de897859521e1bf940179191f50ab (PR head 99726c74a48df1a0658cd6d9f5c494d06d4f2d40), not at the historical Darwin commit. Linux raw totals match Darwin, but gzip totals differ and every real island JavaScript file has a different SHA-256. This is a pair of platform-specific size baselines, not a claim of byte-identical output or semantic equivalence across platforms. The Linux result covers one pinned GitHub Actions run on x64; it does not establish behavior for other Linux architectures or future toolchains.
-
-The live contracts have moved on since the study. They now pin @takazudo/zfb 4.5.4 with the same Node, zlib, esbuild and Hono versions, and their exact ceilings are in `research/v3-island-size/decision.json` (Darwin arm64) and `decision-linux-x64.json` (Linux x64). For example, the one-island event-only page is capped at 64,535 raw / 22,195 gzip bytes in workspace mode on both platforms. The allowance is still zero.
-
-A contract changes only through a reviewed transition. When `Cargo.lock` changes in a way the contracts have not admitted, the island-size check in `health.yml` fails until fresh native evidence is collected and the affected contracts are re-pinned (`--stage`, then `--apply`). Linux x64 evidence comes from a GitHub Actions artifact. Darwin arm64 evidence comes from the native `island-size-darwin.yml` workflow, or from an owner-attested run on a local Mac that `scripts/island-size-local-evidence.mjs` accepts for two reviewed reasons only: internal Cargo rewires and the rustls security lock transition. Neither route changes a ceiling or the allowance by itself.
-
-Use the repository's [measurement and replay commands](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/README.md) to reproduce the two real matrices. The guard selects `decision.json` on Darwin arm64 and `decision-linux-x64.json` on Linux x64, and rejects unsupported hosts or platform-mismatched artifacts. After both runs, check the saved files against the selected contract:
-
-```sh
-node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" --packed "$ZFB_SIZE_OUT/real-packed/measurement.json"
-```
-
-## One runtime
-
-Every island uses zudo-react, the runtime shipped with `@takazudo/zfb`. Its
-components create signals during setup, and the client adopts the island's
-existing child DOM after checking the wrapper identity and strict JSON props.
-There is no per-project framework setting or compatibility alias. Start with
-the [zudo-react overview](../zudo-react/overview.mdx) for its JSX dialect and
-component model.
-
-For the server/client boundary details, see [The zudo-react runtime](../architecture/framework-adapters.mdx).
-
 ## Embedding a third-party widget
 
 A self-mounting widget can own an empty element inside a zudo-react island. Its own framework (including Preact or React) stays in the widget's bundle from `node_modules`; install the framework as the widget library's peer dependency. The v3 restriction on Preact/React JSX runtime imports applies to components rendered by zudo-react, not to an opaque widget mounted inside its own host. Do not pass the widget's VNodes to zudo-react or let it mutate a region containing zudo-react children.
@@ -804,12 +846,12 @@ Requirements for the supported form:
 | Location | Supported |
 |---|---|
 | A server-only page, layout, or component (never reachable from a `"use client"` island) | Yes — always has been, via the general SSR shadow-copy bundler |
-| A `"use client"` island's own file | Yes, since issue #1404 |
-| A module transitively imported from a `"use client"` island | Yes, since #1404, same restrictions as above, when the module is part of the island import graph and is written as a real expanded shadow-copy file |
+| A `"use client"` island's own file | Yes |
+| A module transitively imported from a `"use client"` island | Yes, same restrictions as above, when the module is part of the island import graph and is written as a real expanded shadow-copy file |
 | A file reachable only because it is matched by another island-reachable glob (a raw-mirrored glob target or subtree companion) | **No** — see "Unsupported forms" below |
 | A `*.client.{ts,tsx,js,jsx}` [client script](../guides/client-scripts.mdx) (or anything it imports) | **No** — see "Client scripts" below |
 
-Before #1404, *any* `import.meta.glob` reachable from an island — even the supported eager + string-literal form — was a hard build error (a stopgap from issue #1387). The islands build now materialises a temporary shadow copy of the island-reachable source tree with each supported glob call already expanded, the same trick the SSR bundler has used for server-only modules since issues #665/#670.
+Island-side support is newer than server-side support: earlier releases rejected *any* `import.meta.glob` reachable from an island, even the supported eager + string-literal form, as a hard build error. The islands build now materialises a temporary shadow copy of the island-reachable source tree with each supported glob call already expanded, the same technique the SSR bundler uses for server-only modules. (History: the stopgap error came from issue #1387 and island support from #1404; the SSR technique dates from #665/#670.)
 
 There is one important boundary: the shadow also raw-mirrors files under each island-reachable glob module's directory so matched target files exist for the bundler, but those raw-mirrored target/subtree files are not recursively expanded. If one of those files contains its own `import.meta.glob(...)`, zfb rejects it instead of shipping an unexpanded Vite-only macro to the browser. If the same file is also imported from the island graph in the normal way, it is a real expanded shadow copy and its supported glob keeps working.
 

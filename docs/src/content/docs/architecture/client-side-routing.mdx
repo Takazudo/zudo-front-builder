@@ -7,6 +7,19 @@ category: Concepts
 
 zfb pages are static HTML by default. **`<ClientRouter />`** opts them into SPA-style navigation: clicking a same-origin link fetches the next page in the background, swaps only the `<body>` (and the changed `<head>` nodes), and plays a View Transition animation — without a full browser reload.
 
+## Islands with and without ClientRouter
+
+ClientRouter is optional, and it is separate from both server routing and hydration. [Server routing](./routing.mdx) decides which page file produces the HTML for a URL. ClientRouter only changes how the browser moves between those HTML pages: it fetches the next page, swaps its content into the current document, and manages history and scroll. [Hydration](./islands.mdx) attaches island behavior to HTML that is already on screen, and it works on every page whether or not ClientRouter is mounted.
+
+- **Without ClientRouter**, a link click is an ordinary full page load. The browser loads the next document, the islands bundle runs, and its `mountIslands()` call hydrates that page's islands. Islands need nothing else.
+- **With ClientRouter**, each soft navigation coordinates with the island runtime:
+  1. Just before the DOM swap, the router cancels island mounts that are still waiting on their `data-when` timing and unmounts the islands mounted in the old body, so their cleanups run. An island persisted under a key that the incoming page also uses is kept; see [Persisting an island with `<Island>`](#view-transitions-persisting-elements-across-navigations-persisting-an-island-with-island).
+  2. The router swaps `<body>` and the changed `<head>` nodes, then fires `zfb:after-swap`.
+  3. After the incoming page's scripts run, the runtime mounts the island markers that the swap introduced. Each one is scheduled by its own `data-when` value, so a `visible`, `idle` or `media` island may still be waiting afterwards.
+  4. The router fires `zfb:page-load`.
+
+`DOMContentLoaded` does not fire again on a soft navigation. Code that must run for each new page, including code that looks for its islands, listens for `zfb:page-load`; see [Navigation lifecycle events](#navigation-lifecycle-events). To check whether a particular island has finished mounting, read its `data-zfb-island-mounted` marker; see [Observing mount state](./islands.mdx#how-islands-are-loaded-observing-mount-state).
+
 ## Mounting `<ClientRouter />`
 
 Import from `@takazudo/zfb-runtime` and place the component once inside your page `<head>`:

@@ -45,6 +45,10 @@ zfb css --input src/styles.css --output dist/app.css --project-root .
 
 Use a safelist for complete app candidates that source discovery cannot find. Publish package-owned candidates as a manifest. Reserve a complete spelling in <code>authoredClasses</code> when CSS owns a name that overlaps a utility root.
 
+These inputs do different jobs. `safelist` entries and manifest candidates are resolved like classes found in source and generate CSS when they resolve, so every token they name must be configured here. `authoredClasses` generates nothing: it tells zudo-wind to leave an exact class name to your own CSS. In the example above, `sm:hover:bg-panel` resolves because `sm` is a configured breakpoint and `panel` is a configured color, while `legacy-panel` is styled only by authored CSS. For the rules on complete candidates, see [Complete alternatives, not constructed fragments](./sources-and-candidates.mdx#complete-alternatives-not-constructed-fragments) and [Explicit candidates](./sources-and-candidates.mdx#explicit-candidates-safelist-manifests-and-authored-classes).
+
+The `wind` key is zudo-wind's own configuration, not a Tailwind config: it has no default palette or spacing scale, and unknown keys, including Tailwind options such as `theme` or `content`, fail validation.
+
 {/* wind-preview: guide-configuration/configured-panel "Inspect token-backed utility output" */}
 
 <WindPreviewEnhancer />
