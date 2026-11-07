@@ -6,7 +6,7 @@ sidebar_position: 5
 
 ## ページをレンダリングする
 
-サーバーエントリは **@takazudo/zfb/zudo-react/server** です。**renderToString** は同期的な記述ツリーを HTML にレンダリングします。文字列、数値、空の値、配列、記述、スカラー値を持つリアクティブな子を受け付けます。レンダラーへ直接渡した文字列はテキストとしてエスケープされます。
+サーバーエントリは **@takazudo/zfb/zudo-react/server** です。**renderToString** は同期的な記述ツリーを HTML にレンダリングします。文字列、数値、空の値、配列、記述、スカラー値を持つリアクティブな子を受け付けます。レンダラーへ直接渡した文字列はテキストとしてエスケープされます。`renderToString` は zfb のビルドに依存しません。`@takazudo/zfb/zudo-react` を JSX のインポート元にしてコンパイルするホストであれば、どこからでも呼び出せます。サブパスとそのようなホストが受け持つことは [zfb サイトの外で zudo-react を使う](./overview.mdx#zfb-サイトの外で-zudo-react-を使う)を参照してください。
 
 ~~~tsx
 import { renderToString } from "@takazudo/zfb/zudo-react/server";
@@ -110,6 +110,8 @@ v3.0.0 から、`Island` はレンダリングの前に子を検証します。�
 ~~~text
 ZR_ISLAND_IDENTITY: ThemeToggle has no build identity
 ~~~
+
+この構成では、本来 zfb のビルドが用意する 3 つのものを呼び出し側が受け持ちます。島の識別子のメタデータ（次の節）、自分のバンドラーを通しても失われない関数名、そして後でその出力をハイドレートするクライアントと一致する識別子です。
 
 ### `withIslandTestContext` で識別子を与える
 

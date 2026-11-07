@@ -62,6 +62,27 @@ signal を渡すと更新されるバインディングができます。JSX を
 
 この例では、最初の子はリアクティブです。二番目の子はセットアップ中に読み取った数値のままです。この規則は、コンポーネントの props を通して値を渡す場合にも適用されます。
 
+## zfb サイトの外で zudo-react を使う
+
+zudo-react は独立した npm パッケージではありません。**@takazudo/zfb** の中に含まれているため、zfb サイトではないホスト（別のバンドラーで作るアプリケーション、テストランナー、Node のスクリプトなど）は `@takazudo/zfb` をインストールし、次の公開サブパスからインポートします。
+
+| サブパス | 提供するもの |
+| --- | --- |
+| `@takazudo/zfb/zudo-react` | コアのエントリ。`signal`、`computed`、`h`、`Fragment`、`Show`、`For`、`ErrorBoundary`、`batch`、`flush`、`getScope` |
+| `@takazudo/zfb/zudo-react/jsx-runtime` | 本番ビルド用の自動 JSX 変換の参照先 |
+| `@takazudo/zfb/zudo-react/jsx-dev-runtime` | 開発ビルド用の自動 JSX 変換の参照先 |
+| `@takazudo/zfb/zudo-react/server` | `renderToString`、`islandRoot`、`serializeProps` |
+| `@takazudo/zfb/zudo-react/client` | `hydrate`、`mount`、`parseProps` |
+| `@takazudo/zfb/zudo-react/testing` | `createIslandTest` と `withIslandTestContext` |
+
+zfb サイトの中では、`zfb build` と `zfb dev` が JSX を変換し、島の境界を登録し、ハイドレーションをスケジュールし、サーバーからクライアントへ props を運びます。外部のホストではこれらの処理は行われないため、ホスト自身が受け持ちます。
+
+- **JSX の変換。** ホスト側の変換を自動ランタイムで設定し、JSX のインポート元に `@takazudo/zfb/zudo-react` を指定します。別の JSX ランタイムが作った要素は zudo-react の記述ではありません。
+- **マウント境界とそのライフサイクル。** ホストはラッパー要素を作って接続し、ラッパーと一致する識別子を渡して `@takazudo/zfb/zudo-react/client` の `mount` または `hydrate` を呼び、`null` が返った場合に対処し、境界を取り除くときに `dispose()` または `unmount()` を呼びます。[自分で所有するホストから mount する](./hydration.mdx#自分で所有するホストから-mount-する)を参照してください。
+- **サーバーレンダリング（使う場合）。** `@takazudo/zfb/zudo-react/server` の `renderToString` はどこでも HTML をレンダリングできます。zfb ビルドの外で SDK の `<Island>` 境界をレンダリングするには、識別子の追加設定が必要です。[zfb ビルドの外で Island をレンダリングする](./server-rendering.mdx#zfb-ビルドの外で-island-をレンダリングする)を参照してください。
+
+コンポーネントの契約はどこでも同じです。`class` と `on:click` 属性を使い、signal はセットアップ中に作り、セットアップ関数は一度だけ実行されます。
+
 ## 次に読むページ
 
 以降のページでは、JSX の記述、リアクティブな更新、スコープ、サーバーレンダリング、ハイドレーション、フォーム、構造を持つ領域を説明します。島のスケジュールと永続化に関する zfb 側の仕組みは、島のガイドを参照してください。
