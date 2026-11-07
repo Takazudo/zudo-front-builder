@@ -920,15 +920,18 @@ async function transition(
     const init: RequestInit = { signal: preparationEvent.signal };
     if (preparationEvent.formData) {
       init.method = "POST";
-      const source = preparationEvent.sourceElement;
-      const form = formOwnerOf(source);
-      // `form` is null when the source has no form-owner API and no ancestor
-      // form, or when the native `.form` value is null. An absent encoding
-      // stays multipart FormData. text/plain is not serialized here:
-      // handleSubmit leaves those POSTs to the browser before navigate(), and
-      // an imperative navigate() call keeps FormData.
-      const submitter = source != null && source !== form ? source : null;
-      const encoding = form != null ? selectedFormEncoding(form, submitter) : "multipart";
+      let encoding = submissionEncodings.get(options);
+      if (encoding === undefined) {
+        const source = preparationEvent.sourceElement;
+        const form = formOwnerOf(source);
+        // `form` is null when the source has no form-owner API and no ancestor
+        // form, or when the native `.form` value is null. An absent encoding
+        // stays multipart FormData. text/plain is not serialized here:
+        // handleSubmit leaves those POSTs to the browser before navigate(), and
+        // an imperative navigate() call keeps FormData.
+        const submitter = source != null && source !== form ? source : null;
+        encoding = form != null ? selectedFormEncoding(form, submitter) : "multipart";
+      }
       init.body =
         encoding === "urlencoded"
           ? urlEncodedFormEntries(preparationEvent.formData)
@@ -1484,6 +1487,13 @@ const FORM_TEXT_PLAIN = "text/plain";
 
 type FormBodyEncoding = "urlencoded" | "multipart" | "text/plain";
 
+// The body encoding a routed form submission selected at decision time, keyed
+// by that navigation's own options object. Browsers select it before firing
+// `formdata`, so a listener's later attribute change must not reach the POST
+// body, and a zfb:before-preparation listener replacing formData keeps it
+// (#4616). An imperative navigate() has no entry and derives it from the source.
+const submissionEncodings = new WeakMap<Options, FormBodyEncoding>();
+
 function asciiLower(value: string): string {
   let out = "";
   for (let i = 0; i < value.length; i++) {
@@ -1796,10 +1806,16 @@ function handleSubmit(ev: SubmitEvent): void {
     return;
   }
 
+  // happy-dom reports the form itself as the submitter of a submitter-less
+  // requestSubmit(); browsers report null.
+  const entrySubmitter = submitter !== null && isSameNodeAs(submitter, form) ? null : submitter;
+  // Selected now, with method and action, before any formdata listener runs;
+  // the loader encodes the POST body with this value (#4616).
+  const encoding = method === "post" ? selectedFormEncoding(form, entrySubmitter) : null;
   // POST text/plain stays a single native submission. Decide before FormData
   // and preventDefault so the router never owns the request.
   // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-enctype
-  if (method === "post" && selectedFormEncoding(form, submitter) === "text/plain") return;
+  if (encoding === "text/plain") return;
 
   // Native submission abandons a form that "cannot navigate" (is disconnected)
   // after the submit event and again after building the entry list; a formdata
@@ -1810,17 +1826,16 @@ function handleSubmit(ev: SubmitEvent): void {
   // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
   if (!isConnectedNode(form) || !inThisDocument(form)) return;
   // Decline an invalidated submitter before FormData and preventDefault(); the
-  // browser's own submission still owns it. happy-dom reports the form itself
-  // as the submitter of a submitter-less requestSubmit(); browsers report null.
-  const entrySubmitter = submitter !== null && isSameNodeAs(submitter, form) ? null : submitter;
+  // browser's own submission still owns it.
   if (entrySubmitter !== null && !isSubmitButtonOf(entrySubmitter, form)) return;
   const formData = new FormData(form, entrySubmitter ?? undefined);
   if (!isConnectedNode(form) || !inThisDocument(form)) return;
-  const options: import("./types.js").Options = { sourceElement: submitter ?? form };
-  if (method === "get") {
+  const options: Options = { sourceElement: submitter ?? form };
+  if (encoding === null) {
     action.search = urlEncodedFormEntries(formData).toString();
   } else {
     options.formData = formData;
+    submissionEncodings.set(options, encoding);
   }
 
   ev.preventDefault();

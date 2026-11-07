@@ -89,7 +89,10 @@ import {
 // re-exported from @takazudo/zfb-runtime/client-router. `import type` is erased
 // at runtime, so it does not drag the barrel's <ClientRouter> module into the
 // test environment.
-import type { SyncHistoryEntryOptions } from "../../client-router/index.js";
+import type {
+  SyncHistoryEntryOptions,
+  TransitionBeforePreparationEvent,
+} from "../../client-router/index.js";
 
 // Activate the router. Before #2436 the popstate / load / pageshow / scroll
 // listeners and the history seed ran as a side effect of evaluating router.ts;
@@ -3102,6 +3105,122 @@ describe("form encoding selection", () => {
     absent.append("k", "v");
     await navigate("/submit-target", { formData: absent });
     expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(absent);
+  });
+
+  // #4616: browsers select the encoding before firing `formdata`, so the POST
+  // body keeps the encoding selected when handleSubmit decided to route.
+  describe("decision-time encoding", () => {
+    // Stands in for a formdata listener: happy-dom fires no formdata event.
+    function mutateDuringFormData(mutate: () => void): () => number {
+      const Original = FormData;
+      let constructed = 0;
+      vi.stubGlobal(
+        "FormData",
+        class extends Original {
+          constructor(form?: HTMLFormElement, submitter?: HTMLElement | null) {
+            super(form, submitter);
+            constructed += 1;
+            if (constructed === 1) mutate();
+          }
+        },
+      );
+      return () => constructed;
+    }
+
+    function setAttr(selector: string, name: string, value: string): () => void {
+      return () => document.querySelector(selector)!.setAttribute(name, value);
+    }
+
+    it.each([
+      ["application/x-www-form-urlencoded", undefined, "multipart/form-data", "URLSearchParams"],
+      ["multipart/form-data", undefined, "application/x-www-form-urlencoded", "FormData"],
+      ["application/x-www-form-urlencoded", undefined, "text/plain", "URLSearchParams"],
+      // undefined: the submitter's formenctype changes to multipart instead.
+      ["multipart/form-data", "application/x-www-form-urlencoded", undefined, "URLSearchParams"],
+    ] as const)(
+      "form enctype %j, formenctype %j, enctype changed to %j during formdata: %s",
+      async (enctype, formenctype, changedEnctype, bodyName) => {
+        const bodyType = bodyName === "FormData" ? FormData : URLSearchParams;
+        const constructed = mutateDuringFormData(() => {
+          if (changedEnctype !== undefined) setAttr("form", "enctype", changedEnctype)();
+          else setAttr("button", "formenctype", "multipart/form-data")();
+        });
+        const { event, fetchMock } = dispatchEncoding({
+          enctype,
+          ...(formenctype !== undefined ? { formenctype } : {}),
+        });
+        expect(event.defaultPrevented).toBe(true);
+        await drain();
+        expect(constructed()).toBe(1);
+        expect(fetchMock).toHaveBeenCalledOnce();
+        const body = fetchMock.mock.calls[0]?.[1]?.body;
+        expect(body).toBeInstanceOf(bodyType);
+        expect((body as URLSearchParams | FormData).get("q")).toBe("value");
+      },
+    );
+
+    it("keeps the selected encoding when a before-preparation listener replaces formData", async () => {
+      const replacement = new FormData();
+      replacement.append("replaced", "yes");
+      const onPrep = (ev: Event) => {
+        const prep = ev as TransitionBeforePreparationEvent;
+        prep.formData = replacement;
+        // A live re-derivation from the source would now select multipart.
+        document.querySelector("form")!.setAttribute("enctype", "multipart/form-data");
+      };
+      document.addEventListener("zfb:before-preparation", onPrep);
+      try {
+        const { event, fetchMock } = dispatchEncoding({
+          enctype: "application/x-www-form-urlencoded",
+        });
+        expect(event.defaultPrevented).toBe(true);
+        await drain();
+        expect(fetchMock).toHaveBeenCalledOnce();
+        const body = fetchMock.mock.calls[0]?.[1]?.body;
+        expect(body).toBeInstanceOf(URLSearchParams);
+        expect(String(body)).toBe("replaced=yes");
+      } finally {
+        document.removeEventListener("zfb:before-preparation", onPrep);
+      }
+    });
+
+    it("keeps multipart when a before-preparation listener replaces formData", async () => {
+      const replacement = new FormData();
+      replacement.append("replaced", "yes");
+      const onPrep = (ev: Event) => {
+        (ev as TransitionBeforePreparationEvent).formData = replacement;
+        document
+          .querySelector("form")!
+          .setAttribute("enctype", "application/x-www-form-urlencoded");
+      };
+      document.addEventListener("zfb:before-preparation", onPrep);
+      try {
+        const { fetchMock } = dispatchEncoding({ enctype: "multipart/form-data" });
+        await drain();
+        expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(replacement);
+      } finally {
+        document.removeEventListener("zfb:before-preparation", onPrep);
+      }
+    });
+
+    it("imperative navigate() with formData still derives the encoding at load time", async () => {
+      const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Posted", "posted")));
+      vi.stubGlobal("fetch", fetchMock);
+      const form = document.createElement("form");
+      form.setAttribute("method", "post");
+      form.setAttribute("enctype", "multipart/form-data");
+      document.body.append(form);
+      const onPrep = () => form.setAttribute("enctype", "application/x-www-form-urlencoded");
+      document.addEventListener("zfb:before-preparation", onPrep);
+      try {
+        const formData = new FormData();
+        formData.append("k", "v");
+        await navigate("/submit-target", { formData, sourceElement: form });
+        expect(fetchMock.mock.calls[0]?.[1]?.body).toBeInstanceOf(URLSearchParams);
+      } finally {
+        document.removeEventListener("zfb:before-preparation", onPrep);
+      }
+    });
   });
 });
 
