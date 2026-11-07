@@ -1,5 +1,5 @@
 // SLIM-BUILD ONLY. Used exclusively by `load_ts_via_subprocess` in
-// `crates/zfb/src/config.rs` when the `direct-v8` feature is disabled.
+// `crates/zfb-config-loader/src/loader.rs` when the `direct-v8` feature is disabled.
 // Default (direct-v8) builds evaluate the bundle in-process via V8 and
 // do not stage this file at all (the `CONFIG_LOADER_MJS` constant is
 // cfg-gated to `#[cfg(not(feature = "direct-v8"))]`).
@@ -7,7 +7,7 @@
 // Originally: Wave 2 / Sub 1 — `zfb.config.ts` loader, extended by
 // Phase B Sub 3 / issue #108 with plugin-name resolution.
 // Do not edit unless you also update the Rust caller in
-// `crates/zfb/src/config.rs::load_ts_via_subprocess`.
+// `crates/zfb-config-loader/src/loader.rs::load_ts_via_subprocess`.
 //
 // Usage:
 //
@@ -15,8 +15,8 @@
 //
 // Behaviour:
 //
-// 1. Dynamic-imports the ESM bundle that the Rust caller produced via
-//    esbuild (with `--bundle --format=esm --platform=node`).
+// 1. Dynamic-imports the ESM bundle that the Rust caller produced through
+//    the compiler worker (bundled ESM for the Node platform).
 // 2. Reads the module's `default` export.
 // 3. Walks `default.plugins` (when present) and resolves each
 //    `plugins[i].name` to an absolute module specifier the Rust side

@@ -772,6 +772,13 @@ pub use ssr::{
     SsrRoutesHandle,
 };
 pub use zfb_build::InjectedRoute;
+/// Compiler worker hosting for embedders that load a `.ts` config: the
+/// launcher type, the private argument that selects worker mode, and the
+/// call a host `main` makes first.
+pub use zfb_compiler_worker::{
+    run_if_requested as run_compiler_worker_if_requested, PRIVATE_ARG as COMPILER_WORKER_ARG,
+};
+pub use zfb_config_loader::WorkerLauncher;
 
 /// Options for [`serve`].
 ///

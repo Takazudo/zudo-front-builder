@@ -7098,8 +7098,9 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
- "zfb-build",
+ "zfb-compiler-worker",
  "zfb-render",
+ "zfb-rolldown-prototype",
 ]
 
 [[package]]
@@ -7340,6 +7341,7 @@ dependencies = [
  "tower-service",
  "tracing",
  "zfb-build",
+ "zfb-compiler-worker",
  "zfb-config-loader",
  "zfb-graph",
  "zfb-islands",
