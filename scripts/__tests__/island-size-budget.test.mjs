@@ -11,6 +11,8 @@ import {
   contractPathForPlatform,
   loadRun,
   pnpmLockHashForContract,
+  readBundlerIdentity,
+  sameHashMaps,
   validateIslandSizeBudget,
 } from "../../research/v3-island-size/check-budget.mjs";
 import { computeLockFingerprint } from "../../research/v3-island-size/lock-fingerprint.mjs";
@@ -132,6 +134,7 @@ function currentLocalInputs(
     pnpmLockActualSha256:
       packageVersion === contract.toolchain.packageVersion ? contractLockHash : sha(lockText),
     cargoLockSha256: sha(readFileSync(join(repoRoot, "Cargo.lock"))),
+    bundlerIdentity: readBundlerIdentity(repoRoot),
     normalizerSha256: normalizerSha256(),
     dependencyFingerprint: checkoutFingerprint(lockText),
     dependencyFingerprintError: null,
@@ -140,6 +143,17 @@ function currentLocalInputs(
 
 // Same identity-normalized metric as schemaVersion 2, plus the dependency
 // fingerprint that replaces the whole-file lock compare.
+// schemaVersion 4 (#4635): the v3 shape for the esbuild-free producer, which
+// pins the embedded bundler identity in place of the esbuild version.
+function v4Contract(base = baseContract) {
+  const contract = v3Contract(base);
+  contract.schemaVersion = 4;
+  const { esbuildVersion, ...rest } = contract.toolchain;
+  void esbuildVersion;
+  contract.toolchain = { ...rest, bundlerIdentity: readBundlerIdentity(repoRoot) };
+  return contract;
+}
+
 function v3Contract(base = baseContract) {
   const contract = structuredClone(base);
   contract.schemaVersion = 3;
@@ -386,9 +400,24 @@ function makePackageInputs(root, packageVersion = baseContract.toolchain.package
   };
 }
 
-function provenance(mode, sourceSha, localInputs, packageInputs, platform, schemaVersion) {
+// The synthetic producer is esbuild-backed (the historical shape) unless the
+// contract is schemaVersion 4 or the state models the checkout's own
+// esbuild-free producer (#4635), which records only its embedded bundler.
+function provenance(
+  mode,
+  sourceSha,
+  localInputs,
+  packageInputs,
+  platform,
+  schemaVersion,
+  esbuildFree,
+) {
+  const backend =
+    schemaVersion === 4 || esbuildFree
+      ? { bundlerIdentity: localInputs.bundlerIdentity }
+      : { esbuildVersion: "0.25.12", esbuildBinarySha256: "e".repeat(64) };
   const fingerprint =
-    schemaVersion === 3
+    schemaVersion === 3 || schemaVersion === 4
       ? {
           dependencyFingerprint: {
             policyVersion: localInputs.dependencyFingerprint.policyVersion,
@@ -419,8 +448,7 @@ function provenance(mode, sourceSha, localInputs, packageInputs, platform, schem
     runtimeTarballSha256: sha(readFileSync(packageInputs.runtimeTarballPath)),
     zfbTarballPath: packageInputs.zfbTarballPath,
     runtimeTarballPath: packageInputs.runtimeTarballPath,
-    esbuildVersion: baseContract.toolchain.esbuildVersion,
-    esbuildBinarySha256: "e".repeat(64),
+    ...backend,
     nodeVersion: baseContract.toolchain.nodeVersion,
     zlibVersion: baseContract.toolchain.zlibVersion,
     compression: baseContract.compression,
@@ -432,10 +460,19 @@ function provenance(mode, sourceSha, localInputs, packageInputs, platform, schem
 }
 
 function normalizedSchema(schemaVersion) {
-  return schemaVersion === 2 || schemaVersion === 3;
+  return schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4;
 }
 
-function buildMode(root, mode, sourceSha, localInputs, packageInputs, platform, schemaVersion) {
+function buildMode(
+  root,
+  mode,
+  sourceSha,
+  localInputs,
+  packageInputs,
+  platform,
+  schemaVersion,
+  esbuildFree = false,
+) {
   const outDir = join(root, mode);
   mkdirSync(outDir, { recursive: true });
   const measurement = {
@@ -446,6 +483,7 @@ function buildMode(root, mode, sourceSha, localInputs, packageInputs, platform, 
       packageInputs[mode],
       platform,
       schemaVersion,
+      esbuildFree,
     ),
     results: {},
   };
@@ -493,15 +531,19 @@ const stateTemplates = new Map();
 const templateRoots = [];
 let stateCounter = 0;
 
+// `historical` overrides checkout identities with synthetic historical ones
+// (`cargoLockSha256`, `runnerSha256`); `esbuildFree` models the checkout's
+// esbuild-free producer. Neither is a live measurement or a re-pin.
 function makeState(
   platform = baseContract.platform,
   base = baseContract,
   packageVersion = base.toolchain.packageVersion,
-  historicalCargoSha = null,
+  historical = null,
+  esbuildFree = false,
 ) {
-  const key = JSON.stringify([platform, base, packageVersion, historicalCargoSha]);
+  const key = JSON.stringify([platform, base, packageVersion, historical, esbuildFree]);
   if (!stateTemplates.has(key)) {
-    stateTemplates.set(key, buildState(platform, base, packageVersion, historicalCargoSha));
+    stateTemplates.set(key, buildState(platform, base, packageVersion, historical, esbuildFree));
   }
   return cloneState(stateTemplates.get(key), packageVersion);
 }
@@ -605,14 +647,14 @@ function cloneState(template, packageVersion) {
   return state;
 }
 
-function buildState(platform, base, packageVersion, historicalCargoSha) {
+function buildState(platform, base, packageVersion, historical, esbuildFree) {
   const root = mkdtempSync(join(tmpdir(), "zfb-island-budget-template-"));
   templateRoots.push(root);
   const sourceSha = "1".repeat(40);
   const normalized = normalizedSchema(base.schemaVersion);
   const localInputs = currentLocalInputs(base, packageVersion);
   // Synthetic historical identity only; never a live measurement or re-pin.
-  if (historicalCargoSha !== null) localInputs.cargoLockSha256 = historicalCargoSha;
+  if (historical !== null) Object.assign(localInputs, structuredClone(historical));
   const packageInputs = makePackageInputs(root, packageVersion);
   const workspace = buildMode(
     root,
@@ -622,6 +664,7 @@ function buildState(platform, base, packageVersion, historicalCargoSha) {
     packageInputs,
     platform,
     base.schemaVersion,
+    esbuildFree,
   );
   const packed = buildMode(
     root,
@@ -631,6 +674,7 @@ function buildState(platform, base, packageVersion, historicalCargoSha) {
     packageInputs,
     platform,
     base.schemaVersion,
+    esbuildFree,
   );
   const contract = structuredClone(base);
   for (const mode of ["workspace", "packed"]) {
@@ -670,12 +714,10 @@ function validate(state) {
 }
 
 function assertHistoricalContractAndReviewedCargoGate(contract) {
-  const historical = makeState(
-    contract.platform,
-    contract,
-    contract.toolchain.packageVersion,
-    contract.toolchain.cargoLockSha256,
-  );
+  const historical = makeState(contract.platform, contract, contract.toolchain.packageVersion, {
+    cargoLockSha256: contract.toolchain.cargoLockSha256,
+    runnerSha256: contract.runnerSha256,
+  });
   expect(validate(historical)).toEqual({ errors: [], passed: true });
   // The historical #318 transition is proven from its frozen reviewed bytes,
   // never from the live lock: that proof says nothing about a later candidate.
@@ -686,27 +728,51 @@ function assertHistoricalContractAndReviewedCargoGate(contract) {
     ...lock,
   });
   expect(proof.review.id).toBe("rolldown-native-318");
-  const current = makeState(contract.platform, contract);
-  if (current.localInputs.cargoLockSha256 === contract.toolchain.cargoLockSha256) {
+  // The checkout's own producer is esbuild-free (#4635). A schemaVersion-3
+  // contract pins the esbuild producer, so this models what the checkout
+  // would measure, not the contract's historical shape.
+  const esbuildFree = contract.schemaVersion !== 4;
+  const current = makeState(
+    contract.platform,
+    contract,
+    contract.toolchain.packageVersion,
+    null,
+    esbuildFree,
+  );
+  const runnersMoved = !sameHashMaps(contract.runnerSha256, current.localInputs.runnerSha256);
+  const cargoMoved = current.localInputs.cargoLockSha256 !== contract.toolchain.cargoLockSha256;
+  if (!runnersMoved && !cargoMoved && !esbuildFree) {
     expect(validate(current)).toEqual({ errors: [], passed: true });
     return;
   }
   // Policy authorization does NOT admit the new producer. Fresh platform-native
   // bytes and the existing rebaseline gates must move the live contract first.
-  expect(validate(current)).toEqual({
-    passed: false,
-    errors: [
-      "local Cargo.lock: SHA-256 differs from the reviewed contract",
-      "workspace provenance: Cargo lockfile differs from the contract",
-      "packed provenance: Cargo lockfile differs from the contract",
-    ],
-  });
-  // Live admission gate: a lock the contract does not pin stays red until fresh
-  // native evidence moves the contract through a reviewed rebaseline.
+  // Exactly the not-yet-admitted inputs may be reported, nothing else.
+  const errors = [];
+  if (runnersMoved) {
+    errors.push("local measurement runners: SHA-256 values differ from the reviewed contract");
+  }
+  if (cargoMoved) errors.push("local Cargo.lock: SHA-256 differs from the reviewed contract");
+  for (const mode of ["workspace", "packed"]) {
+    if (runnersMoved) errors.push(mode + " provenance: runner hashes differ from the contract");
+    if (esbuildFree) {
+      errors.push(
+        mode +
+          " provenance: schema mismatch: esbuild-free producer (bundler " +
+          current.localInputs.bundlerIdentity +
+          ") needs a schemaVersion 4 contract",
+      );
+    }
+    if (cargoMoved) errors.push(mode + " provenance: Cargo lockfile differs from the contract");
+  }
+  expect(validate(current)).toEqual({ passed: false, errors });
+  // Live admission gate: a checkout the contract does not pin stays red until
+  // fresh native evidence moves the contract through a reviewed rebaseline.
   expect.fail(
-    `live Cargo.lock ${current.localInputs.cargoLockSha256} is not admitted by the ` +
+    `live checkout (Cargo.lock ${current.localInputs.cargoLockSha256}, bundler ` +
+      `${current.localInputs.bundlerIdentity}) is not admitted by the ` +
       `${contract.platform.os}-${contract.platform.arch} contract, which pins ` +
-      contract.toolchain.cargoLockSha256,
+      `schemaVersion ${contract.schemaVersion} and Cargo.lock ${contract.toolchain.cargoLockSha256}`,
   );
 }
 
@@ -778,6 +844,91 @@ describe("island shipped-size budget", () => {
     expect(budgetAllowsRetention(checkerResult(result))).toBe(true);
     state.contract.ceilings.workspace["event-only"].raw = 0;
     expect(budgetAllowsRetention(checkerResult(validate(state)))).toBe(false);
+  });
+
+  it("retains the esbuild-free producer's exact backend rejection, refusing extra failures", () => {
+    // Synthetic saved-byte pair, never a native Linux/Darwin receipt: the
+    // esbuild-free producer (#4635) against a schemaVersion-3 contract that
+    // still pins an older runner digest and Cargo.lock.
+    const state = makeState(
+      baseContract.platform,
+      v3Contract(),
+      baseContract.toolchain.packageVersion,
+      null,
+      true,
+    );
+    state.contract.toolchain.cargoLockSha256 = "f".repeat(64);
+    state.contract.runnerSha256["measure-real.mjs"] = "0".repeat(64);
+    const checkerResult = (result) => ({
+      status: 1,
+      stderr:
+        "Island size budget rejected:\n" +
+        result.errors.map((error) => "- " + error + "\n").join(""),
+    });
+    const result = validate(state);
+    expect(result.passed).toBe(false);
+    expect(budgetAllowsRetention(checkerResult(result))).toBe(true);
+    state.contract.ceilings.workspace["event-only"].raw = 0;
+    expect(budgetAllowsRetention(checkerResult(validate(state)))).toBe(false);
+  });
+
+  it("accepts an esbuild-free run under a schemaVersion-4 contract and refuses mixed backends", () => {
+    const v4 = () =>
+      makeState(baseContract.platform, v4Contract(), baseContract.toolchain.packageVersion);
+    const state = v4();
+    expect(validate(state)).toEqual({ errors: [], passed: true });
+    for (const mode of ["workspace", "packed"]) {
+      expect(state[mode].measurement.provenance.bundlerIdentity).toBe("rolldown-24bc2d0");
+      expect(state[mode].measurement.provenance).not.toHaveProperty("esbuildVersion");
+      expect(state[mode].measurement.provenance).not.toHaveProperty("esbuildBinarySha256");
+    }
+
+    const esbuildRun = makeState(
+      baseContract.platform,
+      v4Contract(),
+      baseContract.toolchain.packageVersion,
+    );
+    for (const mode of ["workspace", "packed"]) {
+      const provenance = esbuildRun[mode].measurement.provenance;
+      delete provenance.bundlerIdentity;
+      provenance.esbuildVersion = "0.25.12";
+      provenance.esbuildBinarySha256 = "e".repeat(64);
+    }
+    expect(validate(esbuildRun).errors).toEqual(
+      expect.arrayContaining([
+        "workspace provenance: unsupported bundler identity",
+        "workspace provenance: schema mismatch: schemaVersion 4 contract cannot accept an esbuild measurement",
+        "packed provenance: schema mismatch: schemaVersion 4 contract cannot accept an esbuild measurement",
+      ]),
+    );
+
+    const otherBundler = v4();
+    otherBundler.contract.toolchain.bundlerIdentity = "rolldown-0000000";
+    expect(validate(otherBundler).errors).toEqual(
+      expect.arrayContaining([
+        "contract: unsupported toolchain bundlerIdentity",
+        "local crates/zfb-bundler/src/request.rs: BACKEND_IDENTITY differs from the reviewed contract",
+        "workspace provenance: unsupported bundler identity",
+      ]),
+    );
+
+    const staleCheckout = v4();
+    staleCheckout.localInputs.bundlerIdentity = "rolldown-0000000";
+    expect(validate(staleCheckout).errors).toEqual([
+      "local crates/zfb-bundler/src/request.rs: BACKEND_IDENTITY differs from the reviewed contract",
+    ]);
+
+    const declaresEsbuild = v4();
+    declaresEsbuild.contract.toolchain.esbuildVersion = "0.25.12";
+    expect(validate(declaresEsbuild).errors).toEqual([
+      "contract: schemaVersion 4 measures the esbuild-free producer and cannot declare esbuildVersion",
+    ]);
+
+    const v3DeclaresBundler = v3State();
+    v3DeclaresBundler.contract.toolchain.bundlerIdentity = "rolldown-24bc2d0";
+    expect(validate(v3DeclaresBundler).errors).toEqual([
+      "contract: schemaVersion 3 pins the esbuild producer and cannot declare bundlerIdentity",
+    ]);
   });
 
   it("allows lockstep release specifiers but still detects other lockfile drift", () => {
