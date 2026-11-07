@@ -65,12 +65,11 @@ ROLLDOWN_MARKERS = (b"zfb_rolldown_prototype", b"zfb-rolldown-prototype")
 LIFECYCLE_TIMEOUT = 1800  # above check-cli-lifecycle.py's summed internal deadlines (~420 s)
 
 
-def selection_args(selection, extra_features=()):
+def selection_args(selection):
     """Exact cargo feature arguments for a selection (same contract as record-graph.py) and its label."""
     if selection == "default":
         return [], "default"
-    features = ",".join(["direct-v8", *sorted(set(extra_features))])
-    return ["--no-default-features", "--features", features], features
+    return ["--no-default-features", "--features", "direct-v8"], "direct-v8"
 
 
 def sha256(path):
@@ -185,18 +184,14 @@ def main():
     parser.add_argument("--cargo", default="cargo")
     parser.add_argument("--selection", choices=SELECTIONS, default="direct-v8",
                         help="direct-v8: --no-default-features --features direct-v8; default: no feature flags")
-    parser.add_argument("--rolldown", action="store_true",
-                        help="Qualify direct-v8,rolldown-prototype and run with ZFB_ROLLDOWN_PROTOTYPE=1")
     args = parser.parse_args()
-    if args.rolldown and args.selection != "direct-v8":
-        parser.error("--rolldown extends the direct-v8 selection; it cannot combine with --selection default")
     if not args.binary and not args.build:
         parser.error("--binary is required without --build")
     output = args.output.resolve()
     if output.exists():
         parser.error(f"--output {output} already exists; every row needs a new directory")
     output.mkdir(parents=True)
-    feature_args, features = selection_args(args.selection, ["rolldown-prototype"] if args.rolldown else [])
+    feature_args, features = selection_args(args.selection)
     binary = (args.binary or default_binary(args.target)).resolve()
     host = host_identity()
     build_command = [args.cargo, "build", "--locked", "-p", "zfb", *feature_args, "--bin", "zfb"]
@@ -250,9 +245,10 @@ def main():
     version = run([binary, "-V"])
     checks["binary"] = {"path": str(binary), "sha256": digest, "size": len(data), "header": found,
                         "version": version, "passed": version.get("exit") == 0}
+    # Every build ships the native Rolldown compiler; there is no esbuild backend.
     has_rolldown = any(marker in data for marker in ROLLDOWN_MARKERS)
-    checks["feature_markers"] = {"rolldown_prototype_present": has_rolldown, "expected": args.rolldown,
-                                 "passed": has_rolldown == args.rolldown}
+    checks["feature_markers"] = {"rolldown_native_present": has_rolldown, "expected": True,
+                                 "passed": has_rolldown}
     icu_pin = icu_module()
     icu = ROOT / icu_pin.VENDORED
     if icu.is_file():
@@ -263,16 +259,14 @@ def main():
         checks["icu"] = {"status": "NOT RECORDED", "passed": None, "reason": f"{icu_pin.VENDORED} missing"}
     checks["dynamic_dependencies"] = dynamic_dependencies(binary, host["system"])
     graph = run([sys.executable, HERE / "record-graph.py", "--cli", "--target", args.target, "--cargo", args.cargo,
-                 "--selection", args.selection, *(["--extra-feature", "rolldown-prototype"] if args.rolldown else []),
-                 "--output", output / "graph.json"], cwd=ROOT)
+                 "--selection", args.selection, "--output", output / "graph.json"], cwd=ROOT)
     checks["graph"] = {**graph, "report": "graph.json", "passed": graph.get("exit") == 0}
-    env = {key: value for key, value in os.environ.items() if key != "ZFB_ROLLDOWN_PROTOTYPE"}
-    if args.rolldown:
-        env["ZFB_ROLLDOWN_PROTOTYPE"] = "1"
+    # The CLI rejects both retired backend selectors, so never forward them.
+    env = {key: value for key, value in os.environ.items() if key not in ("ZFB_BUNDLER", "ZFB_ROLLDOWN_PROTOTYPE")}
     lifecycle = run([sys.executable, HERE / "check-cli-lifecycle.py", "--binary", binary, "--sha256", digest,
                      "--output", output / "lifecycle"], timeout=LIFECYCLE_TIMEOUT, cwd=ROOT, env=env)
     timed_out = "timeout" in lifecycle
-    checks["lifecycle"] = {**lifecycle, "env": {"ZFB_ROLLDOWN_PROTOTYPE": env.get("ZFB_ROLLDOWN_PROTOTYPE")},
+    checks["lifecycle"] = {**lifecycle,
                            "status": "TIMEOUT (harness limit, not a behavioral result)" if timed_out else None,
                            "passed": None if timed_out else lifecycle.get("exit") == 0}
     checks["binary_unchanged"] = {"passed": binary.is_file() and sha256(binary) == digest}

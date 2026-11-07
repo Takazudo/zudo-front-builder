@@ -12,27 +12,26 @@ function run(command, args, env = process.env) {
   assert.equal(result.status, 0, `${command} failed`);
 }
 run(process.execPath, ["prototypes/rolldown/gate.mjs"]);
-for (const backend of ["esbuild", "rolldown"]) {
-  const env = { ...process.env, ZFB_DEV_TIMING: "1" };
-  delete env.ZFB_ROLLDOWN_PROTOTYPE;
-  env.ZFB_BUNDLER = backend;
-  run(`target/${profile}/examples/rolldown_ssr`, [root], env);
-  const produce = () => run(`target/${profile}/examples/rolldown_browser`, [root], env);
-  const snapshot = () => {
-    const assets = join(dirname(root), `dist-${backend}`, "assets");
-    return readdirSync(assets)
-      .sort()
-      .map((name) => [
-        name,
-        createHash("sha256")
-          .update(readFileSync(join(assets, name)))
-          .digest("hex"),
-      ]);
-  };
-  produce();
-  const previous = snapshot();
-  produce(); // A new process and randomly named client stage.
-  assert.deepEqual(snapshot(), previous, `${backend}: fresh-stage nondeterminism`);
-  console.log(`${backend}: fresh-process/client-stage deterministic asset names and bytes PASS`);
-}
+const env = { ...process.env, ZFB_DEV_TIMING: "1" };
+// The zfb CLI rejects both retired backend selectors, so never forward them.
+delete env.ZFB_ROLLDOWN_PROTOTYPE;
+delete env.ZFB_BUNDLER;
+run(`target/${profile}/examples/rolldown_ssr`, [root], env);
+const produce = () => run(`target/${profile}/examples/rolldown_browser`, [root], env);
+const snapshot = () => {
+  const assets = join(dirname(root), "dist-rolldown", "assets");
+  return readdirSync(assets)
+    .sort()
+    .map((name) => [
+      name,
+      createHash("sha256")
+        .update(readFileSync(join(assets, name)))
+        .digest("hex"),
+    ]);
+};
+produce();
+const previous = snapshot();
+produce(); // A new process and randomly named client stage.
+assert.deepEqual(snapshot(), previous, "rolldown: fresh-stage nondeterminism");
+console.log("rolldown: fresh-process/client-stage deterministic asset names and bytes PASS");
 run(process.execPath, ["prototypes/rolldown/browser.mjs", root]);

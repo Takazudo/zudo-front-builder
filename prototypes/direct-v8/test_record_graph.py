@@ -57,14 +57,13 @@ class Command(unittest.TestCase):
             report = json.loads(out.read_text()) if out.exists() else None
             return result, report, json.loads(log.read_text()) if log.exists() else None
 
-    def test_target_and_extra_feature_reach_cargo_and_report(self):
-        result, report, argv = self.run_with("\n".join(CLEAN) + "\n", "--cli", "--target", "aarch64-apple-darwin",
-                                             "--extra-feature", "rolldown-prototype")
+    def test_target_reaches_cargo_and_report(self):
+        result, report, argv = self.run_with("\n".join(CLEAN) + "\n", "--cli", "--target", "aarch64-apple-darwin")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("direct-v8,rolldown-prototype", argv)
+        self.assertEqual(argv[argv.index("--features") + 1], "direct-v8")
         self.assertEqual(argv[argv.index("--color") + 1], "never")
         self.assertEqual(argv[argv.index("--target") + 1], "aarch64-apple-darwin")
-        self.assertEqual((report["target"], report["features"]), ("aarch64-apple-darwin", "direct-v8,rolldown-prototype"))
+        self.assertEqual((report["target"], report["features"]), ("aarch64-apple-darwin", "direct-v8"))
         self.assertIn("aarch64-apple-darwin", report["build_command"])
 
     def test_default_target_is_linux_x64(self):
@@ -97,7 +96,7 @@ class Command(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertEqual(report["forbidden_dependencies"], ["deno_core v0.400.0 features=[]"])
 
-    def test_default_selection_requires_cli_and_no_extra_feature(self):
+    def test_default_selection_requires_cli_and_retired_extra_feature_is_refused(self):
         for argv in (["--selection", "default"], ["--cli", "--selection", "default", "--extra-feature", "rolldown-prototype"],
                      ["--cli", "--selection", "other"]):
             result, report, cargo_argv = self.run_with("", *argv)
@@ -110,7 +109,7 @@ class Command(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertFalse(report["passed"])
 
-    def test_unknown_target_and_standalone_extra_feature_are_refused(self):
+    def test_unknown_target_and_retired_extra_feature_are_refused(self):
         for argv in (["--cli", "--target", "x86_64-unknown-linux-musl"], ["--extra-feature", "rolldown-prototype"]):
             result, report, cargo_argv = self.run_with("", *argv)
             self.assertEqual(result.returncode, 2, argv)
