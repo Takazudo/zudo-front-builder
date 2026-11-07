@@ -7,6 +7,14 @@ description = "zfb build orchestrator: ties watcher + dependency graph + render/
 
 [lib]
 
+# Test-only compiler worker host for the plugin bundling tests; the zfb CLI is
+# the production host. Binaries of a dependency crate are never installed.
+[[bin]]
+name = "zfb-build-test-compiler-worker"
+path = "src/bin/zfb-build-test-compiler-worker.rs"
+test = false
+doc = false
+
 # Feature-propagation seam for the V8 gate (issue #371, sub-task 4.1a).
 #
 # `zfb-render` declares the inner `direct-v8` feature that pulls the V8
@@ -29,6 +37,8 @@ default = ["direct-v8"]
 
 [dependencies]
 zfb-rolldown-prototype = { path = "../zfb-rolldown-prototype", optional = true }
+# Compiles `.ts`/`.tsx`/`.mts`/`.cts` plugin entries (plugin_bundler.rs).
+zfb-compiler-worker = { path = "../zfb-compiler-worker" }
 zfb-watcher = { path = "../zfb-watcher" }
 zfb-graph = { path = "../zfb-graph" }
 # Read-only consumption of the MDX → JSX emitter (Wave 1 / T3 bundler).

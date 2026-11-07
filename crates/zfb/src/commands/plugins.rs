@@ -49,12 +49,10 @@ fn build_plugin_specs(config: &Config) -> Vec<PluginSpec> {
 /// resolved plugins. Returns `Ok(None)` for plugin-less projects so
 /// callers don't have to special-case the "no plugins" path.
 ///
-/// Supplies the embedded-esbuild getter (#2308) — the byte-for-byte mirror
-/// of `Config::to_loader_options`'s getter (`config.rs:1640-1641`) — so a
-/// `.ts`/`.tsx`/`.mts`/`.cts` plugin entry can still be bundled for a
-/// `cargo install`-ed `zfb` binary with no workspace `crates/zfb/binaries/`
-/// dir. `build`, `dev`, and `preview` all reach the host through this one
-/// function, so this single supplier covers every command.
+/// Supplies the zfb CLI's compiler worker launcher (#4633) so a
+/// `.ts`/`.tsx`/`.mts`/`.cts` plugin entry is compiled by this executable's
+/// private worker mode. `build`, `dev`, and `preview` all reach the host
+/// through this one function, so this single supplier covers every command.
 pub async fn maybe_spawn_host(config: &Config) -> Result<Option<PluginHost>> {
     maybe_spawn_host_with_diagnostic_sink(config, None).await
 }
@@ -71,9 +69,7 @@ pub async fn maybe_spawn_host_with_diagnostic_sink(
         specs,
         None,
         config.plugin_hook_timeout_secs,
-        Some(Box::new(|| {
-            crate::render_pipeline::embedded_binary("esbuild").ok()
-        })),
+        zfb_compiler_worker::WorkerLauncher::zfb_cli().ok(),
         diagnostic_sink,
     )
     .await

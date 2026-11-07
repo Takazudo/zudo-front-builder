@@ -29,6 +29,7 @@ pub(super) struct Request {
     pub(super) options: BundlerOptions,
     pub(super) metafile: Option<PathBuf>,
     pub(super) file_extensions: Vec<String>,
+    pub(super) external_packages: bool,
 }
 
 impl Request {
@@ -236,6 +237,23 @@ impl Request {
         if request.resolve.preserve_symlinks {
             resolve.symlinks = Some(false);
         }
+        let external_packages = match request.resolve.packages {
+            request::Packages::Bundle => false,
+            request::Packages::External => {
+                if !request.resolve.extra_module_dirs.is_empty() {
+                    bail!("external packages search no module directories; extra_module_dirs must be empty");
+                }
+                // Disables package-directory lookup only: tsconfig paths,
+                // baseUrl, aliases, package imports and files still resolve.
+                resolve.modules = Some(Vec::new());
+                true
+            }
+        };
+        if let Some(banner) = &request.banner {
+            options.banner = Some(rolldown_common::AddonOutputOption::String(Some(
+                banner.clone(),
+            )));
+        }
         // Ordered additional module search paths, after node_modules.
         if !request.resolve.extra_module_dirs.is_empty() {
             let modules = resolve
@@ -291,6 +309,7 @@ impl Request {
             options,
             metafile,
             file_extensions,
+            external_packages,
         })
     }
 }

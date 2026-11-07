@@ -125,8 +125,8 @@ pub use pipeline::{
 };
 pub use plan::{ContentNarrowing, CssChangeSet, PageSelection, RebuildPlan};
 pub use plugin_bundler::{
-    bundle_plugin_entry, needs_bundling, resolve_esbuild_for_plugins, EmbeddedEsbuildGetter,
-    StagedPluginBundle, PLUGIN_BUNDLE_TEMP_PREFIX, PLUGIN_BUNDLE_TEMP_SUFFIX,
+    bundle_plugin_entry, needs_bundling, plugin_compile_request, StagedPluginBundle,
+    PLUGIN_BUNDLE_TEMP_PREFIX, PLUGIN_BUNDLE_TEMP_SUFFIX,
 };
 pub use plugin_refresh::{
     PluginRefreshOutcome, PluginRefreshState, PluginVirtualModuleStore, PluginWatchOwnership,
