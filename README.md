@@ -37,7 +37,7 @@ This downloads the `x86_64-pc-windows-msvc` binary, verifies its SHA-256 checksu
 
 ## Install via npm (Node required)
 
-For Node.js tools that need CSS directly, use the asynchronous [`compileCss` API](https://zfb.takazudomodular.com/docs/api/compile-css/) from `@takazudo/zfb/css` (Node ≥22). It accepts in-memory configuration and uses the same compiler as `zfb css`.
+For Node.js tools that need CSS directly, use the asynchronous [`compileCss` API](https://zfb.takazudomodular.com/docs/api/compile-css/) from `@takazudo/zfb/css` (Node ≥24). It accepts in-memory configuration and uses the same compiler as `zfb css`.
 
 ```sh
 # Scaffold a new site
@@ -56,6 +56,8 @@ pnpm add -D @takazudo/zfb
 Rust makes the framework itself fast, memory-safe, and distributable as a single binary — see the [architecture doc](./docs/src/content/docs/architecture/why-rust.mdx) (or the [docs site](https://zfb.takazudomodular.com/)) for the full rationale.
 
 ## What zfb is
+
+New to zfb? [How zfb works: a guide for frontend developers](https://zfb.takazudomodular.com/docs/architecture/architecture-overview/) explains what runs at build time, on a Worker and in the browser.
 
 zfb is the **engine**: router, renderer, content pipeline, and the small set of build-time primitives (frontmatter extraction, content collections, `paths()`, MDX directive registry, and non-HTML page emission) that something else builds on. Frameworks like Astro and Next.js own the site experience; zfb is the engine a framework (zudo-doc) or an app (CCResDoc) sits on.
 
