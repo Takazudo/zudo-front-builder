@@ -27,7 +27,7 @@ shaped as a Cloudflare Workers module:
 
 ```ts
 export default {
-  fetch(request: Request, env: Env, ctx: ExecutionContext): Response { ... }
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> { ... }
 };
 ```
 
@@ -121,10 +121,10 @@ binary as a child process, running `zfb dev` bound to a loopback port, and
 points its own UI at that port.
 
 What makes this practical is that the process stays small. A config with
-`plugins: []` spawns no Node plugin host, and on the standard embedded-V8 build
-the config itself is evaluated in-process by the V8 isolate that ships in the
-binary. Slim builds compile that evaluator out and evaluate the config through a
-`node` subprocess instead, so they do need `node` on `PATH`.
+`plugins: []` spawns no Node plugin host, and the config itself is evaluated in-process by the V8 isolate that ships in the
+binary. This needs the standard, published `zfb` binary: a binary compiled from
+source without V8 cannot run `zfb dev` at all (see
+[JS runtime](./js-runtime.mdx#current-defaults-and-experiments)).
 
 From there the host drives content by writing files. Other parts of the program
 generate MDX into the content tree, and `zfb dev`'s content watcher picks the

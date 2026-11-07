@@ -22,16 +22,16 @@ zfb は 1 つの製品ですが、いくつかの明確に分かれた部品か�
 
 | 部品 | import するもの・実行するもの | 担当すること |
 | --- | --- | --- |
-| **zfb**（CLI とビルドエンジン） | `zfb` コマンド。`@takazudo/zfb` 経由でインストール | プロジェクトを読み込み、バンドルし、ページをレンダリングして `dist/` に書き出します。プラットフォーム別のキャリアパッケージで配布されるネイティブバイナリです。 |
+| **zfb**（CLI とビルドエンジン） | `zfb` コマンド。`@takazudo/zfb` 経由でインストール | プロジェクトを読み込み、バンドルし、ページをレンダリングして `dist/` に書き出します。*キャリアパッケージ* — ビルド済みバイナリを収めた、プラットフォームごとの小さな npm パッケージ（例: `@takazudo/zfb-linux-x64-gnu`）— で配布されるネイティブバイナリです。 |
 | **ページとコンテンツのパイプライン** | `pages/` 配下のファイル、MDX/Markdown、コンテンツコレクション | ファイルシステムルーティング、動的ルートの `paths()`、`getCollection()` で読むコレクション。 |
 | **zudo-react** | `@takazudo/zfb/zudo-react` とそのサブパス | zfb の JSX ランタイムとシグナルベースのコンポーネントモデル。React ではなく、独立した npm パッケージでもありません。 |
 | **zudo-wind** | トップレベルの `wind` キー、`zfb css`、`@takazudo/zfb/css` | zfb のユーティリティ CSS コンパイラ。ソースからクラス候補を見つけ、設定で定義されたものについて CSS を生成します。 |
-| **ブラウザランタイム** | `@takazudo/zfb-runtime` | ページ内ナビゲーション用の任意の `<ClientRouter />` と、URL をページに対応付けるサーバー側ページルーター（`@takazudo/zfb-runtime/server`）。 |
+| **ランタイムパッケージ** | `@takazudo/zfb-runtime` | 両側で使うランタイムのコード。ビルドマシンと Worker で URL をページに対応付けるサーバー側ページルーター（`@takazudo/zfb-runtime/server`）と、ブラウザでのページ内ナビゲーション用の任意の `<ClientRouter />`。 |
 | **デプロイアダプター** | `@takazudo/zfb-adapter-cloudflare` | リクエスト時にレンダリングするページを Cloudflare Worker として包み、`getCloudflareContext()` を提供します。 |
 
 このドキュメントサイトが使っているフレームワーク **zudo-doc** は、エンジンの上に
 作られたものです。これらの部品の利用者であって、部品の 1 つではありません。その境界は
-[Engine vs Framework](./engine-vs-framework.mdx) を、製品の概要は
+[エンジンとフレームワーク](./engine-vs-framework.mdx) を、製品の概要は
 [はじめに](../getting-started/introduction.mdx) を参照してください。
 
 <a id="ビルド時とブラウザ-2-つの出力クラス"></a>
@@ -48,7 +48,7 @@ flowchart TD
     build["1. ビルドマシン\nzfb dev / zfb build\n（ネイティブ CLI + 組み込み V8）"]
     assets["dist/ の静的ファイル\nHTML、CSS、assets/ の JS、public/ のファイル"]
     worker["2. Worker\nリクエスト時の SSR\n_worker.js + _zfb_inner.mjs"]
-    browser["3. ブラウザ\nHTML、CSS、アイランド、クライアントスクリプト"]
+    browser["3. ブラウザ\nHTML、CSS、島、クライアントスクリプト"]
 
     src --> build
     build --> assets
@@ -61,7 +61,7 @@ flowchart TD
 | --- | --- | --- | --- |
 | **1. ビルドマシン** — `zfb dev` や `zfb build` を実行しているあなたのコンピューターまたは CI | ソースファイルと `zfb.config.*` | `zfb` CLI がページをバンドルし、組み込みの V8 エンジンで実行してプリレンダリング対象のページを描画し、zudo-wind で CSS をコンパイルし、ブラウザ用のコードをバンドルします。 | `dist/` のファイル。アダプターがあれば Worker モジュールも出力します。`zfb dev` では同じ処理の結果をローカルの dev サーバーから配信します。 |
 | **2. Worker** — リクエスト時の Cloudflare Worker（`prerender = false` のルートのみ） | HTTP リクエストと Worker のバインディング | Cloudflare のランタイム（workerd）が `_worker.js` を実行します。まず静的ファイルを配信し、該当しなければコンパイル済みのページ関数を呼び出します。 | HTTP レスポンス（通常は HTML）。 |
-| **3. ブラウザ** — 訪問者の端末 | 配信された HTML、CSS、JavaScript | ブラウザが HTML を描画し、CSS を適用し、アイランドをハイドレートし、クライアントスクリプトと（使っていれば）クライアントルーターを実行します。 | 訪問者が見て操作するもの。 |
+| **3. ブラウザ** — 訪問者の端末 | 配信された HTML、CSS、JavaScript | ブラウザが HTML を描画し、CSS を適用し、島をハイドレートし、クライアントスクリプトと（使っていれば）クライアントルーターを実行します。 | 訪問者が見て操作するもの。 |
 
 Rust の CLI とその組み込み V8 エンジンはビルドマシンにとどまります。Worker に
 アップロードされることも、ブラウザに配信されることもありません。
@@ -83,9 +83,9 @@ Rust の CLI とその組み込み V8 エンジンはビルドマシンにとど
 ブラウザ用 JavaScript は互いに独立した 2 つの仕組みから生まれます。プロジェクトは
 どちらか、両方、あるいはどちらも使わないことができます。
 
-- **アイランド** — `"use client"` モジュールからエクスポートされたコンポーネントを
+- **島** — `"use client"` モジュールからエクスポートされたコンポーネントを
   ターゲットとする `<Island>` 境界の中でレンダリングされるコンポーネント。すべてが
-  1 つのバンドル `assets/islands-<hash>.js` を共有します。アイランドを含むビルドでは、
+  1 つのバンドル `assets/islands-<hash>.js` を共有します。島を含むビルドでは、
   zfb が生成したページにそのバンドルを読む `<script type="module">` タグを 1 つ追加し、
   バンドルが `mountIslands()` を呼んで各 `[data-zfb-island]` 要素をハイドレートします。
   [Islands](./islands.mdx) を参照してください。
@@ -93,8 +93,8 @@ Rust の CLI とその組み込み V8 エンジンはビルドマシンにとど
   `<name>.client.ts`（または `.tsx`、`.js`、`.jsx`）ファイル。それぞれが個別に
   バンドルされ、本番では `/assets/client/<name>-<hash>.js` から配信されます。ページは
   `clientScript("name")` でそれを参照します。クライアントスクリプトは普通の ES
-  モジュールで、コンポーネントをハイドレートすることも、アイランドのプロトコルに
-  参加することもありません。[Client Scripts](../guides/client-scripts.mdx) を参照してください。
+  モジュールで、コンポーネントをハイドレートすることも、島のプロトコルに
+  参加することもありません。[クライアントスクリプト](../guides/client-scripts.mdx) を参照してください。
 
 訪問者のブラウザに届くのはこれらのブラウザ用バンドルだけです。zfb がビルドマシンで
 実行するページレンダリング用のバンドルが届くことはありません。
@@ -107,15 +107,15 @@ zfb には「静的モード」「SSR モード」「SPA モード」のどれ�
 | 選択 | 決めること | デフォルト | 有効にする方法 |
 | --- | --- | --- | --- |
 | **SSG か SSR か** | ページの HTML を *いつ* 生成するか（ビルド時に 1 回か、リクエストごとか） | ビルド時（SSG） | ページで `export const prerender = false`、加えて Cloudflare アダプター |
-| **アイランドとクライアントスクリプト** | ページがブラウザでの振る舞いを持つかどうか | なし | `<Island>` 境界、または `.client.*` ファイル |
+| **島とクライアントスクリプト** | ページがブラウザでの振る舞いを持つかどうか | なし | `<Island>` 境界、または `.client.*` ファイル |
 | **ClientRouter** | リンクのクリックで新しいドキュメントを読み込む代わりに、その場で内容を差し替えるかどうか | 通常のページ遷移 | レイアウトに `<ClientRouter />` を置く |
 
-プリレンダリングされたページにアイランドを置くことも、リクエスト時のページを純粋な
-HTML にすることも、アイランドの有無にかかわらずクライアントルーターを使うこともできます。
+プリレンダリングされたページに島を置くことも、リクエスト時のページを純粋な
+HTML にすることも、島の有無にかかわらずクライアントルーターを使うこともできます。
 それぞれの選択には専用の詳細ページがあります。
-[SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx)、
+[SSR と Cloudflare バインディング](../guides/ssr-and-cloudflare-bindings.mdx)、
 [Islands](./islands.mdx)、
-[Client-side routing](./client-side-routing.mdx) です。
+[クライアントサイドルーティングと View Transitions](./client-side-routing.mdx) です。
 
 この 3 つの *実行場所* は、3 つの *デプロイ形態* — 静的サイト、SSR ルート用の Worker を
 加えた静的サイト、別のプログラムの内側で動くローカルコンテンツサーバー — とは別の話です。
@@ -150,11 +150,11 @@ export default function HomePage() {
 
 `zfb build` の間に、ビルドマシンがこの関数を 1 回実行し、結果を `dist/index.html` に
 書き出します。そのあと zfb がこのファイルにスタイルシートの `<link>`（ビルドに
-アイランドがあればアイランドの `<script>` も）を追加します。リクエスト時には静的ホストが
+島があれば島の `<script>` も）を追加します。リクエスト時には静的ホストが
 このファイルを配信するだけで、ページのコードは実行されません。
 
 JSX にも注目してください。zudo-react は HTML の属性名を使うので、`className` ではなく
-`class` です。[Components and JSX](../zudo-react/components-and-jsx.mdx) を参照してください。
+`class` です。[コンポーネントと JSX](../zudo-react/components-and-jsx.mdx) を参照してください。
 
 ### ステップ 2 同じページをリクエストごとにレンダリングする
 
@@ -215,12 +215,12 @@ export default defineConfig({
 - ステップ 1 の `<link>`/`<script>` の自動追加は、生成された HTML ファイルに対する
   ビルド時の後処理です。そのためリクエスト時のレスポンスには適用されません。
   その場合にレイアウトからスタイルシートを参照する方法は
-  [Webshop レシピ](../recipes/webshop.mdx) にあります。
+  [サンプル: Webshop](../recipes/webshop.mdx) にあります。
 
-### ステップ 3 インタラクティブなアイランドを加える
+### ステップ 3 インタラクティブな島を加える
 
 インタラクティブな UI は別の選択です。コンポーネントは、`"use client"` モジュールから
-エクスポートされ、`<Island>` 境界のただ 1 つの子として使われたときにアイランドの
+エクスポートされ、`<Island>` 境界のただ 1 つの子として使われたときに島の
 ターゲットになります。
 
 ```tsx
@@ -258,14 +258,14 @@ export default function HomePage() {
 ```
 
 `Counter` は 2 つの場所で 2 回実行されます。ビルドマシンでは、ボタンの初期 HTML を
-ページに描画します。ブラウザでは、アイランドのバンドルがもう一度実行し、既存のボタンに
+ページに描画します。ブラウザでは、島のバンドルがもう一度実行し、既存のボタンに
 クリックハンドラを取り付けます。マークアップを置き換えるわけではありません。シグナルは
 セットアップ時に 1 回だけ作られ、値が変わるとテキストが更新されます。コンポーネント関数が
 再度呼ばれることはありません。
 
-json-api の例は意図的にこの形を取っています。アイランドはプリレンダリングされたページに
+json-api の例は意図的にこの形を取っています。島はプリレンダリングされたページに
 置き、ライブデータが必要なときは `fetch` で `prerender = false` の API ルートを
-呼び出します。アイランド、ハイドレーションのタイミング、境界の完全なルールは
+呼び出します。島、ハイドレーションのタイミング、境界の完全なルールは
 [Islands](./islands.mdx) にあります。
 
 ## ルーティングとハイドレーション
@@ -276,16 +276,16 @@ json-api の例は意図的にこの形を取っています。アイランド�
 | --- | --- | --- |
 | **サーバー側ページルーター**（`@takazudo/zfb-runtime/server` の `createPageRouter`） | ビルドマシンと Worker | URL をページモジュールに対応付け、そのデフォルトエクスポートをページ props 付きで呼び出します。自動で生成されるので、自分で呼ぶことはありません。 |
 | **ClientRouter**（`@takazudo/zfb-runtime` の `<ClientRouter />`） | ブラウザ（置いた場合のみ） | 同一オリジンのリンクのクリックを横取りし、次のページの HTML を取得して内容を差し替え、履歴とスクロールを管理します。 |
-| **ハイドレーション**（zudo-react） | ブラウザ | すでにページ上にあるサーバー描画済みの DOM に、アイランドの振る舞いを取り付けます。 |
+| **ハイドレーション**（zudo-react） | ブラウザ | すでにページ上にあるサーバー描画済みの DOM に、島の振る舞いを取り付けます。 |
 
 これらは重なり合うのではなく、連携します。サーバー側ルーターは、事前でもリクエストごとでも、
 すべての HTML ドキュメントを生成します。ClientRouter が変えるのは、ブラウザが次の
 ドキュメントを *どう読み込むか* だけです。差し替えのあと、新しい内容に含まれる
-アイランドは受け取ったマークアップからマウントされます。ハイドレーションは
+島は受け取ったマークアップからマウントされます。ハイドレーションは
 ClientRouter があってもなくても動きます。ClientRouter がなければ、すべての遷移は
-通常のページ読み込みになり、アイランドのバンドルが新しいページをハイドレートします。
-詳しくは [Routing](./routing.mdx)、[Client-side routing](./client-side-routing.mdx)、
-[Hydration](../zudo-react/hydration.mdx) を参照してください。
+通常のページ読み込みになり、島のバンドルが新しいページをハイドレートします。
+詳しくは [ルーティング](./routing.mdx)、[クライアントサイドルーティングと View Transitions](./client-side-routing.mdx)、
+[ハイドレーション](../zudo-react/hydration.mdx) を参照してください。
 
 ## CSS が生成される仕組み
 
@@ -307,6 +307,13 @@ function BrokenBadge(props: { color: string }) {
 }
 ```
 
+組み立てたクラスを直すには、取りうる値をすべて完全な形で書き出します。`StatusBadge`
+のような条件分岐か、`{ accent: "bg-accent", muted: "bg-muted" }[props.color]` のような
+マップを使います。`wind.safelist` を使うのは、値がどのスキャン対象ファイルにも本当に
+現れない場合だけです。
+[断片を組み立てず完全な候補を書く](../zudo-wind/sources-and-candidates.mdx#断片を組み立てず完全な候補を書く)
+を参照してください。
+
 候補を見つけるのは最初の一歩にすぎません。候補が CSS になるのは、設定で定義された
 ユーティリティとトークンに解決できたときだけです。zudo-wind は Tailwind ではありません。
 Tailwind の設定は読まず、デフォルトのカラーパレットやスペーシングスケールも提供しません。
@@ -319,8 +326,8 @@ import { defineConfig } from "zfb/config";
 
 export default defineConfig({
   wind: {
-    spec: 1,
-    reset: "minimal-v1",
+    spec: 1, // zudo-wind の言語バージョン。取りうる値は 1 だけ（デフォルトも 1）
+    reset: "minimal-v1", // 小さな組み込みの CSS リセット。デフォルトは "none"
     tokens: {
       colors: { accent: "var(--app-accent)", muted: "var(--app-muted)" },
     },
@@ -348,15 +355,18 @@ export default defineConfig({
   使う候補を公開するためのものです。これがあれば、あなたのビルドがそのパッケージの
   ソースをスキャンする必要はありません。
 - **`authoredClasses`** は、あなたが自分で CSS に書くルールのために、正確なクラス名を
-  予約します。その名前についてはユーティリティの生成を *抑止* するもので、CSS を
-  生成することはありません。
+  予約します。自分のクラス名がユーティリティの綴りと重なるときに必要になります。たとえば
+  スタイルシートで `.bg-hero`（手書きの背景画像）を定義していて、zudo-wind にそれを
+  ユーティリティとして扱わせたくない場合です。その名前についてはユーティリティの生成を
+  *抑止* するもので、CSS を生成することはありません。
 
 もう 1 つの境界があります。zudo-wind はソースをスキャンするときに `className` 属性も
 認識します。外部のパッケージや HTML がその綴りを使うからです。しかし、それで
 `className` が zudo-react の JSX として有効になるわけではありません。完全なルールは
-[Sources and candidates](../zudo-wind/sources-and-candidates.mdx)、
-[Configuration](../zudo-wind/configuration.mdx)、
-[Tokens](../zudo-wind/tokens.mdx) を読んでください。
+[ソースと候補](../zudo-wind/sources-and-candidates.mdx)、
+[設定](../zudo-wind/configuration.mdx)、
+[トークン](../zudo-wind/tokens.mdx) を読んでください。`wind` のすべてのフィールドは
+[設定 — フィールド](../zudo-wind/configuration.mdx#フィールド) に一覧があります。
 
 ## zfb のサイトを作らずに部品を使う
 
@@ -367,14 +377,22 @@ export default defineConfig({
 `/jsx-runtime` と `/jsx-dev-runtime`（JSX 変換用）、`/server`（サーバーレンダリング）、
 `/client`（`hydrate`、`mount`、`parseProps`）、`/testing` です。zfb のビルドの外では、
 JSX の変換とマウント／ライフサイクルの境界はあなたのホストが受け持ちます。zfb の
-アイランド識別プロトコルを手で作り直すのではなく、既存のレシピに従ってください。
+島の識別プロトコルを手で作り直すのではなく、既存のレシピに従ってください。
 [自分で所有するホストから mount する](../zudo-react/hydration.mdx#自分で所有するホストから-mount-する)
 と
 [zfb ビルドの外で Island をレンダリングする](../zudo-react/server-rendering.mdx#zfb-ビルドの外で-island-をレンダリングする)
 です。コンポーネントモデルは [zudo-react の概要](../zudo-react/overview.mdx) で説明しています。
 
-**CSS だけを使う。** `zfb css` はコマンドラインからスタイルシートをコンパイルします。
-Node.js のコードからは `@takazudo/zfb/css` の `compileCss` を使います。
+**CSS だけを使う。** 入力は普通の CSS ファイルです。あなたが書いた CSS と `@import`
+からなり、Tailwind のディレクティブは含みません。生成されるユーティリティは zudo-wind が
+加えます。コマンドラインからは `zfb css` でコンパイルします。
+
+```sh
+zfb css --input styles/main.css --output dist/main.css
+```
+
+すべてのフラグは [`zfb css`](../api/cli.mdx#zfb-css) を参照してください。Node.js の
+コードからは `@takazudo/zfb/css` の `compileCss` を使います。
 
 ```ts
 import { compileCss } from "@takazudo/zfb/css";
@@ -388,8 +406,12 @@ const { css, diagnostics, warnings } = await compileCss({
 });
 ```
 
-`compileCss` は非同期で、Node.js 専用（Node.js 24 以上）です。インストールされた
-プラットフォームパッケージのネイティブコンパイラをプロセス内で実行します。`input` は
+`compileCss` は非同期で、Node.js 専用です。`@takazudo/zfb/css` を含む `@takazudo/zfb`
+の npm パッケージは Node.js 24 以上を対象としています。スタンドアロンの `zfb` バイナリには
+Node はまったく不要です。オプショナル依存関係を有効にして `@takazudo/zfb` をインストールすると、
+プラットフォームに合ったキャリアパッケージが入り、`compileCss` はそのネイティブコンパイラを
+プロセス内で実行します（zudo-react 自体は普通の TypeScript/JavaScript で、ネイティブの
+キャリアは必要ありません）。`input` は
 CSS ファイルへのパスで、CSS の文字列ではありません。`config` はあなたがすでに評価した
 設定で、`compileCss` が `zfb.config.ts` を読み込むことはありません。ブラウザや Worker
 向けのエントリポイントでもありません。[`compileCss`](../api/compile-css.mdx) を
@@ -416,7 +438,7 @@ export default {
 共通なのは形であって、バイト列ではありません。アダプターを設定すると、zfb は
 `prerender = false` のルートとそれらが import するものだけに絞った **2 回目のバンドル**
 を実行し、その小さいバンドルだけを `_zfb_inner.mjs` としてデプロイします。Worker 向けの
-出力とリクエストのディスパッチは [Worker 上の SSR](./ssr-on-a-worker.mdx) で扱います。
+出力とリクエストのディスパッチは [Worker 上の SSR（アダプターモード）](./ssr-on-a-worker.mdx) で扱います。
 
 <a id="レイヤリングのまとめ"></a>
 
@@ -435,16 +457,16 @@ export default {
 zfb が用意した層です。JavaScript の言語機能がすべて使えることは、Node.js の API が
 使えることを意味しません。どちらも、React や Preact のコンポーネントが動くことを
 意味しません。zudo-react は独自のコンポーネントモデルです。バックエンドの詳細と
-その経緯は [JS runtime](./js-runtime.mdx) にあります。
+その経緯は [JS ランタイム](./js-runtime.mdx) にあります。
 
 ## 次に読むもの
 
 | やりたいこと | 読むページ |
 | --- | --- |
 | 最初のサイトを作る | [最初のサイト](../getting-started/your-first-site.mdx) |
-| CSS の生成を理解する | [zudo-wind](../zudo-wind/index.mdx)、[Sources and candidates](../zudo-wind/sources-and-candidates.mdx) |
-| インタラクティブな UI を加える | [Islands](./islands.mdx)、[Client Scripts](../guides/client-scripts.mdx) |
+| CSS の生成を理解する | [zudo-wind](../zudo-wind/index.mdx)、[ソースと候補](../zudo-wind/sources-and-candidates.mdx) |
+| インタラクティブな UI を加える | [Islands](./islands.mdx)、[クライアントスクリプト](../guides/client-scripts.mdx) |
 | コンポーネントを単体で使う | [zudo-react の概要](../zudo-react/overview.mdx) |
-| リクエストごとにページをレンダリングする | [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx)、[Worker 上の SSR](./ssr-on-a-worker.mdx) |
+| リクエストごとにページをレンダリングする | [SSR と Cloudflare バインディング](../guides/ssr-and-cloudflare-bindings.mdx)、[Worker 上の SSR（アダプターモード）](./ssr-on-a-worker.mdx) |
 | デプロイ形態を選ぶ | [zfb を動かす 3 つの方法](./three-ways-to-run-zfb.mdx) |
-| 内部を調べる | [Build pipeline](./build-pipeline.mdx)、[Build engine](./build-engine.mdx)、[JS runtime](./js-runtime.mdx) |
+| 内部を調べる | [ビルドパイプライン](./build-pipeline.mdx)、[ビルドエンジン](./build-engine.mdx)、[JS ランタイム](./js-runtime.mdx) |

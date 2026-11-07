@@ -15,7 +15,7 @@ HTML へのプリレンダリング、Cloudflare Workers での配信、そし�
 そもそも zfb がプロジェクトに合うかどうかは [zfb を選ぶ](./choosing-zfb.mdx) を、
 全体像 — ビルドマシン、Worker、ブラウザでそれぞれ何が動くか — は
 [フロントエンド開発者のための zfb 全体像](./architecture-overview.mdx) を、
-本番の SSR が実際にどう見えるかは [Worker 上の SSR](./ssr-on-a-worker.mdx) を読んでください。
+本番の SSR が実際にどう見えるかは [Worker 上の SSR（アダプターモード）](./ssr-on-a-worker.mdx) を読んでください。
 
 </Info>
 
@@ -27,7 +27,7 @@ zfb はあなたの TSX ページ・レイアウト・コンポーネントを�
 
 ```ts
 export default {
-  fetch(request: Request, env: Env, ctx: ExecutionContext): Response { ... }
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> { ... }
 };
 ```
 
@@ -108,7 +108,7 @@ import するコードをまとめたバンドルである `dist/_zfb_inner.mjs`
   も、リクエスト時のミドルウェア層もありません。** ルートはビルド時にプリレンダリングされるか、
   リクエストごとに処理されるかのどちらかで、その中間はありません。
 
-メンタルモデルは [Worker 上の SSR](./ssr-on-a-worker.mdx) を、実際のセットアップ —
+メンタルモデルは [Worker 上の SSR（アダプターモード）](./ssr-on-a-worker.mdx) を、実際のセットアップ —
 `wrangler.toml`、`compatibility_flags`、D1 のクエリ — は
 [SSR と Cloudflare バインディング](../guides/ssr-and-cloudflare-bindings.mdx) を
 読んでください。
@@ -119,10 +119,10 @@ import するコードをまとめたバンドルである `dist/_zfb_inner.mjs`
 ループバックポートにバインドした `zfb dev` を走らせて、自分の UI をそのポートに向けます。
 
 これを現実的にしているのは、プロセスが小さいままであることです。`plugins: []` の config は
-Node のプラグインホストを一切起動しません。標準の組み込み V8 ビルドでは、config 自体も
-バイナリに同梱された V8 アイソレートがインプロセスで評価します。スリムビルドはその評価器を
-コンパイル対象から外し、代わりに `node` のサブプロセスで config を評価するため、
-`PATH` 上の `node` を必要とします。
+Node のプラグインホストを一切起動しません。config 自体も
+バイナリに同梱された V8 アイソレートがインプロセスで評価します。これには公開されている
+標準の `zfb` バイナリが必要です。V8 なしでソースからコンパイルしたバイナリは `zfb dev` を
+まったく実行できません（[JS ランタイム](./js-runtime.mdx#現在のデフォルトと実験) を参照）。
 
 あとはホストがファイルを書くことでコンテンツを駆動します。プログラムの他の部分がコンテンツ
 ツリーへ MDX を生成し、`zfb dev` のコンテンツウォッチャーがその変更を拾って、影響を受ける
@@ -165,7 +165,7 @@ Rust はここで実際の仕事をしています。ファイルスキャン、
 - [zfb を選ぶ](./choosing-zfb.mdx) — この形のツールがあなたのプロジェクトに合うかどうか。
 - [フロントエンド開発者のための zfb 全体像](./architecture-overview.mdx) — zfb の構成要素と、
   ビルドマシン・Worker・ブラウザという 3 つの実行場所。
-- [Worker 上の SSR](./ssr-on-a-worker.mdx) — 本番での 2 層のワーカー出力とリクエストの
+- [Worker 上の SSR（アダプターモード）](./ssr-on-a-worker.mdx) — 本番での 2 層のワーカー出力とリクエストの
   ディスパッチ。
 - [エンジンとフレームワーク](./engine-vs-framework.mdx) — zfb が提供する
   公開 APIと、エンジンの外側にあるもの。

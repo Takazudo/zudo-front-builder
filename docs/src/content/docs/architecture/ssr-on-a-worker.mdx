@@ -26,8 +26,9 @@ deployment-support claim.
 
 ## Your page is just a function
 
-Strip away the framework vocabulary and a `prerender = false` zfb page is a plain
-`async function` that returns a `Response`. In the snippet below, `renderToString`,
+Strip away the framework vocabulary and a `prerender = false` zfb page is the
+same kind of default export as a prerendered one: a function (often `async`)
+that receives the page's **props** and returns JSX. In the snippet below,
 `getUser`, `updateProfile`, and `AccountLayout` are placeholder identifiers
 representing app-side code — they are not exports of zfb or
 `@takazudo/zfb-adapter-cloudflare`. The only framework-provided symbol the example
@@ -45,7 +46,8 @@ interface Env {
   SESSION_SECRET: string;
 }
 
-export default async function AccountPage(): Promise<Response> {
+// A static route receives `{}` as props, so this page declares no parameter.
+export default async function AccountPage() {
   const { env, request } = getCloudflareContext<Env>();
 
   if (request.method === "POST") {
@@ -55,19 +57,29 @@ export default async function AccountPage(): Promise<Response> {
   }
 
   const user = await getUser(env, request);
-  return new Response(
-    renderToString(<AccountLayout user={user} />),
-    { headers: { "content-type": "text/html" } },
-  );
+  return <AccountLayout user={user} />;
 }
 ```
 
-The function receives no arguments. Cloudflare's `(request, env, ctx)` tuple is
-available through `getCloudflareContext()` anywhere in the call tree — layouts,
-helpers, lib modules. A `POST` from a `<form method="post">` on the same page
-reaches the same handler; branching on `request.method` is the mutation path.
+The default export is called with page props, never with the `Request` — see
+[The default export receives props, not the Request](../guides/ssr-and-cloudflare-bindings.mdx#the-default-export-receives-props-not-the-request).
+Cloudflare's `(request, env, ctx)` tuple is available through
+`getCloudflareContext()` anywhere in the call tree — layouts, helpers, lib
+modules. A `POST` from a `<form method="post">` on the same page reaches the
+same handler; branching on `request.method` is the mutation path.
 
-Nothing special happens here that does not happen in a hand-written Worker. The
+What happens to the return value is decided by the server page router
+(`createPageRouter` from `@takazudo/zfb-runtime/server`), which awaits the
+default export on every request:
+
+- **JSX** is rendered to HTML with zudo-react's `renderToString` and sent with
+  status 200 and `text/html` (or the module's `contentType` export).
+- **A string** is sent verbatim, which suits non-HTML routes such as feeds.
+- **A `Response`** is returned as-is, so the page owns its status, headers
+  and body — the redirect above, or a JSON API route.
+- **A thrown error** becomes a 500 response describing the failure.
+
+Apart from that rendering step, nothing special happens here that does not happen in a hand-written Worker. The
 rest of this page explains how `getCloudflareContext()` actually works, and what
 the build emits to make it possible.
 
@@ -88,7 +100,9 @@ bundle. It does not contain your application code.
 
 **`dist/_zfb_inner.mjs`** — the request-time application bundle: your
 `prerender = false` routes plus the layouts, components, and lib helpers they
-import, compiled into a single Hono-shaped ESM module. This is what actually
+import, compiled into a single ESM module whose `fetch` handler is zfb's page
+router (a [Hono](https://hono.dev/)-based router: one router, with a thin entry
+adapter for each host that drives it). This is what actually
 renders those pages per request.
 
 It comes from a **second bundle pass**. `zfb build` first bundles every route
@@ -327,8 +341,10 @@ lands at `dist/assets/islands.js` (stable filename, no hash); in production
 `ProductionAssetPipeline` writes it as `dist/assets/islands-<hash>.js` and
 rewrites every reference in the rendered HTML to the hashed URL. The bundle is
 neither part of `dist/_worker.js` nor of `dist/_zfb_inner.mjs` — it is browser-shipped
-JavaScript, not server-executed Worker code. The Worker renders the static HTML
-shell; the browser downloads the islands bundle and its top-level hydration code
+JavaScript, not server-executed Worker code. The island's initial HTML comes
+from the server — written into a static file at build time on a prerendered
+page, or rendered per request by the Worker on a `prerender = false` page. The
+browser then downloads the islands bundle the page references and its top-level hydration code
 walks every `[data-zfb-island]` element on the page. See
 [Islands](./islands.mdx) for the full mechanism.
 
