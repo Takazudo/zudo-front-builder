@@ -158,9 +158,9 @@ The dev server also serves `prerender = false` routes through the **same** embed
 
 The SSR layer is wired via a small `SsrDispatcher` trait in `zfb-server`. The bin crate (`crates/zfb/src/commands/dev.rs`) provides the concrete implementation via `EmbeddedV8SsrAdapter`, which clones a handle to the renderer's `Arc<Mutex<Option<RendererState>>>` and dispatches through `EmbeddedV8Host::dispatch_fetch` on a `spawn_blocking` task. The V8 isolate stays on its dedicated OS thread; the adapter doesn't spawn a second thread.
 
-This is what makes "dev matches prod" a real guarantee: the dev preview's `prerender = false` output is **semantically equivalent** (same status, body, content-type — timestamps and request IDs may differ) to what the Cloudflare adapter produces from the same source. The shared V8 host means there is no second renderer to drift.
+This is what makes "dev matches prod" a real guarantee: the dev preview's `prerender = false` output is **semantically equivalent** (same status, body, content-type — timestamps and request IDs may differ) to what the Cloudflare adapter produces from the same source. Dev and build-time SSG share one V8 host, so there is no second renderer inside zfb to drift; in production, workerd runs the adapter's SSR-only bundle built from the same source.
 
-The server is dev-only. Production emits static files for an edge CDN, plus a `_worker.js` from the Cloudflare adapter (Workers Static Assets, Pages-compatible) for `prerender = false` routes. The same atomic-write guarantee that makes the dev server safe makes any production deploy safe.
+The server is dev-only. Production emits static files for an edge CDN, plus a `_worker.js` from the Cloudflare adapter (verified on Workers Static Assets; Cloudflare Pages advanced mode is unverified) for `prerender = false` routes. The same atomic-write guarantee that makes the dev server safe makes any production deploy safe.
 
 ### Embed-as-library: host-supplied HTTP handlers
 

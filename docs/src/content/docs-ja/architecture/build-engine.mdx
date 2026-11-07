@@ -136,9 +136,9 @@ dev サーバーは `prerender = false` ルートも、ビルド時の SSG を�
 
 SSR レイヤーは `zfb-server` の小さな `SsrDispatcher` トレイトを介して配線されます。bin クレート（`crates/zfb/src/commands/dev.rs`）が `EmbeddedV8SsrAdapter` を介して具体的な実装を提供します。これはレンダラーの `Arc<Mutex<Option<RendererState>>>` へのハンドルをクローンし、`spawn_blocking` タスク上で `EmbeddedV8Host::dispatch_fetch` を通してディスパッチします。V8 アイソレートは専用の OS スレッドにとどまり、アダプターは 2 つ目のスレッドを生成しません。
 
-これが「dev が prod と一致する」を本物の保証にしています。dev プレビューの `prerender = false` 出力は、同じソースから Cloudflare アダプターが生成するものと **意味的に等価**（同じステータス・ボディ・コンテンツタイプ。タイムスタンプとリクエスト ID は異なる場合があります）です。共有された V8 ホストにより、ドリフトする 2 つ目のレンダラーが存在しません。
+これが「dev が prod と一致する」を本物の保証にしています。dev プレビューの `prerender = false` 出力は、同じソースから Cloudflare アダプターが生成するものと **意味的に等価**（同じステータス・ボディ・コンテンツタイプ。タイムスタンプとリクエスト ID は異なる場合があります）です。dev とビルド時の SSG は 1 つの V8 ホストを共有するため、zfb の内部にドリフトする 2 つ目のレンダラーは存在しません。本番では、同じソースからビルドされたアダプター向けの SSR 専用バンドルを workerd が実行します。
 
-サーバーは dev 専用です。本番ではエッジ CDN 向けの静的ファイルに加えて、`prerender = false` ルート向けに Cloudflare アダプター（Workers Static Assets、Pages 互換）からの `_worker.js` を出力します。dev サーバーを安全にしているのと同じアトミック書き込みの保証が、あらゆる本番デプロイを安全にします。
+サーバーは dev 専用です。本番ではエッジ CDN 向けの静的ファイルに加えて、`prerender = false` ルート向けに Cloudflare アダプター（Workers Static Assets で検証済み。Cloudflare Pages のアドバンストモードは未検証）からの `_worker.js` を出力します。dev サーバーを安全にしているのと同じアトミック書き込みの保証が、あらゆる本番デプロイを安全にします。
 
 ### ライブラリとしての組み込み: ホストが供給する HTTP ハンドラ
 

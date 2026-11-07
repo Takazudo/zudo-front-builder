@@ -18,7 +18,7 @@ inside the route's SSR handler.
 
 There are two distinct concepts both called "Worker" in a zfb + Cloudflare project. Blurring them is the most common source of confusion.
 
-**zfb's emitted `dist/_worker.js`** — produced by the Cloudflare adapter for every route that exports `prerender = false`. It runs inside the same TSX pipeline as static pages: shared layouts, components, and MDX virtual modules all work exactly as they do for SSG routes.
+**zfb's emitted `dist/_worker.js`** — produced by the Cloudflare adapter to serve the routes that export `prerender = false`. Those routes go through the same TSX pipeline as static pages: shared layouts, components, and MDX virtual modules all work exactly as they do for SSG routes.
 
 **External standalone Workers** — your own wrangler-built Worker bundles deployed separately (e.g. an auth Worker, a photo-upload Worker, a payment-webhook Worker). zfb has no awareness of them. The seam between zfb and an external Worker is always HTTP/JSON: either a `pages/api/*.tsx` proxy route that `fetch()`'s the external Worker, or a `prerender = false` page that calls `fetch()` directly.
 
@@ -26,7 +26,7 @@ Why this matters: AI agents and human readers often try to import shared layout 
 
 </Info>
 
-For the conceptual mental model of how the emitted worker actually runs, see [SSR on a Worker (adapter mode)](../architecture/ssr-on-a-worker.mdx).
+For the conceptual mental model of how the emitted worker actually runs, see [SSR on a Worker (adapter mode)](../architecture/ssr-on-a-worker.mdx). For where request-time rendering fits next to build-time rendering, islands and the browser, see [How zfb works](../architecture/architecture-overview.mdx).
 
 ## SSG vs SSR in zfb
 
@@ -44,8 +44,9 @@ export const prerender = false;
 ```
 
 `prerender = false` tells `zfb build` to skip this page during static
-rendering and instead include it in the **SSR bundle** that is handed
-to your configured adapter.
+rendering and instead include it in the **SSR bundle** — a second bundle
+pass that contains only the `prerender = false` routes and what they
+import — that is handed to your configured adapter.
 
 If a route exports `prerender = false` but no adapter is configured,
 the build fails fast with an error naming the offending route — zfb
@@ -109,10 +110,12 @@ if you're debugging this symptom in an existing route.
 ## dev-prod parity for `prerender = false`
 
 `zfb dev` runs `prerender = false` routes through the **same render
-code** Cloudflare runs in production. The dev server hosts an embedded
-V8 isolate (the same one that drives build-time SSG), and the dev
-router dispatches a `prerender = false` URL into that isolate at
-request time — not at build time, not from a static snapshot.
+code** Cloudflare runs in production — your page modules and the code
+they import — although in zfb's embedded V8 host rather than workerd.
+The dev server hosts an embedded V8 isolate (the same one that drives
+build-time SSG), and the dev router dispatches a `prerender = false`
+URL into that isolate at request time — not at build time, not from a
+static snapshot.
 
 The parity guarantee is **semantic, not byte-for-byte**: status code,
 response body, and `Content-Type` match between dev and the deployed
@@ -196,9 +199,11 @@ pnpm add -D @takazudo/zfb-adapter-cloudflare
   bundle (e.g. `index_bg-a1b2c3d4.wasm` — this is the bundler's
   `[name]-[hash]` asset-name convention, not a zfb-specific scheme),
   plus `.assetsignore`. The ignore file lists `_worker.js`,
-  `_zfb_inner.mjs`, and every emitted Wasm basename, so the asset server
-  never serves server code or compiled modules as public files (a request
-  for `/_worker.js` would otherwise download it as plain text).
+  `_zfb_inner.mjs`, and every emitted Wasm basename, so the asset upload
+  skips them and they are deployed as Worker modules rather than public
+  static files (otherwise a request for `/_worker.js` would download it as
+  plain text). This is deployment packaging, not access control: keep
+  secrets in Worker bindings, not in page modules.
 
 You deploy this `dist/` as a **Cloudflare Worker with Static Assets**
 via `wrangler deploy`, driven by a `wrangler.toml` at your project root
