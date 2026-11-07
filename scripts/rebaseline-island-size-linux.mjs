@@ -4533,9 +4533,7 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
       "` to `" +
       record.runner.afterSha256 +
       "` because the runner now records that identity. " +
-      (cargo
-        ? "`Cargo.lock` moved under " + cargoTransitionMarkdown(cargo) + " "
-        : "`Cargo.lock` is unchanged. ") +
+      (cargo ? cargoTransitionMarkdown(cargo) + " " : "`Cargo.lock` is unchanged. ") +
       "The producer version, fixtures, `measure.mjs`, Hono/Node/zlib, the dependency fingerprint " +
       "and the normalizer are unchanged, and every raw and `gzipNormalized` total is unchanged; " +
       "`toolchain.pnpmLockSha256` follows the artifact as baseline provenance only. These totals " +

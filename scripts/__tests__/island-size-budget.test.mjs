@@ -27,10 +27,12 @@ import {
   BUNDLER_BACKEND_MOVEMENT,
   BUNDLER_BACKEND_REASON,
   assertAllowedMovement,
+  cargoTransitionMarkdown,
   contractDiffKeys,
   measuredIdentity,
   measuredTotals,
   proveCargoProducerLock,
+  readmeSection,
   rebaselineContract,
 } from "../rebaseline-island-size-linux.mjs";
 import { budgetAllowsRetention } from "../island-size-evidence.mjs";
@@ -1023,6 +1025,11 @@ describe("island shipped-size budget", () => {
       },
     });
     expect(contract.baselineEvidence).not.toHaveProperty("cargoTransition");
+    expect(
+      readmeSection(contract, [], before.toolchain.packageVersion, "bundler-backend"),
+    ).toContain(
+      "because the runner now records that identity. `Cargo.lock` is unchanged. The producer version",
+    );
     // The written contract admits the esbuild-free run it was measured from.
     state.contract = contract;
     expect(validate(state)).toEqual({ errors: [], passed: true });
@@ -1122,6 +1129,20 @@ describe("island shipped-size budget", () => {
       added: ["zfb-bundler@0.0.0", "zfb-compiler-worker@0.0.0"],
       review: { id: "esbuild-removal-4635" },
     });
+    const section = readmeSection(
+      contract,
+      [],
+      contract.toolchain.packageVersion,
+      "bundler-backend",
+    );
+    expect(section).toContain(
+      "because the runner now records that identity. `Cargo.lock` moved from `" +
+        lock.expectedOldSha +
+        "` to `" +
+        lock.expectedNewSha +
+        "` under reviewed non-additive transition `esbuild-removal-4635` (manifest SHA-256 `",
+    );
+    expect(section).not.toContain("moved under");
     expect(run(cargoEvidence({ reviewedTransitionText: undefined }))).toThrow(
       /only through --reviewed-cargo-transition/,
     );
@@ -3788,6 +3809,13 @@ describe("live contracts preserve released evidence and authentic predecessors",
         ]),
       );
     expect(gzipShape(live)).toEqual(gzipShape(predecessor));
+    const readme = readFileSync(join(sizeDir, "README.md"), "utf8");
+    expect(readme).toContain(
+      "because the runner now records that identity. " +
+        cargoTransitionMarkdown(live.baselineEvidence.cargoTransition) +
+        " The producer version",
+    );
+    expect(readme).not.toContain("`Cargo.lock` moved under");
   });
 
   // Verbatim bytes of decision.json at 54054042 (main), the zudo-doc 9.1.1
