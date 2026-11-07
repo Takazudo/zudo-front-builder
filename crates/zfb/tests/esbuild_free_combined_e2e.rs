@@ -327,7 +327,10 @@ fn line_of(source: &str, needle: &str) -> usize {
 fn contains_location(text: &str, relative: &str, line: usize) -> bool {
     let native = relative.replace('/', std::path::MAIN_SEPARATOR_STR);
     [relative.to_owned(), native].iter().any(|path| {
-        text.contains(&format!("{path}:{line}:")) || text.contains(&format!("{path}:{line})"))
+        text.contains(&format!("{path}:{line}:"))
+            || text.contains(&format!("{path}:{line})"))
+            // The owned island scanner's parse diagnostic spells the location this way.
+            || text.contains(&format!("{path}: line {line}, column "))
     })
 }
 
@@ -779,7 +782,7 @@ async fn dev_serves_every_surface_and_recovers_from_a_syntax_error() {
     }
     wait_for_body(
         &mut session,
-        &format!("{base}/items/alpha/"),
+        &format!("{base}/items/alpha"),
         &format!("{SSR_MARKER}alpha"),
         "request-time SSR",
     )

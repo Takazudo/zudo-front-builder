@@ -9,8 +9,10 @@ const configMarker = `ZFB_TS_CONFIG:${mode satisfies ConfigMode}`;
 
 export default defineConfig({
   wind: false,
-  define: {
-    __COMBINED_CONFIG_MARKER__: JSON.stringify(configMarker),
+  bundle: {
+    define: {
+      __COMBINED_CONFIG_MARKER__: JSON.stringify(configMarker),
+    },
   },
   plugins: [{ name: "./plugins/stamp-plugin.ts" }],
 });

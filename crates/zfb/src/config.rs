@@ -1377,7 +1377,7 @@ pub struct BundleConfig {
     #[serde(default)]
     pub loaders: Option<BTreeMap<String, String>>,
 
-    /// Operator-authored esbuild `--define` substitutions.
+    /// Operator-authored bundler `define` substitutions.
     ///
     /// Values are raw JavaScript expressions. A string value therefore needs
     /// to be pre-quoted JSON (for example `"\"production\""`). Reserved

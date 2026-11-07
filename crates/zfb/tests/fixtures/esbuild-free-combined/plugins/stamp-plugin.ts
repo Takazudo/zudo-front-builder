@@ -9,7 +9,7 @@ interface StampContext {
 
 interface PostBuildContext {
   outDir: string;
-  routes?: { routes: ReadonlyArray<{ path: string }> };
+  routes?: { routes: ReadonlyArray<{ output: string }> };
 }
 
 const STAMP = "ZFB_TS_PLUGIN_STAMP" as const;
@@ -23,7 +23,7 @@ export default {
     );
   },
   postBuild({ outDir, routes }: PostBuildContext): void {
-    const paths = (routes?.routes ?? []).map((route) => route.path).sort();
+    const paths = (routes?.routes ?? []).map((route) => route.output).sort();
     fs.writeFileSync(
       path.join(outDir, "ts-plugin-postbuild.json"),
       `${JSON.stringify({ stamp: STAMP, paths })}\n`,
