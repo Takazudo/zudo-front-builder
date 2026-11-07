@@ -1,33 +1,33 @@
 ---
 title: Three ways to run zfb
-description: One Request/Response application, three run shapes — prerendered to static HTML at build time, served on Cloudflare Workers at request time, or run as a local content server inside another program.
+description: One Request/Response contract, three deployment shapes — prerendered to static HTML at build time, served on Cloudflare Workers at request time, or run as a local content server inside another program.
 sidebar_position: 4
 category: Concepts
 ---
 
 <Info title="What this page covers">
 
-zfb compiles your pages into one application with a single contract — a
-Request/Response handler — and then runs that same application three ways:
+zfb compiles your pages into an application with a single contract — a
+Request/Response handler — and offers three deployment shapes for it:
 prerendered to static HTML, served on Cloudflare Workers, or spawned as a local
-content server inside another program.
+content server inside another program. This page helps you choose among them.
 
 For whether zfb fits your project at all, read [Choosing zfb](./choosing-zfb.mdx).
-For the build-time pipeline in detail, read
-[Architecture overview](./architecture-overview.mdx). For what production SSR
-actually looks like, read [SSR on a Worker](./ssr-on-a-worker.mdx).
+For the overall model — what runs on the build machine, in a Worker and in the
+browser — read [How zfb works](./architecture-overview.mdx). For what production
+SSR actually looks like, read [SSR on a Worker](./ssr-on-a-worker.mdx).
 
 </Info>
 
 ## One application contract
 
 The generated application exposes a Request/Response handler. When you run a
-build, the bundler (Rolldown by default) compiles your TSX pages, layouts, and components into a single
-worker bundle shaped as a Cloudflare Workers module:
+build, zfb compiles your TSX pages, layouts, and components into a bundle
+shaped as a Cloudflare Workers module:
 
 ```ts
 export default {
-  fetch(request: Request, env: Env, ctx: ExecutionContext): Response { ... }
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> { ... }
 };
 ```
 
@@ -36,9 +36,11 @@ functions; the bundle around them is what carries the handler. That handler is
 the whole contract, and it is what the three run shapes have in common.
 
 Fixing the contract is what makes those shapes one product rather than three.
-The same bundle is driven by synthetic requests at build time and by real
-requests at request time — nothing about the application changes when you move
-between them.
+Bundles of this shape are driven by synthetic requests at build time and by
+real requests at request time, and your page code is written the same way for
+both. The bytes are not identical: for a Worker deployment, zfb runs a second
+bundle pass that keeps only the `prerender = false` routes and what they
+import.
 
 ```text
                      one application contract
@@ -52,6 +54,15 @@ between them.
   static HTML in dist/     SSR responses for        live pages on a
                            prerender = false        loopback port
 ```
+
+<Note title="Deployment shapes are not execution locations">
+
+These three shapes describe how you *deploy* zfb. They are different from the
+three *execution locations* in [How zfb works](./architecture-overview.mdx) —
+the build machine, the Worker and the browser. Every shape still runs browser
+code in the browser, for example.
+
+</Note>
 
 ## Shape 1: static build
 
@@ -76,15 +87,16 @@ export const prerender = false;
 ```
 
 With `@takazudo/zfb-adapter-cloudflare` configured, `zfb build` emits two files:
-`dist/_worker.js`, a small generated stub, and `dist/_zfb_inner.mjs`, the real
-application bundle. The stub opens an `AsyncLocalStorage` scope holding
+`dist/_worker.js`, a small generated stub, and `dist/_zfb_inner.mjs`, the bundle
+of your `prerender = false` routes and the code they import. Prerendered pages
+stay static files. The stub opens an `AsyncLocalStorage` scope holding
 `(env, ctx, request)` and, for the requests it actually receives, dispatches
 each one either to the static asset server via `env.ASSETS` or to the inner
 bundle. Inside a page, `getCloudflareContext()` reads that scope, so Cloudflare
 bindings reach any layout or helper without prop-drilling.
 
-The engine that executes the bundle changes — workerd instead of embedded V8 —
-and the application does not.
+The host that executes the code changes — workerd instead of zfb's embedded
+V8 — and the way you write a page does not.
 
 The limits are worth stating plainly:
 
@@ -109,10 +121,10 @@ binary as a child process, running `zfb dev` bound to a loopback port, and
 points its own UI at that port.
 
 What makes this practical is that the process stays small. A config with
-`plugins: []` spawns no Node plugin host, and on the standard embedded-V8 build
-the config itself is evaluated in-process by the V8 isolate that ships in the
-binary. Slim builds compile that evaluator out and evaluate the config through a
-`node` subprocess instead, so they do need `node` on `PATH`.
+`plugins: []` spawns no Node plugin host, and the config itself is evaluated in-process by the V8 isolate that ships in the
+binary. This needs the standard, published `zfb` binary: a binary compiled from
+source without V8 cannot run `zfb dev` at all (see
+[JS runtime](./js-runtime.mdx#current-defaults-and-experiments)).
 
 From there the host drives content by writing files. Other parts of the program
 generate MDX into the content tree, and `zfb dev`'s content watcher picks the
@@ -154,8 +166,8 @@ thing instead of three separate products that happen to share a name.
 
 - [Choosing zfb](./choosing-zfb.mdx) — whether this shape of tool fits your
   project.
-- [Architecture overview](./architecture-overview.mdx) — the build-time vs
-  browser split and the full build-time pipeline.
+- [How zfb works](./architecture-overview.mdx) — the parts of zfb and the
+  three execution locations: build machine, Worker and browser.
 - [SSR on a Worker](./ssr-on-a-worker.mdx) — the two-layer worker output and
   request dispatch in production.
 - [Engine vs Framework](./engine-vs-framework.mdx) — the documented surfaces zfb

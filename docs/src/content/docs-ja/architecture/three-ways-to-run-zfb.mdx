@@ -1,32 +1,33 @@
 ---
 title: zfb を動かす 3 つの方法
-description: 1 つの Request/Response アプリケーションと 3 つの実行形態 — ビルド時に静的 HTML へプリレンダリングする、リクエスト時に Cloudflare Workers で配信する、別のプログラムの内側でローカルコンテンツサーバーとして動かす。
+description: 1 つの Request/Response コントラクトと 3 つのデプロイ形態 — ビルド時に静的 HTML へプリレンダリングする、リクエスト時に Cloudflare Workers で配信する、別のプログラムの内側でローカルコンテンツサーバーとして動かす。
 sidebar_position: 4
 category: Concepts
 ---
 
 <Info title="このページで扱う内容">
 
-zfb はあなたのページを、単一のコントラクト — Request/Response ハンドラ — を持つ 1 つの
-アプリケーションにコンパイルし、その同じアプリケーションを 3 つの方法で動かします。静的
+zfb はあなたのページを、単一のコントラクト — Request/Response ハンドラ — を持つ
+アプリケーションにコンパイルし、それを 3 つのデプロイ形態で動かせるようにします。静的
 HTML へのプリレンダリング、Cloudflare Workers での配信、そして別のプログラムの内側での
-ローカルコンテンツサーバーとしての起動です。
+ローカルコンテンツサーバーとしての起動です。このページはその選び方を扱います。
 
 そもそも zfb がプロジェクトに合うかどうかは [zfb を選ぶ](./choosing-zfb.mdx) を、
-ビルド時のパイプラインの詳細は [アーキテクチャ概要](./architecture-overview.mdx) を、
-本番の SSR が実際にどう見えるかは [Worker 上の SSR](./ssr-on-a-worker.mdx) を読んでください。
+全体像 — ビルドマシン、Worker、ブラウザでそれぞれ何が動くか — は
+[フロントエンド開発者のための zfb 全体像](./architecture-overview.mdx) を、
+本番の SSR が実際にどう見えるかは [Worker 上の SSR（アダプターモード）](./ssr-on-a-worker.mdx) を読んでください。
 
 </Info>
 
 ## 1 つのアプリケーションコントラクト
 
 生成されるアプリケーションは Request/Response ハンドラを公開します。ビルドを実行すると、
-バンドラー（デフォルトは Rolldown）はあなたの TSX ページ・レイアウト・コンポーネントを、Cloudflare Workers モジュールの
-形をした単一のワーカーバンドルにコンパイルします。
+zfb はあなたの TSX ページ・レイアウト・コンポーネントを、Cloudflare Workers モジュールの
+形をしたバンドルにコンパイルします。
 
 ```ts
 export default {
-  fetch(request: Request, env: Env, ctx: ExecutionContext): Response { ... }
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> { ... }
 };
 ```
 
@@ -35,8 +36,10 @@ export default {
 共通して持つものです。
 
 このコントラクトを固定していることが、3 つの形を 3 つの製品ではなく 1 つの製品にしています。
-同じバンドルが、ビルド時には合成リクエストで、リクエスト時には実際のリクエストで駆動されます。
-両者を行き来してもアプリケーション側は何も変わりません。
+この形のバンドルが、ビルド時には合成リクエストで、リクエスト時には実際のリクエストで
+駆動され、ページのコードはどちらの場合も同じ書き方です。ただしバイト列まで同じでは
+ありません。Worker へのデプロイでは、zfb は `prerender = false` のルートとそれらが
+import するものだけを残す 2 回目のバンドルを実行します。
 
 ```text
                  1 つのアプリケーションコントラクト
@@ -50,6 +53,15 @@ export default {
    dist/ の静的 HTML      prerender = false の    ループバックポート上の
                             SSR レスポンス            ライブページ
 ```
+
+<Note title="デプロイ形態は実行場所とは別のもの">
+
+このページの 3 つの形は、zfb を *デプロイ* する方法を表します。
+[フロントエンド開発者のための zfb 全体像](./architecture-overview.mdx) で説明している
+3 つの *実行場所* — ビルドマシン、Worker、ブラウザ — とは別の話です。たとえば、どの形でも
+ブラウザ用のコードはブラウザで動きます。
+
+</Note>
 
 ## 実行形態 1 静的ビルド
 
@@ -74,15 +86,16 @@ export const prerender = false;
 ```
 
 `@takazudo/zfb-adapter-cloudflare` を設定すると、`zfb build` は 2 つのファイルを出力します。
-小さな生成スタブである `dist/_worker.js` と、実体のアプリケーションバンドルである
-`dist/_zfb_inner.mjs` です。スタブは `(env, ctx, request)` を保持する `AsyncLocalStorage` の
+小さな生成スタブである `dist/_worker.js` と、`prerender = false` のルートとそれらが
+import するコードをまとめたバンドルである `dist/_zfb_inner.mjs` です。プリレンダリング
+されたページは静的ファイルのままです。スタブは `(env, ctx, request)` を保持する `AsyncLocalStorage` の
 スコープを開き、実際に受け取ったリクエストを `env.ASSETS` 経由の静的アセットサーバーか、
 内側のバンドルのどちらかにディスパッチします。ページの内側では `getCloudflareContext()` が
 そのスコープを読むので、Cloudflare のバインディングは prop-drilling なしに任意のレイアウトや
 ヘルパーへ届きます。
 
-バンドルを実行するエンジンは変わります — 組み込み V8 ではなく workerd です — が、
-アプリケーションは変わりません。
+コードを実行するホストは変わります — zfb の組み込み V8 ではなく workerd です — が、
+ページの書き方は変わりません。
 
 制限ははっきり書いておく価値があります。
 
@@ -95,7 +108,7 @@ export const prerender = false;
   も、リクエスト時のミドルウェア層もありません。** ルートはビルド時にプリレンダリングされるか、
   リクエストごとに処理されるかのどちらかで、その中間はありません。
 
-メンタルモデルは [Worker 上の SSR](./ssr-on-a-worker.mdx) を、実際のセットアップ —
+メンタルモデルは [Worker 上の SSR（アダプターモード）](./ssr-on-a-worker.mdx) を、実際のセットアップ —
 `wrangler.toml`、`compatibility_flags`、D1 のクエリ — は
 [SSR と Cloudflare バインディング](../guides/ssr-and-cloudflare-bindings.mdx) を
 読んでください。
@@ -106,10 +119,10 @@ export const prerender = false;
 ループバックポートにバインドした `zfb dev` を走らせて、自分の UI をそのポートに向けます。
 
 これを現実的にしているのは、プロセスが小さいままであることです。`plugins: []` の config は
-Node のプラグインホストを一切起動しません。標準の組み込み V8 ビルドでは、config 自体も
-バイナリに同梱された V8 アイソレートがインプロセスで評価します。スリムビルドはその評価器を
-コンパイル対象から外し、代わりに `node` のサブプロセスで config を評価するため、
-`PATH` 上の `node` を必要とします。
+Node のプラグインホストを一切起動しません。config 自体も
+バイナリに同梱された V8 アイソレートがインプロセスで評価します。これには公開されている
+標準の `zfb` バイナリが必要です。V8 なしでソースからコンパイルしたバイナリは `zfb dev` を
+まったく実行できません（[JS ランタイム](./js-runtime.mdx#現在のデフォルトと実験) を参照）。
 
 あとはホストがファイルを書くことでコンテンツを駆動します。プログラムの他の部分がコンテンツ
 ツリーへ MDX を生成し、`zfb dev` のコンテンツウォッチャーがその変更を拾って、影響を受ける
@@ -150,9 +163,9 @@ Rust はここで実際の仕事をしています。ファイルスキャン、
 ## 次に読むもの
 
 - [zfb を選ぶ](./choosing-zfb.mdx) — この形のツールがあなたのプロジェクトに合うかどうか。
-- [アーキテクチャ概要](./architecture-overview.mdx) — ビルド時とブラウザの分離、そして
-  ビルド時パイプラインの全体。
-- [Worker 上の SSR](./ssr-on-a-worker.mdx) — 本番での 2 層のワーカー出力とリクエストの
+- [フロントエンド開発者のための zfb 全体像](./architecture-overview.mdx) — zfb の構成要素と、
+  ビルドマシン・Worker・ブラウザという 3 つの実行場所。
+- [Worker 上の SSR（アダプターモード）](./ssr-on-a-worker.mdx) — 本番での 2 層のワーカー出力とリクエストの
   ディスパッチ。
 - [エンジンとフレームワーク](./engine-vs-framework.mdx) — zfb が提供する
   公開 APIと、エンジンの外側にあるもの。

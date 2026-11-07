@@ -4,13 +4,28 @@ description: zfb がサーバーサイドの JavaScript 実行を組み込み V8
 sidebar_position: 31
 ---
 
-zfb は組み込み V8 アイソレートを介してサーバーサイドで TSX をレンダリングします。これは `@takazudo/zfb-runtime` からビルドされた Hono スタイルのワーカーバンドルを実行する、Rust がホストする V8 エンジンです。
+このページは、zfb の現在のバックエンド — バンドラーと JSX 変換、V8 ホスト — と、そこに至った経緯についての実装詳細のリファレンスです。読者向けの全体像は [フロントエンド開発者のための zfb 全体像](./architecture-overview.mdx) から読み始めてください。
+
+**現在:** ビルドマシンでは、`zfb build` と `zfb dev` がサーバー側の JavaScript を **V8** で実行します。V8 は zfb 自身の Rust のホスト層（`zfb-js-host` クレートの「direct V8 ホスト」）を通じて `zfb` バイナリに組み込まれています。エンジンは V8 で、direct ホストは zfb と V8 の間の層にすぎません。本番では、リクエスト時のページは Cloudflare の **workerd** で、ブラウザ用のコードは訪問者の **ブラウザのエンジン** で動きます。どこでもレンダリングを行うのは zfb 独自のコンポーネントモデルである zudo-react です。詳細は [今日動いているもの](#今日動いているもの) と [現在のデフォルトと実験](#現在のデフォルトと実験) にあります。その間にある評価の経緯を述べたセクションは **歴史** です。
 
 ## ランタイムの選択に至った経緯
 
-V8 を組み込むという決定は、利用可能な JS ホストの計測的な評価を経て到達しました。初期のイテレーションはインプロセスの `deno_core` アイソレートを使い（`deno_core`・`ssr_rs`・`rquickjs` の 3 候補をスパイクした上で承認）、その後 Cloudflare Workers の本番ターゲットとランタイムの一致を得るために、Node がホストする miniflare ワーカーへ移行しました。Tauri での配布が最終的にその選択を覆しました。zfb をデスクトップアプリとして出荷するには、エンドユーザーのマシンに Node.js 依存のない単一バイナリが必要であり、miniflare は Node のパッケージだからです。バイナリサイズと初回ビルド時間のコストを受け入れた上で、`deno_core` を介した V8 組み込みが再採用されました。Node なしの単一バイナリ制約を満たす唯一の経路だからです。その後 zfb は `deno_core` を、`v8` クレートを直接扱う独自のホストに置き換えました。[#4390](https://github.com/Takazudo/zudo-front-builder/issues/4390) でこれがデフォルトになり、[#4395](https://github.com/Takazudo/zudo-front-builder/issues/4395) で `deno_core` のホストが削除されました。V8 は引き続き組み込まれており、変わったのは zfb と V8 の間の層だけです。
+<Note title="歴史的な経緯">
 
-この間ずっと安定した本番のコントラクトは _バンドルの形_（`export default { fetch }`）であり、ビルド時のエンジンではありませんでした。zfb がビルド時にレンダリングするのと同じバンドルが、ランタイム SSR 向けに Cloudflare Workers へ変更なしでデプロイされます。
+このセクションと [そもそもなぜ JS エンジンが必要なのか](#そもそもなぜ-js-エンジンが必要なのか-—-そしてなぜ特に-v8-なのか) は、エンジンがどう選ばれたかの記録です。その評価の一部は zudo-react より前のもので、Preact のコンポーネントをテストケースにしていました。現在のレンダリングモデルを説明するものではありません。
+
+</Note>
+
+V8 を組み込むという決定は、利用可能な JS ホストの計測的な評価を経て到達しました。順番は次のとおりです。
+
+1. 初期のイテレーションでは、`deno_core`・`ssr_rs`・`rquickjs` の 3 候補をスパイクした上で、`deno_core` を介して V8 をインプロセスに組み込みました。
+2. その後 zfb は、Cloudflare Workers の本番ターゲットとランタイムを一致させるために、Node がホストする miniflare ワーカーへ移行しました。
+3. Tauri での配布がそれを覆しました。zfb をデスクトップアプリとして出荷するには、エンドユーザーのマシンに Node.js 依存のない単一バイナリが必要で、miniflare は Node のパッケージだからです。そこで、バイナリサイズと初回ビルド時間のコストを受け入れた上で、`deno_core` を介した V8 の組み込みを再び採用しました。Node なしの単一バイナリという制約を満たす唯一の経路だったからです。v4.6.0 までのリリース済みバイナリはこのホストを使います。
+4. その後 zfb は `deno_core` を、`v8` クレートを直接扱う独自のホストに置き換えました。[#4390](https://github.com/Takazudo/zudo-front-builder/issues/4390) でこれがデフォルトになり、[#4395](https://github.com/Takazudo/zudo-front-builder/issues/4395) で `deno_core` のホストが削除されました。
+
+ステップ 3 以降、組み込みのエンジンはずっと V8 です。ステップ 4 で変わったのは zfb と V8 の間の層だけです。
+
+この間ずっと安定した本番のコントラクトは _バンドルの形_（`export default { fetch }`）であり、ビルド時のエンジンではありませんでした。ビルド時のバンドルと、ランタイム SSR 向けに Cloudflare Workers へデプロイされるバンドルはこの形を共有しますが、バイト列は同じではありません。アダプターを設定すると、zfb は `prerender = false` のルートに絞った 2 回目のバンドルを実行し、デプロイされるのはそちらです（[ホストをまたぐ `fetch` コントラクト](#ホストをまたぐ-fetch-コントラクト) を参照）。
 
 ## そもそもなぜ JS エンジンが必要なのか — そしてなぜ特に V8 なのか
 
@@ -22,32 +37,61 @@ SWC、oxc、esbuild はいずれも JSX を `h(...)` 呼び出しにコンパイ
 
 ### レイヤー 2 — コンパイルされた JS はやはり実行が必要
 
-JSX が `h(...)` になったら、何かがそのコードを *評価* しなければなりません。呼び出しツリーをたどって VDOM を生成し、次に `renderToString` を呼んで HTML を生成します。評価はどこかに JS エンジンを必要としますが、必ずしも V8 である必要はありません。軽量な代替が 2 つ存在します。
+JSX が `h(...)` になったら、何かがそのコードを *評価* し、結果を HTML にしなければなりません（この評価の当時は Preact の VDOM を作って `renderToString` を呼ぶことを意味していました。現在の zudo-react は各コンポーネントを 1 回だけ実行してその記述を直接レンダリングし、ツリーの再調整は行いません。[zudo-react の概要](../zudo-react/overview.mdx) を参照）。評価はどこかに JS エンジンを必要としますが、必ずしも V8 である必要はありません。軽量な代替が 2 つ存在します。
 
 - **Boa**（純粋な Rust、約 30 秒の増分ビルド） — C++ ツールチェーン不要で完全に Rust で書かれた JS エンジン。ECMA 仕様を追っていますが、新しめの機能のカバレッジでは V8 に後れを取ります。
 - **rquickjs**（QuickJS への Rust バインディング、バイナリへの寄与は約 210 KB） — コンパイルが速く、フットプリントが最小です。
 
-当初の JS ホストの評価では、どちらもシンプルで自己完結した Preact コンポーネントの SSR には十分機能しました。より広い問題は「どんな frontend 開発者の TSX でも、彼らが import したあらゆる npm パッケージとともに」です。ユーザーがカレンダーライブラリ、i18n ヘルパー、あるいは Proxy ベースの状態ストアを使うコンポーネントを追加すると、Boa の ECMA の穴と QuickJS の限られた ES2022+ の表面は、静かな誤出力や手痛いパニックを生むおそれがありました。これらは診断が極めて難しい失敗モードです。任意のエコシステムコードに対しては V8 が安全な選択でした。Node.js と Chromium が動作対象とするのと同じエンジンだからです。
+当初の JS ホストの評価では、テストケースとして使ったシンプルで自己完結した Preact コンポーネントの SSR には、どちらも十分機能しました。より広い問題は「どんな frontend 開発者の TSX でも、彼らが import したあらゆる npm パッケージとともに」です。ユーザーがカレンダーライブラリ、i18n ヘルパー、あるいは Proxy ベースの状態ストアを使うコンポーネントを追加すると、Boa の ECMA の穴と QuickJS の限られた ES2022+ の表面は、静かな誤出力や手痛いパニックを生むおそれがありました。これらは診断が極めて難しい失敗モードです。任意のエコシステムコードに対しては V8 が安全な選択でした。Node.js と Chromium が動作対象とするのと同じエンジンだからです。
 
 両方の軽量エンジンの経路についてはリサーチが進行中です。[#344 — 本番ランタイムでのフィーチャーゲート付き V8](https://github.com/Takazudo/zudo-front-builder/issues/344) と [#345 — SSG 専用 JS エンジンとしての Boa / QuickJS](https://github.com/Takazudo/zudo-front-builder/issues/345) を参照してください。
 
 ### レイヤー 3 — Rust のテンプレーティングは JS を丸ごとコンパイルで消す
 
-Leptos と Yew は JSX に似た構文（RSX）を受け取り、それをビルド時に Rust にコンパイルします。ランタイムにもビルド時にも JS エンジンは不要です。落とし穴は、彼らが借りたのは構文であって言語ではないことです。任意の npm パッケージのための `import` はなく、ランタイム値を捕捉する JS クロージャもなく、GitHub からそのまま使える Preact コンポーネントもありません。Leptos のプロジェクトは Rust のプロジェクトです。Rust を書き、Rust のクレートに依存します。これはコアな対象読者への約束を破ります。frontend 開発者の既存の TSX と npm の知識が転用できなくなるからです。
+Leptos と Yew は JSX に似た構文（RSX）を受け取り、それをビルド時に Rust にコンパイルします。ランタイムにもビルド時にも JS エンジンは不要です。落とし穴は、彼らが借りたのは構文であって言語ではないことです。任意の npm パッケージのための `import` はなく、ランタイム値を捕捉する JS クロージャもありません。Leptos のプロジェクトは Rust のプロジェクトです。Rust を書き、Rust のクレートに依存します。これはコアな対象読者への約束を破ります。frontend 開発者の既存の TSX と npm の知識が転用できなくなるからです。
 
 ### 対象読者のトレードオフ
 
-zfb の対象読者は、すでに TSX を知っている frontend 開発者です。V8 はその読者への入場料であり、「あなたの既存のコンポーネントがそのまま動く」をベストエフォートの近似ではなく真の言明にしているものです。この読者優先の枠組みについては [design philosophy](../architecture/design-philosophy.mdx) のセクションで詳しく説明します。
+zfb の対象読者は、すでに TSX と npm を知っている frontend 開発者です。V8 はその読者への入場料です。コンパイルされたページと、そこから import される npm のコードに、標準どおりの完全な JavaScript のセマンティクスを与えます。そのため、言語レベルの振る舞いが Node.js やブラウザで同じコードを動かしたときと黙って食い違うことがありません。これは *言語* についての話であって、API やコンポーネントライブラリについての話ではありません。V8 があるからといって Node.js の API が使えるわけではなく（[4 つの責務を分けて考える](#4-つの責務を分けて考える) を参照）、React や Preact のコンポーネントが動くわけでもありません。zfb がレンダリングするのは zudo-react で、これは独自のコンポーネントモデルです。この読者優先の枠組みについては [設計哲学](../architecture/design-philosophy.mdx) のセクションで詳しく説明します。
 
 純粋な Rust の SSG（Boa/QuickJS）と、ランタイムでの V8 なし（ビルド時のみの V8）は、現実的な将来の方向性です — [#344](https://github.com/Takazudo/zudo-front-builder/issues/344) と [#345](https://github.com/Takazudo/zudo-front-builder/issues/345) を参照してください — が、これらはデフォルトの上の最適化であって、デフォルトそのものではありません。
 
 ## 今日動いているもの
 
-`zfb build` / `zfb dev` では、Rust のオーケストレーターが `zfb-js-host` クレートの direct V8 ホストを介してインプロセスの V8 アイソレートを生成します。それは `@takazudo/zfb-runtime` が esbuild でビルドする workerd 形のバンドルを読み込みます。ルートごとの props は JSON として渡され、アイソレートは合成された `Request` でバンドルの `fetch` エントリを呼び、`Response`（HTML）を集めて返します。オーケストレーターは素の HTML を `dist/` に書き込みます。サブプロセスは生成されず、Node.js も不要です。
+`zfb build` / `zfb dev` では、Rust のオーケストレーターが `zfb-js-host` クレートの direct V8 ホストを介してインプロセスの V8 アイソレートを生成します。それは、バンドラーが `@takazudo/zfb-runtime/server` の `createPageRouter` を中心にビルドする workerd 形のバンドルを読み込みます（デフォルトは Rolldown。[現在のデフォルトと実験](#現在のデフォルトと実験) を参照）。ルートごとの props は JSON として渡され、アイソレートは合成された `Request` でバンドルの `fetch` エントリを呼び、`Response`（HTML）を集めて返します。オーケストレーターは素の HTML を `dist/` に書き込みます。サブプロセスは生成されず、Node.js も不要です。
 
 V8 自体はプロセスごとに 1 回、CLI が Tokio やホストのスレッドを起動する前にメインスレッドで初期化されます（`zfb-js-host::process::initialize`）。1 つのスレッドで同時に生きていられるホストは 1 つだけです。
 
-同じバンドル（`export default { fetch }`）は、`prerender = false` ルートのランタイム SSR 向けに Cloudflare Workers へ変更なしでデプロイされます。workerd がリクエスト時にそれを実行します。本番の経路は、どのビルド時エンジンがバンドルを生成したかを関知しません。
+`prerender = false` ルートのランタイム SSR 向けには、同じ `export default { fetch }` の形のバンドルが Cloudflare Workers にデプロイされ、workerd がリクエスト時にそれを実行します。それはアダプター向けに絞り込まれた 2 回目のバンドルであり、ビルド時に組み込みホストがレンダリングしたバイト列そのものではありません。本番の経路は、どのビルド時エンジンがバンドルを生成したかを関知しません。
+
+## 4 つの責務を分けて考える
+
+「zfb が TSX を動かす」という言い方には、分けて考えるべき 4 つの責務が含まれています。
+
+| 責務 | それは何か | zfb のどこで行われるか |
+| --- | --- | --- |
+| **変換** | TSX/JSX/MDX をパースし、JavaScript モジュールにバンドルすること。純粋な構文操作で、エンジンは関与しません。 | `zfb` CLI に内蔵されたバンドラー（デフォルトは Rolldown、`ZFB_BUNDLER=esbuild` なら組み込みの esbuild）が、zudo-react の自動 JSX ランタイム（`@takazudo/zfb/zudo-react/jsx-runtime`）を使って行います。一部のソース解析には SWC を使います。 |
+| **JavaScript エンジン** | 変換された JavaScript を実行するもの。 | どこでも V8 です。ビルドマシンでは CLI に組み込まれた V8、Worker では workerd の中の V8、ブラウザではブラウザのエンジンです。zfb の direct V8 ホストは V8 の *周りの* ホストであり、別のエンジンではありません。 |
+| **ホスト API** | ホストが公開するグローバルや組み込みモジュール。 | 組み込みホストはモジュールの読み込みと、ページルーターに必要な Web のリクエスト／レスポンスのサービスを実装します。`node:fs`、`node:fs/promises`、`node:path`、`node:url`、`node:buffer`、`node:async_hooks` はスタブで、使うと `node:* is not available under the SSG runtime` を投げます（`crates/zfb-js-host/src/shims.rs`）。Worker では Cloudflare のランタイムが決め、アダプターは `node:async_hooks` のために `nodejs_compat` を必要とします。ブラウザは DOM を提供します。 |
+| **UI のレンダリング** | コンポーネントを HTML 文字列や動く DOM にすること。 | zudo-react です。ページルーターでは `@takazudo/zfb/zudo-react/server` の `renderToString`、ブラウザでは `@takazudo/zfb/zudo-react/client` の `hydrate`/`mount` を使います。 |
+
+それぞれの層が制約するものは異なります。言語のサポートはエンジンの仕事、どの API が存在するかはホストの仕事、どのコンポーネントモデルが動くかはレンダラーの仕事です。だから「V8 が実行する」ことは「Node.js の API が使える」ことを意味せず、どちらも「React のコンポーネントがレンダリングできる」ことを意味しません。
+
+## ホストをまたぐ `fetch` コントラクト
+
+バンドルの形 — `export default { fetch }` — は Cloudflare Workers のデプロイが期待するコントラクトであり、同時にビルド時に組み込みホストが駆動するものでもあります。ルーティングの中核（`@takazudo/zfb-runtime/server` の `createPageRouter`）は、小さな Web 標準のルーターライブラリである [Hono](https://hono.dev/) の上に作られ、そのアダプターパターンに従っています。1 つのルーターに、複数のエントリアダプターです。ビルド時のホストは合成した `Request` オブジェクトを渡して `Response` の本文を集め、Cloudflare アダプターは `_worker.js` を通じてそれを Worker の `fetch` ハンドラとして登録します。ルーター自身は、どのホストに駆動されているかを知りません。
+
+この形を安定したコントラクトとして固定することで、zfb はどの JS エンジンのホストがそれを実行するかから切り離されます。ビルド時のホストは組み込み V8 アイソレートで、本番のホストは workerd です。共通なのは形であってバイト列ではありません。プロジェクトが `adapter: "@takazudo/zfb-adapter-cloudflare"` を設定すると、`zfb build` はエントリが `prerender = false` のルートだけを import する 2 回目のバンドルを実行し（コンテンツコレクションの import とコンテンツスナップショットも除外します）、アダプターはそのバンドルを包みます。出力されるファイルは [Worker 上の SSR（アダプターモード）](./ssr-on-a-worker.mdx#ビルドが実際に出力するもの) を参照してください。
+
+このコントラクトが可能にするレイヤリングは次のとおりです。
+
+| レイヤー | 所有するもの | 所有しないもの |
+|-------|-------------|----------------------|
+| **あなたのソース** | ページ、コンポーネント、コンテンツ、スタイル | ビルドの仕組み |
+| **zfb** | ビルドのコントラクト — ルートテーブル、ページ props の形、島のプロトコル、クライアントスクリプトのパイプライン、`dist/` のレイアウト | どのバンドラーか、どの JS ホストか |
+| **ツール** | バンドラー（Rolldown または esbuild）、組み込み V8 ホスト（ビルド時の評価） | あなたのコードのセマンティクス |
+
+バンドラーと組み込み V8 ホストは、ユーザーのコードに触れずに差し替えられる実装詳細です。バンドラーは `ZFB_BUNDLER` の背後に、ホストは `RenderHost` トレイトの背後にあります（[境界](#境界)）。
 
 ## 必要性
 
@@ -141,6 +185,6 @@ direct ホストの既知の制限:
 
 ラベルで起動する必須ではない CI レーン（`direct-v8.yml`）が、Linux x64、Linux arm64、Windows x64 のネイティブ行を記録します。Darwin の行は Mac 上で手作業で実行します。コントリビューター向けの詳細は [`prototypes/direct-v8/CLI.md`](https://github.com/Takazudo/zudo-front-builder/blob/main/prototypes/direct-v8/CLI.md) にあります。
 
-ページとアイランドは、デフォルトで Rolldown がバンドルします（`rolldown-prototype` フィーチャーはデフォルトフィーチャーに含まれます）。`ZFB_BUNDLER=esbuild` を設定すると、これらのバンドルに組み込みの esbuild を使います。`zfb.config.ts` とプラグインのコンパイルには引き続き esbuild を使います。`direct-v8-rolldown` レーンは Rolldown を direct V8 と一緒にビルドします。
+ページと島は、デフォルトで Rolldown がバンドルします（`rolldown-prototype` フィーチャーはデフォルトフィーチャーに含まれます）。`ZFB_BUNDLER=esbuild` を設定すると、これらのバンドルに組み込みの esbuild を使います。`zfb.config.ts` とプラグインのコンパイルには引き続き esbuild を使います。`direct-v8-rolldown` レーンは Rolldown を direct V8 と一緒にビルドします。
 
 `zfb preview` は再ビルドせず、ビルド済み出力を配信します。Cloudflare アダプターでは Wrangler に委譲します。一般に組み込み V8 でページを再レンダリングするコマンドではありません。

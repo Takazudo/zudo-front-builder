@@ -7,7 +7,9 @@ category: Concepts
 
 zfb のページはデフォルトで静的 HTML にレンダリングされます。**Islands（島）** はその抜け道です。ブラウザに JavaScript を配信してクライアントでハイドレートする小さなコンポーネントで、ページの残りの部分はプレーンな HTML のままに保たれます。
 
-メンタルモデルは単純です。ページの大部分は静的なドキュメントです。いくつかのインタラクティブな要素（カウンター、検索ボックス、テーマ切り替え）は、そのドキュメントに埋め込まれた島であり、単一の共有バンドルからブラウザでハイドレートされます。
+メンタルモデルは単純です。ページの大部分は静的なドキュメントです。いくつかのインタラクティブな要素（カウンター、検索ボックス、テーマ切り替え）は、そのドキュメントに埋め込まれた島であり、単一の共有バンドルからブラウザでハイドレートされます。*ハイドレーション*とは、すでにページ上にある HTML を描画し直さずに、イベントリスナーやリアクティブな更新といった振る舞いをその HTML に結び付けることです。
+
+このページでは、まず基本的な島を示し、続いてビルドがその島に対して何を出力し、ブラウザがそれをどうロードしてハイドレートするかを説明します。その後に応用的な内容が続きます。ビルドが境界ターゲットをどう検出するか、ファクトリから渡すターゲット、パッケージ島の合成境界、サードパーティウィジェット、そして `?raw`・module worker・`import.meta.glob` といったバンドル機能です。zfb のほかの部分の中で島がどこに位置するかは、[アーキテクチャ概要](./architecture-overview.mdx)を参照してください。
 
 ## 島とは何か
 
@@ -30,7 +32,180 @@ export default function Counter() {
 
 `"use client"` は、そのモジュールの export を island target として使えるようにします。関数がハイドレーション対象として登録されるのは、到達可能なページで SDK の `<Island>` 境界の唯一のコンポーネント子として使われる場合だけです。client module は別の場所で定義された関数を re-export できます。登録された関数が使う import や resource も、通常の bundle graph を通じてブラウザーに届きます。
 
+### ページから島を使う
+
+ページやレイアウトがコンポーネントを描画する場所で、SDK の `<Island>` 境界でそのコンポーネントを包みます。境界が受け取るコンポーネントの子はちょうど 1 つです。
+
+```tsx
+// pages/index.tsx
+import { Island } from "@takazudo/zfb";
+import Counter from "../components/counter";
+
+export default function Home() {
+  return (
+    <main>
+      <h1>Plain HTML heading</h1>
+      <Island>
+        <Counter />
+      </Island>
+    </main>
+  );
+}
+```
+
+見出しと `<main>` は静的な HTML のままです。JavaScript を配信するのは `Counter` だけです。デフォルトのスターターテンプレート `basic-blog` も同じ形を使っています。その `layouts/default.tsx` は `Island` をインポートし、`"use client"` のテーマ切り替えを包んでいます。
+
+### ビルドからブラウザまでの流れ
+
+1. **レンダリング。** zfb はページを HTML にレンダリングします（静的ページならビルド時、SSR ルートならリクエストごと）。カウンターの初期出力（`Count: 0`）もここで描画され、その出力は島の識別子と props を持つ `<div data-zfb-island="Counter" …>` 要素で包まれます。
+2. **バンドル。** 登録されたすべての島ターゲットは 1 つの共有ブラウザバンドル `islands-<hash>.js` にまとめられ、それを読み込む module `<script>` が 1 つ `<head>` に追加されます。[N 個の島に対してバンドラーが生成するもの](#n-個の島に対してバンドラーが生成するもの)を参照してください。
+3. **ロード。** ブラウザではバンドルが `mountIslands()` を呼び出します。ランタイムはラッパーごとに `data-when` のタイミング（デフォルトは `load`）を待ち、識別子と JSON の props を検証してから、既存の子 DOM をハイドレートします。ボタンは描画し直されることなく `on:click` リスナーを受け取ります。[島がどうロードされるか](#島がどうロードされるか)を参照してください。
+4. **マウント完了。** クライアントルートのマウント後、ラッパーに `data-zfb-island-mounted` が付きます。[マウント状態を監視する](#島がどうロードされるか-マウント状態を監視する)を参照してください。
+
+ハイドレーションに [`<ClientRouter />`](./client-side-routing.mdx) は必要ありません。ClientRouter がなければ、すべてのリンクは通常のページ全体の読み込みになり、各ページが自分の島をマウントします。ClientRouter があれば、ルーターはボディを差し替える前に古いページの島をアンマウントし、差し替えた後に新しいページの島をマウントします。[ClientRouter がある場合とない場合の島](./client-side-routing.mdx#clientrouter-がある場合とない場合の島)を参照してください。
+
+## N 個の島に対してバンドラーが生成するもの
+
+3 つの島（`Counter`・`ThemeToggle`・`SearchBox`）を持つプロジェクトの場合、islands のビルドステップは **1 つの共有バンドル** を出力します。
+
+```
+dist/assets/islands.js
+```
+
+すべての島は単一のバンドラー（現在のバンドラーのバックエンドは [JS ランタイム](./js-runtime.mdx)で説明しています）のエントリポイントへ静的にインポートされるため、共有バンドルにはすべての島コンポーネントが含まれます。その後、ビルドの本番アセット処理が、最終出力を書き出す前にコンテンツハッシュ付きのファイル名へとリネームします。
+
+```
+dist/assets/islands-<hash>.js
+```
+
+いずれかの島が内部で動的な `import()` を使っている場合、バンドラーはそれと並べてコード分割チャンクも出力することがあります。
+
+```
+dist/assets/islands-chunk-<hash>.js
+```
+
+バンドルは各島を静的なマーカー名で登録し、モジュールの末尾で `mountIslands()` を呼び出して、ページ上の各ラッパーの識別子を検証し、対応するクライアントエントリが子 DOM を引き受けるようスケジュールします。
+
+**ハッシュ化を担うのはビルドの 1 つの処理だけです。** バンドラーはまず安定した `islands.js` を書き出し、続いて本番アセット処理がハッシュ付きへのリネームを行い、出力された HTML 内の注入されたスクリプト URL を書き換えます。下流の処理がファイル名を推測する必要はありません。
+
+## 島がどうロードされるか
+
+レンダリング後、各島のサーバー描画済み HTML は、コンポーネント識別子と transport メタデータを持つ `<div>` でラップされます。`data-zfb-island*` 境界属性は残り、ランタイムのコメント領域は子の部分ツリーに限定されます。
+
+```html
+<div data-zfb-island="ThemeToggle"
+     data-when="load"
+     data-zfb-transport="json/1"
+     data-zfb-protocol="zudo-react/1"
+     data-zfb-build="build-identity"
+     data-props="{}">
+  <!-- zudo-react's child-subtree markers live here -->
+  <button type="button" aria-pressed="false" aria-label="Switch to dark mode">Dark mode</button>
+</div>
+```
+
+`data-when` 属性はクライアントエントリの実行タイミングを制御します。常に存在し、デフォルトは `"load"` です。デフォルト以外のタイミングを指定する JSX API は [`<Island>` ラッパー](../api/island.mdx) です。メディアクエリによるハイドレーションでは、`when="media"` と `media` クエリの両方を渡します。
+
+```tsx
+import { Island } from "@takazudo/zfb";
+import MobileMenu from "./MobileMenu";
+
+export default function Header() {
+  return (
+    <Island when="media" media="(max-width: 768px)">
+      <MobileMenu />
+    </Island>
+  );
+}
+```
+
+`"visible"`・`"idle"`・`"media"` 戦略はそれぞれ `data-when` 属性を出力します。`"media"` はさらに CSS クエリ文字列を持つ `data-media` 属性も出力します。
+
+```html
+<!-- visible timing -->
+<div data-zfb-island="SearchBox" data-when="visible" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
+
+<!-- idle timing -->
+<div data-zfb-island="Counter" data-when="idle" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
+
+<!-- media timing — hydrates when (max-width: 768px) first matches -->
+<div data-zfb-island="MobileMenu" data-when="media" data-media="(max-width: 768px)" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
+```
+
+少なくとも 1 つの島を含むビルドには、**1 つの `<script>` タグ** がプロジェクト全体で `<head>` に注入されます。
+
+```html
+<script type="module" src="/assets/islands-<hash>.js"></script>
+```
+
+共有 islands バンドル（`islands-<hash>.js`）には、登録された島ターゲットと、それらが必要とするバンドルの依存関係が含まれます。スキャナーが発見した静的なマーカー名（`data-zfb-island` 属性の値）で各ターゲットを登録し、その後 `mountIslands()` を呼び出します。`mountIslands()` はラッパーのメタデータを検証し、JSON の `data-props` を読み取り、予定されたエントリの実行時に既存の子 DOM を引き受けます。
+
+### マウント状態を監視する
+
+ランタイムは、マウント後のマーカー `data-zfb-island-mounted` を 2 種類の島要素に公開します。ハイドレートされる `data-zfb-island` マーカーと、SSR をスキップする `data-zfb-island-skip-ssr` マーカーの両方が対象です。この属性は、クライアントルートのマウントに成功した後だけ追加されます。そのため、遅延されている島には `data-when` の条件を待っている間はマウント済みマーカーがなく、利用者は次のような CSS セレクターでハイドレーション前のスタイルを切り替えられます。
+
+```css
+[data-zfb-island]:not([data-zfb-island-mounted]) {
+  opacity: 0.7;
+}
+```
+
+このマーカーは **「クライアントルートのマウントに成功した」** ことを示します。観測用の属性であり、重複マウントを防ぐのは生きたルートハンドルです。マーカーが付いていても、その後の非同期アプリケーション処理が完了したとは限りません。
+
+島がアンマウントされると、マーカーは削除されます。実際のクライアントルーターのボディスワップでは、変更のない永続化された島は、受信側の `<body>` に同じ `data-zfb-transition-persist` ID があれば、マーカーとマウント済みインスタンスを維持します。破棄される島はマーカーを失い、受信したマークアップから再びマウントされます。永続化された島のコンポーネント識別子または props が変わった場合、ランタイムは古いルートを破棄してマーカーを削除し、`hydrate` ではなく `render` モードで新しいルートを作ります。マウント成功後にマーカーを再度追加します。また、新しいランタイムモジュールは、自身がまだマウントしていない要素に残った古いマーカーを取り除き、自身のマウント後に新しいマーカーを書き込みます。
+
+## 共有バンドルモデルの帰結
+
+すべての島が単一のファイルにまとめてバンドルされるため、次のことが言えます。
+
+- **すべてのページが全島のコードを読み込みます。** 単一の `islands-<hash>.js` バンドルには、プロジェクト内のすべての島コンポーネントが含まれます。`ThemeToggle` しか使わないページでも、`Counter` と `SearchBox` のコードをダウンロードします。これは、ページ単位の読み込み粒度を、よりシンプルなビルドパイプラインとページをまたいだ優れたキャッシュ効率と引き換えにするものです。
+- **島を含むビルドでは、島のないページもバンドルを読み込みます。** islands の `<script>` は、島マーカーを含まないページも含め、プリレンダリングされるすべてのページの `<head>` に注入されます。そのページではバンドルがマウントするラッパーを見つけないだけです。島がまったくないビルドでは、islands バンドルもタグも出力されません。これは `zfb build` が書き出す HTML についての説明であり、リクエスト時の SSR レスポンスはこのように後処理されません（[Worker 上の SSR](./ssr-on-a-worker.mdx)を参照）。使われている場合、他の client-script 仕組みは引き続き JavaScript を追加できます。
+- **いずれかの島の変更が、単一のバンドルを再ハッシュします。** いずれかの島コンポーネントを追加または変更すると新しいコンテンツハッシュが生成され、それがすべてのページについてブラウザのキャッシュされたバンドルを無効化します。トレードオフは、1 つのキャッシュエントリがすべての島をカバーすることです。バンドルが一度キャッシュされれば、プロジェクト内のすべてのページが同じキャッシュヒットの恩恵を受けます。
+
+### 共有バンドルの実測ベースライン
+
+共有バンドルのサイズは測定されており、CI で回帰を防いでいます。記録された調査（zfb 3.0.0）では、イベントのみの島を 1 つ持つページが約 50 KB（gzip で約 17 KB）の島の JavaScript を配信していました。現在の契約では、同じページの上限は raw 64,535 / gzip 22,195 バイトです。測定の詳細、ツールチェーンの固定、契約を変更する手順は、メンテナー向けに以下にまとめています。
+
+<Details title="測定の詳細とサイズ契約">
+
+制御された v3 フィクスチャ調査では **JavaScript の削減は行われていません**。現在のバンドルを回帰検出用のベースラインとして記録しています。Darwin arm64 と Linux x64 で、ワークスペース解決と packed パッケージ解決の両方を使い、島なし、イベントのみ、scalar signal、Show/For、modelValue、ブログメニューとテーマ切り替え、JSON API、2 つの島を含むページの 8 ケースを実際のコンシューマーで測定しました。各プラットフォームの契約では raw と gzip の許容増加量を 0 にしています。
+
+| フィクスチャ | Darwin workspace raw / gzip | Darwin packed raw / gzip | Linux workspace raw / gzip | Linux packed raw / gzip |
+| --- | ---: | ---: | ---: | ---: |
+| 島なし | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| イベントのみ | 49,830 / 17,004 | 49,892 / 17,027 | 49,830 / 17,003 | 49,892 / 17,030 |
+| scalar signal | 49,838 / 17,009 | 49,900 / 17,037 | 49,838 / 17,005 | 49,900 / 17,036 |
+| Show/For | 49,985 / 17,082 | 50,047 / 17,111 | 49,985 / 17,081 | 50,047 / 17,111 |
+| modelValue | 49,829 / 17,012 | 49,891 / 17,045 | 49,829 / 17,014 | 49,891 / 17,046 |
+| ブログメニューとテーマ切り替え | 50,180 / 17,138 | 50,242 / 17,166 | 50,180 / 17,137 | 50,242 / 17,167 |
+| JSON API | 49,984 / 17,096 | 50,046 / 17,127 | 49,984 / 17,098 | 50,046 / 17,123 |
+| 2 つの島 | 50,106 / 17,103 | 50,168 / 17,132 | 50,106 / 17,098 | 50,168 / 17,134 |
+
+各プラットフォームとモードで各ケースを 2 回ビルドし、出力された dist 全体のファイル一覧を比較しました。記録された島ありケースはそれぞれ entry が 1 つで、後続チャンクはありませんでした。分割が発生した場合、サイズ契約では entry、shared、lazy のすべての JavaScript ファイルを数えます。raw は全ファイルのバイト数の合計です。gzip は各ファイルに node:zlib gzipSync を level 9、mtime 0 で個別に適用してから合計します。HTTP 転送時の圧縮サイズは異なることがあります。
+
+調査時は @takazudo/zfb 3.0.0、Node v24.14.0、zlib 1.3.1-e00f703、esbuild 0.25.12、lockfile の Hono 4.12.25 を固定しています。Darwin のベースラインソースは 897f288c013e24ff4fde01483a55d8a1945fc964 です。Linux x64 のプローブは GitHub Actions health run 36831966429 の PR merge ref afa523768b3de897859521e1bf940179191f50ab（PR head 99726c74a48df1a0658cd6d9f5c494d06d4f2d40）で行われ、Darwin の歴史的コミットでの再実行ではありません。Linux の raw 合計は Darwin と一致しましたが gzip 合計は異なり、実際に生成した islands JavaScript の全ファイルで SHA-256 が異なります。これはプラットフォームごとのサイズベースラインであり、プラットフォーム間のバイト一致や意味的同等性を示すものではありません。Linux の結果は固定ツールチェーンを使った x64 GitHub Actions の 1 回の実行に基づきます。他の Linux アーキテクチャや将来のツールチェーンについては確認していません。
+
+現在の契約は調査時から更新されています。いまは @takazudo/zfb 4.5.4 と同じ Node・zlib・esbuild・Hono のバージョンを固定しており、正確な上限値は `research/v3-island-size/decision.json`（Darwin arm64）と `decision-linux-x64.json`（Linux x64）にあります。たとえば島 1 つのイベントのみのページは、両プラットフォームともワークスペースモードで raw 64,535 / gzip 22,195 バイトが上限です。許容増加量は引き続き 0 です。
+
+契約はレビュー済みの遷移を通してのみ変わります。契約が承認していない形で `Cargo.lock` が変わると、`health.yml` の island-size チェックは失敗し続けます。新しいネイティブ証拠を集め、影響する契約を再固定（`--stage` のあと `--apply`）するまで解消しません。Linux x64 の証拠は GitHub Actions のアーティファクトから取ります。Darwin arm64 の証拠はネイティブの `island-size-darwin.yml` ワークフローから取るか、オーナーが手元の Mac で実行して証明したものを使います。後者は `scripts/island-size-local-evidence.mjs` が、内部の Cargo 再配線と rustls セキュリティのロック遷移という 2 つのレビュー済みの理由に限って受け付けます。どちらの経路も、それだけで上限値や許容量を変えることはありません。
+
+2 つの実測マトリクスを再現するコマンドは、リポジトリの[測定と再実行の README](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/README.md)を参照してください。ガードは Darwin arm64 では `decision.json`、Linux x64 では `decision-linux-x64.json` を選び、未対応ホストや異なるプラットフォームの測定結果を拒否します。両方の実行後、保存したファイルを選択された契約と照合します。
+
+```sh
+node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" --packed "$ZFB_SIZE_OUT/real-packed/measurement.json"
+```
+
+</Details>
+
+## 単一のランタイム
+
+すべての島は `@takazudo/zfb` に同梱される zudo-react を使います。コンポーネントはセットアップ中に signal を作り、クライアントはラッパーの識別子と厳格な JSON props を検証してから、既存の子 DOM を引き受けます。プロジェクトごとのフレームワーク設定や互換エイリアスはありません。JSX 方言とコンポーネントモデルは [zudo-react の概要](../zudo-react/overview.mdx)を参照してください。
+
+サーバーとクライアントの境界については [zudo-react ランタイム](../architecture/framework-adapters.mdx)を参照してください。
+
 ## 境界ターゲットの検出と移行
+
+ここから先は、基本の例を超えるケースのためのリファレンスです。ビルドの静的スキャナーがどの関数を登録するのか、ラッパー・ファクトリ・パッケージ島がどう解決されるのか、そしてスキャナーが拒否するラッパーやコンポーネントマップの形をどう移行するのかを説明します。スキャナーはソースファイルを実行せずに読み取ります。
 
 到達可能な `<Island>` 境界の具体的なターゲットだけが公開マーカーを持ちます。クライアントモジュールから関数を export すること、大文字で始まる名前を付けること、JSX を返すことだけでは登録されません。未使用のヘルパーは、複数のモジュールで同じ名前のままにできます。名前を変更する必要はありません。
 
@@ -72,6 +247,23 @@ import { Counter } from "./counter";
 パラメーターを持つ関数は、名前付き関数か、`const` に束縛した関数／アロー関数である必要があります。スキャン対象のモジュールグラフ内では、import と re-export の連鎖も含め、その関数への参照はすべて直接呼び出しの呼び出し対象でなければなりません。`renderPanel(...)`、`(0, renderPanel)(...)`、`namespace.renderPanel(...)` は直接呼び出しです。値として渡す、保存する、返す、bind/apply する、JSX として使う操作は関数の escape です。証明はスキャナーが発見したモジュールグラフを対象とし、実行時に生成される呼び出し元などは対象外です。
 
 呼び出し箇所は 1 つ以上必要です。各呼び出しで宣言された位置にパラメーターを渡し、その位置以前の位置引数にはスプレッドを使えません。外側の引数はオブジェクトリテラルのままにします。たとえば `renderPanel(deps)` は、`deps` がローカル定数でも静的にはなりません。各呼び出しで選択されるターゲットは、同じ関数定義である必要があります。
+
+たとえば、呼び出し側がローカルの静的なスプレッドを渡し、ターゲットは既存のメンバー形式で読み取れます。
+
+~~~tsx
+import { Island } from "@takazudo/zfb";
+import { DesignTokenPanelBootstrap } from "./design-token-panel-bootstrap";
+
+function renderDesignTokenPanel(deps) {
+  const Target = deps.DesignTokenPanelBootstrap;
+  return <Island when="load"><Target /></Island>;
+}
+
+const defaults = { DesignTokenPanelBootstrap };
+export default function Page() {
+  return renderDesignTokenPanel({ ...defaults, enabled: true });
+}
+~~~
 
 #### 静的なローカル依存スプレッド
 
@@ -311,139 +503,6 @@ export default function ThemeToggle() {
 }
 ```
 
-## N 個の島に対してバンドラーが生成するもの
-
-3 つの島（`Counter`・`ThemeToggle`・`SearchBox`）を持つプロジェクトの場合、islands のビルドステップは **1 つの共有バンドル** を出力します。
-
-```
-dist/assets/islands.js
-```
-
-すべての島は単一のバンドラー（デフォルトは Rolldown、`ZFB_BUNDLER=esbuild` なら esbuild）のエントリポイントへ静的にインポートされるため、共有バンドルにはすべての島コンポーネントが含まれます。その後 `ProductionAssetPipeline` が、最終出力を書き出す前にコンテンツハッシュ付きのファイル名へとリネームします。
-
-```
-dist/assets/islands-<hash>.js
-```
-
-いずれかの島が内部で動的な `import()` を使っている場合、バンドラーはそれと並べてコード分割チャンクも出力することがあります。
-
-```
-dist/assets/islands-chunk-<hash>.js
-```
-
-バンドルは各島を静的なマーカー名で登録し、モジュールの末尾で `mountIslands()` を呼び出して、ページ上の各ラッパーの識別子を検証し、対応するクライアントエントリが子 DOM を引き受けるようスケジュールします。
-
-**`ProductionAssetPipeline` がハッシュ化の単一の真実の源です** — バンドラはまず安定した `islands.js` を書き出し、パイプラインがハッシュ付きへのリネームを行い、出力された HTML 内の注入されたスクリプト URL を書き換えます。下流の処理がファイル名を推測する必要はありません。
-
-## 島がどうロードされるか
-
-レンダリング後、各島のサーバー描画済み HTML は、コンポーネント識別子と transport メタデータを持つ `<div>` でラップされます。`data-zfb-island*` 境界属性は残り、ランタイムのコメント領域は子の部分ツリーに限定されます。
-
-```html
-<div data-zfb-island="ThemeToggle"
-     data-when="load"
-     data-zfb-transport="json/1"
-     data-zfb-protocol="zudo-react/1"
-     data-zfb-build="build-identity"
-     data-props="{}">
-  <!-- zudo-react's child-subtree markers live here -->
-  <button type="button" aria-pressed="false" aria-label="Switch to dark mode">Dark mode</button>
-</div>
-```
-
-`data-when` 属性はクライアントエントリの実行タイミングを制御します。常に存在し、デフォルトは `"load"` です。デフォルト以外のタイミングを指定する JSX API は [`<Island>` ラッパー](../api/island.mdx) です。メディアクエリによるハイドレーションでは、`when="media"` と `media` クエリの両方を渡します。
-
-```tsx
-import { Island } from "@takazudo/zfb";
-import MobileMenu from "./MobileMenu";
-
-export default function Header() {
-  return (
-    <Island when="media" media="(max-width: 768px)">
-      <MobileMenu />
-    </Island>
-  );
-}
-```
-
-`"visible"`・`"idle"`・`"media"` 戦略はそれぞれ `data-when` 属性を出力します。`"media"` はさらに CSS クエリ文字列を持つ `data-media` 属性も出力します。
-
-```html
-<!-- visible timing -->
-<div data-zfb-island="SearchBox" data-when="visible" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
-
-<!-- idle timing -->
-<div data-zfb-island="Counter" data-when="idle" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
-
-<!-- media timing — hydrates when (max-width: 768px) first matches -->
-<div data-zfb-island="MobileMenu" data-when="media" data-media="(max-width: 768px)" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="build-identity" data-props="{}">…</div>
-```
-
-少なくとも 1 つの島を含むビルドには、**1 つの `<script>` タグ** がプロジェクト全体で `<head>` に注入されます。
-
-```html
-<script type="module" src="/assets/islands-<hash>.js"></script>
-```
-
-共有 islands バンドル（`islands-<hash>.js`）はすべての島コンポーネントを含みます。スキャナが発見した静的なマーカー名（`data-zfb-island` 属性の値）で各島を登録し、その後 `mountIslands()` を呼び出します。これはページ上のすべての `[data-zfb-island]` 要素を走査し、ラッパーのメタデータを検証して JSON の `data-props` を読み取り、予定されたエントリの実行時に既存の子 DOM を引き受けます。
-
-### マウント状態を監視する
-
-ランタイムは、マウント後のマーカー `data-zfb-island-mounted` を 2 種類の島要素に公開します。ハイドレートされる `data-zfb-island` マーカーと、SSR をスキップする `data-zfb-island-skip-ssr` マーカーの両方が対象です。この属性は、クライアントルートのマウントに成功した後だけ追加されます。そのため、遅延されている島には `data-when` の条件を待っている間はマウント済みマーカーがなく、利用者は次のような CSS セレクターでハイドレーション前のスタイルを切り替えられます。
-
-```css
-[data-zfb-island]:not([data-zfb-island-mounted]) {
-  opacity: 0.7;
-}
-```
-
-このマーカーは **「クライアントルートのマウントに成功した」** ことを示します。観測用の属性であり、重複マウントを防ぐのは生きたルートハンドルです。マーカーが付いていても、その後の非同期アプリケーション処理が完了したとは限りません。
-
-島がアンマウントされると、マーカーは削除されます。実際のクライアントルーターのボディスワップでは、変更のない永続化された島は、受信側の `<body>` に同じ `data-zfb-transition-persist` ID があれば、マーカーとマウント済みインスタンスを維持します。破棄される島はマーカーを失い、受信したマークアップから再びマウントされます。永続化された島のコンポーネント識別子または props が変わった場合、ランタイムは古いルートを破棄してマーカーを削除し、`hydrate` ではなく `render` モードで新しいルートを作ります。マウント成功後にマーカーを再度追加します。また、新しいランタイムモジュールは、自身がまだマウントしていない要素に残った古いマーカーを取り除き、自身のマウント後に新しいマーカーを書き込みます。
-
-## 共有バンドルモデルの帰結
-
-すべての島が単一のファイルにまとめてバンドルされるため、次のことが言えます。
-
-- **いずれかの島を持つすべてのページが、全島のコードを読み込みます。** 単一の `islands-<hash>.js` バンドルには、プロジェクト内のすべての島コンポーネントが含まれます。`ThemeToggle` しか使わないページでも、`Counter` と `SearchBox` のコードをダウンロードします。これは、ページ単位の読み込み粒度を、よりシンプルなビルドパイプラインとページをまたいだ優れたキャッシュ効率と引き換えにするものです。
-- **島のないページには islands スクリプトが入りません。** ページに島マーカーが含まれない場合、ビルドパイプラインはそのページへの共有 islands `<script>` 注入をスキップします。使われている場合、他の client-script 仕組みは引き続き JavaScript を追加できます。
-- **いずれかの島の変更が、単一のバンドルを再ハッシュします。** いずれかの島コンポーネントを追加または変更すると新しいコンテンツハッシュが生成され、それがすべてのページについてブラウザのキャッシュされたバンドルを無効化します。トレードオフは、1 つのキャッシュエントリがすべての島をカバーすることです。バンドルが一度キャッシュされれば、プロジェクト内のすべてのページが同じキャッシュヒットの恩恵を受けます。
-
-### 共有バンドルの実測ベースライン
-
-制御された v3 フィクスチャ調査では **JavaScript の削減は行われていません**。現在のバンドルを回帰検出用のベースラインとして記録しています。Darwin arm64 と Linux x64 で、ワークスペース解決と packed パッケージ解決の両方を使い、島なし、イベントのみ、scalar signal、Show/For、modelValue、ブログメニューとテーマ切り替え、JSON API、2 つの島を含むページの 8 ケースを実際のコンシューマーで測定しました。各プラットフォームの契約では raw と gzip の許容増加量を 0 にしています。
-
-| フィクスチャ | Darwin workspace raw / gzip | Darwin packed raw / gzip | Linux workspace raw / gzip | Linux packed raw / gzip |
-| --- | ---: | ---: | ---: | ---: |
-| 島なし | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
-| イベントのみ | 49,830 / 17,004 | 49,892 / 17,027 | 49,830 / 17,003 | 49,892 / 17,030 |
-| scalar signal | 49,838 / 17,009 | 49,900 / 17,037 | 49,838 / 17,005 | 49,900 / 17,036 |
-| Show/For | 49,985 / 17,082 | 50,047 / 17,111 | 49,985 / 17,081 | 50,047 / 17,111 |
-| modelValue | 49,829 / 17,012 | 49,891 / 17,045 | 49,829 / 17,014 | 49,891 / 17,046 |
-| ブログメニューとテーマ切り替え | 50,180 / 17,138 | 50,242 / 17,166 | 50,180 / 17,137 | 50,242 / 17,167 |
-| JSON API | 49,984 / 17,096 | 50,046 / 17,127 | 49,984 / 17,098 | 50,046 / 17,123 |
-| 2 つの島 | 50,106 / 17,103 | 50,168 / 17,132 | 50,106 / 17,098 | 50,168 / 17,134 |
-
-各プラットフォームとモードで各ケースを 2 回ビルドし、出力された dist 全体のファイル一覧を比較しました。記録された島ありケースはそれぞれ entry が 1 つで、後続チャンクはありませんでした。分割が発生した場合、サイズ契約では entry、shared、lazy のすべての JavaScript ファイルを数えます。raw は全ファイルのバイト数の合計です。gzip は各ファイルに node:zlib gzipSync を level 9、mtime 0 で個別に適用してから合計します。HTTP 転送時の圧縮サイズは異なることがあります。
-
-調査時は @takazudo/zfb 3.0.0、Node v24.14.0、zlib 1.3.1-e00f703、esbuild 0.25.12、lockfile の Hono 4.12.25 を固定しています。Darwin のベースラインソースは 897f288c013e24ff4fde01483a55d8a1945fc964 です。Linux x64 のプローブは GitHub Actions health run 36831966429 の PR merge ref afa523768b3de897859521e1bf940179191f50ab（PR head 99726c74a48df1a0658cd6d9f5c494d06d4f2d40）で行われ、Darwin の歴史的コミットでの再実行ではありません。Linux の raw 合計は Darwin と一致しましたが gzip 合計は異なり、実際に生成した islands JavaScript の全ファイルで SHA-256 が異なります。これはプラットフォームごとのサイズベースラインであり、プラットフォーム間のバイト一致や意味的同等性を示すものではありません。Linux の結果は固定ツールチェーンを使った x64 GitHub Actions の 1 回の実行に基づきます。他の Linux アーキテクチャや将来のツールチェーンについては確認していません。
-
-現在の契約は調査時から更新されています。いまは @takazudo/zfb 4.5.4 と同じ Node・zlib・esbuild・Hono のバージョンを固定しており、正確な上限値は `research/v3-island-size/decision.json`（Darwin arm64）と `decision-linux-x64.json`（Linux x64）にあります。たとえば島 1 つのイベントのみのページは、両プラットフォームともワークスペースモードで raw 64,535 / gzip 22,195 バイトが上限です。許容増加量は引き続き 0 です。
-
-契約はレビュー済みの遷移を通してのみ変わります。契約が承認していない形で `Cargo.lock` が変わると、`health.yml` の island-size チェックは失敗し続けます。新しいネイティブ証拠を集め、影響する契約を再固定（`--stage` のあと `--apply`）するまで解消しません。Linux x64 の証拠は GitHub Actions のアーティファクトから取ります。Darwin arm64 の証拠はネイティブの `island-size-darwin.yml` ワークフローから取るか、オーナーが手元の Mac で実行して証明したものを使います。後者は `scripts/island-size-local-evidence.mjs` が、内部の Cargo 再配線と rustls セキュリティのロック遷移という 2 つのレビュー済みの理由に限って受け付けます。どちらの経路も、それだけで上限値や許容量を変えることはありません。
-
-2 つの実測マトリクスを再現するコマンドは、リポジトリの[測定と再実行の README](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/README.md)を参照してください。ガードは Darwin arm64 では `decision.json`、Linux x64 では `decision-linux-x64.json` を選び、未対応ホストや異なるプラットフォームの測定結果を拒否します。両方の実行後、保存したファイルを選択された契約と照合します。
-
-```sh
-node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" --packed "$ZFB_SIZE_OUT/real-packed/measurement.json"
-```
-
-## 単一のランタイム
-
-すべての島は `@takazudo/zfb` に同梱される zudo-react を使います。コンポーネントはセットアップ中に signal を作り、クライアントはラッパーの識別子と厳格な JSON props を検証してから、既存の子 DOM を引き受けます。プロジェクトごとのフレームワーク設定や互換エイリアスはありません。JSX 方言とコンポーネントモデルは [zudo-react の概要](../zudo-react/overview.mdx)を参照してください。
-
-サーバーとクライアントの境界については [zudo-react ランタイム](../architecture/framework-adapters.mdx)を参照してください。
-
 ## サードパーティウィジェットの埋め込み
 
 自分でマウントするウィジェットには、zudo-react の島の中に空の専用要素を渡せます。ウィジェットが使う Preact や React を含むフレームワークは、`node_modules` からそのままウィジェットのバンドルに入ります。そのライブラリが要求する peer dependency としてフレームワークをインストールしてください。v3 の「Preact/React の JSX ランタイムをインポートしない」という規則は、zudo-react が描画するコンポーネントに適用され、専用ホストにマウントする不透明なウィジェットのバンドルには適用されません。ウィジェットの VNode を zudo-react に渡したり、zudo-react の子要素がある領域をウィジェットに変更させたりしないでください。
@@ -622,12 +681,12 @@ const pages = import.meta.glob("./items/*.tsx", { eager: true });
 | 場所 | サポート |
 |---|---|
 | サーバー専用のページ・レイアウト・コンポーネント（`"use client"` 島から到達不能なもの） | あり — 汎用の SSR シャドウコピーバンドラ経由で、以前から常にサポート |
-| `"use client"` 島自身のファイル | あり（issue #1404 以降） |
-| `"use client"` 島から推移的にインポートされるモジュール | あり（#1404 以降、上記と同じ制約）。島の import グラフに含まれ、展開済みの実体あるシャドウコピーファイルとして書き出される場合 |
+| `"use client"` 島自身のファイル | あり |
+| `"use client"` 島から推移的にインポートされるモジュール | あり（上記と同じ制約）。島の import グラフに含まれ、展開済みの実体あるシャドウコピーファイルとして書き出される場合 |
 | 別の島到達可能な glob にマッチしたことでだけ到達するファイル（raw-mirrored な glob ターゲット、またはサブツリー内の companion ファイル） | **なし** — 後述の「サポートされない形式」を参照 |
 | `*.client.{ts,tsx,js,jsx}` [クライアントスクリプト](../guides/client-scripts.mdx)（およびそれがインポートするもの） | **なし** — 後述の「クライアントスクリプト」を参照 |
 
-issue #1404 以前は、島から到達可能な *あらゆる* `import.meta.glob`（サポートされる eager + 文字列リテラル形式であっても）が、ハードなビルドエラーでした（issue #1387 での応急処置）。現在の islands ビルドは、サポートされる各 glob 呼び出しをあらかじめ展開した状態で、島から到達可能なソースツリーの一時的なシャドウコピーを実体化します。これは SSR バンドラが issue #665/#670 以降、サーバー専用モジュールに対して使ってきたのと同じ手口です。
+島側のサポートはサーバー側より新しいものです。以前のリリースでは、島から到達可能な *あらゆる* `import.meta.glob`（サポートされる eager + 文字列リテラル形式であっても）がハードなビルドエラーでした。現在の islands ビルドは、サポートされる各 glob 呼び出しをあらかじめ展開した状態で、島から到達可能なソースツリーの一時的なシャドウコピーを実体化します。これは SSR バンドラーがサーバー専用モジュールに対して使っているのと同じ手法です。（経緯: 応急処置のエラーは issue #1387、島側のサポートは #1404、SSR 側の手法は #665/#670 によるものです。）
 
 重要な境界が 1 つあります。シャドウは、島から到達可能な各 glob モジュールのディレクトリ配下も raw-mirror し、glob にマッチしたターゲットファイルをバンドラーが読めるようにします。しかしそれらの raw-mirrored なターゲット／サブツリー内ファイルは再帰的には展開されません。その中にさらに `import.meta.glob(...)` がある場合、zfb は未展開の Vite 専用マクロをブラウザへ配信する代わりに拒否します。同じファイルが通常の import によって島のグラフにも含まれているなら、そのファイルは展開済みの実体あるシャドウコピーになり、サポートされる glob は引き続き動作します。
 
