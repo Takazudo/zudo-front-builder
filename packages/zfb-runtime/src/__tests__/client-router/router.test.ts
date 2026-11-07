@@ -2096,6 +2096,51 @@ describe("handleSubmit — form intercept (#1400)", () => {
     },
   );
 
+  // #4612: a form submit listener runs before the router's document listener.
+  // An invalidated submitter is declined before FormData and preventDefault();
+  // a restored one is judged by its current state and still routed.
+  it.each([
+    { mutation: "removed", routed: false },
+    { mutation: "moved to another form", routed: false },
+    { mutation: "retyped to button", routed: false },
+    { mutation: "removed and reinserted", routed: true },
+    { mutation: "retyped and restored", routed: true },
+    { mutation: "disabled", routed: true },
+  ])("submitter $mutation in a form submit listener: routed=$routed", async (config) => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Results", "done")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const form = createForm({ action: "/results", fields: { q: "value" } });
+    const other = createForm({ action: "/other" });
+    const button = document.createElement("button");
+    button.setAttribute("name", "go");
+    button.setAttribute("value", "search");
+    form.append(button);
+    form.addEventListener("submit", () => {
+      if (config.mutation === "removed") button.remove();
+      if (config.mutation === "moved to another form") other.append(button);
+      if (config.mutation === "retyped to button") button.setAttribute("type", "button");
+      if (config.mutation === "removed and reinserted") {
+        button.remove();
+        form.append(button);
+      }
+      if (config.mutation === "retyped and restored") {
+        button.setAttribute("type", "button");
+        button.removeAttribute("type");
+      }
+      if (config.mutation === "disabled") button.disabled = true;
+    });
+    let defaultPrevented: boolean | null = null;
+    window.addEventListener("submit", (ev) => (defaultPrevented = ev.defaultPrevented), {
+      once: true,
+    });
+    form.requestSubmit(button);
+    expect(defaultPrevented).toBe(config.routed);
+    await drain();
+    expect(fetchMock).toHaveBeenCalledTimes(config.routed ? 1 : 0);
+  });
+
   it("leaves a relative override under a cross-origin base to the browser", async () => {
     const base = document.createElement("base");
     base.href = "https://other.example/base/";

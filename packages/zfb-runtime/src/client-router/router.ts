@@ -1542,6 +1542,56 @@ function nativeFormOwner(source: object): HTMLFormElement | null | undefined {
   return undefined;
 }
 
+// Like the form-owner getter above, read `type` through the control's own
+// prototype so an adopted control keeps its native (normalized) type state.
+function nativeControlType(control: object): unknown {
+  try {
+    let proto: object | null = Object.getPrototypeOf(control);
+    while (proto) {
+      const getter = Object.getOwnPropertyDescriptor(proto, "type")?.get;
+      if (getter) return getter.call(control);
+      proto = Object.getPrototypeOf(proto);
+    }
+  } catch {
+    // Not a form control: the getter rejects the receiver.
+  }
+  return undefined;
+}
+
+// `new FormData(form, submitter)` throws unless the submitter is still a submit
+// button whose form owner is `form`. An earlier form submit listener can remove,
+// reassociate or retype it, while native submission keeps the original
+// submitter. Judged at this checkpoint only, so a restored submitter proceeds.
+// https://xhr.spec.whatwg.org/#dom-formdata
+function isSubmitButtonOf(submitter: object, form: HTMLFormElement): boolean {
+  let localName: unknown;
+  try {
+    if (
+      Reflect.get(Element.prototype, "namespaceURI", submitter) !== "http://www.w3.org/1999/xhtml"
+    )
+      return false;
+    localName = Reflect.get(Element.prototype, "localName", submitter);
+  } catch {
+    return false;
+  }
+  if (localName !== "button" && localName !== "input") return false;
+  const type = nativeControlType(submitter);
+  if (type !== "submit" && !(localName === "input" && type === "image")) return false;
+  const owner = nativeFormOwner(submitter);
+  if (owner === form) return true;
+  // happy-dom returns a form's Proxy from the owner getter but dispatches with
+  // the raw target; its proxied methods bind to that target. In a browser a
+  // non-identical owner is a different form, so this stays false (or throws on
+  // a shadowing named control).
+  try {
+    return (
+      owner != null && (owner as { isSameNode(node: Node): boolean }).isSameNode(form) === true
+    );
+  } catch {
+    return false;
+  }
+}
+
 function ancestorForm(source: object): HTMLFormElement | null {
   try {
     const closest = (source as { closest?: unknown }).closest;
@@ -1742,6 +1792,11 @@ function handleSubmit(ev: SubmitEvent): void {
   // so the browser applies its own abort. No latch: a reinserted form proceeds.
   // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
   if (!isConnectedNode(form)) return;
+  // Decline an invalidated submitter before FormData and preventDefault(); the
+  // browser's own submission still owns it. (happy-dom reports the form itself
+  // as the submitter of a submitter-less requestSubmit(); browsers report null.)
+  if (submitter !== null && !isHtmlFormElement(submitter) && !isSubmitButtonOf(submitter, form))
+    return;
   const formData = new FormData(form, submitter ?? undefined);
   if (!isConnectedNode(form)) return;
   const options: import("./types.js").Options = { sourceElement: submitter ?? form };
