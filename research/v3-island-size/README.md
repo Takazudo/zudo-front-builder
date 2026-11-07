@@ -68,8 +68,11 @@ The CI commands derive output paths from `GITHUB_WORKSPACE` and run natively on 
 
 Run on the merged source SHA, with one guarded heavyweight command at a time. The pinned esbuild binary comes from the repo's toolchain; the runner verifies version `0.25.12` and records its digest. Use `CARGO_TARGET_DIR` shared with the manager's existing build. `zfb` must be freshly built from the SHA being measured. Install from `pnpm-lock.yaml` with `--frozen-lockfile` if dependencies are absent; avoid changing the lockfile.
 
+Every `node` and `pnpm` command below must run under the official Node v24.14.0 build (zlib `1.3.1-e00f703`). `check-budget.mjs` pins that toolchain, so a measurement or sidecar recorded under any other Node is rejected at the final step, even when every size matches. The repository's `engines` range admits other 24.x releases, so check before building:
+
 ```sh
 cd "$(git rev-parse --show-toplevel)"
+node -e 'if (process.version !== "v24.14.0" || process.versions.zlib !== "1.3.1-e00f703") { console.error("need Node v24.14.0 / zlib 1.3.1-e00f703, got " + process.version + " / " + process.versions.zlib); process.exit(1); }'
 export ZFB_REPO="$PWD"
 # Same lookup as `pnpm b4push`: an explicit HEAVY_GUARD, else the Claude, then the Codex install.
 ZFB_GUARD="${HEAVY_GUARD:-}"
