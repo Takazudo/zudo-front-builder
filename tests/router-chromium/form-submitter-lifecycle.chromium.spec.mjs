@@ -31,6 +31,7 @@ const SETTLE_MS = 1500;
  * @typedef {{ name: string, method: "get" | "post", control: "button" | "input" | "image",
  *   external?: boolean, foreign?: boolean, buttonType?: string | null, mutate: Mutation | null,
  *   activation: "click" | "request-submit" | "request-submit-null", cancel?: boolean,
+ *   shadow?: "self" | "other",
  *   routed: boolean }} Config
  */
 
@@ -254,6 +255,15 @@ function installForm({ config, id, value, mutate }) {
     field.setAttribute("name", "q");
     field.setAttribute("value", fieldValue);
     form.append(field);
+    if (config.shadow === (formId === id ? "self" : "other")) {
+      // Named controls shadow form instance properties ([LegacyOverrideBuiltIns]).
+      for (const name of ["isSameNode", "elements"]) {
+        const shadow = document.createElement("input");
+        shadow.setAttribute("name", name);
+        shadow.setAttribute("value", "shadowed");
+        form.append(shadow);
+      }
+    }
     form.addEventListener("formdata", () =>
       // @ts-expect-error - test-only global
       window.__slLog({ name: "formdata", docId: window.__slDoc, form: formId }),
@@ -465,6 +475,16 @@ const CASES = [
     routed: true,
   },
 
+  {
+    name: "GET stable button with isSameNode/elements controls",
+    method: "get",
+    control: "button",
+    shadow: "self",
+    mutate: null,
+    activation: "click",
+    routed: true,
+  },
+
   // Invalidated before the router's checkpoint.
   {
     name: "GET button removed",
@@ -606,6 +626,16 @@ const CASES = [
     foreign: true,
     external: true,
     mutate: "type",
+    activation: "click",
+    routed: false,
+  },
+
+  {
+    name: "GET button moved into a second form with isSameNode/elements controls",
+    method: "get",
+    control: "button",
+    shadow: "other",
+    mutate: "move",
     activation: "click",
     routed: false,
   },

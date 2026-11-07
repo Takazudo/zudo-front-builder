@@ -1577,16 +1577,17 @@ function isSubmitButtonOf(submitter: object, form: HTMLFormElement): boolean {
   if (localName !== "button" && localName !== "input") return false;
   const type = nativeControlType(submitter);
   if (type !== "submit" && !(localName === "input" && type === "image")) return false;
-  const owner = nativeFormOwner(submitter);
-  if (owner === form) return true;
-  // happy-dom returns a form's Proxy from the owner getter but dispatches with
-  // the raw target; its proxied methods bind to that target. In a browser a
-  // non-identical owner is a different form, so this stays false (or throws on
-  // a shadowing named control).
+  return isSameNodeAs(nativeFormOwner(submitter), form);
+}
+
+// happy-dom returns a form's Proxy from the owner getter but dispatches with
+// the raw target; its proxied methods bind to that target. In a browser a
+// non-identical node is a different node, so the fallback stays false (or
+// throws on a shadowing named control).
+function isSameNodeAs(node: object | null | undefined, other: Node): boolean {
+  if (node === other) return true;
   try {
-    return (
-      owner != null && (owner as { isSameNode(node: Node): boolean }).isSameNode(form) === true
-    );
+    return node != null && (node as { isSameNode(node: Node): boolean }).isSameNode(other) === true;
   } catch {
     return false;
   }
@@ -1730,7 +1731,8 @@ function handleClick(ev: MouseEvent): void {
 
 function handleSubmit(ev: SubmitEvent): void {
   const form = ev.target;
-  const submitter = ev.submitter as HTMLElement | null;
+  // A plain Event (not a SubmitEvent) has no submitter property at all.
+  const submitter = (ev.submitter ?? null) as HTMLElement | null;
 
   // If the submit was triggered by a modifier-key click, treat as normal browser submit.
   const clickedWithKeys =
@@ -1793,11 +1795,11 @@ function handleSubmit(ev: SubmitEvent): void {
   // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
   if (!isConnectedNode(form)) return;
   // Decline an invalidated submitter before FormData and preventDefault(); the
-  // browser's own submission still owns it. (happy-dom reports the form itself
-  // as the submitter of a submitter-less requestSubmit(); browsers report null.)
-  if (submitter !== null && !isHtmlFormElement(submitter) && !isSubmitButtonOf(submitter, form))
-    return;
-  const formData = new FormData(form, submitter ?? undefined);
+  // browser's own submission still owns it. happy-dom reports the form itself
+  // as the submitter of a submitter-less requestSubmit(); browsers report null.
+  const entrySubmitter = submitter !== null && isSameNodeAs(submitter, form) ? null : submitter;
+  if (entrySubmitter !== null && !isSubmitButtonOf(entrySubmitter, form)) return;
+  const formData = new FormData(form, entrySubmitter ?? undefined);
   if (!isConnectedNode(form)) return;
   const options: import("./types.js").Options = { sourceElement: submitter ?? form };
   if (method === "get") {
