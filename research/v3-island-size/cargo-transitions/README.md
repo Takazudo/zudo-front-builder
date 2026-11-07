@@ -132,3 +132,7 @@ The commands above now use the immutable `--old-cargo-ref` input from #4219. The
 ## Exact tokio security replacement (#4569)
 
 [TOKIO-4569.md](TOKIO-4569.md) records the tokio 1.52.3 → 1.54.1 lock pair for RUSTSEC-2026-0386, approved under POLICY-02. It uses the same exact-byte checker and reviewed-transition entry point as the #4314 replacements, and does not broaden this historical #318 authorization or apply either live platform contract.
+
+## Exact esbuild-removal lock move (#4635, pending owner approval)
+
+[ESBUILD-REMOVAL-4635.md](ESBUILD-REMOVAL-4635.md) records the esbuild-removal milestone lock pair: `zfb-rolldown-prototype` is renamed `zfb-bundler`, `zfb-compiler-worker` is added, `zfb-binfetch`, `tar` and `xattr` are removed, and five internal records rewire. It uses the same exact-byte checker and reviewed-transition entry point as the #4314 replacements. It does not broaden this historical #318 authorization or apply either live platform contract.

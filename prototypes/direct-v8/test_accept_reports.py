@@ -301,7 +301,7 @@ class MainReportConsistencyTest(unittest.TestCase):
             output = target / "acceptance-test"
             argv = ["accept.py", "--output", str(output)]
             if include_generated:
-                argv += ["--generated", "--esbuild", "/unused/esbuild", "--chromium", "/unused/chromium",
+                argv += ["--generated", "--chromium", "/unused/chromium",
                          "--node", "/unused/node", "--rustc", "/unused/rustc"]
             with mock.patch.object(accept, "ROOT", root), \
                     mock.patch.object(accept.Acceptance, "environment", return_value={"fixture": True}), \

@@ -888,7 +888,9 @@ jobs:
       # run, normalize-identity.mjs writes measurement.normalized.json next to
       # measurement.json from the saved pass bytes, and check-budget.mjs
       # recomputes both metrics from those bytes before comparing raw and
-      # gzipNormalized against the zero-allowance ceilings.
+      # gzipNormalized against the zero-allowance ceilings. zfb bundles with
+      # its embedded native Rolldown (#4635); measure-real.mjs records the
+      # identity `zfb --version` reports instead of an esbuild binary.
       - name: Collect Linux x64 island-size measurements
         id: size_measurements
         if: ${{ !cancelled() && steps.size_packages.outcome == 'success' }}
@@ -897,7 +899,6 @@ jobs:
           set -euo pipefail
           ZFB_SIZE_SHA="$(git rev-parse HEAD)"
           ZFB_SIZE_BIN="$GITHUB_WORKSPACE/target/debug/zfb"
-          ZFB_SIZE_ESBUILD="$GITHUB_WORKSPACE/crates/zfb/binaries/esbuild/esbuild"
           ZFB_SIZE_HONO="$GITHUB_WORKSPACE/packages/zfb-runtime/node_modules/hono"
           ZFB_SIZE_OUT="$GITHUB_WORKSPACE/target/island-size"
           ZFB_SIZE_VERSION="$(node -p "require('./packages/zfb/package.json').version")"
@@ -910,7 +911,6 @@ jobs:
             --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" \
             --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" \
             --zfb "$ZFB_SIZE_BIN" \
-            --esbuild "$ZFB_SIZE_ESBUILD" \
             --source-sha "$ZFB_SIZE_SHA" \
             --out "$ZFB_SIZE_OUT/real-workspace"
           node research/v3-island-size/measure-real.mjs \
@@ -922,7 +922,6 @@ jobs:
             --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" \
             --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" \
             --zfb "$ZFB_SIZE_BIN" \
-            --esbuild "$ZFB_SIZE_ESBUILD" \
             --source-sha "$ZFB_SIZE_SHA" \
             --out "$ZFB_SIZE_OUT/real-packed"
           node research/v3-island-size/normalize-identity.mjs \

@@ -52,10 +52,38 @@ const contractFilesByPlatform = {
 };
 const expectedToolchain = {
   honoVersion: "4.12.25",
-  esbuildVersion: "0.25.12",
   nodeVersion: "v24.14.0",
   zlibVersion: "1.3.1-e00f703",
 };
+// The producer's bundling backend. Up to schemaVersion 3 the measured zfb
+// spawned the pinned esbuild binary; schemaVersion 4 (#4635) measures the
+// esbuild-free producer, whose only bundler is the embedded native Rolldown
+// that `zfb --version` reports and crates/zfb-bundler pins in source.
+export const LEGACY_ESBUILD_VERSION = "0.25.12";
+export const EXPECTED_BUNDLER_IDENTITY = "rolldown-24bc2d0";
+export const BUNDLER_IDENTITY_SOURCE = "crates/zfb-bundler/src/request.rs";
+export const BUNDLER_SCHEMA_VERSION = 4;
+const BACKEND_IDENTITY_PATTERN = /^pub const BACKEND_IDENTITY: &str = "([^"]+)";$/gm;
+
+// The embedded bundler identity the checkout at `root` compiles into zfb, or
+// throws when the source does not declare exactly one.
+export function readBundlerIdentity(root = repoRoot) {
+  const source = readFileSync(resolve(root, BUNDLER_IDENTITY_SOURCE), "utf8");
+  const found = [...source.matchAll(BACKEND_IDENTITY_PATTERN)].map((match) => match[1]);
+  if (found.length !== 1) {
+    throw new Error(BUNDLER_IDENTITY_SOURCE + " must declare exactly one BACKEND_IDENTITY");
+  }
+  return found[0];
+}
+
+function bundlerSchema(contract) {
+  return contract?.schemaVersion === BUNDLER_SCHEMA_VERSION;
+}
+
+// schemaVersion 3 and 4 both pin the pnpm dependency fingerprint.
+function fingerprintSchema(contract) {
+  return contract?.schemaVersion === 3 || bundlerSchema(contract);
+}
 const compression =
   "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file";
 const contractFingerprintKeys = ["policyVersion", "parser", "helperSha256", "sha256"];
@@ -283,7 +311,7 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
     errors.push("contract: expected a JSON object");
     return;
   }
-  if (![1, 2, 3].includes(contract.schemaVersion)) {
+  if (![1, 2, 3, BUNDLER_SCHEMA_VERSION].includes(contract.schemaVersion)) {
     errors.push("contract: unsupported schemaVersion");
   }
   const metrics = ceilingMetrics(contract);
@@ -308,7 +336,7 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
   } else if (Object.hasOwn(contract, "metric") || Object.hasOwn(contract, "normalizerSha256")) {
     errors.push("contract: schemaVersion 1 measures actual gzip and cannot declare a metric");
   }
-  if (contract.schemaVersion === 3) {
+  if (fingerprintSchema(contract)) {
     validateContractFingerprint(contract.dependencyFingerprint, errors);
   } else if (Object.hasOwn(contract, "dependencyFingerprint")) {
     errors.push(
@@ -363,6 +391,27 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
     for (const [key, expected] of Object.entries(expectedToolchain)) {
       if (contract.toolchain[key] !== expected)
         errors.push("contract: unsupported toolchain " + key);
+    }
+    if (bundlerSchema(contract)) {
+      if (contract.toolchain.bundlerIdentity !== EXPECTED_BUNDLER_IDENTITY) {
+        errors.push("contract: unsupported toolchain bundlerIdentity");
+      }
+      if (Object.hasOwn(contract.toolchain, "esbuildVersion")) {
+        errors.push(
+          "contract: schemaVersion 4 measures the esbuild-free producer and cannot declare esbuildVersion",
+        );
+      }
+    } else {
+      if (contract.toolchain.esbuildVersion !== LEGACY_ESBUILD_VERSION) {
+        errors.push("contract: unsupported toolchain esbuildVersion");
+      }
+      if (Object.hasOwn(contract.toolchain, "bundlerIdentity")) {
+        errors.push(
+          "contract: schemaVersion " +
+            String(contract.schemaVersion) +
+            " pins the esbuild producer and cannot declare bundlerIdentity",
+        );
+      }
     }
     for (const key of ["pnpmLockSha256", "cargoLockSha256"]) {
       if (!shaPattern.test(contract.toolchain[key] ?? "")) {
@@ -424,15 +473,23 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
   ) {
     errors.push("local measurement runners: SHA-256 values differ from the reviewed contract");
   }
-  // schemaVersion 3 pins only the lock content that can produce measured
+  // schemaVersion 3 and 4 pin only the lock content that can produce measured
   // bytes; toolchain.pnpmLockSha256 stays recorded but is not compared.
-  if (contract.schemaVersion === 3) {
+  if (fingerprintSchema(contract)) {
     compareLocalFingerprint(contract.dependencyFingerprint, localInputs, errors);
   } else if (contract.toolchain?.pnpmLockSha256 !== localInputs.pnpmLockSha256) {
     errors.push("local pnpm-lock.yaml: SHA-256 differs from the reviewed contract");
   }
   if (contract.toolchain?.cargoLockSha256 !== localInputs.cargoLockSha256) {
     errors.push("local Cargo.lock: SHA-256 differs from the reviewed contract");
+  }
+  if (
+    bundlerSchema(contract) &&
+    contract.toolchain?.bundlerIdentity !== localInputs.bundlerIdentity
+  ) {
+    errors.push(
+      "local " + BUNDLER_IDENTITY_SOURCE + ": BACKEND_IDENTITY differs from the reviewed contract",
+    );
   }
   if (
     identityNormalizedSchema(contract) &&
@@ -488,7 +545,7 @@ function compareLocalFingerprint(fingerprint, localInputs, errors) {
 }
 
 function identityNormalizedSchema(contract) {
-  return contract?.schemaVersion === 2 || contract?.schemaVersion === 3;
+  return contract?.schemaVersion === 2 || fingerprintSchema(contract);
 }
 
 export function contractMetric(contract) {
@@ -567,9 +624,34 @@ function validateProvenance(
   if (provenance.honoPackageVersion !== expectedToolchain.honoVersion) {
     errors.push(label + ": unsupported Hono version");
   }
-  if (provenance.esbuildVersion !== expectedToolchain.esbuildVersion) {
-    errors.push(label + ": unsupported esbuild version");
+  const esbuildFree = Object.hasOwn(provenance, "bundlerIdentity");
+  if (bundlerSchema(contract)) {
+    if (provenance.bundlerIdentity !== contract.toolchain?.bundlerIdentity) {
+      errors.push(label + ": unsupported bundler identity");
+    }
+    if (
+      Object.hasOwn(provenance, "esbuildVersion") ||
+      Object.hasOwn(provenance, "esbuildBinarySha256")
+    ) {
+      errors.push(
+        label + ": schema mismatch: schemaVersion 4 contract cannot accept an esbuild measurement",
+      );
+    }
+  } else if (esbuildFree) {
+    // One explicit finding for an esbuild-free measurement against a contract
+    // that still pins the esbuild producer, instead of missing-esbuild noise.
+    errors.push(
+      label +
+        ": schema mismatch: esbuild-free producer (bundler " +
+        String(provenance.bundlerIdentity) +
+        ") needs a schemaVersion 4 contract",
+    );
+  } else {
+    if (provenance.esbuildVersion !== LEGACY_ESBUILD_VERSION) {
+      errors.push(label + ": unsupported esbuild version");
+    }
   }
+  const legacyEsbuild = !bundlerSchema(contract) && !esbuildFree;
   if (provenance.nodeVersion !== expectedToolchain.nodeVersion) {
     errors.push(label + ": unsupported Node version");
   }
@@ -587,7 +669,7 @@ function validateProvenance(
     "zfbBinarySha256",
     "zfbTarballSha256",
     "runtimeTarballSha256",
-    "esbuildBinarySha256",
+    ...(legacyEsbuild ? ["esbuildBinarySha256"] : []),
     "pnpmLockSha256",
     "cargoLockSha256",
   ]) {
@@ -669,7 +751,7 @@ function validateProvenance(
 
 function validateProvenanceFingerprint(provenance, label, contract, localInputs, errors) {
   const carried = Object.hasOwn(provenance, "dependencyFingerprint");
-  if (contract.schemaVersion !== 3) {
+  if (!fingerprintSchema(contract)) {
     if (carried) {
       errors.push(
         label +
@@ -682,7 +764,10 @@ function validateProvenanceFingerprint(provenance, label, contract, localInputs,
   }
   if (!carried) {
     errors.push(
-      label + ": schema mismatch: schemaVersion 3 contract requires dependencyFingerprint",
+      label +
+        ": schema mismatch: schemaVersion " +
+        String(contract.schemaVersion) +
+        " contract requires dependencyFingerprint",
     );
     return;
   }
@@ -946,6 +1031,7 @@ function compareMatchingProvenance(workspace, packed, errors) {
     "runtimeTarballSha256",
     "esbuildVersion",
     "esbuildBinarySha256",
+    "bundlerIdentity",
     "nodeVersion",
     "zlibVersion",
     "compression",
@@ -1338,6 +1424,7 @@ function currentLocalInputs(contract) {
     ),
     pnpmLockActualSha256: sha256(pnpmLockText),
     cargoLockSha256: hashFile(resolve(repoRoot, "Cargo.lock")),
+    bundlerIdentity: readBundlerIdentity(repoRoot),
     normalizerSha256: normalizerSha256(),
     dependencyFingerprint,
     dependencyFingerprintError,

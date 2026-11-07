@@ -20,6 +20,7 @@ import {
   OLD_LOCK_SHA256,
 } from "../rustls-security-transition.mjs";
 import {
+  ESBUILD_REMOVAL_LOCK_TRANSITION,
   NOYALIB_LOCK_TRANSITION,
   TOKIO_SECURITY_TRANSITION,
   WEBPKI_SECURITY_TRANSITION,
@@ -539,6 +540,34 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
       { cargoLockSha256: tokio.oldSha },
     );
     expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow("wrong security lock");
+  });
+  const esbuildRemoval = {
+    oldSha: ESBUILD_REMOVAL_LOCK_TRANSITION.oldLockSha256,
+    newSha: ESBUILD_REMOVAL_LOCK_TRANSITION.newLockSha256,
+    review: {
+      id: ESBUILD_REMOVAL_LOCK_TRANSITION.id,
+      manifestSha256: ESBUILD_REMOVAL_LOCK_TRANSITION.decisionSha256,
+    },
+  };
+  it("accepts the #4635 esbuild-removal transition as far as the retained-file read", () => {
+    const s = staged(
+      "cargo-producer-lock",
+      { cargoTransition: esbuildRemoval },
+      { cargoLockSha256: esbuildRemoval.newSha },
+    );
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(missing);
+  });
+  it.each([
+    ["tokio id on esbuild-removal locks", { ...esbuildRemoval, review: tokio.review }],
+    ["esbuild-removal id on tokio locks", { ...tokio, review: esbuildRemoval.review }],
+    ["tokio old lock with esbuild-removal new lock", { ...esbuildRemoval, oldSha: tokio.oldSha }],
+  ])("rejects a mixed esbuild-removal decision: %s", (_label, transition) => {
+    const s = staged(
+      "cargo-producer-lock",
+      { cargoTransition: transition },
+      { cargoLockSha256: transition.newSha },
+    );
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow("exact approved #4314");
   });
   it("rejects the webpki profile pinning the rustls lock", () => {
     const s = staged("cargo-producer-lock", { cargoTransition: webpki });

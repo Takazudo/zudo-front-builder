@@ -66,7 +66,7 @@ The CI commands derive output paths from `GITHUB_WORKSPACE` and run natively on 
 
 ## Pinned run after the topic merges
 
-Run on the merged source SHA, with one guarded heavyweight command at a time. The pinned esbuild binary comes from the repo's toolchain; the runner verifies version `0.25.12` and records its digest. Use `CARGO_TARGET_DIR` shared with the manager's existing build. `zfb` must be freshly built from the SHA being measured. Install from `pnpm-lock.yaml` with `--frozen-lockfile` if dependencies are absent; avoid changing the lockfile.
+Run on the merged source SHA, with one guarded heavyweight command at a time. Since #4635 `zfb` bundles islands natively: `measure-real.mjs` takes no esbuild binary, reads the `embedded bundler: <id>` line of `zfb --version`, requires it to equal `BACKEND_IDENTITY` in `crates/zfb-bundler/src/request.rs` (`rolldown-24bc2d0`), and records it as `provenance.bundlerIdentity`. The modeled `measure.mjs` sidecar still reproduces the historical esbuild flag set; the checkout no longer stages esbuild, so set `ZFB_SIZE_ESBUILD` to an esbuild `0.25.12` binary you supply, or skip the two modeled commands (they are diagnostics, not the gate). Use `CARGO_TARGET_DIR` shared with the manager's existing build. `zfb` must be freshly built from the SHA being measured. Install from `pnpm-lock.yaml` with `--frozen-lockfile` if dependencies are absent; avoid changing the lockfile.
 
 Every `node` and `pnpm` command below must run under the official Node v24.14.0 build (zlib `1.3.1-e00f703`). `check-budget.mjs` pins that toolchain, so a measurement or sidecar recorded under any other Node is rejected at the final step, even when every size matches. The repository's `engines` range admits other 24.x releases, so check before building:
 
@@ -86,7 +86,8 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ZFB_REPO/target}"
 export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1
 export ZFB_SIZE_SHA="$(git rev-parse HEAD)"
 export ZFB_SIZE_VERSION="$(node -p "require('./packages/zfb/package.json').version")"
-export ZFB_SIZE_ESBUILD="$ZFB_REPO/crates/zfb/binaries/esbuild/esbuild"
+# Only for the diagnostic modeled measure.mjs runs: an esbuild 0.25.12 binary you supply.
+export ZFB_SIZE_ESBUILD="${ZFB_SIZE_ESBUILD:-}"
 export ZFB_SIZE_BIN="$CARGO_TARGET_DIR/debug/zfb"
 export ZFB_SIZE_HONO="$ZFB_REPO/packages/zfb-runtime/node_modules/hono"
 export ZFB_SIZE_OUT="$ZFB_REPO/research/v3-island-size/results"
@@ -101,10 +102,10 @@ pnpm -C packages/zfb-runtime pack --pack-destination "$ZFB_SIZE_OUT/pack"
 tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-slugify-$ZFB_SIZE_VERSION.tgz" -C "$ZFB_SIZE_OUT/packed-slugify"
 tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" -C "$ZFB_SIZE_OUT/packed-package"
 tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" -C "$ZFB_SIZE_OUT/packed-runtime"
-bash "$ZFB_GUARD" -- node research/v3-island-size/measure-real.mjs --case event-only --mode workspace --package "$ZFB_REPO/packages/zfb" --runtime-package "$ZFB_REPO/packages/zfb-runtime" --slugify-package "$ZFB_REPO/packages/zfb-slugify" --hono-package "$ZFB_SIZE_HONO" --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" --zfb "$ZFB_SIZE_BIN" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/smoke-event"
-bash "$ZFB_GUARD" -- node research/v3-island-size/measure-real.mjs --mode workspace --package "$ZFB_REPO/packages/zfb" --runtime-package "$ZFB_REPO/packages/zfb-runtime" --slugify-package "$ZFB_REPO/packages/zfb-slugify" --hono-package "$ZFB_SIZE_HONO" --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" --zfb "$ZFB_SIZE_BIN" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/real-workspace"
+bash "$ZFB_GUARD" -- node research/v3-island-size/measure-real.mjs --case event-only --mode workspace --package "$ZFB_REPO/packages/zfb" --runtime-package "$ZFB_REPO/packages/zfb-runtime" --slugify-package "$ZFB_REPO/packages/zfb-slugify" --hono-package "$ZFB_SIZE_HONO" --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" --zfb "$ZFB_SIZE_BIN" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/smoke-event"
+bash "$ZFB_GUARD" -- node research/v3-island-size/measure-real.mjs --mode workspace --package "$ZFB_REPO/packages/zfb" --runtime-package "$ZFB_REPO/packages/zfb-runtime" --slugify-package "$ZFB_REPO/packages/zfb-slugify" --hono-package "$ZFB_SIZE_HONO" --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" --zfb "$ZFB_SIZE_BIN" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/real-workspace"
 bash "$ZFB_GUARD" -- node research/v3-island-size/measure.mjs --mode workspace --package "$ZFB_REPO/packages/zfb" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/modeled-workspace"
-bash "$ZFB_GUARD" -- node research/v3-island-size/measure-real.mjs --mode packed --package "$ZFB_SIZE_OUT/packed-package/package" --runtime-package "$ZFB_SIZE_OUT/packed-runtime/package" --slugify-package "$ZFB_SIZE_OUT/packed-slugify/package" --hono-package "$ZFB_SIZE_HONO" --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" --zfb "$ZFB_SIZE_BIN" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/real-packed"
+bash "$ZFB_GUARD" -- node research/v3-island-size/measure-real.mjs --mode packed --package "$ZFB_SIZE_OUT/packed-package/package" --runtime-package "$ZFB_SIZE_OUT/packed-runtime/package" --slugify-package "$ZFB_SIZE_OUT/packed-slugify/package" --hono-package "$ZFB_SIZE_HONO" --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" --zfb "$ZFB_SIZE_BIN" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/real-packed"
 bash "$ZFB_GUARD" -- node research/v3-island-size/measure.mjs --mode packed --package "$ZFB_SIZE_OUT/packed-package/package" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/modeled-packed"
 ```
 
@@ -412,6 +413,29 @@ node scripts/rebaseline-island-size-linux.mjs --apply <dir>
 ```
 
 Darwin may also stage owner-attested local evidence through the `cargo-removal` profile in [LOCAL-NATIVE-EVIDENCE.md](LOCAL-NATIVE-EVIDENCE.md). The accompanying tests run the reason against synthetic eleven-record locks in disposable git-backed checkouts (`scripts/__tests__/fixtures/cargo-removal/`); they are fixtures, not native evidence, and no live contract moved. A real activation needs fresh enforced artifacts for the actual source on both platforms, the reviewed declaration committed with that source, the four closure receipts and the paired `--stage`/`--apply` above.
+
+## Bundler-backend transition (#4635, schemaVersion 4)
+
+The esbuild-free producer (#4635) removes esbuild from `zfb`. A real run no longer records `esbuildVersion` or `esbuildBinarySha256`; it records `bundlerIdentity` (the embedded bundler's `BACKEND_IDENTITY`, `rolldown-24bc2d0`). `check-budget.mjs` keeps every schemaVersion 1-3 contract valid as history: they pin esbuild `0.25.12` and cannot declare `bundlerIdentity`, and an esbuild-free run against one fails with `<mode> provenance: schema mismatch: esbuild-free producer (bundler rolldown-24bc2d0) needs a schemaVersion 4 contract`. A schemaVersion 4 contract has the v3 shape with `toolchain.bundlerIdentity` in place of `toolchain.esbuildVersion`. It must equal the checkout's `BACKEND_IDENTITY`, refuses an esbuild measurement, and refuses a contract that also declares `esbuildVersion`.
+
+`scripts/island-size-evidence.mjs` retains health evidence for exactly one additional complete rejection: the local runner digest, the local Cargo.lock, and, per mode, the runner hashes, the esbuild-free schema mismatch and the Cargo lockfile lines. Any extra or missing line withholds the artifact as before.
+
+`--reason bundler-backend` (Linux script only, schemaVersion 3 input, outcome `bundler-backend-transition`, source-bound, not paired) is the bounded re-pin for that rejection. Its exact-key diff allows only `schemaVersion` (3 to 4), `toolchain.esbuildVersion` to `toolchain.bundlerIdentity` (same key position), `runnerSha256["measure-real.mjs"]`, the provenance-only `toolchain.pnpmLockSha256`, `toolchain.cargoLockSha256`, `outcome`, `baselineSourceSha`, `platformStatus` and `baselineEvidence` (which records `bundlerBackend` next to `repinnedFrom`, plus `cargoTransition` when Cargo moves). Every raw and identity-normalized gzip total must be unchanged. The package version, normalizer, fixtures, `measure.mjs`, Hono, Node, zlib, metric, allowance and dependency fingerprint must equal the contract. The artifact must carry no esbuild field and the reviewed bundler identity, which must also equal the checkout's. A Cargo.lock move is admitted only through the reviewed exact-byte [`esbuild-removal-4635`](cargo-transitions/ESBUILD-REMOVAL-4635.md) record and its `--reviewed-cargo-transition` arguments; Cargo arguments with an unchanged lock are refused. Changed totals are not admissible under this reason.
+
+After the integration push, the first `health` run measures the esbuild-free producer on Linux x64. Its budget step fails with the rejection above, and the evidence step retains the `island-size-linux-x64` artifact. Review the artifact, then, from a checkout of the measured source:
+
+```sh
+node scripts/rebaseline-island-size-linux.mjs --reason bundler-backend \
+  --artifact <downloaded artifact dir> --run-id <run id> --job-id <health job id> --artifact-id <artifact id> \
+  --head-sha <probe head> --source-sha <measured merge source> \
+  --expected-old-cargo-sha 216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810 \
+  --expected-new-cargo-sha b4e8f2413e0c8df9df8cd47fb8e555189560ad01bae65d3e9d637d6a51810634 \
+  --old-cargo-ref 0e6f9ca36c31b3961b69cd31837431e4dad3768b:Cargo.lock \
+  --reviewed-cargo-transition research/v3-island-size/cargo-transitions/esbuild-removal-4635.json \
+  --added-packages zfb-bundler@0.0.0,zfb-compiler-worker@0.0.0
+```
+
+The Darwin contract (`decision.json`) stays at schemaVersion 3 until owner-native Mac evidence and a Darwin schemaVersion 4 path exist; `rebaseline-island-size-darwin.mjs` and the local-evidence adapter still expect esbuild runner provenance. The Darwin live-admission test therefore stays red, by design. The synthetic tests in `scripts/__tests__/island-size-budget.test.mjs` exercise the reason against saved fixture bytes; they are not a native measurement, and no live contract moved.
 
 ## Final combined sweep measurement
 

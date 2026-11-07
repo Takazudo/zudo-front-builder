@@ -44,7 +44,7 @@ of either host. The `.wasm` is an authored 39-byte module equivalent to:
 (module (func (export "answer") (result i32) i32.const 42))
 ```
 
-Use the manager-built normal CLI, with its current embedded SDK/runtime/esbuild,
+Use the manager-built normal CLI, with its current embedded SDK/runtime/bundler,
 to stage this site into an ignored directory and run a real build. The normal
 CLI remains on the Deno-backed host. Example producer command after staging:
 
@@ -149,7 +149,6 @@ DIRECT_V8_GUARD=/workspace/portable-codex-home-v51/.codex/scripts/heavy-guard.sh
 DIRECT_V8_BUILD_RECORD="$(python3 -c 'import json; print(json.load(open("prototypes/direct-v8/evidence/generated-manifest.json"))["producer_build_command_supplied"])')"
 bash "$DIRECT_V8_GUARD" -- python3 prototypes/direct-v8/prepare-fixtures.py \
   --zfb "$PWD/target/debug/zfb" \
-  --esbuild /workspace/zfb-tools/esbuild-0.25.12 \
   --wrapper-test-binary "$PWD/target/debug/deps/zfb-4e375712b1045073" \
   --rustc /workspace/zfb-cargo/bin/rustc \
   --node /opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node \
@@ -165,6 +164,16 @@ bash "$DIRECT_V8_GUARD" -- python3 prototypes/direct-v8/check-generated.py \
   --chromium /usr/bin/chromium \
   --output target/direct-v8-generated-replay-results
 ```
+
+Since #4635 the preparation step takes no esbuild binary. It checks that
+`zfb --version` reports exactly one `embedded bundler:` line equal to
+`BACKEND_IDENTITY` in `crates/zfb-bundler/src/request.rs`, and it emits the
+standalone config, negative and plugin bundles through `zfb
+__zfb-compiler-worker`, the native producer the CLI's config loader uses. The
+config request mirrors that loader's own aliases and `esnext` target. Each
+response must carry the request's job identity, report correct digests,
+and emit exactly the expected files. The recorded receipts above predate
+that change; their esbuild-prepared bundles are not replayed by this command.
 
 Pass the producer and browser-bearing checker through the repository heavy
 guard. Both output directories must be new and below this checkout's ignored

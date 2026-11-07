@@ -298,6 +298,36 @@ describe("saved-byte eligibility (synthetic fixtures)", () => {
       budgetAllowsRetention({ status: 1, stderr: fingerprintRejection.replace(/\n/g, "\r\n") }),
     ).toBe(true);
   });
+  // #4635: the esbuild-free producer against the schemaVersion-3 contract.
+  const backendRejection =
+    "Island size budget rejected:\n" +
+    "- local measurement runners: SHA-256 values differ from the reviewed contract\n" +
+    "- local Cargo.lock: SHA-256 differs from the reviewed contract\n" +
+    ["workspace", "packed"]
+      .map(
+        (mode) =>
+          "- " +
+          mode +
+          " provenance: runner hashes differ from the contract\n- " +
+          mode +
+          " provenance: schema mismatch: esbuild-free producer (bundler rolldown-24bc2d0) needs a schemaVersion 4 contract\n- " +
+          mode +
+          " provenance: Cargo lockfile differs from the contract\n",
+      )
+      .join("");
+  it("retains the exact esbuild-free backend rejection of a schemaVersion-3 contract", () => {
+    expect(budgetAllowsRetention({ status: 1, stderr: backendRejection })).toBe(true);
+  });
+  it("refuses a partial, extended or foreign-bundler backend rejection", () => {
+    const lines = backendRejection.trimEnd().split("\n");
+    for (const stderr of [
+      lines.filter((line) => !line.includes("Cargo")).join("\n") + "\n",
+      lines.filter((line) => !line.includes("runner")).join("\n") + "\n",
+      backendRejection + "- workspace provenance: unsupported Node version\n",
+      backendRejection.replaceAll("rolldown-24bc2d0", "rolldown-0000000"),
+    ])
+      expect(budgetAllowsRetention({ status: 1, stderr })).toBe(false);
+  });
   it("refuses extra diagnostics and abnormal exits", () => {
     const helperRejection = fingerprintRejection.replace("sha256 differs", "helperSha256 differs");
     for (const result of [

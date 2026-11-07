@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Prepare #4240 inputs through the current CLI and pinned esbuild, then freeze.
+"""Prepare #4240 inputs through the current CLI and its native compiler, then freeze.
 
 Run only after #4239 passes, in the manager's heavy lane. This script never
 builds Rust, selects a candidate executor, downloads tools, or uploads assets.
 A prebuilt zfb lib-test binary invokes the actual private dev-wrapper producer.
+Since #4635 zfb embeds its bundler and needs no esbuild: the standalone config,
+negative and plugin bundles go through the same `zfb __zfb-compiler-worker`
+producer the CLI's config loader uses, pinned to the checkout's BACKEND_IDENTITY.
 """
 import argparse
 import hashlib
@@ -11,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -18,6 +22,77 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent
 WRAPPER_TEST = "commands::dev::tests::direct_v8_export_canonical_wrapper"
+# Private zfb argv and wire version from crates/zfb-compiler-worker
+# (launcher.rs PRIVATE_ARG, protocol.rs PROTOCOL_VERSION).
+WORKER_ARG = "__zfb-compiler-worker"
+WORKER_PROTOCOL = 1
+BACKEND_SOURCE = "crates/zfb-bundler/src/request.rs"
+
+
+def expected_bundler(root=ROOT):
+    match = re.search(r'pub const BACKEND_IDENTITY: &str = "([^"]+)";',
+                      (root / BACKEND_SOURCE).read_text())
+    if not match:
+        raise RuntimeError(f"no BACKEND_IDENTITY in {BACKEND_SOURCE}")
+    return match.group(1)
+
+
+def embedded_bundler(version_report):
+    found = re.findall(r"^embedded bundler: (\S+)$", version_report, re.M)
+    if len(found) != 1:
+        raise RuntimeError("zfb --version must report exactly one 'embedded bundler:' line")
+    return found[0]
+
+
+def bundle_request(cwd, entry, outfile, *, target, aliases=(), externals=(), source_map="None"):
+    """A zfb_bundler::BundleRequest in its serde JSON shape: ESM, neutral platform, one file."""
+    return {"cwd": str(cwd), "entry": str(entry),
+            "output": {"File": {"file": str(outfile), "asset_names": None}},
+            "format": "Esm", "platform": "Neutral", "target": target,
+            "jsx": {"runtime": None, "import_source": None}, "tsconfig": None,
+            "resolve": {"aliases": [[key, value] for key, value in aliases], "conditions": None,
+                        "main_fields": None, "preserve_symlinks": False, "extra_module_dirs": [],
+                        "packages": "Bundle"},
+            "defines": [], "loaders": [], "externals": [{"Package": name} for name in externals],
+            "splitting": False, "minify": False, "keep_names": False, "source_map": source_map,
+            "banner": None, "graph": None}
+
+
+def publish_worker_files(response, job_id, nonce, private_dir, expected):
+    """Verify one compiler-worker response and copy exactly the expected files out.
+
+    `expected` is the exact set of absolute destinations the request owns.
+    Returns the engine warnings, which the manifest records.
+    """
+    if (response.get("protocol"), response.get("job_id"), response.get("nonce")) != (
+            WORKER_PROTOCOL, job_id, nonce):
+        raise RuntimeError("compiler worker answered with a different protocol or job identity")
+    outcome = response.get("outcome") or {}
+    if set(outcome) != {"Generated"}:
+        raise RuntimeError(f"native bundle did not generate: {json.dumps(outcome)}")
+    generated = outcome["Generated"]
+    files_dir = (private_dir / "files").resolve()
+    reported = {}
+    for entry in generated["files"]:
+        source = (private_dir / entry["private"]).resolve()
+        destination = Path(entry["destination"])
+        if not source.is_relative_to(files_dir) or not source.is_file():
+            raise RuntimeError(f"compiler worker reported a file outside its private directory: {entry}")
+        if source.stat().st_size != entry["size"] or sha(source) != entry["sha256"]:
+            raise RuntimeError(f"compiler worker misreported {destination}")
+        if destination in reported:
+            raise RuntimeError(f"compiler worker reported {destination} twice")
+        reported[destination] = source
+    if set(reported) != set(expected):
+        raise RuntimeError(f"native bundle emitted {sorted(map(str, reported))}, "
+                           f"expected {sorted(map(str, expected))}")
+    if {path.resolve() for path in files_dir.iterdir()} != set(reported.values()):
+        raise RuntimeError("compiler worker left an unreported private file")
+    for destination, source in reported.items():
+        if destination.exists():
+            raise RuntimeError(f"native bundle would overwrite {destination}")
+        shutil.copyfile(source, destination)
+    return generated["warnings"]
 
 
 def sha(path):
@@ -55,7 +130,6 @@ def inventory(root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--zfb", type=Path, required=True)
-    parser.add_argument("--esbuild", type=Path, required=True)
     parser.add_argument("--wrapper-test-binary", type=Path, required=True)
     parser.add_argument("--rustc", type=Path, required=True)
     parser.add_argument("--node", type=Path, required=True)
@@ -68,7 +142,7 @@ def main():
         parser.error("--output must be a new directory below this repository's ignored target/")
     # Preserve executable spelling: resolving a rustc symlink to rustup changes
     # argv[0] and reports the wrong tool. File hashing still follows the link.
-    tools = {name: getattr(args, name).absolute() for name in ("zfb", "esbuild", "wrapper_test_binary", "rustc", "node")}
+    tools = {name: getattr(args, name).absolute() for name in ("zfb", "wrapper_test_binary", "rustc", "node")}
     for name, path in tools.items():
         if not path.is_file():
             parser.error(f"missing explicit {name} executable: {path}")
@@ -81,16 +155,19 @@ def main():
     logs.mkdir()
     commands = []
     environment = os.environ.copy()
-    # The same explicit pin drives CLI preparation and standalone config/error
-    # emission. Never use whichever esbuild happens to appear on PATH.
-    environment["ZFB_ESBUILD_BIN"] = str(tools["esbuild"])
+    # The zfb under test bundles natively; a stale esbuild override from the
+    # caller's shell must not reach any producer command.
+    environment.pop("ZFB_ESBUILD_BIN", None)
     environment["ZFB_NODE_BIN"] = str(tools["node"])
+    worker_private = out / "worker-private"
+    worker_private.mkdir()
+    bundle_warnings = {}
 
-    def run(label, argv, cwd=ROOT, extra_env=None, timeout=180):
+    def run(label, argv, cwd=ROOT, extra_env=None, timeout=180, stdin=None):
         env = environment | (extra_env or {})
         try:
             result = subprocess.run([str(x) for x in argv], cwd=cwd, env=env, capture_output=True,
-                                    text=True, timeout=timeout, check=False)
+                                    text=True, timeout=timeout, check=False, input=stdin)
         except subprocess.TimeoutExpired as error:
             for channel in ("stdout", "stderr"):
                 partial = getattr(error, channel) or b""
@@ -106,15 +183,28 @@ def main():
             raise RuntimeError(f"{label} failed ({result.returncode}); see {logs}")
         return result.stdout.strip()
 
+    def native_bundle(label, cwd, request, expected):
+        """Bundle through `zfb __zfb-compiler-worker`, the CLI's own native producer."""
+        private_dir = worker_private / label
+        private_dir.mkdir()
+        job_id, nonce = label, secrets.token_hex(16)
+        (logs / f"{label}.request.json").write_text(json.dumps(request, indent=2) + "\n")
+        stdout = run(label, [tools["zfb"], WORKER_ARG], cwd, stdin=json.dumps(
+            {"protocol": WORKER_PROTOCOL, "job_id": job_id, "nonce": nonce,
+             "private_dir": str(private_dir), "request": request, "test_hook": None}))
+        bundle_warnings[label] = publish_worker_files(json.loads(stdout), job_id, nonce, private_dir,
+                                                      [cwd / name for name in expected])
+
     try:
         versions = {"zfb": run("zfb-version", [tools["zfb"], "-V"]),
-                    "esbuild": run("esbuild-version", [tools["esbuild"], "--version"]),
+                    "zfb_long": run("zfb-long-version", [tools["zfb"], "--version"]),
                     "rustc": run("rustc-version", [tools["rustc"], "-vV"]),
                     "node": run("node-version", [tools["node"], "--version"])}
-        pin = re.search(r'EXPECTED_ESBUILD_VERSION: &str = "([^"]+)"',
-                        (ROOT / "crates/zfb-toolchain-pins/src/lib.rs").read_text()).group(1)
-        if versions["esbuild"] != pin:
-            raise RuntimeError(f"esbuild {versions['esbuild']} differs from repository pin {pin}")
+        bundler = embedded_bundler(versions["zfb_long"])
+        pin = expected_bundler()
+        if bundler != pin:
+            raise RuntimeError(f"zfb embeds bundler {bundler}, but {BACKEND_SOURCE} pins {pin}")
+        versions["bundler"] = bundler
         site = out / "site"
         shutil.copytree(FIXTURES / "site", site)
         run("real-zfb-build", [tools["zfb"], "build"], site)
@@ -147,15 +237,17 @@ def main():
         shutil.copy2(site / "zfb.config.ts", config / "zfb.config.ts")
         stub = config / "zfb-config-stub.mjs"
         shutil.copy2(ROOT / "crates/zfb-config-loader/js/zfb-config-stub.mjs", stub)
-        # Exact current loader preparation flags; source-map evidence is the
-        # separate negative below, not an invented config-loader requirement.
-        run("config-bundle", [tools["esbuild"], "--bundle", "--format=esm", "--platform=neutral",
-            "--target=esnext", "--log-level=warning", f"--alias:zfb/config={stub}",
-            f"--alias:@takazudo/zfb/config={stub}", "--outfile=config.mjs", "zfb.config.ts"], config)
+        # The config loader's own request (crates/zfb-config-loader/src/loader.rs
+        # bundle_config); source-map evidence is the separate negative below,
+        # not an invented config-loader requirement.
+        native_bundle("config-bundle", config, bundle_request(
+            config, config / "zfb.config.ts", config / "config.mjs", target="esnext",
+            aliases=[("zfb/config", str(stub)), ("@takazudo/zfb/config", str(stub))]), ["config.mjs"])
         negative = frozen / "negative"
         shutil.copytree(FIXTURES / "negative", negative)
-        run("negative-bundle", [tools["esbuild"], "throw.ts", "--bundle", "--format=esm",
-            "--platform=neutral", "--target=es2022", "--sourcemap=linked", "--outfile=throw.mjs"], negative)
+        native_bundle("negative-bundle", negative, bundle_request(
+            negative, negative / "throw.ts", negative / "throw.mjs", target="es2022",
+            source_map="Linked"), ["throw.mjs", "throw.mjs.map"])
         # This isolated module-policy probe is deliberately distinct from the
         # real generated site; it does not stand in for ZFB pipeline coverage.
         plugin = frozen / "plugin"
@@ -172,9 +264,10 @@ export default { async fetch(request: Request) {
   return Response.json({answer,message,method:request.method,marker:request.headers.get("x-input"),body:Array.from(new Uint8Array(await request.arrayBuffer()))}, {headers:[["set-cookie","plugin=one"],["set-cookie","plugin=two"],["x-prepared","42"]]});
 }};
 ''')
-        run("plugin-bundle", [tools["esbuild"], "entry.ts", "--bundle", "--format=esm",
-            "--platform=neutral", "--target=es2022", "--external:plugin:answer",
-            "--external:virtual:message", "--sourcemap=linked", "--outfile=worker.mjs"], plugin)
+        native_bundle("plugin-bundle", plugin, bundle_request(
+            plugin, plugin / "entry.ts", plugin / "worker.mjs", target="es2022",
+            externals=["plugin:answer", "virtual:message"], source_map="Linked"),
+            ["worker.mjs", "worker.mjs.map"])
         after = source_state()
         if before != after:
             raise RuntimeError("repository inputs changed during production; keep logs and regenerate from a stable tree")
@@ -183,11 +276,12 @@ export default { async fetch(request: Request) {
         manifest = {"schema": 1, "producer": before, "producer_build_command_supplied": args.producer_build_command,
                     "tools": {name: {"path": str(path), "sha256": sha(path)} for name, path in tools.items()},
                     "versions": versions, "environment": {name: environment[name] for name in (
-                        "ZFB_ESBUILD_BIN", "ZFB_NODE_BIN", "CARGO_BUILD_JOBS",
+                        "ZFB_NODE_BIN", "CARGO_BUILD_JOBS",
                         "CARGO_INCREMENTAL", "CARGO_TARGET_DIR", "RUSTUP_TOOLCHAIN") if name in environment},
                     "commands": commands, "files": inventory(frozen),
                     "policy": {"normal_cli_host": "deno_core 0.399.0 / v8 147.4.0",
-                               "esbuild": pin, "node_role": "producer/orchestrator only",
+                               "bundler": bundler, "bundle_warnings": bundle_warnings,
+                               "node_role": "producer/orchestrator only",
                                "wrapper": wrapper_receipt, "config_expected": {
                                    "outDir": "dist", "collections": [{"name": "posts", "path": "content/posts"}]},
                                "negative_expected": {"file_suffix": "throw.ts", "line": 6, "column": 9,

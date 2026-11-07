@@ -3,7 +3,8 @@
 // nonzero exit and output intact; a complete old-Cargo-pin-only or
 // old-fingerprint-sha256-only rejection is retained for the separately
 // reviewed, paired platform activation procedure (LOCK-FINGERPRINT-POLICY.md
-// section 11 for the dependency-graph re-pin, #4580).
+// section 11 for the dependency-graph re-pin, #4580), as is the exact
+// esbuild-free backend rejection of a schemaVersion-3 contract (#4635).
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -11,6 +12,7 @@ import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 // Compare canonical paths: a symlinked invocation path (macOS /var -> /private/var) must still run main() (#4465).
 import { realpathSync as realpathSyncForMain } from "node:fs";
+import { EXPECTED_BUNDLER_IDENTITY } from "../research/v3-island-size/check-budget.mjs";
 import { normalizeMeasurementDirectory } from "../research/v3-island-size/normalize-identity.mjs";
 
 const modes = ["workspace", "packed"];
@@ -21,6 +23,21 @@ const oldPinDiagnostics = [
     "packed provenance: Cargo lockfile differs from the contract",
   ],
   ["local dependency fingerprint: sha256 differs from the reviewed contract"],
+  // The esbuild-free producer (#4635) against a schemaVersion-3 contract that
+  // still pins the esbuild producer, its runner digest and the old Cargo.lock:
+  // retained for the separately reviewed `--reason bundler-backend` re-pin.
+  [
+    "local measurement runners: SHA-256 values differ from the reviewed contract",
+    "local Cargo.lock: SHA-256 differs from the reviewed contract",
+    ...["workspace", "packed"].flatMap((mode) => [
+      mode + " provenance: runner hashes differ from the contract",
+      mode +
+        " provenance: schema mismatch: esbuild-free producer (bundler " +
+        EXPECTED_BUNDLER_IDENTITY +
+        ") needs a schemaVersion 4 contract",
+      mode + " provenance: Cargo lockfile differs from the contract",
+    ]),
+  ],
 ];
 
 export function budgetAllowsRetention(result) {

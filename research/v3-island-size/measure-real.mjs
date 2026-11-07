@@ -17,6 +17,7 @@ import { basename, dirname, join, normalize, relative, resolve } from "node:path
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
+import { readBundlerIdentity } from "./check-budget.mjs";
 import { computeLockFingerprint } from "./lock-fingerprint.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
@@ -49,7 +50,6 @@ function option(flag) {
   return process.argv[i + 1];
 }
 const zfb = resolve(option("--zfb"));
-const esbuild = resolve(option("--esbuild"));
 const zfbTarball = resolve(option("--zfb-tarball"));
 const runtimeTarball = resolve(option("--runtime-tarball"));
 const packageDir = resolve(option("--package"));
@@ -65,8 +65,18 @@ if (onlyCase !== null && !Object.hasOwn(cases, onlyCase))
   throw new Error(`unknown --case ${onlyCase}; use ${Object.keys(cases).join(", ")}`);
 if (!["workspace", "packed"].includes(mode)) throw new Error("--mode must be workspace or packed");
 if (!/^[0-9a-f]{40}$/.test(sourceSha)) throw new Error("--source-sha must be a full SHA");
-const version = execFileSync(esbuild, ["--version"], { encoding: "utf8" }).trim();
-if (version !== "0.25.12") throw new Error(`expected esbuild 0.25.12, got ${version}`);
+// zfb bundles natively (#4635): the measured CLI must report the embedded
+// bundler this checkout compiles, and no external bundler binary is involved.
+const zfbVersionReport = execFileSync(zfb, ["--version"], { encoding: "utf8" });
+const reportedBundlers = [...zfbVersionReport.matchAll(/^embedded bundler: (\S+)$/gm)].map(
+  (match) => match[1],
+);
+if (reportedBundlers.length !== 1)
+  throw new Error(`zfb --version must report one embedded bundler, got ${zfbVersionReport}`);
+const bundlerIdentity = reportedBundlers[0];
+const checkoutBundler = readBundlerIdentity(repoRoot);
+if (bundlerIdentity !== checkoutBundler)
+  throw new Error(`zfb reports bundler ${bundlerIdentity}, the checkout pins ${checkoutBundler}`);
 const packageJson = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
 if (packageJson.name !== "@takazudo/zfb") throw new Error("wrong package path");
 const runtimePackageJson = JSON.parse(
@@ -125,11 +135,7 @@ function build(label, ids, pass) {
     for (const id of ids)
       copyFileSync(join(fixtures, `${id}.tsx`), join(work, "components", `${id}.tsx`));
     try {
-      execFileSync(zfb, ["build"], {
-        cwd: work,
-        env: { ...process.env, ZFB_ESBUILD_BIN: esbuild },
-        stdio: "pipe",
-      });
+      execFileSync(zfb, ["build"], { cwd: work, stdio: "pipe" });
     } catch (error) {
       throw new Error(
         `${label} pass ${pass}: zfb build failed\n${error.stdout?.toString() ?? ""}\n${error.stderr?.toString() ?? ""}`,
@@ -265,8 +271,7 @@ const report = {
     zfbBinarySha256: sha(readFileSync(zfb)),
     zfbTarballSha256: sha(readFileSync(zfbTarball)),
     runtimeTarballSha256: sha(readFileSync(runtimeTarball)),
-    esbuildVersion: version,
-    esbuildBinarySha256: sha(readFileSync(esbuild)),
+    bundlerIdentity,
     nodeVersion: process.version,
     zlibVersion: process.versions.zlib,
     compression:
@@ -291,7 +296,7 @@ const report = {
       : null,
 };
 writeFileSync(join(out, "measurement.json"), JSON.stringify(report, null, 2) + "\n");
-let markdown = `# Real zfb build: ${mode}\n\nSource ${sourceSha}; platform ${process.platform}/${process.arch}; package ${packageJson.version}; esbuild ${version}; Node ${process.version}; zlib ${process.versions.zlib}; gzipSync level 9, mtime 0. Two byte-identical dist inventories per case: **PASS**.\n\n| Case | Initial raw | Initial gzip | Later raw | Later gzip | All shipped raw | All shipped gzip |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n`;
+let markdown = `# Real zfb build: ${mode}\n\nSource ${sourceSha}; platform ${process.platform}/${process.arch}; package ${packageJson.version}; embedded bundler ${bundlerIdentity}; Node ${process.version}; zlib ${process.versions.zlib}; gzipSync level 9, mtime 0. Two byte-identical dist inventories per case: **PASS**.\n\n| Case | Initial raw | Initial gzip | Later raw | Later gzip | All shipped raw | All shipped gzip |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n`;
 for (const [label, value] of Object.entries(results))
   markdown += `| ${label} | ${value.initial.raw} | ${value.initial.gzip} | ${value.later.raw} | ${value.later.gzip} | ${value.shipped.raw} | ${value.shipped.gzip} |\n`;
 markdown +=
@@ -302,6 +307,6 @@ for (const [label, value] of Object.entries(results))
 if (report.incremental)
   markdown += `\nMulti-island incremental against scalar signal: ${report.incremental.secondIslandVersusScalar.raw} raw, ${report.incremental.secondIslandVersusScalar.gzip} gzip.\n`;
 markdown += `\nEvery emitted JS file is counted once. Sidecar metafiles in the matching modeled report attribute retained inputs; zfb's private resource and stage-audit metafiles are untouched. Historical v2/v3 recipe numbers are not reproduced.\n`;
-markdown += `\nProvenance SHA-256: zfb CLI ${report.provenance.zfbBinarySha256}; esbuild ${report.provenance.esbuildBinarySha256}; zfb tarball ${report.provenance.zfbTarballSha256}; zfb-runtime tarball ${report.provenance.runtimeTarballSha256}.\n`;
+markdown += `\nProvenance SHA-256: zfb CLI ${report.provenance.zfbBinarySha256}; zfb tarball ${report.provenance.zfbTarballSha256}; zfb-runtime tarball ${report.provenance.runtimeTarballSha256}.\n`;
 writeFileSync(join(out, "report.md"), markdown);
 console.log(join(out, "report.md"));

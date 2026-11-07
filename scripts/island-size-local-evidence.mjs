@@ -22,7 +22,7 @@ export function assertLocalSecurityTransition(transition) {
   );
   if (!approved)
     fail(
-      "only an exact approved #4314 security, #4268 noyalib or #4569 tokio transition supports local evidence",
+      "only an exact approved #4314 security, #4268 noyalib, #4569 tokio or #4635 esbuild-removal transition supports local evidence",
     );
   return approved;
 }
@@ -30,7 +30,8 @@ export function assertLocalSecurityTransition(transition) {
 // The only reasons that may stage owner-attested local evidence, each for its
 // own reviewed purpose: #4311 internal Cargo rewires (evidence.cargoRewire),
 // #4388 declared removal-only Cargo transitions (evidence.cargoRemoval),
-// the exact #4314 security, #4268 noyalib and #4569 tokio lock transitions
+// the exact #4314 security, #4268 noyalib, #4569 tokio and #4635
+// esbuild-removal lock transitions
 // (evidence.cargoTransition), the
 // provenance-only release-bump / runtime-identity re-pins, which carry no Cargo
 // transition (owner decision 2026-10-21: Darwin re-pins must not require a
