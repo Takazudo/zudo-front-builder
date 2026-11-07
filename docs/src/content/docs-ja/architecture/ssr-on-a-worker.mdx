@@ -59,15 +59,23 @@ export default async function AccountPage(): Promise<Response> {
 
 **`dist/_worker.js`** — アダプターが書き出す小さな自動生成のスタブ。これは Workers Static Assets において wrangler 設定の `main` が指し示す Worker のエントリです。ルート直下の形は Cloudflare Pages のアドバンストモードの慣習に従いますが、そのターゲットは未検証です。その役割は、`(env, ctx, request)` のための `AsyncLocalStorage` スコープをセットアップし、実際に受け取ったリクエストを（`env.ASSETS` 経由の静的アセットサーバーか内側のバンドルのいずれかへ）ディスパッチすることです。あなたのアプリケーションコードは含みません。
 
-**`dist/_zfb_inner.mjs`** — 本物のアプリケーションバンドル。すべての `pages/*.tsx` ファイル、レイアウト、コンポーネント、lib ヘルパーを単一の Hono 形の ESM モジュールにコンパイルしたものです。これが実際にページをレンダリングします。
+**`dist/_zfb_inner.mjs`** — リクエスト時のアプリケーションバンドル。`prerender = false` のルートと、それらが import するレイアウト、コンポーネント、lib ヘルパーを単一の Hono 形の ESM モジュールにコンパイルしたものです。これがそれらのページをリクエストごとに実際にレンダリングします。
+
+これは **2 回目のバンドル** から作られます。`zfb build` はまずすべてのルートをバンドルし、その完全なバンドルを組み込み V8 エンジンで実行してプリレンダリングの HTML を書き出します。アダプターが設定されている場合は、エントリを SSR ルートに絞ってもう一度バンドルし、その 2 回目のバンドルだけをアダプターに渡します。プリレンダリングされるルートはそのエントリから到達できないため、SSR ルートが同じコードを import していない限り、それらのページモジュールは含まれません。絞り込んだバンドルはコンテンツコレクションの import とコンテンツスナップショットも含まないため、SSR ルートの中の `getCollection()` からはエントリが 1 つも見えません。サイズが小さくなるのはバンドラーの通常のツリーシェイキングによるもので、関数単位で最小になることは期待しないでください。
 
 ### コンパイル済み Wasm モジュール
 
 SSR ルートが Wasm をインポートすると、zfb はこれら 2 つの JavaScript ファイルの隣に `<name>-<hash>.wasm` ファイル（例: `index_bg-a1b2c3d4.wasm` — これはバンドラーの `[name]-[hash]` というアセット名の命名規則であり、zfb 固有の仕様ではありません）を出力します。`_zfb_inner.mjs` はこれをコンパイル済みの `WebAssembly.Module` としてインポートし、`.assetsignore` はそれが公開アセットにならないようにします。Satori/Resvg の設定、Wrangler のルール、パッケージサイズの詳細は [SSR and Cloudflare Bindings guide](../guides/ssr-and-cloudflare-bindings.mdx#ssr-ルートで-wasm-をインポートする) にあります。
 
-この 2 ファイル構成は、アダプター内での 2 回目のバンドラーパスを回避します。Workerd のモジュールローダーは、デプロイされたワーカーディレクトリ内の相対 ESM インポートを解決するため、`_worker.js` は単純に `import inner from "./_zfb_inner.mjs"` でき、両ファイルは独立したままです。
+アダプター自身はバンドルし直しません。絞り込まれたバンドルを `_zfb_inner.mjs` にコピーし、その隣にラッパーを書き出すだけです。Workerd のモジュールローダーは、デプロイされたワーカーディレクトリ内の相対 ESM インポートを解決するため、`_worker.js` は単純に `import inner from "./_zfb_inner.mjs"` でき、両ファイルは独立したままです。
 
-より広い 2 バンドルのメンタルモデル（ワーカーバンドル対 islands バンドル）については [Architecture overview](./architecture-overview.mdx) を読んでください。
+この出力がビルドマシン、Worker、ブラウザのどこに位置づけられるかは [フロントエンド開発者のための zfb 全体像](./architecture-overview.mdx) を読んでください。
+
+### ファイルの置き場所とデプロイのされ方
+
+これらのファイルはすべて、プリレンダリングされた HTML と同じ `dist/` に書き出されます。アダプターは `dist/.assetsignore` も書き出し、そこに `_worker.js`、`_zfb_inner.mjs`、コピーしたすべての Wasm ファイルを列挙します。このリストによって Workers Static Assets のアップローダーはそれらのファイルをスキップするため、公開の静的アセットとしてはアップロードされません。代わりに `wrangler deploy` が、`_worker.js` を `main` とする Worker のモジュールとしてデプロイします。アダプターは既存の `.assetsignore` を上書きせずに自分のエントリをマージし、コピーする Wasm ファイルが `dist/` の既存ファイルを上書きしそうな場合はビルドを失敗させます。
+
+これはデプロイ用のパッケージングであって、アクセス制御ではありません。ファイル名や `.assetsignore` で隠れると考えてページモジュールにシークレットを置かないでください。シークレットは Worker のバインディングに置き、`getCloudflareContext()` で読み取ります。
 
 ## ディスパッチフロー
 
@@ -122,7 +130,7 @@ function canDelegateToAssets(env) {
 
 フォールスルーの規則は「404 のみ」であり「200 以外のみ」ではありません。これが重要なのは、アセットサーバーが、プリレンダリングされたルートの末尾スラッシュを正規化するためにリダイレクト（Workers Static Assets では 307、Cloudflare Pages では 308）を出すためです。ラッパーはこれらをクライアントへ届けて、ブラウザがそれを辿って `index.html` へ到達できるようにしなければなりません。`worker-wrapper.mjs` を見ると、ラッパーは `await env.ASSETS.fetch(request)` を呼び、`assetResponse.status !== 404` のときはレスポンスを手を加えずに返します。
 
-**なぜ GET/HEAD は静的優先なのか:** アセットサーバーは上で説明した末尾スラッシュの正規化を担当し、さらに島のハイドレーションを機能させるビルド時の head 注入（`<link rel="stylesheet">`、`<script type="module" src="/assets/islands-<hash>.js">`）も配信します。もし内側の Hono ルーターがプリレンダリングされたルートを先に処理すると、それらの注入されたアセットなしでリクエスト時に再レンダリングしてしまい、島はハイドレートされません。
+**なぜ GET/HEAD は静的優先なのか:** アセットサーバーは上で説明した末尾スラッシュの正規化を担当します。そしてプリレンダリングされたページは静的ファイルとしてしか存在しません。それらのファイルには、スタイルと島のハイドレーションを機能させるビルド時の head 注入（`<link rel="stylesheet">`、`<script type="module" src="/assets/islands-<hash>.js">`）が含まれており、そのルート自体は絞り込まれた内側のバンドルにまったく含まれていません。先に内側のルーターに尋ねても、せいぜい 404 が返るだけです。
 
 **なぜ POST/PUT/PATCH/DELETE は直接通すのか:** アセットサーバーは定義上リードオンリーです。フォーム送信のためにそれを探っても、常に 404 か 405 を返すだけ — 利益のない不要な往復です。フォーム送信、JSON API 呼び出し、あらゆるミューテーションは直接内側のワーカーへ進みます。
 
@@ -175,7 +183,9 @@ compatibility_flags = ["nodejs_compat"]
 
 2 つのカテゴリの出力が、`dist/_worker.js` と `dist/_zfb_inner.mjs` から意図的に欠けています。
 
-**Islands** — `"use client"` でマークされたコンポーネントは、別のバンドラーステップによって **単一の結合された** ブラウザ配信バンドルへとコンパイルされます。dev ではこのバンドルは `dist/assets/islands.js`（安定したファイル名、ハッシュなし）に出力され、プロダクションでは `ProductionAssetPipeline` がそれを `dist/assets/islands-<hash>.js` として書き出し、レンダリングされた HTML 内のすべての参照をハッシュ付き URL に書き換えます。このバンドルは `dist/_worker.js` の一部でも `dist/_zfb_inner.mjs` の一部でもありません。サーバーで実行される Worker コードではなく、ブラウザ配信の JavaScript です。Worker は静的 HTML のシェルをレンダリングし、ブラウザが islands バンドルをダウンロードして、そのトップレベルのハイドレーションコードがページ上のすべての `[data-zfb-island]` 要素を走査します。完全な仕組みは [Islands](./islands.mdx) を参照してください。
+**島のブラウザ用コード** — `"use client"` でマークされたコンポーネントは、別のバンドラーステップによって **単一の結合された** ブラウザ配信バンドルへとコンパイルされます。dev ではこのバンドルは `dist/assets/islands.js`（安定したファイル名、ハッシュなし）に出力され、プロダクションでは `ProductionAssetPipeline` がそれを `dist/assets/islands-<hash>.js` として書き出し、レンダリングされた HTML 内のすべての参照をハッシュ付き URL に書き換えます。このバンドルは `dist/_worker.js` の一部でも `dist/_zfb_inner.mjs` の一部でもありません。サーバーで実行される Worker コードではなく、ブラウザ配信の JavaScript です。Worker は静的 HTML のシェルをレンダリングし、ブラウザが islands バンドルをダウンロードして、そのトップレベルのハイドレーションコードがページ上のすべての `[data-zfb-island]` 要素を走査します。完全な仕組みは [Islands](./islands.mdx) を参照してください。
+
+この分離が当てはまるのは *ブラウザ用* のバンドルだけです。島のコンポーネントにはサーバーレンダリング用のコードもあります。SSR ルートが `<Island>` をレンダリングする場合、Worker がその初期 HTML を描画するため、そのコンポーネントと import 先はサーバー側のグラフに含まれます。そのコードが `_zfb_inner.mjs` に存在しないとは考えないでください。
 
 **プリレンダリングされたページ** — `prerender = true` をエクスポートする（またはエクスポートを省略する。デフォルトは true）任意のページは、ビルド時に静的 HTML へレンダリングされます。リクエスト時には、アセット層が `.html` ファイルを直接配信します — Workers Static Assets（`run_worker_first = false`）ではプラットフォームのエッジアセットルーターが、Cloudflare Pages では内側の `env.ASSETS` プローブが配信します — そのため、それらのルートに対して内側の Worker の `fetch` ハンドラは **呼ばれません**。
 
@@ -183,6 +193,6 @@ compatibility_flags = ["nodejs_compat"]
 
 ## 関連
 
-- [Architecture overview](./architecture-overview.mdx) — 2 バンドルのモデルと、ワーカーバンドルの形がビルド時とプロダクションの間の安定したコントラクトであること。
+- [フロントエンド開発者のための zfb 全体像](./architecture-overview.mdx) — 3 つの実行場所と、共通の `fetch` ハンドラの形がビルド時とプロダクションをどうつなぐか。
 - [Islands](./islands.mdx) — `"use client"` がコンポーネントを Worker の外に存在するブラウザ配信バンドルへどう opt-in させるか。
 - [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — 実際のセットアップ向け: `wrangler.toml`、D1 クエリ、シークレット、`wrangler dev` でのローカル開発。

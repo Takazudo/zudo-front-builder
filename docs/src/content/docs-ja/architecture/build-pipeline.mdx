@@ -18,7 +18,7 @@ zfb は、それぞれが 1 つの役割を担う小さな Rust クレート群�
 5. **Build orchestrator** — `crates/zfb-build`。ページ単位の作業を調整し、`atomic_write_string` 経由で出力をアトミックに書き込むため、書き込みの途中で `dist/` が中途半端に壊れた状態になることは決してありません。
 6. **Renderer** — `crates/zfb-render`。SWC で TSX を JS にコンパイルし、得られた ES モジュールを JS ランタイムホスト経由で評価し、ページの `default()` エクスポートを呼び出して HTML 文字列を生成します。コンテンツコレクションのエントリ（`.md` / `.mdx`）は JSX モジュールと同じパイプラインを通してコンパイルされます。レンダラは `mdx://<collection>/<slug>` の specifier を解決し、それらを `entry.Content` としてユーザーページに提供します（[MDX Components](./mdx-components.mdx) を参照）。
 7. **CSS pipeline** — `crates/zfb-css`。zudo-wind のユーティリティをコンパイルし、必要に応じて lightningcss で手書き CSS を処理します。[スタイリング](./styling.mdx)を参照してください。
-8. **Islands pipeline** — `crates/zfb-islands`。`"use client"` コンポーネントをスキャンし、それらすべてをバンドラー（デフォルトは Rolldown、`ZFB_BUNDLER=esbuild` のときは esbuild）経由で単一の共有 ESM モジュールにバンドルします。加えて、動的 `import()` 呼び出しのためのコード分割チャンクも生成します。[Islands](./islands.mdx) を参照してください。
+8. **Islands pipeline** — `crates/zfb-islands`。`"use client"` コンポーネントをスキャンし、それらすべてをバンドラー（デフォルトは Rolldown、`ZFB_BUNDLER=esbuild` のときは esbuild）経由で単一の共有 ESM モジュールにバンドルします。加えて、動的 `import()` 呼び出しのためのコード分割チャンクも生成します。[Islands](./islands.mdx) を参照してください。同じクレートが `.client.*` のクライアントスクリプトのエントリを検出し、それぞれを独立にバンドルします（`crates/zfb-islands/src/client_scripts.rs` の `discover_client_scripts` と `build_production_client_scripts`）。[Client Scripts](../guides/client-scripts.mdx) を参照してください。
 9. **Server** — `crates/zfb-server`。dev モード専用。ページキャッシュを静的ファイルとして配信する axum ベースの HTTP サーバーに加え、ブラウザリロードイベント用に `/__zfb/reload` で SSE チャネルを提供します（イベント種別の完全な内訳は [Dev mode lifecycle](./dev-mode-lifecycle.mdx) を参照）。
 
 ## 本番: `zfb build`
@@ -27,11 +27,12 @@ zfb は、それぞれが 1 つの役割を担う小さな Rust クレート群�
 
 CLI → Router → Graph → Build orchestrator → Renderer → CSS pipeline → Islands pipeline。
 
-ウォッチャーと dev サーバーは関与しません。すべてのページがレンダリングされ、すべての CSS
+ウォッチャーと dev サーバーは関与しません。プリレンダリング対象のすべてのページがレンダリングされ、すべての CSS
 バンドルが生成され、すべてのアイランドがバンドルされ、その結果が `dist/`（または `outDir`
 が指す場所）に配置されます。アトミック書き込みにより、ビルドが中断されても、半分上書きされた
 ぐちゃぐちゃの状態ではなく、以前の `dist/` がそのまま残ります。`prerender = false` の
-ルートについては、アダプタが静的 HTML の代わりにワーカーバンドルを出力します。その出力が
+ルートについては、zfb がそれらのルートに絞った 2 回目のバンドルを実行し、アダプタが静的 HTML の代わりに
+そのバンドルを Worker モジュールとして包みます。その出力が
 どう構成されるかは [SSR on a Worker (adapter mode)](./ssr-on-a-worker.mdx) を
 参照してください。
 

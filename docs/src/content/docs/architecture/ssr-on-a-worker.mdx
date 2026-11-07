@@ -86,9 +86,21 @@ an `AsyncLocalStorage` scope for
 each one — either to the static asset server via `env.ASSETS` or to the inner
 bundle. It does not contain your application code.
 
-**`dist/_zfb_inner.mjs`** — the real application bundle: every `pages/*.tsx` file,
-layouts, components, and lib helpers compiled into a single Hono-shaped ESM module.
-This is what actually renders your pages.
+**`dist/_zfb_inner.mjs`** — the request-time application bundle: your
+`prerender = false` routes plus the layouts, components, and lib helpers they
+import, compiled into a single Hono-shaped ESM module. This is what actually
+renders those pages per request.
+
+It comes from a **second bundle pass**. `zfb build` first bundles every route
+and runs that full bundle in its embedded V8 engine to write the prerendered
+HTML. When an adapter is configured, it then bundles again with the entry
+narrowed to the SSR routes, and only that second bundle is handed to the
+adapter. Prerendered routes are unreachable from its entry, so their page
+modules drop out unless an SSR route imports the same code. The narrowed
+bundle also leaves out content-collection imports and the content snapshot, so
+`getCollection()` inside an SSR route sees no entries. The size reduction comes
+from the bundler's normal tree-shaking; do not expect function-level
+minimality.
 
 ### Compiled Wasm modules
 
@@ -103,13 +115,30 @@ dev/SSG/SSR behavior — and the
 [SSR and Cloudflare Bindings guide](../guides/ssr-and-cloudflare-bindings.mdx#importing-wasm-in-an-ssr-route)
 for the Satori/Resvg setup, Wrangler rule, and package-size details.
 
-The two-file layout avoids a second bundler pass inside the adapter. Workerd's
-module loader resolves relative ESM imports from the deployed worker directory,
-so `_worker.js` can simply `import inner from "./_zfb_inner.mjs"` and both files
+The adapter itself does not bundle again: it copies the narrowed bundle to
+`_zfb_inner.mjs` and writes the wrapper next to it. Workerd's module loader
+resolves relative ESM imports from the deployed worker directory, so
+`_worker.js` can simply `import inner from "./_zfb_inner.mjs"` and both files
 stay independent.
 
-For the broader two-bundle mental model (worker bundle vs island bundles), read
-[Architecture overview](./architecture-overview.mdx).
+For where this output sits among the build machine, the Worker and the browser,
+read [How zfb works](./architecture-overview.mdx).
+
+### Where the files live and how they deploy
+
+All of these files are written into `dist/`, next to your prerendered HTML.
+The adapter also writes `dist/.assetsignore`, listing `_worker.js`,
+`_zfb_inner.mjs` and every copied Wasm file. That list tells the Workers Static
+Assets uploader to skip those files, so they are not uploaded as public static
+assets; `wrangler deploy` instead deploys them as the Worker's modules, with
+`_worker.js` as `main`. The adapter merges its entries into an existing
+`.assetsignore` instead of overwriting it, and fails the build rather than let a
+copied Wasm file overwrite an existing file in `dist/`.
+
+Treat this as deployment packaging, not as access control. Do not put secrets
+in page modules on the assumption that a filename or `.assetsignore` hides
+them; keep secrets in Worker bindings and read them through
+`getCloudflareContext()`.
 
 ## The dispatch flow
 
@@ -199,12 +228,13 @@ has to let those reach the client so the browser can follow them to the
 `assetResponse.status !== 404`.
 
 **Why static-first for GET/HEAD:** the asset server is responsible for the
-trailing-slash canonicalisation described above, and it also serves the
-build-time head injection (`<link rel="stylesheet">`,
-`<script type="module" src="/assets/islands-<hash>.js">`) that makes island
-hydration work. If the inner Hono router handled prerendered routes first, it
-would re-render them at request time without those injected assets, and islands
-would not hydrate.
+trailing-slash canonicalisation described above, and prerendered pages exist
+only as static files. They carry the build-time head injection
+(`<link rel="stylesheet">`,
+`<script type="module" src="/assets/islands-<hash>.js">`) that makes styling
+and island hydration work, and their routes are not in the narrowed inner
+bundle at all. Asking the inner router first would at best produce a 404 for
+them.
 
 **Why POST/PUT/PATCH/DELETE go straight through:** The asset server is read-only
 by definition. Probing it for a form submission would always return 404 or 405 —
@@ -291,7 +321,7 @@ Remix-without-the-Remix-runtime. No RSC streaming, no Server Actions abstraction
 Two categories of output are intentionally absent from `dist/_worker.js` and
 `dist/_zfb_inner.mjs`:
 
-**Islands** — components marked with `"use client"` are compiled by a separate
+**Island browser code** — components marked with `"use client"` are compiled by a separate
 bundler step into a **single combined** browser-shipped bundle. In dev the bundle
 lands at `dist/assets/islands.js` (stable filename, no hash); in production
 `ProductionAssetPipeline` writes it as `dist/assets/islands-<hash>.js` and
@@ -301,6 +331,12 @@ JavaScript, not server-executed Worker code. The Worker renders the static HTML
 shell; the browser downloads the islands bundle and its top-level hydration code
 walks every `[data-zfb-island]` element on the page. See
 [Islands](./islands.mdx) for the full mechanism.
+
+This separation covers the *browser* bundle only. An island's component also
+has server-rendering code: when an SSR route renders an `<Island>`, that
+component and its imports are part of the server graph, because the Worker
+renders its initial HTML. Do not assume that code is absent from
+`_zfb_inner.mjs`.
 
 **Prerendered pages** — any page that exports `prerender = true` (or omits the
 export, which defaults to true) is rendered to static HTML at build time. At
@@ -322,8 +358,8 @@ assets may never boot the Worker — and so never load the inner bundle — at a
 
 ## Related
 
-- [Architecture overview](./architecture-overview.mdx) — the two-bundle model
-  and how the worker bundle shape is the stable contract between build time and
+- [How zfb works](./architecture-overview.mdx) — the three execution
+  locations and how the shared `fetch` handler shape connects build time and
   production.
 - [Islands](./islands.mdx) — how `"use client"` opts a component into the
   browser-shipped bundle that lives outside the Worker.
