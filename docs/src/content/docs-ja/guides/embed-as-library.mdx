@@ -72,14 +72,29 @@ handle.shutdown()?;
 
 `config_path` は `zfb.config.json` と `zfb.config.ts` の両方を受け付けます。組み込みサーバーでは、**`zfb.config.json` が推奨形式です**。ビルドステップなしで直接読み込まれます（このガイドのすべての例もこれを使っています）。
 
-`zfb.config.ts` もサポートされていますが、TypeScript 設定を評価するには、まず **esbuild** でバンドルする必要があります。そして組み込みの `zfb-server` は、`zfb` CLI とは異なり、自前の esbuild バイナリを同梱していません。そのため、リポジトリ外の組み込み側が `.ts` ファイルを `config_path` に指定する場合は、次のいずれかが必要です。
+`zfb.config.ts` もサポートされています。TypeScript 設定は、まず監視下で動くネイティブの **コンパイラワーカー** プロセス（組み込み側の実行ファイル自身の子プロセスで動く Rolldown）でバンドルされ、その後 `zfb` CLI と同じ方法で評価されます。その実行ファイルがワーカーモードを提供できるかどうかはホストにしか分からないため、ライブラリが自分でランチャーを導出することはありません。組み込み側が `.ts` ファイルを `config_path` に指定する場合は、次のいずれかが必要です。
 
-- 代わりに `zfb.config.json` を同梱または生成する — esbuild が一切不要で、最もシンプルな道です。
-- `build()` を呼び出す前に、環境変数 `ZFB_ESBUILD_BIN` を利用可能な esbuild CLI バイナリに設定する。
+- 代わりに `zfb.config.json` を同梱または生成する — ワーカーが一切不要で、最もシンプルな道です。
+- `main` の最初で `zfb_server::run_compiler_worker_if_requested()` を呼び出し、その実行ファイルのランチャーをビルダーに渡す:
+
+```rust
+use zfb_server::{Server, WorkerLauncher, COMPILER_WORKER_ARG};
+
+// `main` の最初に置く: このプロセスがワーカーとして起動された場合は、
+// そのジョブを 1 つ処理し、その終了ステータスで終了する。
+if let Some(code) = zfb_server::run_compiler_worker_if_requested() {
+    return code;
+}
+
+let server = Server::builder()
+    .config_path("./zfb.config.ts")
+    .compiler_worker(WorkerLauncher::new(std::env::current_exe()?).arg(COMPILER_WORKER_ARG))
+    .build()?;
+```
 
 <Note>
 
-`.ts` 設定が "esbuild binary not found" エラーで失敗する場合、原因はこれです。`zfb.config.json` に切り替えるか、`ZFB_ESBUILD_BIN` を設定してください。
+ランチャーなしの `.ts` 設定では、`build()` が `ServerBuilder::compiler_worker` を名指しするエラーで失敗します。`zfb.config.json` に切り替えるか、上記のようにランチャーを設定してください。
 
 </Note>
 

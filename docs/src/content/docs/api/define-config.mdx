@@ -164,10 +164,10 @@ same mode, loader, and define settings as the page/SSR pass. This keeps code
 that is shared between server and browser graphs from changing meaning as it
 crosses a bundle boundary.
 
-These settings use esbuild's option names and semantics (`--platform=neutral`,
-`--main-fields`, loaders, raw `define` expressions). The default Rolldown
-bundler receives the same settings and applies them to every pass, and
-`ZFB_BUNDLER=esbuild` passes them to esbuild unchanged.
+zfb bundles every pass natively with Rolldown; there is no other bundler
+backend. The settings below are translated into that bundler's options:
+a platform-neutral page/SSR pass, an explicit main-fields list, externals,
+loaders keyed by extension, and raw `define` expressions.
 
 ### Bundle mode
 
@@ -186,12 +186,12 @@ three keys in the table are reserved and cannot be overridden through
 
 ### `bundle.exclude`, `bundle.mainFields`, `bundle.external`
 
-The page/SSR pass bundles with esbuild's `--platform=neutral`, which is
-deliberately minimal: its `main-fields` resolution list is empty by default,
-and it rejects packages that resolve only through a CJS-only `require()`
-path. These three fields are escape hatches for CJS-only dependencies that
-reach the neutral pass — either directly imported or newly pulled in by an
-eager `import.meta.glob(...)` expansion. All three are absent/empty by
+The page/SSR pass bundles for a platform-neutral target, which is
+deliberately minimal: it applies no implicit `main` fields and no Node
+builtins, so a package that has no usable `exports` map does not resolve by
+default. These three fields are escape hatches for such dependencies
+(typically CJS-only packages) that reach the neutral pass — either directly
+imported or newly pulled in by an eager `import.meta.glob(...)` expansion. All three are absent/empty by
 default, which is byte-identical to a build without this knob.
 
 `bundle.exclude` — project-relative glob patterns (gitignore-style, matched
@@ -216,7 +216,7 @@ Before: a route's `import.meta.glob("./components/**/*.tsx")` picks up
 neutral-platform build fails to resolve it. After: the glob skips
 `*.stories.tsx` files entirely and the build succeeds.
 
-`bundle.mainFields` — an explicit esbuild `--main-fields` list for the
+`bundle.mainFields` — an explicit package main-fields list for the
 neutral pass. Setting e.g. `["main", "module"]` lets a dependency that ships
 only `main`/`module` (no `exports` map) resolve, since `neutral` otherwise
 consults no main-fields at all.
@@ -231,12 +231,14 @@ export default defineConfig({
 });
 ```
 
-Before: `The "main" field here was ignored. Main fields must be configured
-explicitly when using the "neutral" platform.` After: esbuild consults
-`main` then `module` and resolves the dependency.
+Before: a dependency that publishes only `main`/`module` fails to resolve in
+the neutral pass. After: the bundler consults `main` then `module` and
+resolves the dependency. An `exports` map always takes precedence.
 
-`bundle.external` — bare specifiers to mark `--external` for the neutral
-pass, so esbuild leaves them unbundled instead of trying to resolve them.
+`bundle.external` — bare specifiers to mark external for the neutral
+pass, so the bundler leaves them unbundled instead of trying to resolve them.
+An entry covers the specifier and its subpaths; a single trailing `*` makes it
+a prefix match, and any other `*` is an error.
 The other escape hatch for a CJS-only dependency that `mainFields` alone
 can't satisfy. zfb combines this list with its own external specifiers for the pass.
 
@@ -250,13 +252,13 @@ export default defineConfig({
 });
 ```
 
-Before: esbuild tries to resolve `some-cjs-only-package` under
-`--platform=neutral` and fails. After: esbuild marks the bare import
-external instead of resolving it.
+Before: the bundler tries to resolve `some-cjs-only-package` in the neutral
+pass and fails. After: it keeps the bare import external instead of
+resolving it.
 
 ### `bundle.loaders`
 
-Use `loaders` to assign an additional loader (named as in esbuild) to a file extension:
+Use `loaders` to assign an additional loader to a file extension:
 
 ```ts
 import { defineConfig } from "zfb/config";
@@ -282,7 +284,7 @@ loads valid UTF-8 text, regardless of the extension or its configured loader.
 
 ### `bundle.define`
 
-`define` values are raw esbuild replacement expressions, not automatically
+`define` values are raw JavaScript replacement expressions, not automatically
 quoted strings:
 
 ```ts

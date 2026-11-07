@@ -118,8 +118,8 @@ OS が分類できないイベント種別はすべて `Modified` に折りた�
    ティックは多くても一度しか再バンドルしません。）
 2. **CSS パイプライン。** `rerun_css` が true のとき、zudo-wind と lightningcss を実行します。
    CSS 出力が前のティックとバイト単位で同一なら、`Css` イベントは発行されません。
-3. **アイランドの再バンドル。** `rerun_islands` が true のとき、バンドラーが動きます。デフォルトはプロセス内の
-   Rolldown、`ZFB_BUNDLER=esbuild` なら esbuild のサブプロセスです。すべての `"use client"` コンポーネントをバンドルし、単一の
+3. **アイランドの再バンドル。** `rerun_islands` が true のとき、バンドラー（プロセス内の
+   Rolldown）が動きます。すべての `"use client"` コンポーネントをバンドルし、単一の
    結合モジュールを **安定したファイル名** — `/assets/islands.js` として配信される `.zfb-build/dev-assets/assets/islands.js`（`crates/zfb-types/src/asset_urls.rs`
    の `STABLE_ISLANDS_FILENAME` 定数で、再エクスポートされてアイランドバンドラに消費されます） —
    に書き込みます。ファイル名にコンテンツハッシュはありません。[なぜ dev ではファイル名が安定したままなのか](#なぜ-dev-ではファイル名が安定したままなのか)

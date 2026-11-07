@@ -433,7 +433,7 @@ For a project with three islands (`Counter`, `ThemeToggle`, `SearchBox`), the is
 dist/assets/islands.js
 ```
 
-All islands are statically imported into a single bundler entry point (Rolldown by default, or esbuild with `ZFB_BUNDLER=esbuild`), so the shared bundle contains every island component. `ProductionAssetPipeline` then renames it to a content-hashed filename before writing the final output:
+All islands are statically imported into a single entry point of the native Rolldown bundler, so the shared bundle contains every island component. `ProductionAssetPipeline` then renames it to a content-hashed filename before writing the final output:
 
 ```
 dist/assets/islands-<hash>.js

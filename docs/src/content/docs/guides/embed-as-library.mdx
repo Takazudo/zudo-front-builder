@@ -73,14 +73,29 @@ The async terminal `Server::serve(self, shutdown).await` is also available for h
 
 `config_path` accepts both `zfb.config.json` and `zfb.config.ts`. For an embedded server, **`zfb.config.json` is the recommended format** — it is read directly with no build step (every example in this guide uses it).
 
-`zfb.config.ts` is also supported, but evaluating a TypeScript config first bundles it with **esbuild**, and an embedded `zfb-server` does not ship its own esbuild binary (unlike the `zfb` CLI). So an out-of-repo embedder pointing `config_path` at a `.ts` file must either:
+`zfb.config.ts` is also supported. A TypeScript config is first bundled by a supervised native **compiler worker** process (Rolldown, in a child process of your own executable), then evaluated the same way the `zfb` CLI does it. Only the host knows whether its executable can serve that worker mode, so the library never derives a launcher itself. An embedder pointing `config_path` at a `.ts` file must either:
 
-- ship or generate a `zfb.config.json` instead — needs no esbuild at all, the simplest path; or
-- set the `ZFB_ESBUILD_BIN` environment variable to a usable esbuild CLI binary before calling `build()`.
+- ship or generate a `zfb.config.json` instead — needs no worker at all, the simplest path; or
+- make its `main` call `zfb_server::run_compiler_worker_if_requested()` before doing anything else, and pass a launcher for that executable to the builder:
+
+```rust
+use zfb_server::{Server, WorkerLauncher, COMPILER_WORKER_ARG};
+
+// First thing in `main`: when this process was started as the worker,
+// serve that one job and exit with its status.
+if let Some(code) = zfb_server::run_compiler_worker_if_requested() {
+    return code;
+}
+
+let server = Server::builder()
+    .config_path("./zfb.config.ts")
+    .compiler_worker(WorkerLauncher::new(std::env::current_exe()?).arg(COMPILER_WORKER_ARG))
+    .build()?;
+```
 
 <Note>
 
-If a `.ts` config fails with an "esbuild binary not found" error, this is the cause — switch to `zfb.config.json` or set `ZFB_ESBUILD_BIN`.
+A `.ts` config without a launcher fails `build()` with an error that names `ServerBuilder::compiler_worker`. Switch to `zfb.config.json`, or set up the launcher as above.
 
 </Note>
 

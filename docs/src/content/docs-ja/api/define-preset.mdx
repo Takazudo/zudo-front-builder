@@ -34,7 +34,7 @@ export function docsPreset(): Partial<ZfbConfig> {
 
 ## `source_package` マーカー
 
-`source_package` は `definePreset` が `config.plugins` の各オブジェクトに付与する snake_case フィールドです。値はプリセット自身の npm パッケージ名（`package.json` の `"name"` フィールドに書く文字列、例: `"@scope/zfb-preset-docs"`）です。プレーンな文字列リテラルなので esbuild によるバンドルを経ても保持され、Value 層のプリセットマージを経て Rust ローダーに構造化データとして届きます。
+`source_package` は `definePreset` が `config.plugins` の各オブジェクトに付与する snake_case フィールドです。値はプリセット自身の npm パッケージ名（`package.json` の `"name"` フィールドに書く文字列、例: `"@scope/zfb-preset-docs"`）です。プレーンな文字列リテラルなので 設定のバンドルを経ても保持され、Value 層のプリセットマージを経て Rust ローダーに構造化データとして届きます。
 
 Rust 側のフィールド名は `source_package`（verbatim snake_case）です。`sourcePackage` は**使わないでください** — zfb の `PluginConfig` 構造体には `#[serde(rename_all)]` 属性がないため、JSON キーはフィールド名と完全に一致する必要があります。
 
@@ -65,7 +65,7 @@ Rust リゾルバが `source_package` を持つプラグインエントリを処
 
 | パス / ケース | 挙動 |
 | --- | --- |
-| デフォルトのインプロセス V8（一般的なパス） | `source_package` リテラルが esbuild バンドルを経ても保持される → Rust がパッケージ名を解決 → プリセットディレクトリ基準の解決が機能する |
+| デフォルトのインプロセス V8（一般的なパス） | `source_package` リテラルが 設定のバンドルを経ても保持される → Rust がパッケージ名を解決 → プリセットディレクトリ基準の解決が機能する |
 | スリム node サブプロセス | 同一 — マーカーは同じ Value パイプラインを通過する |
 | `zfb.config.json`（evaluator なし） | インラインのプリセットリテラルに `source_package` が含まれないため、プロジェクトルート基準のまま（変更なし）。プラグインが解決できない場合はより明確なエラーメッセージが表示される |
 | `definePreset` なし / マーカーなしのプラグイン | プロジェクトルート基準のまま（変更なし）。プラグインが解決できない場合はより明確なエラーメッセージが表示される。完全に後方互換 |

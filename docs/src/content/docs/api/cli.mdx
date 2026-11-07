@@ -68,7 +68,7 @@ zfb dev [--port <port>] [--host [<host>]]
 | `--port` | u16 | `3000`* | Port to bind the dev server to. |
 | `--host` | string | `localhost`* | Host interface to bind to. Bare `--host` (no value) is a shortcut for `0.0.0.0`. |
 | `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | Give this dev server its own directory for zfb's generated artifacts. Under a scratch dir, dev ignores the prebuilt output directory. See [Scratch dirs](#scratch-dirs). |
-| `--define` | `KEY=EXPR`, repeatable | none | Add an esbuild define for this invocation, overriding `bundle.define` per key. See [Per-invocation defines](#per-invocation-defines). |
+| `--define` | `KEY=EXPR`, repeatable | none | Add a bundler define for this invocation, overriding `bundle.define` per key. See [Per-invocation defines](#per-invocation-defines). |
 
 \* Falls back through: CLI flag → `port`/`host` in `zfb.config.json` → built-in default.
 
@@ -131,13 +131,13 @@ zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 | `--no-strict-broken` | boolean flag | config/default | Do not fail this build on broken links. Overrides `strictBrokenLinks: true` from config or presets. Disables the top-level strict overlay only — a `linkValidation` block that explicitly sets `failOnBroken: true` stays in effect. |
 | `--strict-content-bridge` | boolean flag | config/default | Fail this build (non-zero exit) when a content-collection `.md`/`.mdx` entry's compiled JSX cannot be parsed for the MDX bridge and would render `<pre data-zfb-content-fallback>`. Overrides `strictContentBridge: false` or an omitted config value. |
 | `--no-strict-content-bridge` | boolean flag | config/default | Do not fail this build on an MDX content-bridge fallback; zfb still warns and emits the fallback. Overrides `strictContentBridge: true` from config or presets. |
-| `--strict-plain-css-imports` | boolean flag | config/default | Fail this build when esbuild resolves a plain `.css` import from JavaScript/TypeScript whose bytes are not emitted. Overrides `strictPlainCssImports: false` or an omitted config value. |
+| `--strict-plain-css-imports` | boolean flag | config/default | Fail this build when the bundler resolves a plain `.css` import from JavaScript/TypeScript whose bytes are not emitted. Overrides `strictPlainCssImports: false` or an omitted config value. |
 | `--no-strict-plain-css-imports` | boolean flag | config/default | Continue with warnings for dropped plain CSS imports. Overrides `strictPlainCssImports: true` from config or presets. |
 | `--emit-render-artifacts` | boolean flag | config/default | Write a JSON render artifact under `__zfb/render/` for every markdown/MDX-backed HTML route whose page renders exactly one top-level content region. Overrides `emitRenderArtifacts: false` or an omitted config value. |
 | `--no-emit-render-artifacts` | boolean flag | config/default | Do not write render artifacts for this build. Overrides `emitRenderArtifacts: true` from config or presets. |
 | `--scratch-dir` | path | `ZFB_SCRATCH_DIR` / `.zfb-build` | Give this build its own directory for zfb's generated artifacts. The output directory is still shared. See [Scratch dirs](#scratch-dirs). |
 | `--warnings-json` | path | none | Write build diagnostics to a schemaVersion 1 JSON file. Failed build reports may be partial. |
-| `--define` | `KEY=EXPR`, repeatable | none | Add an esbuild define for this build, overriding `bundle.define` per key. See [Per-invocation defines](#per-invocation-defines). |
+| `--define` | `KEY=EXPR`, repeatable | none | Add a bundler define for this build, overriding `bundle.define` per key. See [Per-invocation defines](#per-invocation-defines). |
 
 HTML minification is off by default unless `minifyHtml: true` is set or `--minify-html` is passed. It runs inside zfb's Rust post-processing pipeline and does not spawn a Node.js minifier subprocess. The first version is conservative: rendered HTML pages are candidates, source `.html` passthrough pages remain verbatim, and non-HTML outputs are skipped.
 
@@ -151,7 +151,7 @@ Render-artifact export is likewise off by default. `--emit-render-artifacts` and
 
 | Variable | Values | Description |
 |---|---|---|
-| `ZFB_KEEP_BUILD_SHADOW` | `1` or `true` | Leave this build's shadow tempdirs on disk after the process exits — on a failing build too — instead of deleting them, for inspecting the generated shadow tree (injected-route shims, resolved `node_modules` layout) without an external polling harness. Covers exactly three tempdir classes: the bundler's shadow root, its exact-`node_modules` isolation root, and the package-routes overlay (only allocated when the project registers package routes). Each kept path is printed once to stderr, naming its role. Other `zfb build` temp producers (config loading, islands/esbuild, CSS, plugin resolution) are **not** covered. A kept dir is never auto-reaped — cleaning it up is your responsibility (contrast `ZFB_KEEP_SHADOW_SESSION` under [`zfb dev`](#zfb-dev), which a later boot eventually reaps). `zfb dev` is entirely unaffected by this flag, even where it happens to share an allocator with `zfb build`. Off by default. |
+| `ZFB_KEEP_BUILD_SHADOW` | `1` or `true` | Leave this build's shadow tempdirs on disk after the process exits — on a failing build too — instead of deleting them, for inspecting the generated shadow tree (injected-route shims, resolved `node_modules` layout) without an external polling harness. Covers exactly three tempdir classes: the bundler's shadow root, its exact-`node_modules` isolation root, and the package-routes overlay (only allocated when the project registers package routes). Each kept path is printed once to stderr, naming its role. Other `zfb build` temp producers (config loading, islands bundling, CSS, plugin resolution) are **not** covered. A kept dir is never auto-reaped — cleaning it up is your responsibility (contrast `ZFB_KEEP_SHADOW_SESSION` under [`zfb dev`](#zfb-dev), which a later boot eventually reaps). `zfb dev` is entirely unaffected by this flag, even where it happens to share an allocator with `zfb build`. Off by default. |
 
 ### Example
 
@@ -595,14 +595,14 @@ Without a scratch dir, dev behaves exactly as before.
 A scratch dir isolates zfb's own generated artifacts. These stay shared between concurrent commands by design:
 
 - **The output directory.** Two `zfb build` runs with the same output directory still overwrite each other. Pass a different `--outdir` to each one.
-- **Temp files that are already per-process.** esbuild entry, tsconfig, and virtual-module temp files in the project root, shadow sessions, and config-loader temp dirs each get a unique name per process, so they do not collide.
+- **Temp files that are already per-process.** Bundler entry, tsconfig, and virtual-module temp files in the project root, shadow sessions, and config-loader temp dirs each get a unique name per process, so they do not collide.
 - **A user tsconfig's `.tsbuildinfo`.** When your tsconfig turns on `incremental` or `composite`, `zfb check` runs `tsc` with your settings unchanged, so tsc writes that file where your tsconfig says.
 - **The `.zfb/` staging directory.** Project code imports from it, so it cannot move.
 - **Plugin-owned directories.** A plugin that writes to its own project-root directory (for example `.zudo-doc/`) is still shared between concurrent commands. Plugin isolation requires the plugin to adopt `ctx.scratchDir`. See [Plugins](../architecture/plugins.mdx#scratch-space-for-intermediates).
 
 ## Per-invocation defines
 
-`--define KEY=EXPR` adds an esbuild define substitution for one invocation, on top of the config's [`bundle.define`](./define-config.mdx#bundle-settings-bundle-define). Use it to build or serve the same checkout with different values, for example a different origin per environment, without editing `zfb.config.ts`.
+`--define KEY=EXPR` adds a bundler define substitution for one invocation, on top of the config's [`bundle.define`](./define-config.mdx#bundle-settings-bundle-define). Use it to build or serve the same checkout with different values, for example a different origin per environment, without editing `zfb.config.ts`.
 
 ```sh
 zfb build --define __ORIGIN__='"https://www.example.com"'
@@ -612,9 +612,9 @@ zfb dev --scratch-dir .zfb-build/dev-preview \
 ```
 
 - **Commands.** `--define` is repeatable and accepted by `zfb dev`, `zfb build`, and `zfb check`. `zfb preview` rejects it, because preview serves already-built output and bundles nothing.
-- **Values are raw esbuild expressions**, exactly like `bundle.define`. A string needs its own inner quotes: `--define __ORIGIN__='"https://a.example"'`. The shell's single quotes keep the inner double quotes intact. The flag splits on the first `=`, so the expression itself may contain `=`.
+- **Values are raw JavaScript expressions**, exactly like `bundle.define`. A string needs its own inner quotes: `--define __ORIGIN__='"https://a.example"'`. The shell's single quotes keep the inner double quotes intact. The flag splits on the first `=`, so the expression itself may contain `=`.
 - **Merge.** The CLI values are merged per key over `bundle.define`, and the CLI wins. When the same key is repeated, the last occurrence wins, so a script can append an override to a shared argument list. Plugins see the merged map in `ctx.config.bundle.define`.
-- **Errors.** A value with no `=`, an empty key, or an empty expression is a CLI usage error. So is a reserved key: `import.meta.env.PROD`, `import.meta.env.DEV`, or `process.env.NODE_ENV`. zfb does not check key syntax any further; esbuild reports an invalid key at bundle time, the same as for `bundle.define`.
+- **Errors.** A value with no `=`, an empty key, or an empty expression is a CLI usage error. So is a reserved key: `import.meta.env.PROD`, `import.meta.env.DEV`, or `process.env.NODE_ENV`. zfb does not check key syntax any further.
 - **Security.** The warning on `bundle.define` applies here too: every value ends up in browser bundles, so never pass secrets.
 
 ### `--define` with `zfb check`
@@ -654,8 +654,7 @@ The following environment variables affect `zfb` globally (not specific to one s
 | `ZFB_DEV_DEFER_BUNDLE` | unset | Set to `0` to opt out of the boot-lazy bundle deferral (either variant; build the renderer before bind instead of after the first request). On by default when boot-lazy is active. |
 | `ZFB_DEV_TIMING` | unset | Set to `1` or `true` to print dev-mode phase timings for each file-change tick. |
 | `ZFB_PLUGIN_HOOK_TIMEOUT` | `120` (seconds) | Maximum time (in seconds) any single plugin hook reply is awaited before the plugin host is force-killed and the build fails. Precedence: `pluginHookTimeoutSecs` in config > this env var > 120s built-in default. |
-| `ZFB_BUNDLER` | `rolldown` | Bundler for the page/SSR and islands bundles. `rolldown` (the default) bundles in process; `esbuild` uses the embedded esbuild instead. Any other value is a usage error. When it is unset, `ZFB_ROLLDOWN_PROTOTYPE=0` still selects esbuild. |
-| `ZFB_ESBUILD_BIN` | unset | Absolute path to an esbuild binary. Used by the bundler, islands compiler, tests, and TypeScript config loading (`zfb.config.ts`) when an embedded/staged esbuild binary is unavailable or should be overridden. |
+| `ZFB_BUNDLER`, `ZFB_ROLLDOWN_PROTOTYPE` | unset | Removed. zfb always bundles natively with Rolldown and no longer ships or runs esbuild. Setting either variable, to any value, fails before any command runs; unset it. `ZFB_ESBUILD_BIN` no longer exists and is ignored. |
 | `ZFB_DEBUG_SNAPSHOT` | unset | Set to `1` or `true` to log the content snapshot's entry count and serialized byte size to stderr during `zfb build`, for monitoring V8 memory pressure on large sites. See [Incremental Rebuild](../architecture/incremental-rebuild.mdx). |
 | `ZFB_SKIP_WRANGLER_VERSION_CHECK` | unset | Set to `1`, `true`, or `yes` to bypass the `zfb preview` adapter-mode wrangler minimum-version gate. Intended for temporary release-engineering use. |
 | `ZFB_SCRATCH_DIR` | unset | Scratch dir for `zfb dev`, `zfb build`, `zfb check`, and `zfb preview` when `--scratch-dir` is not passed. An empty or whitespace-only value counts as unset. See [Scratch dirs](#scratch-dirs). |
