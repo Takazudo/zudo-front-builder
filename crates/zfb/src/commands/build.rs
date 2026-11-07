@@ -67,8 +67,8 @@ use zfb_islands::{
     build_production_client_scripts_with_workers, build_production_islands_asset,
     discover_client_scripts, scan_islands_with_meta_and_first_party_root,
     scan_reachable_modules_with_meta, scan_reachable_modules_with_meta_and_first_party_root,
-    BundleConfig, ClientScriptBundleOutput, ClientScriptEntry, ClientScriptWorkerEntry,
-    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver, StageAuditPolicy,
+    BundleConfig, ClientScriptBundleOutput, ClientScriptEntry, ClientScriptWorkerEntry, FsResolver,
+    IslandsBundler, IslandsBundlerConfig, StageAuditPolicy,
 };
 use zfb_router::Router;
 
@@ -4156,7 +4156,7 @@ pub(crate) fn build_default_islands_payload(
 /// boundary (every legitimately staged input — the mirrored project plus the
 /// wholesale-mirrored siblings — lives under it) and `first_party_root` as the
 /// live-source boundary a package-name escape climbs to. `metafile_cwd` is not
-/// passed here: [`EsbuildSubprocessConfig`] already runs esbuild from — and
+/// passed here: [`IslandsBundlerConfig`] already bundles from — and
 /// audits against — its `working_dir` (the stage's `bundle_working_dir`,
 /// nested below `stage_root`), wired in issue #1705.
 fn stage_escape_audit_policy(
@@ -5021,39 +5021,23 @@ pub(crate) fn prepare_default_islands_payload(
         );
     }
 
-    // Sub #212 follow-up — extend embedded-binary AND embedded-node_modules
-    // extraction to the islands bundler.
+    // Sub #212 follow-up — extend embedded-node_modules extraction to the
+    // islands bundler.
     //
-    // 1. Binary path: `EsbuildSubprocessConfig::default()` resolves to a
-    //    fixed `crates/zfb/binaries/esbuild/esbuild` slot when neither
-    //    `binary_path` is overridden nor `ZFB_ESBUILD_BIN` is set; consumer
-    //    projects without that workspace dir hit the same "esbuild binary
-    //    not found at default slot" failure as the main bundler did before
-    //    this PR's other fix. Mirror the wiring applied in `run_build` and
-    //    the CSS engine path: when no env override is in play, pre-extract
-    //    the embedded esbuild via `embedded_binary("esbuild")` and pin its
-    //    path on the config via `with_binary_path`.
-    //
-    // 2. node_modules resolution: esbuild walks UP from each importing
-    //    file's directory looking for `node_modules`. When the consumer
-    //    project has no on-disk `node_modules`, every bare import in
-    //    user-authored components and in the synthesised entry
-    //    (`@takazudo/zfb/runtime`, owned JSX modules) fails. The main bundler
-    //    addresses this via a "shadow
-    //    tree" with a `node_modules` symlink (see
-    //    `crates/zfb-build/src/bundler.rs:751`); the islands bundler runs
-    //    esbuild directly against the user's source tree so a shadow tree
-    //    is not available. Instead, extract the embedded vendor
-    //    (`embedded_node_modules()`) into a tempdir and pass its path via
-    //    the `NODE_PATH` env var on the esbuild subprocess. esbuild
-    //    consults `NODE_PATH` as a fallback when the upward walk doesn't
-    //    find a match — see esbuild's
-    //    https://esbuild.github.io/api/#node-paths and the
-    //    `with_extra_env` setter on `EsbuildSubprocessConfig`. This
-    //    preserves project_root as the working_dir (so tsconfig
-    //    discovery and the entry-tempfile placement comment block in
-    //    `zfb-islands/src/esbuild.rs::bundle_one_entry` still hold).
-    let _embedded_esbuild_handle: Option<tempfile::TempDir>;
+    // Resolution walks UP from each importing file's directory looking for
+    // `node_modules`. When the consumer project has no on-disk
+    // `node_modules`, every bare import in user-authored components and in
+    // the synthesised entry (`@takazudo/zfb/runtime`, owned JSX modules)
+    // fails. The main bundler addresses this via a "shadow tree" with a
+    // `node_modules` symlink (see `crates/zfb-build/src/bundler.rs:751`); the
+    // islands bundler runs directly against the user's source tree so a
+    // shadow tree is not available. Instead, extract the embedded vendor
+    // (`embedded_node_modules()`) into a tempdir and pass its path through
+    // `IslandsBundlerConfig::with_node_path`, which every job searches after
+    // the upward walk (Node's `NODE_PATH` semantics). This preserves
+    // project_root as the working_dir (so tsconfig discovery and the
+    // entry-tempfile placement comment block in
+    // `zfb-islands/src/bundle_job.rs::bundle_one_entry` still hold).
     let _embedded_nm_handle: Option<
         crate::render_pipeline::embedded_node_modules_cache::EmbeddedNodeModulesLease,
     >;
@@ -5068,7 +5052,7 @@ pub(crate) fn prepare_default_islands_payload(
         .map(|shadow| shadow.bundle_working_dir.clone())
         .unwrap_or_else(|| project_root.to_path_buf());
     let mut esbuild_cfg =
-        EsbuildSubprocessConfig::default().with_working_dir(islands_bundler_working_dir);
+        IslandsBundlerConfig::default().with_working_dir(islands_bundler_working_dir);
     esbuild_cfg.original_virtual_modules = plugin_config
         .virtual_modules
         .iter()
@@ -5102,8 +5086,8 @@ pub(crate) fn prepare_default_islands_payload(
     } else {
         match crate::render_pipeline::embedded_node_modules_for_project(project_root) {
             Ok(lease) => {
-                esbuild_cfg = esbuild_cfg
-                    .with_extra_env("NODE_PATH", lease.node_modules().as_os_str().to_owned());
+                esbuild_cfg =
+                    esbuild_cfg.with_node_path(lease.node_modules().as_os_str().to_owned());
                 _embedded_nm_handle = Some(lease);
             }
             Err(e) => {
@@ -5119,28 +5103,6 @@ pub(crate) fn prepare_default_islands_payload(
                 _embedded_nm_handle = None;
             }
         }
-    }
-    if std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
-        match crate::render_pipeline::embedded_binary("esbuild") {
-            Ok((handle, path)) => {
-                esbuild_cfg = esbuild_cfg.with_binary_path(path);
-                _embedded_esbuild_handle = Some(handle);
-            }
-            Err(e) => {
-                if island_pass_emits_diagnostics(token_only) {
-                    warn_build(
-                        codes::EMBEDDED_TOOL_FALLBACK,
-                        format!(
-                            "could not extract embedded esbuild for islands bundler ({e}); \
-                         falling back to default slot resolver"
-                        ),
-                    );
-                }
-                _embedded_esbuild_handle = None;
-            }
-        }
-    } else {
-        _embedded_esbuild_handle = None;
     }
     // #261 — wire alias + virtual-module registries from the plugin setup
     // hook into the islands esbuild config. When both are empty (no plugin
@@ -5179,7 +5141,7 @@ pub(crate) fn prepare_default_islands_payload(
         esbuild_cfg = esbuild_cfg.with_virtual_modules(islands_virtual_modules);
     }
 
-    let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
+    let bundler = IslandsBundler::new(esbuild_cfg);
     // Thread the scanner's `<ClientRouter />` detection (#289) into the
     // bundler so the synthetic islands entry picks up the client-router
     // runtime's side-effect import. When false the generated entry is
@@ -6324,14 +6286,13 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
         None => (entries.as_slice(), project_root.to_path_buf(), false),
     };
 
-    // Reuse the same embedded-esbuild + embedded-node_modules wiring as
+    // Reuse the same embedded-node_modules wiring as
     // `build_default_islands_payload`. Client scripts are plain TS/JS
     // files so the same NODE_PATH resolution strategy applies.
-    let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<
         crate::render_pipeline::embedded_node_modules_cache::EmbeddedNodeModulesLease,
     >;
-    let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
+    let mut esbuild_cfg = IslandsBundlerConfig::default().with_working_dir(bundler_working_dir);
     // Issue #1707: arm the guard (b) stage-escape audit for the client-script
     // stage when it widened past project_root (a pnpm-workspace build). Same
     // shape as the islands shadow — `stage.root` is the staged-input boundary;
@@ -6382,8 +6343,8 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     } else {
         match crate::render_pipeline::embedded_node_modules_for_project(project_root) {
             Ok(lease) => {
-                esbuild_cfg = esbuild_cfg
-                    .with_extra_env("NODE_PATH", lease.node_modules().as_os_str().to_owned());
+                esbuild_cfg =
+                    esbuild_cfg.with_node_path(lease.node_modules().as_os_str().to_owned());
                 _embedded_nm_handle = Some(lease);
             }
             Err(e) => {
@@ -6398,28 +6359,8 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
             }
         }
     }
-    if std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
-        match crate::render_pipeline::embedded_binary("esbuild") {
-            Ok((handle, path)) => {
-                esbuild_cfg = esbuild_cfg.with_binary_path(path);
-                _embedded_esbuild_handle = Some(handle);
-            }
-            Err(e) => {
-                warn_build(
-                    codes::EMBEDDED_TOOL_FALLBACK,
-                    format!(
-                        "could not extract embedded esbuild for client-script bundler ({e}); \
-                     falling back to default slot resolver"
-                    ),
-                );
-                _embedded_esbuild_handle = None;
-            }
-        }
-    } else {
-        _embedded_esbuild_handle = None;
-    }
 
-    let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
+    let bundler = IslandsBundler::new(esbuild_cfg);
     // JSX is harmless for plain .ts files; reuse the islands JSX import
     // source so the owned JSX import source applies consistently to any .tsx
     // client scripts.
@@ -7020,13 +6961,12 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     // cwd is the mirrored project dir (issue #1674).
     let client_tsconfig_boundary = preprocess_stage.as_ref().map(|stage| stage.root.clone());
 
-    // Set up the esbuild subprocess — same wiring as `build_default_client_scripts_payloads`
+    // Set up the client-script bundler — same wiring as `build_default_client_scripts_payloads`
     // but using `BundleConfig::dev()` (no minification, sourcemaps on).
-    let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<
         crate::render_pipeline::embedded_node_modules_cache::EmbeddedNodeModulesLease,
     >;
-    let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
+    let mut esbuild_cfg = IslandsBundlerConfig::default().with_working_dir(bundler_working_dir);
     // Issue #1707: arm the guard (b) stage-escape audit for the client-script
     // stage when it widened past project_root (a pnpm-workspace build). Same
     // shape as the islands shadow — `stage.root` is the staged-input boundary;
@@ -7077,8 +7017,8 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     } else {
         match crate::render_pipeline::embedded_node_modules_for_project(project_root) {
             Ok(lease) => {
-                esbuild_cfg = esbuild_cfg
-                    .with_extra_env("NODE_PATH", lease.node_modules().as_os_str().to_owned());
+                esbuild_cfg =
+                    esbuild_cfg.with_node_path(lease.node_modules().as_os_str().to_owned());
                 _embedded_nm_handle = Some(lease);
             }
             Err(e) => {
@@ -7093,28 +7033,8 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
             }
         }
     }
-    if std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
-        match crate::render_pipeline::embedded_binary("esbuild") {
-            Ok((handle, path)) => {
-                esbuild_cfg = esbuild_cfg.with_binary_path(path);
-                _embedded_esbuild_handle = Some(handle);
-            }
-            Err(e) => {
-                warn_build(
-                    codes::EMBEDDED_TOOL_FALLBACK,
-                    format!(
-                        "could not extract embedded esbuild for client-script bundler ({e}); \
-                     falling back to default slot resolver"
-                    ),
-                );
-                _embedded_esbuild_handle = None;
-            }
-        }
-    } else {
-        _embedded_esbuild_handle = None;
-    }
 
-    let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
+    let bundler = IslandsBundler::new(esbuild_cfg);
     let bundle_cfg = BundleConfig::dev()
         .with_outdir(assets_root.to_path_buf())
         .with_loaders(bundle_loaders)

@@ -31,19 +31,13 @@
 //! plugin path (not the user's `tsconfig.paths`) would resolve the import and the
 //! test could pass on current `main` for the wrong reason. The ONLY thing that may
 //! resolve `@/marker` is the user's `tsconfig.json`.
-//!
-//! Esbuild gating mirrors the other islands integration tests: locate a binary via
-//! `zfb_test_utils::locate_esbuild()` (env `ZFB_ESBUILD_BIN` → workspace
-//! `crates/zfb/binaries/esbuild/` slot → `which esbuild`) and skip with a printed
-//! note when none is present.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use zfb_islands::{
-    BundleConfig, ClientBundler, EsbuildSubprocessBundler, EsbuildSubprocessConfig, Island,
+    BundleConfig, ClientBundler, External, Island, IslandsBundler, IslandsBundlerConfig,
 };
-use zfb_test_utils::locate_esbuild;
 
 const TEST_BUILD_TOKEN: &str = "0123456789abcdef";
 
@@ -80,11 +74,11 @@ fn write_user_tsconfig_fixture(root: &Path) {
 
 /// The external flags every fixture shares — same set the neighbouring
 /// `exact_match_resolution.rs` uses so the vendor-lib runtime stays unbundled.
-fn vendor_lib_externals() -> Vec<std::ffi::OsString> {
+fn vendor_lib_externals() -> Vec<External> {
     vec![
-        std::ffi::OsString::from("--external:vendor-lib"),
-        std::ffi::OsString::from("--external:vendor-lib/*"),
-        std::ffi::OsString::from("--external:@takazudo/*"),
+        External::Package("vendor-lib".to_string()),
+        External::Prefix("vendor-lib/".to_string()),
+        External::Prefix("@takazudo/".to_string()),
     ]
 }
 
@@ -97,11 +91,6 @@ fn vendor_lib_externals() -> Vec<std::ffi::OsString> {
 /// with `Could not resolve "@/marker"`.
 #[test]
 fn island_bundle_resolves_user_tsconfig_path_with_plugin_present() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[islands_user_tsconfig_paths] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_user_tsconfig_fixture(&root);
@@ -115,11 +104,10 @@ fn island_bundle_resolves_user_tsconfig_path_with_plugin_present() {
     )
     .unwrap();
 
-    let cfg = EsbuildSubprocessConfig {
-        extra_args: vendor_lib_externals(),
-        ..EsbuildSubprocessConfig::default()
+    let cfg = IslandsBundlerConfig {
+        externals: vendor_lib_externals(),
+        ..IslandsBundlerConfig::default()
     }
-    .with_binary_path(esbuild)
     .with_working_dir(&root)
     // UNRELATED plugin registration — does NOT resolve `@/marker`. Its sole purpose
     // is to make `paths_entries` non-empty so the synthetic tsconfig is written.
@@ -127,7 +115,7 @@ fn island_bundle_resolves_user_tsconfig_path_with_plugin_present() {
         "virtual:zfb-test".to_string(),
         "export default function Unrelated() { return null; }\n".to_string(),
     )]);
-    let bundler = EsbuildSubprocessBundler::new(cfg);
+    let bundler = IslandsBundler::new(cfg);
     let bundle_cfg = BundleConfig::default()
         .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(root.join("dist"));
@@ -153,11 +141,6 @@ fn island_bundle_resolves_user_tsconfig_path_with_plugin_present() {
 /// path independent of any JSX configuration.
 #[test]
 fn client_script_resolves_user_tsconfig_path_with_plugin_present() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[islands_user_tsconfig_paths] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_user_tsconfig_fixture(&root);
@@ -171,17 +154,16 @@ fn client_script_resolves_user_tsconfig_path_with_plugin_present() {
     )
     .unwrap();
 
-    let cfg = EsbuildSubprocessConfig {
-        extra_args: vendor_lib_externals(),
-        ..EsbuildSubprocessConfig::default()
+    let cfg = IslandsBundlerConfig {
+        externals: vendor_lib_externals(),
+        ..IslandsBundlerConfig::default()
     }
-    .with_binary_path(esbuild)
     .with_working_dir(&root)
     .with_virtual_modules(vec![(
         "virtual:zfb-test".to_string(),
         "export default function Unrelated() { return null; }\n".to_string(),
     )]);
-    let bundler = EsbuildSubprocessBundler::new(cfg);
+    let bundler = IslandsBundler::new(cfg);
     let bundle_cfg = BundleConfig::default().with_outdir(root.join("dist"));
 
     let js = bundler
@@ -205,11 +187,6 @@ fn client_script_resolves_user_tsconfig_path_with_plugin_present() {
 /// `is_empty()` early return; this is the behavioural half.)
 #[test]
 fn island_bundle_resolves_user_tsconfig_path_without_plugin() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[islands_user_tsconfig_paths] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_user_tsconfig_fixture(&root);
@@ -225,13 +202,12 @@ fn island_bundle_resolves_user_tsconfig_path_without_plugin() {
 
     // No `.with_virtual_modules` / `.with_alias_entries` — empty `paths_entries`,
     // so no `--tsconfig=` is emitted and esbuild discovers the real tsconfig.
-    let cfg = EsbuildSubprocessConfig {
-        extra_args: vendor_lib_externals(),
-        ..EsbuildSubprocessConfig::default()
+    let cfg = IslandsBundlerConfig {
+        externals: vendor_lib_externals(),
+        ..IslandsBundlerConfig::default()
     }
-    .with_binary_path(esbuild)
     .with_working_dir(&root);
-    let bundler = EsbuildSubprocessBundler::new(cfg);
+    let bundler = IslandsBundler::new(cfg);
     let bundle_cfg = BundleConfig::default()
         .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(root.join("dist"));

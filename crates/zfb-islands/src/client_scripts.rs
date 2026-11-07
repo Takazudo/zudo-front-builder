@@ -27,7 +27,7 @@
 //! [`build_production_client_scripts`] mirrors [`build_production_islands_asset`]
 //! but produces one [`ProductionClientScriptAsset`] per discovered entry instead
 //! of one combined asset. Each entry is bundled independently via
-//! [`EsbuildSubprocessBundler::bundle_client_script_file`], content-hashed by
+//! [`IslandsBundler::bundle_client_script_file`], content-hashed by
 //! `ProductionAssetPipeline`, and served from
 //! `/assets/client/<name>-<hash>.js`.
 
@@ -36,8 +36,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use crate::bundle_job::IslandsBundler;
 use crate::bundler::{BundleChunk, BundleConfig};
-use crate::esbuild::EsbuildSubprocessBundler;
 use zfb_types::{stable_client_script_relative_path, stable_client_script_url};
 
 // The `.client.*` filename contract (infix, accepted extensions, and the
@@ -198,7 +198,7 @@ pub fn discover_client_scripts(
     Ok((entries, collisions))
 }
 
-/// Run the esbuild bundler over each discovered client-script entry and return
+/// Run the bundler over each discovered client-script entry and return
 /// production asset payloads.
 ///
 /// - Empty input (`entries` is empty) returns `Ok(vec![])` without invoking
@@ -212,7 +212,7 @@ pub fn discover_client_scripts(
 /// relative paths and URLs (no hash). `ProductionAssetPipeline` performs the
 /// hashing and HTML rewrite step.
 pub fn build_production_client_scripts(
-    bundler: &EsbuildSubprocessBundler,
+    bundler: &IslandsBundler,
     entries: &[ClientScriptEntry],
     config: &BundleConfig,
 ) -> Result<Vec<ProductionClientScriptAsset>> {
@@ -224,10 +224,10 @@ pub fn build_production_client_scripts(
 ///
 /// The map is keyed by [`ClientScriptEntry::entry_name`]. Every worker is
 /// bundled as an independent, self-contained ESM entry and returned under its
-/// contract filename. Unknown or missing subprocess outputs are rejected by
-/// the esbuild read-back boundary.
+/// contract filename. Unknown or missing job outputs are rejected by
+/// the staging read-back boundary.
 pub fn build_production_client_scripts_with_workers(
-    bundler: &EsbuildSubprocessBundler,
+    bundler: &IslandsBundler,
     entries: &[ClientScriptEntry],
     workers_by_entry: &BTreeMap<String, Vec<ClientScriptWorkerEntry>>,
     config: &BundleConfig,
@@ -385,9 +385,9 @@ mod tests {
 
     #[test]
     fn build_production_client_scripts_returns_empty_for_no_entries() {
-        use crate::esbuild::{EsbuildSubprocessBundler, EsbuildSubprocessConfig};
-        let cfg = EsbuildSubprocessConfig::default().with_mock_output("// mock");
-        let bundler = EsbuildSubprocessBundler::new(cfg);
+        use crate::bundle_job::{IslandsBundler, IslandsBundlerConfig};
+        let cfg = IslandsBundlerConfig::default().with_mock_output("// mock");
+        let bundler = IslandsBundler::new(cfg);
         let bundle_cfg = BundleConfig::default().with_outdir(std::path::PathBuf::from("/tmp"));
         let result = build_production_client_scripts(&bundler, &[], &bundle_cfg).unwrap();
         assert!(result.is_empty());
@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn build_production_client_scripts_bundles_each_entry() {
-        use crate::esbuild::{EsbuildSubprocessBundler, EsbuildSubprocessConfig};
+        use crate::bundle_job::{IslandsBundler, IslandsBundlerConfig};
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         // Stage two .client.ts files.
@@ -404,8 +404,8 @@ mod tests {
             std::fs::write(&path, "// client script").unwrap();
         }
 
-        let cfg = EsbuildSubprocessConfig::default().with_mock_output("// bundled");
-        let bundler = EsbuildSubprocessBundler::new(cfg);
+        let cfg = IslandsBundlerConfig::default().with_mock_output("// bundled");
+        let bundler = IslandsBundler::new(cfg);
         let bundle_cfg = BundleConfig::default().with_outdir(root.to_path_buf());
 
         let entries = vec![
@@ -439,16 +439,15 @@ mod tests {
 
     #[test]
     fn build_production_client_scripts_carries_worker_companions() {
-        use crate::esbuild::{EsbuildSubprocessBundler, EsbuildSubprocessConfig};
+        use crate::bundle_job::{IslandsBundler, IslandsBundlerConfig};
 
         let dir = tempfile::tempdir().unwrap();
         let entry = dir.path().join("widget.client.ts");
         let worker = dir.path().join("worker.ts");
         std::fs::write(&entry, "console.log('entry');\n").unwrap();
         std::fs::write(&worker, "self.postMessage('worker');\n").unwrap();
-        let bundler = EsbuildSubprocessBundler::new(
-            EsbuildSubprocessConfig::default().with_mock_output("// bundled"),
-        );
+        let bundler =
+            IslandsBundler::new(IslandsBundlerConfig::default().with_mock_output("// bundled"));
         let entries = vec![ClientScriptEntry {
             entry_name: "widget".into(),
             source_path: entry,

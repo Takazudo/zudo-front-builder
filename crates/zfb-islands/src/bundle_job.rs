@@ -1,20 +1,15 @@
-//! Production [`ClientBundler`] implementation: shell out to the esbuild
-//! CLI binary.
+//! Production [`ClientBundler`] implementation on zfb's in-process native
+//! bundler (`zfb_rolldown_prototype`).
 //!
-//! Sub 2 of Epic #6 lives here. The trait + shared types
-//! ([`crate::bundler::ClientBundler`], [`crate::bundler::Island`],
-//! [`crate::bundler::BundleConfig`], [`crate::bundler::BundleOutput`]) are
-//! owned by Sub 1 in [`crate::bundler`]; this module is the production
-//! implementation that wraps the esbuild subprocess.
-//!
-//! This adapter uses a config struct that locates the binary (defaulting
-//! to `crates/zfb/binaries/esbuild`),
-//! an implementation that builds the command line, runs esbuild, reads the
-//! output back into memory, and returns it in [`crate::bundler::BundleOutput`]
-//! — the bundler does NOT write `islands.js` to disk. Downstream consumers
-//! (the prod pipeline, the dev server) own all disk writes.
-//! `ProductionAssetPipeline` is the single source of truth for content
-//! hashing per the Prod Asset Graph epic.
+//! The trait + shared types ([`crate::bundler::ClientBundler`],
+//! [`crate::bundler::Island`], [`crate::bundler::BundleConfig`],
+//! [`crate::bundler::BundleOutput`]) are owned by [`crate::bundler`]; this
+//! module builds one typed [`BundleRequest`] per job (the shared islands entry,
+//! each module worker, each client script), runs it into a private staging
+//! directory, and reads every output back into memory — the bundler does NOT
+//! write `islands.js` to disk. Downstream consumers (the prod pipeline, the dev
+//! server) own all disk writes. `ProductionAssetPipeline` is the single source
+//! of truth for content hashing per the Prod Asset Graph epic.
 //!
 //! The scanner supplies only validated concrete boundary targets here.
 //! The generated entry imports each target through its selected export,
@@ -27,37 +22,27 @@
 //!
 //! `"use client"` islands are allowed to `import "./x.css"` (and
 //! `import styles from "./x.module.css"`), same as any other component in
-//! the project. [`build_esbuild_args_with_entry_name`] passes
-//! `--loader:.css=empty` **and** `--loader:.module.css=empty`, mirroring the SSR bundler's
-//! `ESBUILD_LOADER_ARGS` (`crates/zfb-build/src/bundler.rs`): the loader
-//! substitutes an empty exports object for the CSS module at compile time,
-//! so the import resolves and esbuild does not emit a sibling CSS output
-//! file for `read_back_outdir` to reject. Authored CSS is shipped
-//! separately via the zfb CSS pipeline's `styles-<hash>.css` — islands
-//! never carry those bytes in their own JS bundle.
+//! the project. Every job maps `.css` **and** `.module.css` to the empty
+//! loader, mirroring the SSR bundler: the import resolves to an empty module
+//! and no sibling CSS output is emitted for the read-back to reject. Authored
+//! CSS is shipped separately via the zfb CSS pipeline's `styles-<hash>.css` —
+//! islands never carry those bytes in their own JS bundle. A configured raw
+//! `css` loader is rejected by the native bundler with its own message.
 //!
 //! **Out of scope (deliberately):** unlike the SSR bundler,
 //! `.module.css` imports inside an island do NOT get a scoped
-//! class-name map. On esbuild 0.25 a bare `--loader:.css=empty` does NOT
-//! cover `.module.css` — esbuild's native `local-css` loader claims that
-//! extension unless a more specific rule is registered (issue #1410) — so
-//! `.module.css` gets its own explicit `--loader:.module.css=empty`; then
-//! `import styles from "./x.module.css"` resolves to `styles === undefined`
-//! in the client bundle rather than the real scoped names. Extracting a real client-side
-//! class map is tracked by the shadow-materialisation follow-up (#1404);
-//! the docs wave (#1406) documents this limitation for users.
+//! class-name map; `import styles from "./x.module.css"` resolves to
+//! `styles === undefined` in the client bundle (#1404, documented by #1406).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use zfb_build::etxtbsy::spawn_with_etxtbsy_retry_blocking;
 use zfb_build::metafile_deps::audit_metafile_stage_escape_at_path;
+use zfb_rolldown_prototype::{BundleRequest, External, JsxRuntime, Loader, OutputLayout, Platform};
 use zfb_types::json_string;
 
 use crate::bundler::{
@@ -106,290 +91,65 @@ pub struct ClientScriptBundleOutput {
     pub companions: Vec<BundleChunk>,
 }
 
-/// The pinned esbuild CLI version this crate runs against.
+/// Entry file pattern for the shared islands bundle.
 ///
-/// Re-exported from `zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION`, the
-/// single source of truth for all external tool version pins. To bump,
-/// update that constant and follow the "External tool version pins"
-/// procedure in `CONTRIBUTING.md` at the workspace root.
-pub use zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION;
-
-/// esbuild `--entry-names` template for the shared islands bundle.
-///
-/// `islands` (no extension — esbuild appends `.js`) pins the entry's
+/// `islands` (no extension — the bundler appends `.js`) pins the entry's
 /// basename to the stable `STABLE_ISLANDS_FILENAME` so the staging
-/// read-back can recognise the entry file among the esbuild outdir
-/// contents. A `debug_assert!` in `bundle_one_entry` ties this template
-/// to `STABLE_ISLANDS_FILENAME`'s stem so the two can never silently
-/// drift.
-pub(crate) const ESBUILD_ENTRY_NAME_TEMPLATE: &str = "islands";
+/// read-back can recognise the entry file among the staged outputs. A
+/// `debug_assert!` in [`build_bundle_request`] ties this template to
+/// `STABLE_ISLANDS_FILENAME`'s stem so the two can never silently drift.
+pub(crate) const ENTRY_NAME_TEMPLATE: &str = "islands";
 
-/// esbuild `--chunk-names` template for code-split chunks.
+/// Chunk file pattern for code-split chunks.
 ///
-/// `islands-chunk-[hash]` puts esbuild's own content hash in each chunk's
+/// `islands-chunk-[hash]` puts the bundler's own content hash in each chunk's
 /// **flat** basename, in the SAME directory as the entry. This is the core
-/// of the bundler split contract: esbuild — not the prod pipeline — owns
+/// of the bundler split contract: the bundler — not the prod pipeline — owns
 /// the chunk hash, and bakes relative `import("./islands-chunk-<hash>.js")`
 /// references between chunks/entry. Downstream therefore MUST ship chunks
 /// under these exact names (never rename them); only the entry may later be
 /// content-hashed by the prod pipeline, because its relative chunk imports
-/// still resolve from the shared directory.
-///
-/// A future bundler swap (the Rolldown spike — issue #318) MUST reproduce
-/// this contract: stable-named entry, self-hashed flat chunks, relative
-/// inter-chunk imports. See [`crate::BundleOutput::chunks`] and
-/// `ESBUILD_CHUNK_FILENAME_PREFIX` (the read-back validation gate).
-pub(crate) const ESBUILD_CHUNK_NAME_TEMPLATE: &str = "islands-chunk-[hash]";
+/// still resolve from the shared directory. See [`crate::BundleOutput::chunks`]
+/// and `CHUNK_FILENAME_PREFIX` (the read-back validation gate).
+pub(crate) const CHUNK_NAME_TEMPLATE: &str = "islands-chunk-[hash]";
 
 /// Basename prefix every emitted chunk file must carry
-/// (`islands-chunk-...`), derived from [`ESBUILD_CHUNK_NAME_TEMPLATE`].
-/// `bundle_one_entry`'s read-back rejects any non-entry output file that
-/// is not flat (no path separators / traversal) and does not start with
-/// this prefix — a defence against a future esbuild change or a malformed
-/// template silently smuggling an unexpected file into `BundleOutput`.
-pub(crate) const ESBUILD_CHUNK_FILENAME_PREFIX: &str = "islands-chunk-";
+/// (`islands-chunk-...`), derived from [`CHUNK_NAME_TEMPLATE`].
+/// The read-back rejects any non-entry output file that is not flat (no path
+/// separators / traversal) and does not start with this prefix.
+pub(crate) const CHUNK_FILENAME_PREFIX: &str = "islands-chunk-";
 
-/// Prefix for each per-worker `--entry-names` template.
+/// Prefix for each per-worker entry file pattern.
 ///
 /// The complete entry name is derived from
 /// [`zfb_types::module_worker_filename`] with the trailing `.js` removed;
-/// esbuild appends that extension again. Keeping the reserved prefix beside
-/// the islands entry/chunk templates makes the read-back filename classes
-/// explicit; aliasing the shared constant pins this layer to the #1500
-/// contract at compile time.
-pub(crate) const ESBUILD_WORKER_ENTRY_NAME_PREFIX: &str = zfb_types::MODULE_WORKER_FILENAME_PREFIX;
+/// the bundler appends that extension again. Aliasing the shared constant
+/// pins this layer to the #1500 contract at compile time.
+pub(crate) const WORKER_ENTRY_NAME_PREFIX: &str = zfb_types::MODULE_WORKER_FILENAME_PREFIX;
 
-/// esbuild `--asset-names` template for locked non-entry browser resources.
+/// Asset file pattern for locked non-entry browser resources.
 ///
 /// The template is flat and self-hashed so the copied resource can remain
 /// beside a production-hashed islands entry without a later writer having to
-/// rename (and therefore break) the URL that esbuild already emitted.
-pub(crate) const ESBUILD_RESOURCE_NAME_TEMPLATE: &str = "islands-resource-[name]-[hash]";
+/// rename (and therefore break) the URL the bundler already emitted.
+pub(crate) const RESOURCE_NAME_TEMPLATE: &str = "islands-resource-[name]-[hash]";
 
 /// Prefix every locked file-loader resource output must carry.
-pub(crate) const ESBUILD_RESOURCE_FILENAME_PREFIX: &str = "islands-resource-";
+pub(crate) const RESOURCE_FILENAME_PREFIX: &str = "islands-resource-";
 
-/// Fixed metafile basename inside the private shared-islands staging outdir.
-/// It is an oracle used only during read-back and is never itself returned as
-/// a companion.
-const ESBUILD_RESOURCE_METAFILE_FILENAME: &str = "meta.json";
+/// Fixed module-graph basename inside the private shared-islands staging
+/// outdir. It is an oracle used only during read-back and is never itself
+/// returned as a companion.
+const RESOURCE_METAFILE_FILENAME: &str = "meta.json";
 
 const ZFB_RESOURCE_MJS_EXTENSION: &str = ".zfb-resource.mjs";
 const WASM_EXTENSION: &str = ".wasm";
 
-/// SHA-256 of the pinned esbuild binary for the current platform,
-/// lowercase hex.
-///
-/// The constant is resolved at compile time using `cfg!()` so the
-/// correct hash is embedded for every supported platform without
-/// runtime branching.  Platforms outside the supported set compile to
-/// the empty string `""`, which skips the checksum gate with a warning
-/// (the `--version` gate still runs).
-///
-/// These digests are the SHA-256 of the *extracted* binary inside the
-/// platform-specific npm package (e.g. `@esbuild/linux-x64`), **not**
-/// of the .tgz itself.  They must be bumped in lock-step with
-/// `EXPECTED_ESBUILD_VERSION` and with the matching constants in
-/// `crates/zfb/build.rs` whenever the esbuild pin is updated.
-///
-/// Verified on 2026-05-05 against npm registry v0.25.12.
-pub const EXPECTED_ESBUILD_SHA256: &str = {
-    // Linux x86_64
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    {
-        "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014"
-    }
-
-    // Linux aarch64
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    {
-        "840ad255d6fd587b126d8b2d59ab506d8562785b9bc76249dc3b0e1bdd2ca449"
-    }
-
-    // macOS aarch64 (Apple Silicon)
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    {
-        "3e030ee2aa86ad3c33e5e95ae0e53bb03de40e0da35c9b1180a67de4a497cae5"
-    }
-
-    // macOS x86_64 (Intel)
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    {
-        "bd09e65a6a1a903c40269d3a4ae23ffc6139f691703728c1faf25f62e48baa40"
-    }
-
-    // Windows x86_64
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    {
-        "cae1bbc86f4df800b01d99e28aea0a154b02243de6797e98f48a9b88a64a7be0"
-    }
-
-    // Fallback for unsupported platforms: skip checksum gate.
-    #[cfg(not(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "aarch64"),
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "macos", target_arch = "x86_64"),
-        all(target_os = "windows", target_arch = "x86_64"),
-    )))]
-    {
-        ""
-    }
-};
-
-/// One-time cache of `(binary_path → outcome)` for the version + checksum
-/// verification. The first invocation of an `EsbuildSubprocessBundler`
-/// pays the cost of running `esbuild --version` and hashing the binary;
-/// subsequent invocations short-circuit. Wrapped in a `Mutex<BTreeMap>`
-/// so a process running multiple bundlers (e.g. an integration test
-/// suite) verifies each pinned binary path exactly once.
-fn verification_cache() -> &'static Mutex<BTreeMap<PathBuf, ()>> {
-    static CACHE: OnceLock<Mutex<BTreeMap<PathBuf, ()>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-
-/// Run the version + checksum gate on `binary_path`. Idempotent across
-/// the process: each path is verified at most once, but every distinct
-/// path is verified the first time it is seen.
-///
-/// `skip` lets callers (notably tests using `mock_subprocess`) bypass
-/// the gate without having to expose the cache directly.
-fn ensure_binary_verified(binary_path: &Path, skip: bool) -> Result<()> {
-    if skip {
-        return Ok(());
-    }
-    let key = binary_path.to_path_buf();
-    {
-        let cache = verification_cache().lock().unwrap_or_else(|p| {
-            tracing::warn!(
-                site = "esbuild::verification_cache",
-                "mutex poisoned, recovered"
-            );
-            p.into_inner()
-        });
-        if cache.contains_key(&key) {
-            return Ok(());
-        }
-    }
-
-    if !binary_path.exists() {
-        return Err(anyhow!(
-            "esbuild binary not found at {}; \
-             set ZFB_ESBUILD_BIN or update EsbuildSubprocessConfig::binary_path",
-            binary_path.display()
-        ));
-    }
-
-    // 1. Version gate.
-    //
-    // Bounded ETXTBSY retry (issue #2896). A packaged `zfb` extracts the
-    // embedded esbuild into a tempdir, and this gate is the *first* exec of
-    // that just-written file — the spawn most exposed to the fork-to-exec
-    // race `zfb_build::etxtbsy` documents. `.output()` is unrolled into
-    // spawn + `wait_with_output` because only the `execve` inside `spawn()`
-    // can yield ETXTBSY, so the wait must stay outside the retried closure;
-    // the stdio triple below is what `.output()` would have set implicitly.
-    // This crate's other esbuild spawns are gated behind this one, so they
-    // never meet a binary that has not already been exec'd successfully.
-    let mut version_command = Command::new(binary_path);
-    version_command
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let version_output = spawn_with_etxtbsy_retry_blocking(|| version_command.spawn())
-        .with_context(|| {
-            format!(
-                "failed to spawn `{} --version` for the version gate",
-                binary_path.display()
-            )
-        })?
-        .wait_with_output()
-        .with_context(|| {
-            format!(
-                "failed to run `{} --version` for the version gate",
-                binary_path.display()
-            )
-        })?;
-    if !version_output.status.success() {
-        let stderr = String::from_utf8_lossy(&version_output.stderr);
-        return Err(anyhow!(
-            "esbuild --version exited with status {}: {}",
-            version_output.status,
-            stderr.trim()
-        ));
-    }
-    let reported = String::from_utf8_lossy(&version_output.stdout)
-        .trim()
-        .to_string();
-    if reported != EXPECTED_ESBUILD_VERSION {
-        return Err(anyhow!(
-            "esbuild version mismatch: expected `{}` (pinned in zfb-toolchain-pins), got `{}` from {}. \
-             To resolve, follow the \"External tool version pins\" procedure in CONTRIBUTING.md \
-             at the workspace root: bump EXPECTED_ESBUILD_VERSION in \
-             crates/zfb-toolchain-pins/src/lib.rs (and EXPECTED_ESBUILD_SHA256 in \
-             crates/zfb-islands/src/esbuild.rs) in lock-step with the binary under \
-             crates/zfb/binaries/esbuild/esbuild.",
-            EXPECTED_ESBUILD_VERSION,
-            reported,
-            binary_path.display()
-        ));
-    }
-
-    // 2. SHA-256 gate. Skipped when the constant is empty (development
-    // / pre-release-engineering slot).
-    if !EXPECTED_ESBUILD_SHA256.is_empty() {
-        let bytes = std::fs::read(binary_path)
-            .with_context(|| format!("failed to read {} for checksum", binary_path.display()))?;
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let actual = hex::encode(hasher.finalize());
-        if !actual.eq_ignore_ascii_case(EXPECTED_ESBUILD_SHA256) {
-            return Err(anyhow!(
-                "esbuild binary checksum mismatch for {}: \
-                 expected sha256 `{}`, got `{}`. \
-                 To resolve, follow the \"External tool version pins\" procedure in \
-                 CONTRIBUTING.md at the workspace root: either replace the binary with \
-                 one matching EXPECTED_ESBUILD_SHA256, or — when bumping intentionally — \
-                 update EXPECTED_ESBUILD_VERSION in crates/zfb-toolchain-pins/src/lib.rs \
-                 and EXPECTED_ESBUILD_SHA256 in crates/zfb-islands/src/esbuild.rs \
-                 in lock-step with the new binary.",
-                binary_path.display(),
-                EXPECTED_ESBUILD_SHA256,
-                actual
-            ));
-        }
-    }
-
-    verification_cache()
-        .lock()
-        .unwrap_or_else(|p| {
-            tracing::warn!(
-                site = "esbuild::verification_cache",
-                "mutex poisoned, recovered"
-            );
-            p.into_inner()
-        })
-        .insert(key, ());
-    Ok(())
-}
-
 #[derive(Debug, Clone)]
-pub struct EsbuildSubprocessConfig {
-    /// Path to the esbuild CLI binary.
-    ///
-    /// Default: `crates/zfb/binaries/esbuild/esbuild` (relative to the
-    /// workspace root). Sub 2 reserves the parent `esbuild/` directory in
-    /// the release tarball layout; the directory shape gives release tooling
-    /// room to drop sidecars
-    /// like a checksum manifest next to the binary). Override via
-    /// [`Self::with_binary_path`] or via the `ZFB_ESBUILD_BIN` environment
-    /// variable (checked at engine construction time, not at every
-    /// invocation).
-    pub binary_path: PathBuf,
-
-    /// Working directory for the subprocess. esbuild resolves entry points
-    /// and `node_modules` lookups relative to this directory.
+pub struct IslandsBundlerConfig {
+    /// Working directory of every bundle job. Entry points and `node_modules`
+    /// lookups resolve relative to it, and module-graph keys are spelled
+    /// relative to it.
     ///
     /// Default: the current working directory at engine construction time.
     pub working_dir: PathBuf,
@@ -401,42 +161,34 @@ pub struct EsbuildSubprocessConfig {
     /// config and must never inherit an unrelated config above the tempdir.
     pub tsconfig_search_boundary: Option<PathBuf>,
 
-    /// Extra CLI args appended to the subprocess invocation, for escape
-    /// hatches like `--define:process.env.NODE_ENV='production'`. Passed
-    /// verbatim — each element becomes a separate `argv` entry, so shell
-    /// quoting is not needed and shell injection is not possible.
+    /// Extra specifiers left unbundled by every job, after the built-in
+    /// `node:` prefix.
     ///
     /// **Trust boundary**: callers are expected to assemble these from
-    /// build configuration (zfb.config.ts, env vars under operator
-    /// control), NOT from end-user input. The same caveat applies to
-    /// island `source_path`s — they come from project-local source files
-    /// the scanner has identified, not from user-supplied data.
-    pub extra_args: Vec<OsString>,
+    /// build configuration, NOT from end-user input.
+    pub externals: Vec<External>,
+
+    /// Extra package export conditions for every job, added to the platform
+    /// defaults. `None` keeps the defaults alone.
+    pub conditions: Option<Vec<String>>,
 
     /// When true, the bundler will return a *fake* JS payload instead of
-    /// invoking the subprocess. Used by unit tests to avoid depending on
-    /// the binary being installed. The string returned is taken from
+    /// bundling. Used by unit tests that only exercise entry synthesis and
+    /// output assembly. The string returned is taken from
     /// [`Self::mock_output`].
-    pub mock_subprocess: bool,
+    pub mock_bundle: bool,
 
-    /// Output to return when `mock_subprocess` is true.
+    /// Output to return when `mock_bundle` is true.
     pub mock_output: String,
 
-    /// Extra environment variables to set on the esbuild subprocess.
-    ///
-    /// Primarily used to pass `NODE_PATH=<path>` so esbuild resolves bare
-    /// imports against an externally-staged `node_modules` tree (e.g. the
-    /// `include_dir!`-extracted `@takazudo/*` + framework runtime tree
-    /// from the cargo-installed binary). esbuild walks the importing file
-    /// upward looking for `node_modules` and falls back to `NODE_PATH`
-    /// when the walk doesn't find a match — see issue zfb#221's
-    /// follow-up commit.
-    ///
-    /// Each entry becomes a `cmd.env(key, value)` call before spawn.
-    /// Pre-existing process env is inherited; setting an entry here
-    /// overrides any value the parent process had for the same key (for
-    /// the subprocess only — the parent env is untouched).
-    pub env_vars: Vec<(OsString, OsString)>,
+    /// Module search path consulted after `node_modules`, in `NODE_PATH`
+    /// syntax. Used to resolve bare imports against an externally-staged
+    /// `node_modules` tree (e.g. the `include_dir!`-extracted `@takazudo/*` +
+    /// framework runtime tree from the cargo-installed binary; issue zfb#221).
+    /// `None` falls back to the process's inherited `NODE_PATH` (the package
+    /// manager's bin shim exports one naming its hidden-hoist store, #4430);
+    /// an empty value means no extra directories.
+    pub node_path: Option<OsString>,
 
     /// Import alias rewrites consumed by the islands bundler (#261, #269).
     ///
@@ -450,12 +202,10 @@ pub struct EsbuildSubprocessConfig {
     /// `import "@/foo/bar"`. To achieve this, `bundle_one_entry`
     /// writes a synthetic `tsconfig.json` whose `compilerOptions.paths`
     /// map carries one entry per pair (wildcard-free, which is the
-    /// literal exact-match shape in TS / esbuild's path-mapping
-    /// pipeline) and passes `--tsconfig=<that file>` to esbuild. No
-    /// `--alias` flags are emitted for plugin entries — esbuild's
-    /// `--alias` is prefix-with-slash and would silently rewrite
-    /// `@/foo/bar` to `<to>/bar`, contradicting the V8 host's
-    /// exact-match contract
+    /// literal exact-match shape in TS path mapping) and hands it to the
+    /// job as its tsconfig. Directory targets are never registered as
+    /// prefix aliases, which would silently rewrite `@/foo/bar` to
+    /// `<to>/bar`, contradicting the V8 host's exact-match contract
     /// (`zfb-render::BundleModuleLoader::resolve_alias`).
     ///
     /// Populated only when plugin registrations are present. An empty
@@ -481,38 +231,36 @@ pub struct EsbuildSubprocessConfig {
     /// file's path is added to the synthetic tsconfig's
     /// `compilerOptions.paths` map under the bare specifier — same
     /// exact-match shape as `alias_entries`. Temp files are held alive
-    /// for the duration of the subprocess call and dropped afterwards.
+    /// for the duration of the bundle job and dropped afterwards.
     ///
     /// An empty `Vec` (the default) adds no temp files and no
     /// synthetic tsconfig entry — zero-registration builds are
     /// byte-identical to today.
     pub virtual_modules: Vec<(String, String)>,
     /// Authored virtual sources before CLI shadow import remapping. These
-    /// bytes identify the source; esbuild still resolves the staged text.
+    /// bytes identify the source; the bundler still resolves the staged text.
     pub original_virtual_modules: BTreeMap<String, Vec<u8>>,
 
-    /// Optional per-subprocess stage-escape audit policy (issue #1705,
-    /// epic #1702's guard (b) wiring wave). When `Some`, every REAL
-    /// (non-mock) esbuild subprocess this bundler spawns emits a metafile
-    /// and is audited immediately after it succeeds via
-    /// [`zfb_build::metafile_deps::audit_metafile_stage_escape`] — the
+    /// Optional per-job stage-escape audit policy (issue #1705, epic #1702's
+    /// guard (b) wiring wave). When `Some`, every real (non-mock) bundle job
+    /// writes its module graph and is audited immediately after it succeeds
+    /// via [`zfb_build::metafile_deps::audit_metafile_stage_escape`] — the
     /// same fail-closed check the sibling-mirror epic's guard (b)
     /// primitive implements, catching a bare first-party package-name
     /// import that climbed a staged `node_modules` symlink to a live
     /// workspace sibling.
     ///
-    /// `None` (the default) skips both metafile emission and auditing for
-    /// every job type, keeping argv and behavior byte-identical to a
-    /// build without this policy. Mock subprocesses never emit or require
-    /// a metafile regardless of this setting.
+    /// `None` (the default) skips both graph emission and auditing for
+    /// every job type that does not already write its graph. Mock bundles
+    /// never emit or require a graph regardless of this setting.
     pub stage_audit: Option<StageAuditPolicy>,
 }
 
-/// Per-subprocess stage-escape audit policy consumed by
-/// [`EsbuildSubprocessConfig::stage_audit`]. Mirrors the parameter shape of
+/// Per-job stage-escape audit policy consumed by
+/// [`IslandsBundlerConfig::stage_audit`]. Mirrors the parameter shape of
 /// [`zfb_build::metafile_deps::audit_metafile_stage_escape`] directly — the
-/// bundler passes these fields through unchanged for every real subprocess
-/// it audits.
+/// bundler passes these fields through unchanged for every real job it
+/// audits.
 #[derive(Debug, Clone)]
 pub struct StageAuditPolicy {
     /// Roots a resolved input may legitimately live under. A build can
@@ -524,38 +272,17 @@ pub struct StageAuditPolicy {
     pub first_party_root: PathBuf,
 }
 
-impl Default for EsbuildSubprocessConfig {
+impl Default for IslandsBundlerConfig {
     fn default() -> Self {
-        Self::default_with_env_getter(|name| std::env::var_os(name))
-    }
-}
-
-impl EsbuildSubprocessConfig {
-    /// Build a default config, but resolve the `ZFB_ESBUILD_BIN`
-    /// override via the supplied getter rather than touching the real
-    /// process environment. Tests use this to drive the env-override
-    /// path without calling `std::env::set_var`, which is `unsafe`
-    /// under Rust 2024 because it races other threads reading the env
-    /// table. Production callers should keep using
-    /// [`Default::default`].
-    pub fn default_with_env_getter<F>(getter: F) -> Self
-    where
-        F: Fn(&str) -> Option<OsString>,
-    {
-        let env_override = getter("ZFB_ESBUILD_BIN");
-        let binary_path = match env_override {
-            Some(p) => PathBuf::from(p),
-            None => PathBuf::from("crates/zfb/binaries/esbuild/esbuild"),
-        };
         let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
-            binary_path,
             working_dir,
             tsconfig_search_boundary: None,
-            extra_args: Vec::new(),
-            mock_subprocess: false,
+            externals: Vec::new(),
+            conditions: None,
+            mock_bundle: false,
             mock_output: String::new(),
-            env_vars: Vec::new(),
+            node_path: None,
             alias_entries: Vec::new(),
             virtual_modules: Vec::new(),
             original_virtual_modules: BTreeMap::new(),
@@ -564,13 +291,7 @@ impl EsbuildSubprocessConfig {
     }
 }
 
-impl EsbuildSubprocessConfig {
-    /// Override the binary path (chainable).
-    pub fn with_binary_path(mut self, path: impl Into<PathBuf>) -> Self {
-        self.binary_path = path.into();
-        self
-    }
-
+impl IslandsBundlerConfig {
     /// Override the working directory (chainable).
     pub fn with_working_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.working_dir = dir.into();
@@ -584,20 +305,18 @@ impl EsbuildSubprocessConfig {
         self
     }
 
-    /// Configure the bundler to skip the subprocess and return `output`
+    /// Configure the bundler to skip bundling and return `output`
     /// instead. Used by unit tests.
     pub fn with_mock_output(mut self, output: impl Into<String>) -> Self {
-        self.mock_subprocess = true;
+        self.mock_bundle = true;
         self.mock_output = output.into();
         self
     }
 
-    /// Append an extra environment variable applied to the esbuild
-    /// subprocess (chainable). Most useful for `NODE_PATH=<path>` so
-    /// esbuild resolves bare imports against an externally-staged
-    /// `node_modules` tree.
-    pub fn with_extra_env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
-        self.env_vars.push((key.into(), value.into()));
+    /// Set the module search path consulted after `node_modules`, in
+    /// `NODE_PATH` syntax (chainable). See [`Self::node_path`].
+    pub fn with_node_path(mut self, value: impl Into<OsString>) -> Self {
+        self.node_path = Some(value.into());
         self
     }
 
@@ -605,7 +324,7 @@ impl EsbuildSubprocessConfig {
     ///
     /// Replaces the current `alias_entries` list. Each `(from, to)`
     /// pair becomes an exact-match `compilerOptions.paths` entry in the
-    /// synthetic tsconfig the bundler hands to esbuild (#269); `to`
+    /// synthetic tsconfig the bundler hands to each job (#269); `to`
     /// must be an absolute filesystem path (as produced by
     /// [`zfb_build::AliasMap`]). When the list is empty (the default)
     /// no synthetic tsconfig is generated and the bundle is
@@ -632,43 +351,51 @@ impl EsbuildSubprocessConfig {
     }
 
     /// Set the stage-escape audit policy (chainable). See
-    /// [`StageAuditPolicy`]. When set, every real subprocess this bundler
-    /// spawns emits a metafile and is audited immediately after it
-    /// succeeds; mock subprocesses are unaffected.
+    /// [`StageAuditPolicy`]. When set, every real job this bundler runs
+    /// writes its module graph and is audited immediately after it
+    /// succeeds; mock bundles are unaffected.
     pub fn with_stage_audit(mut self, policy: StageAuditPolicy) -> Self {
         self.stage_audit = Some(policy);
         self
     }
+
+    /// The extra module directories every job searches after `node_modules`:
+    /// [`Self::node_path`] when set, otherwise the inherited `NODE_PATH`.
+    fn extra_module_dirs(&self) -> Vec<PathBuf> {
+        self.node_path
+            .clone()
+            .or_else(|| std::env::var_os("NODE_PATH"))
+            .filter(|value| !value.is_empty())
+            .map(|value| std::env::split_paths(&value).collect())
+            .unwrap_or_default()
+    }
 }
 
-/// The default [`ClientBundler`]: shells out to the esbuild CLI binary.
+/// The default [`ClientBundler`]: zfb's in-process native bundler.
 ///
-/// The binary is invoked on one synthesized entry source, plus `--bundle
-/// --format=esm --splitting=true --tree-shaking=true` (esbuild tree-shakes
-/// ESM by default but we set the flag explicitly so the contract is
-/// visible). `--minify` and `--sourcemap=linked` are appended per
-/// [`BundleConfig`]. Output goes to a staging `--outdir` (splitting requires
-/// directory mode): the entry is emitted under the stable name `islands.js`
-/// (`--entry-names=islands`) and any code-split chunks under self-hashed
-/// flat names (`--chunk-names=islands-chunk-[hash]`). All emitted files are
-/// read back into memory and returned via [`BundleOutput`] — the bundler
-/// does **NOT** write to `{outdir}/assets/islands.js`. Downstream consumers
-/// (prod pipeline, dev server) own all disk writes; chunks are returned via
+/// The shared pass bundles one synthesized entry source as ESM with code
+/// splitting; minification and linked sourcemaps follow [`BundleConfig`].
+/// Output goes to a staging directory: the entry is emitted under the stable
+/// name `islands.js` and any code-split chunks under self-hashed flat names
+/// (`islands-chunk-[hash]`). All emitted files are read back into memory and
+/// returned via [`BundleOutput`] — the bundler does **NOT** write to
+/// `{outdir}/assets/islands.js`. Downstream consumers (prod pipeline, dev
+/// server) own all disk writes; chunks are returned via
 /// [`BundleOutput::chunks`] (see that field's contract).
 /// `ProductionAssetPipeline` performs the content-hash + rename pass on the
-/// *entry* at deploy time; chunks already carry esbuild's own content hash
-/// and must never be renamed.
+/// *entry* at deploy time; chunks already carry the bundler's own content
+/// hash and must never be renamed.
 ///
 /// ### Example
 ///
 /// ```no_run
 /// use zfb_islands::{
-///     BundleConfig, ClientBundler, EsbuildSubprocessBundler,
-///     EsbuildSubprocessConfig, Island,
+///     BundleConfig, ClientBundler, IslandsBundler,
+///     IslandsBundlerConfig, Island,
 /// };
 /// use std::path::PathBuf;
 ///
-/// let bundler = EsbuildSubprocessBundler::new(EsbuildSubprocessConfig::default());
+/// let bundler = IslandsBundler::new(IslandsBundlerConfig::default());
 /// let islands = vec![Island::new("Counter", PathBuf::from("components/counter.tsx"))];
 /// let config = BundleConfig::production()
 ///     .with_zudo_react_build(Some("0123456789abcdef".to_string()));
@@ -676,8 +403,8 @@ impl EsbuildSubprocessConfig {
 /// assert_eq!(out.asset_url, "/assets/islands.js");
 /// ```
 #[derive(Debug, Clone)]
-pub struct EsbuildSubprocessBundler {
-    config: EsbuildSubprocessConfig,
+pub struct IslandsBundler {
+    config: IslandsBundlerConfig,
 }
 
 /// Build the synthetic `tsconfig.json` esbuild reads via `--tsconfig=<file>` when a plugin
@@ -816,24 +543,24 @@ fn read_back_client_script_outdir(
 
     for dirent in std::fs::read_dir(out_dir).with_context(|| {
         format!(
-            "failed to read client-script esbuild outdir {}",
+            "failed to read client-script staging outdir {}",
             out_dir.display()
         )
     })? {
-        let dirent = dirent.context("failed to read client-script esbuild outdir entry")?;
+        let dirent = dirent.context("failed to read client-script staging outdir entry")?;
         let file_type = dirent
             .file_type()
             .context("failed to inspect client-script output")?;
         let os_name = dirent.file_name();
         let name = os_name.to_str().ok_or_else(|| {
             anyhow!(
-                "esbuild emitted a non-UTF-8 client-script filename in {}",
+                "the bundler emitted a non-UTF-8 client-script filename in {}",
                 out_dir.display()
             )
         })?;
         if !file_type.is_file() {
             return Err(anyhow!(
-                "esbuild emitted an unexpected non-file client-script output {name:?}"
+                "the bundler emitted an unexpected non-file client-script output {name:?}"
             ));
         }
         if let Some(js_name) = name.strip_suffix(".map") {
@@ -841,13 +568,13 @@ fn read_back_client_script_outdir(
                 continue;
             }
             return Err(anyhow!(
-                "esbuild emitted an unexpected client-script sourcemap {name:?}"
+                "the bundler emitted an unexpected client-script sourcemap {name:?}"
             ));
         }
         if name == entry_filename {
             entry_js = Some(
                 std::fs::read_to_string(dirent.path())
-                    .context("failed to read esbuild client-script entry output")?,
+                    .context("failed to read client-script entry output")?,
             );
             continue;
         }
@@ -855,17 +582,17 @@ fn read_back_client_script_outdir(
             companions.insert(
                 name.to_string(),
                 std::fs::read(dirent.path())
-                    .with_context(|| format!("failed to read esbuild module worker {name}"))?,
+                    .with_context(|| format!("failed to read module worker output {name}"))?,
             );
             continue;
         }
         return Err(anyhow!(
-            "esbuild emitted an unexpected client-script output file {name:?}; expected entry {entry_filename:?} or one of {expected_workers:?}"
+            "the bundler emitted an unexpected client-script output file {name:?}; expected entry {entry_filename:?} or one of {expected_workers:?}"
         ));
     }
 
     let js = entry_js.ok_or_else(|| {
-        anyhow!("esbuild produced no `{entry_filename}` for client-script entry `{entry_name}`")
+        anyhow!("the bundler produced no `{entry_filename}` for client-script entry `{entry_name}`")
     })?;
     let missing: Vec<_> = expected_workers
         .iter()
@@ -874,7 +601,7 @@ fn read_back_client_script_outdir(
         .collect();
     if !missing.is_empty() {
         return Err(anyhow!(
-            "esbuild produced no output for client-script module worker(s): {}",
+            "the bundler produced no output for client-script module worker(s): {}",
             missing.join(", ")
         ));
     }
@@ -925,26 +652,23 @@ fn nearest_typescript_config(source_path: &Path, boundary: Option<&Path>) -> Opt
 
 /// The pinned native resolver discovers only tsconfig.json and does not honor
 /// package.json#tsconfig in extends. Materialize the already selected per-entry
-/// policy without changing ordinary esbuild discovery or writing into packages.
-#[cfg(any(test, feature = "rolldown-prototype"))]
+/// policy (the request's explicit tsconfig, else the closest config) without
+/// writing into packages.
 fn native_entry_config(
-    cmd: &Command,
+    request: &BundleRequest,
     source_path: &Path,
     boundary: Option<&Path>,
 ) -> Result<Option<tempfile::NamedTempFile>> {
-    let cwd = cmd.get_current_dir().unwrap_or_else(|| Path::new("."));
-    let selected = cmd
-        .get_args()
-        .filter_map(|arg| arg.to_str()?.strip_prefix("--tsconfig="))
-        .last()
-        .map(|path| cwd.join(path))
+    let selected = request
+        .tsconfig
+        .as_ref()
+        .map(|path| request.cwd.join(path))
         .or_else(|| nearest_typescript_config(source_path, boundary));
     let Some(selected) = selected else {
         return Ok(None);
     };
     let selected = std::path::absolute(selected).context("absolute native config selection")?;
-    let preserve_symlinks = cmd.get_args().any(|arg| arg == "--preserve-symlinks");
-    let effective = native_effective_config(&selected, preserve_symlinks)?;
+    let effective = native_effective_config(&selected, request.resolve.preserve_symlinks)?;
     let file = tempfile::Builder::new()
         .prefix("zfb-native-config-")
         .suffix(".json")
@@ -955,7 +679,6 @@ fn native_entry_config(
     Ok(Some(file))
 }
 
-#[cfg(any(test, feature = "rolldown-prototype"))]
 fn native_effective_config(path: &Path, preserve_symlinks: bool) -> Result<serde_json::Value> {
     let (mut effective, paths_dir) =
         native_config_chain(path, preserve_symlinks, 0, &mut BTreeSet::new())?;
@@ -982,7 +705,6 @@ fn native_effective_config(path: &Path, preserve_symlinks: bool) -> Result<serde
     Ok(serde_json::Value::Object(effective))
 }
 
-#[cfg(any(test, feature = "rolldown-prototype"))]
 fn native_config_chain(
     path: &Path,
     preserve_symlinks: bool,
@@ -1130,7 +852,6 @@ fn native_config_chain(
     Ok((effective, paths_dir))
 }
 
-#[cfg(any(test, feature = "rolldown-prototype"))]
 fn native_config_path(value: &mut serde_json::Value, base: &Path) -> Result<()> {
     let path = value
         .as_str()
@@ -1139,7 +860,6 @@ fn native_config_path(value: &mut serde_json::Value, base: &Path) -> Result<()> 
     Ok(())
 }
 
-#[cfg(any(test, feature = "rolldown-prototype"))]
 fn native_config_paths(value: &mut serde_json::Value, base: &Path) -> Result<()> {
     for path in value
         .as_array_mut()
@@ -1150,14 +870,21 @@ fn native_config_paths(value: &mut serde_json::Value, base: &Path) -> Result<()>
     Ok(())
 }
 
-#[cfg(feature = "rolldown-prototype")]
-fn run_native_entry(cmd: &mut Command, source_path: &Path, boundary: Option<&Path>) -> Result<()> {
-    let config = native_entry_config(cmd, source_path, boundary)?;
+/// Runs one typed job: selects its per-entry config, then generates and
+/// publishes every output into the job's staging directory.
+fn run_native_entry(
+    mut request: BundleRequest,
+    source_path: &Path,
+    boundary: Option<&Path>,
+) -> Result<()> {
+    let config = native_entry_config(&request, source_path, boundary)?;
     if let Some(config) = &config {
-        cmd.arg(format!("--tsconfig={}", config.path().display()));
+        request.tsconfig = Some(config.path().to_path_buf());
     }
     // Keep the config owner alive through native generation and runtime teardown.
-    zfb_rolldown_prototype::run_prepared(cmd)
+    zfb_rolldown_prototype::bundle(&request)?;
+    drop(config);
+    Ok(())
 }
 
 fn build_job_resolver_inputs(
@@ -1200,7 +927,7 @@ fn build_job_resolver_inputs(
     root.insert(
         "//".to_string(),
         serde_json::Value::String(
-            "Synthetic tsconfig generated by zfb-islands for one physical esbuild entry."
+            "Synthetic tsconfig generated by zfb-islands for one physical bundle entry."
                 .to_string(),
         ),
     );
@@ -1316,7 +1043,7 @@ fn keep_debug_islands_metafile(metafile: &Path) {
 /// Run the guard (b) stage-escape audit against a just-emitted metafile and
 /// attach the owning job's identity to any failure. Called immediately after
 /// each real esbuild subprocess succeeds (never for mock subprocesses, and
-/// only when [`EsbuildSubprocessConfig::stage_audit`] is `Some`).
+/// only when [`IslandsBundlerConfig::stage_audit`] is `Some`).
 fn run_stage_escape_audit(
     policy: &StageAuditPolicy,
     metafile_path: &Path,
@@ -1333,19 +1060,19 @@ fn run_stage_escape_audit(
     .with_context(|| format!("zfb-islands: stage-escape audit failed for {job_label}"))
 }
 
-impl EsbuildSubprocessBundler {
+impl IslandsBundler {
     /// Construct a new bundler with the given config.
-    pub fn new(config: EsbuildSubprocessConfig) -> Self {
+    pub fn new(config: IslandsBundlerConfig) -> Self {
         Self { config }
     }
 
     /// Construct a new bundler with the default config.
     pub fn with_default_config() -> Self {
-        Self::new(EsbuildSubprocessConfig::default())
+        Self::new(IslandsBundlerConfig::default())
     }
 
     /// Borrow the underlying config.
-    pub fn config(&self) -> &EsbuildSubprocessConfig {
+    pub fn config(&self) -> &IslandsBundlerConfig {
         &self.config
     }
 
@@ -1376,7 +1103,7 @@ impl EsbuildSubprocessBundler {
     /// deliberately does not live in [`Self::bundle_one_entry`], where a
     /// sweep would repeat for unrelated client-script and worker jobs.
     fn sweep_stranded_entries(&self) {
-        if self.config.mock_subprocess || !self.config.working_dir.is_dir() {
+        if self.config.mock_bundle || !self.config.working_dir.is_dir() {
             return;
         }
         sweep_orphaned_in_project_temp_files(&self.config.working_dir);
@@ -1413,7 +1140,7 @@ impl EsbuildSubprocessBundler {
         self.bundle_one_entry(&entry_source, config, true, "shared entry", false)
     }
 
-    /// Derive compatibility identity from esbuild's resolved executable closure.
+    /// Derive compatibility identity from the bundler's resolved executable closure.
     /// The probe does not ship: the normal pass still owns splitting, filenames
     /// and sourcemaps. No result is cached across builds or watcher generations.
     pub fn derive_build_token(
@@ -1436,7 +1163,10 @@ impl EsbuildSubprocessBundler {
         let output = self.bundle_one_entry(&entry, &probe, true, "identity probe", true)?;
         let mut digest = Sha256::new();
         digest.update(b"zfb-islands-resolved-executable/1\n");
-        hash_identity_part(&mut digest, EXPECTED_ESBUILD_VERSION.as_bytes());
+        hash_identity_part(
+            &mut digest,
+            zfb_rolldown_prototype::BACKEND_IDENTITY.as_bytes(),
+        );
         hash_identity_part(&mut digest, compiler_version.as_bytes());
         digest.update([
             config.mode.is_prod() as u8,
@@ -1449,12 +1179,9 @@ impl EsbuildSubprocessBundler {
         // BTreeMap serialization is deterministic; frames keep fields distinct.
         hash_identity_part(&mut digest, &serde_json::to_vec(&config.define)?);
         hash_identity_part(&mut digest, &serde_json::to_vec(&config.loaders)?);
-        // Operator arguments can override defines/loaders or select other
-        // transforms. Preserve order because esbuild's last argument wins.
-        digest.update((self.config.extra_args.len() as u64).to_le_bytes());
-        for argument in &self.config.extra_args {
-            hash_identity_part(&mut digest, argument.as_encoded_bytes());
-        }
+        // Operator resolution overrides change what the probe can reach.
+        hash_identity_part(&mut digest, &serde_json::to_vec(&self.config.externals)?);
+        hash_identity_part(&mut digest, &serde_json::to_vec(&self.config.conditions)?);
         for graph in &output.graph_digests {
             digest.update(graph);
         }
@@ -1471,11 +1198,11 @@ impl EsbuildSubprocessBundler {
     }
 
     /// Internal: bundle a single in-memory entry source. Writes the
-    /// source to a temp file (because esbuild expects entry points on
-    /// disk), runs the subprocess, and returns its JS and companion outputs.
+    /// source to a temp file (because entry points resolve from disk),
+    /// runs the job, and returns its JS and companion outputs.
     ///
     /// `job_label` identifies this invocation in
-    /// [`EsbuildSubprocessConfig::stage_audit`] and splitting-pass
+    /// [`IslandsBundlerConfig::stage_audit`] and splitting-pass
     /// entry-import audit failure messages (e.g. `"shared entry"`).
     fn bundle_one_entry(
         &self,
@@ -1488,13 +1215,12 @@ impl EsbuildSubprocessBundler {
         if splitting {
             validate_module_worker_entries(&config.module_workers)?;
         }
-        if self.config.mock_subprocess {
+        if self.config.mock_bundle {
             // Mock mode: return either the configured mock_output (when
             // set) or the entry source itself so tests can assert the
             // generated entry shape end-to-end. Mock mode never produces
-            // chunks — the real esbuild subprocess is the only chunk
-            // source, so the splitting path is exercised by the
-            // `#[ignore]` integration tests that run the actual binary.
+            // chunks — the real bundler is the only chunk source, so the
+            // splitting path is exercised by the integration tests.
             let js = if !self.config.mock_output.is_empty() {
                 self.config.mock_output.clone()
             } else {
@@ -1523,91 +1249,71 @@ impl EsbuildSubprocessBundler {
             return Ok(output);
         }
 
-        ensure_binary_verified(&self.config.binary_path, false)?;
-
-        // Entry temp file (.tsx so esbuild's loader inference picks up
-        // JSX automatically — the entry imports component .tsx files).
+        // Entry temp file (.tsx so loader inference picks up JSX
+        // automatically — the entry imports component .tsx files).
         //
         // **Why we allocate inside `working_dir` rather than `$TMPDIR`**
         //
         // The synthesized entry's imports (`@takazudo/zfb/runtime` and
         // `@takazudo/zfb/zudo-react/client`) must resolve from the project's
-        // `node_modules/`. esbuild walks UP from the entry file's directory
+        // `node_modules/`. Resolution walks UP from the entry file's directory
         // looking for `node_modules`, **not** from process cwd. If the entry
-        // lives at `/tmp/zfb-esbuild-entry-XXXX.tsx`, esbuild walks `/tmp -> /`
-        // and never reaches the project, so those imports fail to resolve
-        // (issue #147 / zudolab/zudo-doc#1355 Wave 6 follow-up). Allocating
-        // inside `working_dir` (= the consumer project root, set by
-        // `EsbuildSubprocessConfig::with_working_dir`) puts the temp file
-        // next to the project's `node_modules/` so esbuild's upward walk
-        // finds both packages on the first hop.
+        // lived at `/tmp/zfb-esbuild-entry-XXXX.tsx`, the walk would go
+        // `/tmp -> /` and never reach the project (issue #147 /
+        // zudolab/zudo-doc#1355 Wave 6 follow-up). Allocating inside
+        // `working_dir` (= the consumer project root, set by
+        // `IslandsBundlerConfig::with_working_dir`) puts the temp file next to
+        // the project's `node_modules/` so the upward walk finds both packages
+        // on the first hop.
         //
-        // We fall back to the system tempdir (the original behaviour)
-        // when `working_dir` does not exist on disk; that is the case
-        // for the `zfb-islands` unit tests that construct an
-        // `EsbuildSubprocessConfig::default()` from a repo whose
-        // working_dir was wherever the test binary was launched from
-        // (real builds always have an existing project root, so
-        // production never takes this branch).
+        // We fall back to the system tempdir when `working_dir` does not exist
+        // on disk (real builds always have an existing project root).
         let entry_tmp = allocate_locked_entry_tmp(&self.config.working_dir, entry_source)?;
 
-        // Staging output **directory**. `--splitting` requires `--outdir`
-        // (esbuild rejects `--outfile` with splitting), and esbuild emits the
-        // entry plus any code-split chunks here. We stage to a throwaway temp
-        // dir and read every emitted file back into memory — the bundler never
-        // writes into `dist/`; the prod pipeline / dev server own all `dist`
-        // writes (see the `BundleOutput::chunks` contract). A system tempdir is
-        // fine for the *output* (only the *entry* temp file must sit beside the
-        // project's `node_modules` for esbuild's upward resolution walk).
+        // Staging output **directory**. Splitting needs a directory, and the
+        // bundler emits the entry plus any code-split chunks here. We stage to
+        // a throwaway temp dir and read every emitted file back into memory —
+        // the bundler never writes into `dist/`; the prod pipeline / dev
+        // server own all `dist` writes (see the `BundleOutput::chunks`
+        // contract). A system tempdir is fine for the *output* (only the
+        // *entry* temp file must sit beside the project's `node_modules`).
         let out_dir = tempfile::Builder::new()
             .prefix("zfb-esbuild-out-")
             .tempdir()
             .context("failed to allocate out temp dir")?;
 
-        // Plugin-registered aliases + virtual modules (#269). Both
-        // surface through a synthetic `compilerOptions.paths` map
-        // esbuild reads via `--tsconfig=<temp tsconfig>`. A plugin alias
-        // (`@/foo`) is tsconfig-paths-ONLY when its target is a
-        // *directory* (or missing): esbuild's `--alias:<from>=<to>` is
+        // Plugin-registered aliases + virtual modules (#269). Both surface
+        // through a synthetic `compilerOptions.paths` map handed to the job
+        // as its tsconfig. A plugin alias (`@/foo`) is tsconfig-paths-ONLY
+        // when its target is a *directory* (or missing): a request alias is
         // prefix-with-slash, so registering `@/foo` there would silently
         // rewrite `@/foo/bar` (which can be a real file under that
         // directory), contradicting the embedded V8 host's exact-match
         // contract (`zfb-render::BundleModuleLoader::resolve_alias`). A
         // wildcard-free `compilerOptions.paths` entry is a literal exact
-        // match in TS / esbuild's path-mapping pipeline.
+        // match.
         //
-        // A single-FILE plugin alias target ALSO rides `--alias` (#3002)
-        // — a file has no children, so the same prefix-with-slash
-        // matching cannot capture a longer import and the exact-match
-        // contract holds — subject to the gates documented on
+        // A single-FILE plugin alias target ALSO rides the request aliases
+        // (#3002) — a file has no children, so prefix-with-slash matching
+        // cannot capture a longer import and the exact-match contract holds —
+        // subject to the gates documented on
         // `zfb_plugin_resolver::ResolverInputs::plugin_alias_args`
-        // (is_file, user-wins, no slash-prefix collision). This closes
-        // the node_modules gap below for `addAlias` the same way virtual
-        // modules already close it: a route entrypoint installed under
-        // `node_modules` (e.g. by a published preset) cannot resolve an
-        // alias via `compilerOptions.paths` alone, because esbuild does
-        // not apply tsconfig `paths` to a source file under
-        // `node_modules`.
+        // (is_file, user-wins, no slash-prefix collision). Plugin virtual
+        // modules always ride them too (#1263): tsconfig `paths` do not apply
+        // to a source file under `node_modules` (e.g. a route entrypoint
+        // installed by a published preset), while request aliases do.
         //
-        // Plugin virtual modules additionally surface as
-        // `--alias:<spec>=<tmp.mjs>` flags (#1263) — see where they (and
-        // the plugin-alias flags above) are appended to `cmd` below.
-        // `--alias` is not node_modules-gated and is exact-match-safe for
-        // virtual modules because their target is always a single `.mjs`
-        // file.
-        //
-        // `zfb_plugin_resolver::build_resolver_inputs` materializes
-        // each virtual module's source to a `.zfb-virtual-*.mjs` temp
-        // file inside `working_dir` (same node_modules-walk rationale
-        // as the entry temp file above) and returns POSIX-normalized
-        // `(specifier, absolute-path)` pairs. The held-alive temp
-        // files live in `resolver_inputs._temp_files` and are dropped
-        // after the subprocess returns.
+        // `zfb_plugin_resolver::build_resolver_inputs` materializes each
+        // virtual module's source to a `.zfb-virtual-*.mjs` temp file inside
+        // `working_dir` (same node_modules-walk rationale as the entry temp
+        // file above) and returns POSIX-normalized `(specifier,
+        // absolute-path)` pairs. The held-alive temp files live in
+        // `resolver_inputs._temp_files` and are dropped after every job.
         // Read the user's own `compilerOptions.paths` ONCE — used both to
-        // filter the virtual-module `--alias` set (user-wins, #1267) and to
-        // seed the synthetic tsconfig (#1238). Read only when a plugin
-        // registered something, preserving the no-plugin path's "reads
-        // nothing / byte-identical" guarantee (see `build_plugin_tsconfig`).
+        // filter the virtual-module alias set (user-wins, #1267) and to seed
+        // the synthetic tsconfig (#1238). Read only when a plugin registered
+        // something, preserving the no-plugin path's "reads nothing /
+        // byte-identical" guarantee (see `build_plugin_tsconfig`).
         let user_tsconfig_paths =
             if self.config.alias_entries.is_empty() && self.config.virtual_modules.is_empty() {
                 BTreeMap::new()
@@ -1625,137 +1331,61 @@ impl EsbuildSubprocessBundler {
         .context("zfb-islands: failed materializing plugin resolver inputs")?;
 
         // Synthetic tsconfig. Allocated only when there is at least one
-        // plugin-registered entry; otherwise islands stays byte-identical
-        // to the no-plugin path — esbuild walks up from the entry file to
-        // find the user's `tsconfig.json` as it does today. When allocated,
-        // it seeds the user's own `compilerOptions.paths` first, then merges
-        // the plugin entries on top (see `build_plugin_tsconfig`) — the
-        // explicit `--tsconfig=` would otherwise drop the user's `@/`-style
-        // aliases (#1238).
+        // plugin-registered entry; otherwise the job keeps its native
+        // closest-config discovery. When allocated, it seeds the user's own
+        // `compilerOptions.paths` first, then merges the plugin entries on top
+        // (see `build_plugin_tsconfig`) — an explicit tsconfig would otherwise
+        // drop the user's `@/`-style aliases (#1238).
         let plugin_tsconfig = build_plugin_tsconfig(
             &self.config.working_dir,
             &resolver_inputs,
             &user_tsconfig_paths,
             "islands",
-            "Synthetic tsconfig generated by zfb-islands::esbuild. \
+            "Synthetic tsconfig generated by zfb-islands::bundle_job. \
              Drives plugin-registered alias / virtual-module \
             exact-match resolution through compilerOptions.paths.",
         )?;
-        // Scratch metafile for THIS job's stage-escape audit. `resource_contract`
-        // (`== splitting`, see `build_esbuild_args`) already forces its own
-        // `--metafile=meta.json` when `splitting` is true, so this one is
-        // only actually requested by the args builder in the `splitting ==
-        // false` (per-island / runtime) case — see
-        // `build_esbuild_args_with_entry_name_and_resource_contract`'s
-        // `stage_audit_metafile` doc comment.
+        // Scratch graph file for THIS job's stage-escape audit. The resource
+        // contract (`== splitting`) already writes its own `meta.json` when
+        // `splitting` is true, so this one is only actually requested in the
+        // `splitting == false` case — see `JobShape::stage_audit_metafile`.
         let entry_stage_audit_metafile = stage_audit_metafile(self.config.stage_audit.as_ref())?;
-        let args = build_esbuild_args(
+        let mut request = build_bundle_request(
+            &self.config,
             config,
-            &self.config.extra_args,
-            out_dir.path(),
-            entry_tmp.path(),
-            splitting,
-            entry_stage_audit_metafile.as_ref().map(|f| f.path()),
-        );
-        let mut cmd = Command::new(&self.config.binary_path);
-        cmd.current_dir(&self.config.working_dir);
-        // Apply caller-supplied env vars (e.g. NODE_PATH=<embedded
-        // node_modules path> so esbuild can resolve bare imports against
-        // an externally-staged tree when the consumer project has no
-        // on-disk `node_modules`).
-        for (key, value) in &self.config.env_vars {
-            cmd.env(key, value);
-        }
-        // `--tsconfig=<synthetic>` goes first so it's adjacent to its
-        // adjacent in the argv (deterministic + reviewable). Only
-        // emitted when plugin entries are present; the zero-plugin
-        // path is byte-identical to the previous behaviour.
-        if let Some(ref tsconfig_tmp) = plugin_tsconfig {
-            cmd.arg(OsString::from(format!(
-                "--tsconfig={}",
-                tsconfig_tmp.path().display()
-            )));
-        }
-        // Virtual-module `--alias` flags (#1263): make `virtual:*` imports
-        // resolve even from a route entrypoint whose realpath is under
-        // `node_modules` (where esbuild's `compilerOptions.paths` is not
-        // applied). Empty for the zero-virtual-module path, so the argv
-        // stays byte-identical there.
-        for flag in resolver_inputs.virtual_module_alias_flags() {
-            cmd.arg(OsString::from(flag));
-        }
-        // Single-file plugin-alias `--alias` flags (#3002): the same
-        // node_modules-gated tsconfig gap above applies to plugin aliases
-        // whose target is a single file, so they ALSO ride `--alias`
-        // (gated in `zfb_plugin_resolver::build_resolver_inputs` — see
-        // `ResolverInputs::plugin_alias_args`). Empty when no plugin
-        // alias qualifies, so the zero-plugin argv stays byte-identical.
-        for flag in resolver_inputs.plugin_alias_flags() {
-            cmd.arg(OsString::from(flag));
-        }
-        for arg in &args {
-            cmd.arg(arg);
-        }
-
-        if identity_probe {
-            // A single executable closure avoids esbuild chunk hashes derived
-            // from random staging paths. Metafile edges retain module identity.
-            cmd.arg("--splitting=false");
-        }
-        #[cfg(feature = "rolldown-prototype")]
-        let native = zfb_rolldown_prototype::enabled();
-        #[cfg(not(feature = "rolldown-prototype"))]
-        let native = false;
-        #[cfg(feature = "rolldown-prototype")]
-        if native {
-            run_native_entry(
-                &mut cmd,
-                entry_tmp.path(),
-                self.config.tsconfig_search_boundary.as_deref(),
-            )?;
-        }
-        let output = if native {
-            None
-        } else {
-            Some(cmd.output().with_context(|| {
-                format!("failed to spawn {}", self.config.binary_path.display())
-            })?)
-        };
-
-        if let Some(output) = output.filter(|output| !output.status.success()) {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let friendly = redact_temp_path(
-                &stderr,
-                entry_tmp.path(),
-                &self.config.working_dir,
-                "<synthesized zfb-islands bundle entry, not a project file>",
-            );
-            let friendly = redact_temp_path(
-                &friendly,
+            Some(&resolver_inputs),
+            plugin_tsconfig.as_ref().map(|file| file.path()),
+            JobShape::shared_entry(
                 out_dir.path(),
-                &self.config.working_dir,
-                "<zfb-islands internal esbuild output directory>",
-            );
-            return Err(anyhow!(
-                "esbuild exited with status {}: {}",
-                output.status,
-                friendly.trim()
-            ));
+                entry_tmp.path(),
+                splitting,
+                entry_stage_audit_metafile.as_ref().map(|f| f.path()),
+            ),
+        )?;
+        if identity_probe {
+            // A single executable closure avoids chunk hashes derived from
+            // random staging paths. Graph edges retain module identity.
+            request.splitting = false;
         }
+        run_native_entry(
+            request,
+            entry_tmp.path(),
+            self.config.tsconfig_search_boundary.as_deref(),
+        )?;
 
-        // Kept before the audits so a failing build still leaves its metafile.
+        // Kept before the audits so a failing build still leaves its graph.
         if splitting && !identity_probe {
-            keep_debug_islands_metafile(&out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME));
+            keep_debug_islands_metafile(&out_dir.path().join(RESOURCE_METAFILE_FILENAME));
         }
 
-        // Guard (b) wiring (#1705): audit immediately after this subprocess
+        // Guard (b) wiring (#1705): audit immediately after this job
         // succeeds, before touching its output. The resource-contract pass
         // (`splitting == true`) already wrote `meta.json` above regardless
         // of this policy; every other pass wrote the dedicated
         // `stage_audit_metafile` requested above.
         if let Some(policy) = &self.config.stage_audit {
             let metafile_path = if splitting {
-                out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME)
+                out_dir.path().join(RESOURCE_METAFILE_FILENAME)
             } else {
                 entry_stage_audit_metafile
                     .as_ref()
@@ -1768,12 +1398,12 @@ impl EsbuildSubprocessBundler {
             run_stage_escape_audit(policy, &metafile_path, &self.config.working_dir, job_label)?;
         }
 
-        // Entry-import guard (#4464): the splitting pass's `meta.json`, written
-        // by either backend, must show no output importing the islands entry.
-        // The identity probe runs unsplit and never ships, so it is skipped.
+        // Entry-import guard (#4464): the splitting pass's `meta.json` must
+        // show no output importing the islands entry. The identity probe runs
+        // unsplit and never ships, so it is skipped.
         if splitting && !identity_probe {
             crate::entry_import_guard::audit_entry_imports_at_path(
-                &out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME),
+                &out_dir.path().join(RESOURCE_METAFILE_FILENAME),
                 &self.config.working_dir,
                 entry_tmp.path(),
             )
@@ -1783,7 +1413,7 @@ impl EsbuildSubprocessBundler {
         let mut graph_digests = Vec::new();
         if identity_probe {
             graph_digests.push(crate::graph_identity::resolved_graph_digest(
-                &out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME),
+                &out_dir.path().join(RESOURCE_METAFILE_FILENAME),
                 &self.config.working_dir,
                 entry_tmp.path(),
                 &resolver_inputs.paths_entries,
@@ -1792,13 +1422,13 @@ impl EsbuildSubprocessBundler {
             )?);
         }
 
-        // Issue #1501: esbuild does not discover `new Worker(new URL(...))`
-        // as another entry. Run one explicit browser bundle per locked #1500
-        // worker entry into the SAME staging outdir as `islands.js`. Each
-        // pass disables splitting so the stable `worker-*.js` companion is
-        // self-contained; the shared loaders, defines, mode, JSX policy,
-        // plugin aliases, and virtual modules all flow through the same arg
-        // builder and resolver inputs as the islands entry.
+        // Issue #1501: `new Worker(new URL(...))` is not discovered as another
+        // entry. Run one explicit browser bundle per locked #1500 worker entry
+        // into the SAME staging outdir as `islands.js`. Each pass disables
+        // splitting so the stable `worker-*.js` companion is self-contained;
+        // the shared loaders, defines, mode, JSX policy, plugin aliases, and
+        // virtual modules all flow through the same request builder and
+        // resolver inputs as the islands entry.
         if splitting && !config.module_workers.is_empty() {
             for worker in &config.module_workers {
                 let worker_resolver = build_job_resolver_inputs(
@@ -1816,71 +1446,23 @@ impl EsbuildSubprocessBundler {
                 } else {
                     stage_audit_metafile(self.config.stage_audit.as_ref())?
                 };
-                let worker_args = build_esbuild_args_with_entry_name(
+                let worker_request = build_bundle_request(
+                    &self.config,
                     config,
-                    &self.config.extra_args,
-                    out_dir.path(),
-                    worker.source_path(),
-                    false,
-                    worker.entry_name_template(),
-                    worker_stage_audit_metafile.as_ref().map(|f| f.path()),
-                );
-                let mut worker_cmd = Command::new(&self.config.binary_path);
-                worker_cmd.current_dir(&self.config.working_dir);
-                for (key, value) in &self.config.env_vars {
-                    worker_cmd.env(key, value);
-                }
-                if let Some(ref tsconfig) = worker_resolver.tsconfig {
-                    worker_cmd.arg(OsString::from(format!(
-                        "--tsconfig={}",
-                        tsconfig.path().display()
-                    )));
-                }
-                for flag in worker_resolver.resolver_inputs.virtual_module_alias_flags() {
-                    worker_cmd.arg(OsString::from(flag));
-                }
-                for flag in worker_resolver.resolver_inputs.plugin_alias_flags() {
-                    worker_cmd.arg(OsString::from(flag));
-                }
-                for arg in &worker_args {
-                    worker_cmd.arg(arg);
-                }
-
-                #[cfg(feature = "rolldown-prototype")]
-                if native {
-                    run_native_entry(
-                        &mut worker_cmd,
-                        worker.source_path(),
-                        self.config.tsconfig_search_boundary.as_deref(),
-                    )?;
-                }
-                let worker_output = if native {
-                    None
-                } else {
-                    Some(worker_cmd.output().with_context(|| {
-                        format!(
-                            "failed to spawn {} for module-worker entry {}",
-                            self.config.binary_path.display(),
-                            worker.source_path().display()
-                        )
-                    })?)
-                };
-                if let Some(worker_output) = worker_output.filter(|output| !output.status.success())
-                {
-                    let stderr = String::from_utf8_lossy(&worker_output.stderr);
-                    let friendly = redact_temp_path(
-                        &stderr,
+                    Some(&worker_resolver.resolver_inputs),
+                    worker_resolver.tsconfig.as_ref().map(|file| file.path()),
+                    JobShape::named(
                         out_dir.path(),
-                        &self.config.working_dir,
-                        "<zfb-islands internal esbuild output directory>",
-                    );
-                    return Err(anyhow!(
-                        "esbuild exited with status {} bundling module worker {}: {}",
-                        worker_output.status,
-                        worker.source_path().display(),
-                        friendly.trim()
-                    ));
-                }
+                        worker.source_path(),
+                        worker.entry_name_template(),
+                        worker_stage_audit_metafile.as_ref().map(|f| f.path()),
+                    ),
+                )?;
+                run_native_entry(
+                    worker_request,
+                    worker.source_path(),
+                    self.config.tsconfig_search_boundary.as_deref(),
+                )?;
 
                 if identity_probe {
                     graph_digests.push(crate::graph_identity::resolved_graph_digest(
@@ -1912,7 +1494,7 @@ impl EsbuildSubprocessBundler {
             }
         }
 
-        // All subprocesses are complete. Dropping these deletes the temporary
+        // All jobs are complete. Dropping these deletes the temporary
         // plugin resolver modules/tsconfig only after every worker pass has
         // had a chance to resolve through them.
         drop(resolver_inputs);
@@ -1921,7 +1503,7 @@ impl EsbuildSubprocessBundler {
         let mut output = if splitting {
             read_back_shared_outdir(
                 out_dir.path(),
-                &out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME),
+                &out_dir.path().join(RESOURCE_METAFILE_FILENAME),
                 &self.config.working_dir,
             )?
         } else {
@@ -2002,7 +1584,7 @@ impl OneEntryOutput {
 
 /// Filename prefix of the synthesized entry temp file when it is allocated
 /// **inside `working_dir`** (the production placement — see
-/// [`EsbuildSubprocessBundler::bundle_one_entry`] for why it cannot live in
+/// [`IslandsBundler::bundle_one_entry`] for why it cannot live in
 /// `$TMPDIR`). Leading dot so the project's own tooling treats it as hidden.
 const IN_PROJECT_ENTRY_PREFIX: &str = ".zfb-esbuild-entry-";
 
@@ -2046,8 +1628,8 @@ const TSCONFIG_TEMP_SUFFIX: &str = ".json";
 
 /// Every in-project `.zfb-*` temp-file class the sweep recognizes, as
 /// `(prefix, suffix)` pairs. Each class is allocated **inside `working_dir`**
-/// (the real project root — `zfb-islands` never shadow-copies the project,
-/// see the note on [`redact_temp_path`]) and locked with a *shared* `flock`
+/// (the real project root — `zfb-islands` never shadow-copies the project)
+/// and locked with a *shared* `flock`
 /// by its producer, so the age+lock contract documented on
 /// [`sweep_orphaned_in_project_temp_files`] applies uniformly to all four:
 ///
@@ -2108,7 +1690,7 @@ const IN_PROJECT_TEMP_CLASSES: &[(&str, &str)] = &[
 /// step, so every I/O failure — including a filesystem with no lock support —
 /// simply leaves the candidate alone.
 /// Allocate the esbuild entry temp file for one
-/// [`EsbuildSubprocessBundler::bundle_one_entry`] call, write `entry_source`
+/// [`IslandsBundler::bundle_one_entry`] call, write `entry_source`
 /// into it, and claim it with a **shared** lock.
 ///
 /// Split out of `bundle_one_entry` so the ownership claim — the production
@@ -2230,37 +1812,6 @@ fn sweep_orphaned_in_project_temp_files(working_dir: &Path) {
     }
 }
 
-/// Redacts one ephemeral internal temp path from an esbuild subprocess's
-/// captured stderr, replacing it with a stable, self-explanatory `label`
-/// (#1385 pt.2 / issue #1388 — same treatment as the bundler's
-/// `friendly_esbuild_error` in `zfb-build`, applied here to the islands
-/// pipeline's own leaks: the synthesized `.zfb-esbuild-entry-*.tsx` wrapper
-/// [`bundle_one_entry`] writes beside the project, and the system-tempdir
-/// `--outdir` both entry points use).
-///
-/// Unlike the main SSR/page bundler, `zfb-islands` never shadow-copies the
-/// project — `working_dir` (`cmd.current_dir`) IS the real project root, so
-/// there is no project-root escape boundary to explain here; the only leak
-/// is a meaningless generated filename the user never created. `leak_path`
-/// is redacted in both forms esbuild's diagnostics might show it in: the
-/// `cwd`-relative form (esbuild's normal source-location display) and the
-/// full absolute path (a defensive catch-all for non-source-location
-/// diagnostics, e.g. an outdir write failure).
-fn redact_temp_path(stderr: &str, leak_path: &Path, cwd: &Path, label: &str) -> String {
-    let mut out = stderr.to_string();
-    if let Ok(rel) = leak_path.strip_prefix(cwd) {
-        let rel_str = rel.to_string_lossy();
-        if !rel_str.is_empty() {
-            out = out.replace(rel_str.as_ref(), label);
-        }
-    }
-    let abs_str = leak_path.to_string_lossy();
-    if !abs_str.is_empty() {
-        out = out.replace(abs_str.as_ref(), label);
-    }
-    out
-}
-
 /// Read every file esbuild staged into `out_dir` back into memory without a
 /// resource oracle. This is retained for the per-island/runtime path, whose
 /// output policy deliberately remains entry/chunk/worker-only.
@@ -2303,13 +1854,13 @@ struct ResourceMetafileOutput {
 fn read_resource_metafile(metafile_path: &Path) -> Result<ResourceMetafile> {
     let bytes = std::fs::read(metafile_path).with_context(|| {
         format!(
-            "esbuild resource discovery requires metafile {}",
+            "resource discovery requires metafile {}",
             metafile_path.display()
         )
     })?;
     serde_json::from_slice(&bytes).with_context(|| {
         format!(
-            "esbuild resource discovery could not parse metafile {}",
+            "resource discovery could not parse metafile {}",
             metafile_path.display()
         )
     })
@@ -2345,9 +1896,9 @@ fn read_back_outdir_with_resource_oracle(
     let mut output_names = BTreeSet::new();
 
     for dirent in std::fs::read_dir(out_dir)
-        .with_context(|| format!("failed to read esbuild outdir {}", out_dir.display()))?
+        .with_context(|| format!("failed to read staging outdir {}", out_dir.display()))?
     {
-        let dirent = dirent.context("failed to read esbuild outdir entry")?;
+        let dirent = dirent.context("failed to read staging outdir entry")?;
         if metafile_path
             .map(|path| path == dirent.path().as_path())
             .unwrap_or(false)
@@ -2358,7 +1909,7 @@ fn read_back_outdir_with_resource_oracle(
         }
         if !dirent.file_type().map(|t| t.is_file()).unwrap_or(false) {
             return Err(anyhow!(
-                "esbuild emitted an unexpected non-file output entry {:?} in {}",
+                "the bundler emitted an unexpected non-file output entry {:?} in {}",
                 dirent.file_name(),
                 out_dir.display()
             ));
@@ -2366,7 +1917,7 @@ fn read_back_outdir_with_resource_oracle(
         let os_name = dirent.file_name();
         let name = os_name.to_str().ok_or_else(|| {
             anyhow!(
-                "esbuild emitted a non-UTF-8 filename in {}",
+                "the bundler emitted a non-UTF-8 filename in {}",
                 out_dir.display()
             )
         })?;
@@ -2390,11 +1941,11 @@ fn read_back_outdir_with_resource_oracle(
 
         if name == zfb_types::STABLE_ISLANDS_FILENAME {
             register_output_name(&mut output_names, name)?;
-            let js = std::fs::read_to_string(dirent.path())
-                .context("failed to read esbuild entry output")?;
+            let js =
+                std::fs::read_to_string(dirent.path()).context("failed to read entry output")?;
             if entry_js.is_some() {
                 return Err(anyhow!(
-                    "esbuild emitted duplicate entry output {name:?} in {}",
+                    "the bundler emitted duplicate entry output {name:?} in {}",
                     out_dir.display()
                 ));
             }
@@ -2409,7 +1960,7 @@ fn read_back_outdir_with_resource_oracle(
         let class = validate_chunk_filename(name)?;
         register_output_name(&mut output_names, name)?;
         let bytes = std::fs::read(dirent.path())
-            .with_context(|| format!("failed to read esbuild companion {name}"))?;
+            .with_context(|| format!("failed to read companion {name}"))?;
         match class {
             OutputFilenameClass::Chunk => chunks.push(BundleChunk {
                 filename: name.to_string(),
@@ -2422,12 +1973,12 @@ fn read_back_outdir_with_resource_oracle(
             OutputFilenameClass::Resource => {
                 let metafile = metafile.ok_or_else(|| {
                     anyhow!(
-                        "esbuild emitted resource {name:?} without the shared-islands metafile oracle"
+                        "the bundler emitted resource {name:?} without the shared-islands metafile oracle"
                     )
                 })?;
                 let metafile_working_dir = metafile_working_dir.ok_or_else(|| {
                     anyhow!(
-                        "esbuild emitted resource {name:?} without the shared-islands metafile working-directory context"
+                        "the bundler emitted resource {name:?} without the shared-islands metafile working-directory context"
                     )
                 })?;
                 validate_resource_metafile_edge(
@@ -2446,7 +1997,7 @@ fn read_back_outdir_with_resource_oracle(
 
     let js = entry_js.ok_or_else(|| {
         anyhow!(
-            "esbuild produced no `{}` entry in {}",
+            "the bundler produced no `{}` entry in {}",
             zfb_types::STABLE_ISLANDS_FILENAME,
             out_dir.display()
         )
@@ -2472,7 +2023,7 @@ fn read_back_outdir_with_resource_oracle(
 fn register_output_name(names: &mut BTreeSet<String>, name: &str) -> Result<()> {
     if !names.insert(name.to_string()) {
         return Err(anyhow!(
-            "esbuild emitted duplicate or cross-class-colliding output filename {name:?}"
+            "the bundler emitted duplicate or cross-class-colliding output filename {name:?}"
         ));
     }
     Ok(())
@@ -2558,7 +2109,7 @@ pub(crate) fn metafile_output_path(output_path: &str, working_dir: &Path) -> Res
     };
     std::fs::canonicalize(&resolved).with_context(|| {
         format!(
-            "could not canonicalize esbuild metafile output path {output_path:?} resolved from {}",
+            "could not canonicalize module-graph output path {output_path:?} resolved from {}",
             working_dir.display()
         )
     })
@@ -2578,7 +2129,7 @@ enum OutputFilenameClass {
 fn validate_chunk_filename(name: &str) -> Result<OutputFilenameClass> {
     if name.contains('/') || name.contains('\\') || name.contains(std::path::MAIN_SEPARATOR) {
         return Err(anyhow!(
-            "esbuild companion filename must be flat (no path separator): {name:?}"
+            "companion filename must be flat (no path separator): {name:?}"
         ));
     }
     // A legitimate self-hashed chunk basename never contains `..`; reject the
@@ -2586,7 +2137,7 @@ fn validate_chunk_filename(name: &str) -> Result<OutputFilenameClass> {
     // with the separator check above).
     if name.contains("..") {
         return Err(anyhow!(
-            "esbuild companion filename must not contain `..`: {name:?}"
+            "companion filename must not contain `..`: {name:?}"
         ));
     }
     // Issue #1395: a residual `.css` output here means the `--loader:.css=empty`
@@ -2605,7 +2156,7 @@ fn validate_chunk_filename(name: &str) -> Result<OutputFilenameClass> {
         ));
     }
     if let Some(hash) = name
-        .strip_prefix(ESBUILD_CHUNK_FILENAME_PREFIX)
+        .strip_prefix(CHUNK_FILENAME_PREFIX)
         .and_then(|rest| rest.strip_suffix(".js"))
     {
         if !hash.is_empty()
@@ -2617,7 +2168,7 @@ fn validate_chunk_filename(name: &str) -> Result<OutputFilenameClass> {
         }
     }
     if let Some(encoded_path) = name
-        .strip_prefix(ESBUILD_WORKER_ENTRY_NAME_PREFIX)
+        .strip_prefix(WORKER_ENTRY_NAME_PREFIX)
         .and_then(|rest| rest.strip_suffix(".js"))
     {
         if !encoded_path.is_empty()
@@ -2643,9 +2194,9 @@ fn validate_chunk_filename(name: &str) -> Result<OutputFilenameClass> {
     }
     Err(anyhow!(
         "esbuild emitted an unexpected output file {name:?}; expected the entry `{}`, \
-         a `{ESBUILD_CHUNK_FILENAME_PREFIX}*` chunk, or a \
-         `{ESBUILD_WORKER_ENTRY_NAME_PREFIX}*.js` module worker, or a \
-         `{ESBUILD_RESOURCE_FILENAME_PREFIX}*-<hash>.mjs|.wasm` resource",
+         a `{CHUNK_FILENAME_PREFIX}*` chunk, or a \
+         `{WORKER_ENTRY_NAME_PREFIX}*.js` module worker, or a \
+         `{RESOURCE_FILENAME_PREFIX}*-<hash>.mjs|.wasm` resource",
         zfb_types::STABLE_ISLANDS_FILENAME
     ))
 }
@@ -2656,10 +2207,10 @@ fn validate_chunk_filename(name: &str) -> Result<OutputFilenameClass> {
 /// checks, so this helper stays narrowly about the naming template shape.
 fn resource_name_and_hash(name: &str) -> Option<(&str, &str)> {
     let stem = name
-        .strip_prefix(ESBUILD_RESOURCE_FILENAME_PREFIX)?
+        .strip_prefix(RESOURCE_FILENAME_PREFIX)?
         .strip_suffix(".mjs")
         .or_else(|| {
-            name.strip_prefix(ESBUILD_RESOURCE_FILENAME_PREFIX)?
+            name.strip_prefix(RESOURCE_FILENAME_PREFIX)?
                 .strip_suffix(WASM_EXTENSION)
         })?;
     stem.rsplit_once('-')
@@ -2680,252 +2231,212 @@ fn validate_locked_resource_loader_overrides(loaders: &BTreeMap<String, String>)
     Ok(())
 }
 
-/// Compose the esbuild CLI argument list for one entry-source bundle
-/// pass. Split out from `bundle_one_entry` so unit tests can assert
-/// against the flag list without spawning the subprocess.
+/// The per-job half of a bundle request: where the job reads and writes, and
+/// which output contract it owns.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct JobShape<'a> {
+    /// Private staging directory every output is written into.
+    pub(crate) out_dir: &'a Path,
+    pub(crate) entry_path: &'a Path,
+    /// Code splitting; only the shared islands pass ships chunks.
+    pub(crate) splitting: bool,
+    /// Entry file pattern without extension (`islands`, a worker name, a
+    /// client-script name).
+    pub(crate) entry_name_template: &'a str,
+    /// The locked file-resource contract plus its `meta.json` graph oracle;
+    /// owned by the shared splitting islands pass only.
+    pub(crate) resource_contract: bool,
+    /// Graph file requested for the stage-escape audit. Honoured only
+    /// without the resource contract, whose own `meta.json` already is the
+    /// graph the audit reads.
+    pub(crate) stage_audit_metafile: Option<&'a Path>,
+}
+
+impl<'a> JobShape<'a> {
+    /// The shared islands entry: stable `islands.js`, with the resource
+    /// contract exactly when splitting.
+    pub(crate) fn shared_entry(
+        out_dir: &'a Path,
+        entry_path: &'a Path,
+        splitting: bool,
+        stage_audit_metafile: Option<&'a Path>,
+    ) -> Self {
+        Self {
+            out_dir,
+            entry_path,
+            splitting,
+            entry_name_template: ENTRY_NAME_TEMPLATE,
+            resource_contract: splitting,
+            stage_audit_metafile,
+        }
+    }
+
+    /// A self-contained module-worker or client-script job named
+    /// `<entry_name_template>.js`.
+    pub(crate) fn named(
+        out_dir: &'a Path,
+        entry_path: &'a Path,
+        entry_name_template: &'a str,
+        stage_audit_metafile: Option<&'a Path>,
+    ) -> Self {
+        Self {
+            out_dir,
+            entry_path,
+            splitting: false,
+            entry_name_template,
+            resource_contract: false,
+            stage_audit_metafile,
+        }
+    }
+}
+
+/// Compose the typed bundle request for one job. Pure: it reads only its
+/// arguments (and the inherited `NODE_PATH` when the config sets none), so
+/// tests can assert the request without bundling.
 ///
-/// The args use automatic JSX with the single owned import source. Without
-/// those flags esbuild's classic transform emits unresolved React references.
-///
-/// Order is stable across calls so callers (and tests) can rely on a
-/// deterministic argv layout.
-pub(crate) fn build_esbuild_args(
+/// Every job is a browser ESM bundle with automatic JSX on the single owned
+/// import source; without that, the classic transform emits unresolved React
+/// references (#151). `resolver` supplies the plugin aliases (virtual modules
+/// first, then single-file plugin aliases) placed ahead of the built-in `zfb`
+/// SDK alias; `tsconfig` is the job's explicit (synthetic) tsconfig, if any.
+pub(crate) fn build_bundle_request(
+    bundler: &IslandsBundlerConfig,
     config: &BundleConfig,
-    extra_args: &[OsString],
-    out_dir: &Path,
-    entry_path: &Path,
-    splitting: bool,
-    stage_audit_metafile: Option<&Path>,
-) -> Vec<OsString> {
+    resolver: Option<&zfb_plugin_resolver::ResolverInputs>,
+    tsconfig: Option<&Path>,
+    job: JobShape<'_>,
+) -> Result<BundleRequest> {
     // The entry-name template must produce exactly `STABLE_ISLANDS_FILENAME`
-    // (esbuild appends `.js`), or the read-back won't recognise the entry.
-    // Assert the two stay in sync.
+    // (the bundler appends `.js`), or the read-back won't recognise the entry.
     debug_assert_eq!(
-        format!("{ESBUILD_ENTRY_NAME_TEMPLATE}.js"),
+        format!("{ENTRY_NAME_TEMPLATE}.js"),
         zfb_types::STABLE_ISLANDS_FILENAME,
         "entry-name template must match STABLE_ISLANDS_FILENAME stem"
     );
-    build_esbuild_args_with_entry_name_and_resource_contract(
-        config,
-        extra_args,
-        out_dir,
-        entry_path,
-        splitting,
-        ESBUILD_ENTRY_NAME_TEMPLATE,
-        splitting,
-        stage_audit_metafile,
-    )
-}
+    // Directory-mode output into the *staging* `out_dir` (a throwaway
+    // tempdir — NOT `dist/assets/`). The entry pattern pins the entry's
+    // basename so the read-back can identify it by name. The chunk pattern
+    // (splitting only) self-content-hashes each chunk FLAT in the same dir
+    // (`islands-chunk-<hash>.js`); the bundler bakes relative `import("./...")`
+    // references between them, so names must never be renamed downstream. See
+    // `ENTRY_NAME_TEMPLATE` / `CHUNK_NAME_TEMPLATE` and the
+    // `BundleOutput::chunks` contract for the full rationale.
+    let output = OutputLayout::Dir {
+        dir: job.out_dir.to_path_buf(),
+        entry_names: Some(job.entry_name_template.to_string()),
+        chunk_names: job.splitting.then(|| CHUNK_NAME_TEMPLATE.to_string()),
+        asset_names: job
+            .resource_contract
+            .then(|| RESOURCE_NAME_TEMPLATE.to_string()),
+    };
+    let mut request = BundleRequest::new(
+        &bundler.working_dir,
+        job.entry_path,
+        output,
+        Platform::Browser,
+    );
+    // Code-splitting is enabled ONLY for the shared-bundle path. With
+    // splitting on, the bundler emits the entry plus one chunk per shared /
+    // dynamically-imported module graph, so a consumer's `import("shiki")`
+    // lands in its own chunk instead of being inlined into the multi-MB entry
+    // every page loads (issue #800). Client-script and worker jobs inline
+    // their dynamic imports so the single output file remains self-contained.
+    request.splitting = job.splitting;
+    request
+        .externals
+        .push(External::Prefix("node:".to_string()));
+    request.externals.extend(bundler.externals.iter().cloned());
 
-/// Like [`build_esbuild_args`] but with a caller-supplied entry name
-/// template for `--entry-names`. Used by the client-script bundling path
-/// where the stable output filename must match `<entry_name>.js` rather
-/// than the shared-bundle `islands.js`.
-///
-/// When `entry_name_template == ESBUILD_ENTRY_NAME_TEMPLATE` the output
-/// is byte-identical to `build_esbuild_args`.
-pub(crate) fn build_esbuild_args_with_entry_name(
-    config: &BundleConfig,
-    extra_args: &[OsString],
-    out_dir: &Path,
-    entry_path: &Path,
-    splitting: bool,
-    entry_name_template: &str,
-    stage_audit_metafile: Option<&Path>,
-) -> Vec<OsString> {
-    build_esbuild_args_with_entry_name_and_resource_contract(
-        config,
-        extra_args,
-        out_dir,
-        entry_path,
-        splitting,
-        entry_name_template,
-        false,
-        stage_audit_metafile,
-    )
-}
-
-/// Private variant that enables the locked resource contract only for the
-/// shared splitting islands pass. Per-island, worker, and client-script
-/// outputs deliberately keep their existing argv/read-back policy.
-///
-/// `stage_audit_metafile`, when `Some`, is only honoured when
-/// `resource_contract` is `false` — the resource-contract pass already emits
-/// its own mandatory `--metafile=meta.json` below, esbuild accepts only one
-/// `--metafile` flag per invocation, and that pre-existing metafile is
-/// exactly what the stage-escape audit needs, so the caller reuses it rather
-/// than requesting a second one here.
-#[allow(clippy::too_many_arguments)] // 8 params: #1705 added stage_audit_metafile; both public wrappers (build_esbuild_args, build_esbuild_args_with_entry_name) already collapse most of these for callers, a struct here would just shuffle the same threaded fields
-fn build_esbuild_args_with_entry_name_and_resource_contract(
-    config: &BundleConfig,
-    extra_args: &[OsString],
-    out_dir: &Path,
-    entry_path: &Path,
-    splitting: bool,
-    entry_name_template: &str,
-    resource_contract: bool,
-    stage_audit_metafile: Option<&Path>,
-) -> Vec<OsString> {
-    let mut args: Vec<OsString> = Vec::new();
-    args.push(OsString::from("--bundle"));
-    args.push(OsString::from("--format=esm"));
-    // Code-splitting is enabled ONLY for the shared-bundle path (esm-only; we
-    // already force `--format=esm`). With splitting on, esbuild emits the entry
-    // plus one chunk per shared / dynamically-imported module graph, so a
-    // consumer's `import("shiki")` lands in its own chunk instead of being
-    // inlined into the multi-MB entry every page loads (issue #800). A
-    // zero-dynamic-import project emits only the entry — identical to the
-    // pre-splitting single-file build.
-    //
-    // Client-script jobs pass `splitting = false`; their dynamic imports
-    // are inlined so the single output file remains self-contained.
-    if splitting {
-        args.push(OsString::from("--splitting=true"));
-    }
-    args.push(OsString::from("--tree-shaking=true"));
-    // Shared islands and client scripts ship to the browser.
-    args.push(OsString::from("--platform=browser"));
-    args.push(OsString::from("--external:node:*"));
-    // Issue #1395: an island importing a `.css` file (e.g.
-    // `import "./styles.css"` inside a `"use client"` component) must not
-    // hard-fail the islands bundle. Mirrors the SSR bundler's
-    // `--loader:.css=empty` in `ESBUILD_LOADER_ARGS`
-    // (`crates/zfb-build/src/bundler.rs`): the loader substitutes an empty
-    // exports object for the CSS file at compile time, so the import
-    // resolves instead of esbuild emitting a sibling CSS output file that
-    // `read_back_outdir`/`validate_chunk_filename` below would reject.
-    // Authored CSS (including `.css` bytes reachable from an island) is
-    // already shipped separately via the zfb CSS pipeline's
-    // `styles-<hash>.css` — islands never need to carry those bytes
-    // themselves. NOTE (issue #1410): on esbuild 0.25 a bare
-    // `--loader:.css=empty` does NOT cover `.module.css` — esbuild's native
-    // `local-css` loader claims the `.module.css` extension and emits a
-    // sibling CSS output file (+ a scoped class-name map) unless a MORE
-    // SPECIFIC extension rule is registered. So `.module.css` needs its own
-    // explicit `--loader:.module.css=empty`. Both then resolve the import to
-    // `styles === undefined` rather than a scoped class-name map: the SSR
-    // bundler's per-file class-map extraction is deliberately OUT OF SCOPE
-    // for the islands client bundle (see #1404 for the shadow-materialisation
-    // follow-up and #1406 for the docs wave that documents this limitation).
-    args.push(OsString::from("--loader:.css=empty"));
-    args.push(OsString::from("--loader:.module.css=empty"));
+    // Issue #1395 + #1410: an island importing `.css` / `.module.css` must
+    // not hard-fail the islands bundle and must not emit a sibling CSS output
+    // the read-back would reject. Both map to the empty loader (mirroring the
+    // SSR bundler); `.module.css` needs its own rule so no scoped-CSS loader
+    // claims it. Authored CSS is shipped by the zfb CSS pipeline instead.
+    let mut loaders = BTreeMap::from([
+        (".css".to_string(), Loader::Empty),
+        (".module.css".to_string(), Loader::Empty),
+    ]);
     for (extension, loader) in &config.loaders {
-        args.push(OsString::from(format!("--loader:{extension}={loader}")));
+        let parsed =
+            Loader::parse(loader).with_context(|| format!("Unknown module type: {loader}"))?;
+        loaders.insert(extension.clone(), parsed);
     }
-    args.push(OsString::from("--jsx=automatic"));
-    args.push(OsString::from(format!(
-        "--jsx-import-source={}",
-        zfb_types::owned_runtime::JSX_IMPORT_SOURCE
-    )));
-    args.push(OsString::from("--keep-names"));
+    if job.resource_contract {
+        // Locked after every configured loader so the shared browser-islands
+        // contract cannot be weakened by a later override. The explicit
+        // `.zfb-resource.mjs` rule is more specific than `.mjs`, preserving
+        // the copied glue as JavaScript while ordinary `.mjs` modules remain
+        // bundle inputs.
+        loaders.insert(ZFB_RESOURCE_MJS_EXTENSION.to_string(), Loader::File);
+        loaders.insert(WASM_EXTENSION.to_string(), Loader::File);
+    }
+    request.loaders = loaders.into_iter().collect();
+
+    request.jsx.runtime = Some(JsxRuntime::Automatic);
+    request.jsx.import_source = Some(zfb_types::owned_runtime::JSX_IMPORT_SOURCE.to_string());
+    request.keep_names = true;
+    if let Some(resolver) = resolver {
+        request
+            .resolve
+            .aliases
+            .extend(resolver.virtual_module_alias_args.iter().cloned());
+        request
+            .resolve
+            .aliases
+            .extend(resolver.plugin_alias_args.iter().cloned());
+    }
     // Consumer code uses the public SDK through the bare `zfb` namespace
-    // (`zfb/content`, `zfb/config`, `zfb/zudo-react`, …), while the
-    // published npm package is named `@takazudo/zfb`. esbuild's alias
-    // applies to exact imports and subpaths, including imports from
-    // node_modules entries where the synthetic tsconfig paths are ignored.
-    // Both resolver-input call sites reserve `zfb` so a plugin alias cannot
-    // shadow this built-in mapping (#3934).
-    args.push(OsString::from("--alias:zfb=@takazudo/zfb"));
-    if config.minify {
-        args.push(OsString::from("--minify"));
-    }
+    // (`zfb/content`, `zfb/config`, `zfb/zudo-react`, …), while the published
+    // npm package is named `@takazudo/zfb`. The alias applies to exact
+    // imports and subpaths, including imports from node_modules entries where
+    // the synthetic tsconfig paths are ignored. Both resolver-input call sites
+    // reserve `zfb` so a plugin alias cannot shadow this mapping (#3934).
+    request
+        .resolve
+        .aliases
+        .push(("zfb".to_string(), "@takazudo/zfb".to_string()));
+    request.minify = config.minify;
     if config.sourcemap {
-        args.push(OsString::from("--sourcemap=linked"));
+        request.source_map = zfb_rolldown_prototype::SourceMap::Linked;
     }
-    // Issue #1404/#1413: keep esbuild anchored at each importer's on-disk
+    // Issue #1404/#1413: keep resolution anchored at each importer's on-disk
     // location when the islands shadow uses symlink mode. Copy-mode shadows
-    // omit this flag because their source files are real shadow copies,
-    // mirroring the SSR bundler's project-node_modules + tsconfig-paths
-    // fallback. The default no-shadow argv remains byte-identical to a
-    // pre-#1404 build.
-    if config.preserve_symlinks {
-        args.push(OsString::from("--preserve-symlinks"));
-    }
-    // Directory-mode output: esbuild writes the entry (and, when splitting is
-    // on, any chunks) into the *staging* `out_dir` (a throwaway tempdir —
-    // NOT `dist/assets/`). `--outdir` is always present — the read-back
-    // walks this dir for the `<entry_name_template>.js` entry regardless of
-    // splitting. `--entry-names` pins the entry's basename to `entry_name_template`
-    // (esbuild appends `.js`) so the read-back can identify it by name.
-    // `--chunk-names` (splitting only) self-content-hashes each chunk FLAT
-    // in the same dir (`islands-chunk-<hash>.js`); esbuild bakes relative
-    // `import("./...")` references between them, so names must never be
-    // renamed downstream. Omitted without `--splitting`.
-    // See `ESBUILD_ENTRY_NAME_TEMPLATE` / `ESBUILD_CHUNK_NAME_TEMPLATE` and
-    // the `BundleOutput::chunks` contract for the full rationale.
-    // Flag spellings verified against the pinned esbuild 0.25.x CLI.
-    args.push(OsString::from(format!("--outdir={}", out_dir.display())));
-    args.push(OsString::from(format!(
-        "--entry-names={entry_name_template}"
-    )));
-    if splitting {
-        args.push(OsString::from(format!(
-            "--chunk-names={ESBUILD_CHUNK_NAME_TEMPLATE}"
-        )));
-    }
+    // leave it off because their source files are real shadow copies.
+    request.resolve.preserve_symlinks = config.preserve_symlinks;
+    request.resolve.conditions = bundler.conditions.clone();
+    request.resolve.extra_module_dirs = bundler.extra_module_dirs();
+
     // Inline NODE_ENV so framework packages pick their mode-specific build.
-    // Mode is intentionally independent from minification. esbuild expects
-    // the define value to be a JS literal, hence the embedded quotes.
-    if config.mode.is_prod() {
-        args.push(OsString::from(
-            "--define:process.env.NODE_ENV=\"production\"",
-        ));
-    } else {
-        args.push(OsString::from(
-            "--define:process.env.NODE_ENV=\"development\"",
-        ));
-    }
-    // Inline `import.meta.env.{PROD,DEV}` so consumer `'use client'`
-    // code that references either expression (e.g. `if
-    // (import.meta.env.DEV) console.log(…)`) is folded at bundle time
-    // instead of leaving the literal expression in the shipped bundle.
-    // The shared-bundle path (`crates/zfb-build/src/bundler.rs::2395`)
-    // already does this for the SSR/runtime bundle; mirroring here
-    // keeps both pipelines aligned. Without these defines,
-    // `import.meta.env` is `undefined` at module-init time in the
-    // browser and `import.meta.env.DEV` throws
-    // `TypeError: Cannot read properties of undefined (reading 'DEV')`
-    // before any island can hydrate (issue #287).
+    // Mode is intentionally independent from minification. Define values are
+    // JS expressions, hence the embedded quotes.
     let prod = config.mode.is_prod();
-    args.push(OsString::from(format!(
-        "--define:import.meta.env.PROD={}",
-        prod
-    )));
-    args.push(OsString::from(format!(
-        "--define:import.meta.env.DEV={}",
-        !prod
-    )));
+    let node_env = if prod { "production" } else { "development" };
+    request.defines.push((
+        "process.env.NODE_ENV".to_string(),
+        format!("\"{node_env}\""),
+    ));
+    // Inline `import.meta.env.{PROD,DEV}` so consumer `'use client'` code
+    // that references either expression is folded at bundle time instead of
+    // shipping `import.meta.env`, which is `undefined` in the browser and
+    // throws before any island can hydrate (issue #287). The SSR bundler
+    // defines the same pair.
+    request
+        .defines
+        .push(("import.meta.env.PROD".to_string(), prod.to_string()));
+    request
+        .defines
+        .push(("import.meta.env.DEV".to_string(), (!prod).to_string()));
     for (key, value) in &config.define {
-        args.push(OsString::from(format!("--define:{key}={value}")));
+        request.defines.push((key.clone(), value.clone()));
     }
-    for extra in extra_args {
-        args.push(extra.clone());
-    }
-    if resource_contract {
-        // These locked flags come after every operator-supplied argument so
-        // the shared browser-islands contract cannot be weakened by a later
-        // loader or asset-name override. The explicit `.zfb-resource.mjs`
-        // rule is more specific than `.mjs`, preserving the copied glue as
-        // JavaScript while ordinary `.mjs` modules remain bundle inputs.
-        args.push(OsString::from(format!(
-            "--loader:{ZFB_RESOURCE_MJS_EXTENSION}=file"
-        )));
-        args.push(OsString::from(format!("--loader:{WASM_EXTENSION}=file")));
-        args.push(OsString::from(format!(
-            "--asset-names={ESBUILD_RESOURCE_NAME_TEMPLATE}"
-        )));
-        args.push(OsString::from(format!(
-            "--metafile={}",
-            out_dir.join(ESBUILD_RESOURCE_METAFILE_FILENAME).display()
-        )));
-    } else if let Some(metafile) = stage_audit_metafile {
-        // Stage-escape audit policy (#1705): every other real pass has no
-        // metafile of its own, so request a dedicated one here when the
-        // caller configured a stage-audit policy.
-        args.push(OsString::from(format!("--metafile={}", metafile.display())));
-    }
-    args.push(OsString::from(entry_path.as_os_str()));
-    args
+
+    request.graph = if job.resource_contract {
+        Some(job.out_dir.join(RESOURCE_METAFILE_FILENAME))
+    } else {
+        job.stage_audit_metafile.map(Path::to_path_buf)
+    };
+    request.tsconfig = tsconfig.map(Path::to_path_buf);
+    Ok(request)
 }
 
 /// Generate the synthetic single-entry source for the owned shared bundle.
@@ -3012,8 +2523,7 @@ fn render_shared_bundle_entry_source_with_build(
     build: Option<&str>,
     module_labels: &BTreeMap<PathBuf, String>,
 ) -> String {
-    let mut out =
-        String::from("// Generated by zfb-islands::EsbuildSubprocessBundler::produce_bundle_js\n");
+    let mut out = String::from("// Generated by zfb-islands::IslandsBundler::produce_bundle_js\n");
     // `<ClientRouter />` auto-include (issue #289).
     //
     // `<ClientRouter />` only renders SSR `<head>` tags; the View
@@ -3099,7 +2609,7 @@ fn is_absolute_module_label(label: &str) -> bool {
         || (bytes.get(1) == Some(&b':') && bytes.first().is_some_and(u8::is_ascii_alphabetic))
 }
 
-impl ClientBundler for EsbuildSubprocessBundler {
+impl ClientBundler for IslandsBundler {
     fn bundle(&self, islands: &[Island], config: &BundleConfig) -> Result<BundleOutput> {
         validate_owned_build_identity(islands, config)?;
         let mut markers = std::collections::HashSet::new();
@@ -3169,7 +2679,7 @@ impl ClientBundler for EsbuildSubprocessBundler {
     }
 }
 
-impl EsbuildSubprocessBundler {
+impl IslandsBundler {
     /// Bundle a single client-script file (`.client.{ts,tsx,js,jsx}`) directly.
     ///
     /// Unlike the shared-islands path (which synthesises a virtual entry that
@@ -3220,7 +2730,7 @@ impl EsbuildSubprocessBundler {
         self.sweep_stranded_entries();
 
         let workers = validate_client_script_worker_entries(entry_name, workers)?;
-        if self.config.mock_subprocess {
+        if self.config.mock_bundle {
             let js = if !self.config.mock_output.is_empty() {
                 self.config.mock_output.clone()
             } else {
@@ -3242,13 +2752,11 @@ impl EsbuildSubprocessBundler {
             return Ok(ClientScriptBundleOutput { js, companions });
         }
 
-        ensure_binary_verified(&self.config.binary_path, false)?;
-
         // Staging output directory — same pattern as `bundle_one_entry`.
-        // A system tempdir is fine for the output because esbuild's
-        // `node_modules` upward-walk starts from the actual entry file's
-        // directory (not the outdir), so bare imports resolve against the
-        // project's `node_modules/` naturally.
+        // A system tempdir is fine for the output because the `node_modules`
+        // upward-walk starts from the actual entry file's directory (not the
+        // outdir), so bare imports resolve against the project's
+        // `node_modules/` naturally.
         let out_dir = tempfile::Builder::new()
             .prefix("zfb-esbuild-client-out-")
             .tempdir()
@@ -3268,11 +2776,6 @@ impl EsbuildSubprocessBundler {
             )
         }));
 
-        #[cfg(feature = "rolldown-prototype")]
-        let native = zfb_rolldown_prototype::enabled();
-        #[cfg(not(feature = "rolldown-prototype"))]
-        let native = false;
-
         for (output_stem, source_path, label) in jobs {
             let job_resolver = build_job_resolver_inputs(
                 &self.config.working_dir,
@@ -3282,81 +2785,40 @@ impl EsbuildSubprocessBundler {
                 &self.config.virtual_modules,
             )?;
             let job_stage_audit_metafile = stage_audit_metafile(self.config.stage_audit.as_ref())?;
-            // Every entry is self-contained (`splitting=false`). Worker URL
+            // Every entry is self-contained (no splitting). Worker URL
             // edges have already been rewritten to sibling contract names.
-            let args = build_esbuild_args_with_entry_name(
+            let request = build_bundle_request(
+                &self.config,
                 config,
-                &self.config.extra_args,
-                out_dir.path(),
-                &source_path,
-                false,
-                &output_stem,
-                job_stage_audit_metafile.as_ref().map(|f| f.path()),
-            );
-            let mut cmd = Command::new(&self.config.binary_path);
-            cmd.current_dir(&self.config.working_dir);
-            for (key, value) in &self.config.env_vars {
-                cmd.env(key, value);
-            }
-            if let Some(ref tsconfig) = job_resolver.tsconfig {
-                cmd.arg(OsString::from(format!(
-                    "--tsconfig={}",
-                    tsconfig.path().display()
-                )));
-            }
-            for flag in job_resolver.resolver_inputs.virtual_module_alias_flags() {
-                cmd.arg(OsString::from(flag));
-            }
-            for flag in job_resolver.resolver_inputs.plugin_alias_flags() {
-                cmd.arg(OsString::from(flag));
-            }
-            for arg in &args {
-                cmd.arg(arg);
-            }
-            #[cfg(feature = "rolldown-prototype")]
-            if native {
-                run_native_entry(
-                    &mut cmd,
-                    &source_path,
-                    self.config.tsconfig_search_boundary.as_deref(),
-                )?;
-                if std::env::var_os("ZFB_DEV_TIMING").is_some() {
-                    let kind = if label == "client script" {
-                        "entry"
-                    } else {
-                        "worker"
-                    };
-                    let relative_source = source_path
-                        .strip_prefix(&self.config.working_dir)
-                        .unwrap_or(&source_path);
-                    eprintln!(
-                        "[zfb-timing] rolldown-prototype client-script job={output_stem} kind={kind} source={}",
-                        relative_source.display()
-                    );
-                }
-            }
-            let output = if native {
-                None
-            } else {
-                Some(cmd.output().with_context(|| {
-                    format!("failed to spawn {}", self.config.binary_path.display())
-                })?)
-            };
-
-            if let Some(output) = output.filter(|output| !output.status.success()) {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let friendly = redact_temp_path(
-                    &stderr,
+                Some(&job_resolver.resolver_inputs),
+                job_resolver.tsconfig.as_ref().map(|file| file.path()),
+                JobShape::named(
                     out_dir.path(),
-                    &self.config.working_dir,
-                    "<zfb-islands internal esbuild output directory>",
+                    &source_path,
+                    &output_stem,
+                    job_stage_audit_metafile.as_ref().map(|f| f.path()),
+                ),
+            )?;
+            run_native_entry(
+                request,
+                &source_path,
+                self.config.tsconfig_search_boundary.as_deref(),
+            )?;
+            if std::env::var_os("ZFB_DEV_TIMING").is_some() {
+                let kind = if label == "client script" {
+                    "entry"
+                } else {
+                    "worker"
+                };
+                let relative_source = source_path
+                    .strip_prefix(&self.config.working_dir)
+                    .unwrap_or(&source_path);
+                // The line shape is parsed by prototypes/rolldown/client-scripts.mjs
+                // and crates/zfb/tests/client_bundling_cross_pipeline.rs.
+                eprintln!(
+                    "[zfb-timing] rolldown-prototype client-script job={output_stem} kind={kind} source={}",
+                    relative_source.display()
                 );
-                return Err(anyhow!(
-                    "esbuild exited with status {} bundling {label} {:?}: {}",
-                    output.status,
-                    source_path,
-                    friendly.trim()
-                ));
             }
 
             if let Some(policy) = &self.config.stage_audit {
@@ -3397,6 +2859,10 @@ mod tests {
 
     const TEST_BUILD_TOKEN: &str = "0123456789abcdef";
 
+    fn config_request(cwd: &Path) -> BundleRequest {
+        BundleRequest::new(cwd, "entry.ts", OutputLayout::dir("out"), Platform::Browser)
+    }
+
     #[test]
     fn native_config_discovers_jsconfig_and_reloads_package_selected_parent() {
         let owner = tempfile::tempdir().unwrap();
@@ -3419,15 +2885,14 @@ mod tests {
             r#"{"compilerOptions":{"useDefineForClassFields":true}}"#,
         )
         .unwrap();
-        let mut cmd = Command::new("unused");
-        cmd.current_dir(root.as_path());
+        let request = config_request(root.as_path());
         for (selected, expected) in [("assignment.json", false), ("define.json", true)] {
             std::fs::write(
                 package.join("package.json"),
                 format!(r#"{{"tsconfig":"{selected}"}}"#),
             )
             .unwrap();
-            let file = native_entry_config(&cmd, &root.as_path().join("src/worker.ts"), None)
+            let file = native_entry_config(&request, &root.as_path().join("src/worker.ts"), None)
                 .unwrap()
                 .unwrap();
             let value: serde_json::Value =
@@ -3512,21 +2977,20 @@ mod tests {
         )
         .unwrap();
         let source = project.join("worker.ts");
-        let mut cmd = Command::new("unused");
-        cmd.current_dir(&project);
-        assert!(native_entry_config(&cmd, &source, Some(&project))
+        let mut request = config_request(&project);
+        assert!(native_entry_config(&request, &source, Some(&project))
             .unwrap()
             .is_none());
-        cmd.arg("--tsconfig=selected.json");
-        let selected = native_entry_config(&cmd, &source, Some(&project))
+        request.tsconfig = Some(PathBuf::from("selected.json"));
+        let selected = native_entry_config(&request, &source, Some(&project))
             .unwrap()
             .unwrap();
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(selected.path()).unwrap()).unwrap();
         assert_eq!(value["compilerOptions"]["strict"], true);
-        cmd.arg("--tsconfig=missing.json");
+        request.tsconfig = Some(PathBuf::from("missing.json"));
         assert!(
-            native_entry_config(&cmd, &source, None).is_err(),
+            native_entry_config(&request, &source, None).is_err(),
             "never fall back from an invalid explicit selection"
         );
     }
@@ -3589,12 +3053,9 @@ mod tests {
         .unwrap();
         std::os::unix::fs::symlink(real.join("base.json"), lexical.join("tsconfig.json")).unwrap();
         for (preserve, base) in [(false, &real), (true, &lexical)] {
-            let mut cmd = Command::new("unused");
-            cmd.current_dir(&lexical);
-            if preserve {
-                cmd.arg("--preserve-symlinks");
-            }
-            let file = native_entry_config(&cmd, &lexical.join("worker.ts"), None)
+            let mut request = config_request(&lexical);
+            request.resolve.preserve_symlinks = preserve;
+            let file = native_entry_config(&request, &lexical.join("worker.ts"), None)
                 .unwrap()
                 .unwrap();
             let value: serde_json::Value =
@@ -4375,43 +3836,6 @@ mod tests {
         );
     }
 
-    // ── redact_temp_path (#1388) ─────────────────────────────────────────────
-
-    #[test]
-    fn redact_temp_path_replaces_cwd_relative_form() {
-        let cwd = Path::new("/Users/dev/my-project");
-        let leak_path = cwd.join(".zfb-esbuild-entry-a1b2c3.tsx");
-        let stderr = "\u{2718} [ERROR] Could not resolve \"vendor-lib\"\n\n    .zfb-esbuild-entry-a1b2c3.tsx:2:9:\n";
-        let friendly = redact_temp_path(stderr, &leak_path, cwd, "<synthesized entry>");
-        assert!(
-            friendly.contains("<synthesized entry>"),
-            "should replace the leaked filename with the label: {friendly}"
-        );
-        assert!(
-            !friendly.contains(".zfb-esbuild-entry-a1b2c3.tsx"),
-            "should not leak the synthesized entry filename: {friendly}"
-        );
-    }
-
-    #[test]
-    fn redact_temp_path_replaces_absolute_form() {
-        let cwd = Path::new("/Users/dev/my-project");
-        let leak_path = Path::new("/tmp/zfb-esbuild-out-xyz789/islands.js");
-        let stderr = "error writing /tmp/zfb-esbuild-out-xyz789/islands.js: disk full";
-        let friendly = redact_temp_path(stderr, leak_path, cwd, "<internal outdir>");
-        assert_eq!(friendly, "error writing <internal outdir>: disk full");
-    }
-
-    #[test]
-    fn redact_temp_path_is_a_no_op_when_leak_path_never_appears() {
-        let cwd = Path::new("/Users/dev/my-project");
-        let leak_path = cwd.join(".zfb-esbuild-entry-a1b2c3.tsx");
-        let stderr =
-            "\u{2718} [ERROR] Could not resolve \"vendor-lib\"\n\n    components/counter.tsx:2:9:\n";
-        let friendly = redact_temp_path(stderr, &leak_path, cwd, "<synthesized entry>");
-        assert_eq!(friendly, stderr);
-    }
-
     #[test]
     fn json_string_escapes_specials() {
         assert_eq!(json_string("a/b"), "\"a/b\"");
@@ -4521,7 +3945,7 @@ mod tests {
             "client_router=false must not mention the client-router subpath: {without}"
         );
 
-        let header = "// Generated by zfb-islands::EsbuildSubprocessBundler::produce_bundle_js\n";
+        let header = "// Generated by zfb-islands::IslandsBundler::produce_bundle_js\n";
         let import_line = "import \"@takazudo/zfb-runtime/client-router\";\n";
         let body_without = without
             .strip_prefix(header)
@@ -4741,7 +4165,7 @@ mod tests {
     /// there are multiple input files" for any N >= 2. The fix
     /// synthesizes a single-entry source via
     /// [`render_shared_bundle_entry_source`] and routes through
-    /// [`EsbuildSubprocessBundler::bundle_one_entry`] so esbuild always
+    /// [`IslandsBundler::bundle_one_entry`] so esbuild always
     /// sees exactly one input.
     ///
     /// We exercise the mock path with an empty `mock_output` so
@@ -4752,12 +4176,12 @@ mod tests {
     #[test]
     fn bundle_handles_multiple_islands_via_synthetic_entry() {
         let dir = tempfile::tempdir().unwrap();
-        let bundler = EsbuildSubprocessBundler::new(EsbuildSubprocessConfig {
-            mock_subprocess: true,
+        let bundler = IslandsBundler::new(IslandsBundlerConfig {
+            mock_bundle: true,
             // Empty mock_output → bundle_one_entry returns the entry
             // source verbatim. That lets us assert against the
             // synthesized shape end-to-end.
-            ..EsbuildSubprocessConfig::default()
+            ..IslandsBundlerConfig::default()
         });
         let islands = vec![
             Island::new("Counter", "/abs/components/Counter.tsx"),
@@ -4805,45 +4229,88 @@ mod tests {
         assert!(in_memory.contains("__zfb_register(__zfb_island_2, \"Sidebar\", \"Sidebar\","));
     }
 
-    #[test]
-    fn esbuild_subprocess_config_env_override_is_honoured() {
-        // Drive the env-override path through an injected getter rather
-        // than mutating the real process environment. `std::env::set_var`
-        // is `unsafe` under Rust 2024 because it races other threads
-        // reading the env table — and our test suite is multi-threaded.
-        let cfg = EsbuildSubprocessConfig::default_with_env_getter(|name| {
-            if name == "ZFB_ESBUILD_BIN" {
-                Some(OsString::from("/tmp/zfb-esbuild-overridden"))
-            } else {
-                None
+    /// The shared-entry request `bundle_one_entry` builds. `splitting` selects
+    /// the shared-bundle path (`true`) vs the per-island/runtime path (`false`).
+    fn shared_request(config: &BundleConfig, splitting: bool) -> BundleRequest {
+        shared_request_with_graph(config, splitting, None)
+    }
+
+    fn shared_request_with_graph(
+        config: &BundleConfig,
+        splitting: bool,
+        stage_audit_metafile: Option<&Path>,
+    ) -> BundleRequest {
+        build_bundle_request(
+            &IslandsBundlerConfig::default().with_working_dir("/tmp/zfb-proj"),
+            config,
+            None,
+            None,
+            JobShape::shared_entry(
+                Path::new("/tmp/zfb-out"),
+                Path::new("/tmp/entry.tsx"),
+                splitting,
+                stage_audit_metafile,
+            ),
+        )
+        .expect("bundle request")
+    }
+
+    fn named_request(
+        config: &BundleConfig,
+        entry: &str,
+        entry_name: &str,
+        stage_audit_metafile: Option<&Path>,
+    ) -> BundleRequest {
+        build_bundle_request(
+            &IslandsBundlerConfig::default().with_working_dir("/tmp/zfb-proj"),
+            config,
+            None,
+            None,
+            JobShape::named(
+                Path::new("/tmp/zfb-out"),
+                Path::new(entry),
+                entry_name,
+                stage_audit_metafile,
+            ),
+        )
+        .expect("bundle request")
+    }
+
+    /// `(entry_names, chunk_names, asset_names)` of a staging-directory job.
+    fn layout_names(request: &BundleRequest) -> (Option<&str>, Option<&str>, Option<&str>) {
+        match &request.output {
+            OutputLayout::Dir {
+                dir,
+                entry_names,
+                chunk_names,
+                asset_names,
+            } => {
+                assert_eq!(dir, Path::new("/tmp/zfb-out"));
+                (
+                    entry_names.as_deref(),
+                    chunk_names.as_deref(),
+                    asset_names.as_deref(),
+                )
             }
-        });
-        assert_eq!(
-            cfg.binary_path,
-            PathBuf::from("/tmp/zfb-esbuild-overridden")
-        );
+            other => panic!("every job writes a staging directory: {other:?}"),
+        }
     }
 
-    #[test]
-    fn esbuild_subprocess_config_falls_back_to_default_slot_without_env() {
-        let cfg = EsbuildSubprocessConfig::default_with_env_getter(|_| None);
-        assert_eq!(
-            cfg.binary_path,
-            PathBuf::from("crates/zfb/binaries/esbuild/esbuild")
-        );
+    fn loader_of(request: &BundleRequest, extension: &str) -> Option<Loader> {
+        request
+            .loaders
+            .iter()
+            .find(|(key, _)| key == extension)
+            .map(|(_, loader)| *loader)
     }
 
-    /// Helper: collect the args produced by `build_esbuild_args` as
-    /// plain `String`s so test assertions can use `contains` / equality
-    /// without juggling `OsString` conversions. `splitting` selects the
-    /// shared-bundle path (`true`) vs the per-island/runtime path (`false`).
-    fn args_as_strings(config: &BundleConfig, splitting: bool) -> Vec<String> {
-        let entry = PathBuf::from("/tmp/entry.tsx");
-        let out_dir = PathBuf::from("/tmp/zfb-out");
-        build_esbuild_args(config, &[], &out_dir, &entry, splitting, None)
-            .into_iter()
-            .map(|os| os.to_string_lossy().into_owned())
-            .collect()
+    fn define_of<'r>(request: &'r BundleRequest, key: &str) -> Option<&'r str> {
+        request
+            .defines
+            .iter()
+            .rev()
+            .find(|(candidate, _)| candidate == key)
+            .map(|(_, value)| value.as_str())
     }
 
     // -----------------------------------------------------------------------
@@ -4857,30 +4324,20 @@ mod tests {
     /// passes) is the ONLY case that honours `stage_audit_metafile` — no
     /// `--metafile` appears at all without a policy.
     #[test]
-    fn build_esbuild_args_omits_metafile_without_a_stage_audit_policy() {
-        let args = args_as_strings(&BundleConfig::production(), false);
-        assert!(
-            !args.iter().any(|a| a.starts_with("--metafile")),
-            "no policy configured, no --metafile flag expected: {args:?}"
+    fn bundle_request_omits_graph_without_a_stage_audit_policy() {
+        let request = shared_request(&BundleConfig::production(), false);
+        assert_eq!(
+            request.graph, None,
+            "no policy configured, no graph file expected: {request:?}"
         );
     }
 
     #[test]
-    fn build_esbuild_args_emits_requested_metafile_when_stage_audit_metafile_is_some() {
-        let cfg = BundleConfig::production();
-        let out_dir = PathBuf::from("/tmp/zfb-out");
-        let entry = PathBuf::from("/tmp/entry.tsx");
-        let metafile = out_dir.join(".zfb-stage-audit-entry.json");
-        let args: Vec<String> =
-            build_esbuild_args(&cfg, &[], &out_dir, &entry, false, Some(&metafile))
-                .into_iter()
-                .map(|a| a.to_string_lossy().into_owned())
-                .collect();
-        assert!(
-            args.iter()
-                .any(|a| *a == format!("--metafile={}", metafile.display())),
-            "expected the requested stage-audit metafile flag: {args:?}"
-        );
+    fn bundle_request_writes_requested_graph_when_stage_audit_metafile_is_some() {
+        let metafile = PathBuf::from("/tmp/zfb-out/.zfb-stage-audit-entry.json");
+        let request =
+            shared_request_with_graph(&BundleConfig::production(), false, Some(&metafile));
+        assert_eq!(request.graph, Some(metafile));
     }
 
     /// The resource-contract pass (`splitting == true`) already emits its
@@ -4889,33 +4346,18 @@ mod tests {
     /// invocation never carries two `--metafile` flags (esbuild accepts
     /// only one).
     #[test]
-    fn build_esbuild_args_resource_contract_pass_never_duplicates_metafile_flag() {
-        let cfg = BundleConfig::production();
-        let out_dir = PathBuf::from("/tmp/zfb-out");
-        let entry = PathBuf::from("/tmp/entry.tsx");
-        let would_be_stage_audit_metafile = out_dir.join(".zfb-stage-audit-entry.json");
-        let args: Vec<String> = build_esbuild_args(
-            &cfg,
-            &[],
-            &out_dir,
-            &entry,
+    fn bundle_request_resource_contract_pass_reuses_its_own_graph() {
+        let would_be_stage_audit_metafile =
+            PathBuf::from("/tmp/zfb-out/.zfb-stage-audit-entry.json");
+        let request = shared_request_with_graph(
+            &BundleConfig::production(),
             true,
             Some(&would_be_stage_audit_metafile),
-        )
-        .into_iter()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
-        let metafile_flags: Vec<&String> = args
-            .iter()
-            .filter(|a| a.starts_with("--metafile="))
-            .collect();
+        );
         assert_eq!(
-            metafile_flags,
-            vec![&format!(
-                "--metafile={}",
-                out_dir.join(ESBUILD_RESOURCE_METAFILE_FILENAME).display()
-            )],
-            "exactly one --metafile flag, reusing the resource-contract metafile: {args:?}"
+            request.graph,
+            Some(Path::new("/tmp/zfb-out").join(RESOURCE_METAFILE_FILENAME)),
+            "the resource-contract graph is the one the audit reads: {request:?}"
         );
     }
 
@@ -4923,28 +4365,16 @@ mod tests {
     /// worker loop and the client-script jobs loop — same gating contract
     /// as `build_esbuild_args`.
     #[test]
-    fn build_esbuild_args_with_entry_name_emits_metafile_when_stage_audit_metafile_is_some() {
-        let cfg = BundleConfig::production();
-        let out_dir = PathBuf::from("/tmp/zfb-out");
-        let entry = PathBuf::from("/tmp/worker.ts");
-        let metafile = out_dir.join(".zfb-stage-audit-worker-src-s-search-d-worker-d-ts.json");
-        let args: Vec<String> = build_esbuild_args_with_entry_name(
-            &cfg,
-            &[],
-            &out_dir,
-            &entry,
-            false,
+    fn named_bundle_request_writes_graph_when_stage_audit_metafile_is_some() {
+        let metafile =
+            PathBuf::from("/tmp/zfb-out/.zfb-stage-audit-worker-src-s-search-d-worker-d-ts.json");
+        let request = named_request(
+            &BundleConfig::production(),
+            "/tmp/worker.ts",
             "worker-src-s-search-d-worker-d-ts",
             Some(&metafile),
-        )
-        .into_iter()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
-        assert!(
-            args.iter()
-                .any(|a| *a == format!("--metafile={}", metafile.display())),
-            "expected the requested stage-audit metafile flag: {args:?}"
         );
+        assert_eq!(request.graph, Some(metafile));
     }
 
     #[test]
@@ -5026,10 +4456,10 @@ mod tests {
             stage_roots: vec![PathBuf::from("/nonexistent/stage")],
             first_party_root: PathBuf::from("/nonexistent/workspace"),
         };
-        let cfg = EsbuildSubprocessConfig::default()
+        let cfg = IslandsBundlerConfig::default()
             .with_mock_output("export const Counter = () => null;\n")
             .with_stage_audit(policy);
-        let bundler = EsbuildSubprocessBundler::new(cfg);
+        let bundler = IslandsBundler::new(cfg);
         let tmp = tempfile::tempdir().unwrap();
         let bundle_cfg = BundleConfig::production()
             .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
@@ -5049,8 +4479,7 @@ mod tests {
 
     #[test]
     fn browser_bundler_rejects_duplicate_marker_before_emitting() {
-        let bundler =
-            EsbuildSubprocessBundler::new(EsbuildSubprocessConfig::default().with_mock_output(""));
+        let bundler = IslandsBundler::new(IslandsBundlerConfig::default().with_mock_output(""));
         let config =
             BundleConfig::production().with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()));
         let error = bundler
@@ -5073,10 +4502,10 @@ mod tests {
             stage_roots: vec![PathBuf::from("/nonexistent/stage")],
             first_party_root: PathBuf::from("/nonexistent/workspace"),
         };
-        let cfg = EsbuildSubprocessConfig::default()
+        let cfg = IslandsBundlerConfig::default()
             .with_mock_output("// bundled")
             .with_stage_audit(policy);
-        let bundler = EsbuildSubprocessBundler::new(cfg);
+        let bundler = IslandsBundler::new(cfg);
         let dir = tempfile::tempdir().unwrap();
         let entry = dir.path().join("widget.client.ts");
         let worker = dir.path().join("worker.ts");
@@ -5125,34 +4554,16 @@ mod tests {
     /// `import()` land in its own chunk instead of inlining into the
     /// multi-MB entry every page loads.
     #[test]
-    fn build_esbuild_args_enables_splitting_with_outdir_and_naming() {
-        let cfg = BundleConfig::default();
-        let args = args_as_strings(&cfg, true);
-
-        assert!(
-            args.iter().any(|a| a == "--splitting=true"),
-            "missing --splitting=true in args: {args:?}"
-        );
-        assert!(
-            !args.iter().any(|a| a == "--splitting=false"),
-            "stale --splitting=false still present: {args:?}"
-        );
-        assert!(
-            args.iter().any(|a| a.starts_with("--outdir=")),
-            "missing --outdir= in args: {args:?}"
-        );
-        assert!(
-            !args.iter().any(|a| a.starts_with("--outfile=")),
-            "stale --outfile= still present: {args:?}"
-        );
-        assert!(
-            args.iter().any(|a| a == "--entry-names=islands"),
-            "missing --entry-names=islands in args: {args:?}"
-        );
-        assert!(
-            args.iter()
-                .any(|a| a == "--chunk-names=islands-chunk-[hash]"),
-            "missing --chunk-names=islands-chunk-[hash] in args: {args:?}"
+    fn bundle_request_enables_splitting_with_outdir_and_naming() {
+        let request = shared_request(&BundleConfig::default(), true);
+        assert!(request.splitting, "shared pass must split: {request:?}");
+        assert_eq!(
+            layout_names(&request),
+            (
+                Some("islands"),
+                Some("islands-chunk-[hash]"),
+                Some("islands-resource-[name]-[hash]")
+            )
         );
     }
 
@@ -5161,60 +4572,53 @@ mod tests {
     /// private metafile read-back oracle; non-splitting client-script jobs
     /// retain their separate argument contract.
     #[test]
-    fn shared_bundle_args_include_locked_resource_contract_only_when_splitting() {
+    fn shared_bundle_request_includes_locked_resource_contract_only_when_splitting() {
         let cfg = BundleConfig::default()
             .with_loaders(BTreeMap::from([(".txt".to_string(), "text".to_string())]));
-        let shared = args_as_strings(&cfg, true);
-        let txt_index = shared
-            .iter()
-            .position(|arg| arg == "--loader:.txt=text")
-            .expect("user loader");
-        let glue_index = shared
-            .iter()
-            .position(|arg| arg == "--loader:.zfb-resource.mjs=file")
-            .expect("locked glue loader");
-        let wasm_index = shared
-            .iter()
-            .position(|arg| arg == "--loader:.wasm=file")
-            .expect("locked wasm loader");
-        assert!(
-            txt_index < glue_index && glue_index < wasm_index,
-            "{shared:?}"
-        );
-        assert!(
-            shared
-                .iter()
-                .any(|arg| arg == "--asset-names=islands-resource-[name]-[hash]"),
+        let shared = shared_request(&cfg, true);
+        assert_eq!(loader_of(&shared, ".txt"), Some(Loader::Text));
+        assert_eq!(loader_of(&shared, ".zfb-resource.mjs"), Some(Loader::File));
+        assert_eq!(loader_of(&shared, ".wasm"), Some(Loader::File));
+        assert_eq!(
+            layout_names(&shared).2,
+            Some("islands-resource-[name]-[hash]"),
             "missing locked resource naming: {shared:?}"
         );
-        assert!(
-            shared
-                .iter()
-                .any(|arg| arg == "--metafile=/tmp/zfb-out/meta.json"),
-            "missing metafile oracle: {shared:?}"
+        assert_eq!(
+            shared.graph,
+            Some(PathBuf::from("/tmp/zfb-out/meta.json")),
+            "missing graph oracle: {shared:?}"
         );
 
-        let per_island = args_as_strings(&cfg, false);
-        assert!(
-            !per_island
-                .iter()
-                .any(|arg| arg.contains("zfb-resource.mjs") || arg == "--loader:.wasm=file"),
-            "per-island argv must not acquire the resource contract: {per_island:?}"
+        // The locked loaders win over a configured override that reached the
+        // builder directly.
+        let overridden = shared_request(
+            &BundleConfig::default()
+                .with_loaders(BTreeMap::from([(".wasm".to_string(), "empty".to_string())])),
+            true,
         );
-        assert!(
-            !per_island
-                .iter()
-                .any(|arg| arg.starts_with("--asset-names=") || arg.starts_with("--metafile=")),
-            "per-island argv must not acquire resource output metadata: {per_island:?}"
+        assert_eq!(loader_of(&overridden, ".wasm"), Some(Loader::File));
+
+        let per_island = shared_request(&cfg, false);
+        assert_eq!(
+            loader_of(&per_island, ".zfb-resource.mjs"),
+            None,
+            "per-island request must not acquire the resource contract: {per_island:?}"
         );
+        assert_eq!(loader_of(&per_island, ".wasm"), None);
+        assert_eq!(
+            layout_names(&per_island).2,
+            None,
+            "per-island request must not acquire resource output naming: {per_island:?}"
+        );
+        assert_eq!(per_island.graph, None);
     }
 
     #[test]
     fn shared_bundle_rejects_reserved_resource_loader_overrides() {
         for extension in [ZFB_RESOURCE_MJS_EXTENSION, WASM_EXTENSION] {
-            let bundler = EsbuildSubprocessBundler::new(
-                EsbuildSubprocessConfig::default().with_mock_output("export {};"),
-            );
+            let bundler =
+                IslandsBundler::new(IslandsBundlerConfig::default().with_mock_output("export {};"));
             let cfg = BundleConfig::default()
                 .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
                 .with_loaders(BTreeMap::from([(
@@ -5233,27 +4637,14 @@ mod tests {
     /// Non-splitting jobs omit `--splitting` and `--chunk-names`; esbuild
     /// inlines dynamic imports into their single output file.
     #[test]
-    fn build_esbuild_args_non_splitting_path_disables_splitting() {
-        let cfg = BundleConfig::default();
-        let args = args_as_strings(&cfg, false);
-
+    fn bundle_request_non_splitting_path_disables_splitting() {
+        let request = shared_request(&BundleConfig::default(), false);
         assert!(
-            !args.iter().any(|a| a.starts_with("--splitting")),
-            "non-splitting path must not pass any --splitting flag: {args:?}"
-        );
-        assert!(
-            !args.iter().any(|a| a.starts_with("--chunk-names")),
-            "non-splitting path must not pass --chunk-names (no chunks): {args:?}"
+            !request.splitting,
+            "non-splitting path must not split: {request:?}"
         );
         // The stable-entry read-back contract still holds without splitting.
-        assert!(
-            args.iter().any(|a| a.starts_with("--outdir=")),
-            "missing --outdir= in args: {args:?}"
-        );
-        assert!(
-            args.iter().any(|a| a == "--entry-names=islands"),
-            "missing --entry-names=islands in args: {args:?}"
-        );
+        assert_eq!(layout_names(&request), (Some("islands"), None, None));
     }
 
     /// `validate_chunk_filename` accepts exactly the two reserved companion
@@ -5297,41 +4688,32 @@ mod tests {
     /// Worker passes inherit the shared browser mode/loaders/defines while
     /// deliberately disabling splitting and pinning the full contract name.
     #[test]
-    fn module_worker_args_are_browser_non_splitting_and_inherit_config() {
+    fn module_worker_request_is_browser_non_splitting_and_inherits_config() {
         let cfg = BundleConfig::dev()
             .with_loaders(BTreeMap::from([(".txt".to_string(), "text".to_string())]))
             .with_define(BTreeMap::from([(
                 "__WORKER_FLAG__".to_string(),
                 "true".to_string(),
             )]));
-        let args: Vec<String> = build_esbuild_args_with_entry_name(
+        let request = named_request(
             &cfg,
-            &[],
-            Path::new("/tmp/out"),
-            Path::new("/app/src/search.worker.ts"),
-            false,
+            "/app/src/search.worker.ts",
             "worker-src-s-search-d-worker-d-ts",
             None,
-        )
-        .into_iter()
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect();
-
-        assert!(args.iter().any(|arg| arg == "--platform=browser"));
-        assert!(
-            !args.iter().any(|arg| arg.starts_with("--splitting")),
-            "worker bundles must be self-contained: {args:?}"
         );
-        assert!(args
-            .iter()
-            .any(|arg| arg == "--entry-names=worker-src-s-search-d-worker-d-ts"));
-        assert!(args.iter().any(|arg| arg == "--loader:.txt=text"));
-        assert!(args
-            .iter()
-            .any(|arg| arg == "--define:__WORKER_FLAG__=true"));
-        assert!(args
-            .iter()
-            .any(|arg| arg == "--define:import.meta.env.DEV=true"));
+
+        assert_eq!(request.platform, Platform::Browser);
+        assert!(
+            !request.splitting,
+            "worker bundles must be self-contained: {request:?}"
+        );
+        assert_eq!(
+            layout_names(&request),
+            (Some("worker-src-s-search-d-worker-d-ts"), None, None)
+        );
+        assert_eq!(loader_of(&request, ".txt"), Some(Loader::Text));
+        assert_eq!(define_of(&request, "__WORKER_FLAG__"), Some("true"));
+        assert_eq!(define_of(&request, "import.meta.env.DEV"), Some("true"));
     }
 
     #[test]
@@ -5343,9 +4725,8 @@ mod tests {
         let config = BundleConfig::dev()
             .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
             .with_module_workers(vec![worker.clone(), worker]);
-        let bundler = EsbuildSubprocessBundler::new(
-            EsbuildSubprocessConfig::default().with_mock_output("export {};"),
-        );
+        let bundler =
+            IslandsBundler::new(IslandsBundlerConfig::default().with_mock_output("export {};"));
 
         let error = bundler
             .bundle(&[Island::new("Island", &source)], &config)
@@ -5393,17 +4774,19 @@ mod tests {
     /// Checked on both the shared-bundle (`splitting = true`) and per-island
     /// (`splitting = false`) arg shapes since both call the same builder.
     #[test]
-    fn build_esbuild_args_includes_css_empty_loader() {
+    fn bundle_request_includes_css_empty_loader() {
         let cfg = BundleConfig::default();
         for splitting in [true, false] {
-            let args = args_as_strings(&cfg, splitting);
-            assert!(
-                args.iter().any(|a| a == "--loader:.css=empty"),
-                "missing --loader:.css=empty (splitting={splitting}) in args: {args:?}"
+            let request = shared_request(&cfg, splitting);
+            assert_eq!(
+                loader_of(&request, ".css"),
+                Some(Loader::Empty),
+                "missing empty .css loader (splitting={splitting}): {request:?}"
             );
-            assert!(
-                args.iter().any(|a| a == "--loader:.module.css=empty"),
-                "missing --loader:.module.css=empty (splitting={splitting}) in args: {args:?}"
+            assert_eq!(
+                loader_of(&request, ".module.css"),
+                Some(Loader::Empty),
+                "missing empty .module.css loader (splitting={splitting}): {request:?}"
             );
         }
     }
@@ -5412,21 +4795,21 @@ mod tests {
     /// `BundleConfig::preserve_symlinks` is set, and is absent by default so
     /// the no-shadow argv stays byte-identical to a pre-#1404 build.
     #[test]
-    fn build_esbuild_args_emits_preserve_symlinks_only_when_configured() {
+    fn bundle_request_preserves_symlinks_only_when_configured() {
         for splitting in [true, false] {
-            let off = args_as_strings(&BundleConfig::default(), splitting);
+            let off = shared_request(&BundleConfig::default(), splitting);
             assert!(
-                !off.iter().any(|a| a == "--preserve-symlinks"),
-                "default config must NOT emit --preserve-symlinks (splitting={splitting}): {off:?}"
+                !off.resolve.preserve_symlinks,
+                "default config must NOT preserve symlinks (splitting={splitting}): {off:?}"
             );
 
-            let on = args_as_strings(
+            let on = shared_request(
                 &BundleConfig::default().with_preserve_symlinks(true),
                 splitting,
             );
             assert!(
-                on.iter().any(|a| a == "--preserve-symlinks"),
-                "preserve_symlinks=true must emit --preserve-symlinks (splitting={splitting}): {on:?}"
+                on.resolve.preserve_symlinks,
+                "preserve_symlinks=true must preserve symlinks (splitting={splitting}): {on:?}"
             );
         }
     }
@@ -5454,11 +4837,11 @@ mod tests {
     fn read_back_shared_outdir_keeps_zero_resource_output_compatible() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("islands.js"), b"export const x = 1;\n").unwrap();
-        write_resource_metafile(&dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME), &[]).unwrap();
+        write_resource_metafile(&dir.path().join(RESOURCE_METAFILE_FILENAME), &[]).unwrap();
 
         let out = read_back_shared_outdir(
             dir.path(),
-            &dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME),
+            &dir.path().join(RESOURCE_METAFILE_FILENAME),
             dir.path(),
         )
         .expect("zero resources remain valid");
@@ -5479,7 +4862,7 @@ mod tests {
         // inherited from filesystem iteration order.
         std::fs::write(&wasm, [0_u8, 97, 115, 109]).unwrap();
         std::fs::write(&glue, b"export const glue = true;\n").unwrap();
-        let metafile = dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME);
+        let metafile = dir.path().join(RESOURCE_METAFILE_FILENAME);
         write_resource_metafile(
             &metafile,
             &[
@@ -5537,7 +4920,7 @@ mod tests {
             .path()
             .join("islands-resource-glue.zfb-resource-ABCDE.mjs");
         std::fs::write(&resource, b"export {}\n").unwrap();
-        let metafile = dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME);
+        let metafile = dir.path().join(RESOURCE_METAFILE_FILENAME);
         std::fs::write(
             &metafile,
             serde_json::to_vec(&serde_json::json!({
@@ -5566,7 +4949,7 @@ mod tests {
         std::fs::write(dir.path().join("islands.js"), b"entry\n").unwrap();
         let resource = dir.path().join("islands-resource-payload-ABCDE.wasm");
         std::fs::write(&resource, b"wasm").unwrap();
-        let metafile = dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME);
+        let metafile = dir.path().join(RESOURCE_METAFILE_FILENAME);
 
         write_resource_metafile(
             &metafile,
@@ -5713,99 +5096,49 @@ mod tests {
     /// The esbuild subprocess argument list MUST include
     /// `--jsx=automatic` and the owned JSX import source.
     #[test]
-    fn build_esbuild_args_includes_automatic_owned_jsx_flags() {
-        let cfg = BundleConfig::default();
-        let args = args_as_strings(&cfg, true);
-        assert!(
-            args.iter().any(|a| a == "--jsx=automatic"),
-            "missing --jsx=automatic in args: {args:?}"
+    fn bundle_request_uses_automatic_owned_jsx() {
+        let request = shared_request(&BundleConfig::default(), true);
+        assert_eq!(request.jsx.runtime, Some(JsxRuntime::Automatic));
+        assert_eq!(
+            request.jsx.import_source.as_deref(),
+            Some("@takazudo/zfb/zudo-react")
         );
-        assert!(
-            args.iter()
-                .any(|a| a == "--jsx-import-source=@takazudo/zfb/zudo-react"),
-            "missing owned JSX import source in args: {args:?}"
-        );
-        // Both flags must appear before the entry path (which is
-        // always last) so esbuild parses them as flags rather than as
-        // additional inputs.
-        let entry_idx = args
-            .iter()
-            .position(|a| a.ends_with("entry.tsx"))
-            .expect("entry path present");
-        let jsx_idx = args
-            .iter()
-            .position(|a| a == "--jsx=automatic")
-            .expect("--jsx=automatic present");
-        let import_idx = args
-            .iter()
-            .position(|a| a == "--jsx-import-source=@takazudo/zfb/zudo-react")
-            .expect("owned JSX import source present");
-        assert!(jsx_idx < entry_idx);
-        assert!(import_idx < entry_idx);
     }
 
     #[test]
-    fn every_client_esbuild_pass_has_the_sdk_alias_exactly_once() {
+    fn every_client_pass_has_the_sdk_alias_exactly_once() {
         let cfg = BundleConfig::default();
-        let out_dir = PathBuf::from("/tmp/zfb-client-out");
         let passes = [
-            (
-                "shared islands entry",
-                build_esbuild_args(
-                    &cfg,
-                    &[],
-                    &out_dir,
-                    Path::new("/tmp/islands.tsx"),
-                    true,
-                    None,
-                ),
-            ),
+            ("shared islands entry", shared_request(&cfg, true)),
             (
                 "module worker",
-                build_esbuild_args_with_entry_name(
-                    &cfg,
-                    &[],
-                    &out_dir,
-                    Path::new("/tmp/worker.ts"),
-                    false,
-                    "worker-src-s-worker-d-ts",
-                    None,
-                ),
+                named_request(&cfg, "/tmp/worker.ts", "worker-src-s-worker-d-ts", None),
             ),
             (
                 "client script",
-                build_esbuild_args_with_entry_name(
-                    &cfg,
-                    &[],
-                    &out_dir,
-                    Path::new("/tmp/widget.client.tsx"),
-                    false,
-                    "widget",
-                    None,
-                ),
+                named_request(&cfg, "/tmp/widget.client.tsx", "widget", None),
             ),
             (
                 "client-script module worker",
-                build_esbuild_args_with_entry_name(
+                named_request(
                     &cfg,
-                    &[],
-                    &out_dir,
-                    Path::new("/tmp/widget.worker.ts"),
-                    false,
+                    "/tmp/widget.worker.ts",
                     "worker-src-s-widget-d-worker-d-ts",
                     None,
                 ),
             ),
         ];
 
-        for (pass, args) in passes {
-            let aliases = args
+        for (pass, request) in passes {
+            let aliases = request
+                .resolve
+                .aliases
                 .iter()
-                .filter(|arg| arg.to_string_lossy() == "--alias:zfb=@takazudo/zfb")
+                .filter(|(key, target)| key == "zfb" && target == "@takazudo/zfb")
                 .count();
             assert_eq!(
                 aliases, 1,
-                "{pass} should receive exactly one SDK alias: {args:?}"
+                "{pass} should receive exactly one SDK alias: {request:?}"
             );
         }
     }
@@ -5823,23 +5156,13 @@ mod tests {
     /// `DEV=false`, and `NODE_ENV="production"`. The values are JS literals,
     /// not quoted strings (except the string-valued `NODE_ENV`).
     #[test]
-    fn build_esbuild_args_defines_import_meta_env_in_prod() {
-        let cfg = BundleConfig::production().with_minify(false);
-        let args = args_as_strings(&cfg, true);
-        assert!(
-            args.iter()
-                .any(|a| a == "--define:import.meta.env.PROD=true"),
-            "missing --define:import.meta.env.PROD=true in args: {args:?}"
-        );
-        assert!(
-            args.iter()
-                .any(|a| a == "--define:import.meta.env.DEV=false"),
-            "missing --define:import.meta.env.DEV=false in args: {args:?}"
-        );
-        assert!(
-            args.iter()
-                .any(|a| a == "--define:process.env.NODE_ENV=\"production\""),
-            "missing production NODE_ENV in args: {args:?}"
+    fn bundle_request_defines_import_meta_env_in_prod() {
+        let request = shared_request(&BundleConfig::production().with_minify(false), true);
+        assert_eq!(define_of(&request, "import.meta.env.PROD"), Some("true"));
+        assert_eq!(define_of(&request, "import.meta.env.DEV"), Some("false"));
+        assert_eq!(
+            define_of(&request, "process.env.NODE_ENV"),
+            Some("\"production\"")
         );
     }
 
@@ -5847,62 +5170,46 @@ mod tests {
     /// flags and pins `NODE_ENV="development"`. This keeps mode independent
     /// of output-size optimization across all client pipelines.
     #[test]
-    fn build_esbuild_args_defines_import_meta_env_in_dev() {
-        let cfg = BundleConfig::dev().with_minify(true);
-        let args = args_as_strings(&cfg, true);
-        assert!(
-            args.iter()
-                .any(|a| a == "--define:import.meta.env.PROD=false"),
-            "missing --define:import.meta.env.PROD=false in args: {args:?}"
-        );
-        assert!(
-            args.iter()
-                .any(|a| a == "--define:import.meta.env.DEV=true"),
-            "missing --define:import.meta.env.DEV=true in args: {args:?}"
-        );
-        assert!(
-            args.iter()
-                .any(|a| a == "--define:process.env.NODE_ENV=\"development\""),
-            "missing development NODE_ENV in args: {args:?}"
+    fn bundle_request_defines_import_meta_env_in_dev() {
+        let request = shared_request(&BundleConfig::dev().with_minify(true), true);
+        assert!(request.minify);
+        assert_eq!(define_of(&request, "import.meta.env.PROD"), Some("false"));
+        assert_eq!(define_of(&request, "import.meta.env.DEV"), Some("true"));
+        assert_eq!(
+            define_of(&request, "process.env.NODE_ENV"),
+            Some("\"development\"")
         );
     }
 
     #[test]
-    fn client_script_args_use_the_same_explicit_dev_mode_contract() {
-        let cfg = BundleConfig::dev().with_minify(true);
-        let args: Vec<String> = build_esbuild_args_with_entry_name(
-            &cfg,
-            &[],
-            &PathBuf::from("/tmp/zfb-client-out"),
-            &PathBuf::from("/tmp/widget.client.ts"),
-            false,
+    fn client_script_request_uses_the_same_explicit_dev_mode_contract() {
+        let request = named_request(
+            &BundleConfig::dev().with_minify(true),
+            "/tmp/widget.client.ts",
             "widget",
             None,
-        )
-        .into_iter()
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect();
+        );
 
-        assert!(args.iter().any(|arg| arg == "--entry-names=widget"));
-        assert!(
-            args.iter()
-                .any(|arg| arg == "--define:import.meta.env.DEV=true"),
-            "client-script DEV must be mode-driven: {args:?}"
+        assert_eq!(layout_names(&request).0, Some("widget"));
+        assert_eq!(
+            define_of(&request, "import.meta.env.DEV"),
+            Some("true"),
+            "client-script DEV must be mode-driven: {request:?}"
         );
-        assert!(
-            args.iter()
-                .any(|arg| arg == "--define:import.meta.env.PROD=false"),
-            "client-script PROD must be mode-driven: {args:?}"
+        assert_eq!(
+            define_of(&request, "import.meta.env.PROD"),
+            Some("false"),
+            "client-script PROD must be mode-driven: {request:?}"
         );
-        assert!(
-            args.iter()
-                .any(|arg| arg == "--define:process.env.NODE_ENV=\"development\""),
-            "client-script NODE_ENV must be mode-driven: {args:?}"
+        assert_eq!(
+            define_of(&request, "process.env.NODE_ENV"),
+            Some("\"development\""),
+            "client-script NODE_ENV must be mode-driven: {request:?}"
         );
     }
 
     #[test]
-    fn build_esbuild_args_appends_sorted_inline_loaders_and_raw_defines() {
+    fn bundle_request_carries_inline_loaders_and_sorted_raw_defines() {
         let cfg = BundleConfig::production()
             .with_loaders(std::collections::BTreeMap::from([
                 (".txt".to_string(), "text".to_string()),
@@ -5912,45 +5219,166 @@ mod tests {
                 ("__ZETA__".to_string(), "true".to_string()),
                 ("__ALPHA__".to_string(), "\"zfb\"".to_string()),
             ]));
-        let args = args_as_strings(&cfg, true);
+        let request = shared_request(&cfg, true);
 
-        let css_idx = args
-            .iter()
-            .position(|arg| arg == "--loader:.module.css=empty")
-            .expect("reserved module CSS loader");
-        let bin_idx = args
-            .iter()
-            .position(|arg| arg == "--loader:.bin=binary")
-            .expect("configured .bin loader");
-        let txt_idx = args
-            .iter()
-            .position(|arg| arg == "--loader:.txt=text")
-            .expect("configured .txt loader");
-        assert!(css_idx < bin_idx && bin_idx < txt_idx, "args: {args:?}");
+        assert_eq!(loader_of(&request, ".module.css"), Some(Loader::Empty));
+        assert_eq!(loader_of(&request, ".bin"), Some(Loader::Binary));
+        assert_eq!(loader_of(&request, ".txt"), Some(Loader::Text));
 
-        let alpha_idx = args
-            .iter()
-            .position(|arg| arg == "--define:__ALPHA__=\"zfb\"")
-            .expect("raw __ALPHA__ define");
-        let zeta_idx = args
-            .iter()
-            .position(|arg| arg == "--define:__ZETA__=true")
-            .expect("raw __ZETA__ define");
-        assert!(alpha_idx < zeta_idx, "args: {args:?}");
+        let position = |key: &str| {
+            request
+                .defines
+                .iter()
+                .position(|(candidate, _)| candidate == key)
+                .unwrap_or_else(|| panic!("missing define {key}: {request:?}"))
+        };
+        assert_eq!(define_of(&request, "__ALPHA__"), Some("\"zfb\""));
+        assert_eq!(define_of(&request, "__ZETA__"), Some("true"));
+        assert!(
+            position("import.meta.env.DEV") < position("__ALPHA__")
+                && position("__ALPHA__") < position("__ZETA__"),
+            "raw defines follow the mode defines in key order: {request:?}"
+        );
+    }
+
+    /// A configured loader name the bundler does not know fails the job by
+    /// name, and a configured raw `css` loader reaches the native bundler,
+    /// which owns the actionable rejection.
+    #[test]
+    fn bundle_request_rejects_unknown_loader_and_forwards_raw_css() {
+        let error = build_bundle_request(
+            &IslandsBundlerConfig::default().with_working_dir("/tmp/zfb-proj"),
+            &BundleConfig::default().with_loaders(BTreeMap::from([(
+                ".txt".to_string(),
+                "local-css".to_string(),
+            )])),
+            None,
+            None,
+            JobShape::shared_entry(
+                Path::new("/tmp/zfb-out"),
+                Path::new("/tmp/entry.tsx"),
+                true,
+                None,
+            ),
+        )
+        .expect_err("unknown loader must be rejected");
+        assert!(
+            format!("{error:#}").contains("Unknown module type: local-css"),
+            "{error:#}"
+        );
+
+        let request = shared_request(
+            &BundleConfig::default()
+                .with_loaders(BTreeMap::from([(".css".to_string(), "css".to_string())])),
+            true,
+        );
+        assert_eq!(loader_of(&request, ".css"), Some(Loader::Css));
+    }
+
+    /// A client script that reaches raw CSS through a configured `css` loader
+    /// fails with the native bundler's own diagnostic, naming the file, and
+    /// writes nothing.
+    #[test]
+    fn client_script_raw_css_surfaces_the_native_rejection() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = dir.path().join("widget.client.ts");
+        std::fs::write(dir.path().join("a.css"), "a{color:red}\n").unwrap();
+        std::fs::write(&entry, "import './a.css';\nconsole.log('widget');\n").unwrap();
+        let bundler =
+            IslandsBundler::new(IslandsBundlerConfig::default().with_working_dir(dir.path()));
+        let config = BundleConfig::production()
+            .with_loaders(BTreeMap::from([(".css".to_string(), "css".to_string())]));
+        let error = bundler
+            .bundle_client_script_file("widget", &entry, &config)
+            .expect_err("raw CSS must be rejected");
+        let message = format!("{error:#}");
+        assert!(message.contains("a.css"), "{message}");
+        assert!(message.to_lowercase().contains("raw css"), "{message}");
+        assert!(!dir.path().join("widget.js").exists());
+    }
+
+    /// Operator resolution settings and plugin aliases reach every request in
+    /// order: plugin virtual modules, then single-file plugin aliases, then the
+    /// built-in SDK alias. An explicitly empty module path means none, even
+    /// when the process inherited one.
+    #[test]
+    fn bundle_request_carries_operator_resolution_and_plugin_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundler = IslandsBundlerConfig {
+            externals: vec![
+                External::Package("vendor-lib".to_string()),
+                External::Prefix("@takazudo/".to_string()),
+            ],
+            conditions: Some(vec!["custom".to_string()]),
+            ..IslandsBundlerConfig::default().with_working_dir(dir.path())
+        };
+        let resolver = zfb_plugin_resolver::build_resolver_inputs(
+            &[],
+            &[("virtual:data".to_string(), "export default 1;".to_string())],
+            dir.path(),
+            &BTreeMap::new(),
+            &["zfb"],
+        )
+        .unwrap();
+        let tsconfig = dir.path().join("synthetic.json");
+        let job = |bundler: &IslandsBundlerConfig| {
+            build_bundle_request(
+                bundler,
+                &BundleConfig::default(),
+                Some(&resolver),
+                Some(&tsconfig),
+                JobShape::named(
+                    Path::new("/tmp/zfb-out"),
+                    Path::new("/tmp/widget.client.ts"),
+                    "widget",
+                    None,
+                ),
+            )
+            .unwrap()
+        };
+
+        let path = std::env::join_paths(["/staged/a", "/staged/b"]).unwrap();
+        let request = job(&bundler.clone().with_node_path(path));
+        assert_eq!(request.cwd, dir.path());
+        assert_eq!(
+            request.externals,
+            vec![
+                External::Prefix("node:".to_string()),
+                External::Package("vendor-lib".to_string()),
+                External::Prefix("@takazudo/".to_string()),
+            ]
+        );
+        assert_eq!(request.resolve.conditions, Some(vec!["custom".to_string()]));
+        assert_eq!(
+            request.resolve.extra_module_dirs,
+            vec![PathBuf::from("/staged/a"), PathBuf::from("/staged/b")]
+        );
+        assert_eq!(request.tsconfig, Some(tsconfig.clone()));
+        let virtual_target = resolver.virtual_module_alias_args[0].1.clone();
+        assert_eq!(
+            request.resolve.aliases,
+            vec![
+                ("virtual:data".to_string(), virtual_target),
+                ("zfb".to_string(), "@takazudo/zfb".to_string()),
+            ]
+        );
+
+        let request = job(&bundler.with_node_path(""));
+        assert!(request.resolve.extra_module_dirs.is_empty());
     }
 
     #[test]
-    fn owned_args_use_runtime_without_compat_aliases() {
-        let args = args_as_strings(&BundleConfig::default(), true);
-        assert!(args.iter().any(|arg| arg == "--jsx=automatic"));
-        assert!(args
-            .iter()
-            .any(|arg| arg == "--jsx-import-source=@takazudo/zfb/zudo-react"));
-        assert!(args.iter().any(|arg| arg == "--keep-names"));
-        assert!(!args.iter().any(|arg| arg.starts_with("--alias:react")));
-        assert!(!args
-            .iter()
-            .any(|arg| arg.starts_with("--alias:@takazudo/zfb/jsx-factory")));
+    fn owned_request_uses_runtime_without_compat_aliases() {
+        let request = shared_request(&BundleConfig::default(), true);
+        assert_eq!(request.jsx.runtime, Some(JsxRuntime::Automatic));
+        assert_eq!(
+            request.jsx.import_source.as_deref(),
+            Some("@takazudo/zfb/zudo-react")
+        );
+        assert!(request.keep_names);
+        assert!(!request.resolve.aliases.iter().any(
+            |(key, _)| key.starts_with("react") || key.starts_with("@takazudo/zfb/jsx-factory")
+        ));
     }
 
     #[test]
@@ -6063,7 +5491,7 @@ mod tests {
     /// SDK alias is still present in every real client pass.
     #[test]
     fn zero_registrations_produce_no_plugin_aliases_in_config() {
-        let cfg = EsbuildSubprocessConfig::default();
+        let cfg = IslandsBundlerConfig::default();
         assert!(
             cfg.alias_entries.is_empty(),
             "alias_entries must default to empty"
@@ -6081,7 +5509,7 @@ mod tests {
             ("@/foo".to_string(), "/abs/project/src/foo.tsx".to_string()),
             ("@/bar".to_string(), "/abs/project/src/bar.tsx".to_string()),
         ];
-        let cfg = EsbuildSubprocessConfig::default().with_alias_entries(aliases.clone());
+        let cfg = IslandsBundlerConfig::default().with_alias_entries(aliases.clone());
         assert_eq!(cfg.alias_entries, aliases);
     }
 
@@ -6092,7 +5520,7 @@ mod tests {
             "virtual:my-data".to_string(),
             "export const x = 1;".to_string(),
         )];
-        let cfg = EsbuildSubprocessConfig::default().with_virtual_modules(vms.clone());
+        let cfg = IslandsBundlerConfig::default().with_virtual_modules(vms.clone());
         assert_eq!(cfg.virtual_modules, vms);
     }
 
@@ -6102,13 +5530,13 @@ mod tests {
     #[test]
     fn mock_mode_succeeds_with_alias_entries() {
         let dir = tempfile::tempdir().unwrap();
-        let cfg = EsbuildSubprocessConfig {
-            mock_subprocess: true,
+        let cfg = IslandsBundlerConfig {
+            mock_bundle: true,
             mock_output: "// alias mock output".to_string(),
             alias_entries: vec![("@/foo".to_string(), "/abs/src/foo.tsx".to_string())],
-            ..EsbuildSubprocessConfig::default()
+            ..IslandsBundlerConfig::default()
         };
-        let bundler = EsbuildSubprocessBundler::new(cfg);
+        let bundler = IslandsBundler::new(cfg);
         let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
         let bundle_cfg = BundleConfig::default()
             .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
@@ -6122,16 +5550,16 @@ mod tests {
     #[test]
     fn mock_mode_succeeds_with_virtual_modules() {
         let dir = tempfile::tempdir().unwrap();
-        let cfg = EsbuildSubprocessConfig {
-            mock_subprocess: true,
+        let cfg = IslandsBundlerConfig {
+            mock_bundle: true,
             mock_output: "// virtual mock output".to_string(),
             virtual_modules: vec![(
                 "virtual:config".to_string(),
                 "export const site = 'zfb';".to_string(),
             )],
-            ..EsbuildSubprocessConfig::default()
+            ..IslandsBundlerConfig::default()
         };
-        let bundler = EsbuildSubprocessBundler::new(cfg);
+        let bundler = IslandsBundler::new(cfg);
         let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
         let bundle_cfg = BundleConfig::default()
             .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
@@ -6145,7 +5573,7 @@ mod tests {
     /// can be chained together and that both field lists are populated.
     #[test]
     fn builder_methods_are_chainable() {
-        let cfg = EsbuildSubprocessConfig::default()
+        let cfg = IslandsBundlerConfig::default()
             .with_alias_entries(vec![(
                 "@/components".to_string(),
                 "/abs/src/components".to_string(),
@@ -6172,7 +5600,7 @@ mod tests {
     #[test]
     fn virtual_module_source_round_trips_through_config() {
         let source = "export const data = { key: 'value' };\nexport default data;\n";
-        let cfg = EsbuildSubprocessConfig::default()
+        let cfg = IslandsBundlerConfig::default()
             .with_virtual_modules(vec![("virtual:data".to_string(), source.to_string())]);
         let retrieved = &cfg.virtual_modules[0].1;
         assert_eq!(

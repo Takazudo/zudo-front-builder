@@ -1,25 +1,16 @@
-//! Real esbuild output regression coverage for #4231; no budget normalization.
+//! Real bundler output regression coverage for #4231; no budget normalization.
 use std::{collections::BTreeMap, fs, path::Path};
 use zfb_islands::{
-    BundleConfig, ClientBundler, EsbuildSubprocessBundler, EsbuildSubprocessConfig, Island,
+    BundleConfig, ClientBundler, External, Island, IslandsBundler, IslandsBundlerConfig,
 };
-use zfb_test_utils::locate_esbuild;
 
-fn bundler(
-    root: &Path,
-    virtuals: Vec<(String, String)>,
-    conditions: &str,
-) -> EsbuildSubprocessBundler {
-    let binary = locate_esbuild().expect("graph identity tests require the pinned esbuild binary");
-    EsbuildSubprocessBundler::new(
-        EsbuildSubprocessConfig {
-            extra_args: vec![
-                "--external:@takazudo/*".into(),
-                format!("--conditions={conditions}").into(),
-            ],
-            ..EsbuildSubprocessConfig::default()
+fn bundler(root: &Path, virtuals: Vec<(String, String)>, conditions: &str) -> IslandsBundler {
+    IslandsBundler::new(
+        IslandsBundlerConfig {
+            externals: vec![External::Prefix("@takazudo/".to_string())],
+            conditions: Some(conditions.split(',').map(str::to_string).collect()),
+            ..IslandsBundlerConfig::default()
         }
-        .with_binary_path(binary)
         .with_working_dir(root)
         .with_virtual_modules(virtuals),
     )
@@ -36,7 +27,7 @@ fn snapshot(
 
 fn snapshot_with_bundler(
     root: &Path,
-    bundler: EsbuildSubprocessBundler,
+    bundler: IslandsBundler,
     config: BundleConfig,
 ) -> (String, BTreeMap<String, Vec<u8>>) {
     let islands = [Island::new("Counter", root.join("counter.ts"))];
@@ -234,7 +225,7 @@ fn alias_linked_package_worker_and_resource_changes_invalidate() {
             "selected".into(),
             package.join("index.js").to_string_lossy().into_owned(),
         )]);
-        let bundler = EsbuildSubprocessBundler::new(cfg);
+        let bundler = IslandsBundler::new(cfg);
         let islands = [Island::new("Counter", root.join("counter.ts"))];
         let cfg = config().with_module_workers(workers.clone());
         let token = bundler.derive_build_token(&islands, &cfg, "v1").unwrap();
@@ -381,14 +372,10 @@ fn aliased_tmpdir_and_project_root_preserve_graph_tokens_and_raw_outputs() {
                     vec![("virtual:demo".into(), source.into())],
                     "browser",
                 );
-                let mut cfg = base.config().clone();
-                if preserve {
-                    cfg.extra_args.push("--preserve-symlinks".into());
-                }
                 snapshot_with_bundler(
                     root,
-                    EsbuildSubprocessBundler::new(cfg),
-                    BundleConfig::production(),
+                    base,
+                    BundleConfig::production().with_preserve_symlinks(preserve),
                 )
             };
             let before = build("export function value(){return 1 + 2}");
