@@ -21,7 +21,7 @@ export default function DesignDiscovery({ title, body, action, href }: DesignDis
           {action}
         </a>
       </div>
-      <div class="design-discovery-miniatures" aria-label={MINIATURES.join(", ")}>
+      <div class="design-discovery-miniatures" role="img" aria-label={MINIATURES.join(", ")}>
         {MINIATURES.map((name) => (
           <div class={`design-discovery-mini ${name.toLowerCase()}`}>
             <span>FIELDNOTES</span>
