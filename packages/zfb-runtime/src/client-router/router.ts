@@ -1553,6 +1553,16 @@ function ancestorForm(source: object): HTMLFormElement | null {
   }
 }
 
+// Read through Node.prototype: a control named "isConnected" shadows the form's
+// own property ([LegacyOverrideBuiltIns]).
+function isConnectedNode(node: Node): boolean {
+  try {
+    return Reflect.get(Node.prototype, "isConnected", node) === true;
+  } catch {
+    return false;
+  }
+}
+
 function formOwnerOf(source: EventTarget | null | undefined): HTMLFormElement | null {
   if (isHtmlFormElement(source)) return source;
   if (source == null || typeof source !== "object") return null;
@@ -1726,7 +1736,14 @@ function handleSubmit(ev: SubmitEvent): void {
   // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-enctype
   if (method === "post" && selectedFormEncoding(form, submitter) === "text/plain") return;
 
+  // Native submission abandons a form that "cannot navigate" (is disconnected)
+  // after the submit event and again after building the entry list; a formdata
+  // listener can remove it during construction. Decline without preventDefault()
+  // so the browser applies its own abort. No latch: a reinserted form proceeds.
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
+  if (!isConnectedNode(form)) return;
   const formData = new FormData(form, submitter ?? undefined);
+  if (!isConnectedNode(form)) return;
   const options: import("./types.js").Options = { sourceElement: submitter ?? form };
   if (method === "get") {
     action.search = urlEncodedFormEntries(formData).toString();
