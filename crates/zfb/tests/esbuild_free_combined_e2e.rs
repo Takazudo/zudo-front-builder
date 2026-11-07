@@ -60,8 +60,8 @@ mod process_guard;
 
 use process_guard::ProcessTreeGuard;
 use zfb_test_utils::{
-    next_sse_event_name, open_sse, watcher_live_handshake, zfb_binary, CrossBinaryE2eLock,
-    HandshakeOpts,
+    decode_utf8_incremental, next_sse_event_name, open_sse, watcher_live_handshake, zfb_binary,
+    CrossBinaryE2eLock, HandshakeOpts,
 };
 
 const WASM_ANSWER: u8 = 41;
@@ -742,14 +742,51 @@ async fn subscribe(base: &str) -> reqwest::Response {
     response
 }
 
-async fn expect_page_event(sse: reqwest::Response, session: &DevSession, phase: &str) {
-    let event = next_sse_event_name(sse, SSE_DEADLINE)
-        .await
-        .expect("read SSE stream");
-    assert_eq!(
-        event.as_deref(),
-        Some("page"),
-        "{phase}: the edit must broadcast an SSE `page` event\n{}",
+/// Reads the SSE stream until a `page` event arrives. One tick can also
+/// broadcast `islands` or `css` around its `page` event in either order (the
+/// same set `dev_content_reload_2063_e2e` accepts), so those may come first;
+/// any other event name, or no `page` event within `SSE_DEADLINE`, fails.
+async fn expect_page_event(mut sse: reqwest::Response, session: &DevSession, phase: &str) {
+    let deadline = Instant::now() + SSE_DEADLINE;
+    let mut buf = Vec::<u8>::new();
+    let mut decoded_up_to = 0usize;
+    let mut pending_line = String::new();
+    let mut events: Vec<String> = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let chunk = match tokio::time::timeout(remaining, sse.chunk()).await {
+            Ok(Ok(Some(bytes))) => bytes,
+            Ok(Ok(None)) | Err(_) => break,
+            Ok(Err(error)) => panic!("{phase}: read SSE stream: {error}"),
+        };
+        buf.extend_from_slice(&chunk);
+        let (decoded, new_decoded_up_to) = decode_utf8_incremental(&buf, decoded_up_to);
+        decoded_up_to = new_decoded_up_to;
+        let text = std::mem::take(&mut pending_line) + &decoded;
+        let mut lines = text.split('\n').peekable();
+        while let Some(line) = lines.next() {
+            if lines.peek().is_none() {
+                pending_line = line.to_owned();
+                break;
+            }
+            let Some(name) = line.trim_end_matches('\r').strip_prefix("event:") else {
+                continue;
+            };
+            let name = name.trim().to_owned();
+            assert!(
+                matches!(name.as_str(), "page" | "css" | "islands"),
+                "{phase}: unexpected SSE event {name:?} after {events:?}\n{}",
+                session.logs()
+            );
+            if name == "page" {
+                return;
+            }
+            events.push(name);
+        }
+    }
+    panic!(
+        "{phase}: the edit must broadcast an SSE `page` event within {}s; saw {events:?}\n{}",
+        SSE_DEADLINE.as_secs(),
         session.logs()
     );
 }
