@@ -15,6 +15,7 @@ import {
   buildEditorialForest,
   buildWindEditorialForest,
   canonicalNavSection,
+  chromeCacheKey,
   editorialForestFor,
   resolveNavigationScope,
   sectionForest,
@@ -220,9 +221,7 @@ describe("documentation navigation contracts", () => {
     expect(chrome).toContain("if (scope) return editorialForestFor(scope, tree);");
     // Unscoped sections keep only their own category forest, one cache pair each.
     expect(chrome).toContain("return sectionForest(tree, navSection, (slug: string) =>");
-    expect(chrome).toContain(
-      'const key = `${locale}:${scope?.id ?? `native:${props.navSection ?? ""}`}`;',
-    );
+    expect(chrome).toContain("const key = chromeCacheKey(locale, scope, props.navSection);");
     // Deploy gets its tree from its scope like every other section, not a flat override.
     expect(chrome).not.toContain("DEPLOY_SLUGS");
     expect(sidebarDefinitionFor(resolveNavigationScope("zudo-wind/learn", "zudo-wind"))).toEqual({
@@ -719,23 +718,27 @@ describe("documentation navigation contracts", () => {
     const byKey = new Map();
     for (const [slug, navSection] of cases) {
       const scope = resolveNavigationScope(slug, canonicalNavSection(slug, navSection));
+      const section = canonicalNavSection(slug, navSection);
       const identity = scope
         ? JSON.stringify([scope.navSection, scope.editorialRootSlug, sidebarDefinitionFor(scope)])
-        : "native";
-      const key = scope?.id ?? "native";
+        : JSON.stringify(["native", section]);
+      const key = chromeCacheKey("en", scope, section);
       if (byKey.has(key)) expect(byKey.get(key)).toBe(identity);
       byKey.set(key, identity);
     }
     expect(new Set(byKey.values()).size).toBe(byKey.size);
     expect([...byKey.keys()]).toEqual([
-      "architecture-overview",
-      "architecture",
-      "build",
-      "wind",
-      "wind-learn",
-      "deploy",
-      "native",
+      "en:architecture-overview",
+      "en:architecture",
+      "en:build",
+      "en:wind",
+      "en:wind-learn",
+      "en:deploy",
+      "en:native:getting-started",
     ]);
+    expect(chromeCacheKey("ja", undefined, "guides")).not.toBe(
+      chromeCacheKey("en", undefined, "guides"),
+    );
     // Unknown pages fall back to native (unscoped) navigation.
     expect(resolveNavigationScope("architecture/future", "architecture")).toBeUndefined();
     expect(resolveNavigationScope("build-with-zfb/future", "build-with-zfb")).toBeUndefined();

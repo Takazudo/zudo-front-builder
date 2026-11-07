@@ -13,6 +13,7 @@ import type { SidebarDefinition, SidebarsConfig } from "@takazudo/zudo-doc/sideb
 import { resolveCategoryOwner } from "@takazudo/zudo-doc/nav-scope";
 import {
   canonicalNavSection,
+  chromeCacheKey,
   editorialForestFor,
   resolveNavigationScope,
   sectionForest,
@@ -32,7 +33,7 @@ export function createNavigationChrome(baseBindings: ChromeHostBindings) {
   function pair(props: HeaderWithDefaultsProps | SidebarWithDefaultsProps) {
     const scope = resolveNavigationScope(props.currentSlug, props.navSection);
     const locale = props.lang ?? routeCtx.defaultLocale;
-    const key = `${locale}:${scope?.id ?? `native:${props.navSection ?? ""}`}`;
+    const key = chromeCacheKey(locale, scope, props.navSection);
     const existing = pairs.get(key);
     if (existing) return existing;
     const sidebarsConfig: SidebarsConfig = {
