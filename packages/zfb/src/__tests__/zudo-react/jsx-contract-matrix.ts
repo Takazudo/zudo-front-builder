@@ -163,9 +163,9 @@ export const jsxContractMatrix: readonly JsxContractMatrixRow[] = [
     "<p>page</p>",
   ),
   accepted(
-    "esbuild automatic JSX and Fragment import",
-    "crates/zfb-islands/src/esbuild.rs",
-    "--jsx=automatic",
+    "islands bundler automatic JSX and Fragment import",
+    "crates/zfb-islands/src/bundle_job.rs",
+    "JsxRuntime::Automatic",
     'jsxs(Fragment, { children: [jsx("b", ...), jsx("i", ...)] })',
     "Fragment and static child arrays are accepted with no separator bytes.",
     () => jsxs(Fragment, { children: [jsx("b", { children: "a" }), jsx("i", { children: "b" })] }),
