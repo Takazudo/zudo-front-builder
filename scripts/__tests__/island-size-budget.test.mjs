@@ -24,9 +24,15 @@ import {
   normalizerSha256,
 } from "../../research/v3-island-size/normalize-identity.mjs";
 import {
+  BUNDLER_BACKEND_MOVEMENT,
+  BUNDLER_BACKEND_REASON,
+  assertAllowedMovement,
+  cargoTransitionMarkdown,
+  contractDiffKeys,
   measuredIdentity,
   measuredTotals,
   proveCargoProducerLock,
+  readmeSection,
   rebaselineContract,
 } from "../rebaseline-island-size-linux.mjs";
 import { budgetAllowsRetention } from "../island-size-evidence.mjs";
@@ -807,13 +813,21 @@ function rewriteMeasurement(state, mode) {
   reload(state, mode);
 }
 
-// A synthetic schemaVersion-2 state shaped like the live Linux contract; its
-// checkout-bound pins are re-derived, so it exercises the v2 metric and the v2
-// whole-file lock compare rather than the reviewed live pins.
+// Verbatim bytes of decision-linux-x64.json at 7ea8f771 (the v5.2.2 release
+// bump), the last Linux contract that pins the esbuild producer; the #4635
+// bundler-backend transition moved it to schemaVersion 4.
+const linuxV522Esbuild = () => {
+  const blob = readFileSync(join(testDir, "fixtures/island-size-linux-x64-v5.2.2-release.json"));
+  expect(sha(blob)).toBe("e71f2360a96d97cbe8708464fcd3cb7a8b62481999de9b85d55e0b2ede16a2bb");
+  return JSON.parse(blob.toString("utf8"));
+};
+
+// A synthetic schemaVersion-2 state shaped like the frozen esbuild-producer
+// Linux contract (schemaVersion 2 pins that producer); its checkout-bound pins
+// are re-derived, so it exercises the v2 metric and the v2 whole-file lock
+// compare rather than the reviewed live pins.
 function linuxState() {
-  const linuxContract = withCheckoutPins(
-    asSchemaV2(JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"))),
-  );
+  const linuxContract = withCheckoutPins(asSchemaV2(linuxV522Esbuild()));
   return makeState(linuxContract.platform, linuxContract);
 }
 
@@ -1011,6 +1025,11 @@ describe("island shipped-size budget", () => {
       },
     });
     expect(contract.baselineEvidence).not.toHaveProperty("cargoTransition");
+    expect(
+      readmeSection(contract, [], before.toolchain.packageVersion, "bundler-backend"),
+    ).toContain(
+      "because the runner now records that identity. `Cargo.lock` is unchanged. The producer version",
+    );
     // The written contract admits the esbuild-free run it was measured from.
     state.contract = contract;
     expect(validate(state)).toEqual({ errors: [], passed: true });
@@ -1110,6 +1129,20 @@ describe("island shipped-size budget", () => {
       added: ["zfb-bundler@0.0.0", "zfb-compiler-worker@0.0.0"],
       review: { id: "esbuild-removal-4635" },
     });
+    const section = readmeSection(
+      contract,
+      [],
+      contract.toolchain.packageVersion,
+      "bundler-backend",
+    );
+    expect(section).toContain(
+      "because the runner now records that identity. `Cargo.lock` moved from `" +
+        lock.expectedOldSha +
+        "` to `" +
+        lock.expectedNewSha +
+        "` under reviewed non-additive transition `esbuild-removal-4635` (manifest SHA-256 `",
+    );
+    expect(section).not.toContain("moved under");
     expect(run(cargoEvidence({ reviewedTransitionText: undefined }))).toThrow(
       /only through --reviewed-cargo-transition/,
     );
@@ -1268,9 +1301,9 @@ describe("island shipped-size budget", () => {
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
     expect(linuxContract.toolchain.packageVersion).toBe("5.2.2");
-    // A schemaVersion-3 contract tracks the dependency fingerprint, the same
+    // A schemaVersion-4 contract tracks the dependency fingerprint, the same
     // drift guard as the Darwin contract above; its whole-file pnpmLockSha256
-    // is baseline provenance, pinned by the live release-bump test below.
+    // is baseline provenance, pinned by the live bundler-backend test below.
     expect(linuxContract.schemaVersion).toBe(4);
     expect(linuxContract.dependencyFingerprint).toEqual(checkoutFingerprint());
     expect(linuxContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
@@ -1326,6 +1359,153 @@ describe("island shipped-size budget", () => {
     );
     state.contract = contract;
     expect(validate(state)).toEqual({ errors: [], passed: true });
+  });
+
+  // A synthetic esbuild-free state shaped like the live schemaVersion-4 Linux
+  // contract; its checkout-bound pins are re-derived. Never a native receipt.
+  function linuxV4State() {
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.schemaVersion).toBe(4);
+    const contract = withCheckoutPins(live);
+    return makeState(contract.platform, contract, contract.toolchain.packageVersion);
+  }
+  function repinEvidence(state, patch = {}) {
+    const provenance = state.packed.measurement.provenance;
+    return {
+      version: state.contract.toolchain.packageVersion,
+      pnpmLockSha256: state.contract.toolchain.pnpmLockSha256,
+      normalizerSha256: state.localInputs.normalizerSha256,
+      sourceSha: state.sourceSha,
+      headSha: state.sourceSha,
+      runId: 1,
+      jobId: 2,
+      runLabel: "Synthetic re-pin",
+      identity: measuredIdentity(provenance),
+      artifactFingerprint: provenance.dependencyFingerprint,
+      dependencyFingerprint: checkoutFingerprint(),
+      dependencyFingerprintError: null,
+      // Test fixture: a digest-only previous-contract reference (#4219).
+      previousContract: { sha256: "d".repeat(64) },
+      ...patch,
+    };
+  }
+  const stateTotals = (state) =>
+    measuredTotals({
+      workspace: state.workspace.normalized.results,
+      packed: state.packed.normalized.results,
+    });
+
+  it("accepts a schemaVersion-4 contract written by the release re-pin helper", () => {
+    const state = linuxV4State();
+    expect(validate(state)).toEqual({ errors: [], passed: true });
+    const before = structuredClone(state.contract);
+    const { contract } = rebaselineContract(
+      state.contract,
+      stateTotals(state),
+      repinEvidence(state),
+      "release-bump",
+    );
+    expect(contract.schemaVersion).toBe(4);
+    expect(contract.outcome).toBe("release-version-stamp");
+    expect(contract.toolchain).not.toHaveProperty("esbuildVersion");
+    expect(contract.toolchain.bundlerIdentity).toBe(before.toolchain.bundlerIdentity);
+    expect(Object.keys(contract.toolchain)).toEqual(Object.keys(before.toolchain));
+    expect(contract.ceilings).toEqual(before.ceilings);
+    expect(contract.dependencyFingerprint).toEqual(before.dependencyFingerprint);
+    expect(contract.runnerSha256).toEqual(before.runnerSha256);
+    state.contract = contract;
+    expect(validate(state)).toEqual({ errors: [], passed: true });
+
+    const runtime = linuxV4State();
+    expect(
+      rebaselineContract(
+        runtime.contract,
+        stateTotals(runtime),
+        repinEvidence(runtime),
+        "runtime-identity",
+      ).contract.schemaVersion,
+    ).toBe(4);
+  });
+
+  it("enforces the dependency fingerprint on a schemaVersion-4 release re-pin", () => {
+    for (const reason of ["release-bump", "runtime-identity"]) {
+      const moved = linuxV4State();
+      moved.contract.dependencyFingerprint.sha256 = "1".repeat(64);
+      expect(() =>
+        rebaselineContract(moved.contract, stateTotals(moved), repinEvidence(moved), reason),
+      ).toThrow("--reason " + reason + " cannot move the dependency fingerprint (sha256 differ");
+
+      const artifact = linuxV4State();
+      expect(() =>
+        rebaselineContract(
+          artifact.contract,
+          stateTotals(artifact),
+          repinEvidence(artifact, {
+            artifactFingerprint: { policyVersion: 1, sha256: "2".repeat(64) },
+          }),
+          reason,
+        ),
+      ).toThrow(/artifact dependency fingerprint sha256 differs from this checkout's/);
+    }
+  });
+
+  it("refuses to move a schemaVersion-3 contract to the esbuild-free producer under any other reason", () => {
+    for (const reason of [
+      "release-bump",
+      "runtime-identity",
+      "dependency-graph",
+      "fingerprint-policy",
+      "cargo-producer-lock",
+      "cargo-internal-rewire",
+      "cargo-removal",
+    ]) {
+      const state = makeState(
+        baseContract.platform,
+        v3Contract(),
+        baseContract.toolchain.packageVersion,
+        null,
+        true,
+      );
+      expect(() =>
+        rebaselineContract(state.contract, stateTotals(state), repinEvidence(state), reason),
+      ).toThrow(
+        "--reason " +
+          reason +
+          ": the artifact measured the esbuild-free producer (bundler rolldown-24bc2d0) but the contract is schemaVersion 3; only `--reason bundler-backend` moves a contract to schemaVersion 4",
+      );
+    }
+  });
+
+  it("refuses an esbuild or foreign-bundler artifact against a schemaVersion-4 contract", () => {
+    const esbuild = linuxV4State();
+    const evidence = repinEvidence(esbuild);
+    delete evidence.identity.toolchain.bundlerIdentity;
+    evidence.identity.toolchain.esbuildVersion = "0.25.12";
+    expect(() =>
+      rebaselineContract(esbuild.contract, stateTotals(esbuild), evidence, "release-bump"),
+    ).toThrow(
+      "--reason release-bump: the artifact measured an esbuild producer (esbuild 0.25.12) but the schemaVersion 4 contract pins the embedded bundler rolldown-24bc2d0; refusing",
+    );
+
+    const foreign = linuxV4State();
+    const other = repinEvidence(foreign);
+    other.identity.toolchain.bundlerIdentity = "rolldown-0000000";
+    expect(() =>
+      rebaselineContract(foreign.contract, stateTotals(foreign), other, "dependency-graph"),
+    ).toThrow(
+      "--reason dependency-graph: the artifact measured bundler rolldown-0000000 but the schemaVersion 4 contract pins rolldown-24bc2d0; refusing",
+    );
+
+    // bundler-backend itself stays a schemaVersion 3 -> 4 move only.
+    const again = linuxV4State();
+    expect(() =>
+      rebaselineContract(
+        again.contract,
+        stateTotals(again),
+        repinEvidence(again),
+        "bundler-backend",
+      ),
+    ).toThrow(/--reason bundler-backend needs a schemaVersion 3 contract, found schemaVersion 4/);
   });
 
   it("accepts a schemaVersion-3 contract pinned by the dependency fingerprint", () => {
@@ -1862,15 +2042,16 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // flat record carries no baselineRunId.
 const repinnedFromContracts = [
   {
-    // The v5.2.2 release bump cites the frozen v5.2.1 Linux contract.
+    // The #4635 bundler-backend transition cites the frozen schemaVersion-3
+    // v5.2.2 Linux contract.
     file: "decision-linux-x64.json",
-    commit: "e87950975fbe400114842eac4a3e54606c40f0eb",
-    sha256: "1af2f74b57f2fdbd35253d8f89907d2f6812e03e4aac262bbdc7c693e825d911",
-    fixture: "fixtures/island-size-linux-x64-v5.2.1-release.json",
+    commit: "7ea8f771da08fa8ac8a05ab7f1dc376d574c6bde",
+    sha256: "e71f2360a96d97cbe8708464fcd3cb7a8b62481999de9b85d55e0b2ede16a2bb",
+    fixture: "fixtures/island-size-linux-x64-v5.2.2-release.json",
     outcome: "release-version-stamp",
-    packageVersion: "5.2.1",
-    baselineSourceSha: "878db516dba71068dcda910a9293c65e0f5286e5",
-    baselineRunId: 42103764413,
+    packageVersion: "5.2.2",
+    baselineSourceSha: "e87950975fbe400114842eac4a3e54606c40f0eb",
+    baselineRunId: 42167975789,
   },
   {
     // The Darwin v5.2.0 release bump cites the zudo-doc 9.1.1 Darwin contract on
@@ -3682,7 +3863,9 @@ describe("live contracts preserve released evidence and authentic predecessors",
       "fixtures/island-size-linux-x64-v5.2.1-release.json",
       "1af2f74b57f2fdbd35253d8f89907d2f6812e03e4aac262bbdc7c693e825d911",
     );
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    const live = linuxV522Esbuild();
+    expect(live.schemaVersion).toBe(3);
+    expect(live.toolchain.esbuildVersion).toBe("0.25.12");
     expect(live.outcome).toBe("release-version-stamp");
     expect(live.toolchain.packageVersion).toBe("5.2.2");
     expect(live.toolchain.pnpmLockSha256).toBe(
@@ -3696,6 +3879,90 @@ describe("live contracts preserve released evidence and authentic predecessors",
       sourceSha: "5de9d7e396d06cfdbc071f0e3786b25ad995a3a6",
     });
     expectReleaseBumpOnly(predecessor, live);
+  });
+
+  // The owner-approved #4635 artifact (health run 42405070022) re-pinned the
+  // Linux contract to the esbuild-free producer at an unchanged v5.2.2.
+  it("moves the frozen v5.2.2 schema-3 Linux contract only by the bundler-backend transition", () => {
+    const predecessor = linuxV522Esbuild();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.outcome).toBe("bundler-backend-transition");
+    expect(live.schemaVersion).toBe(4);
+    expect(live.toolchain).not.toHaveProperty("esbuildVersion");
+    expect(live.toolchain.bundlerIdentity).toBe("rolldown-24bc2d0");
+    expect(live.toolchain.packageVersion).toBe(predecessor.toolchain.packageVersion);
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "0b5c30279d7d2d98f7b2c238d36c0f9671ec446b4c31708fe1f12064d1a698ea",
+    );
+    expect(live.baselineSourceSha).toBe("d7ec3fa1793c4fc6b7fa550f2b69166b161a59f5");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "ci",
+      runId: 42405070022,
+      jobId: 128500932316,
+      sourceSha: "e48c6b4c7c560e39da52e8d30f8b239b249abffb",
+    });
+    for (const key of ["fingerprintTransition", "cargoRewire", "cargoRemoval"]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    expect(live.baselineEvidence.bundlerBackend).toEqual({
+      schemaVersion: { from: 3, to: 4 },
+      from: { esbuildVersion: predecessor.toolchain.esbuildVersion },
+      to: { bundlerIdentity: "rolldown-24bc2d0" },
+      runner: {
+        file: "measure-real.mjs",
+        beforeSha256: predecessor.runnerSha256["measure-real.mjs"],
+        afterSha256: live.runnerSha256["measure-real.mjs"],
+      },
+      pnpmLockSha256: {
+        before: predecessor.toolchain.pnpmLockSha256,
+        after: live.toolchain.pnpmLockSha256,
+      },
+    });
+    const lock = esbuildRemovalLock();
+    expect(live.baselineEvidence.cargoTransition).toMatchObject({
+      oldSha: predecessor.toolchain.cargoLockSha256,
+      newSha: live.toolchain.cargoLockSha256,
+      added: ["zfb-bundler@0.0.0", "zfb-compiler-worker@0.0.0"],
+      review: { id: "esbuild-removal-4635" },
+    });
+    expect(live.baselineEvidence.cargoTransition.oldSha).toBe(lock.expectedOldSha);
+    expect(live.baselineEvidence.cargoTransition.newSha).toBe(lock.expectedNewSha);
+    // Exactly the bundler-backend keys moved; the ceilings, allowance,
+    // fingerprint, normalizer, fixtures and measure.mjs are the predecessor's.
+    const moved = contractDiffKeys(predecessor, live);
+    expect(moved.filter((key) => !key.startsWith("baselineEvidence."))).toEqual([
+      "baselineSourceSha",
+      "outcome",
+      "platformStatus",
+      "runnerSha256.measure-real.mjs",
+      "schemaVersion",
+      "toolchain.bundlerIdentity",
+      "toolchain.cargoLockSha256",
+      "toolchain.esbuildVersion",
+      "toolchain.pnpmLockSha256",
+    ]);
+    expect(() =>
+      assertAllowedMovement(BUNDLER_BACKEND_REASON, BUNDLER_BACKEND_MOVEMENT, predecessor, live),
+    ).not.toThrow();
+    expect(live.ceilings).toEqual(predecessor.ceilings);
+    expect(live.allowance).toEqual(predecessor.allowance);
+    // actualGzip is transfer-size evidence the new producer may move, so only
+    // its fixture coverage is pinned, not its values.
+    const gzipShape = (contract) =>
+      Object.fromEntries(
+        Object.entries(contract.baselineEvidence.actualGzip).map(([mode, rows]) => [
+          mode,
+          Object.keys(rows).sort(),
+        ]),
+      );
+    expect(gzipShape(live)).toEqual(gzipShape(predecessor));
+    const readme = readFileSync(join(sizeDir, "README.md"), "utf8");
+    expect(readme).toContain(
+      "because the runner now records that identity. " +
+        cargoTransitionMarkdown(live.baselineEvidence.cargoTransition) +
+        " The producer version",
+    );
+    expect(readme).not.toContain("`Cargo.lock` moved under");
   });
 
   // Verbatim bytes of decision.json at 54054042 (main), the zudo-doc 9.1.1

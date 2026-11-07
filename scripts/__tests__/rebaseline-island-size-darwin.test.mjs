@@ -377,6 +377,13 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+// The producer a Linux run of `contract` records: the embedded bundler under
+// the schemaVersion-4 live Linux contract (#4635), esbuild under an older one.
+function linuxProducer(contract) {
+  return contract.schemaVersion === 4
+    ? { bundlerIdentity: contract.toolchain.bundlerIdentity }
+    : { esbuildVersion: contract.toolchain.esbuildVersion };
+}
 describe("rebaseline-island-size-darwin", () => {
   it("migrates a complete native artifact using the artifact's own provenance", () => {
     const root = makeArtifact();
@@ -2070,7 +2077,7 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
       packageVersion: repo.version,
       runtimePackageVersion: repo.version,
       honoPackageVersion: liveOf(LINUX).toolchain.honoVersion,
-      esbuildVersion: liveOf(LINUX).toolchain.esbuildVersion,
+      ...linuxProducer(liveOf(LINUX)),
       nodeVersion: liveOf(LINUX).toolchain.nodeVersion,
       zlibVersion: liveOf(LINUX).toolchain.zlibVersion,
       compression: liveOf(LINUX).compression,
@@ -2862,7 +2869,7 @@ describe("rebaseline-island-size-darwin fingerprint-policy (#4218)", () => {
       packageVersion: repo.version,
       runtimePackageVersion: repo.version,
       honoPackageVersion: linuxLive.toolchain.honoVersion,
-      esbuildVersion: linuxLive.toolchain.esbuildVersion,
+      ...linuxProducer(linuxLive),
       nodeVersion: linuxLive.toolchain.nodeVersion,
       zlibVersion: linuxLive.toolchain.zlibVersion,
       compression: linuxLive.compression,
@@ -3214,7 +3221,7 @@ describe.each([1, 2])("cargo-internal-rewire paired staging, declaration schema 
       packageVersion: repo.version,
       runtimePackageVersion: repo.version,
       honoPackageVersion: liveOf(LINUX).toolchain.honoVersion,
-      esbuildVersion: liveOf(LINUX).toolchain.esbuildVersion,
+      ...linuxProducer(liveOf(LINUX)),
       nodeVersion: liveOf(LINUX).toolchain.nodeVersion,
       zlibVersion: liveOf(LINUX).toolchain.zlibVersion,
       compression: liveOf(LINUX).compression,
@@ -4457,7 +4464,7 @@ describe("cargo-removal paired staging (#4388)", () => {
       packageVersion: repo.version,
       runtimePackageVersion: repo.version,
       honoPackageVersion: liveOf(LINUX).toolchain.honoVersion,
-      esbuildVersion: liveOf(LINUX).toolchain.esbuildVersion,
+      ...linuxProducer(liveOf(LINUX)),
       nodeVersion: liveOf(LINUX).toolchain.nodeVersion,
       zlibVersion: liveOf(LINUX).toolchain.zlibVersion,
       compression: liveOf(LINUX).compression,
@@ -4849,7 +4856,7 @@ describe("dependency-graph local Darwin evidence (#4580)", () => {
       packageVersion: repo.version,
       runtimePackageVersion: repo.version,
       honoPackageVersion: liveOf(LINUX).toolchain.honoVersion,
-      esbuildVersion: liveOf(LINUX).toolchain.esbuildVersion,
+      ...linuxProducer(liveOf(LINUX)),
       nodeVersion: liveOf(LINUX).toolchain.nodeVersion,
       zlibVersion: liveOf(LINUX).toolchain.zlibVersion,
       compression: liveOf(LINUX).compression,

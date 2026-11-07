@@ -389,9 +389,15 @@ jobs:
         env:
           ZFB_SUPERVISOR_TIMELINE: "1"
 
+      # The fast checks and the Rust lane below gate on their own prerequisites,
+      # not on the implicit success(), so a red contract test (e.g. an island-size
+      # contract awaiting native evidence) does not hide their results. Each
+      # step's own failure still fails the job; nothing here turns a failure green.
       - run: pnpm format:check
+        if: ${{ !cancelled() && steps.native_prerequisites.outcome == 'success' }}
 
       - name: Wind policy, inventory, accounting and mutation contracts
+        if: ${{ !cancelled() && steps.native_prerequisites.outcome == 'success' }}
         run: |
           node scripts/wind-compatibility/inventory-cli.mjs validate
           node --test tests/wind-compatibility/*.test.mjs tests/wind-compatibility/reference/*.test.mjs tests/wind-compatibility/empty-token/*.test.mjs tests/wind-compatibility/corpus/*.test.mjs
@@ -400,6 +406,7 @@ jobs:
       # (issue #2482). This pure-Node check is cheap and belongs in the health
       # job's fast checks; it does not require the wasm-md package build.
       - name: Assert md-wasm documentation matches shipped sizes
+        if: ${{ !cancelled() && steps.native_prerequisites.outcome == 'success' }}
         run: node scripts/assert-md-wasm-size-docs.mjs
 
       # SSE endpoint literal guard (issue #2644): reqwest's `.timeout()` bounds
@@ -409,6 +416,7 @@ jobs:
       # probe; tests must use zfb_test_utils::open_sse(). This is an offline
       # source scan and mirrors scripts/run-b4push.sh's cheap guard step.
       - name: Check SSE endpoint literal ownership
+        if: ${{ !cancelled() && steps.native_prerequisites.outcome == 'success' }}
         run: node scripts/check-sse-endpoint.mjs
 
       # Compiles every target (incl. benches/examples). Since #4635 the zfb
@@ -430,6 +438,7 @@ jobs:
       # Exercise the built CLI on the reduced Tailwind theme-variable case,
       # and keep the exact ZW016 lines in CI logs for migration review.
       - name: ZW016 built-CLI migration spot check
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' }}
         run: node scripts/verify-zw016-audit.mjs "$PWD/target/debug/zfb"
 
       # Freshness gate (issue #1871): the custom SyntaxSet dump is a tracked
@@ -438,6 +447,8 @@ jobs:
       # its crate-root CWD and uses normalized relative paths, keeping the dump
       # bytes independent of the checkout location that ran this step.
       - name: Verify syntect syntax-set.packdump is fresh
+        id: packdump
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' }}
         run: |
           DUMP=crates/zfb-content/assets/syntax-set.packdump
           # The generator writes unconditionally, and the dump is an include_bytes! input of
@@ -453,13 +464,19 @@ jobs:
       # short-circuits the expensive test run. Note: -D warnings on the stable
       # toolchain can surface new lints on a future toolchain bump — accepted
       # cost; a future maintainer seeing a red gate with no code change should
-      # check if a toolchain pin bump introduced new lints.
+      # check if a toolchain pin bump introduced new lints. The Rust test steps
+      # below keep that short-circuit through steps.workspace_clippy. A stale
+      # packdump exits before its mtime restore and leaves regenerated,
+      # uncommitted bytes in the tree, so nothing downstream may lint or test them.
       - run: cargo clippy --workspace --all-targets -- -D warnings
+        id: workspace_clippy
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.packdump.outcome == 'success' }}
 
       # The SDK-alias confirm must exercise jsx_pragma without zfb-build's
       # default V8 feature; the normal workspace nextest lane below uses the
       # default feature set and does not cover this compile configuration.
       - name: Test jsx_pragma without default features (#3939)
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.workspace_clippy.outcome == 'success' }}
         run: cargo test -p zfb-build --no-default-features --lib jsx_pragma
 
       # Run the workspace test suite under cargo-nextest (issue #1340). CI
@@ -479,6 +496,8 @@ jobs:
       # (per-test TRY/PASS/FAIL lines, panic messages) that the JUnit report
       # alone doesn't carry.
       - name: cargo nextest run --workspace --profile ci
+        id: workspace_nextest
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.workspace_clippy.outcome == 'success' }}
         shell: bash
         env:
           ZFB_DEFAULT_LAYOUT_EVIDENCE_DIR: ${{ runner.temp }}/default-layout-workspace
@@ -533,13 +552,16 @@ jobs:
         if: ${{ !cancelled() && steps.build_binary.outcome == 'success' }}
         run: node scripts/install-playwright-linux.mjs --label health-chromium --engines chromium --acquire-timeout 180 --install-timeout 180 --browser-timeout 180 --total-timeout 600
 
+      # Consumes the production dist the workspace nextest run preserves.
       - name: Scanner boundary acceptance (Chromium)
+        if: ${{ !cancelled() && steps.chromium.outcome == 'success' && steps.workspace_nextest.outcome == 'success' }}
         run: pnpm exec playwright test --config tests/scanner-boundary-acceptance/playwright.config.mjs
 
       # #3939 runs the documented MDX recipe as a packed external consumer.
       # Its JS packages are packed from this checkout, and the Rust binary
       # built above must match the exact checked-out source SHA.
       - name: SDK alias packed consumer and dev rebundle (#3939)
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.chromium.outcome == 'success' }}
         env:
           ZFB_SDK_ALIAS_EVIDENCE_DIR: ${{ runner.temp }}/sdk-alias-consumer
         run: |
@@ -640,6 +662,7 @@ jobs:
       # plus 8 ignored/no_run examples across zfb-islands, zfb-server,
       # zfb-test-utils, and zfb-render — 11 entries across 5 crates.
       - run: cargo test --workspace --doc
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.workspace_clippy.outcome == 'success' }}
 
       # Run the zfb-md-extras integration suite gated behind the `test-utils`
       # feature (issue #1091). The `test-utils` feature is not in the default
@@ -656,6 +679,7 @@ jobs:
       # Output is teed to a log file (issue #1341) for the same reason as the
       # workspace run above.
       - name: cargo nextest run -p zfb-md-extras --features test-utils --profile ci
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.workspace_clippy.outcome == 'success' }}
         shell: bash
         run: |
           cargo nextest run -p zfb-md-extras --features test-utils --profile ci 2>&1 | tee target/nextest-logs/md-extras.log
@@ -663,6 +687,7 @@ jobs:
       # Lint the test-utils-gated targets (they are excluded from the workspace
       # clippy step above for the same reason as cargo test).
       - run: cargo clippy -p zfb-md-extras --features test-utils --all-targets -- -D warnings
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.workspace_clippy.outcome == 'success' }}
 
       # Upload nextest JUnit reports (issue #1340) so retry/flaky telemetry
       # survives the run — the machine-readable feed issue #1341 consumes

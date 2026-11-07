@@ -227,7 +227,7 @@ export const REASONS = Object.freeze({
     outcome: "release-version-stamp",
     heading: "release baseline",
     requires: 2,
-    accepts: [2, 3],
+    accepts: [2, 3, 4],
   },
   "metric-migration": {
     outcome: "metric-migration",
@@ -238,7 +238,7 @@ export const REASONS = Object.freeze({
     outcome: "runtime-identity-repin",
     heading: "runtime-identity re-pin",
     requires: 2,
-    accepts: [2, 3],
+    accepts: [2, 3, 4],
   },
   "lockfile-provenance": {
     outcome: "lockfile-provenance-repin",
@@ -254,37 +254,37 @@ export const REASONS = Object.freeze({
     outcome: "fingerprint-helper-repin",
     heading: "fingerprint-helper re-pin",
     requires: 3,
-    accepts: [3],
+    accepts: [3, 4],
   },
   "cargo-producer-lock": {
     outcome: "cargo-producer-lock-transition",
     heading: "cargo-producer-lock transition",
     requires: 3,
-    accepts: [3],
+    accepts: [3, 4],
   },
   "dependency-graph": {
     outcome: "dependency-graph-repin",
     heading: "dependency-graph re-pin",
     requires: 3,
-    accepts: [3],
+    accepts: [3, 4],
   },
   "fingerprint-policy": {
     outcome: "fingerprint-policy",
     heading: "fingerprint-policy re-pin",
     requires: 3,
-    accepts: [3],
+    accepts: [3, 4],
   },
   "cargo-internal-rewire": {
     outcome: "cargo-internal-rewire-transition",
     heading: "cargo-internal-rewire transition",
     requires: 3,
-    accepts: [3],
+    accepts: [3, 4],
   },
   "cargo-removal": {
     outcome: "cargo-removal-transition",
     heading: "cargo-removal transition",
     requires: 3,
-    accepts: [3],
+    accepts: [3, 4],
   },
   "bundler-backend": {
     outcome: "bundler-backend-transition",
@@ -387,6 +387,13 @@ const REVIEWED_CARGO_TRANSITION_SHA256 =
 export function acceptedSchemas(reason) {
   const policy = REASONS[reason];
   return policy.accepts ?? [policy.requires];
+}
+
+// "3", "3 or 4", "2, 3 or 4": the accepted schema versions in a refusal.
+export function schemaList(schemas) {
+  return schemas.length < 2
+    ? schemas.join("")
+    : schemas.slice(0, -1).join(", ") + " or " + schemas[schemas.length - 1];
 }
 
 // Both identity-normalized schemas carry {raw, gzipNormalized} ceilings.
@@ -589,7 +596,7 @@ export function assertFingerprintMigrationMovement(contract, evidence) {
   }
 }
 
-// release-bump / runtime-identity on a schemaVersion-3 contract: the measured
+// release-bump / runtime-identity on a schemaVersion-3 or -4 contract: the measured
 // artifact must carry this checkout's fingerprint and the contract's must not move.
 export function assertFingerprintUnchanged(contract, evidence, reason) {
   const problem = artifactFingerprintProblem(evidence.artifactFingerprint, evidence);
@@ -1691,6 +1698,74 @@ export function bundlerBackendRecord(contract, evidence) {
       after: evidence.pnpmLockSha256,
     },
   };
+}
+
+// Every reason but bundler-backend keeps the contract's producer: a
+// schemaVersion-4 contract admits only its own embedded-bundler identity, and
+// an esbuild-producer contract (schemaVersion 3 or older) only an esbuild run.
+export function assertProducerMatchesSchema(contract, evidence, reason) {
+  const toolchain = evidence.identity?.toolchain;
+  if (toolchain === undefined) return;
+  const prefix = "--reason " + reason + ": ";
+  if (contract.schemaVersion === BUNDLER_SCHEMA_VERSION) {
+    if (toolchain.esbuildVersion !== undefined) {
+      throw new Error(
+        prefix +
+          "the artifact measured an esbuild producer (esbuild " +
+          String(toolchain.esbuildVersion) +
+          ") but the schemaVersion 4 contract pins the embedded bundler " +
+          String(contract.toolchain.bundlerIdentity) +
+          "; refusing",
+      );
+    }
+    if (toolchain.bundlerIdentity !== contract.toolchain.bundlerIdentity) {
+      throw new Error(
+        prefix +
+          "the artifact measured bundler " +
+          String(toolchain.bundlerIdentity) +
+          " but the schemaVersion 4 contract pins " +
+          String(contract.toolchain.bundlerIdentity) +
+          "; refusing",
+      );
+    }
+    return;
+  }
+  if (toolchain.bundlerIdentity !== undefined) {
+    throw new Error(
+      prefix +
+        "the artifact measured the esbuild-free producer (bundler " +
+        String(toolchain.bundlerIdentity) +
+        ") but the contract is schemaVersion " +
+        String(contract.schemaVersion) +
+        "; only `--reason " +
+        BUNDLER_BACKEND_REASON +
+        "` moves a contract to schemaVersion " +
+        BUNDLER_SCHEMA_VERSION,
+    );
+  }
+}
+
+// Only bundler-backend writes schemaVersion 4, and a schemaVersion-4 contract
+// never regains toolchain.esbuildVersion.
+function assertSchemaShape(before, after, reason) {
+  if (
+    reason !== BUNDLER_BACKEND_REASON &&
+    before.schemaVersion !== BUNDLER_SCHEMA_VERSION &&
+    after.schemaVersion === BUNDLER_SCHEMA_VERSION
+  ) {
+    throw new Error("--reason " + reason + " cannot write schemaVersion 4; refusing");
+  }
+  if (
+    after.schemaVersion === BUNDLER_SCHEMA_VERSION &&
+    (Object.hasOwn(after.toolchain, "esbuildVersion") ||
+      !Object.hasOwn(after.toolchain, "bundlerIdentity"))
+  ) {
+    throw new Error(
+      "--reason " +
+        reason +
+        " would write a schemaVersion 4 contract without exactly toolchain.bundlerIdentity; refusing",
+    );
+  }
 }
 
 function bundlerBackendText(record, cargoTransition) {
@@ -3830,11 +3905,12 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       "--reason " +
         reason +
         " needs a schemaVersion " +
-        schemas.join(" or ") +
+        schemaList(schemas) +
         " contract, found schemaVersion " +
         String(contract.schemaVersion),
     );
   }
+  if (reason !== BUNDLER_BACKEND_REASON) assertProducerMatchesSchema(contract, evidence, reason);
   const repinnedFrom = REPINNED_FROM_REASONS.includes(reason)
     ? repinnedFromRecord(contract, evidence.previousContract)
     : null;
@@ -3875,7 +3951,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
   const fingerprintPolicy = reason === FINGERPRINT_POLICY_REASON;
   if (dependencyGraph) assertDependencyGraphMovement(contract, evidence);
   else if (fingerprintPolicy) assertFingerprintPolicyMovement(contract, evidence);
-  else if (contract.schemaVersion === 3) assertFingerprintUnchanged(contract, evidence, reason);
+  else if (contract.schemaVersion >= 3) assertFingerprintUnchanged(contract, evidence, reason);
   const fingerprintTransition = dependencyGraph
     ? fingerprintTransitionRecord(contract, evidence.dependencyFingerprint)
     : null;
@@ -3976,6 +4052,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
     Object.assign(next, migrated);
     next.runnerSha256 = { ...evidence.identity.runnerSha256 };
   }
+  assertSchemaShape(contract, next, reason);
   next.outcome = policy.outcome;
   next.baselineSourceSha = evidence.headSha;
   next.toolchain.packageVersion = evidence.version;
@@ -4533,9 +4610,7 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
       "` to `" +
       record.runner.afterSha256 +
       "` because the runner now records that identity. " +
-      (cargo
-        ? "`Cargo.lock` moved under " + cargoTransitionMarkdown(cargo) + " "
-        : "`Cargo.lock` is unchanged. ") +
+      (cargo ? cargoTransitionMarkdown(cargo) + " " : "`Cargo.lock` is unchanged. ") +
       "The producer version, fixtures, `measure.mjs`, Hono/Node/zlib, the dependency fingerprint " +
       "and the normalizer are unchanged, and every raw and `gzipNormalized` total is unchanged; " +
       "`toolchain.pnpmLockSha256` follows the artifact as baseline provenance only. These totals " +
@@ -4906,9 +4981,14 @@ export function repinFingerprintHelper(contracts, proof) {
     return { name, file, contract: contracts[name] };
   });
   for (const { file, contract } of entries) {
-    if (contract.schemaVersion !== 3 || !isRecord(contract.dependencyFingerprint)) {
+    if (
+      !acceptedSchemas(FINGERPRINT_HELPER_REASON).includes(contract.schemaVersion) ||
+      !isRecord(contract.dependencyFingerprint)
+    ) {
       throw helperRepinError(
-        "needs a schemaVersion 3 contract, found " +
+        "needs a schemaVersion " +
+          schemaList(acceptedSchemas(FINGERPRINT_HELPER_REASON)) +
+          " contract, found " +
           String(contract.schemaVersion) +
           " in " +
           file +
