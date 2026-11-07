@@ -11,13 +11,13 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
-use zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION;
+use zfb_rolldown_prototype::BACKEND_IDENTITY;
 
 /// The detailed version report shown by `zfb --version`.
 ///
 /// Keep the short `version` value on [`Cli`] unchanged: clap renders it for
-/// `-V`, while this report adds the versions of the external binaries bundled
-/// with the executable.
+/// `-V`, while this report adds the identity of the native bundler backend
+/// compiled into the executable.
 fn long_version() -> &'static str {
     // clap's `Str` stores a static string, so build this report once and keep
     // it for the process lifetime instead of allocating on every command.
@@ -26,7 +26,7 @@ fn long_version() -> &'static str {
         .get_or_init(|| {
             let release_version =
                 option_env!("ZFB_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
-            format!("{release_version}\nembedded esbuild: {EXPECTED_ESBUILD_VERSION}")
+            format!("{release_version}\nembedded bundler: {BACKEND_IDENTITY}")
         })
         .as_str()
 }
