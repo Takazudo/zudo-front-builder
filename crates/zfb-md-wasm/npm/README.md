@@ -471,7 +471,7 @@ for your own environment.
 
 Every entry has a `browser` export condition. Its browser entry imports the
 generated glue and Wasm binary through an explicit bundler `?url` asset
-contract. Vite and zfb's pinned esbuild setup therefore keep separate resource
+contract. Vite and zfb's bundler therefore keep separate resource
 edges for exactly its own pair. The focused pairs are:
 
 ```text

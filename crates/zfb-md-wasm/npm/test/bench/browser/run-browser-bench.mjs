@@ -7,14 +7,13 @@
 //   pnpm --filter @takazudo/zfb-md-wasm build   # once, real dist/ required
 //   node crates/zfb-md-wasm/npm/test/bench/browser/run-browser-bench.mjs
 //
-// Steps: esbuild-bundles the page entry (package browser entry + remark
-// stack + shared fixtures/bench core) with the exact loader flags
+// Steps: Rolldown-bundles the page entry (package browser entry + remark
+// stack + shared fixtures/bench core) with the same file-resource harness
 // `test/package-browser.test.ts` proves the packaged browser entry against,
 // serves the bundle over a local http server, drives Chromium via
 // Playwright (root devDependency), and prints the same markdown table +
 // raw JSON the Node runner prints. NOT wired into `pnpm test` or CI.
 
-import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,6 +22,7 @@ import { fileURLToPath } from "node:url";
 
 import { chromium } from "@playwright/test";
 
+import { bundle, fileResourcePlugin } from "../../support/rolldown-harness.mjs";
 import { markdownTable } from "../bench-core.mjs";
 
 const benchBrowserDir = dirname(fileURLToPath(import.meta.url));
@@ -38,19 +38,24 @@ if (!existsSync(join(packageRoot, "dist", "browser.js"))) {
 
 const outDir = mkdtempSync(join(tmpdir(), "zfb-md-wasm-browser-bench-"));
 
-execFileSync(
-  join(packageRoot, "node_modules", ".bin", "esbuild"),
-  [
-    join(benchBrowserDir, "browser-page-entry.mjs"),
-    "--bundle",
-    "--format=esm",
-    "--platform=browser",
-    `--outdir=${outDir}`,
-    "--loader:.zfb-resource.mjs=file",
-    "--loader:.wasm=file",
-  ],
-  { cwd: packageRoot, stdio: "inherit" },
-);
+const { inputs } = await bundle({
+  input: join(benchBrowserDir, "browser-page-entry.mjs"),
+  outDir,
+  cwd: packageRoot,
+  platform: "browser",
+  assetFileNames: "[name]-[hash][extname]",
+  plugins: [fileResourcePlugin([".zfb-resource.mjs", ".wasm"])],
+});
+// The page must exercise the package browser entry and its own resource pair.
+for (const suffix of [
+  "/dist/browser.js",
+  "/dist/wasm/zfb_md_wasm_glue.zfb-resource.mjs?url",
+  "/dist/wasm/zfb_md_wasm_bg.wasm?url",
+]) {
+  if (!inputs.some((path) => path.replaceAll("\\", "/").endsWith(suffix))) {
+    throw new Error(`browser bench bundle is missing ${suffix}`);
+  }
+}
 
 writeFileSync(
   join(outDir, "index.html"),

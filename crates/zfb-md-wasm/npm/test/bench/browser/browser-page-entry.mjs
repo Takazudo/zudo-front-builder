@@ -1,7 +1,7 @@
 // Browser bench page entry (parseToAst, zfb#1857, epic zfb#1854). Bundled by
-// `run-browser-bench.mjs` with the same esbuild loader config the packaged
-// browser entry is proven against in `test/package-browser.test.ts`
-// (`--loader:.zfb-resource.mjs=file --loader:.wasm=file`). Runs the exact
+// `run-browser-bench.mjs` with the same Rolldown file-resource harness the
+// packaged browser entry is proven against in `test/package-browser.test.ts`
+// (`.zfb-resource.mjs` glue and `.wasm` emitted as files). Runs the exact
 // same capability-matched grid as the Node runner — same fixtures, same
 // bench core, same options — inside real Chromium.
 

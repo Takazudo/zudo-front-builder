@@ -182,26 +182,51 @@ function checkTypes(directory) {
   }
 }
 
-function esbuildProbe(directory, kind, esbuild) {
+// Bundles a JSX consumer against the packed (or symlinked source) package for the neutral and
+// browser platforms with the pinned dev-only Rolldown, so the JSX import source resolves from the
+// package itself. Any warning (an unresolved import included) fails the probe. Rolldown is a root
+// devDependency, not a packages/zfb one, so the island-size lock fingerprint's importers stay put.
+async function bundlerProbe(directory, kind, packageRoot) {
+  const { rolldown } = await import("rolldown");
   const entry = join(directory, "probe.tsx");
   writeFileSync(
     entry,
     'import { h } from "@takazudo/zfb/zudo-react"; export const view = <div>{h("b", null, "ok")}</div>;\n',
   );
+  const runtime =
+    kind === "source" ? "src/zudo-react/jsx-runtime.ts" : "dist/zudo-react/jsx-runtime.js";
+  const expectedRuntime = join(packageRoot, runtime);
   for (const platform of ["neutral", "browser"]) {
-    const args = [
-      entry,
-      "--bundle",
-      `--platform=${platform}`,
-      "--format=esm",
-      "--jsx=automatic",
-      "--jsx-import-source=@takazudo/zfb/zudo-react",
-      `--outfile=${join(directory, `probe-${platform}.js`)}`,
-    ];
-    if (kind === "source") args.push("--preserve-symlinks");
-    run(esbuild, args, directory);
+    const warnings = [];
+    const build = await rolldown({
+      input: entry,
+      cwd: directory,
+      platform,
+      tsconfig: false,
+      transform: {
+        jsx: { runtime: "automatic", importSource: "@takazudo/zfb/zudo-react" },
+      },
+      resolve: kind === "source" ? { symlinks: false } : {},
+      onLog(level, log) {
+        if (level === "warn") warnings.push(`${log.code ?? "WARN"}: ${log.message}`);
+      },
+    });
+    try {
+      const { output } = await build.write({
+        file: join(directory, `probe-${platform}.js`),
+        format: "esm",
+      });
+      if (warnings.length > 0)
+        throw new Error(`${kind} ${platform} probe warned:\n${warnings.join("\n")}`);
+      const modules = output.flatMap((item) => (item.type === "chunk" ? item.moduleIds : []));
+      if (!modules.includes(expectedRuntime)) {
+        throw new Error(`${kind} ${platform} probe did not bundle ${expectedRuntime}`);
+      }
+    } finally {
+      await build.close();
+    }
   }
-  console.log(`esbuild probe ${kind} neutral/browser: PASS`);
+  console.log(`rolldown probe ${kind} neutral/browser: PASS`);
 }
 
 try {
@@ -226,15 +251,8 @@ try {
       join(sourceDir, "node_modules", "@takazudo", "zfb-slugify"),
       "dir",
     );
-    const esbuild =
-      process.env.ZFB_ESBUILD_BIN ||
-      join(repoDir, "crates", "zfb", "binaries", "esbuild", "esbuild");
-    if (existsSync(esbuild)) {
-      esbuildProbe(directory, "packed", esbuild);
-      esbuildProbe(sourceDir, "source", esbuild);
-    } else {
-      console.log("esbuild probe: SKIPPED (set ZFB_ESBUILD_BIN or stage the pinned binary)");
-    }
+    await bundlerProbe(directory, "packed", join(directory, "node_modules", "@takazudo", "zfb"));
+    await bundlerProbe(sourceDir, "source", link);
   }
 } catch (error) {
   console.error(error?.stderr?.toString() || error);
