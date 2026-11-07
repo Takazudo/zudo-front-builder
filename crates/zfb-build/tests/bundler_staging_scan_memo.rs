@@ -7,7 +7,7 @@
 //! one logical visit per path — so each alias stays nested under its importer
 //! (#1646) — but walks and import-parses the physical directory only once.
 //!
-//! Uses `mock_subprocess_output`: staging runs before esbuild, so no esbuild
+//! Uses `mock_bundle_output`: staging runs before esbuild, so no esbuild
 //! binary is needed.
 
 #![cfg(unix)]
@@ -88,7 +88,7 @@ fn staging_stats(root: &Path, bundle_exclude: Vec<String>) -> NodeModulesStaging
             "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime".into(),
         ],
-        mock_subprocess_output: Some("export default {};\n".to_string()),
+        mock_bundle_output: Some("export default {};\n".to_string()),
         node_modules_dir: Some(root.join("node_modules")),
         // Any non-empty `paths` map makes esbuild resolve through canonical
         // package dirs, which is what follows a store dir's private siblings.

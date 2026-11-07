@@ -26,7 +26,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec};
-use zfb_test_utils::locate_esbuild;
 
 /// Build a minimal user-project tree exercising both the page walker
 /// AND the collection walker so we cover both `add_strip_md_ext`
@@ -69,12 +68,7 @@ fn write_fixture_project(root: &std::path::Path) {
     .unwrap();
 }
 
-fn make_input(
-    root: &std::path::Path,
-    esbuild: &std::path::Path,
-    outdir_name: &str,
-    strip_md_ext: bool,
-) -> BundlerInput {
+fn make_input(root: &std::path::Path, outdir_name: &str, strip_md_ext: bool) -> BundlerInput {
     BundlerInput {
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
@@ -98,8 +92,7 @@ fn make_input(
         outdir: root.join(outdir_name),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.to_path_buf()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -128,21 +121,11 @@ fn make_input(
 
 #[test]
 fn strip_md_ext_on_rewrites_internal_md_hrefs_to_trailing_slash() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_strip_md_ext] no esbuild binary available; \
-             set ZFB_ESBUILD_BIN, place the binary at \
-             crates/zfb/binaries/esbuild/esbuild, or install esbuild on PATH \
-             to enable this test. Skipping."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root);
 
-    let input = make_input(&root, &esbuild, "dist-on", true);
+    let input = make_input(&root, "dist-on", true);
     let out = bundle(input).expect("bundle should succeed with strip_md_ext=true");
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
     assert!(!body.is_empty(), "bundle should be non-empty");
@@ -209,16 +192,12 @@ fn strip_md_ext_off_preserves_md_hrefs() {
     // identical to Sub 1's outcome — `[link](./other.md)` survives
     // verbatim into the bundle. This pins the "opt-in by default"
     // contract from the issue.
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_strip_md_ext] no esbuild binary available; skipping.");
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root);
 
-    let input = make_input(&root, &esbuild, "dist-off", false);
+    let input = make_input(&root, "dist-off", false);
     let out = bundle(input).expect("bundle should succeed with strip_md_ext=false");
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
 

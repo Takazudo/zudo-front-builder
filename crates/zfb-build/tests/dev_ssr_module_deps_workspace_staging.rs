@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 use zfb_build::{
     bundle_with_session, BundleMode, BundlerInput, RawImportInvalidation, ShadowSession,
 };
-use zfb_test_utils::locate_esbuild;
 
 fn write_nested_host_workspace(ws_root: &Path) -> PathBuf {
     fs::write(
@@ -74,7 +73,7 @@ fn write_nested_host_workspace(ws_root: &Path) -> PathBuf {
     project
 }
 
-fn dev_input(project: &Path, esbuild: PathBuf) -> BundlerInput {
+fn dev_input(project: &Path) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
         BundleMode::Development,
@@ -86,7 +85,6 @@ fn dev_input(project: &Path, esbuild: PathBuf) -> BundlerInput {
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
-    input.esbuild_binary = Some(esbuild);
     input
 }
 
@@ -102,16 +100,12 @@ fn is_under_shadow_session(path: &Path) -> bool {
 #[cfg(unix)]
 #[test]
 fn nested_host_publishes_original_workspace_package_files_not_staged_copies() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_ssr_module_deps_workspace_staging] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws_root = fs::canonicalize(tmp.path()).unwrap();
     let project = write_nested_host_workspace(&ws_root);
 
     let mut session = ShadowSession::new(&project).unwrap();
-    let out = bundle_with_session(dev_input(&project, esbuild), Some(&mut session))
+    let out = bundle_with_session(dev_input(&project), Some(&mut session))
         .unwrap_or_else(|error| panic!("dev bundle must succeed: {error:#}"));
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
     assert!(body.contains("DATA_LABEL"), "{body}");

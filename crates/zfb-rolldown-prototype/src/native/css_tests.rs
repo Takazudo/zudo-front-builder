@@ -67,6 +67,10 @@ fn raw_css_default_and_custom_loaders_reject_without_publication() {
                 "{message}"
             );
             assert!(message.contains(filename), "{message}");
+            assert!(message.contains("*.module.css"), "{message}");
+            assert!(message.contains("Lightning CSS"), "{message}");
+            assert!(!message.contains("esbuild"), "{message}");
+            assert!(!message.contains("ZFB_BUNDLER"), "{message}");
             if existing {
                 assert_eq!(
                     fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap(),

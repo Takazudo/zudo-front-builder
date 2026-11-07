@@ -154,6 +154,11 @@ fn raw_css_is_rejected_with_the_supported_path() {
         error.contains("ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED"),
         "{error}"
     );
+    assert!(error.contains("*.module.css"), "{error}");
+    assert!(error.contains("Wind"), "{error}");
+    assert!(error.contains("Lightning CSS"), "{error}");
+    assert!(!error.contains("esbuild"), "{error}");
+    assert!(!error.contains("ZFB_BUNDLER"), "{error}");
     assert!(!dir.join("out").exists());
     fs::remove_dir_all(&dir).unwrap();
 }

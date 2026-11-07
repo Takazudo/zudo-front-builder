@@ -13,7 +13,7 @@
 //!    top, user-supplied entries win on key collision.
 //!
 //! All three tests need a real esbuild binary: the unit-test path
-//! (`mock_subprocess_output`) bypasses `run_esbuild` entirely, so it
+//! (`mock_bundle_output`) bypasses `run_esbuild` entirely, so it
 //! cannot exercise esbuild's path-mapping pipeline. Esbuild gating
 //! follows the precedence used by sibling integration tests
 //! (`bundler_strip_md_ext.rs`): `ZFB_ESBUILD_BIN` env var →
@@ -27,7 +27,6 @@ use std::path::PathBuf;
 use zfb_build::{
     bundle, bundle_with_session, BundleMode, BundlerInput, ContentCollectionSpec, ShadowSession,
 };
-use zfb_test_utils::locate_esbuild;
 
 /// Lay down a minimal user-project tree: one TSX page that imports a
 /// single specifier the caller picks. `import_specifier` is what the
@@ -101,7 +100,6 @@ fn write_hidden_imports_package(root: &std::path::Path, directory: &str, marker:
 
 fn make_input(
     root: &std::path::Path,
-    esbuild: &std::path::Path,
     outdir_name: &str,
     tsconfig_paths: BTreeMap<String, Vec<String>>,
     plugin_alias_entries: Vec<(String, String)>,
@@ -130,8 +128,7 @@ fn make_input(
         outdir: root.join(outdir_name),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.to_path_buf()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -161,11 +158,6 @@ fn make_input(
 /// referencing the bare `@/foo/bar` string.
 #[test]
 fn plugin_alias_does_not_match_prefix_with_slash() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "@/foo/bar", "foo.tsx");
@@ -174,14 +166,7 @@ fn plugin_alias_does_not_match_prefix_with_slash() {
         "@/foo".to_string(),
         root.join("src/foo.tsx").to_string_lossy().into_owned(),
     )];
-    let input = make_input(
-        &root,
-        &esbuild,
-        "dist-alias",
-        BTreeMap::new(),
-        plugin_aliases,
-        vec![],
-    );
+    let input = make_input(&root, "dist-alias", BTreeMap::new(), plugin_aliases, vec![]);
     let err = bundle(input).expect_err(
         "Wave 2 contract: addAlias(\"@/foo\", ...) must NOT match `@/foo/bar`; \
          bundling must fail with an unresolved-import error.",
@@ -201,11 +186,6 @@ fn plugin_alias_does_not_match_prefix_with_slash() {
 /// reference the aliased file's exported identifier `Foo`.
 #[test]
 fn plugin_alias_matches_exact_specifier() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "@/foo", "foo.tsx");
@@ -216,7 +196,6 @@ fn plugin_alias_matches_exact_specifier() {
     )];
     let input = make_input(
         &root,
-        &esbuild,
         "dist-alias-ok",
         BTreeMap::new(),
         plugin_aliases,
@@ -240,11 +219,6 @@ fn plugin_alias_matches_exact_specifier() {
 
 #[test]
 fn project_plugin_alias_is_preprocessed_inside_the_ssr_shadow() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:preprocessed", "unused.tsx");
@@ -268,7 +242,6 @@ fn project_plugin_alias_is_preprocessed_inside_the_ssr_shadow() {
     let worker_filename = zfb_types::module_worker_filename(&root, &worker).unwrap();
     let input = make_input(
         &root,
-        &esbuild,
         "dist-alias-preprocessed",
         BTreeMap::new(),
         vec![(
@@ -287,12 +260,6 @@ fn project_plugin_alias_is_preprocessed_inside_the_ssr_shadow() {
 
 #[test]
 fn imported_excluded_plugin_alias_never_falls_back_to_real_source() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:excluded-root", "unused.tsx");
@@ -317,7 +284,6 @@ fn imported_excluded_plugin_alias_never_falls_back_to_real_source() {
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-excluded-alias-root",
         BTreeMap::new(),
         vec![
@@ -356,12 +322,6 @@ fn imported_excluded_plugin_alias_never_falls_back_to_real_source() {
 
 #[test]
 fn unused_excluded_plugin_alias_registration_is_harmless() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:unused-excluded", "unused.tsx");
@@ -379,7 +339,6 @@ fn unused_excluded_plugin_alias_registration_is_harmless() {
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-unused-excluded-alias",
         BTreeMap::new(),
         vec![(
@@ -395,12 +354,6 @@ fn unused_excluded_plugin_alias_registration_is_harmless() {
 
 #[test]
 fn plugin_alias_preprocessing_honours_excluded_nested_raw_target() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:excluded-raw", "unused.tsx");
@@ -420,7 +373,6 @@ fn plugin_alias_preprocessing_honours_excluded_nested_raw_target() {
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-excluded-plugin-raw",
         BTreeMap::new(),
         vec![(
@@ -448,12 +400,6 @@ fn plugin_alias_preprocessing_honours_excluded_nested_raw_target() {
 
 #[test]
 fn plugin_alias_preprocessing_honours_excluded_nested_module() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:excluded-module", "unused.tsx");
@@ -473,7 +419,6 @@ fn plugin_alias_preprocessing_honours_excluded_nested_module() {
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-excluded-plugin-module",
         BTreeMap::new(),
         vec![(
@@ -501,12 +446,6 @@ fn plugin_alias_preprocessing_honours_excluded_nested_module() {
 
 #[test]
 fn plugin_alias_preprocessing_honours_excluded_exact_tsconfig_target() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:excluded-tsconfig", "unused.tsx");
@@ -539,7 +478,6 @@ fn plugin_alias_preprocessing_honours_excluded_exact_tsconfig_target() {
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-excluded-plugin-tsconfig",
         BTreeMap::from([(
             "project:secret".to_string(),
@@ -570,12 +508,6 @@ fn plugin_alias_preprocessing_honours_excluded_exact_tsconfig_target() {
 
 #[test]
 fn excluded_exact_tsconfig_directory_cannot_fallback_to_index_json() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:excluded-json-directory", "unused.tsx");
@@ -596,7 +528,6 @@ fn excluded_exact_tsconfig_directory_cannot_fallback_to_index_json() {
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-excluded-index-json",
         BTreeMap::from([(
             "project:secret-json-directory".to_string(),
@@ -630,12 +561,6 @@ fn excluded_exact_tsconfig_directory_cannot_fallback_to_index_json() {
 
 #[test]
 fn excluded_nontrailing_css_sibling_is_removed_before_esbuild_selects_directory_main() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:choice", "unused.tsx");
@@ -661,7 +586,6 @@ fn excluded_nontrailing_css_sibling_is_removed_before_esbuild_selects_directory_
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-excluded-css-sibling",
         BTreeMap::from([(
             "project:choice".to_string(),
@@ -681,12 +605,6 @@ fn excluded_nontrailing_css_sibling_is_removed_before_esbuild_selects_directory_
 
 #[test]
 fn trailing_tsconfig_target_preserves_directory_only_resolution() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:directory-only", "unused.tsx");
@@ -712,7 +630,6 @@ fn trailing_tsconfig_target_preserves_directory_only_resolution() {
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-trailing-directory",
         BTreeMap::from([(
             "project:directory-only".to_string(),
@@ -732,11 +649,6 @@ fn trailing_tsconfig_target_preserves_directory_only_resolution() {
 
 #[test]
 fn trailing_tsconfig_target_removes_excluded_basename_child_before_main_fallback() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:trailing-child", "unused.tsx");
@@ -761,7 +673,6 @@ fn trailing_tsconfig_target_removes_excluded_basename_child_before_main_fallback
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-trailing-child-excluded",
         BTreeMap::from([(
             "project:trailing-child".to_string(),
@@ -782,11 +693,6 @@ fn trailing_tsconfig_target_removes_excluded_basename_child_before_main_fallback
 
 #[test]
 fn trailing_tsconfig_target_keeps_allowed_basename_child_when_main_is_excluded() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:trailing-child", "unused.tsx");
@@ -806,7 +712,6 @@ fn trailing_tsconfig_target_keeps_allowed_basename_child_when_main_is_excluded()
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-trailing-child-allowed",
         BTreeMap::from([(
             "project:trailing-child".to_string(),
@@ -826,11 +731,6 @@ fn trailing_tsconfig_target_keeps_allowed_basename_child_when_main_is_excluded()
 
 #[test]
 fn node_modules_exact_target_removes_preferred_excluded_js_and_uses_ts() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:node-choice", "unused.tsx");
@@ -851,7 +751,6 @@ fn node_modules_exact_target_removes_preferred_excluded_js_and_uses_ts() {
     let target = package.join("value");
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-node-js-excluded",
         BTreeMap::from([(
             "project:node-choice".to_string(),
@@ -870,11 +769,6 @@ fn node_modules_exact_target_removes_preferred_excluded_js_and_uses_ts() {
 
 #[test]
 fn node_modules_exact_target_prefers_allowed_js_over_excluded_invalid_ts() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:node-choice", "unused.tsx");
@@ -895,7 +789,6 @@ fn node_modules_exact_target_prefers_allowed_js_over_excluded_invalid_ts() {
     let target = package.join("value");
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-node-ts-excluded",
         BTreeMap::from([(
             "project:node-choice".to_string(),
@@ -913,11 +806,6 @@ fn node_modules_exact_target_prefers_allowed_js_over_excluded_invalid_ts() {
 
 #[test]
 fn node_modules_exact_target_cannot_climb_to_live_excluded_bare_dependency() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:node-bare", "unused.tsx");
@@ -945,7 +833,6 @@ fn node_modules_exact_target_cannot_climb_to_live_excluded_bare_dependency() {
     let target = package.join("value");
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-node-bare-excluded",
         BTreeMap::from([(
             "project:node-bare".to_string(),
@@ -970,11 +857,6 @@ fn node_modules_exact_target_cannot_climb_to_live_excluded_bare_dependency() {
 
 #[test]
 fn node_modules_exact_target_stages_allowed_bare_dependency_closure() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:node-bare", "unused.tsx");
@@ -1011,7 +893,6 @@ fn node_modules_exact_target_stages_allowed_bare_dependency_closure() {
     let target = package.join("value");
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-node-bare-allowed",
         BTreeMap::from([(
             "project:node-bare".to_string(),
@@ -1031,11 +912,6 @@ fn node_modules_exact_target_stages_allowed_bare_dependency_closure() {
 #[cfg(unix)]
 #[test]
 fn node_modules_symlinked_package_stages_non_hoisted_canonical_dependency_only_without_preserve() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:pnpm-package", "unused.tsx");
@@ -1079,7 +955,6 @@ fn node_modules_symlinked_package_stages_non_hoisted_canonical_dependency_only_w
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-pnpm-canonical",
         BTreeMap::from([(
             "project:pnpm-package".to_string(),
@@ -1096,7 +971,6 @@ fn node_modules_symlinked_package_stages_non_hoisted_canonical_dependency_only_w
 
     let mut preserve_input = make_input(
         &root,
-        &esbuild,
         "dist-pnpm-preserve",
         BTreeMap::from([(
             "project:pnpm-package".to_string(),
@@ -1119,11 +993,6 @@ fn node_modules_symlinked_package_stages_non_hoisted_canonical_dependency_only_w
 #[cfg(unix)]
 #[test]
 fn workspace_isolation_only_falls_back_to_pnpm_store_without_explicit_preserve() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let workspace = tmp.path();
     fs::write(
@@ -1174,7 +1043,6 @@ fn workspace_isolation_only_falls_back_to_pnpm_store_without_explicit_preserve()
     for preserve in [false, true] {
         let mut input = make_input(
             &root,
-            &esbuild,
             &format!("dist-workspace-preserve-{preserve}"),
             BTreeMap::new(),
             vec![(
@@ -1211,11 +1079,6 @@ fn workspace_isolation_only_falls_back_to_pnpm_store_without_explicit_preserve()
 #[cfg(unix)]
 #[test]
 fn cyclic_pnpm_dependencies_reach_a_fixed_point_with_bundle_exclude() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:cycle", "unused.tsx");
@@ -1255,7 +1118,6 @@ fn cyclic_pnpm_dependencies_reach_a_fixed_point_with_bundle_exclude() {
     let target = root.join("node_modules/cycle-a/index.js");
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-pnpm-cycle",
         BTreeMap::from([(
             "project:cycle".to_string(),
@@ -1325,11 +1187,6 @@ fn write_bare_package_in(node_modules: &std::path::Path, name: &str, marker: &st
 
 #[test]
 fn first_party_package_stages_project_local_bare_dependency_closure() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     for preserve in [false, true] {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().to_path_buf();
@@ -1348,7 +1205,6 @@ fn first_party_package_stages_project_local_bare_dependency_closure() {
         .unwrap();
         let mut input = make_input(
             &root,
-            &esbuild,
             &format!("dist-fp-local-{preserve}"),
             BTreeMap::new(),
             vec![(
@@ -1373,11 +1229,6 @@ fn first_party_package_stages_project_local_bare_dependency_closure() {
 
 #[test]
 fn first_party_package_stages_external_vendored_bare_dependency_closure() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     for preserve in [false, true] {
         let project = tempfile::tempdir().expect("project tempdir");
         let vendor = tempfile::tempdir().expect("vendor tempdir");
@@ -1399,7 +1250,6 @@ fn first_party_package_stages_external_vendored_bare_dependency_closure() {
         .unwrap();
         let mut input = make_input(
             &root,
-            &esbuild,
             &format!("dist-fp-vendor-{preserve}"),
             BTreeMap::new(),
             vec![(
@@ -1426,11 +1276,6 @@ fn first_party_package_stages_external_vendored_bare_dependency_closure() {
 #[cfg(unix)]
 #[test]
 fn first_party_package_stages_pnpm_symlinked_bare_dependency_closure() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     for preserve in [false, true] {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().to_path_buf();
@@ -1458,7 +1303,6 @@ fn first_party_package_stages_pnpm_symlinked_bare_dependency_closure() {
         .unwrap();
         let mut input = make_input(
             &root,
-            &esbuild,
             &format!("dist-fp-pnpm-{preserve}"),
             BTreeMap::new(),
             vec![(
@@ -1484,11 +1328,6 @@ fn first_party_package_stages_pnpm_symlinked_bare_dependency_closure() {
 
 #[test]
 fn first_party_package_imports_external_stages_allowed_bare_dependency_closure() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:fp-imports", "unused.tsx");
@@ -1520,7 +1359,6 @@ fn first_party_package_imports_external_stages_allowed_bare_dependency_closure()
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-fp-imports",
         BTreeMap::new(),
         vec![(
@@ -1542,11 +1380,6 @@ fn first_party_package_imports_external_stages_allowed_bare_dependency_closure()
 
 #[test]
 fn css_import_context_does_not_use_allowed_invalid_ts_when_css_is_excluded() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:unused", "unused.tsx");
@@ -1569,7 +1402,6 @@ fn css_import_context_does_not_use_allowed_invalid_ts_when_css_is_excluded() {
     let target = root.join("src/theme");
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-css-context-excluded",
         BTreeMap::from([(
             "project:theme".to_string(),
@@ -1583,26 +1415,17 @@ fn css_import_context_does_not_use_allowed_invalid_ts_when_css_is_excluded() {
 
     let error = bundle(input).expect_err("CSS context must not fall through to live excluded CSS");
     let message = format!("{error:#}");
-    if rolldown_selected() {
-        assert!(
-            message.contains("ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED"),
-            "{message}"
-        );
-        assert!(!root.join("dist-css-context-excluded/bundle.mjs").exists());
-        assert!(!root.join("dist-css-context-excluded/bundle.css").exists());
-    } else {
-        assert!(message.contains("project:theme"), "{message}");
-    }
+    assert!(
+        message.contains("ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED"),
+        "{message}"
+    );
+    assert!(!root.join("dist-css-context-excluded/bundle.mjs").exists());
+    assert!(!root.join("dist-css-context-excluded/bundle.css").exists());
     assert!(!message.contains("failed to parse"), "{message}");
 }
 
 #[test]
 fn css_import_context_keeps_css_when_invalid_ts_alternate_is_excluded() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:unused", "unused.tsx");
@@ -1625,7 +1448,6 @@ fn css_import_context_keeps_css_when_invalid_ts_alternate_is_excluded() {
     let target = root.join("src/theme");
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-css-context-allowed",
         BTreeMap::from([(
             "project:theme".to_string(),
@@ -1637,33 +1459,22 @@ fn css_import_context_keeps_css_when_invalid_ts_alternate_is_excluded() {
     input.extra_loader_args = vec!["--loader:.css=css".to_string()];
     input.bundle_exclude = vec!["src/theme.ts".to_string()];
 
-    let result = bundle(input);
-    if rolldown_selected() {
-        // Raw CSS is explicitly outside the native prototype's accepted
-        // contract. Keep the ordinary esbuild success assertion below intact.
-        let error = result.expect_err("native raw CSS must fail closed");
-        let message = format!("{error:#}");
-        assert!(
-            message.contains("ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED"),
-            "{message}"
-        );
-        assert!(!root.join("dist-css-context-allowed/bundle.mjs").exists());
-        assert!(!root.join("dist-css-context-allowed/bundle.css").exists());
-        return;
-    }
-    result.expect("CSS context must resolve the allowed CSS candidate");
-    let css = fs::read_to_string(root.join("dist-css-context-allowed/bundle.css")).unwrap();
-    assert!(css.contains("ALLOWED_CONTEXT_CSS"), "{css}");
+    // Raw CSS is outside the bundler's contract: it fails closed and names
+    // the supported CSS path instead of resolving the CSS candidate.
+    let error = bundle(input).expect_err("raw CSS must fail closed");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED"),
+        "{message}"
+    );
+    assert!(message.contains("*.module.css"), "{message}");
+    assert!(!message.contains("ZFB_BUNDLER"), "{message}");
+    assert!(!root.join("dist-css-context-allowed/bundle.mjs").exists());
+    assert!(!root.join("dist-css-context-allowed/bundle.css").exists());
 }
 
 #[test]
 fn ordinary_wildcard_target_cannot_fallback_to_excluded_real_file() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:secret", "unused.tsx");
@@ -1675,7 +1486,6 @@ fn ordinary_wildcard_target_cannot_fallback_to_excluded_real_file() {
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-excluded-wildcard",
         BTreeMap::from([(
             "project:*".to_string(),
@@ -1702,11 +1512,6 @@ fn unrelated_wildcard_loses_ignored_directory_real_fallback_under_exclusions() {
     // without the suppressed real fallback the alias target is genuinely absent
     // and the build must FAIL, naming the unresolved import rather than
     // resurrecting the file from the live tree.
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
@@ -1726,7 +1531,6 @@ fn unrelated_wildcard_loses_ignored_directory_real_fallback_under_exclusions() {
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-unrelated-wildcard",
         BTreeMap::from([(
             "ignored:*".to_string(),
@@ -1751,12 +1555,6 @@ fn unrelated_wildcard_loses_ignored_directory_real_fallback_under_exclusions() {
 
 #[test]
 fn package_parent_main_ts_rewrite_is_removed_before_allowed_index_fallback() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:parent-main", "unused.tsx");
@@ -1780,7 +1578,6 @@ fn package_parent_main_ts_rewrite_is_removed_before_allowed_index_fallback() {
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-parent-main",
         BTreeMap::from([(
             "project:parent-main".to_string(),
@@ -1800,11 +1597,6 @@ fn package_parent_main_ts_rewrite_is_removed_before_allowed_index_fallback() {
 
 #[test]
 fn rooted_package_main_remains_package_local_in_isolated_shadow() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:rooted-main", "unused.tsx");
@@ -1824,7 +1616,6 @@ fn rooted_package_main_remains_package_local_in_isolated_shadow() {
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-rooted-main",
         BTreeMap::from([(
             "project:rooted-main".to_string(),
@@ -1844,12 +1635,6 @@ fn rooted_package_main_remains_package_local_in_isolated_shadow() {
 
 #[test]
 fn allowed_exact_js_wins_before_excluded_ts_rewrite() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:exact-js", "unused.tsx");
@@ -1863,7 +1648,6 @@ fn allowed_exact_js_wins_before_excluded_ts_rewrite() {
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-allowed-exact-js",
         BTreeMap::from([(
             "project:exact-js".to_string(),
@@ -1882,12 +1666,6 @@ fn allowed_exact_js_wins_before_excluded_ts_rewrite() {
 
 #[test]
 fn hidden_plugin_directory_uses_shadow_entry_and_blocks_excluded_nested_import() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:hidden-directory", "unused.tsx");
@@ -1907,7 +1685,6 @@ fn hidden_plugin_directory_uses_shadow_entry_and_blocks_excluded_nested_import()
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-hidden-plugin-directory",
         BTreeMap::new(),
         vec![(
@@ -1932,11 +1709,6 @@ fn hidden_plugin_directory_uses_shadow_entry_and_blocks_excluded_nested_import()
 
 #[test]
 fn hidden_plugin_directory_preserves_package_imports_into_dotdir() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:hidden-imports", "unused.tsx");
@@ -1958,7 +1730,6 @@ fn hidden_plugin_directory_preserves_package_imports_into_dotdir() {
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-hidden-imports-directory",
         BTreeMap::new(),
         vec![(
@@ -1977,11 +1748,6 @@ fn hidden_plugin_directory_preserves_package_imports_into_dotdir() {
 
 #[test]
 fn hidden_plugin_directory_omits_excluded_package_import_target() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:hidden-imports", "unused.tsx");
@@ -1993,7 +1759,6 @@ fn hidden_plugin_directory_omits_excluded_package_import_target() {
     );
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-hidden-imports-excluded",
         BTreeMap::new(),
         vec![(
@@ -2020,11 +1785,6 @@ fn hidden_plugin_directory_omits_excluded_package_import_target() {
 
 #[test]
 fn hidden_plugin_file_alias_stages_containing_package_for_imports() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:hidden-file-imports", "unused.tsx");
@@ -2036,7 +1796,6 @@ fn hidden_plugin_file_alias_stages_containing_package_for_imports() {
     );
     let input = make_input(
         &root,
-        &esbuild,
         "dist-hidden-imports-file",
         BTreeMap::new(),
         vec![(
@@ -2056,11 +1815,6 @@ fn hidden_plugin_file_alias_stages_containing_package_for_imports() {
 
 #[test]
 fn project_root_file_alias_stages_nested_root_package_imports_scope() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:root-package", "unused.tsx");
@@ -2083,7 +1837,6 @@ fn project_root_file_alias_stages_nested_root_package_imports_scope() {
     .unwrap();
     let input = make_input(
         &root,
-        &esbuild,
         "dist-root-package-imports",
         BTreeMap::new(),
         vec![(
@@ -2100,11 +1853,6 @@ fn project_root_file_alias_stages_nested_root_package_imports_scope() {
 
 #[test]
 fn hidden_user_exact_file_cannot_import_excluded_relative_dependency() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:hidden-exact", "unused.tsx");
@@ -2123,7 +1871,6 @@ fn hidden_user_exact_file_cannot_import_excluded_relative_dependency() {
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-hidden-user-excluded",
         BTreeMap::from([(
             "project:hidden-exact".to_string(),
@@ -2146,11 +1893,6 @@ fn hidden_user_exact_file_cannot_import_excluded_relative_dependency() {
 
 #[test]
 fn hidden_user_exact_file_stages_allowed_relative_closure_under_unrelated_exclusion() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:hidden-exact", "unused.tsx");
@@ -2174,7 +1916,6 @@ fn hidden_user_exact_file_stages_allowed_relative_closure_under_unrelated_exclus
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-hidden-user-allowed",
         BTreeMap::from([(
             "project:hidden-exact".to_string(),
@@ -2192,12 +1933,6 @@ fn hidden_user_exact_file_stages_allowed_relative_closure_under_unrelated_exclus
 
 #[test]
 fn excluded_mdx_components_override_is_neither_preflighted_nor_imported() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:unused", "unused.tsx");
@@ -2215,7 +1950,6 @@ fn excluded_mdx_components_override_is_neither_preflighted_nor_imported() {
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-excluded-mdx-components",
         BTreeMap::new(),
         vec![],
@@ -2232,12 +1966,6 @@ fn excluded_mdx_components_override_is_neither_preflighted_nor_imported() {
 
 #[test]
 fn excluded_collection_markdown_is_rejected_for_snapshot_parity() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:unused", "unused.tsx");
@@ -2249,7 +1977,6 @@ fn excluded_collection_markdown_is_rejected_for_snapshot_parity() {
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-excluded-collection-markdown",
         BTreeMap::new(),
         vec![],
@@ -2270,12 +1997,6 @@ fn excluded_collection_markdown_is_rejected_for_snapshot_parity() {
 
 #[test]
 fn explicit_defines_override_public_env_per_exact_ssr_expression() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:unused", "unused.tsx");
@@ -2289,7 +2010,6 @@ fn explicit_defines_override_public_env_per_exact_ssr_expression() {
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-public-define-precedence",
         BTreeMap::new(),
         vec![],
@@ -2319,16 +2039,11 @@ fn explicit_defines_override_public_env_per_exact_ssr_expression() {
 
 #[test]
 fn virtual_only_ssr_entry_rejects_unshadowable_preprocessing_syntax() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "virtual:ssr-raw", "unused.tsx");
     let input = make_input(
         &root,
-        &esbuild,
         "dist-virtual-preprocess-error",
         BTreeMap::new(),
         vec![],
@@ -2350,10 +2065,6 @@ fn virtual_only_ssr_entry_rejects_unshadowable_preprocessing_syntax() {
 
 #[test]
 fn user_claimed_virtual_skips_losing_plugin_preprocessing_source() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "virtual:claimed", "user-virtual.tsx");
@@ -2368,7 +2079,6 @@ fn user_claimed_virtual_skips_losing_plugin_preprocessing_source() {
     )]);
     let input = make_input(
         &root,
-        &esbuild,
         "dist-user-claimed-virtual",
         user_paths,
         vec![],
@@ -2387,10 +2097,6 @@ fn user_claimed_virtual_skips_losing_plugin_preprocessing_source() {
 
 #[test]
 fn user_claimed_virtual_stays_suppressed_inside_plugin_alias_root() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:entry", "user-virtual.tsx");
@@ -2417,7 +2123,6 @@ fn user_claimed_virtual_stays_suppressed_inside_plugin_alias_root() {
     )]);
     let input = make_input(
         &root,
-        &esbuild,
         "dist-user-claimed-virtual-alias-root",
         user_paths,
         vec![(
@@ -2443,11 +2148,6 @@ fn user_claimed_virtual_stays_suppressed_inside_plugin_alias_root() {
 /// rewrite this to `<temp-mjs>/bar`.
 #[test]
 fn plugin_virtual_module_does_not_match_prefix_with_slash() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     // The page imports `virtual:foo/bar` — wrong by one slash.
@@ -2457,14 +2157,7 @@ fn plugin_virtual_module_does_not_match_prefix_with_slash() {
         "virtual:foo".to_string(),
         "export default function Foo() { return null; }\n".to_string(),
     )];
-    let input = make_input(
-        &root,
-        &esbuild,
-        "dist-vm",
-        BTreeMap::new(),
-        vec![],
-        plugin_vms,
-    );
+    let input = make_input(&root, "dist-vm", BTreeMap::new(), vec![], plugin_vms);
     let err = bundle(input).expect_err(
         "Wave 2 contract: addVirtualModule(\"virtual:foo\", ...) must NOT match \
          `virtual:foo/bar`; bundling must fail with an unresolved-import error.",
@@ -2483,11 +2176,6 @@ fn plugin_virtual_module_does_not_match_prefix_with_slash() {
 /// specifier). Bundling must succeed.
 #[test]
 fn plugin_virtual_module_matches_exact_specifier() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "virtual:foo", "foo.tsx");
@@ -2496,14 +2184,7 @@ fn plugin_virtual_module_matches_exact_specifier() {
         "virtual:foo".to_string(),
         "export default function Foo() { return null; }\n".to_string(),
     )];
-    let input = make_input(
-        &root,
-        &esbuild,
-        "dist-vm-ok",
-        BTreeMap::new(),
-        vec![],
-        plugin_vms,
-    );
+    let input = make_input(&root, "dist-vm-ok", BTreeMap::new(), vec![], plugin_vms);
     let out = bundle(input).expect(
         "exact-match virtual module `virtual:foo` must resolve when the import \
          string is the registered specifier",
@@ -2525,11 +2206,6 @@ fn plugin_virtual_module_matches_exact_specifier() {
 /// or shadowed by the plugin merge (collision policy: user wins).
 #[test]
 fn user_tsconfig_paths_coexist_with_plugin_aliases() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     // Build a project tree with TWO aliased targets — one resolved
@@ -2579,14 +2255,7 @@ fn user_tsconfig_paths_coexist_with_plugin_aliases() {
         root.join("src/data.ts").to_string_lossy().into_owned(),
     )];
 
-    let input = make_input(
-        &root,
-        &esbuild,
-        "dist-coexist",
-        user_paths,
-        plugin_aliases,
-        vec![],
-    );
+    let input = make_input(&root, "dist-coexist", user_paths, plugin_aliases, vec![]);
     let out = bundle(input).expect(
         "User-supplied tsconfig_paths AND plugin aliases must coexist — both \
          resolve in the same bundle.",
@@ -2614,11 +2283,6 @@ fn user_tsconfig_paths_coexist_with_plugin_aliases() {
 /// `@/x` to the user's file, not the plugin's.
 #[test]
 fn user_tsconfig_paths_win_over_plugin_alias_on_collision() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     for d in ["pages", "content", "components", "layouts", "src"] {
@@ -2664,14 +2328,7 @@ fn user_tsconfig_paths_win_over_plugin_alias_on_collision() {
             .into_owned(),
     )];
 
-    let input = make_input(
-        &root,
-        &esbuild,
-        "dist-collide",
-        user_paths,
-        plugin_aliases,
-        vec![],
-    );
+    let input = make_input(&root, "dist-collide", user_paths, plugin_aliases, vec![]);
     let out = bundle(input)
         .expect("bundling must succeed without preprocessing the losing plugin alias target");
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
@@ -2707,11 +2364,6 @@ fn write_root_bare_package(root: &std::path::Path, name: &str, marker: &str) -> 
 // same-named live bare package.
 #[test]
 fn excluded_exact_bare_alias_cannot_fall_back_to_same_named_package() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "collision-alias", "unused.tsx");
@@ -2725,7 +2377,6 @@ fn excluded_exact_bare_alias_cannot_fall_back_to_same_named_package() {
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-exact-bare-collision",
         BTreeMap::from([(
             "collision-alias".to_string(),
@@ -2756,11 +2407,6 @@ fn excluded_exact_bare_alias_cannot_fall_back_to_same_named_package() {
 // live bare package subpath.
 #[test]
 fn overlapping_wildcard_cannot_fall_back_to_same_named_package_subpath() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "collision-wildcard/secret", "unused.tsx");
@@ -2780,7 +2426,6 @@ fn overlapping_wildcard_cannot_fall_back_to_same_named_package_subpath() {
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-wildcard-bare-collision",
         BTreeMap::from([(
             "collision-wildcard/*".to_string(),
@@ -2808,11 +2453,6 @@ fn overlapping_wildcard_cannot_fall_back_to_same_named_package_subpath() {
 // dependency view; it must not climb to an excluded live bare dependency.
 #[test]
 fn first_party_root_exact_target_cannot_climb_to_excluded_bare_dependency() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:root-bare", "unused.tsx");
@@ -2829,7 +2469,6 @@ fn first_party_root_exact_target_cannot_climb_to_excluded_bare_dependency() {
     );
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-root-bare-excluded",
         BTreeMap::new(),
         vec![(
@@ -2865,11 +2504,6 @@ fn first_party_root_exact_target_cannot_climb_to_excluded_bare_dependency() {
 
 #[test]
 fn root_level_plugin_entry_stages_allowed_direct_bare_dependency_under_exclusions() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:root-direct", "unused.tsx");
@@ -2891,7 +2525,6 @@ fn root_level_plugin_entry_stages_allowed_direct_bare_dependency_under_exclusion
     );
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-root-direct-allowed",
         BTreeMap::new(),
         vec![(
@@ -2918,11 +2551,6 @@ fn root_level_plugin_entry_stages_allowed_direct_bare_dependency_under_exclusion
 
 #[test]
 fn root_level_tsconfig_entry_stages_allowed_transitive_bare_dependency_under_exclusions() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "project:root-hop", "unused.tsx");
@@ -2949,7 +2577,6 @@ fn root_level_tsconfig_entry_stages_allowed_transitive_bare_dependency_under_exc
     );
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-root-hop-allowed",
         BTreeMap::from([(
             "project:root-hop".to_string(),
@@ -2980,11 +2607,6 @@ fn root_level_tsconfig_entry_stages_allowed_transitive_bare_dependency_under_exc
 // must use the filtered dependency view, not climb to the excluded dependency.
 #[test]
 fn first_party_package_imports_external_cannot_climb_to_excluded_dependency() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:hidden-external-import", "unused.tsx");
@@ -3008,7 +2630,6 @@ fn first_party_package_imports_external_cannot_climb_to_excluded_dependency() {
     );
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-hidden-external-import-excluded",
         BTreeMap::new(),
         vec![(
@@ -3050,11 +2671,6 @@ fn first_party_package_imports_external_cannot_climb_to_excluded_dependency() {
 // resolves again — across one stable session identity.
 #[test]
 fn session_transition_removes_and_restores_node_modules_symlink_under_exclusions() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "session-dep", "unused.tsx");
@@ -3062,7 +2678,7 @@ fn session_transition_removes_and_restores_node_modules_symlink_under_exclusions
     let dependency = write_root_bare_package(&root, "session-dep", "SESSION_DEP_MARKER");
 
     let make_tick = |exclude: Vec<String>, outdir: &str| {
-        let mut input = make_input(&root, &esbuild, outdir, BTreeMap::new(), vec![], vec![]);
+        let mut input = make_input(&root, outdir, BTreeMap::new(), vec![], vec![]);
         input.mode = BundleMode::Development;
         input.node_modules_dir = Some(root.join("node_modules"));
         input.bundle_exclude = exclude;
@@ -3120,11 +2736,6 @@ fn session_transition_removes_and_restores_node_modules_symlink_under_exclusions
 /// active (live symlink removed) the build must still resolve it.
 #[test]
 fn page_bare_import_is_staged_under_bundle_exclude() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "@scope/page-dependency", "unused.tsx");
@@ -3134,14 +2745,7 @@ fn page_bare_import_is_staged_under_bundle_exclude() {
         "STAGED_PAGE_BARE_DEPENDENCY",
     );
 
-    let mut input = make_input(
-        &root,
-        &esbuild,
-        "dist-page-bare-dep",
-        BTreeMap::new(),
-        vec![],
-        vec![],
-    );
+    let mut input = make_input(&root, "dist-page-bare-dep", BTreeMap::new(), vec![], vec![]);
     // Non-empty exclusion removes the live symlink; without the source-graph
     // seed the page's bare import is unresolvable.
     input.bundle_exclude = vec!["src/unused.tsx".to_string()];
@@ -3158,11 +2762,6 @@ fn page_bare_import_is_staged_under_bundle_exclude() {
 /// staged view when `bundle.exclude` is active (#1645 release follow-up).
 #[test]
 fn external_pages_root_bare_import_is_staged_under_bundle_exclude() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "overlay-page-dependency", "unused.tsx");
@@ -3180,7 +2779,6 @@ fn external_pages_root_bare_import_is_staged_under_bundle_exclude() {
     .unwrap();
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-external-page-bare-dep",
         BTreeMap::new(),
         vec![],
@@ -3209,11 +2807,6 @@ fn external_pages_root_bare_import_is_staged_under_bundle_exclude() {
 /// "Could not resolve @takazudo/zfb-runtime/server" failure.
 #[test]
 fn generated_entry_framework_imports_are_staged_under_bundle_exclude() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     for d in ["pages", "content", "components", "layouts", "src"] {
@@ -3266,14 +2859,7 @@ fn generated_entry_framework_imports_are_staged_under_bundle_exclude() {
     )
     .unwrap();
 
-    let mut input = make_input(
-        &root,
-        &esbuild,
-        "dist-entry-infra",
-        BTreeMap::new(),
-        vec![],
-        vec![],
-    );
+    let mut input = make_input(&root, "dist-entry-infra", BTreeMap::new(), vec![], vec![]);
     // The framework packages must resolve from the STAGED view, not be
     // externalized away — that is exactly what #1645 broke.
     input.external = vec![];
@@ -3294,11 +2880,6 @@ fn generated_entry_framework_imports_are_staged_under_bundle_exclude() {
 /// as alias-claimed and suppress the entire source-graph seed.
 #[test]
 fn catch_all_tsconfig_path_does_not_suppress_page_bare_import_staging() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "@scope/catchall-dependency", "unused.tsx");
@@ -3310,7 +2891,6 @@ fn catch_all_tsconfig_path_does_not_suppress_page_bare_import_staging() {
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-catchall-path",
         // A catch-all path: `foo` maps to `src/foo`, and anything not found there
         // falls back to node_modules — exactly what must stay stageable.
@@ -3331,11 +2911,6 @@ fn catch_all_tsconfig_path_does_not_suppress_page_bare_import_staging() {
 /// shadow root, where a first-party import could fall back to it (#1646).
 #[test]
 fn alias_colliding_transitive_dependency_is_nested_under_its_importer() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "transitive-importer", "excluded-collision.ts");
@@ -3354,7 +2929,6 @@ fn alias_colliding_transitive_dependency_is_nested_under_its_importer() {
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-nested-transitive-collision",
         BTreeMap::from([(
             "collision-alias".to_string(),
@@ -3380,11 +2954,6 @@ fn alias_colliding_transitive_dependency_is_nested_under_its_importer() {
 /// a page import whose first-party alias target was excluded (#1646).
 #[test]
 fn excluded_alias_cannot_fall_back_to_transitively_staged_package() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "collision-alias", "excluded-collision.ts");
@@ -3410,7 +2979,6 @@ fn excluded_alias_cannot_fall_back_to_transitively_staged_package() {
 
     let mut input = make_input(
         &root,
-        &esbuild,
         "dist-transitive-bare-collision",
         BTreeMap::from([(
             "collision-alias".to_string(),
@@ -3435,11 +3003,4 @@ fn excluded_alias_cannot_fall_back_to_transitively_staged_package() {
         let body = fs::read_to_string(bundle_path).unwrap();
         assert!(!body.contains("TRANSITIVE_LIVE_BARE_FALLBACK"), "{body}");
     }
-}
-
-fn rolldown_selected() -> bool {
-    #[cfg(feature = "rolldown-prototype")]
-    return zfb_rolldown_prototype::enabled();
-    #[cfg(not(feature = "rolldown-prototype"))]
-    false
 }

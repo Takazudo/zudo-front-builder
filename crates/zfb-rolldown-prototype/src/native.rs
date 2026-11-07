@@ -46,17 +46,6 @@ use std::{
     time::Instant,
 };
 
-/// Rolldown is the default bundler wherever this backend is compiled in.
-/// `ZFB_BUNDLER=esbuild` selects the esbuild subprocess instead, and the
-/// opt-in-era `ZFB_ROLLDOWN_PROTOTYPE=0` still does when `ZFB_BUNDLER` is unset.
-/// The `zfb` CLI rejects any other `ZFB_BUNDLER` value before a build starts.
-pub fn enabled() -> bool {
-    match std::env::var_os("ZFB_BUNDLER") {
-        Some(value) => value != "esbuild",
-        None => std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").is_none_or(|value| value != "0"),
-    }
-}
-
 #[derive(Debug)]
 struct GraphPlugin {
     inputs: Arc<Mutex<BTreeMap<String, Value>>>,
@@ -77,10 +66,14 @@ impl Plugin for GraphPlugin {
     ) -> Result<Option<HookTransformOutput>> {
         // Inspect the effective native loader, not a filename guess: CSS
         // deliberately loaded as a file or text remains a supported resource.
-        // Raw CSS is outside this experiment's contract at the pinned engine.
+        // zfb's CSS is compiled by its own Wind/Lightning CSS pipeline, never
+        // bundled as raw CSS.
         if matches!(args.module_type, ModuleType::Css) {
             bail!(
-                "ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED: the Rolldown bundler does not bundle raw CSS yet; set ZFB_BUNDLER=esbuild to build this project: {}",
+                "ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED: the bundler does not bundle raw CSS: {}. \
+                 Import styles through a CSS Module (`*.module.css`) or the zfb CSS pipeline \
+                 (Wind utilities and authored stylesheets compiled with Lightning CSS), and \
+                 remove any `css` loader from `bundle.loaders`.",
                 args.id
             );
         }

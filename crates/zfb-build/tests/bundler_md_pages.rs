@@ -12,13 +12,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_test_utils::locate_esbuild;
 
 /// Build a minimal `BundlerInput` for an isolated test project.
-fn make_input(root: &std::path::Path, esbuild: PathBuf) -> BundlerInput {
+fn make_input(root: &std::path::Path) -> BundlerInput {
     BundlerInput {
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
@@ -45,8 +43,7 @@ fn make_input(root: &std::path::Path, esbuild: PathBuf) -> BundlerInput {
         outdir: root.join("dist"),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -66,32 +63,33 @@ fn make_input(root: &std::path::Path, esbuild: PathBuf) -> BundlerInput {
     }
 }
 
-/// Bundle a project and re-parse the output with esbuild to confirm it is
-/// syntactically valid JS.
-fn assert_bundle_parses(bundle_path: &std::path::Path, esbuild: &std::path::Path) {
-    let parse = Command::new(esbuild)
-        .arg(bundle_path)
-        .arg("--bundle=false")
-        .arg("--log-level=warning")
-        .output()
-        .expect("re-parse via esbuild");
+/// Parses `path` as an ES module, proving the bundle is well-formed JS.
+fn assert_parses_as_module(path: &std::path::Path) {
+    use swc_core::common::{sync::Lrc, FileName, SourceMap};
+    use swc_core::ecma::ast::EsVersion;
+    use swc_core::ecma::parser::{parse_file_as_module, EsSyntax, Syntax};
+    let source = std::fs::read_to_string(path).expect("read bundle");
+    let cm: Lrc<SourceMap> = Default::default();
+    let fm = cm.new_source_file(FileName::Anon.into(), source);
+    let mut recovered = Vec::new();
+    let parsed = parse_file_as_module(
+        &fm,
+        Syntax::Es(EsSyntax::default()),
+        EsVersion::latest(),
+        None,
+        &mut recovered,
+    );
     assert!(
-        parse.status.success(),
-        "bundle is not parseable by esbuild: stderr={}",
-        String::from_utf8_lossy(&parse.stderr)
+        parsed.is_ok() && recovered.is_empty(),
+        "bundle {} is not a parseable ES module: {:?} {:?}",
+        path.display(),
+        parsed.err(),
+        recovered
     );
 }
 
 #[test]
 fn md_page_bundles_successfully() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_md_pages] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN to enable."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     fs::create_dir_all(root.join("pages")).unwrap();
@@ -106,7 +104,7 @@ fn md_page_bundles_successfully() {
     )
     .unwrap();
 
-    let input = make_input(root, esbuild.clone());
+    let input = make_input(root);
     let out = bundle(input).expect("bundle with .md page should succeed");
 
     // Bundle exists and has content.
@@ -135,16 +133,11 @@ fn md_page_bundles_successfully() {
     );
 
     // The bundle is syntactically valid JS.
-    assert_bundle_parses(&out.bundle_path, &esbuild);
+    assert_parses_as_module(&out.bundle_path);
 }
 
 #[test]
 fn md_page_bundle_contains_title_and_document_structure() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_md_pages] no esbuild binary; skipping");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     fs::create_dir_all(root.join("pages")).unwrap();
@@ -158,7 +151,7 @@ fn md_page_bundle_contains_title_and_document_structure() {
     )
     .unwrap();
 
-    let input = make_input(root, esbuild.clone());
+    let input = make_input(root);
     let out = bundle(input).expect("bundle with .md page should succeed");
 
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
@@ -184,10 +177,6 @@ fn md_page_with_relative_link_bundles_successfully() {
     // A .md page with a relative markdown link `[link](./other)` must
     // compile and bundle without error. We assert on tag structure
     // (the compiled body has <a>) not on the exact resolved URL.
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_md_pages] no esbuild binary; skipping");
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
@@ -203,7 +192,7 @@ fn md_page_with_relative_link_bundles_successfully() {
     )
     .unwrap();
 
-    let input = make_input(root, esbuild.clone());
+    let input = make_input(root);
     let out = bundle(input).expect("bundle with relative link in .md page should succeed");
 
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
@@ -216,17 +205,13 @@ fn md_page_with_relative_link_bundles_successfully() {
     );
 
     // The bundle must be syntactically valid JS.
-    assert_bundle_parses(&out.bundle_path, &esbuild);
+    assert_parses_as_module(&out.bundle_path);
 }
 
 #[test]
 fn mdx_pages_still_work_after_md_change() {
     // Regression guard: .mdx pages must keep working byte-identically
     // after the .md support change lands.
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_md_pages] no esbuild binary; skipping");
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
@@ -242,7 +227,7 @@ fn mdx_pages_still_work_after_md_change() {
     )
     .unwrap();
 
-    let input = make_input(root, esbuild.clone());
+    let input = make_input(root);
     let out = bundle(input).expect("bundle with .mdx page should succeed");
 
     assert!(out.bundle_path.exists());
@@ -266,7 +251,7 @@ fn mdx_pages_still_work_after_md_change() {
         "bundle must contain compiled MDX body"
     );
 
-    assert_bundle_parses(&out.bundle_path, &esbuild);
+    assert_parses_as_module(&out.bundle_path);
 }
 
 // --- render-region markers on the .md page shell (epic #2421) --------------
@@ -279,10 +264,6 @@ fn md_page_markers_reach_the_bundle_with_no_text_node_around_the_region() {
     // element children and no whitespace text node. A surviving text node
     // would be captured inside the extracted fragment by the artifact
     // writer's exact-byte slice, and no source-level assertion can see it.
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_md_pages] no esbuild binary; skipping");
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
@@ -297,7 +278,7 @@ fn md_page_markers_reach_the_bundle_with_no_text_node_around_the_region() {
     )
     .unwrap();
 
-    let mut input = make_input(root, esbuild.clone());
+    let mut input = make_input(root);
     input.emit_render_artifacts = true;
     let out = bundle(input).expect("bundle with .md page + render artifacts should succeed");
 
@@ -336,7 +317,7 @@ fn md_page_markers_reach_the_bundle_with_no_text_node_around_the_region() {
          sentinels and the region; slice:\n{region}"
     );
 
-    assert_bundle_parses(&out.bundle_path, &esbuild);
+    assert_parses_as_module(&out.bundle_path);
 }
 
 /// Every double-quoted string literal in `js` whose contents are non-empty

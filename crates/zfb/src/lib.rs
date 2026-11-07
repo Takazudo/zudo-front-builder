@@ -41,22 +41,27 @@ impl std::fmt::Display for SilentExit {
 
 impl std::error::Error for SilentExit {}
 
-/// Reject a `ZFB_BUNDLER` value this binary cannot honor before any command runs.
-/// The bundler crates read the variable themselves and treat anything other
-/// than `esbuild` as Rolldown, so a typo would otherwise pass silently.
-pub fn check_bundler_selection(value: Option<&std::ffi::OsStr>) -> anyhow::Result<()> {
-    let Some(value) = value else { return Ok(()) };
-    match value.to_str() {
-        Some("esbuild") => Ok(()),
-        Some("rolldown") if cfg!(feature = "rolldown-prototype") => Ok(()),
-        Some("rolldown") => anyhow::bail!(
-            "ZFB_BUNDLER=rolldown: this zfb binary was built without the Rolldown bundler; unset ZFB_BUNDLER or set it to esbuild"
-        ),
-        _ => anyhow::bail!(
-            "ZFB_BUNDLER={}: expected `rolldown` or `esbuild`",
-            value.to_string_lossy()
-        ),
+/// Environment variables that selected a bundler backend before the esbuild
+/// backend was removed (#4628). Native bundling is the only bundler, so a set
+/// selector is a configuration this binary can no longer honor.
+pub const REMOVED_BUNDLER_SELECTORS: [&str; 2] = ["ZFB_BUNDLER", "ZFB_ROLLDOWN_PROTOTYPE"];
+
+/// Fail before any command runs when a removed bundler selector is set, to
+/// any value, so a script that still asks for esbuild is not silently
+/// built with another bundler.
+pub fn reject_removed_bundler_selectors(
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> anyhow::Result<()> {
+    for name in REMOVED_BUNDLER_SELECTORS {
+        if let Some(value) = env(name) {
+            anyhow::bail!(
+                "{name}={}: the esbuild bundler backend and its {name} selector were removed; \
+                 zfb always bundles natively. Unset {name}.",
+                value.to_string_lossy()
+            );
+        }
     }
+    Ok(())
 }
 
 /// Render and print an [`anyhow::Error`] to stderr, prefixed with a red `✗`.
@@ -70,20 +75,31 @@ pub fn report_error(err: &anyhow::Error) {
 
 #[cfg(test)]
 mod bundler_selection_tests {
-    use super::check_bundler_selection;
-    use std::ffi::OsStr;
+    use super::reject_removed_bundler_selectors;
+    use std::ffi::OsString;
 
     #[test]
-    fn accepts_unset_and_esbuild_and_rejects_unknown_values() {
-        assert!(check_bundler_selection(None).is_ok());
-        assert!(check_bundler_selection(Some(OsStr::new("esbuild"))).is_ok());
-        let error = check_bundler_selection(Some(OsStr::new("esbuld"))).unwrap_err();
-        assert!(format!("{error}").contains("expected `rolldown` or `esbuild`"));
+    fn accepts_an_environment_without_bundler_selectors() {
+        assert!(reject_removed_bundler_selectors(|_| None).is_ok());
     }
 
     #[test]
-    fn rolldown_needs_the_compiled_backend() {
-        let result = check_bundler_selection(Some(OsStr::new("rolldown")));
-        assert_eq!(result.is_ok(), cfg!(feature = "rolldown-prototype"));
+    fn rejects_every_removed_selector_whatever_its_value() {
+        for name in ["ZFB_BUNDLER", "ZFB_ROLLDOWN_PROTOTYPE"] {
+            for value in ["esbuild", "rolldown", "0", "1", ""] {
+                let error = reject_removed_bundler_selectors(|key| {
+                    (key == name).then(|| OsString::from(value))
+                })
+                .unwrap_err();
+                let message = format!("{error}");
+                assert!(
+                    message.starts_with(&format!("{name}={value}:")),
+                    "{message}"
+                );
+                assert!(message.contains("esbuild bundler backend"), "{message}");
+                assert!(message.contains("were removed"), "{message}");
+                assert!(message.contains(&format!("Unset {name}")), "{message}");
+            }
+        }
     }
 }

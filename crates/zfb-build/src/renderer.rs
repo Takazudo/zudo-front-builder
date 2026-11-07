@@ -1458,7 +1458,6 @@ struct LoadedSourceMap {
 }
 
 /// Internal #318 evidence seam: use the production stack projection unchanged.
-#[cfg(feature = "rolldown-prototype")]
 #[doc(hidden)]
 pub fn prototype_project_error(body: &str, map: &Path, project_root: &Path) -> Option<String> {
     let loaded = load_sourcemap(map)?;

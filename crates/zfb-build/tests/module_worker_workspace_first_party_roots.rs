@@ -337,7 +337,7 @@ fn without_workspace_marker_outside_dependency_stays_rejected() {
 // epic's confirm sub-issue (#1674's cross-pipeline lane).
 //
 // Staging is a pure Rust materialise pass — no esbuild subprocess runs to
-// build the shadow tree. Every fixture here sets `mock_subprocess_output`
+// build the shadow tree. Every fixture here sets `mock_bundle_output`
 // (never a real `esbuild_binary`) and drives `bundle_with_session` so the
 // persistent shadow survives the call for inspection, confirming these tests
 // need NO esbuild env-gate.
@@ -377,7 +377,7 @@ fn write_bundle_workspace_project(workspace: &Path) -> (PathBuf, PathBuf) {
 }
 
 /// Every field `BundlerInput` needs, held to the minimum this suite
-/// exercises. `mock_subprocess_output` is always set — the guard under test
+/// exercises. `mock_bundle_output` is always set — the guard under test
 /// fires (or doesn't) before `run_esbuild` would ever be reached, so no
 /// fixture in this section needs a real esbuild binary.
 fn make_bundle_input(
@@ -408,8 +408,7 @@ fn make_bundle_input(
         outdir: project.join(outdir_name),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: None,
-        mock_subprocess_output: Some("export default {};".to_string()),
+        mock_bundle_output: Some("export default {};".to_string()),
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,

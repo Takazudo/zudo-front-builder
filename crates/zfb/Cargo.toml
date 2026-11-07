@@ -33,8 +33,7 @@ path = "src/lib.rs"
 # Default JS runtime (#4390); the deno_core host was removed in #4395.
 direct-v8 = ["zfb-render/direct-v8", "zfb-build/direct-v8", "zfb-server/direct-v8", "zfb-config-loader/direct-v8"]
 
-rolldown-prototype = ["zfb-build/rolldown-prototype", "zfb-islands/rolldown-prototype"]
-default = ["direct-v8", "rolldown-prototype"]
+default = ["direct-v8"]
 
 [dependencies]
 zfb-diagnostics = { path = "../zfb-diagnostics" }

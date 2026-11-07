@@ -15,7 +15,7 @@ fn main() {
 #[tokio::main]
 async fn run() {
     let cli = Cli::parse();
-    if let Err(e) = zfb::check_bundler_selection(std::env::var_os("ZFB_BUNDLER").as_deref()) {
+    if let Err(e) = zfb::reject_removed_bundler_selectors(|name| std::env::var_os(name)) {
         zfb::report_error(&e);
         std::process::exit(1);
     }

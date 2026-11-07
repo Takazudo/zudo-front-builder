@@ -22,7 +22,7 @@
 //!
 //! The bundler-level tests (groups 1 and 2) do NOT require esbuild or a
 //! running JS runtime — they exercise only the `bundle()` codepath
-//! with `mock_subprocess_output` so they run in CI without any external
+//! with `mock_bundle_output` so they run in CI without any external
 //! binary. The EmbeddedV8 render tests (groups 3–5) are gated on
 //! `direct-v8` and skip when esbuild
 //! or the pnpm store is unavailable.
@@ -42,8 +42,6 @@ use zfb_content::{build_snapshot, CollectionConfig};
 #[cfg(feature = "direct-v8")]
 use zfb_content::{build_snapshot_with_config, PipelineSpec};
 #[cfg(feature = "direct-v8")]
-use zfb_test_utils::locate_esbuild;
-
 // ---------------------------------------------------------------------------
 // Shared fixture helpers
 // ---------------------------------------------------------------------------
@@ -73,7 +71,7 @@ fn owned_pipeline_spec() -> PipelineSpec {
     }
 }
 
-/// Build a minimal `BundlerInput` that uses `mock_subprocess_output` so
+/// Build a minimal `BundlerInput` that uses `mock_bundle_output` so
 /// the test doesn't need a real esbuild binary. The mock output satisfies
 /// the bundler's post-processing expectations (routes export).
 fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> BundlerInput {
@@ -108,8 +106,7 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         outdir: root.join("dist"),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: None,
-        mock_subprocess_output: Some("// mock bundle\nexport const routes = {};\n".to_string()),
+        mock_bundle_output: Some("// mock bundle\nexport const routes = {};\n".to_string()),
         content_snapshot_json: snapshot_json,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -597,15 +594,6 @@ export default function HomePage({ posts }: Props) {
 async fn embedded_v8_renders_page_with_snapshot_data() {
     use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike};
 
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[embedded_v8_snapshot_e2e] no esbuild binary; set ZFB_ESBUILD_BIN, \
-             place it at crates/zfb/binaries/esbuild/esbuild, or install via pnpm. \
-             Skipping."
-        );
-        return;
-    };
-
     // --- Fixture: pages/index.tsx + content/blog/*.md ---
     let fixture_tmp = tempfile::tempdir().expect("fixture tempdir");
     let project_root = write_blog_fixture_project(fixture_tmp.path());
@@ -664,8 +652,7 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
         outdir: dist_tmp.path().to_path_buf(),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.clone()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: Some(snap_json.clone()),
         node_modules_dir: Some(node_modules.path().to_path_buf()),
         // false (production default): esbuild resolves symlinks to realpaths,
@@ -813,15 +800,6 @@ fn write_md_html_page_fixture(root: &Path) {
 async fn embedded_v8_md_page_renders_to_html() {
     use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike};
 
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[embedded_v8_snapshot_e2e] no esbuild binary; set ZFB_ESBUILD_BIN, \
-             place it at crates/zfb/binaries/esbuild/esbuild, or install via pnpm. \
-             Skipping md-page test."
-        );
-        return;
-    };
-
     let fixture_tmp = tempfile::tempdir().expect("fixture tempdir");
     let project_root = fixture_tmp.path();
     write_md_html_page_fixture(project_root);
@@ -857,8 +835,7 @@ async fn embedded_v8_md_page_renders_to_html() {
         outdir: dist_tmp.path().to_path_buf(),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.clone()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: Some(node_modules.path().to_path_buf()),
         node_modules_preserve_symlinks: true,
@@ -1260,14 +1237,6 @@ export default function PostPage({ title, params }: Props) {
 async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
     use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike};
 
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[embedded_v8_snapshot_e2e] no esbuild binary; \
-             skipping paths-dual-instance test."
-        );
-        return;
-    };
-
     let fixture_tmp = tempfile::tempdir().expect("fixture tempdir");
     let project_root = fixture_tmp.path();
     write_paths_via_collection_fixture(project_root);
@@ -1320,8 +1289,7 @@ async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
         outdir: dist_tmp.path().to_path_buf(),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.clone()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: Some(snap_json.clone()),
         node_modules_dir: Some(node_modules.path().to_path_buf()),
         // `node_modules_preserve_symlinks` is a no-op today (see

@@ -10,7 +10,7 @@
 //! (`.zudo-doc/routes-src/**` + top-level `.zfb/*.json`) so the staged
 //! spelling exists and the audit's in-stage rule allows it naturally.
 //!
-//! Every fixture drives `bundle_with_session` with `mock_subprocess_output`
+//! Every fixture drives `bundle_with_session` with `mock_bundle_output`
 //! (never a real esbuild binary): the staging is a pure Rust materialise pass,
 //! so these are Level-3 staging tests that need NO esbuild env-gate. The
 //! stage-escape audit itself CANNOT run under mocks (no metafile), so the
@@ -104,8 +104,7 @@ fn make_bundle_input(project: &Path, outdir_name: &str) -> BundlerInput {
         outdir: project.join(outdir_name),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: None,
-        mock_subprocess_output: Some("export default {};".to_string()),
+        mock_bundle_output: Some("export default {};".to_string()),
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,

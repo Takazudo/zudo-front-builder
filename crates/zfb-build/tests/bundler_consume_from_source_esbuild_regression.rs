@@ -48,7 +48,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_test_utils::locate_esbuild;
 
 fn write(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
@@ -163,7 +162,7 @@ fn write_consumer_entry(project: &Path) {
     );
 }
 
-fn base_input(project: &Path, esbuild: PathBuf, node_modules: PathBuf) -> BundlerInput {
+fn base_input(project: &Path, node_modules: PathBuf) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
         BundleMode::Production,
@@ -175,7 +174,6 @@ fn base_input(project: &Path, esbuild: PathBuf, node_modules: PathBuf) -> Bundle
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
-    input.esbuild_binary = Some(esbuild);
     input.node_modules_dir = Some(node_modules);
     input.tsconfig_paths = BTreeMap::new();
     input
@@ -193,8 +191,8 @@ fn base_input(project: &Path, esbuild: PathBuf, node_modules: PathBuf) -> Bundle
 /// (bundler.rs :4870-4875) skips (`file.starts_with(project_root)`) even in
 /// the nested-member topology where `first_party_root != project_root`. Its
 /// only job is making `tsconfig_paths` non-empty.
-fn base_input_copy_mode(project: &Path, esbuild: PathBuf, node_modules: PathBuf) -> BundlerInput {
-    let mut input = base_input(project, esbuild, node_modules);
+fn base_input_copy_mode(project: &Path, node_modules: PathBuf) -> BundlerInput {
+    let mut input = base_input(project, node_modules);
     input.tsconfig_paths = BTreeMap::from([(
         "#components/*".to_string(),
         vec![project
@@ -225,10 +223,6 @@ fn bundle_text(path: &Path) -> String {
 #[test]
 #[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored"]
 fn nested_member_consume_from_source_sibling_is_accepted_as_declared_first_party_source() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_consume_from_source_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
     write_workspace_root(root);
@@ -238,7 +232,7 @@ fn nested_member_consume_from_source_sibling_is_accepted_as_declared_first_party
     write_consumer_entry(&project);
 
     let output = bundle_with_session(
-        base_input(&project, esbuild, node_modules),
+        base_input(&project, node_modules),
         Some(&mut ShadowSession::new(&project).expect("shadow session")),
     )
     .expect(
@@ -286,10 +280,6 @@ fn nested_member_consume_from_source_sibling_is_accepted_as_declared_first_party
 #[test]
 #[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored"]
 fn nested_member_consume_from_source_sibling_accepted_via_canonicalized_key_under_copy_mode() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_consume_from_source_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
     write_workspace_root(root);
@@ -299,7 +289,7 @@ fn nested_member_consume_from_source_sibling_accepted_via_canonicalized_key_unde
     write_consumer_entry(&project);
 
     let output = bundle_with_session(
-        base_input_copy_mode(&project, esbuild, node_modules),
+        base_input_copy_mode(&project, node_modules),
         Some(&mut ShadowSession::new(&project).expect("shadow session")),
     )
     .expect(
@@ -338,10 +328,6 @@ fn nested_member_consume_from_source_sibling_accepted_via_canonicalized_key_unde
 #[test]
 #[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored"]
 fn nested_member_undeclared_deep_import_into_dist_shipping_sibling_stays_rejected() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_consume_from_source_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
     write_workspace_root(root);
@@ -360,7 +346,7 @@ fn nested_member_undeclared_deep_import_into_dist_shipping_sibling_stays_rejecte
     );
 
     let error = bundle_with_session(
-        base_input(&project, esbuild, node_modules),
+        base_input(&project, node_modules),
         Some(&mut ShadowSession::new(&project).expect("shadow session")),
     )
     .expect_err(
@@ -392,10 +378,6 @@ fn nested_member_undeclared_deep_import_into_dist_shipping_sibling_stays_rejecte
 #[test]
 #[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored"]
 fn root_project_consume_from_source_sibling_builds_clean_today_for_the_identical_shape() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_consume_from_source_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
     write_workspace_root(root);
@@ -408,7 +390,7 @@ fn root_project_consume_from_source_sibling_builds_clean_today_for_the_identical
     write_consumer_entry(root);
 
     let output = bundle_with_session(
-        base_input(root, esbuild, node_modules),
+        base_input(root, node_modules),
         Some(&mut ShadowSession::new(root).expect("shadow session")),
     )
     .expect(

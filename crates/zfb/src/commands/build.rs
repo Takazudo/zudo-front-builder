@@ -7442,7 +7442,6 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     let crate::commands::bundler_input::AssembledBundlerInput {
         bundler_input,
         _node_modules_handle: _embedded_nm_handle,
-        _esbuild_handle: _embedded_esbuild_handle,
     } = crate::commands::bundler_input::assemble_bundler_input(
         project_root,
         &scratch.bundle_outdir(),
@@ -7452,10 +7451,6 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         content_snapshot_json,
         plugin_alias_entries,
         plugin_virtual_modules,
-        // `zfb build` keeps the per-call embedded-esbuild extraction —
-        // one extraction per build; the per-tick reuse (#994 item A) is a
-        // dev-only concern.
-        None,
         // #1193 — point the bundler at the SAME pages root the router scan
         // used (the overlay when package routes are present), so the
         // bundle's page imports include package-owned routes.
@@ -7480,14 +7475,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
 
     // Snapshot the bundler input before consuming it so the runtime-only
     // bundle pass (zfb#283) can run later in this function with the same
-    // shadow setup / esbuild handle / node_modules / plugin wiring, just
+    // shadow setup / node_modules / plugin wiring, just
     // narrowed to SSR-only routes via `worker_only_routes`.
     //
     // Clones are cheap relative to the bundle step itself; the heavy
-    // tempdir handles (`_embedded_esbuild_handle`, `_embedded_nm_handle`)
-    // live in this function's scope and are NOT cloned — the cloned
-    // `esbuild_binary` / `node_modules_dir` `PathBuf`s reference paths
-    // those handles keep alive.
+    // tempdir handle (`_embedded_nm_handle`) lives in this function's scope
+    // and is NOT cloned — the cloned `node_modules_dir` `PathBuf` references
+    // the path that handle keeps alive.
     let bundler_input_for_runtime = bundler_input.clone();
     let bundler_out = runner
         .bundle(bundler_input)

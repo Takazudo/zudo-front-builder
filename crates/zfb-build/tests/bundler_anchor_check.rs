@@ -34,7 +34,6 @@ use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec};
 use zfb_content::{LinkValidationConfig, MarkdownFeaturesConfig, PipelineSpec, TranscludeConfig};
-use zfb_test_utils::locate_esbuild;
 
 // ── Shared fixture helpers ──────────────────────────────────────────────────
 
@@ -60,12 +59,7 @@ fn write_common_dirs(root: &Path) {
 }
 
 /// Base `BundlerInput` with the standard docs collection wiring.
-fn make_base_input(
-    root: &Path,
-    esbuild: &Path,
-    outdir_name: &str,
-    pipeline_spec: PipelineSpec,
-) -> BundlerInput {
+fn make_base_input(root: &Path, outdir_name: &str, pipeline_spec: PipelineSpec) -> BundlerInput {
     BundlerInput {
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
@@ -89,8 +83,7 @@ fn make_base_input(
         outdir: root.join(outdir_name),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.to_path_buf()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -147,10 +140,6 @@ fn declared_anchor_spec(root: &Path, fail_on_broken: bool) -> PipelineSpec {
 
 #[test]
 fn declared_component_anchors_resolve_cross_file_fragments_on_both_bundle_ticks() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_anchor_check] no esbuild binary available; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     write_common_dirs(root);
@@ -166,22 +155,13 @@ fn declared_component_anchors_resolve_cross_file_fragments_on_both_bundle_ticks(
     .unwrap();
     let spec = declared_anchor_spec(root, true);
     for tick in 1..=2 {
-        let input = make_base_input(
-            root,
-            &esbuild,
-            &format!("dist-declared-{tick}"),
-            spec.clone(),
-        );
+        let input = make_base_input(root, &format!("dist-declared-{tick}"), spec.clone());
         bundle(input).expect("declared cross-file anchors must resolve on fresh and warm ticks");
     }
 }
 
 #[test]
 fn undeclared_component_anchor_still_fails_cross_file_strict_validation() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_anchor_check] no esbuild binary available; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     write_common_dirs(root);
@@ -194,7 +174,6 @@ fn undeclared_component_anchor_still_fails_cross_file_strict_validation() {
     .unwrap();
     let input = make_base_input(
         root,
-        &esbuild,
         "dist-declared-negative",
         declared_anchor_spec(root, true),
     );
@@ -230,14 +209,6 @@ fn armed_link_validation_with_transclude_spec(root: &Path, fail_on_broken: bool)
 /// `BrokenLink` diagnostic → the build fails.
 #[test]
 fn broken_cross_file_anchor_fails_armed_build_with_fail_on_broken() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_anchor_check] no esbuild binary available; \
-             set ZFB_ESBUILD_BIN or install esbuild on PATH. Skipping."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_common_dirs(&root);
@@ -257,7 +228,7 @@ fn broken_cross_file_anchor_fails_armed_build_with_fail_on_broken() {
     .unwrap();
 
     let spec = armed_link_validation_spec(&root, true);
-    let input = make_base_input(&root, &esbuild, "dist-anchor-fail", spec);
+    let input = make_base_input(&root, "dist-anchor-fail", spec);
     let err = bundle(input)
         .expect_err("bundle should fail: broken cross-file anchor with failOnBroken:true");
     let msg = format!("{err:#}");
@@ -278,11 +249,6 @@ fn broken_cross_file_anchor_fails_armed_build_with_fail_on_broken() {
 /// succeeds; warning emitted to stderr (not testable here), build continues.
 #[test]
 fn broken_cross_file_anchor_warns_and_succeeds_with_fail_on_broken_false() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_anchor_check] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_common_dirs(&root);
@@ -301,7 +267,7 @@ fn broken_cross_file_anchor_warns_and_succeeds_with_fail_on_broken_false() {
 
     // failOnBroken:false → Warning severity → build succeeds
     let spec = armed_link_validation_spec(&root, false);
-    let input = make_base_input(&root, &esbuild, "dist-anchor-warn", spec);
+    let input = make_base_input(&root, "dist-anchor-warn", spec);
     let out = bundle(input).expect(
         "bundle should succeed: broken cross-file anchor with failOnBroken:false is a warning",
     );
@@ -317,11 +283,6 @@ fn broken_cross_file_anchor_warns_and_succeeds_with_fail_on_broken_false() {
 /// `bundle()` succeeds with no diagnostics.
 #[test]
 fn valid_cross_file_anchor_passes() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_anchor_check] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_common_dirs(&root);
@@ -340,7 +301,7 @@ fn valid_cross_file_anchor_passes() {
     .unwrap();
 
     let spec = armed_link_validation_spec(&root, true);
-    let input = make_base_input(&root, &esbuild, "dist-anchor-valid", spec);
+    let input = make_base_input(&root, "dist-anchor-valid", spec);
     let out = bundle(input).expect("bundle should succeed: valid cross-file anchor");
     assert!(
         out.bundle_path.exists(),
@@ -361,11 +322,6 @@ fn valid_cross_file_anchor_passes() {
 ///   - `source.mdx`: links to `./target.mdx#transcluded-heading`
 #[test]
 fn heading_from_transclusion_passes_anchor_check() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_anchor_check] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_common_dirs(&root);
@@ -392,7 +348,7 @@ fn heading_from_transclusion_passes_anchor_check() {
     .unwrap();
 
     let spec = armed_link_validation_with_transclusion_spec(&root, true);
-    let input = make_base_input(&root, &esbuild, "dist-anchor-transclusion", spec);
+    let input = make_base_input(&root, "dist-anchor-transclusion", spec);
     let out = bundle(input)
         .expect("bundle should succeed: heading provided by transclusion is in the heading map");
     assert!(
@@ -412,11 +368,6 @@ fn heading_from_transclusion_passes_anchor_check() {
 /// but is not inside any walked collection or pages dir.
 #[test]
 fn out_of_build_target_skipped_existence_only() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_anchor_check] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_common_dirs(&root);
@@ -439,7 +390,7 @@ fn out_of_build_target_skipped_existence_only() {
 
     // Even with failOnBroken:true, out-of-build targets are skipped.
     let spec = armed_link_validation_spec(&root, true);
-    let input = make_base_input(&root, &esbuild, "dist-anchor-out-of-build", spec);
+    let input = make_base_input(&root, "dist-anchor-out-of-build", spec);
     let out = bundle(input)
         .expect("bundle should succeed: out-of-build target is skipped (existence-only degrade)");
     assert!(
@@ -456,11 +407,6 @@ fn out_of_build_target_skipped_existence_only() {
 /// Guards against accidentally enabling the anchor check for unarmed configs.
 #[test]
 fn unarmed_config_no_new_diagnostics() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_anchor_check] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_common_dirs(&root);
@@ -479,12 +425,7 @@ fn unarmed_config_no_new_diagnostics() {
 
     // Default (unarmed) spec — no features, no build_context_roots.
     // The link validation plugin is not wired, so no candidates are recorded.
-    let input = make_base_input(
-        &root,
-        &esbuild,
-        "dist-anchor-unarmed",
-        PipelineSpec::default(),
-    );
+    let input = make_base_input(&root, "dist-anchor-unarmed", PipelineSpec::default());
     let out = bundle(input).expect("unarmed bundle should succeed (no new diagnostics)");
     assert!(
         out.bundle_path.exists(),
@@ -502,11 +443,6 @@ fn unarmed_config_no_new_diagnostics() {
 /// Scenario: broken anchor + failOnBroken:true → both runs fail.
 #[test]
 fn cache_hit_replay_same_verdict_both_runs() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_anchor_check] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_common_dirs(&root);
@@ -526,12 +462,12 @@ fn cache_hit_replay_same_verdict_both_runs() {
     let spec = armed_link_validation_spec(&root, true);
 
     // First run: fresh compile, builds the cache.
-    let input1 = make_base_input(&root, &esbuild, "dist-anchor-cache1", spec.clone());
+    let input1 = make_base_input(&root, "dist-anchor-cache1", spec.clone());
     let err1 = bundle(input1).expect_err("first bundle run should fail (broken anchor)");
     let msg1 = format!("{err1:#}");
 
     // Second run: should hit the compile cache; verdict must be identical.
-    let input2 = make_base_input(&root, &esbuild, "dist-anchor-cache2", spec);
+    let input2 = make_base_input(&root, "dist-anchor-cache2", spec);
     let err2 = bundle(input2).expect_err("second bundle run should also fail (cache hit)");
     let msg2 = format!("{err2:#}");
 
@@ -557,11 +493,6 @@ fn cache_hit_replay_same_verdict_both_runs() {
 /// by the materialise + pipeline drain chain.
 #[test]
 fn dev_tick_shaped_double_bundle_valid_anchor() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_anchor_check] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_common_dirs(&root);
@@ -581,12 +512,12 @@ fn dev_tick_shaped_double_bundle_valid_anchor() {
     let spec = armed_link_validation_spec(&root, true);
 
     // Tick 1: fresh compile.
-    let input1 = make_base_input(&root, &esbuild, "dist-dev-tick1", spec.clone());
+    let input1 = make_base_input(&root, "dist-dev-tick1", spec.clone());
     let out1 = bundle(input1).expect("dev tick 1 should succeed (valid anchor)");
     assert!(out1.bundle_path.exists(), "tick 1 bundle must be written");
 
     // Tick 2: cache warm (all files cached from tick 1).
-    let input2 = make_base_input(&root, &esbuild, "dist-dev-tick2", spec);
+    let input2 = make_base_input(&root, "dist-dev-tick2", spec);
     let out2 = bundle(input2).expect("dev tick 2 (cache warm) should succeed (valid anchor)");
     assert!(out2.bundle_path.exists(), "tick 2 bundle must be written");
 }

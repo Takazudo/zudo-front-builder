@@ -15,7 +15,7 @@
 //! exclusions (reserved generated names skipped). esbuild stays the sole
 //! resolver — Rust only stages trees (see `l-lessons-client-bundling`).
 //!
-//! Every fixture drives `bundle_with_session` with `mock_subprocess_output`
+//! Every fixture drives `bundle_with_session` with `mock_bundle_output`
 //! (never a real esbuild binary): the staging is a pure Rust materialise pass,
 //! so these are Level-3 staging tests that need NO esbuild env-gate. The
 //! persistent `ShadowSession` survives the call so the staged tree can be
@@ -110,8 +110,7 @@ fn make_bundle_input(
         outdir: project.join(outdir_name),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: None,
-        mock_subprocess_output: Some("export default {};".to_string()),
+        mock_bundle_output: Some("export default {};".to_string()),
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -1085,7 +1084,7 @@ fn non_workspace_build_stages_no_sibling_region() {
 /// `node_modules_preserve_symlinks` false, non-empty `tsconfig_paths`) used to
 /// propagate a bare `os error 2` on the first dangling link it hit; this pins
 /// the classify-and-skip fix at the `bundle()` level. Preflight runs before
-/// esbuild, so the usual `mock_subprocess_output` fixture is enough — no real
+/// esbuild, so the usual `mock_bundle_output` fixture is enough — no real
 /// esbuild binary needed.
 #[cfg(unix)]
 #[test]

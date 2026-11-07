@@ -17,7 +17,7 @@
 //! canonical package dirs), and one physical pnpm-private `leftpad-priv`
 //! reached along three logical paths.
 //!
-//! Uses `mock_subprocess_output`: staging runs before esbuild, so no esbuild
+//! Uses `mock_bundle_output`: staging runs before esbuild, so no esbuild
 //! binary is needed.
 
 #![cfg(unix)]
@@ -167,7 +167,7 @@ fn staging_stats(
             "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime".into(),
         ],
-        mock_subprocess_output: Some("export default {};\n".to_string()),
+        mock_bundle_output: Some("export default {};\n".to_string()),
         node_modules_dir: Some(site.join("node_modules")),
         // Any non-empty `paths` map makes the closure resolve through
         // canonical package dirs — the #3133 fixture's load-bearing gate.

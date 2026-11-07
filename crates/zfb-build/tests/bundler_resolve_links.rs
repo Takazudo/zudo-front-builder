@@ -40,7 +40,6 @@ use zfb_build::{
     bundle, BundleMode, BundlerInput, ContentCollectionSpec, OnBrokenLinks,
     ResolveMarkdownLinksRoute, ResolveMarkdownLinksSpec,
 };
-use zfb_test_utils::locate_esbuild;
 
 /// Write the fixture project tree:
 ///
@@ -87,7 +86,6 @@ fn write_fixture_project(root: &std::path::Path) {
 
 fn make_input_with_resolve(
     root: &std::path::Path,
-    esbuild: &std::path::Path,
     outdir_name: &str,
     on_broken_links: OnBrokenLinks,
 ) -> BundlerInput {
@@ -114,8 +112,7 @@ fn make_input_with_resolve(
         outdir: root.join(outdir_name),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.to_path_buf()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -146,11 +143,7 @@ fn make_input_with_resolve(
     }
 }
 
-fn make_input_without_resolve(
-    root: &std::path::Path,
-    esbuild: &std::path::Path,
-    outdir_name: &str,
-) -> BundlerInput {
+fn make_input_without_resolve(root: &std::path::Path, outdir_name: &str) -> BundlerInput {
     BundlerInput {
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
@@ -174,8 +167,7 @@ fn make_input_without_resolve(
         outdir: root.join(outdir_name),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.to_path_buf()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -249,12 +241,8 @@ fn write_resolver_fragment_fixture(root: &std::path::Path, missing_occurrences: 
     .unwrap();
 }
 
-fn resolver_fragment_input(
-    root: &std::path::Path,
-    esbuild: &std::path::Path,
-    outdir_name: &str,
-) -> BundlerInput {
-    let mut input = make_input_with_resolve(root, esbuild, outdir_name, OnBrokenLinks::Error);
+fn resolver_fragment_input(root: &std::path::Path, outdir_name: &str) -> BundlerInput {
+    let mut input = make_input_with_resolve(root, outdir_name, OnBrokenLinks::Error);
     input.content_collections[0].root = PathBuf::from("src/content/docs");
     input.content_collections.push(ContentCollectionSpec::new(
         "ja_docs",
@@ -282,17 +270,12 @@ fn resolver_fragment_input(
 
 #[test]
 fn resolve_links_preserves_cross_file_fragments_for_strict_validation() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_resolve_links] no esbuild binary available; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
     write_resolver_fragment_fixture(root, 1);
     let err = bundle(resolver_fragment_input(
         root,
-        &esbuild,
         "dist-resolved-fragment-broken",
     ))
     .expect_err("strict build must reject the resolver-hidden missing fragment");
@@ -312,7 +295,6 @@ fn resolve_links_preserves_cross_file_fragments_for_strict_validation() {
     write_resolver_fragment_fixture(root, 2);
     let err = bundle(resolver_fragment_input(
         root,
-        &esbuild,
         "dist-resolved-fragment-repeated",
     ))
     .expect_err("strict build must report both authored broken occurrences");
@@ -329,7 +311,6 @@ fn resolve_links_preserves_cross_file_fragments_for_strict_validation() {
     write_resolver_fragment_fixture(root, 0);
     let out = bundle(resolver_fragment_input(
         root,
-        &esbuild,
         "dist-resolved-fragment-valid",
     ))
     .expect("strict resolver-aware build must accept every real target fragment");
@@ -339,19 +320,11 @@ fn resolve_links_preserves_cross_file_fragments_for_strict_validation() {
 /// (a) Good link rewrites to the rendered route URL in the bundle.
 #[test]
 fn resolve_links_good_link_rewrites_to_route_url() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_resolve_links] no esbuild binary available; \
-             set ZFB_ESBUILD_BIN or install esbuild on PATH. Skipping."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root);
 
-    let input = make_input_with_resolve(&root, &esbuild, "dist-a", OnBrokenLinks::Warn);
+    let input = make_input_with_resolve(&root, "dist-a", OnBrokenLinks::Warn);
     let out = bundle(input).expect("bundle should succeed (warn mode)");
 
     assert!(out.bundle_path.exists(), "bundle.mjs should exist");
@@ -377,16 +350,11 @@ fn resolve_links_good_link_rewrites_to_route_url() {
 /// (b) onBrokenLinks: 'warn' — bundle succeeds; broken link not rewritten.
 #[test]
 fn resolve_links_warn_mode_succeeds_despite_broken_link() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_resolve_links] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root);
 
-    let input = make_input_with_resolve(&root, &esbuild, "dist-b", OnBrokenLinks::Warn);
+    let input = make_input_with_resolve(&root, "dist-b", OnBrokenLinks::Warn);
     // Must succeed even though ./missing.mdx is not in the source map.
     let out = bundle(input).expect("bundle should succeed with onBrokenLinks: warn");
     assert!(out.bundle_path.exists(), "bundle.mjs should exist");
@@ -396,16 +364,11 @@ fn resolve_links_warn_mode_succeeds_despite_broken_link() {
 ///     message includes the broken link URL.
 #[test]
 fn resolve_links_error_mode_fails_on_broken_link() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_resolve_links] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root);
 
-    let input = make_input_with_resolve(&root, &esbuild, "dist-c", OnBrokenLinks::Error);
+    let input = make_input_with_resolve(&root, "dist-c", OnBrokenLinks::Error);
     let err = bundle(input)
         .expect_err("bundle should fail with onBrokenLinks: error when broken links exist");
     let msg = format!("{err:#}");
@@ -424,16 +387,11 @@ fn resolve_links_error_mode_fails_on_broken_link() {
 ///     survive unchanged in the bundle.
 #[test]
 fn resolve_links_disabled_preserves_raw_mdx_hrefs() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_resolve_links] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root);
 
-    let input = make_input_without_resolve(&root, &esbuild, "dist-d");
+    let input = make_input_without_resolve(&root, "dist-d");
     let out = bundle(input).expect("bundle should succeed with feature disabled");
 
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
@@ -499,16 +457,11 @@ fn write_dir_link_fixture_project(root: &std::path::Path) {
 /// end-to-end.
 #[test]
 fn resolve_links_dir_relative_link_rewrites_to_route_url() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_resolve_links] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_dir_link_fixture_project(&root);
 
-    let mut input = make_input_with_resolve(&root, &esbuild, "dist-f", OnBrokenLinks::Error);
+    let mut input = make_input_with_resolve(&root, "dist-f", OnBrokenLinks::Error);
     input.pipeline_spec = zfb_content::PipelineSpec {
         features: Some(zfb_content::MarkdownFeaturesConfig {
             link_validation: Some(zfb_content::LinkValidationConfig {
@@ -582,16 +535,11 @@ fn write_url_space_fixture_project(root: &std::path::Path) {
 /// bundle proves the diagnostic is gone end-to-end.
 #[test]
 fn resolve_links_url_space_link_from_non_index_page_rewrites_to_route_url() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_resolve_links] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_url_space_fixture_project(&root);
 
-    let mut input = make_input_with_resolve(&root, &esbuild, "dist-g", OnBrokenLinks::Error);
+    let mut input = make_input_with_resolve(&root, "dist-g", OnBrokenLinks::Error);
     input.pipeline_spec = zfb_content::PipelineSpec {
         features: Some(zfb_content::MarkdownFeaturesConfig {
             link_validation: Some(zfb_content::LinkValidationConfig {
@@ -632,11 +580,6 @@ fn resolve_links_url_space_link_from_non_index_page_rewrites_to_route_url() {
 /// rebuild of the same tree (the dev-loop shape) silently succeeds.
 #[test]
 fn resolve_links_error_mode_still_fails_when_compiles_hit_the_cache() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_resolve_links] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root);
@@ -645,7 +588,6 @@ fn resolve_links_error_mode_still_fails_when_compiles_hit_the_cache() {
     // fails on the broken link (policy applies after the walk).
     let cold = bundle(make_input_with_resolve(
         &root,
-        &esbuild,
         "dist-e1",
         OnBrokenLinks::Error,
     ));
@@ -655,7 +597,6 @@ fn resolve_links_error_mode_still_fails_when_compiles_hit_the_cache() {
     // every compile is a hit. The failure must survive the hits.
     let warm_err = bundle(make_input_with_resolve(
         &root,
-        &esbuild,
         "dist-e2",
         OnBrokenLinks::Error,
     ))
