@@ -66,20 +66,23 @@ go to the build and to `record-graph.py`, which resolves the same selection. For
 depends on `zfb-render`/`zfb-build`, which only the standalone js-host graph
 forbids. Until the default engine flips, `--selection default` resolves the
 Deno-backed default, so its graph check (and the row) reports FAIL on `deno_core`;
-that is the honest result, not a harness fault. `--rolldown` cannot combine with
-`--selection default`.
+that is the honest result, not a harness fault.
 
-`--rolldown` qualifies `direct-v8,rolldown-prototype`: it builds that selection,
-requires the binary to contain the Rolldown prototype crate (and refuses it
-otherwise), and runs the lifecycle observer with `ZFB_ROLLDOWN_PROTOTYPE=1`. That observer is a small
-build/dev smoke.
+Every selection ships the native Rolldown compiler (#4628 removed the esbuild
+backend and the `rolldown-prototype` feature), so the row requires the binary to
+contain the native compiler crate and fails otherwise. `--rolldown` and
+`--extra-feature` no longer exist. The lifecycle observer, a small build/dev
+smoke, runs with `ZFB_BUNDLER` and `ZFB_ROLLDOWN_PROTOTYPE` removed from its
+environment, because the CLI rejects both retired selectors.
 
 ## CLI interoperability cases
 
 `check-cli-cases.py` runs the actual binary over `site/` and small fixtures it
 writes itself, one row per case, and records every row even when an earlier one
-fails. The CI lane runs it on every host after the row, under the default
-bundler and, on the Rolldown leg, with `--rolldown` (`ZFB_ROLLDOWN_PROTOTYPE=1`).
+fails. The CI lane runs it on every host after the row, with the retired
+`ZFB_BUNDLER`/`ZFB_ROLLDOWN_PROTOTYPE` selectors removed from its environment.
+The `--rolldown` columns below are historical results from the removed
+`direct-v8-rolldown` row.
 Any failing row turns that step red. The browser rows need an installed
 Chromium (`--chromium`, installed by the lane with Playwright, never downloaded
 by the harness); without one they are listed as NOT RUN, not passed.
@@ -132,11 +135,10 @@ install step was skipped after the failed lifecycle row; that step, and the
 Linux packaging steps the packed consumer with Rolldown needs, now run after a
 failed row too.
 
-No Darwin row is recorded in these results yet. On the Rolldown leg the lane also builds the Linux x86_64
-packed carrier's scaffolded site with `packed-consumer.py --rolldown`, which
-requires the Rolldown backend's own `[zfb-timing] rolldown-prototype:` line as
-proof that Rolldown bundled it. That is not run on Windows, where every Rolldown
-build already stops on the verbatim path above. Still not covered by any
+No Darwin row is recorded in these results yet. On every row the lane also builds the Linux x86_64
+packed carrier's scaffolded site with `packed-consumer.py --rolldown-timing`,
+which sets `ZFB_DEV_TIMING=1` and requires the native compiler's own
+`[zfb-timing] rolldown-prototype:` line as proof that Rolldown bundled it. Still not covered by any
 actual-CLI case: source maps for client or island bundles (production ships
 none), and failure and replacement under Rolldown beyond the lifecycle observer,
 which stops at the known `routes` case below.
@@ -157,12 +159,11 @@ no-op.
 | --- | --- | --- | --- |
 | PR label `direct-v8`; dispatch `selection=direct-v8` (default) | `direct-v8` | `direct-v8` | `--no-default-features --features direct-v8` |
 | PR label `native-default`; dispatch `selection=default` | `native-default` | `default` | none (the default build) |
-| PR label `direct-v8-rolldown`; dispatch `rolldown=true` (added to the chosen selection) | `direct-v8-rolldown` | `direct-v8` | `--no-default-features --features direct-v8,rolldown-prototype` |
 
 Recipe for the CI rows at a PR head: dispatch the workflow on the PR's branch
 (`gh workflow run direct-v8.yml --ref <branch> -f selection=direct-v8`), or add
 the label; read each row's `row.json` (artifacts
-`direct-v8-<host>-<direct|default|rolldown>`, `host` one of `linux-x64`,
+`direct-v8-<host>-<direct|default>`, `host` one of `linux-x64`,
 `linux-arm64`, `windows-x64`) and record the run, job and artifact IDs and the
 first result of each row. The Darwin rows are added from the local Mac run. A failing row needs a
 named cause and an owner issue. Run it again with `selection=default` to qualify
@@ -184,7 +185,7 @@ Each row run:
   selection (no feature flags for `native-default`), and runs
   `packed-consumer.py` for the `win32-x64-msvc` carrier (the cross-platform
   counterpart of the smoke script, which stays the Linux required check);
-- on Windows x64 Rolldown rows, runs `cargo test -p zfb-rolldown-prototype
+- on Windows x64, runs `cargo test -p zfb-rolldown-prototype
   --features native --lib`, the only tests that see Windows verbatim canonical
   paths (log: `rolldown-prototype-lib-tests.log`).
 

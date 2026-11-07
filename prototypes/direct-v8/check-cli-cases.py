@@ -2,8 +2,9 @@
 """Actual CLI interoperability cases for #4302: one row per case, every case runs.
 
 Each case builds or serves its own copy of a fixture with the given binary, so a
-failure in one case never hides another. `--rolldown` runs every case with
-ZFB_ROLLDOWN_PROTOTYPE=1; without it an inherited value is removed. A failing row
+failure in one case never hides another. Inherited ZFB_BUNDLER and
+ZFB_ROLLDOWN_PROTOTYPE values are removed: the CLI rejects both retired
+backend selectors and always bundles natively. A failing row
 is a compatibility result to record, not something to retry. The fixture copies
 live in a temporary directory; the report and per-case logs are kept.
 
@@ -52,6 +53,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = Path(__file__).resolve().parent
 SITE = HERE / "site"
+# Retired backend selectors the CLI rejects at any value (#4628); never forwarded.
+REMOVED_BUNDLER_SELECTORS = ("ZFB_BUNDLER", "ZFB_ROLLDOWN_PROTOTYPE")
 _spec = importlib.util.spec_from_file_location("check_cli_lifecycle", HERE / "check-cli-lifecycle.py")
 lifecycle = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lifecycle)
@@ -502,8 +505,7 @@ def dev_row(rows, work, logs, env):
 
 
 def summary(report):
-    lines = [f"CLI cases ({'Rolldown' if report['rolldown_prototype'] else 'default bundler'}): "
-             + ("PASS" if report["passed"] else "FAIL")]
+    lines = ["CLI cases: " + ("PASS" if report["passed"] else "FAIL")]
     lines += [f"- {row['name']}: {row['passed']} {row.get('error', '')}".rstrip() for row in report["rows"]]
     lines += [f"- {row['name']}: NOT RUN ({row['reason']})" for row in report.get("not_run", [])]
     return "\n".join(lines)
@@ -514,7 +516,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--binary", type=Path)
     parser.add_argument("--output", type=Path, help="New directory for the report and logs")
-    parser.add_argument("--rolldown", action="store_true", help="Run every case with ZFB_ROLLDOWN_PROTOTYPE=1")
     parser.add_argument("--chromium", type=Path, help="Installed Chromium for the hydration row; never downloaded")
     parser.add_argument("--summary", type=Path, metavar="REPORT", help="Print REPORT as Markdown and exit")
     args = parser.parse_args()
@@ -529,11 +530,8 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     logs = output / "logs"
     logs.mkdir()
-    env = {key: value for key, value in os.environ.items() if key != "ZFB_ROLLDOWN_PROTOTYPE"}
-    if args.rolldown:
-        env["ZFB_ROLLDOWN_PROTOTYPE"] = "1"
-    report = {"binary": str(BINARY), "sha256": lifecycle.digest(BINARY),
-              "rolldown_prototype": env.get("ZFB_ROLLDOWN_PROTOTYPE"), "rows": [], "not_run": []}
+    env = {key: value for key, value in os.environ.items() if key not in REMOVED_BUNDLER_SELECTORS}
+    report = {"binary": str(BINARY), "sha256": lifecycle.digest(BINARY), "rows": [], "not_run": []}
     rows = Rows(report)
     with tempfile.TemporaryDirectory(prefix="zfb-cli-cases-") as directory:
         work = Path(directory)

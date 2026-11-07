@@ -150,7 +150,7 @@ cargo build --locked -p zfb --bin zfb
 - The ICU 77 data is vendored at `crates/zfb-js-host/icu/icudtl.dat` and embedded at compile time; no environment variable or download is needed. `python3 prototypes/direct-v8/prepare-icu.py --verify` checks it against the pin.
 - Run these builds through the heavy guard like any other V8 build.
 
-The CI lane [`.github/workflows/direct-v8.yml`](./.github/workflows/direct-v8.yml) runs only when a PR carries the `direct-v8` label (or `direct-v8-rolldown` to add the Rolldown prototype), or on manual dispatch. It records native rows on Linux x64, Linux arm64 and Windows x64 and is never a required check. Darwin rows need a Mac and are not run there.
+The CI lane [`.github/workflows/direct-v8.yml`](./.github/workflows/direct-v8.yml) runs only when a PR carries the `direct-v8` or `native-default` label, or on manual dispatch. It records native rows on Linux x64, Linux arm64 and Windows x64 and is never a required check. Darwin rows need a Mac and are not run there.
 
 The developer scripts in [`prototypes/direct-v8/`](prototypes/direct-v8/README.md) require Python >=3.11. On macOS, explicitly select an installed compatible interpreter, for example `ZFB_DEV_PYTHON="$(command -v python3.11)"`, and invoke the tools with `"$ZFB_DEV_PYTHON"`. Verify its version before running. This does not add a Python requirement to the production CLI.
 
