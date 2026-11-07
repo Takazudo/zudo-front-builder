@@ -206,9 +206,10 @@ function localizedNote(value, locale, field) {
 // unreachable from zudo-wind (every edge kind, all targets).
 // #4629 typed bundler API: Cargo.lock only (zfb-rolldown-prototype gains an edge to the
 // already-locked serde); zudo-wind depends on no zfb-* crate and crates/zudo-wind and
-// Cargo.toml are unchanged versus main 0e6f9ca.
+// Cargo.toml are unchanged versus main 0e6f9ca. #4630 compiler worker adds the zfb-compiler-worker
+// lock record (already-locked hex/libc/serde/serde_json/sha2/tokio) and its edge from zfb.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "99f9a45f1fdc1ac240937983eb905e8a1adddc2cacef88f06289128a1bfa09a1";
+  "b98dd50f960e7c8a500ab49bba10a7c59d81d5853e081b62bc7fdb48dda40b09";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];
