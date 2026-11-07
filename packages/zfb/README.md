@@ -36,7 +36,7 @@ const { css, diagnostics, warnings } = await compileCss({
 });
 ```
 
-Requires Node.js ≥22 and the matching native platform package installed through optional dependencies. This ESM entry compiles in-process, accepts already-evaluated CSS configuration, and never discovers config files. `output` is optional; every successful call returns CSS. The addon is isolated from root/runtime imports. See the [CSS API reference](https://takazudomodular.com/pj/zudo-front-builder/docs/api/compile-css/) for path anchors, presets, diagnostics, and supported platforms.
+Requires Node.js ≥24 and the matching native platform package installed through optional dependencies. This ESM entry compiles in-process, accepts already-evaluated CSS configuration, and never discovers config files. `output` is optional; every successful call returns CSS. The addon is isolated from root/runtime imports. See the [CSS API reference](https://takazudomodular.com/pj/zudo-front-builder/docs/api/compile-css/) for path anchors, presets, diagnostics, and supported platforms.
 
 ## What lives here
 
