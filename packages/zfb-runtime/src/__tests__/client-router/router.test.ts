@@ -89,7 +89,10 @@ import {
 // re-exported from @takazudo/zfb-runtime/client-router. `import type` is erased
 // at runtime, so it does not drag the barrel's <ClientRouter> module into the
 // test environment.
-import type { SyncHistoryEntryOptions } from "../../client-router/index.js";
+import type {
+  SyncHistoryEntryOptions,
+  TransitionBeforePreparationEvent,
+} from "../../client-router/index.js";
 
 // Activate the router. Before #2436 the popstate / load / pageshow / scroll
 // listeners and the history seed ran as a side effect of evaluating router.ts;
@@ -2141,6 +2144,144 @@ describe("handleSubmit — form intercept (#1400)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(config.routed ? 1 : 0);
   });
 
+  // #4617: native submission targets the form's current node document, so a
+  // form moved into another document is declined without preventDefault() at
+  // both checkpoints (before and after the router's own FormData).
+  describe("form moved into another document", () => {
+    // happy-dom 15 never updates a node's document on a cross-document insert
+    // (and adoptNode only defines an own property), so model the browser's node
+    // document on the Node.prototype getter the router reads. Keyed by
+    // isSameNode: happy-dom dispatches with a form's raw target, not its Proxy.
+    let nodeDocuments: [Node, Document][] = [];
+    const nativeOwnerDocument = Object.getOwnPropertyDescriptor(Node.prototype, "ownerDocument")!;
+    beforeEach(() => {
+      Object.defineProperty(Node.prototype, "ownerDocument", {
+        ...nativeOwnerDocument,
+        get(this: Node) {
+          const entry = nodeDocuments.find(([node]) => node.isSameNode(this));
+          return entry ? entry[1] : nativeOwnerDocument.get!.call(this);
+        },
+      });
+    });
+    afterEach(() => {
+      Object.defineProperty(Node.prototype, "ownerDocument", nativeOwnerDocument);
+      nodeDocuments = [];
+    });
+    function moveTo(other: Document, form: HTMLFormElement): void {
+      other.body.append(form);
+      nodeDocuments.push([form, other]);
+    }
+
+    // A target-phase form listener runs before the router's document listener,
+    // whose place in the dispatch path was fixed when the event started.
+    function submitMovedBy(move: (form: HTMLFormElement) => void): {
+      form: HTMLFormElement;
+      event: SubmitEvent;
+      routerSaw: () => boolean;
+    } {
+      const form = createForm({ action: "/results", method: "post", fields: { q: "value" } });
+      form.addEventListener("submit", () => move(form), { once: true });
+      let reached = false;
+      document.addEventListener("submit", () => (reached = true), { once: true });
+      const event = new SubmitEvent("submit", { bubbles: true, cancelable: true });
+      form.dispatchEvent(event);
+      return { form, event, routerSaw: () => reached };
+    }
+
+    it("declines before FormData when a submit listener moved the form", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const formDataSpy = vi.spyOn(globalThis, "FormData");
+      const other = document.implementation.createHTMLDocument("other");
+      const { form, event, routerSaw } = submitMovedBy((form) => moveTo(other, form));
+      await drain();
+      expect(routerSaw()).toBe(true);
+      expect(form.isConnected).toBe(true);
+      expect(event.defaultPrevented).toBe(false);
+      expect(formDataSpy).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+      formDataSpy.mockRestore();
+    });
+
+    it("declines after FormData when entry-list construction moved the form", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const other = document.implementation.createHTMLDocument("other");
+      const form = createForm({ action: "/results", method: "post", fields: { q: "value" } });
+      const Original = FormData;
+      let constructed = 0;
+      // Stands in for a formdata listener: happy-dom fires no formdata event.
+      // Moves the form's Proxy; the router holds the raw event target.
+      vi.stubGlobal(
+        "FormData",
+        class extends Original {
+          constructor(target?: HTMLFormElement, submitter?: HTMLElement | null) {
+            super(target, submitter);
+            constructed += 1;
+            moveTo(other, form);
+          }
+        },
+      );
+      const event = new SubmitEvent("submit", { bubbles: true, cancelable: true });
+      form.dispatchEvent(event);
+      await drain();
+      expect(constructed).toBe(1);
+      expect(form.isConnected).toBe(true);
+      expect(event.defaultPrevented).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("declines a moved form whose ownerDocument control claims this document", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const formDataSpy = vi.spyOn(globalThis, "FormData");
+      const other = document.implementation.createHTMLDocument("other");
+      const { form, event, routerSaw } = submitMovedBy((form) => {
+        moveTo(other, form);
+        Object.defineProperty(form, "ownerDocument", { value: document, configurable: true });
+      });
+      await drain();
+      expect(routerSaw()).toBe(true);
+      expect(form.ownerDocument).toBe(document);
+      expect(event.defaultPrevented).toBe(false);
+      expect(formDataSpy).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+      formDataSpy.mockRestore();
+    });
+
+    it("routes an in-document form whose ownerDocument control claims another document", async () => {
+      const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+        htmlResponse(pageHtml("Results", "done")),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const other = document.implementation.createHTMLDocument("other");
+      const form = createForm({ action: "/results", method: "post", fields: { q: "value" } });
+      Object.defineProperty(form, "ownerDocument", { value: other, configurable: true });
+      const event = new SubmitEvent("submit", { bubbles: true, cancelable: true });
+      form.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      await drain();
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect((fetchMock.mock.calls[0]![1]?.body as FormData).get("q")).toBe("value");
+    });
+
+    it("routes a form moved into another document and back before submission", async () => {
+      const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+        htmlResponse(pageHtml("Results", "done")),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const other = document.implementation.createHTMLDocument("other");
+      const { event } = submitMovedBy((form) => {
+        moveTo(other, form);
+        document.body.append(form);
+        nodeDocuments = [];
+      });
+      expect(event.defaultPrevented).toBe(true);
+      await drain();
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+  });
+
   it("routes a plain Event('submit') that carries no submitter property", async () => {
     const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
       htmlResponse(pageHtml("Results", "done")),
@@ -2964,6 +3105,122 @@ describe("form encoding selection", () => {
     absent.append("k", "v");
     await navigate("/submit-target", { formData: absent });
     expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(absent);
+  });
+
+  // #4616: browsers select the encoding before firing `formdata`, so the POST
+  // body keeps the encoding selected when handleSubmit decided to route.
+  describe("decision-time encoding", () => {
+    // Stands in for a formdata listener: happy-dom fires no formdata event.
+    function mutateDuringFormData(mutate: () => void): () => number {
+      const Original = FormData;
+      let constructed = 0;
+      vi.stubGlobal(
+        "FormData",
+        class extends Original {
+          constructor(form?: HTMLFormElement, submitter?: HTMLElement | null) {
+            super(form, submitter);
+            constructed += 1;
+            if (constructed === 1) mutate();
+          }
+        },
+      );
+      return () => constructed;
+    }
+
+    function setAttr(selector: string, name: string, value: string): () => void {
+      return () => document.querySelector(selector)!.setAttribute(name, value);
+    }
+
+    it.each([
+      ["application/x-www-form-urlencoded", undefined, "multipart/form-data", "URLSearchParams"],
+      ["multipart/form-data", undefined, "application/x-www-form-urlencoded", "FormData"],
+      ["application/x-www-form-urlencoded", undefined, "text/plain", "URLSearchParams"],
+      // undefined: the submitter's formenctype changes to multipart instead.
+      ["multipart/form-data", "application/x-www-form-urlencoded", undefined, "URLSearchParams"],
+    ] as const)(
+      "form enctype %j, formenctype %j, enctype changed to %j during formdata: %s",
+      async (enctype, formenctype, changedEnctype, bodyName) => {
+        const bodyType = bodyName === "FormData" ? FormData : URLSearchParams;
+        const constructed = mutateDuringFormData(() => {
+          if (changedEnctype !== undefined) setAttr("form", "enctype", changedEnctype)();
+          else setAttr("button", "formenctype", "multipart/form-data")();
+        });
+        const { event, fetchMock } = dispatchEncoding({
+          enctype,
+          ...(formenctype !== undefined ? { formenctype } : {}),
+        });
+        expect(event.defaultPrevented).toBe(true);
+        await drain();
+        expect(constructed()).toBe(1);
+        expect(fetchMock).toHaveBeenCalledOnce();
+        const body = fetchMock.mock.calls[0]?.[1]?.body;
+        expect(body).toBeInstanceOf(bodyType);
+        expect((body as URLSearchParams | FormData).get("q")).toBe("value");
+      },
+    );
+
+    it("keeps the selected encoding when a before-preparation listener replaces formData", async () => {
+      const replacement = new FormData();
+      replacement.append("replaced", "yes");
+      const onPrep = (ev: Event) => {
+        const prep = ev as TransitionBeforePreparationEvent;
+        prep.formData = replacement;
+        // A live re-derivation from the source would now select multipart.
+        document.querySelector("form")!.setAttribute("enctype", "multipart/form-data");
+      };
+      document.addEventListener("zfb:before-preparation", onPrep);
+      try {
+        const { event, fetchMock } = dispatchEncoding({
+          enctype: "application/x-www-form-urlencoded",
+        });
+        expect(event.defaultPrevented).toBe(true);
+        await drain();
+        expect(fetchMock).toHaveBeenCalledOnce();
+        const body = fetchMock.mock.calls[0]?.[1]?.body;
+        expect(body).toBeInstanceOf(URLSearchParams);
+        expect(String(body)).toBe("replaced=yes");
+      } finally {
+        document.removeEventListener("zfb:before-preparation", onPrep);
+      }
+    });
+
+    it("keeps multipart when a before-preparation listener replaces formData", async () => {
+      const replacement = new FormData();
+      replacement.append("replaced", "yes");
+      const onPrep = (ev: Event) => {
+        (ev as TransitionBeforePreparationEvent).formData = replacement;
+        document
+          .querySelector("form")!
+          .setAttribute("enctype", "application/x-www-form-urlencoded");
+      };
+      document.addEventListener("zfb:before-preparation", onPrep);
+      try {
+        const { fetchMock } = dispatchEncoding({ enctype: "multipart/form-data" });
+        await drain();
+        expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(replacement);
+      } finally {
+        document.removeEventListener("zfb:before-preparation", onPrep);
+      }
+    });
+
+    it("imperative navigate() with formData still derives the encoding at load time", async () => {
+      const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Posted", "posted")));
+      vi.stubGlobal("fetch", fetchMock);
+      const form = document.createElement("form");
+      form.setAttribute("method", "post");
+      form.setAttribute("enctype", "multipart/form-data");
+      document.body.append(form);
+      const onPrep = () => form.setAttribute("enctype", "application/x-www-form-urlencoded");
+      document.addEventListener("zfb:before-preparation", onPrep);
+      try {
+        const formData = new FormData();
+        formData.append("k", "v");
+        await navigate("/submit-target", { formData, sourceElement: form });
+        expect(fetchMock.mock.calls[0]?.[1]?.body).toBeInstanceOf(URLSearchParams);
+      } finally {
+        document.removeEventListener("zfb:before-preparation", onPrep);
+      }
+    });
   });
 });
 
