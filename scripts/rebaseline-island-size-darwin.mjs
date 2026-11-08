@@ -1413,7 +1413,7 @@ export function darwinBundlerBackendReadmeSection(contract, gzipMoves) {
     record.runner.afterSha256 +
     "` because the runner now records that identity. " +
     (e.cargoTransition
-      ? "`Cargo.lock` moved under " + cargoTransitionMarkdown(e.cargoTransition) + " "
+      ? cargoTransitionMarkdown(e.cargoTransition) + " "
       : "`Cargo.lock` is unchanged. ") +
     "The package version, fixtures, `measure.mjs`, Hono/Node/zlib, the dependency fingerprint " +
     "and the normalizer are unchanged, and every raw and `gzipNormalized` total is unchanged; " +
