@@ -177,6 +177,18 @@ second scheduler; use existing workflows/scripts and preserve original receipts.
   [`LOCAL-NATIVE-EVIDENCE.md`](research/v3-island-size/LOCAL-NATIVE-EVIDENCE.md) (#4336). Give
   Mac-only steps to the owner as paste-ready prompts for a local Claude Code session; existing
   macOS workflows stay, but do not add new macOS CI legs for routine confirmation.
+- **Intel macOS (`x86_64-apple-darwin`) is confirmed under Rosetta 2 on the owner's Apple Silicon
+  Mac.** Owner decision (2026-11-08): the owner has no Intel Mac and does not want to rely on
+  hosted Intel runners, so a Rosetta-translated run is the acceptance gate for darwin-x64 rows.
+  It replaces the earlier "native Intel only; Rosetta does not satisfy" wording in older issues
+  (#4123, #4366, #4645). Build the `x86_64-apple-darwin` binary on the Mac and run it and its
+  tests under `arch -x86_64` (`scripts/smoke-packed-clean-room.sh` admits such a run only with
+  `ZFB_SMOKE_ALLOW_ROSETTA=1`). Record `sysctl.proc_translated=1` from inside the translated
+  process, the `file` output of each binary and the host's arm64 identity. Label the result
+  **Rosetta-translated**, never "native Intel". The gate covers functional behavior only:
+  performance, timing budgets and CPU-feature-specific code paths are not proven. A bug
+  reported from real Intel hardware still reopens the row. Rosetta's general availability
+  ends after macOS 27, so revisit this gate when the Mac moves past macOS 27.
 
 ### Codex Cloud disk capacity and broad Rust verification
 

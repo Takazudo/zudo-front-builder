@@ -52,7 +52,12 @@ set -euo pipefail
 # host: the packed platform package is only installed when its os/cpu fields
 # match, so a mismatched host would silently skip it. A darwin-* run is native
 # Darwin evidence only when run on that Darwin architecture (#4231 item 2); a
-# darwin-x64 run on an Apple-silicon Mac under Rosetta is not native arm64.
+# darwin-x64 run on an Apple-silicon Mac under Rosetta is not native.
+# ZFB_SMOKE_ALLOW_ROSETTA=1 admits exactly that one case, for the owner's
+# Rosetta-translated darwin-x64 gate (CLAUDE.md, owner decision 2026-11-08):
+# ZFB_SMOKE_PLATFORM=darwin-x64, an x86_64 process, arm64 hardware and
+# `sysctl.proc_translated` = 1. The run is labelled Rosetta-translated, never
+# native. Without it, and for every other platform, the native rule holds.
 #
 #   platform        packed package           binary env                 CSS addon env
 #   linux-x64-gnu   zfb-linux-x64-gnu        ZFB_LINUX_X64_BINARY       ZFB_LINUX_X64_CSS_ADDON
@@ -81,8 +86,12 @@ HOST_NATIVE_ARCH="$(uname -m)"
 if [[ "$(uname -s)" == "Darwin" && "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" == "1" ]]; then
   HOST_NATIVE_ARCH=arm64
 fi
-if [[ "$(uname -s)" != "$HOST_OS" || "$(uname -m)" != "$HOST_ARCH" || "$HOST_NATIVE_ARCH" != "$HOST_ARCH" ]]; then
-  echo "::error::ZFB_SMOKE_PLATFORM=$ZFB_SMOKE_PLATFORM needs a native $HOST_OS/$HOST_ARCH host, got $(uname -s)/$(uname -m) on $HOST_NATIVE_ARCH hardware (a Rosetta-translated process is not native)" >&2
+if [[ "${ZFB_SMOKE_ALLOW_ROSETTA:-}" == "1" && "$ZFB_SMOKE_PLATFORM" == "darwin-x64" &&
+  "$(uname -s)" == "Darwin" && "$(uname -m)" == "x86_64" && "$HOST_NATIVE_ARCH" == "arm64" &&
+  "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" == "1" ]]; then
+  echo "::notice::ZFB_SMOKE_PLATFORM=darwin-x64 is running Rosetta-translated on arm64 hardware (ZFB_SMOKE_ALLOW_ROSETTA=1); this is not native Intel evidence" >&2
+elif [[ "$(uname -s)" != "$HOST_OS" || "$(uname -m)" != "$HOST_ARCH" || "$HOST_NATIVE_ARCH" != "$HOST_ARCH" ]]; then
+  echo "::error::ZFB_SMOKE_PLATFORM=$ZFB_SMOKE_PLATFORM needs a native $HOST_OS/$HOST_ARCH host, got $(uname -s)/$(uname -m) on $HOST_NATIVE_ARCH hardware (a Rosetta-translated process is not native; ZFB_SMOKE_ALLOW_ROSETTA=1 admits only a translated darwin-x64 run)" >&2
   exit 2
 fi
 ZFB_SMOKE_BINARY="${!BINARY_VAR:-}"
