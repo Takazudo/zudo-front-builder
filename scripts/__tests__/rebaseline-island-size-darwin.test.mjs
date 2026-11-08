@@ -1630,10 +1630,10 @@ describe("rebaseline-island-size-darwin cargo-producer-lock (#4214)", () => {
     const { artifact, contract } = fixture();
     const v2 = asSchemaV2(contract);
     expect(validateDarwinEvidence(v2, artifact, SOURCE_SHA, "cargo-producer-lock")).toContain(
-      "contract is not a schemaVersion 3 or 4 gzip-identity-normalized v2 contract",
+      "contract is not a schemaVersion 3 gzip-identity-normalized v2 contract",
     );
     expect(() => run(v2, artifact)).toThrow(
-      "--reason cargo-producer-lock needs a schemaVersion 3 or 4 contract, found schemaVersion 2",
+      "--reason cargo-producer-lock needs a schemaVersion 3 contract, found schemaVersion 2",
     );
     const grown = structuredClone(contract);
     grown.ceilings.packed.model.gzipNormalized += 1;
@@ -2226,7 +2226,7 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
       }),
     ).toThrow(/but helperSha256 differ from the contract; .*`fingerprint-policy` \(#4218\)/);
     expect(run(asSchemaV2(darwinPinned))).toThrow(
-      "--reason dependency-graph needs a schemaVersion 3 or 4 contract, found schemaVersion 2",
+      "--reason dependency-graph needs a schemaVersion 3 contract, found schemaVersion 2",
     );
     expect(run({ ...darwinPinned, allowance: { raw: 0, gzipNormalized: 1 } })).toThrow(
       "moves only dependencyFingerprint.sha256, but allowance differ",
@@ -2287,7 +2287,7 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
         c.schemaVersion = 2;
       }),
       {},
-      "contract is not a schemaVersion 3 or 4 gzip-identity-normalized v2 contract",
+      "contract is not a schemaVersion 3 gzip-identity-normalized v2 contract",
     ],
     [
       "a sidecar whose results were edited",
@@ -3582,7 +3582,7 @@ describe.each([1, 2])("cargo-internal-rewire paired staging, declaration schema 
         rewire,
       ),
     ).toThrow(
-      "--reason cargo-internal-rewire needs a schemaVersion 3 or 4 contract, found schemaVersion 2",
+      "--reason cargo-internal-rewire needs a schemaVersion 3 contract, found schemaVersion 2",
     );
     const moved = structuredClone(darwinPinned);
     moved.toolchain.packageVersion = "9.9.8";
@@ -5317,7 +5317,8 @@ describe("bundler-backend local Darwin evidence (#4645)", () => {
     [
       "a moved measure.mjs digest",
       { changeContract: (c) => (c.runnerSha256["measure.mjs"] = "1".repeat(64)) },
-      /runnerSha256\.measure\.mjs differ/,
+      // validateDarwinEvidence refuses every runner but measure-real.mjs up front.
+      /runner hashes differ from the contract/,
     ],
     [
       "a schemaVersion-4 contract",

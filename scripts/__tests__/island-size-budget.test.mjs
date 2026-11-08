@@ -1,4 +1,5 @@
 import { afterAll, afterEach, describe, expect, it } from "vite-plus/test";
+import { ESBUILD_REMOVAL_LOCK_TRANSITION } from "../security-lock-transitions.mjs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -1236,10 +1237,10 @@ describe("island shipped-size budget", () => {
       event: "local-native",
       localReceipt: { sha256: "a06dc9127cb5b94de35fb916b2a4f1bcda22af0991aeba187e41797c61e23eec" },
     });
-    // pnpmLockSha256 follows the v5.2.0 release bump at 54054042; cargoLockSha256 the
-    // reviewed noyalib-4268 producer-lock transition at f65dd70d (#4268,
-    // owner-attested local evidence); the ceilings below follow the Rolldown
-    // default islands bundler under identity normalizer v2 (#4408, #4417).
+    // pnpmLockSha256 and cargoLockSha256 follow the #4645 Darwin bundler-backend
+    // transition at 933acb8 (owner-attested local evidence; Cargo.lock under the
+    // reviewed esbuild-removal-4635 decision); the ceilings below follow the
+    // Rolldown default islands bundler under identity normalizer v2 (#4408, #4417).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
       "0b5c30279d7d2d98f7b2c238d36c0f9671ec446b4c31708fe1f12064d1a698ea",
     );
@@ -2031,11 +2032,10 @@ describe("island shipped-size budget", () => {
 
 // Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
-// Exact immediate predecessors of the live contracts: the noyalib-4268
-// producer-lock contracts of both platforms, cited at #4412 merge source 2735135c
-// (byte-identical to main 2abb2382) and moved by the cargo-removal Deno exit
-// (#4396/#4397), Linux from Actions evidence and Darwin from owner-attested local
-// evidence.
+// Exact immediate predecessors of the live contracts: the schemaVersion-3 v5.2.2
+// release-bump contracts of both platforms, each moved by its bundler-backend
+// transition (#4635 Linux from Actions evidence, #4645 Darwin from
+// owner-attested local evidence).
 // Each must equal a frozen verbatim fixture, so the metadata check also holds in
 // shallow CI; full checkouts also compare git bytes and that no intermediate
 // contract was skipped. A local-native predecessor has no Actions run, so its
@@ -4063,6 +4063,17 @@ describe("live contracts preserve released evidence and authentic predecessors",
     );
     expect(live.toolchain.cargoLockSha256).toBe(predecessor.toolchain.cargoLockSha256);
     expect(live.baselineSourceSha).toBe("0e6f9ca36c31b3961b69cd31837431e4dad3768b");
+    expect(live.baselineEvidence.repinnedFrom).toEqual({
+      schemaVersion: predecessor.schemaVersion,
+      outcome: predecessor.outcome,
+      packageVersion: predecessor.toolchain.packageVersion,
+      baselineSourceSha: predecessor.baselineSourceSha,
+      contract: {
+        sha256: "f26b6b8f236616803c4828f2ad94cebb9b9c3f0f642dfae7a3b201a864343b82",
+        commit: "0e6f9ca36c31b3961b69cd31837431e4dad3768b",
+        path: "research/v3-island-size/decision.json",
+      },
+    });
     expect(live.baselineEvidence).toMatchObject({
       event: "local-native",
       sourceSha: "0e6f9ca36c31b3961b69cd31837431e4dad3768b",
@@ -4122,10 +4133,21 @@ describe("live contracts preserve released evidence and authentic predecessors",
       oldSha: predecessor.toolchain.cargoLockSha256,
       newSha: live.toolchain.cargoLockSha256,
       added: ["zfb-bundler@0.0.0", "zfb-compiler-worker@0.0.0"],
-      review: { id: "esbuild-removal-4635" },
+      review: {
+        id: "esbuild-removal-4635",
+        manifestSha256: ESBUILD_REMOVAL_LOCK_TRANSITION.decisionSha256,
+      },
     });
     expect(live.baselineEvidence.cargoTransition.oldSha).toBe(lock.expectedOldSha);
     expect(live.baselineEvidence.cargoTransition.newSha).toBe(lock.expectedNewSha);
+    const gzipShape = (contract) =>
+      Object.fromEntries(
+        Object.entries(contract.baselineEvidence.actualGzip).map(([mode, rows]) => [
+          mode,
+          Object.keys(rows).sort(),
+        ]),
+      );
+    expect(gzipShape(live)).toEqual(gzipShape(predecessor));
     const moved = contractDiffKeys(predecessor, live);
     expect(moved.filter((key) => !key.startsWith("baselineEvidence."))).toEqual([
       "baselineSourceSha",

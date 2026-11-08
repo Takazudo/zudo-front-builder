@@ -10,6 +10,10 @@ import {
   ESBUILD_REMOVAL_LOCK_TRANSITION,
   SECURITY_LOCK_TRANSITIONS,
 } from "./security-lock-transitions.mjs";
+import {
+  BUNDLER_SCHEMA_VERSION,
+  EXPECTED_BUNDLER_IDENTITY,
+} from "../research/v3-island-size/check-budget.mjs";
 
 const fail = (message) => {
   throw new Error("local Darwin evidence: " + message);
@@ -41,7 +45,9 @@ export function assertLocalSecurityTransition(transition) {
 // hosted Mac runner), the paired #4218 dependency-graph re-pin
 // (evidence.fingerprintTransition; owner decision 2026-10-28, #4580) and the
 // unpaired #4635 bundler-backend transition (evidence.bundlerBackend plus the
-// exact esbuild-removal evidence.cargoTransition). Adding a reason here is a
+// exact esbuild-removal evidence.cargoTransition; a local bundler-backend move
+// with an unchanged Cargo.lock is deliberately not admitted, because the only
+// reviewed local case is the #4635 lock move). Adding a reason here is a
 // provenance-policy decision, not a refactor.
 const provenanceRepin = (reason, outcome) =>
   Object.freeze({
@@ -117,8 +123,11 @@ export const LOCAL_EVIDENCE_PROFILES = Object.freeze({
       if (
         !record ||
         typeof record !== "object" ||
-        contract.schemaVersion !== record.schemaVersion?.to ||
-        contract.toolchain?.bundlerIdentity !== record.to?.bundlerIdentity ||
+        record.schemaVersion?.from !== BUNDLER_SCHEMA_VERSION - 1 ||
+        record.schemaVersion?.to !== BUNDLER_SCHEMA_VERSION ||
+        contract.schemaVersion !== BUNDLER_SCHEMA_VERSION ||
+        record.to?.bundlerIdentity !== EXPECTED_BUNDLER_IDENTITY ||
+        contract.toolchain?.bundlerIdentity !== EXPECTED_BUNDLER_IDENTITY ||
         Object.hasOwn(contract.toolchain ?? {}, "esbuildVersion")
       )
         fail("bundler-backend evidence lacks its bundler record or disagrees with the contract");

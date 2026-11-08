@@ -617,6 +617,37 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
       "lacks its bundler record",
     ],
     [
+      "a self-consistent schemaVersion 3 record and contract",
+      (s) => {
+        s.contract.schemaVersion = 3;
+        s.contract.baselineEvidence.bundlerBackend = {
+          ...bundlerRecord,
+          schemaVersion: { from: 3, to: 3 },
+        };
+      },
+      "lacks its bundler record",
+    ],
+    [
+      "a record that starts from schemaVersion 2",
+      (s) =>
+        (s.contract.baselineEvidence.bundlerBackend = {
+          ...bundlerRecord,
+          schemaVersion: { from: 2, to: 4 },
+        }),
+      "lacks its bundler record",
+    ],
+    [
+      "a self-consistent wrong bundler identity",
+      (s) => {
+        s.contract.toolchain.bundlerIdentity = "rolldown-0000000";
+        s.contract.baselineEvidence.bundlerBackend = {
+          ...bundlerRecord,
+          to: { bundlerIdentity: "rolldown-0000000" },
+        };
+      },
+      "lacks its bundler record",
+    ],
+    [
       "no Cargo transition",
       (s) => delete s.contract.baselineEvidence.cargoTransition,
       "exact approved #4635 esbuild-removal",

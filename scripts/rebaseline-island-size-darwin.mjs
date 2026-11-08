@@ -171,6 +171,7 @@ import {
   REASONS,
   SOURCE_BOUND_REASONS,
   acceptedSchemas,
+  assertSchemaShape,
   applyStage,
   assertAllowedMovement,
   assertBundlerBackendMovement,
@@ -362,6 +363,18 @@ export function loadDarwinArtifact(artifactDir, { verifySidecar = false } = {}) 
   };
 }
 
+// Darwin reasons that may rewrite a schemaVersion-4 contract. Only the
+// provenance-only re-pins (repinDarwinContract) are exercised on schema 4 so
+// far; every other Darwin reason stays on its pre-#4645 schemas until it has a
+// schema-4 path and tests of its own.
+const DARWIN_SCHEMA_4_REASONS = new Set(["release-bump", "runtime-identity"]);
+function darwinAcceptedSchemas(reason) {
+  const schemas = acceptedSchemas(reason);
+  return DARWIN_SCHEMA_4_REASONS.has(reason)
+    ? schemas
+    : schemas.filter((schema) => schema !== BUNDLER_SCHEMA_VERSION);
+}
+
 // Returns every reason the artifact cannot back this migration, or [].
 export function validateDarwinEvidence(
   contract,
@@ -374,7 +387,7 @@ export function validateDarwinEvidence(
     errors.push("contract is not the Darwin arm64 contract");
   }
   const requires = REASONS[reason]?.requires;
-  const schemas = REASONS[reason] ? acceptedSchemas(reason) : [];
+  const schemas = REASONS[reason] ? darwinAcceptedSchemas(reason) : [];
   // The producer the artifact must have measured: bundler-backend moves an
   // esbuild-producer contract to the esbuild-free one (#4635), a schemaVersion-4
   // contract admits only its own embedded bundler, and every older contract
@@ -419,14 +432,21 @@ export function validateDarwinEvidence(
       errors.push(label + "fixture hashes differ from the contract");
     }
     // The migration's runners gained the fingerprint, and bundler-backend's
-    // measure-real.mjs records the embedded bundler, so their digests are
-    // checked against the checkout (checkoutMismatches) and, for
-    // bundler-backend, every other runner against the contract
-    // (assertBundlerBackendMovement), not here.
+    // measure-real.mjs records the embedded bundler, so those digests are
+    // checked against the checkout (checkoutMismatches), not the contract.
+    const withoutMeasureReal = (map) => {
+      if (!isRecord(map)) return map;
+      const { ["measure-real.mjs"]: _measureReal, ...rest } = map;
+      return rest;
+    };
     if (
       reason !== FINGERPRINT_MIGRATION &&
-      !bundlerBackend &&
-      !sameJson(sortedEntries(p.runnerSha256), sortedEntries(contract?.runnerSha256))
+      !sameJson(
+        sortedEntries(bundlerBackend ? withoutMeasureReal(p.runnerSha256) : p.runnerSha256),
+        sortedEntries(
+          bundlerBackend ? withoutMeasureReal(contract?.runnerSha256) : contract?.runnerSha256,
+        ),
+      )
     ) {
       errors.push(label + "runner hashes differ from the contract");
     }
@@ -859,7 +879,7 @@ function fingerprintMoves(contract, checkout) {
   );
 }
 
-// Provenance-only re-pin of a schemaVersion-2 or -3 contract. Ceilings, metric,
+// Provenance-only re-pin of a schemaVersion-2, -3 or -4 contract. Ceilings, metric,
 // fixtures, allowance, proposedCiLane and a v3 dependencyFingerprint are
 // carried over untouched; a v3 fingerprint movement is refused.
 export function repinDarwinContract(contract, totals, evidence, reason, checkout) {
@@ -959,6 +979,7 @@ export function repinDarwinContract(contract, totals, evidence, reason, checkout
       repinFieldChanges(contract, next, "text") +
       " Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
   };
+  assertSchemaShape(contract, next, reason);
   return { contract: next, gzipMoves: moves ?? [], previousVersion };
 }
 
@@ -1082,12 +1103,12 @@ export function migrateDarwinFingerprint(contract, totals, evidence, checkout) {
 export function transitionDarwinCargoLock(contract, totals, evidence, checkout, cargoLock) {
   const repinnedFrom = repinnedFromRecord(contract, evidence.previousContract);
   const errors = checkRepinTotals(contract, totals);
-  if (!acceptedSchemas(CARGO_PRODUCER_LOCK_REASON).includes(contract.schemaVersion)) {
+  if (!darwinAcceptedSchemas(CARGO_PRODUCER_LOCK_REASON).includes(contract.schemaVersion)) {
     errors.push(
       "--reason " +
         CARGO_PRODUCER_LOCK_REASON +
         " needs a schemaVersion " +
-        schemaList(acceptedSchemas(CARGO_PRODUCER_LOCK_REASON)) +
+        schemaList(darwinAcceptedSchemas(CARGO_PRODUCER_LOCK_REASON)) +
         " contract, found schemaVersion " +
         String(contract.schemaVersion),
     );
@@ -1250,12 +1271,12 @@ export function transitionDarwinBundlerBackend(
   const reason = BUNDLER_BACKEND_REASON;
   const repinnedFrom = repinnedFromRecord(contract, evidence.previousContract);
   const errors = checkRepinTotals(contract, totals);
-  if (!acceptedSchemas(reason).includes(contract.schemaVersion)) {
+  if (!darwinAcceptedSchemas(reason).includes(contract.schemaVersion)) {
     errors.push(
       "--reason " +
         reason +
         " needs a schemaVersion " +
-        schemaList(acceptedSchemas(reason)) +
+        schemaList(darwinAcceptedSchemas(reason)) +
         " contract, found schemaVersion " +
         String(contract.schemaVersion),
     );
@@ -1373,6 +1394,7 @@ export function transitionDarwinBundlerBackend(
       "earlier ceilings remain in git history.",
   };
   assertAllowedMovement(reason, BUNDLER_BACKEND_MOVEMENT, contract, next);
+  assertSchemaShape(contract, next, reason);
   return { contract: next, gzipMoves: moves ?? [] };
 }
 
@@ -1469,12 +1491,12 @@ function transitionDarwinDeclaredCargo(reason, contract, totals, evidence, check
   const kind = DECLARED_CARGO_KINDS[reason];
   const repinnedFrom = repinnedFromRecord(contract, evidence.previousContract);
   const errors = checkRepinTotals(contract, totals);
-  if (!acceptedSchemas(reason).includes(contract.schemaVersion)) {
+  if (!darwinAcceptedSchemas(reason).includes(contract.schemaVersion)) {
     errors.push(
       "--reason " +
         reason +
         " needs a schemaVersion " +
-        schemaList(acceptedSchemas(reason)) +
+        schemaList(darwinAcceptedSchemas(reason)) +
         " contract, found schemaVersion " +
         String(contract.schemaVersion),
     );
@@ -1663,12 +1685,12 @@ export function repinDarwinDependencyGraph(contract, totals, evidence, checkout)
   const repinnedFrom = repinnedFromRecord(contract, evidence.previousContract);
   const totalsErrors = checkRepinTotals(contract, totals);
   if (totalsErrors.length > 0) throw new Error(totalsErrors.join("; "));
-  if (!acceptedSchemas(reason).includes(contract.schemaVersion)) {
+  if (!darwinAcceptedSchemas(reason).includes(contract.schemaVersion)) {
     throw new Error(
       "--reason " +
         reason +
         " needs a schemaVersion " +
-        schemaList(acceptedSchemas(reason)) +
+        schemaList(darwinAcceptedSchemas(reason)) +
         " contract, found schemaVersion " +
         String(contract.schemaVersion),
     );
@@ -1818,12 +1840,12 @@ export function repinDarwinFingerprintPolicy(contract, totals, evidence, checkou
   const repinnedFrom = repinnedFromRecord(contract, evidence.previousContract);
   const totalsErrors = checkRepinTotals(contract, totals);
   if (totalsErrors.length > 0) throw new Error(totalsErrors.join("; "));
-  if (!acceptedSchemas(reason).includes(contract.schemaVersion)) {
+  if (!darwinAcceptedSchemas(reason).includes(contract.schemaVersion)) {
     throw new Error(
       "--reason " +
         reason +
         " needs a schemaVersion " +
-        schemaList(acceptedSchemas(reason)) +
+        schemaList(darwinAcceptedSchemas(reason)) +
         " contract, found schemaVersion " +
         String(contract.schemaVersion),
     );
