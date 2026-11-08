@@ -78,7 +78,7 @@ pub(super) fn scan(source: &str, out: &mut Collector<'_>, mdx: bool) {
         i += 1;
     }
     let clean = String::from_utf8(masked).expect("masked UTF-8 source");
-    super::markup::scan(&clean, 0, out, false);
+    super::markup::scan(&clean, 0, out, false, false);
     if mdx {
         let bytes = clean.as_bytes();
         let mut i = 0;

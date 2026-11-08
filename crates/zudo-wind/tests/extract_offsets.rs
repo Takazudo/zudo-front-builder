@@ -304,3 +304,83 @@ fn repeated_generated_html_classes_keep_raw_positions() {
             .all(|o| &source[o.byte_offset..o.byte_offset + o.byte_length] == text));
     }
 }
+
+/// #4647: a plugin data module that inlines a whole HTML app as a JSON string.
+/// A class attribute written in a template literal of the app's `<script>`
+/// holds `${...}` interpolations; they split the value like a template literal
+/// does, their bodies are scanned for literals, and they never reach the
+/// compiler as part of a class candidate.
+#[test]
+fn interpolation_in_embedded_script_class_value_splits_the_candidates() {
+    let source = concat!(
+        "export default {\"assets/app.html\":",
+        r#""<p class=\"intro\">x</p><script>const l = `<text class=\"label label-${kind}\">x</text><li class=\"${s.selected===q.uid?'is-selected':''} item\">`;const i = `<i class=\"text-lg${x}\"><b class=\"${on ? \"is-on\" : \"\"} card\">`;</script>"};"#,
+    );
+    let result = extract_candidates(source.as_bytes(), SourceKind::Js);
+    assert_positions(source, &result);
+    let found: Vec<_> = result.candidates.iter().map(|c| c.text.as_str()).collect();
+    assert!(!found.iter().any(|c| c.contains("${")), "{found:?}");
+    assert!(!found.contains(&"label-"), "{found:?}");
+
+    for (class, at) in [
+        ("intro", source.find("intro").unwrap()),
+        ("label", source.find("label label-").unwrap()),
+        ("item", source.find("''} item").unwrap() + 4),
+        ("card", source.find(r#"\"\"} card"#).unwrap() + 6),
+    ] {
+        let occurrence = class_occurrence(&result, class);
+        assert_eq!(occurrence.byte_offset, at, "{class}");
+        assert!(!occurrence.adjacent_interpolation, "{class}");
+    }
+    assert!(class_occurrence(&result, "text-lg").adjacent_interpolation);
+    for literal in ["is-selected", "is-on"] {
+        let occurrence = result
+            .candidates
+            .iter()
+            .find(|c| c.text == literal)
+            .map(|c| (c.occurrences[0].byte_offset, c.occurrences[0].position_kind));
+        assert_eq!(
+            occurrence,
+            Some((source.find(literal).unwrap(), PositionKind::Literal)),
+            "{literal}: {found:?}"
+        );
+    }
+}
+
+/// Outside a `<script>` of JS-carried markup, and in plain HTML, `${` in a
+/// class attribute is literal text: it stays a malformed class candidate for
+/// the author to see.
+#[test]
+fn interpolation_syntax_outside_a_carried_script_stays_malformed() {
+    for (source, kind) in [
+        (r#"<div class="foo ${bar}"></div>"#, SourceKind::Html),
+        (
+            r#"el.innerHTML = '<div class="foo ${bar}"></div>';"#,
+            SourceKind::Js,
+        ),
+    ] {
+        let result = extract_candidates(source.as_bytes(), kind);
+        assert!(
+            result.notes.iter().any(|note| {
+                note.kind == NoteKind::MalformedClassCandidate && note.text == "${bar}"
+            }),
+            "{kind:?}: {result:?}"
+        );
+    }
+}
+
+/// Inside a carried `<script>`, a `${` that never closes or is escaped is
+/// text: it must not swallow later markup or split the value.
+#[test]
+fn unclosed_or_escaped_interpolation_in_carried_script_stays_text() {
+    let source = r#"export default "<script>x = `<input placeholder=\"${\"><div class=\"card p-4\">x</div><i class=\"a \\${b} c\">`;</script>";"#;
+    let result = extract_candidates(source.as_bytes(), SourceKind::Js);
+    assert_positions(source, &result);
+    for class in ["card", "p-4", "a", "c"] {
+        class_occurrence(&result, class);
+    }
+    assert!(
+        !result.candidates.iter().any(|c| c.text == "b"),
+        "{result:?}"
+    );
+}
