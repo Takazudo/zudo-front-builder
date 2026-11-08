@@ -1,9 +1,19 @@
 use super::{Collector, PositionKind};
 
-pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>, scripts: bool) -> bool {
+/// `carried` is set for markup carried inside a JS string. Its `<script>`
+/// bodies are JS source, so a class attribute written in a template literal
+/// there reads `${...}` as interpolation rather than class text (#4647).
+pub(super) fn scan(
+    source: &str,
+    base: usize,
+    out: &mut Collector<'_>,
+    scripts: bool,
+    carried: bool,
+) -> bool {
     let bytes = source.as_bytes();
     let mut i = 0;
     let mut class_attribute = false;
+    let mut in_script = false;
     while i < bytes.len() {
         if bytes[i..].starts_with(b"<!--") {
             i = source[i + 4..]
@@ -30,10 +40,22 @@ pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>, scripts: 
         if i >= bytes.len() || !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'/') {
             continue;
         }
+        let interpolations = carried && in_script;
+        if carried {
+            if let Some(name) = tag_name(&source[tag_start..]) {
+                in_script = name == "script";
+            }
+        }
         let mut quote = None;
         let mut brace = 0usize;
         while i < bytes.len() {
             let b = bytes[i];
+            if interpolations {
+                if let Some(close) = interpolation_at(source, i) {
+                    i = close;
+                    continue;
+                }
+            }
             if let Some(q) = quote {
                 if b == q && (i == 0 || bytes[i - 1] != b'\\') {
                     quote = None;
@@ -50,13 +72,18 @@ pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>, scripts: 
             i += 1;
         }
         let tag_end = i.min(bytes.len());
-        class_attribute |= attributes(&source[tag_start..tag_end], base + tag_start, out);
+        class_attribute |= attributes(
+            &source[tag_start..tag_end],
+            base + tag_start,
+            out,
+            interpolations,
+        );
         i = (tag_end + 1).min(bytes.len());
     }
     class_attribute
 }
 
-fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) -> bool {
+fn attributes(tag: &str, base: usize, out: &mut Collector<'_>, interpolations: bool) -> bool {
     let bytes = tag.as_bytes();
     let mut i = 1;
     let mut class_attribute = false;
@@ -102,6 +129,12 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) -> bool {
         i += 1;
         let value_start = i;
         while i < bytes.len() && bytes[i] != q {
+            if interpolations {
+                if let Some(close) = interpolation_at(tag, i) {
+                    i = close;
+                    continue;
+                }
+            }
             if bytes[i] == b'\\' {
                 i += 1;
             }
@@ -110,22 +143,34 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) -> bool {
         let value_end = i.min(bytes.len());
         if name == "class" || name == "className" {
             class_attribute = true;
-            let (decoded, source_map) = entities(&tag[value_start..value_end]);
             // An unterminated value has no closing quote inside the tag.
             let close = if value_end < bytes.len() {
                 value_end + 1
             } else {
                 value_end
             };
-            out.tokens(
-                &decoded,
-                base + value_start,
-                (base + open, close - open),
-                PositionKind::Class,
-                false,
-                false,
-                Some(&source_map),
-            );
+            let value = &tag[value_start..value_end];
+            let segments = if interpolations && value.contains("${") {
+                static_segments(value, base + value_start, out)
+            } else {
+                vec![(0, value.len())]
+            };
+            let last = segments.len() - 1;
+            for (index, (start, end)) in segments.into_iter().enumerate() {
+                let (decoded, mut source_map) = entities(&value[start..end]);
+                if start > 0 {
+                    source_map.iter_mut().for_each(|at| *at += start);
+                }
+                out.tokens(
+                    &decoded,
+                    base + value_start,
+                    (base + open, close - open),
+                    PositionKind::Class,
+                    index < last,
+                    index > 0,
+                    Some(&source_map),
+                );
+            }
         }
         i = (i + 1).min(bytes.len());
         if brace && i < bytes.len() && bytes[i] == b'}' {
@@ -133,6 +178,65 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) -> bool {
         }
     }
     class_attribute
+}
+
+/// The lowercase name of the element a `<script>` / `</script>`-style tag at
+/// the start of `tag` opens or closes; `None` for any other tag.
+fn tag_name(tag: &str) -> Option<&'static str> {
+    let rest = tag.strip_prefix('<')?;
+    let closing = rest.starts_with('/');
+    let name = rest.trim_start_matches('/');
+    let is_script = name
+        .get(..6)
+        .is_some_and(|head| head.eq_ignore_ascii_case("script"))
+        && name[6..]
+            .bytes()
+            .next()
+            .is_none_or(|b| b.is_ascii_whitespace() || b == b'>' || b == b'/');
+    match (is_script, closing) {
+        (true, false) => Some("script"),
+        (true, true) => Some("/script"),
+        _ => None,
+    }
+}
+
+/// The end of a `${...}` at `at` that reads as template interpolation: not
+/// escaped by an odd run of backslashes, closed, and with no `<` in its body,
+/// so a literal `${` never swallows the markup after it.
+fn interpolation_at(text: &str, at: usize) -> Option<usize> {
+    if !text[at..].starts_with("${") {
+        return None;
+    }
+    let backslashes = text[..at].bytes().rev().take_while(|&b| b == b'\\').count();
+    if backslashes % 2 == 1 {
+        return None;
+    }
+    let close = super::script::interpolation_close(text, at + 2)?;
+    (!text[at + 2..close].contains('<')).then_some(close)
+}
+
+/// Splits a class value at each `${...}` that reads as interpolation, scanning
+/// each body for literals, and returns the byte ranges of the static text
+/// between them. Any other `${` stays text.
+fn static_segments(value: &str, base: usize, out: &mut Collector<'_>) -> Vec<(usize, usize)> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while let Some(found) = value[i..].find("${") {
+        let open = i + found;
+        let Some(close) = interpolation_at(value, open) else {
+            i = open + 2;
+            continue;
+        };
+        segments.push((start, open));
+        if close - 1 > open + 2 {
+            super::script::scan_interpolation(&value[open + 2..close - 1], base + open + 2, out);
+        }
+        start = close;
+        i = close;
+    }
+    segments.push((start, value.len()));
+    segments
 }
 
 fn entities(value: &str) -> (String, Vec<usize>) {

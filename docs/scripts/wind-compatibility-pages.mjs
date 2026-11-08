@@ -204,8 +204,10 @@ function localizedNote(value, locale, field) {
 // reachable from it (every edge kind) are byte-identical versus main 7b06241.
 // #4569 tokio 1.54.1 (RUSTSEC-2026-0386): Cargo.lock only (tokio version + checksum); tokio is
 // unreachable from zudo-wind (every edge kind, all targets).
+// #4647 extraction only: `${...}` in a class value inside a <script> of JS-carried markup
+// splits as interpolation (crates/zudo-wind/src/extract/*); the utility catalog is unchanged.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "67096b6cbadc1b3da024a31ff60cb8b7539ba0471b843b4c8ca68ccedb823ac3";
+  "642e5f0b87d2717932d883b7867bb734d35d4e4fda27aac5895a5c60f0392d04";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];
