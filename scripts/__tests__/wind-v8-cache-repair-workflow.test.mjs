@@ -60,7 +60,7 @@ function runStep(cwd) {
   const result = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", script], {
     cwd,
     encoding: "utf8",
-    env: { PATH: "/usr/bin:/bin" },
+    env: { PATH: process.env.PATH },
   });
   return {
     status: result.status,
@@ -91,7 +91,8 @@ const V8_RUN = "v8-9f8e7d6c5b4a3921";
 const V8_BUILD_SCRIPT = "v8-0011223344556677";
 const SERDE_RUN = "serde-aabbccddeeff0011";
 
-// A cargo profile dir shaped like a rust-cache restore of a v8-dependent build.
+// A cargo profile dir of a v8-dependent build. rusty_v8 writes the archive to
+// target/<profile>/gn_out/obj/; rust-cache restores only build/, .fingerprint/ and deps/.
 function profileFixture(base, profile, { archive }) {
   const p = `target/${profile}`;
   const fp = `${p}/.fingerprint`;
@@ -116,12 +117,15 @@ function profileFixture(base, profile, { archive }) {
   ]) {
     touch(base, `${fp}/${SERDE_RUN}/${file}`);
   }
-  touch(base, `${p}/build/${V8_RUN}/out/gn_out/obj/librusty_v8.a`);
+  touch(base, `${p}/build/${V8_RUN}/out/gn_out/args.gn`);
   touch(base, `${p}/build/${V8_RUN}/output`);
   touch(base, `${p}/build/${V8_BUILD_SCRIPT}/build-script-build`);
   touch(base, `${p}/build/${SERDE_RUN}/output`);
   touch(base, `${p}/deps/libv8-5566778899aabbcc.rlib`);
-  if (archive) touch(base, `${p}/librusty_v8.a`);
+  if (archive) {
+    touch(base, `${p}/gn_out/obj/librusty_v8.a`);
+    touch(base, `${p}/gn_out/obj/librusty_v8.sum`);
+  }
 }
 
 const removedRunFingerprint = (profile) => `target/${profile}/.fingerprint/${V8_RUN}/`;
@@ -130,7 +134,7 @@ const withoutRunFingerprint = (tree, profile) =>
 
 describe("wind-computed-style v8 build-script re-run step", () => {
   it("extracts a non-trivial script that parses under bash -n", () => {
-    expect(script).toContain("librusty_v8.a");
+    expect(script).toContain('"$profile/gn_out/obj/librusty_v8.a"');
     const result = spawnSync("bash", ["-n", "-c", script], {
       encoding: "utf8",
     });
@@ -164,7 +168,7 @@ describe("wind-computed-style v8 build-script re-run step", () => {
       `target/debug/.fingerprint/${V8_BUILD_SCRIPT}/build-script-build-script-build`,
       `target/debug/.fingerprint/${SERDE_RUN}/run-build-script-build-script-build`,
       `target/debug/.fingerprint/${SERDE_RUN}/run-build-script-build-script-build.json`,
-      `target/debug/build/${V8_RUN}/out/gn_out/obj/librusty_v8.a`,
+      `target/debug/build/${V8_RUN}/out/gn_out/args.gn`,
       `target/debug/build/${SERDE_RUN}/output`,
       "target/debug/deps/libv8-5566778899aabbcc.rlib",
     ]) {
@@ -235,5 +239,34 @@ describe("wind-computed-style v8 build-script re-run step", () => {
     expect(second.status, second.stderr).toBe(0);
     expect(second.stdout).toBe("");
     expect(snapshot(base)).toEqual(afterFirst);
+  });
+
+  it("runs after the Rust cache restore, before the suite, unconditionally", () => {
+    const at = (marker) => {
+      const index = workflow.indexOf(`      - ${marker}\n`);
+      expect(index, `step "${marker}" not found`).toBeGreaterThanOrEqual(0);
+      return index;
+    };
+    const cache = at("name: Cache zfb SSR and zudo-wind Rust artifacts");
+    const repair = at(STEP);
+    const suite = at("name: Run wind computed-style suite");
+    expect(cache).toBeLessThan(repair);
+    expect(repair).toBeLessThan(suite);
+    expect(stepBlock(STEP)).not.toMatch(/^ {8}if:/m);
+  });
+
+  it("fires on a real post-restore tree (build/, .fingerprint/, deps/ only)", () => {
+    const base = workspace();
+    profileFixture(base, "debug", { archive: false });
+    expect(readdirSync(join(base, "target/debug")).sort()).toEqual([
+      ".fingerprint",
+      "build",
+      "deps",
+    ]);
+    const before = snapshot(base);
+    const result = runStep(base);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(`re-run v8 build script: target/debug/.fingerprint/${V8_RUN}/\n`);
+    expect(snapshot(base)).toEqual(withoutRunFingerprint(before, "debug"));
   });
 });
