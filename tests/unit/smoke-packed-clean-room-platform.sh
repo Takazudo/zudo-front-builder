@@ -73,18 +73,24 @@ case "$HOST" in
   Darwin/x86_64) HOSTP=darwin-x64; BIN=ZFB_DARWIN_X64_BINARY; ADDON=ZFB_DARWIN_X64_CSS_ADDON ;;
   *) HOSTP=; BIN=; ADDON= ;;
 esac
+# Run translated under Rosetta (the owner's darwin-x64 gate), the host case
+# is only admitted with the opt-in, so pass it to reach the env checks.
+HOST_ALLOW=ZFB_SMOKE_ALLOW_ROSETTA=0
+if [ "$HOST" = "Darwin/x86_64" ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" = "1" ]; then
+  HOST_ALLOW=ZFB_SMOKE_ALLOW_ROSETTA=1
+fi
 if [ -n "$HOSTP" ]; then
-  if run_script 1 "$BIN env var is required" ZFB_SMOKE_PLATFORM="$HOSTP"; then
+  if run_script 1 "$BIN env var is required" "$HOST_ALLOW" ZFB_SMOKE_PLATFORM="$HOSTP"; then
     pass "$HOSTP requires $BIN"
   else
     fail "$HOSTP requires $BIN"
   fi
-  if run_script 1 "$ADDON env var is required" ZFB_SMOKE_PLATFORM="$HOSTP" "$BIN=/nonexistent"; then
+  if run_script 1 "$ADDON env var is required" "$HOST_ALLOW" ZFB_SMOKE_PLATFORM="$HOSTP" "$BIN=/nonexistent"; then
     pass "$HOSTP requires $ADDON"
   else
     fail "$HOSTP requires $ADDON"
   fi
-  if run_script 2 "$BIN does not exist" ZFB_SMOKE_PLATFORM="$HOSTP" "$BIN=/nonexistent" "$ADDON=/nonexistent"; then
+  if run_script 2 "$BIN does not exist" "$HOST_ALLOW" ZFB_SMOKE_PLATFORM="$HOSTP" "$BIN=/nonexistent" "$ADDON=/nonexistent"; then
     pass "$HOSTP rejects a missing binary path"
   else
     fail "$HOSTP rejects a missing binary path"
