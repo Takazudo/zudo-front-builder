@@ -304,3 +304,25 @@ fn repeated_generated_html_classes_keep_raw_positions() {
             .all(|o| &source[o.byte_offset..o.byte_offset + o.byte_length] == text));
     }
 }
+
+/// #4647: a plugin data module that inlines a whole HTML app as a JSON string.
+/// The class attribute inside the app's `<script>` template literal is produced
+/// by JavaScript, so the `${kind}` interpolation must stay a dynamic split and
+/// never reach the compiler as a complete class candidate.
+#[test]
+fn script_template_inside_embedded_markup_keeps_interpolation_split() {
+    let source = concat!(
+        "export default {\"assets/app.html\":",
+        r#""<p class=\"intro\">x</p><script>const el = (kind) => `<text class=\"label label-${kind}\">x</text>`;const li = `<li class=\"${s.selected===q.uid?'is-selected':''}\">`;</script>"};"#,
+    );
+    let result = extract_candidates(source.as_bytes(), SourceKind::Js);
+    assert_positions(source, &result);
+    assert!(
+        !result.candidates.iter().any(|c| c.text.contains("${")),
+        "{result:?}"
+    );
+    let label = class_occurrence(&result, "label");
+    assert_eq!(label.byte_offset, source.find("label label-").unwrap());
+    let intro = class_occurrence(&result, "intro");
+    assert_eq!(intro.byte_offset, source.find("intro").unwrap());
+}

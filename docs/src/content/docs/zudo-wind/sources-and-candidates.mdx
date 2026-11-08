@@ -305,7 +305,7 @@ Both `text-muted` and `text-accent` are present as complete literals and can be 
 
 At an interpolation boundary, a static token remains eligible only if it is complete on its own. For example, a full token followed by an interpolation may be retained and marked as adjacent to dynamic text; text on either side is never joined to create a token.
 
-Configure `wind.sources.ignoreAttributes` for nonclass prop names such as `css`, `html`, `js`, `displayJs`, and `title`. It augments built-in `href`, `src`, `content`, `name`, `rel`, and `type`, excluding the entire prop value, even nested markup, interpolations, and class-helper calls. Class attributes elsewhere remain scanned. Speculative literals discard punctuation noise outside balanced arbitrary CSS forms but keep Unicode and punctuation inside those forms; embedded markup contributes its class attributes once. No query-selector or script-text heuristic is applied.
+Configure `wind.sources.ignoreAttributes` for nonclass prop names such as `css`, `html`, `js`, `displayJs`, and `title`. It augments built-in `href`, `src`, `content`, `name`, `rel`, and `type`, excluding the entire prop value, even nested markup, interpolations, and class-helper calls. Class attributes elsewhere remain scanned. Speculative literals discard punctuation noise outside balanced arbitrary CSS forms but keep Unicode and punctuation inside those forms; embedded markup contributes its class attributes once, and a `<script>` element inside it is scanned as script, so a class attribute written in that script's template literal keeps its interpolation boundaries. No query-selector or script-text heuristic is applied.
 
 ## Class positions and confidence
 
