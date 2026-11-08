@@ -104,7 +104,7 @@ export default function Page() {
   return (
     <html lang="en">
       <head><title>HTML minify fixture</title></head>
-      <body><div rawHtml={html} /><Island><Counter /></Island></body>
+      <body><div rawHtml={html} /><p>Privacy &amp; Security</p><Island><Counter /></Island></body>
     </html>
   );
 }
@@ -176,6 +176,10 @@ fn production_html_minification_real_build_path() {
     assert!(
         index.contains("/site/about"),
         "link-base rewrite should run before minification:\n{index}",
+    );
+    assert!(
+        index.contains("<p>Privacy &amp; Security</p>"),
+        "minification must keep the rendered `&amp;` escape (#4650):\n{index}",
     );
     assert!(
         index.contains("data-zfb-island=Counter") || index.contains(r#"data-zfb-island="Counter""#),

@@ -216,8 +216,10 @@ function localizedNote(value, locale, field) {
 // #4635 esbuild removal: Cargo.lock only (tar, xattr and zfb-binfetch leave with zfb's esbuild
 // staging, zfb-rolldown-prototype is renamed zfb-bundler); none is reachable from zudo-wind, and
 // crates/zudo-wind and Cargo.toml are unchanged.
+// #4647 extraction only: `${...}` in a class value inside a <script> of JS-carried markup
+// splits as interpolation (crates/zudo-wind/src/extract/*); the utility catalog is unchanged.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "221d360bb1aa1f3fe222cbf8719a606de830b0111b89817c2c1bb95020240a7f";
+  "79b44d465d98b973c6249c44524dc2709896f2c9c6e1efba8bac675a15c4fed1";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];

@@ -4,7 +4,7 @@
 > scratch examples used to test published packages, not standalone projects.
 > For the 9 standalone Cloudflare Workers/Pages example repositories with
 > live demos, see the
-> [Examples](https://takazudomodular.com/pj/zudo-front-builder/docs/guides/examples/)
+> [Examples](https://zfb.takazudomodular.com/docs/guides/examples/)
 > docs page.
 
 The `examples/*` workspace is for copyable, runnable examples that exercise
@@ -95,7 +95,7 @@ examples out because they do not provide tests.
 Each example must include its own `README.md` with:
 
 - A short description of the scenario the example demonstrates.
-- Local run steps: `pnpm install`, `pnpm dev`, `pnpm build`, and `pnpm preview`. For an example with `prerender = false` routes that read Cloudflare bindings, qualify `pnpm dev`: it exercises rendering only, not bindings — `pnpm preview` (or `wrangler dev`) is the loop that actually runs the route. See [SSR and Cloudflare Bindings — Local development](https://takazudomodular.com/pj/zudo-front-builder/docs/guides/ssr-and-cloudflare-bindings/#local-development).
+- Local run steps: `pnpm install`, `pnpm dev`, `pnpm build`, and `pnpm preview`. For an example with `prerender = false` routes that read Cloudflare bindings, qualify `pnpm dev`: it exercises rendering only, not bindings — `pnpm preview` (or `wrangler dev`) is the loop that actually runs the route. See [SSR and Cloudflare Bindings — Local development](https://zfb.takazudomodular.com/docs/guides/ssr-and-cloudflare-bindings/#local-development).
 - Cloudflare provisioning steps when the example needs Cloudflare resources.
 - Placeholder IDs in `wrangler.jsonc` or `wrangler.toml`, plus the exact
   `wrangler` commands needed to create real resources.

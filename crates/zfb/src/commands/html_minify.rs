@@ -30,16 +30,57 @@ pub(crate) fn minify_rendered_html_bytes(html: &[u8]) -> Vec<u8> {
     }
     if preservation.is_empty() {
         // No mermaid body is at risk — safe to minify normally.
-        return minify(html, &conservative_cfg());
+        return minify_keeping_escaped_ampersands(html);
     }
 
-    let minified = minify(preservation.html(), &conservative_cfg());
+    let minified = minify_keeping_escaped_ampersands(preservation.html());
     // A placeholder that fails to round-trip means minification mangled it in
     // a way `restore` cannot resolve safely — the module's own docs call the
     // original bytes the only safe fallback in that case.
     preservation
         .restore(&minified)
         .unwrap_or_else(|_| html.to_vec())
+}
+
+/// Stand-in for `&amp;` while minify-html runs. ASCII letters and digits
+/// only, so the minifier never decodes, re-encodes, quotes or splits it.
+const AMP_PLACEHOLDER: &[u8] = b"zfbAmpQ7x3kV9mPlaceholder";
+
+/// Runs the conservative minifier without letting it unescape `&amp;`.
+///
+/// minify-html decodes every character reference and re-encodes an `&`
+/// only where the WHATWG parser would read it as the start of a reference,
+/// so `a &amp; b` comes out as `a & b`. That is spec-valid but fails
+/// html-validate's default `no-raw-characters` rule (#4650). The renderer
+/// escapes every literal `&` as `&amp;`, so shielding that exact sequence
+/// keeps the escape the page was rendered with.
+fn minify_keeping_escaped_ampersands(html: &[u8]) -> Vec<u8> {
+    const AMP: &[u8] = b"&amp;";
+    if !contains(html, AMP) || contains(html, AMP_PLACEHOLDER) {
+        return minify(html, &conservative_cfg());
+    }
+    let shielded = replace_all(html, AMP, AMP_PLACEHOLDER);
+    replace_all(
+        &minify(&shielded, &conservative_cfg()),
+        AMP_PLACEHOLDER,
+        AMP,
+    )
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+fn replace_all(input: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(pos) = rest.windows(from.len()).position(|w| w == from) {
+        out.extend_from_slice(&rest[..pos]);
+        out.extend_from_slice(to);
+        rest = &rest[pos + from.len()..];
+    }
+    out.extend_from_slice(rest);
+    out
 }
 
 #[cfg(test)]
@@ -280,4 +321,75 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn html_minify_keeps_escaped_ampersands_in_text() {
+        // #4650: the renderer emits `&amp;` for every literal `&`; minify-html
+        // alone would turn the unambiguous ones back into a raw `&`.
+        let input = concat!(
+            "<p>Plain AMP1 &amp; text.</p>",
+            "<p><strong>AMP2 &amp; text</strong></p>",
+            "<p><code>AMP3 &amp; text</code></p>",
+            "<p><a href=\"https://example.com\">AMP4 &amp; text</a></p>",
+            "<p>AMP6 &lt; text and AT&amp;T; and &amp;copy end</p>",
+            "<title>Privacy &amp; Security</title>"
+        );
+
+        let raw = String::from_utf8(minify(input.as_bytes(), &conservative_cfg())).unwrap();
+        assert!(
+            raw.contains("AMP1 & text"),
+            "precondition: minify-html unescapes: {raw}"
+        );
+
+        let output = minify_rendered_html_string(input);
+
+        for expected in [
+            "AMP1 &amp; text.",
+            "<strong>AMP2 &amp; text</strong>",
+            "<code>AMP3 &amp; text</code>",
+            ">AMP4 &amp; text</a>",
+            "AMP6 &lt; text and AT&amp;T; and &amp;copy end",
+            "<title>Privacy &amp; Security</title>",
+        ] {
+            assert!(
+                output.contains(expected),
+                "missing {expected:?} in {output}"
+            );
+        }
+        assert!(!output.contains(AMP_PLACEHOLDER_STR), "{output}");
+    }
+
+    #[test]
+    fn html_minify_keeps_escaped_ampersands_in_attributes_and_raw_text() {
+        let input = concat!(
+            "<a href=\"/search?a=1&amp;b=2\" title=\"Tom &amp; Jerry\">x</a>",
+            "<script>if (a &amp;&amp; b) {}</script>",
+            "<!-- c &amp; d -->"
+        );
+
+        let output = minify_rendered_html_string(input);
+
+        assert!(output.contains("/search?a=1&amp;b=2"), "{output}");
+        assert!(output.contains("Tom &amp; Jerry"), "{output}");
+        assert!(
+            output.contains("<script>if (a &amp;&amp; b) {}</script>"),
+            "{output}"
+        );
+        assert!(output.contains("<!-- c &amp; d -->"), "{output}");
+    }
+
+    #[test]
+    fn html_minify_does_not_rewrite_a_document_that_already_holds_the_placeholder() {
+        let input = format!("<p> {AMP_PLACEHOLDER_STR} &amp; x </p>");
+
+        let output = minify_rendered_html_string(&input);
+        let baseline = String::from_utf8(minify(input.as_bytes(), &conservative_cfg())).unwrap();
+
+        assert_eq!(output, baseline);
+    }
+
+    const AMP_PLACEHOLDER_STR: &str = match std::str::from_utf8(AMP_PLACEHOLDER) {
+        Ok(s) => s,
+        Err(_) => panic!("placeholder must be UTF-8"),
+    };
 }

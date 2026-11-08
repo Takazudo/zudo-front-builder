@@ -68,8 +68,8 @@ render code but exposes no bindings, so the call above throws there. Use
 [Local development][ssr-guide-local-dev] in the same guide for the
 two-loop setup.
 
-[ssr-guide]: https://takazudomodular.com/pj/zudo-front-builder/docs/guides/ssr-and-cloudflare-bindings/
-[ssr-guide-local-dev]: https://takazudomodular.com/pj/zudo-front-builder/docs/guides/ssr-and-cloudflare-bindings/#local-development
+[ssr-guide]: https://zfb.takazudomodular.com/docs/guides/ssr-and-cloudflare-bindings/
+[ssr-guide-local-dev]: https://zfb.takazudomodular.com/docs/guides/ssr-and-cloudflare-bindings/#local-development
 
 `zfb build` will:
 

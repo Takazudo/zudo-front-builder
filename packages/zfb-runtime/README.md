@@ -237,7 +237,7 @@ import ClientRouterBootstrap from "@/components/client-router-bootstrap";
 This is the escape hatch, not the default — prefer a plain
 `import { ClientRouter } from "@takazudo/zfb-runtime"`, which the scanner detects
 on its own. See the [Client-Side Routing concept
-guide](https://takazudomodular.com/pj/zudo-front-builder/docs/concepts/client-side-routing/)
+guide](https://zfb.takazudomodular.com/docs/architecture/client-side-routing/)
 for the full API.
 
 #### `navigate()` needs `<ClientRouter />` mounted on the current page
@@ -293,7 +293,7 @@ island's current props/state exactly as they are, regardless of what the
 incoming page's props would have been — the attribute's absence, or the
 literal string `"false"`, is what makes props refresh (mirrors Astro's
 `data-astro-transition-persist-props`). See the [Client-Side Routing concept
-guide](https://takazudomodular.com/pj/zudo-front-builder/docs/concepts/client-side-routing/)
+guide](https://zfb.takazudomodular.com/docs/architecture/client-side-routing/)
 for the full walkthrough, including when to reach for the opt-out.
 
 ### `createPageRouter(options) → PageRouter`
