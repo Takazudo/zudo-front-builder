@@ -6,7 +6,14 @@ import { execFileSync } from "node:child_process";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { SECURITY_LOCK_TRANSITIONS } from "./security-lock-transitions.mjs";
+import {
+  ESBUILD_REMOVAL_LOCK_TRANSITION,
+  SECURITY_LOCK_TRANSITIONS,
+} from "./security-lock-transitions.mjs";
+import {
+  BUNDLER_SCHEMA_VERSION,
+  EXPECTED_BUNDLER_IDENTITY,
+} from "../research/v3-island-size/check-budget.mjs";
 
 const fail = (message) => {
   throw new Error("local Darwin evidence: " + message);
@@ -35,9 +42,13 @@ export function assertLocalSecurityTransition(transition) {
 // (evidence.cargoTransition), the
 // provenance-only release-bump / runtime-identity re-pins, which carry no Cargo
 // transition (owner decision 2026-10-21: Darwin re-pins must not require a
-// hosted Mac runner), and the paired #4218 dependency-graph re-pin
-// (evidence.fingerprintTransition; owner decision 2026-10-28, #4580). Adding a
-// reason here is a provenance-policy decision, not a refactor.
+// hosted Mac runner), the paired #4218 dependency-graph re-pin
+// (evidence.fingerprintTransition; owner decision 2026-10-28, #4580) and the
+// unpaired #4635 bundler-backend transition (evidence.bundlerBackend plus the
+// exact esbuild-removal evidence.cargoTransition; a local bundler-backend move
+// with an unchanged Cargo.lock is deliberately not admitted, because the only
+// reviewed local case is the #4635 lock move). Adding a reason here is a
+// provenance-policy decision, not a refactor.
 const provenanceRepin = (reason, outcome) =>
   Object.freeze({
     transitionKey: null,
@@ -101,8 +112,46 @@ export const LOCAL_EVIDENCE_PROFILES = Object.freeze({
         fail("dependency-graph transition disagrees with the staged fingerprint");
     },
   }),
+  "bundler-backend": Object.freeze({
+    transitionKey: "cargoTransition",
+    ownedKeys: Object.freeze(["cargoTransition", "bundlerBackend"]),
+    requiresReviewedTransition: true,
+    assertContract(contract) {
+      if (contract.outcome !== "bundler-backend-transition")
+        fail("bundler-backend evidence must record outcome bundler-backend-transition");
+      const record = contract.baselineEvidence?.bundlerBackend;
+      if (
+        !record ||
+        typeof record !== "object" ||
+        record.schemaVersion?.from !== BUNDLER_SCHEMA_VERSION - 1 ||
+        record.schemaVersion?.to !== BUNDLER_SCHEMA_VERSION ||
+        contract.schemaVersion !== BUNDLER_SCHEMA_VERSION ||
+        record.to?.bundlerIdentity !== EXPECTED_BUNDLER_IDENTITY ||
+        contract.toolchain?.bundlerIdentity !== EXPECTED_BUNDLER_IDENTITY ||
+        Object.hasOwn(contract.toolchain ?? {}, "esbuildVersion")
+      )
+        fail("bundler-backend evidence lacks its bundler record or disagrees with the contract");
+      const transition = contract.baselineEvidence.cargoTransition;
+      const expected = ESBUILD_REMOVAL_LOCK_TRANSITION;
+      if (
+        transition?.oldSha !== expected.oldLockSha256 ||
+        transition?.newSha !== expected.newLockSha256 ||
+        transition?.review?.id !== expected.id ||
+        transition?.review?.manifestSha256 !== expected.decisionSha256
+      )
+        fail("bundler-backend evidence needs the exact approved #4635 esbuild-removal transition");
+      if (contract.toolchain?.cargoLockSha256 !== expected.newLockSha256)
+        fail("staged contract has wrong esbuild-removal lock");
+    },
+  }),
 });
-const TRANSITION_KEYS = ["cargoRewire", "cargoRemoval", "cargoTransition", "fingerprintTransition"];
+const TRANSITION_KEYS = [
+  "cargoRewire",
+  "cargoRemoval",
+  "cargoTransition",
+  "fingerprintTransition",
+  "bundlerBackend",
+];
 
 export function localEvidenceProfile(reason) {
   if (typeof reason !== "string" || !Object.hasOwn(LOCAL_EVIDENCE_PROFILES, reason))
@@ -270,7 +319,8 @@ export function verifyLocalStageEvidence(run, contract, root) {
   )
     fail("mixed or missing staged local provenance");
   const profile = LOCAL_EVIDENCE_PROFILES[run.reason];
-  if (TRANSITION_KEYS.some((key) => key !== profile.transitionKey && Object.hasOwn(evidence, key)))
+  const owned = profile.ownedKeys ?? [profile.transitionKey];
+  if (TRANSITION_KEYS.some((key) => !owned.includes(key) && Object.hasOwn(evidence, key)))
     fail("staged evidence carries another profile's transition");
   profile.assertContract(contract);
   if (

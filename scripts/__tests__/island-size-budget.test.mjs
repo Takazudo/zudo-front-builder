@@ -1,4 +1,5 @@
 import { afterAll, afterEach, describe, expect, it } from "vite-plus/test";
+import { ESBUILD_REMOVAL_LOCK_TRANSITION } from "../security-lock-transitions.mjs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -1225,30 +1226,30 @@ describe("island shipped-size budget", () => {
   it("records the reviewed Darwin arm64 ceilings with zero allowance", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
-    expect(darwinContract.toolchain.packageVersion).toBe("5.2.0");
-    expect(darwinContract.schemaVersion).toBe(3);
+    expect(darwinContract.toolchain.packageVersion).toBe("5.2.2");
+    expect(darwinContract.schemaVersion).toBe(4);
     expect(darwinContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("54054042e5706cfa0d8c365913a8372fb7e864a1");
+    expect(darwinContract.baselineSourceSha).toBe("933acb8c129218ef036341db0e2a6d1a19e5e8c5");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "local-native",
-      localReceipt: { sha256: "a0dd8e36ce96713614da90d84367f1224c90d2f5cc208d750c02bc50c0fca934" },
+      localReceipt: { sha256: "a06dc9127cb5b94de35fb916b2a4f1bcda22af0991aeba187e41797c61e23eec" },
     });
-    // pnpmLockSha256 follows the v5.2.0 release bump at 54054042; cargoLockSha256 the
-    // reviewed noyalib-4268 producer-lock transition at f65dd70d (#4268,
-    // owner-attested local evidence); the ceilings below follow the Rolldown
-    // default islands bundler under identity normalizer v2 (#4408, #4417).
+    // pnpmLockSha256 and cargoLockSha256 follow the #4645 Darwin bundler-backend
+    // transition at 933acb8 (owner-attested local evidence; Cargo.lock under the
+    // reviewed esbuild-removal-4635 decision); the ceilings below follow the
+    // Rolldown default islands bundler under identity normalizer v2 (#4408, #4417).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
-      "5cce7d76a77876ef1093eeb19e300de362fc78e8838684e72c9f0567a50c277d",
+      "0b5c30279d7d2d98f7b2c238d36c0f9671ec446b4c31708fe1f12064d1a698ea",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
-      "216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810",
+      "b4e8f2413e0c8df9df8cd47fb8e555189560ad01bae65d3e9d637d6a51810634",
     );
     // rebaseline-island-size-darwin.mjs rewrites this literal once the contract
-    // is schemaVersion 3 (#4187); a v2 contract carries no fingerprint.
-    if (darwinContract.schemaVersion === 3) {
+    // is schemaVersion 3 or 4 (#4187, #4645); a v2 contract carries no fingerprint.
+    if (darwinContract.schemaVersion >= 3) {
       expect(darwinContract.dependencyFingerprint.sha256).toBe(
         "47de8f7592f1fb1c463ad9294ea65bbc1f315d50a74e87ab86a129d86eda89b2",
       );
@@ -2031,11 +2032,10 @@ describe("island shipped-size budget", () => {
 
 // Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
-// Exact immediate predecessors of the live contracts: the noyalib-4268
-// producer-lock contracts of both platforms, cited at #4412 merge source 2735135c
-// (byte-identical to main 2abb2382) and moved by the cargo-removal Deno exit
-// (#4396/#4397), Linux from Actions evidence and Darwin from owner-attested local
-// evidence.
+// Exact immediate predecessors of the live contracts: the schemaVersion-3 v5.2.2
+// release-bump contracts of both platforms, each moved by its bundler-backend
+// transition (#4635 Linux from Actions evidence, #4645 Darwin from
+// owner-attested local evidence).
 // Each must equal a frozen verbatim fixture, so the metadata check also holds in
 // shallow CI; full checkouts also compare git bytes and that no intermediate
 // contract was skipped. A local-native predecessor has no Actions run, so its
@@ -2054,15 +2054,15 @@ const repinnedFromContracts = [
     baselineRunId: 42167975789,
   },
   {
-    // The Darwin v5.2.0 release bump cites the zudo-doc 9.1.1 Darwin contract on
-    // main at 54054042.
+    // The Darwin #4645 bundler-backend transition cites the frozen
+    // schemaVersion-3 v5.2.2 Darwin contract (its release bump at 0e6f9ca).
     file: "decision.json",
-    commit: "54054042e5706cfa0d8c365913a8372fb7e864a1",
-    sha256: "ed3ffdcd9d0fca189d503b0c5b38371afb70ecc45b41c7b660a150d389f4ecb7",
-    fixture: "fixtures/island-size-darwin-v5.1.5-doc911.json",
-    outcome: "dependency-graph-repin",
-    packageVersion: "5.1.5",
-    baselineSourceSha: "d04ef461b3e9c54cedd1be8ef46bee219c716690",
+    commit: "933acb8c129218ef036341db0e2a6d1a19e5e8c5",
+    sha256: "51b177b70d1e618ac3de55fa2b723b248b18c2add0519ece53c665e979c4d8ac",
+    fixture: "fixtures/island-size-darwin-v5.2.2-release.json",
+    outcome: "release-version-stamp",
+    packageVersion: "5.2.2",
+    baselineSourceSha: "0e6f9ca36c31b3961b69cd31837431e4dad3768b",
     baselineRunId: undefined,
   },
 ];
@@ -4014,9 +4014,20 @@ describe("live contracts preserve released evidence and authentic predecessors",
 
   // The Darwin v5.2.0 release bump: local native evidence collected on the
   // MacBook Neo at 54054042.
-  it("moves the live Darwin contract from the frozen doc 9.1.1 bytes only by the v5.2.0 release bump", () => {
+  const darwinV520 = () =>
+    frozenDenoExit(
+      "fixtures/island-size-darwin-v5.2.0-release.json",
+      "f26b6b8f236616803c4828f2ad94cebb9b9c3f0f642dfae7a3b201a864343b82",
+    );
+  const darwinV522Esbuild = () =>
+    frozenDenoExit(
+      "fixtures/island-size-darwin-v5.2.2-release.json",
+      "51b177b70d1e618ac3de55fa2b723b248b18c2add0519ece53c665e979c4d8ac",
+    );
+
+  it("moves the frozen doc 9.1.1 Darwin contract only by the v5.2.0 release bump", () => {
     const predecessor = darwinV515Doc911();
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+    const live = darwinV520();
     expect(live.outcome).toBe("release-version-stamp");
     expect(live.toolchain.packageVersion).toBe("5.2.0");
     expect(live.toolchain.pnpmLockSha256).toBe(
@@ -4036,6 +4047,130 @@ describe("live contracts preserve released evidence and authentic predecessors",
     for (const key of ["runId", "jobId", "artifact"])
       expect(live.baselineEvidence).not.toHaveProperty(key);
     expectReleaseBumpOnly(predecessor, live);
+  });
+
+  // The Darwin v5.2.2 release bump (#4645): local native evidence collected on
+  // ball-lightning at the esbuild-era 5.2.2 source 0e6f9ca.
+  it("moves the frozen v5.2.0 Darwin contract only by the v5.2.2 release bump", () => {
+    const predecessor = darwinV520();
+    const live = darwinV522Esbuild();
+    expect(live.schemaVersion).toBe(3);
+    expect(live.outcome).toBe("release-version-stamp");
+    expect(live.toolchain.packageVersion).toBe("5.2.2");
+    expect(live.toolchain.esbuildVersion).toBe(predecessor.toolchain.esbuildVersion);
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "82b441e26cc6c9696299475838166a064bfa174c77700b4e26fe4a885aefe6e6",
+    );
+    expect(live.toolchain.cargoLockSha256).toBe(predecessor.toolchain.cargoLockSha256);
+    expect(live.baselineSourceSha).toBe("0e6f9ca36c31b3961b69cd31837431e4dad3768b");
+    expect(live.baselineEvidence.repinnedFrom).toEqual({
+      schemaVersion: predecessor.schemaVersion,
+      outcome: predecessor.outcome,
+      packageVersion: predecessor.toolchain.packageVersion,
+      baselineSourceSha: predecessor.baselineSourceSha,
+      contract: {
+        sha256: "f26b6b8f236616803c4828f2ad94cebb9b9c3f0f642dfae7a3b201a864343b82",
+        commit: "0e6f9ca36c31b3961b69cd31837431e4dad3768b",
+        path: "research/v3-island-size/decision.json",
+      },
+    });
+    expect(live.baselineEvidence).toMatchObject({
+      event: "local-native",
+      sourceSha: "0e6f9ca36c31b3961b69cd31837431e4dad3768b",
+      stagingTool: { commit: "4b4ca3d89494f023be90a622ee4637695267d9df" },
+      localReceipt: { sha256: "d06f8dcbcfa4a74bf7fe78a78d4c165f1773208dd5883a88ad46f56a36e62bb0" },
+      originalCheckerResult: { exitCode: 0 },
+    });
+    for (const key of ["fingerprintTransition", "cargoRewire", "cargoTransition", "cargoRemoval"]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    for (const key of ["runId", "jobId", "artifact"])
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    expectReleaseBumpOnly(predecessor, live);
+  });
+
+  // The Darwin bundler-backend transition (#4645): local native evidence of the
+  // esbuild-free producer at 933acb8, re-pinned to schemaVersion 4 at v5.2.2.
+  it("moves the frozen v5.2.2 schema-3 Darwin contract only by the bundler-backend transition", () => {
+    const predecessor = darwinV522Esbuild();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+    expect(live.outcome).toBe("bundler-backend-transition");
+    expect(live.schemaVersion).toBe(4);
+    expect(live.toolchain).not.toHaveProperty("esbuildVersion");
+    expect(live.toolchain.bundlerIdentity).toBe("rolldown-24bc2d0");
+    expect(live.toolchain.packageVersion).toBe(predecessor.toolchain.packageVersion);
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "0b5c30279d7d2d98f7b2c238d36c0f9671ec446b4c31708fe1f12064d1a698ea",
+    );
+    expect(live.baselineSourceSha).toBe("933acb8c129218ef036341db0e2a6d1a19e5e8c5");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "local-native",
+      sourceSha: "933acb8c129218ef036341db0e2a6d1a19e5e8c5",
+      stagingTool: { commit: "933acb8c129218ef036341db0e2a6d1a19e5e8c5" },
+      localReceipt: { sha256: "a06dc9127cb5b94de35fb916b2a4f1bcda22af0991aeba187e41797c61e23eec" },
+    });
+    for (const key of ["runId", "jobId", "artifact"])
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    for (const key of ["fingerprintTransition", "cargoRewire", "cargoRemoval"]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    expect(live.baselineEvidence.bundlerBackend).toEqual({
+      schemaVersion: { from: 3, to: 4 },
+      from: { esbuildVersion: predecessor.toolchain.esbuildVersion },
+      to: { bundlerIdentity: "rolldown-24bc2d0" },
+      runner: {
+        file: "measure-real.mjs",
+        beforeSha256: predecessor.runnerSha256["measure-real.mjs"],
+        afterSha256: live.runnerSha256["measure-real.mjs"],
+      },
+      pnpmLockSha256: {
+        before: predecessor.toolchain.pnpmLockSha256,
+        after: live.toolchain.pnpmLockSha256,
+      },
+    });
+    const lock = esbuildRemovalLock();
+    expect(live.baselineEvidence.cargoTransition).toMatchObject({
+      oldSha: predecessor.toolchain.cargoLockSha256,
+      newSha: live.toolchain.cargoLockSha256,
+      added: ["zfb-bundler@0.0.0", "zfb-compiler-worker@0.0.0"],
+      review: {
+        id: "esbuild-removal-4635",
+        manifestSha256: ESBUILD_REMOVAL_LOCK_TRANSITION.decisionSha256,
+      },
+    });
+    expect(live.baselineEvidence.cargoTransition.oldSha).toBe(lock.expectedOldSha);
+    expect(live.baselineEvidence.cargoTransition.newSha).toBe(lock.expectedNewSha);
+    const gzipShape = (contract) =>
+      Object.fromEntries(
+        Object.entries(contract.baselineEvidence.actualGzip).map(([mode, rows]) => [
+          mode,
+          Object.keys(rows).sort(),
+        ]),
+      );
+    expect(gzipShape(live)).toEqual(gzipShape(predecessor));
+    const moved = contractDiffKeys(predecessor, live);
+    expect(moved.filter((key) => !key.startsWith("baselineEvidence."))).toEqual([
+      "baselineSourceSha",
+      "outcome",
+      "platformStatus",
+      "runnerSha256.measure-real.mjs",
+      "schemaVersion",
+      "toolchain.bundlerIdentity",
+      "toolchain.cargoLockSha256",
+      "toolchain.esbuildVersion",
+      "toolchain.pnpmLockSha256",
+    ]);
+    expect(() =>
+      assertAllowedMovement(BUNDLER_BACKEND_REASON, BUNDLER_BACKEND_MOVEMENT, predecessor, live),
+    ).not.toThrow();
+    expect(live.ceilings).toEqual(predecessor.ceilings);
+    expect(live.allowance).toEqual(predecessor.allowance);
+    const readme = readFileSync(join(sizeDir, "README.md"), "utf8");
+    expect(readme).toContain(
+      "because the runner now records that identity. " +
+        cargoTransitionMarkdown(live.baselineEvidence.cargoTransition) +
+        " The package version",
+    );
   });
 
   it("keeps the dated README corrections", () => {

@@ -1747,7 +1747,7 @@ export function assertProducerMatchesSchema(contract, evidence, reason) {
 
 // Only bundler-backend writes schemaVersion 4, and a schemaVersion-4 contract
 // never regains toolchain.esbuildVersion.
-function assertSchemaShape(before, after, reason) {
+export function assertSchemaShape(before, after, reason) {
   if (
     reason !== BUNDLER_BACKEND_REASON &&
     before.schemaVersion !== BUNDLER_SCHEMA_VERSION &&
@@ -1768,7 +1768,7 @@ function assertSchemaShape(before, after, reason) {
   }
 }
 
-function bundlerBackendText(record, cargoTransition) {
+export function bundlerBackendText(record, cargoTransition) {
   return (
     "schemaVersion " +
     record.schemaVersion.from +
