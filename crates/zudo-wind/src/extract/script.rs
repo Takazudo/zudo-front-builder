@@ -130,8 +130,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>, jsx: &JsxSp
                     let body_end = if source[..i].ends_with('}') { i - 1 } else { i };
                     if !known_non_class && body_end > expression_start {
                         let expression = &source[expression_start..body_end];
-                        let nested_jsx = collect_jsx_spans(expression);
-                        scan_literals(expression, base + expression_start, out, &nested_jsx);
+                        scan_interpolation(expression, base + expression_start, out);
                     }
                     segment = i;
                     left = true;
@@ -621,7 +620,13 @@ pub(super) fn scan_interpolation(expression: &str, base: usize, out: &mut Collec
     scan_literals(expression, base, out, &jsx);
 }
 
-pub(super) fn expression_end(source: &str, start: usize) -> usize {
+fn expression_end(source: &str, start: usize) -> usize {
+    interpolation_close(source, start).unwrap_or(source.len())
+}
+
+/// The end of a `${...}` body starting at `start`, just past its closing `}`,
+/// or `None` when the body never closes.
+pub(super) fn interpolation_close(source: &str, start: usize) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut i = start;
     let mut depth = 1;
@@ -640,12 +645,12 @@ pub(super) fn expression_end(source: &str, start: usize) -> usize {
         } else if bytes[i] == b'}' {
             depth -= 1;
             if depth == 0 {
-                return i + 1;
+                return Some(i + 1);
             }
         }
         i += 1;
     }
-    bytes.len()
+    None
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -42,10 +42,6 @@ pub(super) fn scan(
         let mut brace = 0usize;
         while i < bytes.len() {
             let b = bytes[i];
-            if interpolations && bytes[i..].starts_with(b"${") {
-                i = super::script::expression_end(source, i + 2);
-                continue;
-            }
             if let Some(q) = quote {
                 if b == q && (i == 0 || bytes[i - 1] != b'\\') {
                     quote = None;
@@ -119,10 +115,6 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>, interpolations: b
         i += 1;
         let value_start = i;
         while i < bytes.len() && bytes[i] != q {
-            if interpolations && bytes[i..].starts_with(b"${") {
-                i = super::script::expression_end(tag, i + 2);
-                continue;
-            }
             if bytes[i] == b'\\' {
                 i += 1;
             }
@@ -138,7 +130,7 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>, interpolations: b
                 value_end
             };
             let value = &tag[value_start..value_end];
-            let segments = if interpolations {
+            let segments = if interpolations && value.contains("${") {
                 static_segments(value, base + value_start, out)
             } else {
                 vec![(0, value.len())]
@@ -166,23 +158,29 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>, interpolations: b
     class_attribute
 }
 
-/// Splits a class value at its `${...}` interpolations, scanning each body for
-/// literals, and returns the byte ranges of the static text between them.
+/// Splits a class value at each unescaped `${...}` that closes inside it,
+/// scanning each body for literals, and returns the byte ranges of the static
+/// text between them. A `${` that is escaped or never closes stays text.
 fn static_segments(value: &str, base: usize, out: &mut Collector<'_>) -> Vec<(usize, usize)> {
     let mut segments = Vec::new();
     let mut start = 0;
     let mut i = 0;
     while let Some(found) = value[i..].find("${") {
         let open = i + found;
-        segments.push((start, open));
         let body = open + 2;
-        i = super::script::expression_end(value, body);
-        // An unterminated interpolation runs to the end and has no `}` to strip.
-        let body_end = if value[..i].ends_with('}') { i - 1 } else { i };
-        if body_end > body {
-            super::script::scan_interpolation(&value[body..body_end], base + body, out);
+        let close = (!value[..open].ends_with('\\'))
+            .then(|| super::script::interpolation_close(value, body))
+            .flatten();
+        let Some(close) = close else {
+            i = body;
+            continue;
+        };
+        segments.push((start, open));
+        if close - 1 > body {
+            super::script::scan_interpolation(&value[body..close - 1], base + body, out);
         }
-        start = i;
+        start = close;
+        i = close;
     }
     segments.push((start, value.len()));
     segments

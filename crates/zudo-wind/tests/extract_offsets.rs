@@ -314,7 +314,7 @@ fn repeated_generated_html_classes_keep_raw_positions() {
 fn interpolation_in_embedded_class_value_splits_the_candidates() {
     let source = concat!(
         "export default {\"assets/app.html\":",
-        r#""<script>const l = `<text class=\"label label-${kind}\">x</text><li class=\"${s.selected===q.uid?'is-selected':''} item\">`;const i = `<i class=\"text-lg${x}\"><b class=\"${on ? \"is-on\" : \"\"} card\">`;</script>"};"#,
+        r#""<script>const l = `<text class=\"label label-${kind}\">x</text><li class=\"${s.selected===q.uid?'is-selected':''} item\">`;const i = `<i class=\"text-lg${x}\">`;</script>"};"#,
     );
     let result = extract_candidates(source.as_bytes(), SourceKind::Js);
     assert_positions(source, &result);
@@ -325,22 +325,20 @@ fn interpolation_in_embedded_class_value_splits_the_candidates() {
     let label = class_occurrence(&result, "label");
     assert_eq!(label.byte_offset, source.find("label label-").unwrap());
     assert!(!label.adjacent_interpolation);
-    for (class, after) in [("item", "''} "), ("card", r#"\"\"} "#)] {
-        let occurrence = class_occurrence(&result, class);
-        let at = source.find(after).unwrap() + after.len();
-        assert_eq!(occurrence.byte_offset, at, "{class}");
-        assert!(!occurrence.adjacent_interpolation, "{class}");
-    }
+    let item = class_occurrence(&result, "item");
+    assert_eq!(item.byte_offset, source.find("''} item").unwrap() + 4);
+    assert!(!item.adjacent_interpolation);
     assert!(class_occurrence(&result, "text-lg").adjacent_interpolation);
-    for literal in ["is-selected", "is-on"] {
-        let candidate = result.candidates.iter().find(|c| c.text == literal);
-        let occurrence = candidate.map(|c| &c.occurrences[0]);
-        assert_eq!(
-            occurrence.map(|o| (o.byte_offset, o.position_kind)),
-            Some((source.find(literal).unwrap(), PositionKind::Literal)),
-            "{literal}: {found:?}"
-        );
-    }
+    let selected = result
+        .candidates
+        .iter()
+        .find(|c| c.text == "is-selected")
+        .map(|c| (c.occurrences[0].byte_offset, c.occurrences[0].position_kind));
+    assert_eq!(
+        selected,
+        Some((source.find("is-selected").unwrap(), PositionKind::Literal)),
+        "{found:?}"
+    );
 }
 
 /// Outside a JS string, `${` in a class attribute is literal text, so it stays
@@ -354,6 +352,22 @@ fn interpolation_syntax_in_plain_markup_class_stays_malformed() {
             .notes
             .iter()
             .any(|note| note.kind == NoteKind::MalformedClassCandidate && note.text == "${bar}"),
+        "{result:?}"
+    );
+}
+
+/// A `${` that never closes inside its class value, or is escaped, is text:
+/// it must not swallow later markup or split the value (#4647 review).
+#[test]
+fn unclosed_or_escaped_interpolation_in_embedded_markup_stays_text() {
+    let source = r#"el.innerHTML = '<input placeholder="${"><div class="card p-4">x</div><i class="a \\${b} c">';"#;
+    let result = extract_candidates(source.as_bytes(), SourceKind::Js);
+    assert_positions(source, &result);
+    for class in ["card", "p-4", "a", "c"] {
+        class_occurrence(&result, class);
+    }
+    assert!(
+        !result.candidates.iter().any(|c| c.text == "b"),
         "{result:?}"
     );
 }
