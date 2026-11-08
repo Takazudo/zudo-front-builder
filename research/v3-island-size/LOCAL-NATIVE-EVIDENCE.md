@@ -1,16 +1,17 @@
 # Owner-attested local Darwin evidence
 
 This adapter extends `cargo-internal-rewire`, `cargo-removal`, the exact #4314 `cargo-producer-lock`
-transition, the provenance-only `release-bump` and `runtime-identity` re-pins and the
-paired `dependency-graph` re-pin (see the profile table below). It accepts retained native Darwin
+transition, the provenance-only `release-bump` and `runtime-identity` re-pins, the
+paired `dependency-graph` re-pin and the #4635 `bundler-backend` transition (see the
+profile table below). It accepts retained native Darwin
 arm64 bundles through the same measurement, normalization, fingerprint, Cargo
 closure/declaration and paired-stage validators as Actions artifacts. It changes no
 ceiling, allowance, budget pin, default feature, producer or collection command.
 Every other reason still requires its existing provenance route.
 
-## One module, six reviewed profiles
+## One module, seven reviewed profiles
 
-`scripts/island-size-local-evidence.mjs` holds exactly six local-evidence
+`scripts/island-size-local-evidence.mjs` holds exactly seven local-evidence
 profiles in `LOCAL_EVIDENCE_PROFILES`, each for its own purpose:
 
 | Reason | Purpose | Transition binding | Lock binding |
@@ -21,6 +22,7 @@ profiles in `LOCAL_EVIDENCE_PROFILES`, each for its own purpose:
 | `release-bump` | Darwin package-version re-pin after a release (owner decision 2026-10-21) | None; `outcome` must be `release-version-stamp` | `Cargo.lock` must not move (the re-pin's own refusal) |
 | `runtime-identity` | Darwin runtime-identity re-pin (same decision) | None; `outcome` must be `runtime-identity-repin` | `Cargo.lock` must not move (the re-pin's own refusal) |
 | `dependency-graph` | Darwin half of the paired #4218 dependency-graph re-pin (owner decision 2026-10-28, #4580) | `baselineEvidence.fingerprintTransition` from the shared fingerprint refusals; `outcome` must be `dependency-graph-repin` | `Cargo.lock` must not move (the re-pin's own refusal) |
+| `bundler-backend` | Darwin schemaVersion 3 to 4 move to the esbuild-free producer (#4635, #4645) | `baselineEvidence.bundlerBackend` plus `baselineEvidence.cargoTransition` equal to the exact `esbuild-removal-4635` decision; `outcome` must be `bundler-backend-transition` | Exact old/new `Cargo.lock` SHA-256 of that decision |
 
 On 2026-10-21 the owner decided that Darwin re-pins must not require a hosted
 Mac runner, so the two provenance-only re-pins joined the table. They keep every
@@ -129,6 +131,14 @@ For `dependency-graph`, pass the same receipt, tooling and source flags with
 `--reason dependency-graph` and the `--stage` directory the Linux run stages
 into (either order). `--source-sha` must be the Linux run's PR merge source or
 its probe head, as on the Actions route. No Cargo flag is accepted.
+
+For `bundler-backend`, pass the same receipt, tooling and source flags with an
+unpaired `--stage`, `--previous-contract-ref <measured-source>` and the
+`esbuild-removal-4635` Cargo arguments shown in the README's bundler-backend
+section; `--reviewed-cargo-transition` is required. The bundle must record
+`bundlerIdentity` and no esbuild field, and `runner-provenance.txt` must carry
+`bundler_identity` instead of `esbuild_version` and `esbuild_binary`. Apply it
+like `release-bump`.
 
 For `release-bump` or `runtime-identity`, pass the same receipt, tooling and
 source flags with `--reason release-bump` (or `runtime-identity`), an

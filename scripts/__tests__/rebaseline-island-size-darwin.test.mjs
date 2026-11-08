@@ -26,6 +26,7 @@ import {
   normalizerSha256,
 } from "../../research/v3-island-size/normalize-identity.mjs";
 import {
+  BUNDLER_BACKEND_MOVEMENT,
   CARGO_INTERNAL_REWIRE_MOVEMENT,
   CARGO_PRODUCER_LOCK_MOVEMENT,
   CARGO_REMOVAL_MOVEMENT,
@@ -60,6 +61,7 @@ import {
   darwinRepinReadmeSection,
   markdownCodeSpan,
   rewriteDarwinTestPins,
+  transitionDarwinBundlerBackend,
   transitionDarwinCargoLock,
   transitionDarwinCargoRemoval,
   transitionDarwinCargoRewire,
@@ -99,6 +101,7 @@ import {
   writeExternalInputs,
 } from "./fixtures/island-size-external-edge.mjs";
 import { reviewedCargoLock } from "./fixtures/reviewed-cargo-transition.mjs";
+import { esbuildRemovalLock } from "./fixtures/esbuild-removal-transition.mjs";
 import {
   REMOVAL_MANIFESTS,
   removalDeclaration,
@@ -442,7 +445,7 @@ describe("rebaseline-island-size-darwin", () => {
     expect(bad({ reason: "runtime-identity" })).not.toThrow();
     expect(bad({ reason: "fingerprint-migration" })).not.toThrow();
     expect(bad({ reason: "other" })).toThrow(
-      /--reason must be one of metric-migration, release-bump, runtime-identity, fingerprint-migration, fingerprint-helper, cargo-producer-lock, dependency-graph, fingerprint-policy, cargo-internal-rewire, cargo-removal$/,
+      /--reason must be one of metric-migration, release-bump, runtime-identity, fingerprint-migration, fingerprint-helper, cargo-producer-lock, dependency-graph, fingerprint-policy, cargo-internal-rewire, cargo-removal, bundler-backend$/,
     );
     // The Linux-only consumer-lock reason (#4184) is not a Darwin re-pin reason.
     expect(bad({ reason: "lockfile-provenance" })).toThrow("--reason must be one of");
@@ -1627,10 +1630,10 @@ describe("rebaseline-island-size-darwin cargo-producer-lock (#4214)", () => {
     const { artifact, contract } = fixture();
     const v2 = asSchemaV2(contract);
     expect(validateDarwinEvidence(v2, artifact, SOURCE_SHA, "cargo-producer-lock")).toContain(
-      "contract is not a schemaVersion 3 gzip-identity-normalized v2 contract",
+      "contract is not a schemaVersion 3 or 4 gzip-identity-normalized v2 contract",
     );
     expect(() => run(v2, artifact)).toThrow(
-      "--reason cargo-producer-lock needs a schemaVersion 3 contract, found schemaVersion 2",
+      "--reason cargo-producer-lock needs a schemaVersion 3 or 4 contract, found schemaVersion 2",
     );
     const grown = structuredClone(contract);
     grown.ceilings.packed.model.gzipNormalized += 1;
@@ -2223,7 +2226,7 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
       }),
     ).toThrow(/but helperSha256 differ from the contract; .*`fingerprint-policy` \(#4218\)/);
     expect(run(asSchemaV2(darwinPinned))).toThrow(
-      "--reason dependency-graph needs a schemaVersion 3 contract, found schemaVersion 2",
+      "--reason dependency-graph needs a schemaVersion 3 or 4 contract, found schemaVersion 2",
     );
     expect(run({ ...darwinPinned, allowance: { raw: 0, gzipNormalized: 1 } })).toThrow(
       "moves only dependencyFingerprint.sha256, but allowance differ",
@@ -2284,7 +2287,7 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
         c.schemaVersion = 2;
       }),
       {},
-      "contract is not a schemaVersion 3 gzip-identity-normalized v2 contract",
+      "contract is not a schemaVersion 3 or 4 gzip-identity-normalized v2 contract",
     ],
     [
       "a sidecar whose results were edited",
@@ -3579,7 +3582,7 @@ describe.each([1, 2])("cargo-internal-rewire paired staging, declaration schema 
         rewire,
       ),
     ).toThrow(
-      "--reason cargo-internal-rewire needs a schemaVersion 3 contract, found schemaVersion 2",
+      "--reason cargo-internal-rewire needs a schemaVersion 3 or 4 contract, found schemaVersion 2",
     );
     const moved = structuredClone(darwinPinned);
     moved.toolchain.packageVersion = "9.9.8";
@@ -5038,5 +5041,349 @@ describe("dependency-graph local Darwin evidence (#4580)", () => {
       main([...argv, "--run-id", "7"], repo.root, undefined, tools.root),
     ).rejects.toThrow("forbids Actions");
     unchanged();
+  });
+});
+
+// #4645 bundler-backend: synthetic esbuild-free saved bytes, an owner-style
+// receipt and a git-backed checkout whose HEAD carries the reviewed #4635
+// Cargo.lock over a schemaVersion-3 contract pinning the esbuild producer, the
+// old lock and an older measure-real.mjs digest. Test fixture, not a native
+// Mac measurement or a live re-pin.
+describe("bundler-backend local Darwin evidence (#4645)", () => {
+  const CONTRACT = "research/v3-island-size/decision.json";
+  const TEST = "scripts/__tests__/island-size-budget.test.mjs";
+  const README = "research/v3-island-size/README.md";
+  const REQUEST = "crates/zfb-bundler/src/request.rs";
+  const BUNDLER = "rolldown-24bc2d0";
+  const OLD_RUNNER = "0".repeat(64);
+  const localRoots = [];
+  const argv = (values) =>
+    Object.entries(values)
+      .filter(([, v]) => v !== undefined)
+      .flatMap(([key, value]) => ["--" + key, value]);
+  afterEach(() => {
+    for (const root of localRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+  const esbuildFree = (p) => {
+    delete p.esbuildVersion;
+    delete p.esbuildBinarySha256;
+    p.bundlerIdentity = BUNDLER;
+  };
+  function setup({
+    tweak = () => {},
+    changeContract = () => {},
+    runner = (text) => text,
+    checkoutBundler = BUNDLER,
+  } = {}) {
+    const lock = esbuildRemovalLock();
+    let pinned;
+    const repo = makeGitCheckout(localRoots, {
+      oldCargoLock: lock.oldText,
+      newCargoLock: lock.newText,
+      prepare(checkout) {
+        const artifact = makeArtifact({ version: checkout.version });
+        pinned = previousSchema2(artifact);
+        Object.assign(pinned, {
+          schemaVersion: 3,
+          dependencyFingerprint: checkout.dependencyFingerprint,
+          fixtureSha256: checkout.fixtureSha256,
+          runnerSha256: { ...checkout.runnerSha256, "measure-real.mjs": OLD_RUNNER },
+        });
+        Object.assign(pinned.toolchain, {
+          packageVersion: checkout.version,
+          pnpmLockSha256: checkout.pnpmLockSha256,
+          cargoLockSha256: lock.expectedOldSha,
+        });
+        changeContract(pinned);
+        write(checkout.root, CONTRACT, JSON.stringify(pinned));
+        write(checkout.root, "review.json", lock.reviewedTransitionText);
+        write(
+          checkout.root,
+          REQUEST,
+          'pub const BACKEND_IDENTITY: &str = "' + checkoutBundler + '";\n',
+        );
+      },
+    });
+    repo.git("add", "Cargo.lock");
+    repo.git("commit", "-qm", "fixture candidate");
+    const source = repo.git("rev-parse", "HEAD").trim();
+    const tools = makeGitCheckout(localRoots);
+    const toolSha = tools.git("rev-parse", "HEAD").trim();
+    const artifact = realpathSync(
+      makeArtifact({
+        version: repo.version,
+        tweak(p, mode) {
+          Object.assign(p, {
+            sourceSha: source,
+            fixtureSha256: repo.fixtureSha256,
+            runnerSha256: repo.runnerSha256,
+            pnpmLockSha256: repo.pnpmLockSha256,
+            cargoLockSha256: repo.cargoLockSha256,
+            dependencyFingerprint: { policyVersion: 1, sha256: repo.dependencyFingerprint.sha256 },
+          });
+          esbuildFree(p);
+          tweak(p, mode);
+        },
+      }),
+    );
+    // The esbuild-free workflow records bundler_identity instead of the esbuild lines.
+    const runnerPath = join(artifact, "runner-provenance.txt");
+    writeFileSync(
+      runnerPath,
+      runner(
+        readFileSync(runnerPath, "utf8")
+          .replace(SOURCE_SHA, source)
+          .replace(/^esbuild_version=.*\n/m, "bundler_identity=" + BUNDLER + "\n")
+          .replace(/^esbuild_binary=.*\n/m, ""),
+      ),
+    );
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "zfb-bundler-receipt-")));
+    localRoots.push(outside);
+    const receiptPath = join(outside, "receipt.json");
+    writeFileSync(
+      receiptPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        kind: "local-native-darwin",
+        operator: "synthetic owner",
+        collectedAt: "2026-01-01T00:00:00.000Z",
+        source: { commit: source, clean: true },
+        platform: { os: "darwin", arch: "arm64" },
+        commands: [["synthetic-collector", "--two-passes"]],
+        bundle: { location: "synthetic retained bytes", sha256: localBundleDigest(artifact) },
+      }),
+    );
+    const values = {
+      artifact,
+      "source-root": repo.root,
+      "source-sha": source,
+      "tool-sha": toolSha,
+      "local-receipt": receiptPath,
+      "local-receipt-sha": sha(readFileSync(receiptPath)),
+      reason: "bundler-backend",
+      stage: join(outside, "stage"),
+      "expected-old-cargo-sha": lock.expectedOldSha,
+      "expected-new-cargo-sha": lock.expectedNewSha,
+      "old-cargo-ref": repo.commit,
+      "added-packages": lock.added.join(","),
+      "reviewed-cargo-transition": "review.json",
+      "previous-contract-ref": source,
+    };
+    const before = Object.fromEntries(
+      [CONTRACT, TEST, README].map((f) => [f, readFileSync(join(repo.root, f))]),
+    );
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const run = (extra = {}) => main(argv({ ...values, ...extra }), ".", undefined, tools.root);
+    const unchanged = () => {
+      for (const [f, b] of Object.entries(before))
+        expect(readFileSync(join(repo.root, f))).toEqual(b);
+    };
+    return { lock, repo, tools, source, toolSha, pinned, values, artifact, run, unchanged };
+  }
+
+  it("stages and applies the schemaVersion 3 -> 4 move from local evidence", async () => {
+    const f = setup();
+    await f.run();
+    f.unchanged();
+    const staged = JSON.parse(readFileSync(join(f.values.stage, CONTRACT), "utf8"));
+    expect(staged.schemaVersion).toBe(4);
+    expect(staged.outcome).toBe("bundler-backend-transition");
+    expect(Object.keys(staged.toolchain)).toEqual(
+      Object.keys(f.pinned.toolchain).map((key) =>
+        key === "esbuildVersion" ? "bundlerIdentity" : key,
+      ),
+    );
+    expect(staged.toolchain).toEqual({
+      ...Object.fromEntries(
+        Object.entries(f.pinned.toolchain).filter(([key]) => key !== "esbuildVersion"),
+      ),
+      bundlerIdentity: BUNDLER,
+      cargoLockSha256: f.lock.expectedNewSha,
+    });
+    expect(staged.runnerSha256).toEqual(f.repo.runnerSha256);
+    expect(staged.ceilings).toEqual(f.pinned.ceilings);
+    expect(staged.allowance).toEqual(f.pinned.allowance);
+    expect(staged.dependencyFingerprint).toEqual(f.pinned.dependencyFingerprint);
+    expect(() =>
+      assertAllowedMovement("bundler-backend", BUNDLER_BACKEND_MOVEMENT, f.pinned, staged),
+    ).not.toThrow();
+    expect(staged.baselineEvidence).toMatchObject({
+      event: "local-native",
+      sourceSha: f.source,
+      stagingTool: { commit: f.toolSha },
+      localReceipt: { sha256: f.values["local-receipt-sha"] },
+      nativeRunner: { bundlerIdentity: BUNDLER },
+      bundlerBackend: {
+        schemaVersion: { from: 3, to: 4 },
+        from: { esbuildVersion: "0.25.12" },
+        to: { bundlerIdentity: BUNDLER },
+        runner: {
+          file: "measure-real.mjs",
+          beforeSha256: OLD_RUNNER,
+          afterSha256: f.repo.runnerSha256["measure-real.mjs"],
+        },
+      },
+      cargoTransition: {
+        oldSha: f.lock.expectedOldSha,
+        newSha: f.lock.expectedNewSha,
+        review: { id: "esbuild-removal-4635" },
+      },
+    });
+    expect(staged.baselineEvidence.nativeRunner).not.toHaveProperty("esbuild");
+    expect(staged.baselineEvidence.nativeRunner).not.toHaveProperty("esbuildBinarySha256");
+    for (const key of ["artifact", "runId", "jobId"])
+      expect(staged.baselineEvidence).not.toHaveProperty(key);
+    const pins = readFileSync(join(f.values.stage, TEST), "utf8");
+    expect(pins).toContain("expect(darwinContract.schemaVersion).toBe(4)");
+    expect(rewriteDarwinTestPins(pins, staged)).toBe(pins);
+    const section = darwinSectionOf(readFileSync(join(f.values.stage, README), "utf8"));
+    expect(section).toContain("bundler-backend transition");
+    expect(section).toContain("`toolchain.bundlerIdentity` `" + BUNDLER + "`");
+    expect(section).toContain("under reviewed non-additive transition `esbuild-removal-4635`");
+    expectReceiptOperatorProse(staged, section);
+    const manifest = JSON.parse(readFileSync(join(f.values.stage, "stage-manifest.json")));
+    expect(manifest.runs).toHaveLength(1); // Unpaired: Darwin stages alone.
+    applyStage(f.values.stage, f.repo.root);
+    const live = JSON.parse(readFileSync(join(f.repo.root, CONTRACT), "utf8"));
+    expect(live).toEqual(staged);
+    // Afterwards the provenance-only re-pins admit the schemaVersion-4 contract
+    // and its esbuild-free runs, and refuse an esbuild run against it.
+    expect(
+      validateDarwinEvidence(live, loadDarwinArtifact(f.artifact), f.source, "release-bump"),
+    ).toEqual([]);
+    const esbuildRun = loadDarwinArtifact(makeArtifact({ version: f.repo.version }));
+    expect(validateDarwinEvidence(live, esbuildRun, SOURCE_SHA, "release-bump")).toEqual(
+      expect.arrayContaining([
+        "workspace: provenance of the esbuild-free producer carries an esbuild field",
+        "workspace: measured bundler undefined is not the contract's " + BUNDLER,
+        "runner-provenance.txt bundler_identity is missing or inconsistent",
+        "runner-provenance.txt records esbuild_version for the esbuild-free producer",
+      ]),
+    );
+  });
+
+  it("admits the esbuild-free run only under bundler-backend against the schemaVersion 3 contract", () => {
+    const f = setup();
+    const contract = JSON.parse(readFileSync(join(f.repo.root, CONTRACT), "utf8"));
+    const artifact = loadDarwinArtifact(f.artifact);
+    expect(validateDarwinEvidence(contract, artifact, f.source, "bundler-backend")).toEqual([]);
+    expect(validateDarwinEvidence(contract, artifact, f.source, "release-bump")).toContain(
+      "workspace: the artifact measured the esbuild-free producer (bundler " +
+        BUNDLER +
+        ") but the contract is schemaVersion 3; only `--reason bundler-backend` moves a contract to schemaVersion 4",
+    );
+  });
+
+  it.each([
+    [
+      "an esbuild field in the measurement",
+      { tweak: (p) => (p.esbuildVersion = "0.25.12") },
+      "provenance of the esbuild-free producer carries an esbuild field",
+    ],
+    [
+      "an esbuild line in runner-provenance.txt",
+      { runner: (text) => text + "esbuild_version=0.25.12\n" },
+      "runner-provenance.txt records esbuild_version",
+    ],
+    [
+      "a wrong measured bundler identity",
+      {
+        tweak: (p) => (p.bundlerIdentity = "rolldown-0000000"),
+        runner: (text) => text.replace(BUNDLER, "rolldown-0000000"),
+      },
+      "measured bundler rolldown-0000000 is not the reviewed " + BUNDLER,
+    ],
+    [
+      "a runner-provenance bundler that disagrees",
+      { runner: (text) => text.replace(BUNDLER, "rolldown-0000000") },
+      "runner-provenance.txt bundler_identity is missing or inconsistent",
+    ],
+    [
+      "a checkout BACKEND_IDENTITY that differs",
+      { checkoutBundler: "rolldown-0000000" },
+      "checkout's BACKEND_IDENTITY is rolldown-0000000",
+    ],
+    [
+      "a changed raw total",
+      { changeContract: (c) => (c.ceilings.workspace.model.raw += 1) },
+      /raw totals changed/,
+    ],
+    [
+      "a changed gzipNormalized total",
+      { changeContract: (c) => (c.ceilings.packed.model.gzipNormalized -= 1) },
+      /gzipNormalized totals changed/,
+    ],
+    [
+      "a moved measure.mjs digest",
+      { changeContract: (c) => (c.runnerSha256["measure.mjs"] = "1".repeat(64)) },
+      /runnerSha256\.measure\.mjs differ/,
+    ],
+    [
+      "a schemaVersion-4 contract",
+      {
+        changeContract: (c) => {
+          c.schemaVersion = 4;
+          c.toolchain = Object.fromEntries(
+            Object.entries(c.toolchain).map(([k, v]) =>
+              k === "esbuildVersion" ? ["bundlerIdentity", BUNDLER] : [k, v],
+            ),
+          );
+        },
+      },
+      "contract is not a schemaVersion 3 gzip-identity-normalized v2 contract",
+    ],
+  ])("refuses %s without a live write", async (_label, options, message) => {
+    const f = setup(options);
+    await expect(f.run()).rejects.toThrow(message);
+    f.unchanged();
+    expect(existsSync(f.values.stage)).toBe(false);
+  });
+
+  it("refuses Cargo arguments when Cargo.lock did not move", async () => {
+    const f = setup({
+      changeContract: (c) => (c.toolchain.cargoLockSha256 = esbuildRemovalLock().expectedNewSha),
+    });
+    await expect(f.run()).rejects.toThrow("Cargo.lock is unchanged; drop the Cargo arguments");
+    f.unchanged();
+    expect(existsSync(f.values.stage)).toBe(false);
+  });
+
+  it("refuses local evidence without the reviewed transition, with Actions fields or unstaged", async () => {
+    const f = setup();
+    await expect(f.run({ "reviewed-cargo-transition": undefined })).rejects.toThrow(
+      "required --reviewed-cargo-transition",
+    );
+    await expect(f.run({ "run-id": "42" })).rejects.toThrow("forbids Actions metadata");
+    await expect(f.run({ stage: undefined })).rejects.toThrow("requires staged");
+    f.unchanged();
+    expect(existsSync(f.values.stage)).toBe(false);
+  });
+
+  it("refuses the pure transition without Cargo arguments or with a moved fingerprint", () => {
+    const f = setup();
+    const contract = JSON.parse(readFileSync(join(f.repo.root, CONTRACT), "utf8"));
+    const artifact = loadDarwinArtifact(f.artifact);
+    const evidence = {
+      ...evidenceFor({ ...args, "source-sha": f.source }, artifact),
+      checkoutBundlerIdentity: BUNDLER,
+    };
+    const checkout = { dependencyFingerprint: f.repo.dependencyFingerprint };
+    expect(() =>
+      transitionDarwinBundlerBackend(contract, totalsOf(artifact), evidence, checkout),
+    ).toThrow("pass the reviewed transition's Cargo arguments");
+    const moved = structuredClone(contract);
+    moved.dependencyFingerprint.sha256 = "1".repeat(64);
+    expect(() =>
+      transitionDarwinBundlerBackend(moved, totalsOf(artifact), evidence, checkout),
+    ).toThrow("--reason bundler-backend cannot move the dependency fingerprint");
+    const esbuildOutcome = { ...evidence, identity: { ...evidence.identity } };
+    esbuildOutcome.identity.toolchain = {
+      ...evidence.identity.toolchain,
+      esbuildVersion: "0.25.12",
+    };
+    expect(() =>
+      transitionDarwinBundlerBackend(contract, totalsOf(artifact), esbuildOutcome, checkout),
+    ).toThrow("the artifact measured an esbuild producer");
   });
 });

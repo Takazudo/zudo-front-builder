@@ -110,6 +110,17 @@
 // identical apart from declared internal rows leaving. Paired and source-bound
 // the same way.
 //
+// `--reason bundler-backend` (#4635, schemaVersion 3 -> 4) is the Darwin half
+// of the esbuild-free producer move, unpaired and source-bound like the Linux
+// reason it shares its refusals with (assertBundlerBackendMovement): from a
+// native artifact that records `bundlerIdentity` (the checkout's
+// crates/zfb-bundler BACKEND_IDENTITY) and no esbuild field, with
+// runner-provenance.txt `bundler_identity` in place of `esbuild_version` /
+// `esbuild_binary`, it writes exactly BUNDLER_BACKEND_MOVEMENT. A Cargo.lock
+// move needs the reviewed transition arguments; owner-attested local evidence
+// admits only the exact #4635 esbuild-removal transition. Afterwards the other
+// re-pin reasons accept the schemaVersion-4 contract and its esbuild-free runs.
+//
 // No file is written before every validation and every rendered output
 // succeeds; there is no force or ignore-provenance option.
 // Optional --reviewed-cargo-transition uses the same exact non-additive #318
@@ -129,7 +140,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 // Compare canonical paths: a symlinked invocation path (macOS /var -> /private/var) must still run main() (#4465).
 import { realpathSync as realpathSyncForMain } from "node:fs";
-import { BUNDLER_SCHEMA_VERSION } from "../research/v3-island-size/check-budget.mjs";
+import {
+  BUNDLER_SCHEMA_VERSION,
+  EXPECTED_BUNDLER_IDENTITY,
+  readBundlerIdentity,
+} from "../research/v3-island-size/check-budget.mjs";
 
 import {
   IDENTITY_NORMALIZATION_VERSION,
@@ -140,6 +155,8 @@ import {
   normalizerSha256,
 } from "../research/v3-island-size/normalize-identity.mjs";
 import {
+  BUNDLER_BACKEND_MOVEMENT,
+  BUNDLER_BACKEND_REASON,
   CARGO_INTERNAL_REWIRE_REASON,
   CARGO_PRODUCER_LOCK_REASON,
   CARGO_REMOVAL_REASON,
@@ -156,6 +173,7 @@ import {
   acceptedSchemas,
   applyStage,
   assertAllowedMovement,
+  assertBundlerBackendMovement,
   assertCargoInternalRewireMovement,
   assertCargoProducerLockMovement,
   assertCargoRemovalMovement,
@@ -173,6 +191,8 @@ import {
   checkPairedReasonStage,
   checkPreviousContractRefArgs,
   artifactFingerprintProblem,
+  bundlerBackendRecord,
+  bundlerBackendText,
   contractFingerprint,
   dependencyGraphFingerprintRefusal,
   dependencyGraphIdentityMoves,
@@ -187,6 +207,7 @@ import {
   fingerprintPolicyTransitionRecord,
   fingerprintPolicyTransitionText,
   loadCheckoutHelper,
+  measuredIdentity,
   measuredTotals,
   openOutputSession,
   previousContractReference,
@@ -203,6 +224,7 @@ import {
   rewriteTestBlock,
   runFingerprintHelperRepin,
   savedSidecarProblem,
+  schemaList,
   stageRunIdentity,
 } from "./rebaseline-island-size-linux.mjs";
 
@@ -226,6 +248,7 @@ const DARWIN_REASONS = [
   FINGERPRINT_POLICY_REASON,
   CARGO_INTERNAL_REWIRE_REASON,
   CARGO_REMOVAL_REASON,
+  BUNDLER_BACKEND_REASON,
 ];
 // The Darwin reasons that record `repinnedFrom` and accept --previous-contract-ref.
 const DARWIN_REPINNED_FROM_REASONS = [
@@ -235,6 +258,7 @@ const DARWIN_REPINNED_FROM_REASONS = [
   FINGERPRINT_POLICY_REASON,
   CARGO_INTERNAL_REWIRE_REASON,
   CARGO_REMOVAL_REASON,
+  BUNDLER_BACKEND_REASON,
 ];
 // The producer closure target a Darwin arm64 rewire receipt must be recorded for.
 export const DARWIN_PRODUCER_TARGET = "aarch64-apple-darwin";
@@ -350,12 +374,16 @@ export function validateDarwinEvidence(
     errors.push("contract is not the Darwin arm64 contract");
   }
   const requires = REASONS[reason]?.requires;
-  // The Darwin arm64 contract still pins the esbuild producer: its evidence
-  // checks are esbuild-shaped and no Darwin bundler-backend reason exists yet,
-  // so a schemaVersion-4 Darwin contract is refused until that reason lands.
-  const schemas = REASONS[reason]
-    ? acceptedSchemas(reason).filter((schema) => schema !== BUNDLER_SCHEMA_VERSION)
-    : [];
+  const schemas = REASONS[reason] ? acceptedSchemas(reason) : [];
+  // The producer the artifact must have measured: bundler-backend moves an
+  // esbuild-producer contract to the esbuild-free one (#4635), a schemaVersion-4
+  // contract admits only its own embedded bundler, and every older contract
+  // only the esbuild producer.
+  const bundlerBackend = reason === BUNDLER_BACKEND_REASON;
+  const esbuildFree = bundlerBackend || contract?.schemaVersion === BUNDLER_SCHEMA_VERSION;
+  const expectedBundler = bundlerBackend
+    ? EXPECTED_BUNDLER_IDENTITY
+    : contract?.toolchain?.bundlerIdentity;
   if (reason === METRIC_MIGRATION) {
     if (contract?.schemaVersion !== requires || Object.hasOwn(contract ?? {}, "metric")) {
       errors.push("contract is not a schemaVersion " + requires + " actual-gzip contract");
@@ -367,7 +395,7 @@ export function validateDarwinEvidence(
   ) {
     errors.push(
       "contract is not a schemaVersion " +
-        schemas.join(" or ") +
+        schemaList(schemas) +
         " " +
         IDENTITY_NORMALIZED_METRIC +
         " v" +
@@ -390,15 +418,19 @@ export function validateDarwinEvidence(
     if (!sameJson(sortedEntries(p.fixtureSha256), sortedEntries(contract?.fixtureSha256))) {
       errors.push(label + "fixture hashes differ from the contract");
     }
-    // The migration's runners gained the fingerprint, so their digests are
-    // checked against the checkout (checkoutMismatches), not the old contract.
+    // The migration's runners gained the fingerprint, and bundler-backend's
+    // measure-real.mjs records the embedded bundler, so their digests are
+    // checked against the checkout (checkoutMismatches) and, for
+    // bundler-backend, every other runner against the contract
+    // (assertBundlerBackendMovement), not here.
     if (
       reason !== FINGERPRINT_MIGRATION &&
+      !bundlerBackend &&
       !sameJson(sortedEntries(p.runnerSha256), sortedEntries(contract?.runnerSha256))
     ) {
       errors.push(label + "runner hashes differ from the contract");
     }
-    if (reason === FINGERPRINT_MIGRATION || contract?.schemaVersion === 3) {
+    if (reason === FINGERPRINT_MIGRATION || contract?.schemaVersion >= 3) {
       if (!isRecord(p.dependencyFingerprint)) {
         errors.push(label + "provenance carries no dependencyFingerprint");
       }
@@ -413,10 +445,37 @@ export function validateDarwinEvidence(
       ["nodeVersion", contract.toolchain?.nodeVersion],
       ["zlibVersion", contract.toolchain?.zlibVersion],
       ["honoPackageVersion", contract.toolchain?.honoVersion],
-      ["esbuildVersion", contract.toolchain?.esbuildVersion],
+      ...(esbuildFree ? [] : [["esbuildVersion", contract.toolchain?.esbuildVersion]]),
       ["compression", contract.compression],
     ]) {
       if (p[key] !== expected) errors.push(label + key + " differs from the contract");
+    }
+    if (esbuildFree) {
+      if (Object.hasOwn(p, "esbuildVersion") || Object.hasOwn(p, "esbuildBinarySha256")) {
+        errors.push(label + "provenance of the esbuild-free producer carries an esbuild field");
+      }
+      if (p.bundlerIdentity !== expectedBundler) {
+        errors.push(
+          label +
+            "measured bundler " +
+            String(p.bundlerIdentity) +
+            " is not the " +
+            (bundlerBackend ? "reviewed " : "contract's ") +
+            String(expectedBundler),
+        );
+      }
+    } else if (Object.hasOwn(p, "bundlerIdentity")) {
+      errors.push(
+        label +
+          "the artifact measured the esbuild-free producer (bundler " +
+          String(p.bundlerIdentity) +
+          ") but the contract is schemaVersion " +
+          String(contract?.schemaVersion) +
+          "; only `--reason " +
+          BUNDLER_BACKEND_REASON +
+          "` moves a contract to schemaVersion " +
+          BUNDLER_SCHEMA_VERSION,
+      );
     }
     if (p.repeats !== 2) errors.push(label + "expected two saved passes");
     if (
@@ -430,7 +489,7 @@ export function validateDarwinEvidence(
       "pnpmLockSha256",
       "cargoLockSha256",
       "zfbBinarySha256",
-      "esbuildBinarySha256",
+      ...(esbuildFree ? [] : ["esbuildBinarySha256"]),
       "zfbTarballSha256",
       "runtimeTarballSha256",
     ]) {
@@ -442,7 +501,7 @@ export function validateDarwinEvidence(
       "pnpmLockSha256",
       "cargoLockSha256",
       "zfbBinarySha256",
-      "esbuildBinarySha256",
+      ...(esbuildFree ? ["bundlerIdentity"] : ["esbuildBinarySha256"]),
       "zfbTarballSha256",
       "runtimeTarballSha256",
     ]) {
@@ -485,9 +544,13 @@ export function validateDarwinEvidence(
     ["source_sha", r.source_sha, expectedSourceSha],
     ["node", r.node, contract.toolchain?.nodeVersion],
     ["zlib", r.zlib, contract.toolchain?.zlibVersion],
-    ["esbuild_version", r.esbuild_version, contract.toolchain?.esbuildVersion],
+    ...(esbuildFree
+      ? [["bundler_identity", r.bundler_identity, expectedBundler]]
+      : [["esbuild_version", r.esbuild_version, contract.toolchain?.esbuildVersion]]),
     ["zfb_binary", leadingDigest(r.zfb_binary), packed.zfbBinarySha256],
-    ["esbuild_binary", leadingDigest(r.esbuild_binary), packed.esbuildBinarySha256],
+    ...(esbuildFree
+      ? []
+      : [["esbuild_binary", leadingDigest(r.esbuild_binary), packed.esbuildBinarySha256]]),
     ["zfb_tarball", leadingDigest(r.zfb_tarball), packed.zfbTarballSha256],
     ["runtime_tarball", leadingDigest(r.runtime_tarball), packed.runtimeTarballSha256],
     ["slugify_tarball", leadingDigest(r.slugify_tarball), artifact.files.slugifyTarballSha256],
@@ -495,6 +558,13 @@ export function validateDarwinEvidence(
   for (const [name, found, expected] of runnerChecks) {
     if (found === undefined || found !== expected) {
       errors.push("runner-provenance.txt " + name + " is missing or inconsistent");
+    }
+  }
+  if (esbuildFree) {
+    for (const name of ["esbuild_version", "esbuild_binary"]) {
+      if (Object.hasOwn(r, name)) {
+        errors.push("runner-provenance.txt records " + name + " for the esbuild-free producer");
+      }
     }
   }
   return errors;
@@ -798,7 +868,7 @@ export function repinDarwinContract(contract, totals, evidence, reason, checkout
   const errors = checkRepinTotals(contract, totals);
   const cargo = cargoMoveRefusal(reason, evidence.cargoLockSha256, contract);
   if (cargo) errors.push(cargo);
-  if (contract.schemaVersion === 3) {
+  if (contract.schemaVersion >= 3) {
     const problem = artifactFingerprintProblem(evidence.dependencyFingerprint, checkout ?? {});
     if (problem) errors.push(problem);
     const moved = fingerprintMoves(contract, checkout);
@@ -1012,11 +1082,13 @@ export function migrateDarwinFingerprint(contract, totals, evidence, checkout) {
 export function transitionDarwinCargoLock(contract, totals, evidence, checkout, cargoLock) {
   const repinnedFrom = repinnedFromRecord(contract, evidence.previousContract);
   const errors = checkRepinTotals(contract, totals);
-  if (contract.schemaVersion !== 3) {
+  if (!acceptedSchemas(CARGO_PRODUCER_LOCK_REASON).includes(contract.schemaVersion)) {
     errors.push(
       "--reason " +
         CARGO_PRODUCER_LOCK_REASON +
-        " needs a schemaVersion 3 contract, found schemaVersion " +
+        " needs a schemaVersion " +
+        schemaList(acceptedSchemas(CARGO_PRODUCER_LOCK_REASON)) +
+        " contract, found schemaVersion " +
         String(contract.schemaVersion),
     );
   }
@@ -1159,6 +1231,208 @@ export function darwinCargoProducerLockReadmeSection(contract, gzipMoves) {
   );
 }
 
+// The esbuild -> embedded-bundler move (#4635) on a schemaVersion-3 contract:
+// schemaVersion 3 -> 4, toolchain.esbuildVersion replaced in place by
+// toolchain.bundlerIdentity, the measure-real.mjs runner digest, the recorded
+// pnpm-lock.yaml hash (provenance only) and, when Cargo.lock moved, only a
+// hash proven by the reviewed transition. The Linux script's shared
+// assertBundlerBackendMovement refuses every other identity move, and the
+// written keys are exactly BUNDLER_BACKEND_MOVEMENT. `evidence` carries the
+// artifact `identity` and the checkout's `checkoutBundlerIdentity`;
+// `cargoLock` is readCargoLockEvidence's result or null.
+export function transitionDarwinBundlerBackend(
+  contract,
+  totals,
+  evidence,
+  checkout,
+  cargoLock = null,
+) {
+  const reason = BUNDLER_BACKEND_REASON;
+  const repinnedFrom = repinnedFromRecord(contract, evidence.previousContract);
+  const errors = checkRepinTotals(contract, totals);
+  if (!acceptedSchemas(reason).includes(contract.schemaVersion)) {
+    errors.push(
+      "--reason " +
+        reason +
+        " needs a schemaVersion " +
+        schemaList(acceptedSchemas(reason)) +
+        " contract, found schemaVersion " +
+        String(contract.schemaVersion),
+    );
+  }
+  const problem = artifactFingerprintProblem(evidence.dependencyFingerprint, checkout ?? {});
+  if (problem) errors.push(problem);
+  const moved = fingerprintMoves(contract, checkout);
+  if (!problem && moved.length > 0) {
+    errors.push(
+      "--reason " +
+        reason +
+        " cannot move the dependency fingerprint (" +
+        moved.join(", ") +
+        " differ from the contract); " +
+        FINGERPRINT_MOVE_REMEDY,
+    );
+  }
+  if (errors.length > 0) throw new Error(errors.join("; "));
+  assertBundlerBackendMovement(contract, {
+    identity: evidence.identity,
+    version: evidence.packageVersion,
+    normalizerSha256: evidence.normalizerSha256,
+    checkoutBundlerIdentity: evidence.checkoutBundlerIdentity,
+    ...(cargoLock ? { cargoLock } : {}),
+  });
+  const cargoTransition = cargoLock
+    ? proveCargoProducerLock({
+        ...cargoLock,
+        contractSha: contract.toolchain.cargoLockSha256,
+        artifactSha: evidence.cargoLockSha256,
+      })
+    : null;
+  const record = bundlerBackendRecord(contract, {
+    identity: evidence.identity,
+    pnpmLockSha256: evidence.pnpmLockSha256,
+  });
+  const moves = gzipMovesSince(contract, totals);
+  const next = structuredClone(contract);
+  next.schemaVersion = BUNDLER_SCHEMA_VERSION;
+  next.outcome = REASONS[reason].outcome;
+  next.baselineSourceSha = evidence.sourceSha;
+  next.toolchain = Object.fromEntries(
+    Object.entries(next.toolchain).map(([key, value]) =>
+      key === "esbuildVersion" ? ["bundlerIdentity", record.to.bundlerIdentity] : [key, value],
+    ),
+  );
+  next.toolchain.pnpmLockSha256 = evidence.pnpmLockSha256;
+  if (cargoTransition) next.toolchain.cargoLockSha256 = cargoTransition.newSha;
+  next.runnerSha256 = Object.fromEntries(
+    Object.keys(contract.runnerSha256).map((file) => [file, evidence.runnerSha256[file]]),
+  );
+  const transitionText = bundlerBackendText(record, cargoTransition);
+  const metric = IDENTITY_NORMALIZED_METRIC + " v" + IDENTITY_NORMALIZATION_VERSION;
+  next.platformStatus =
+    "Darwin arm64 has exact zero-allowance v" +
+    evidence.packageVersion +
+    " ceilings on metric " +
+    metric +
+    (evidence.localReceipt
+      ? ", re-pinned from " + localStatusText(evidence.localReceipt)
+      : ", re-pinned from the native artifact of workflow_dispatch run " + evidence.runId) +
+    " at source " +
+    evidence.sourceSha +
+    " for the esbuild-free producer (" +
+    transitionText +
+    "). The package version, fixtures, measure.mjs, Hono/Node/zlib, dependency fingerprint and " +
+    "normalizer are unchanged, and every raw and gzipNormalized total is unchanged; the recorded " +
+    "pnpm-lock.yaml hash is baseline provenance only. Equal totals alone do not prove " +
+    "byte-identical product code. " +
+    gzipSummary(moves) +
+    ". Workspace and packed eight-fixture matrices each have two byte-identical full-dist " +
+    "inventories. Other platforms and toolchains are not covered.";
+  next.baselineEvidence = {
+    ...(evidence.localReceipt
+      ? {
+          event: "local-native",
+          localReceipt: evidence.localReceipt,
+          stagingTool: evidence.stagingTool,
+        }
+      : {
+          event: "ci-artifact",
+          runId: evidence.runId,
+          jobId: evidence.jobId,
+          artifact: {
+            id: evidence.artifactId,
+            name: "island-size-darwin-arm64-" + evidence.sourceSha,
+            expiresAt: evidence.artifactExpiresAt,
+          },
+        }),
+    sourceSha: evidence.sourceSha,
+    nativeRunner: evidence.nativeRunner,
+    repinnedFrom,
+    bundlerBackend: record,
+    ...(cargoTransition ? { cargoTransition } : {}),
+    originalCheckerResult: evidence.originalCheckerResult,
+    actualGzip: actualGzipRows(totals),
+    note:
+      (evidence.localReceipt
+        ? "Bundler-backend transition from " + localNoteText(evidence.localReceipt) + " at source "
+        : "Bundler-backend transition from the native Darwin arm64 artifact of run " +
+          evidence.runId +
+          " (job " +
+          evidence.jobId +
+          ") at source ") +
+      evidence.sourceSha +
+      " (" +
+      transitionText +
+      "). Complete workspace and packed eight-fixture matrices, each with two identical full-dist " +
+      "inventories. Raw and gzipNormalized totals did not change from the v" +
+      contract.toolchain.packageVersion +
+      " contract; " +
+      gzipSummary(moves) +
+      ". The artifact's own check-budget run compared it with the schemaVersion 3 contract and is " +
+      "preserved as evidence. Ceilings equal the artifact measurements with zero allowance; " +
+      "earlier ceilings remain in git history.",
+  };
+  assertAllowedMovement(reason, BUNDLER_BACKEND_MOVEMENT, contract, next);
+  return { contract: next, gzipMoves: moves ?? [] };
+}
+
+export function darwinBundlerBackendReadmeSection(contract, gzipMoves) {
+  const e = contract.baselineEvidence;
+  const record = e.bundlerBackend;
+  return (
+    "\n## Darwin v" +
+    contract.toolchain.packageVersion +
+    " " +
+    REASONS[BUNDLER_BACKEND_REASON].heading +
+    "\n\n" +
+    "The Darwin arm64 contract moved to the esbuild-free producer (schemaVersion " +
+    record.schemaVersion.from +
+    " to " +
+    record.schemaVersion.to +
+    ") at v" +
+    contract.toolchain.packageVersion +
+    (e.event === "local-native"
+      ? " from " + localReadmeMarkdown(e.localReceipt) + " at source `"
+      : " from the native artifact " +
+        e.artifact.id +
+        " of [workflow_dispatch run " +
+        e.runId +
+        "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
+        e.runId +
+        ") (job " +
+        e.jobId +
+        ") at source `") +
+    e.sourceSha +
+    "`: `toolchain.esbuildVersion` `" +
+    record.from.esbuildVersion +
+    "` is replaced by `toolchain.bundlerIdentity` `" +
+    record.to.bundlerIdentity +
+    "`, and the `measure-real.mjs` runner digest moved from `" +
+    record.runner.beforeSha256 +
+    "` to `" +
+    record.runner.afterSha256 +
+    "` because the runner now records that identity. " +
+    (e.cargoTransition
+      ? "`Cargo.lock` moved under " + cargoTransitionMarkdown(e.cargoTransition) + " "
+      : "`Cargo.lock` is unchanged. ") +
+    "The package version, fixtures, `measure.mjs`, Hono/Node/zlib, the dependency fingerprint " +
+    "and the normalizer are unchanged, and every raw and `gzipNormalized` total is unchanged; " +
+    "`toolchain.pnpmLockSha256` follows the artifact as baseline provenance only. These totals " +
+    "alone do not prove byte-identical product code. The artifact's own `check-budget.mjs` run " +
+    "against the schemaVersion 3 contract is preserved as evidence (exit code " +
+    String(e.originalCheckerResult?.exitCode) +
+    "). " +
+    (gzipMoves.length === 0
+      ? "No actual gzip total moved."
+      : "Actual gzip moved on " +
+        gzipMoves.length +
+        " rows (" +
+        describeDeltas(gzipMoves) +
+        "); that is transfer-size evidence in `baselineEvidence.actualGzip`, not a ceiling.") +
+    " Linux x64 is re-pinned separately by `rebaseline-island-size-linux.mjs`.\n"
+  );
+}
+
 // The two declaration-bound Cargo reasons share one Darwin transition: the
 // reason, its shared Linux proof, the baselineEvidence key it records, the
 // phrase and README wording it renders, and its exact-key movement check.
@@ -1195,11 +1469,13 @@ function transitionDarwinDeclaredCargo(reason, contract, totals, evidence, check
   const kind = DECLARED_CARGO_KINDS[reason];
   const repinnedFrom = repinnedFromRecord(contract, evidence.previousContract);
   const errors = checkRepinTotals(contract, totals);
-  if (contract.schemaVersion !== 3) {
+  if (!acceptedSchemas(reason).includes(contract.schemaVersion)) {
     errors.push(
       "--reason " +
         reason +
-        " needs a schemaVersion 3 contract, found schemaVersion " +
+        " needs a schemaVersion " +
+        schemaList(acceptedSchemas(reason)) +
+        " contract, found schemaVersion " +
         String(contract.schemaVersion),
     );
   }
@@ -1387,11 +1663,13 @@ export function repinDarwinDependencyGraph(contract, totals, evidence, checkout)
   const repinnedFrom = repinnedFromRecord(contract, evidence.previousContract);
   const totalsErrors = checkRepinTotals(contract, totals);
   if (totalsErrors.length > 0) throw new Error(totalsErrors.join("; "));
-  if (contract.schemaVersion !== 3) {
+  if (!acceptedSchemas(reason).includes(contract.schemaVersion)) {
     throw new Error(
       "--reason " +
         reason +
-        " needs a schemaVersion 3 contract, found schemaVersion " +
+        " needs a schemaVersion " +
+        schemaList(acceptedSchemas(reason)) +
+        " contract, found schemaVersion " +
         String(contract.schemaVersion),
     );
   }
@@ -1540,11 +1818,13 @@ export function repinDarwinFingerprintPolicy(contract, totals, evidence, checkou
   const repinnedFrom = repinnedFromRecord(contract, evidence.previousContract);
   const totalsErrors = checkRepinTotals(contract, totals);
   if (totalsErrors.length > 0) throw new Error(totalsErrors.join("; "));
-  if (contract.schemaVersion !== 3) {
+  if (!acceptedSchemas(reason).includes(contract.schemaVersion)) {
     throw new Error(
       "--reason " +
         reason +
-        " needs a schemaVersion 3 contract, found schemaVersion " +
+        " needs a schemaVersion " +
+        schemaList(acceptedSchemas(reason)) +
+        " contract, found schemaVersion " +
         String(contract.schemaVersion),
     );
   }
@@ -1691,8 +1971,8 @@ export function rewriteDarwinTestPins(source, contract) {
       [/(darwinContract\.baselineSourceSha\)\.toBe\(\s*)"[^"]+"/, contract.baselineSourceSha],
       [/(darwinContract\.toolchain\.pnpmLockSha256\)\.toBe\(\s*)"[^"]+"/, t.pnpmLockSha256],
       [/(darwinContract\.toolchain\.cargoLockSha256\)\.toBe\(\s*)"[^"]+"/, t.cargoLockSha256],
-      // Scaffolded under `schemaVersion === 3`; required once the contract is v3.
-      ...(contract.schemaVersion === 3
+      // Scaffolded under `schemaVersion >= 3`; required once the contract is v3 or v4.
+      ...(contract.schemaVersion >= 3
         ? [
             [
               /(darwinContract\.dependencyFingerprint\.sha256\)\.toBe\(\s*)"[^"]+"/,
@@ -1976,6 +2256,7 @@ function macOsVersion(swVers = "") {
 export function buildEvidence(args, artifact, local = null) {
   const p = artifact.modes.packed.measurement.provenance;
   const r = artifact.runner;
+  const esbuildFreeRun = Object.hasOwn(p, "bundlerIdentity");
   return {
     packageVersion: p.packageVersion,
     pnpmLockSha256: p.pnpmLockSha256,
@@ -1983,6 +2264,7 @@ export function buildEvidence(args, artifact, local = null) {
     dependencyFingerprint: p.dependencyFingerprint,
     fixtureSha256: p.fixtureSha256,
     runnerSha256: p.runnerSha256,
+    identity: measuredIdentity(p),
     normalizerSha256: normalizerSha256(),
     sourceSha: args["source-sha"],
     ...(local
@@ -2001,10 +2283,13 @@ export function buildEvidence(args, artifact, local = null) {
       node: r.node,
       zlib: r.zlib,
       pnpm: r.pnpm,
-      esbuild: r.esbuild_version,
+      // The esbuild-free producer (#4635) records its embedded bundler instead.
+      ...(esbuildFreeRun
+        ? { bundlerIdentity: r.bundler_identity }
+        : { esbuild: r.esbuild_version }),
       hono: r.hono_version,
       zfbBinarySha256: p.zfbBinarySha256,
-      esbuildBinarySha256: p.esbuildBinarySha256,
+      ...(esbuildFreeRun ? {} : { esbuildBinarySha256: p.esbuildBinarySha256 }),
       zfbTarballSha256: p.zfbTarballSha256,
       runtimeTarballSha256: p.runtimeTarballSha256,
       slugifyTarballSha256: artifact.files.slugifyTarballSha256,
@@ -2142,6 +2427,19 @@ const DARWIN_HANDLERS = {
         readCargoRemovalEvidence(args, root, DARWIN_PRODUCER_TARGET),
       ),
     readme: (result) => darwinCargoRemovalReadmeSection(result.contract, result.gzipMoves),
+    verb: "re-pinned",
+  },
+  [BUNDLER_BACKEND_REASON]: {
+    checkout: true,
+    run: ({ contract, totals, evidence, checkout, args, root }) =>
+      transitionDarwinBundlerBackend(
+        contract,
+        totals,
+        { ...evidence, checkoutBundlerIdentity: readBundlerIdentity(root) },
+        checkout,
+        Object.hasOwn(args, "old-cargo-ref") ? readCargoLockEvidence(args, root) : null,
+      ),
+    readme: (result) => darwinBundlerBackendReadmeSection(result.contract, result.gzipMoves),
     verb: "re-pinned",
   },
 };

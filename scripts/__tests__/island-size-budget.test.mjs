@@ -1247,8 +1247,8 @@ describe("island shipped-size budget", () => {
       "216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810",
     );
     // rebaseline-island-size-darwin.mjs rewrites this literal once the contract
-    // is schemaVersion 3 (#4187); a v2 contract carries no fingerprint.
-    if (darwinContract.schemaVersion === 3) {
+    // is schemaVersion 3 or 4 (#4187, #4645); a v2 contract carries no fingerprint.
+    if (darwinContract.schemaVersion >= 3) {
       expect(darwinContract.dependencyFingerprint.sha256).toBe(
         "47de8f7592f1fb1c463ad9294ea65bbc1f315d50a74e87ab86a129d86eda89b2",
       );

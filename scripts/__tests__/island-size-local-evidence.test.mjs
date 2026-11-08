@@ -154,6 +154,7 @@ describe("local CLI scope", () => {
     "release-bump",
     "runtime-identity",
     "dependency-graph",
+    "bundler-backend",
   ])("requires --stage and an exact --tool-sha for %s", (reason) => {
     expect(() => parseArgs(["--reason", reason, "--tool-sha", source, ...flags])).toThrow(
       "requires staged",
@@ -569,6 +570,107 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
     );
     expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow("exact approved #4314");
   });
+  // #4645: the unpaired Darwin bundler-backend stage binds its bundler record
+  // and exactly the #4635 esbuild-removal Cargo transition.
+  const bundlerRecord = {
+    schemaVersion: { from: 3, to: 4 },
+    from: { esbuildVersion: "0.25.12" },
+    to: { bundlerIdentity: "rolldown-24bc2d0" },
+  };
+  function bundlerStage(evidence = {}, mutate = () => {}) {
+    const s = staged(
+      "bundler-backend",
+      { bundlerBackend: bundlerRecord, cargoTransition: esbuildRemoval, ...evidence },
+      { bundlerIdentity: "rolldown-24bc2d0", cargoLockSha256: esbuildRemoval.newSha },
+    );
+    s.contract.schemaVersion = 4;
+    s.contract.outcome = "bundler-backend-transition";
+    mutate(s);
+    return s;
+  }
+  it("accepts the bundler-backend profile's own shape as far as the retained-file read", () => {
+    const s = bundlerStage();
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(missing);
+    expect(localEvidenceProfile("bundler-backend").requiresReviewedTransition).toBe(true);
+  });
+  it.each([
+    [
+      "another outcome",
+      (s) => (s.contract.outcome = "cargo-producer-lock-transition"),
+      "must record outcome bundler-backend-transition",
+    ],
+    ["no outcome", (s) => delete s.contract.outcome, "must record outcome"],
+    [
+      "no bundler record",
+      (s) => delete s.contract.baselineEvidence.bundlerBackend,
+      "lacks its bundler record",
+    ],
+    ["a schemaVersion 3 contract", (s) => (s.contract.schemaVersion = 3), "lacks its bundler"],
+    [
+      "an esbuild version beside the bundler",
+      (s) => (s.contract.toolchain.esbuildVersion = "0.25.12"),
+      "lacks its bundler record",
+    ],
+    [
+      "a different bundler identity",
+      (s) => (s.contract.toolchain.bundlerIdentity = "rolldown-0000000"),
+      "lacks its bundler record",
+    ],
+    [
+      "no Cargo transition",
+      (s) => delete s.contract.baselineEvidence.cargoTransition,
+      "exact approved #4635 esbuild-removal",
+    ],
+    [
+      "the tokio transition",
+      (s) => (s.contract.baselineEvidence.cargoTransition = tokio),
+      "exact approved #4635 esbuild-removal",
+    ],
+    [
+      "the tokio id on esbuild-removal locks",
+      (s) =>
+        (s.contract.baselineEvidence.cargoTransition = { ...esbuildRemoval, review: tokio.review }),
+      "exact approved #4635 esbuild-removal",
+    ],
+    [
+      "the old lock still pinned",
+      (s) => (s.contract.toolchain.cargoLockSha256 = esbuildRemoval.oldSha),
+      "wrong esbuild-removal lock",
+    ],
+    [
+      "a fingerprint transition",
+      (s) => (s.contract.baselineEvidence.fingerprintTransition = graph),
+      "another profile's transition",
+    ],
+    [
+      "a rewire proof",
+      (s) => (s.contract.baselineEvidence.cargoRewire = { oldSha: "x" }),
+      "another profile's transition",
+    ],
+    [
+      "Actions identity",
+      (s) => (s.contract.baselineEvidence.runId = 1),
+      "mixed or missing staged local provenance",
+    ],
+  ])("rejects a bundler-backend stage with %s", (_label, mutate, message) => {
+    const s = bundlerStage({}, mutate);
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(message);
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).not.toThrow(missing);
+  });
+  it.each([
+    ["release-bump", "release-version-stamp", {}],
+    ["cargo-producer-lock", undefined, { cargoTransition: esbuildRemoval }],
+  ])("rejects a %s stage carrying the bundler record", (reason, outcome, evidence) => {
+    const s = staged(
+      reason,
+      { ...evidence, bundlerBackend: bundlerRecord },
+      { cargoLockSha256: esbuildRemoval.newSha },
+    );
+    if (outcome) s.contract.outcome = outcome;
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(
+      "another profile's transition",
+    );
+  });
   it("rejects the webpki profile pinning the rustls lock", () => {
     const s = staged("cargo-producer-lock", { cargoTransition: webpki });
     expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow("wrong security lock");
@@ -594,6 +696,14 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
     ["relative binding", (s) => (s.run.localEvidence.receiptPath = "r")],
   ])("rejects a wrong %s before reading evidence", (_label, mutate) => {
     for (const reason of Object.keys(LOCAL_EVIDENCE_PROFILES)) {
+      if (reason === "bundler-backend") {
+        const b = bundlerStage({}, mutate);
+        expect(() => verifyLocalStageEvidence(b.run, b.contract, ".")).toThrow(
+          /local Darwin evidence/,
+        );
+        expect(() => verifyLocalStageEvidence(b.run, b.contract, ".")).not.toThrow(missing);
+        continue;
+      }
       const s = staged(
         reason,
         reason === "cargo-producer-lock"
@@ -627,8 +737,9 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
       "cargo-removal evidence must record outcome cargo-removal-transition",
     );
   });
-  it("keeps exactly the six reviewed profiles", () => {
+  it("keeps exactly the seven reviewed profiles", () => {
     expect(Object.keys(LOCAL_EVIDENCE_PROFILES).sort()).toEqual([
+      "bundler-backend",
       "cargo-internal-rewire",
       "cargo-producer-lock",
       "cargo-removal",
@@ -639,6 +750,7 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
     for (const [reason, outcome] of PROVENANCE_REPINS)
       expect(REASONS[reason].outcome).toBe(outcome);
     expect(REASONS["dependency-graph"].outcome).toBe("dependency-graph-repin");
+    expect(REASONS["bundler-backend"].outcome).toBe("bundler-backend-transition");
     expect(Object.isFrozen(LOCAL_EVIDENCE_PROFILES)).toBe(true);
     expect(() => localEvidenceProfile("toString")).toThrow("no local evidence profile");
     expect(() => localEvidenceProfile("__proto__")).toThrow("no local evidence profile");

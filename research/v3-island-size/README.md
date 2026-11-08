@@ -420,7 +420,7 @@ The esbuild-free producer (#4635) removes esbuild from `zfb`. A real run no long
 
 `scripts/island-size-evidence.mjs` retains health evidence for exactly one additional complete rejection: the local runner digest, the local Cargo.lock, and, per mode, the runner hashes, the esbuild-free schema mismatch and the Cargo lockfile lines. Any extra or missing line withholds the artifact as before.
 
-`--reason bundler-backend` (Linux script only, schemaVersion 3 input, outcome `bundler-backend-transition`, source-bound, not paired) is the bounded re-pin for that rejection. Its exact-key diff allows only `schemaVersion` (3 to 4), `toolchain.esbuildVersion` to `toolchain.bundlerIdentity` (same key position), `runnerSha256["measure-real.mjs"]`, the provenance-only `toolchain.pnpmLockSha256`, `toolchain.cargoLockSha256`, `outcome`, `baselineSourceSha`, `platformStatus` and `baselineEvidence` (which records `bundlerBackend` next to `repinnedFrom`, plus `cargoTransition` when Cargo moves). Every raw and identity-normalized gzip total must be unchanged. The package version, normalizer, fixtures, `measure.mjs`, Hono, Node, zlib, metric, allowance and dependency fingerprint must equal the contract. The artifact must carry no esbuild field and the reviewed bundler identity, which must also equal the checkout's. A Cargo.lock move is admitted only through the reviewed exact-byte [`esbuild-removal-4635`](cargo-transitions/ESBUILD-REMOVAL-4635.md) record and its `--reviewed-cargo-transition` arguments; Cargo arguments with an unchanged lock are refused. Changed totals are not admissible under this reason.
+`--reason bundler-backend` (Linux script; its Darwin counterpart follows below; schemaVersion 3 input, outcome `bundler-backend-transition`, source-bound, not paired) is the bounded re-pin for that rejection. Its exact-key diff allows only `schemaVersion` (3 to 4), `toolchain.esbuildVersion` to `toolchain.bundlerIdentity` (same key position), `runnerSha256["measure-real.mjs"]`, the provenance-only `toolchain.pnpmLockSha256`, `toolchain.cargoLockSha256`, `outcome`, `baselineSourceSha`, `platformStatus` and `baselineEvidence` (which records `bundlerBackend` next to `repinnedFrom`, plus `cargoTransition` when Cargo moves). Every raw and identity-normalized gzip total must be unchanged. The package version, normalizer, fixtures, `measure.mjs`, Hono, Node, zlib, metric, allowance and dependency fingerprint must equal the contract. The artifact must carry no esbuild field and the reviewed bundler identity, which must also equal the checkout's. A Cargo.lock move is admitted only through the reviewed exact-byte [`esbuild-removal-4635`](cargo-transitions/ESBUILD-REMOVAL-4635.md) record and its `--reviewed-cargo-transition` arguments; Cargo arguments with an unchanged lock are refused. Changed totals are not admissible under this reason.
 
 After the integration push, the first `health` run measures the esbuild-free producer on Linux x64. Its budget step fails with the rejection above, and the evidence step retains the `island-size-linux-x64` artifact. Review the artifact, then, from a checkout of the measured source:
 
@@ -435,7 +435,22 @@ node scripts/rebaseline-island-size-linux.mjs --reason bundler-backend \
   --added-packages zfb-bundler@0.0.0,zfb-compiler-worker@0.0.0
 ```
 
-The Darwin contract (`decision.json`) stays at schemaVersion 3 until owner-native Mac evidence and a Darwin schemaVersion 4 path exist; `rebaseline-island-size-darwin.mjs` and the local-evidence adapter still expect esbuild runner provenance. The Darwin live-admission test therefore stays red, by design. The synthetic tests in `scripts/__tests__/island-size-budget.test.mjs` exercise the reason against saved fixture bytes; they are not a native measurement, and no live contract moved.
+The Darwin contract (`decision.json`) moves the same way through `rebaseline-island-size-darwin.mjs --reason bundler-backend` (#4645): the same refusals and exact-key diff, an esbuild-free bundle whose provenance carries `bundlerIdentity` and no esbuild field, and `runner-provenance.txt` with `bundler_identity` in place of `esbuild_version`/`esbuild_binary`. It is unpaired. Its contract also pins the old `Cargo.lock`, so it needs the same reviewed transition, and the `bundler-backend` [local-evidence profile](LOCAL-NATIVE-EVIDENCE.md) admits only that exact decision. After the owner's native Mac collection at the measured source, stage it from a clean tooling checkout, then apply it from a clean checkout at the measured source:
+
+```sh
+node scripts/rebaseline-island-size-darwin.mjs --reason bundler-backend \
+  --artifact <retained bundle> --source-root <measured checkout> --source-sha <measured source> \
+  --tool-sha <tooling checkout HEAD> --local-receipt <receipt.json> --local-receipt-sha <receipt SHA-256> \
+  --stage <stage dir> --previous-contract-ref <measured source> \
+  --expected-old-cargo-sha 216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810 \
+  --expected-new-cargo-sha b4e8f2413e0c8df9df8cd47fb8e555189560ad01bae65d3e9d637d6a51810634 \
+  --old-cargo-ref 0e6f9ca36c31b3961b69cd31837431e4dad3768b:Cargo.lock \
+  --reviewed-cargo-transition research/v3-island-size/cargo-transitions/esbuild-removal-4635.json \
+  --added-packages zfb-bundler@0.0.0,zfb-compiler-worker@0.0.0
+node scripts/rebaseline-island-size-darwin.mjs --apply <stage dir>
+```
+
+Until that evidence is applied, the Darwin contract stays at schemaVersion 3 and its live-admission test stays red, by design. The synthetic tests in `scripts/__tests__/island-size-budget.test.mjs` and `scripts/__tests__/rebaseline-island-size-darwin.test.mjs` exercise both reasons against saved fixture bytes; they are not a native measurement, and no live contract moved. After the move, the other Darwin re-pin reasons accept the schemaVersion 4 contract and admit only esbuild-free runs of its bundler.
 
 ## Final combined sweep measurement
 

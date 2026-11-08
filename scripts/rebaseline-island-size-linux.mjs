@@ -1768,7 +1768,7 @@ function assertSchemaShape(before, after, reason) {
   }
 }
 
-function bundlerBackendText(record, cargoTransition) {
+export function bundlerBackendText(record, cargoTransition) {
   return (
     "schemaVersion " +
     record.schemaVersion.from +
