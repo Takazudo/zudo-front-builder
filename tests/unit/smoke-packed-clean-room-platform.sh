@@ -121,6 +121,45 @@ else
   fail "darwin-x64 is refused for an x86_64 process on arm64 hardware (Rosetta)"
 fi
 
+# ZFB_SMOKE_ALLOW_ROSETTA=1 (owner decision 2026-11-08) admits only a
+# translated darwin-x64 process on arm64 hardware. The sysctl stub answers
+# per key so proc_translated can be varied.
+write_sysctl() { # write_sysctl <proc_translated value>
+  cat >"$STUBS/sysctl" <<STUB
+#!/bin/sh
+case "\$2" in hw.optional.arm64) echo 1 ;; sysctl.proc_translated) echo $1 ;; *) echo 0 ;; esac
+STUB
+  chmod +x "$STUBS/sysctl"
+}
+write_sysctl 1
+if run_script 2 "ZFB_DARWIN_X64_BINARY does not exist" \
+  PATH="$STUBS:$PATH" ZFB_SMOKE_ALLOW_ROSETTA=1 ZFB_SMOKE_PLATFORM=darwin-x64 ZFB_DARWIN_X64_BINARY=/nonexistent ZFB_DARWIN_X64_CSS_ADDON=/nonexistent &&
+  printf '%s' "$out" | grep -qF "running Rosetta-translated"; then
+  pass "ZFB_SMOKE_ALLOW_ROSETTA=1 admits a translated darwin-x64 process and labels it Rosetta-translated"
+else
+  fail "ZFB_SMOKE_ALLOW_ROSETTA=1 admits a translated darwin-x64 process and labels it Rosetta-translated"
+fi
+if run_script 2 "a Rosetta-translated process is not native" \
+  PATH="$STUBS:$PATH" ZFB_SMOKE_PLATFORM=darwin-x64 ZFB_DARWIN_X64_BINARY=/nonexistent ZFB_DARWIN_X64_CSS_ADDON=/nonexistent; then
+  pass "without ZFB_SMOKE_ALLOW_ROSETTA a translated darwin-x64 process is still refused"
+else
+  fail "without ZFB_SMOKE_ALLOW_ROSETTA a translated darwin-x64 process is still refused"
+fi
+write_sysctl 0
+if run_script 2 "a Rosetta-translated process is not native" \
+  PATH="$STUBS:$PATH" ZFB_SMOKE_ALLOW_ROSETTA=1 ZFB_SMOKE_PLATFORM=darwin-x64 ZFB_DARWIN_X64_BINARY=/nonexistent ZFB_DARWIN_X64_CSS_ADDON=/nonexistent; then
+  pass "ZFB_SMOKE_ALLOW_ROSETTA=1 still refuses when sysctl.proc_translated is not 1"
+else
+  fail "ZFB_SMOKE_ALLOW_ROSETTA=1 still refuses when sysctl.proc_translated is not 1"
+fi
+write_sysctl 1
+if run_script 2 "ZFB_SMOKE_PLATFORM=linux-x64-gnu needs a native" \
+  PATH="$STUBS:$PATH" ZFB_SMOKE_ALLOW_ROSETTA=1 ZFB_SMOKE_PLATFORM=linux-x64-gnu ZFB_LINUX_X64_BINARY=/nonexistent ZFB_LINUX_X64_CSS_ADDON=/nonexistent; then
+  pass "ZFB_SMOKE_ALLOW_ROSETTA=1 does not relax any other platform"
+else
+  fail "ZFB_SMOKE_ALLOW_ROSETTA=1 does not relax any other platform"
+fi
+
 # Static pin: platform package names appear only in the comments and the
 # platform table / default, never in the stages' code.
 HARDCODED=$(grep -nE 'zfb-(linux|darwin|win32)-' "$SCRIPT" | grep -vE '^[0-9]+:[[:space:]]*#' |
