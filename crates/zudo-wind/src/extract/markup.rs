@@ -117,15 +117,22 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) -> bool {
             } else {
                 value_end
             };
-            out.tokens(
-                &decoded,
-                base + value_start,
-                (base + open, close - open),
-                PositionKind::Class,
-                false,
-                false,
-                Some(&source_map),
-            );
+            // A `${...}` in a class value is a template interpolation (markup
+            // that a JS string carries as data, #4647): split at it like a
+            // script template literal instead of reading it as class text.
+            let segments = static_segments(&decoded);
+            let last = segments.len() - 1;
+            for (index, (start, end)) in segments.into_iter().enumerate() {
+                out.tokens(
+                    &decoded[start..end],
+                    base + value_start,
+                    (base + open, close - open),
+                    PositionKind::Class,
+                    index < last,
+                    index > 0,
+                    Some(&source_map[start..]),
+                );
+            }
         }
         i = (i + 1).min(bytes.len());
         if brace && i < bytes.len() && bytes[i] == b'}' {
@@ -133,6 +140,49 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) -> bool {
         }
     }
     class_attribute
+}
+
+/// The byte ranges of `value` outside `${...}` interpolations, in order. An
+/// unterminated interpolation runs to the end of the value.
+fn static_segments(value: &str) -> Vec<(usize, usize)> {
+    let bytes = value.as_bytes();
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] != b'$' || bytes[i + 1] != b'{' {
+            i += 1;
+            continue;
+        }
+        segments.push((start, i));
+        let mut depth = 0usize;
+        let mut quote = None;
+        i += 1;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if let Some(q) = quote {
+                if b == b'\\' {
+                    i += 1;
+                } else if b == q {
+                    quote = None;
+                }
+            } else if matches!(b, b'\'' | b'"' | b'`') {
+                quote = Some(b);
+            } else if b == b'{' {
+                depth += 1;
+            } else if b == b'}' {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            i += 1;
+        }
+        i = (i + 1).min(bytes.len());
+        start = i;
+    }
+    segments.push((start, bytes.len()));
+    segments
 }
 
 fn entities(value: &str) -> (String, Vec<usize>) {

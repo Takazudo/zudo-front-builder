@@ -674,7 +674,7 @@ fn emit(
         && embedded
         && decoded.contains('<')
         && out.within_decoded(base + start, source_map.clone(), |out| {
-            super::markup::scan(&decoded, 0, out, true)
+            super::markup::scan(&decoded, 0, out, false)
         });
     if !scanned_markup {
         out.tokens(

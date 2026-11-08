@@ -306,23 +306,30 @@ fn repeated_generated_html_classes_keep_raw_positions() {
 }
 
 /// #4647: a plugin data module that inlines a whole HTML app as a JSON string.
-/// The class attribute inside the app's `<script>` template literal is produced
-/// by JavaScript, so the `${kind}` interpolation must stay a dynamic split and
-/// never reach the compiler as a complete class candidate.
+/// A class attribute written inside the app's script template literal holds
+/// `${...}` interpolations; they split the value like a template literal does
+/// and never reach the compiler as part of a class candidate.
 #[test]
-fn script_template_inside_embedded_markup_keeps_interpolation_split() {
+fn interpolation_in_embedded_class_value_splits_the_candidates() {
     let source = concat!(
         "export default {\"assets/app.html\":",
-        r#""<p class=\"intro\">x</p><script>const el = (kind) => `<text class=\"label label-${kind}\">x</text>`;const li = `<li class=\"${s.selected===q.uid?'is-selected':''}\">`;</script>"};"#,
+        r#""<script>const l = `<text class=\"label label-${kind}\">x</text><li class=\"${s.selected===q.uid?'is-selected':''} item\">`;const i = `<i class=\"text-lg${x}\">`;</script>"};"#,
     );
     let result = extract_candidates(source.as_bytes(), SourceKind::Js);
     assert_positions(source, &result);
+    let found: Vec<_> = result.candidates.iter().map(|c| c.text.as_str()).collect();
+    assert!(!found.iter().any(|c| c.contains("${")), "{result:?}");
     assert!(
-        !result.candidates.iter().any(|c| c.text.contains("${")),
-        "{result:?}"
+        !found.contains(&"l") && !found.contains(&"const"),
+        "{found:?}"
     );
+
     let label = class_occurrence(&result, "label");
     assert_eq!(label.byte_offset, source.find("label label-").unwrap());
-    let intro = class_occurrence(&result, "intro");
-    assert_eq!(intro.byte_offset, source.find("intro").unwrap());
+    assert!(!label.adjacent_interpolation);
+    let item = class_occurrence(&result, "item");
+    assert_eq!(item.byte_offset, source.find("item").unwrap());
+    assert!(!item.adjacent_interpolation);
+    assert!(class_occurrence(&result, "text-lg").adjacent_interpolation);
+    assert!(!found.contains(&"label-"), "{found:?}");
 }
