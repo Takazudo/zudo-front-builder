@@ -124,7 +124,7 @@ pub fn extract_candidates_with_options(
             script::scan(source, 0, &mut collector)
         }
         SourceKind::Html => {
-            markup::scan(source, 0, &mut collector, true);
+            markup::scan(source, 0, &mut collector, true, false);
         }
         SourceKind::Md | SourceKind::Mdx => {
             markdown::scan(source, &mut collector, kind == SourceKind::Mdx)

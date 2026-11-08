@@ -1,6 +1,14 @@
 use super::{Collector, PositionKind};
 
-pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>, scripts: bool) -> bool {
+/// `interpolations` is set for markup carried inside a JS string, where a
+/// `${...}` is template interpolation rather than attribute text (#4647).
+pub(super) fn scan(
+    source: &str,
+    base: usize,
+    out: &mut Collector<'_>,
+    scripts: bool,
+    interpolations: bool,
+) -> bool {
     let bytes = source.as_bytes();
     let mut i = 0;
     let mut class_attribute = false;
@@ -34,6 +42,10 @@ pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>, scripts: 
         let mut brace = 0usize;
         while i < bytes.len() {
             let b = bytes[i];
+            if interpolations && bytes[i..].starts_with(b"${") {
+                i = super::script::expression_end(source, i + 2);
+                continue;
+            }
             if let Some(q) = quote {
                 if b == q && (i == 0 || bytes[i - 1] != b'\\') {
                     quote = None;
@@ -50,13 +62,18 @@ pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>, scripts: 
             i += 1;
         }
         let tag_end = i.min(bytes.len());
-        class_attribute |= attributes(&source[tag_start..tag_end], base + tag_start, out);
+        class_attribute |= attributes(
+            &source[tag_start..tag_end],
+            base + tag_start,
+            out,
+            interpolations,
+        );
         i = (tag_end + 1).min(bytes.len());
     }
     class_attribute
 }
 
-fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) -> bool {
+fn attributes(tag: &str, base: usize, out: &mut Collector<'_>, interpolations: bool) -> bool {
     let bytes = tag.as_bytes();
     let mut i = 1;
     let mut class_attribute = false;
@@ -102,6 +119,10 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) -> bool {
         i += 1;
         let value_start = i;
         while i < bytes.len() && bytes[i] != q {
+            if interpolations && bytes[i..].starts_with(b"${") {
+                i = super::script::expression_end(tag, i + 2);
+                continue;
+            }
             if bytes[i] == b'\\' {
                 i += 1;
             }
@@ -110,27 +131,30 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) -> bool {
         let value_end = i.min(bytes.len());
         if name == "class" || name == "className" {
             class_attribute = true;
-            let (decoded, source_map) = entities(&tag[value_start..value_end]);
             // An unterminated value has no closing quote inside the tag.
             let close = if value_end < bytes.len() {
                 value_end + 1
             } else {
                 value_end
             };
-            // A `${...}` in a class value is a template interpolation (markup
-            // that a JS string carries as data, #4647): split at it like a
-            // script template literal instead of reading it as class text.
-            let segments = static_segments(&decoded);
+            let value = &tag[value_start..value_end];
+            let segments = if interpolations {
+                static_segments(value, base + value_start, out)
+            } else {
+                vec![(0, value.len())]
+            };
             let last = segments.len() - 1;
             for (index, (start, end)) in segments.into_iter().enumerate() {
+                let (decoded, offsets) = entities(&value[start..end]);
+                let source_map: Vec<usize> = offsets.into_iter().map(|at| start + at).collect();
                 out.tokens(
-                    &decoded[start..end],
+                    &decoded,
                     base + value_start,
                     (base + open, close - open),
                     PositionKind::Class,
                     index < last,
                     index > 0,
-                    Some(&source_map[start..]),
+                    Some(&source_map),
                 );
             }
         }
@@ -142,46 +166,25 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>) -> bool {
     class_attribute
 }
 
-/// The byte ranges of `value` outside `${...}` interpolations, in order. An
-/// unterminated interpolation runs to the end of the value.
-fn static_segments(value: &str) -> Vec<(usize, usize)> {
-    let bytes = value.as_bytes();
+/// Splits a class value at its `${...}` interpolations, scanning each body for
+/// literals, and returns the byte ranges of the static text between them.
+fn static_segments(value: &str, base: usize, out: &mut Collector<'_>) -> Vec<(usize, usize)> {
     let mut segments = Vec::new();
     let mut start = 0;
     let mut i = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] != b'$' || bytes[i + 1] != b'{' {
-            i += 1;
-            continue;
+    while let Some(found) = value[i..].find("${") {
+        let open = i + found;
+        segments.push((start, open));
+        let body = open + 2;
+        i = super::script::expression_end(value, body);
+        // An unterminated interpolation runs to the end and has no `}` to strip.
+        let body_end = if value[..i].ends_with('}') { i - 1 } else { i };
+        if body_end > body {
+            super::script::scan_interpolation(&value[body..body_end], base + body, out);
         }
-        segments.push((start, i));
-        let mut depth = 0usize;
-        let mut quote = None;
-        i += 1;
-        while i < bytes.len() {
-            let b = bytes[i];
-            if let Some(q) = quote {
-                if b == b'\\' {
-                    i += 1;
-                } else if b == q {
-                    quote = None;
-                }
-            } else if matches!(b, b'\'' | b'"' | b'`') {
-                quote = Some(b);
-            } else if b == b'{' {
-                depth += 1;
-            } else if b == b'}' {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-            }
-            i += 1;
-        }
-        i = (i + 1).min(bytes.len());
         start = i;
     }
-    segments.push((start, bytes.len()));
+    segments.push((start, value.len()));
     segments
 }
 

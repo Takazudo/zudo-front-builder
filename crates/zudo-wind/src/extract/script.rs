@@ -614,7 +614,14 @@ fn regex_context(prefix: &str) -> bool {
         .is_some_and(|word| matches!(word, "return" | "throw" | "case" | "yield"))
 }
 
-fn expression_end(source: &str, start: usize) -> usize {
+/// Scans a `${...}` body found in embedded markup the way a template literal's
+/// interpolation is scanned.
+pub(super) fn scan_interpolation(expression: &str, base: usize, out: &mut Collector<'_>) {
+    let jsx = collect_jsx_spans(expression);
+    scan_literals(expression, base, out, &jsx);
+}
+
+pub(super) fn expression_end(source: &str, start: usize) -> usize {
     let bytes = source.as_bytes();
     let mut i = start;
     let mut depth = 1;
@@ -674,7 +681,7 @@ fn emit(
         && embedded
         && decoded.contains('<')
         && out.within_decoded(base + start, source_map.clone(), |out| {
-            super::markup::scan(&decoded, 0, out, false)
+            super::markup::scan(&decoded, 0, out, false, true)
         });
     if !scanned_markup {
         out.tokens(
