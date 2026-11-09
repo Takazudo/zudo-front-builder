@@ -2420,8 +2420,8 @@ impl PluginPreprocessingMeta {
     }
 }
 
-/// Construct the [`zfb_build::ModuleWorkerBuildContext`] shape esbuild will
-/// actually see, from the same bundle options and plugin registrations every
+/// Construct the [`zfb_build::ModuleWorkerBuildContext`] matching the native
+/// browser bundle jobs, from the same bundle options and plugin registrations every
 /// caller already threads (mode, loaders, defines,
 /// plugin aliases/virtual modules, output semantics). Shared by the islands
 /// bundler wiring and the command-layer CSS discovery pass (issue #1775) so

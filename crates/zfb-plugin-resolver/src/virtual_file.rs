@@ -1,9 +1,9 @@
 //! Content-addressed materialization of one plugin virtual module (#4367).
 //!
-//! esbuild hashes each input's path into the name of the chunk that holds it,
-//! so a randomly named temp file renamed that chunk on every build of
-//! identical input. The file name is therefore derived from the specifier and
-//! source, which makes concurrent builds of one project share a file.
+//! Stable materialized paths keep compiler input identity deterministic.
+//! The filename is derived from the specifier and source (introduced in
+//! #4367 to prevent the former esbuild backend's chunk-name churn), so
+//! concurrent builds of one project can share a file.
 //!
 //! Every holder keeps the file pinned at its path until it drops, and the
 //! last holder removes it:

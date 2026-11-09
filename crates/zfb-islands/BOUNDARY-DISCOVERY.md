@@ -49,7 +49,7 @@ side effects must survive; an unused helper must occupy no registry slot.
 | `src/scanner.rs`: `Resolver`, `FsResolver`, `resolve_module_edge`, SWC binding resolution used by worker scanning | Reuse resolution and lexical binding facilities. Resolve demanded package bindings beyond traversal shortcuts when necessary, without globally scanning all dependencies. |
 | `src/bundler.rs`: `Island` | Keep export access, public marker, and defining binding identity distinct. Today equality is only `(source_path, component_name)`; that is insufficient for aliases. |
 | `src/manifest.rs`: `Manifest::from_islands`, `is_same_package_duplicate` | Validate identities before flattening to `marker -> path`; remove package membership/byte-copy suppression from registration validation. |
-| `src/esbuild.rs`: `render_shared_bundle_entry_source_with_build` | Emit one registration per validated identity/marker using the exact selected export. Do not recover a missing named export via `ns.default`. |
+| `src/bundle_job.rs`: `render_shared_bundle_entry_source_with_build` | Emit one registration per validated identity/marker using the exact selected export. Do not recover a missing named export via `ns.default`. |
 | `../zfb/src/commands/build.rs`: islands scan, manifest validation, shadow remap | Propagate unsupported registration as a production error, validate before emission, preserve source identity through staging, and feed the validated set to bundling. |
 | `../zfb/src/commands/bundler_input.rs`: scanner preflight and `zudo_react_island_names` | Validate before reducing targets to a `BTreeSet` of names; that reduction currently hides distinct bindings with one marker. |
 | `../zfb-build/src/bundler.rs`: `zudo_react_island_names`, `zudo-react-build.mjs`, `zudo_react_build_token_with_inputs_and_output` | SSR metadata and client registration must derive from the same validated target set and build inputs. Audit all scan consumers, including dev/rebuild and worker-only SSR paths. |
@@ -324,8 +324,8 @@ collision. Do not infer an owned marker from a textual
 legacy fixtures must be migrated to actual owned boundaries, not kept as a hidden
 registration API.
 
-Both SSR (`../zfb-build/src/bundler.rs`) and client (`src/esbuild.rs`) currently
-use `--keep-names`. Preserve these settings and production minification behavior.
+Both SSR (`../zfb-build/src/bundler.rs`) and client (`src/bundle_job.rs`) currently
+enable `keep_names` on their typed `zfb-bundler` requests. Preserve these settings and production minification behavior.
 The browser emitter must validate the exact picked function against the marker
 (and must not accept a conflicting displayName that SSR rejects). A missing
 export or identity mismatch must not overwrite another registry entry. A defensive

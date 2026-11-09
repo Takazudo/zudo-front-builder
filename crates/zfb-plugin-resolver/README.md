@@ -1,40 +1,28 @@
 # zfb-plugin-resolver
 
-Shared exact-match resolver inputs for the two esbuild call sites in the workspace.
+Shared resolver inputs for the page/SSR bundler (`zfb-build::bundler`) and
+browser islands, client scripts, and module-worker jobs
+(`zfb-islands::bundle_job`). These callers pass typed requests to the native
+`zfb-bundler`; this crate does not locate or launch a compiler executable.
 
-Both the main page/layout bundler (`zfb-build::bundler`) and the islands bundler
-(`zfb-islands::esbuild`) need to forward plugin-registered aliases and virtual modules to
-esbuild. This crate provides that shared logic.
+## Resolution contract
 
-## Why this crate exists
+Plugin aliases are exact-match registrations. An alias `@/foo` must not also
+claim `@/foo/bar`. The helper expresses aliases as literal
+`compilerOptions.paths` entries, with no wildcard, and merges them into the
+caller's synthetic tsconfig without replacing user entries.
 
-esbuild's `--alias` flag uses **prefix-with-slash** matching: registering `@/foo` would
-silently match `@/foo/bar` too, contradicting the exact-match contract that
-`zfb-render::BundleModuleLoader::resolve_alias` enforces in the V8 host. This helper
-produces the inputs needed for exact-match aliases by expressing them as
-`compilerOptions.paths` entries in a synthetic tsconfig instead — a bare specifier in
-`paths` (no `*` wildcard) is a literal exact match in TypeScript / esbuild.
+Direct resolver aliases supplement the paths map for virtual modules and
+eligible single-file plugin aliases, including imports from installed package
+entrypoints. Directory aliases stay paths-only. This preserves the constraints
+introduced for the former esbuild backend (#269, #1263, #1267, #3002); current
+callers consume `(specifier, target)` pairs through `BundleRequest.resolve.aliases`.
+The public `virtual_module_alias_flags()` and `plugin_alias_flags()` formatters
+still return the legacy `--alias:<specifier>=<path>` spelling. They remain
+available, but the workspace's native bundlers do not build CLI argv from them.
 
-### …but virtual modules ALSO need `--alias` (#1263)
-
-esbuild does **not** apply `compilerOptions.paths` to a source file whose directory is
-under `node_modules` (its resolver's `tsConfigForDir` returns `nil` for
-`isInsideNodeModules` *before* consulting the `--tsconfig` / `--tsconfig-raw` override). So
-a preset route entrypoint installed under `node_modules` (e.g.
-`node_modules/@takazudo/zudo-doc/dist/routes/_chrome.js`) cannot resolve a `virtual:*`
-import through the synthetic tsconfig alone.
-
-`--alias` is *not* node_modules-gated, so virtual modules are emitted as `--alias` flags too
-(`ResolverInputs::virtual_module_alias_flags`). This is exact-match-safe **only for virtual
-modules** because their target is always a single materialized `.mjs` file:
-`virtual:foo/bar` remaps to `<tmp>.mjs/bar`, which cannot resolve, so the prefix-with-slash
-form still fails. Plugin `@/`-style aliases (which may target a directory) stay
-`compilerOptions.paths`-only.
-
-A tiny leaf crate is also necessary to break a dependency cycle: `zfb-build` depends on
-`zfb-render` and `zfb-content`; `zfb-islands` does not depend on `zfb-build` (and
-`zfb-build` re-uses `zfb-islands` through the orchestrator's bundling fan-out). Placing
-this logic in either crate would create a cycle or pull in the entire orchestrator graph.
+A small shared crate lets `zfb-build` and `zfb-islands` use the same policy
+while keeping the resolver implementation independent of the orchestrator.
 
 ## Public API
 
@@ -46,62 +34,64 @@ pub fn build_resolver_inputs(
     virtual_modules: &[(String, String)],
     working_dir: &Path,
     user_tsconfig_paths: &BTreeMap<String, Vec<String>>,
+    reserved_specifiers: &[&str],
 ) -> Result<ResolverInputs>
 ```
 
-Given plugin-registered aliases and virtual modules:
+- `aliases` contains `(from, absolute filesystem target)` registrations.
+- `virtual_modules` contains `(specifier, ESM source)` registrations.
+- `working_dir` anchors materialized virtual-module files and their dependency
+  lookup. An existing directory receives `.zfb-virtual-*.mjs` files; a missing
+  directory uses the system temp directory with the `zfb-virtual-` prefix.
+- `user_tsconfig_paths` is the consumer's own `compilerOptions.paths` map.
+  When an exact key or wildcard claims a virtual specifier, that registration
+  is suppressed from both output resolver lists. Its file is still held alive.
+- `reserved_specifiers` lists caller-owned direct aliases. Current page/SSR
+  and browser jobs reserve `zfb` for the public SDK mapping. An overlapping
+  plugin alias stays paths-only.
 
-1. Writes each virtual module's source to a `.mjs` temp file under `working_dir`
-   (held alive in `ResolverInputs::_temp_files`).
-2. Builds `paths_entries` — a `Vec<(specifier, absolute-path)>` with paths
-   normalized to POSIX forward-slash form for platform-stable JSON.
-3. Builds `virtual_module_alias_args` — the virtual-module subset of `paths_entries`,
-   surfaced as `--alias:<spec>=<path>` flags by `virtual_module_alias_flags()` (#1263).
-
-`user_tsconfig_paths` is the consumer project's own `compilerOptions.paths` map. **User wins**
-(#1267): when a virtual-module specifier is already claimed there — an exact key, or a
-wildcard pattern it falls under — that specifier is dropped from BOTH `paths_entries` and
-`virtual_module_alias_args`, so the user's own mapping governs instead. The virtual module's
-temp file is still materialized (and its lifetime still held in `_temp_files`) even when
-suppressed this way; it is simply left unreferenced.
-
-Callers write the merged entries into a synthetic tsconfig and pass `--tsconfig=<path>` to
-esbuild, AND pass each `virtual_module_alias_flags()` entry so `virtual:*` imports resolve
-from node_modules-resident entrypoints. No `--alias` flags are emitted for plugin `@/`
-aliases — only for virtual modules.
-
-Falls back to the system temp dir when `working_dir` is not an existing directory (matches
-the islands path's existing unit-test convention).
-
-### `ResolverInputs`
+The helper returns all four fields below; paths use POSIX forward slashes.
 
 ```rust,ignore
 pub struct ResolverInputs {
-    /// (specifier, absolute-path) pairs for compilerOptions.paths.
     pub paths_entries: Vec<(String, String)>,
-    /// (specifier, absolute-path) pairs for virtual modules ONLY, also
-    /// emitted as `--alias` flags via `virtual_module_alias_flags()` (#1263).
     pub virtual_module_alias_args: Vec<(String, String)>,
-    /// Held-alive temp-file handles for virtual-module .mjs files.
-    pub _temp_files: Vec<NamedTempFile>,
+    pub plugin_alias_args: Vec<(String, String)>,
+    pub _temp_files: Vec<VirtualModuleFile>,
 }
 ```
 
-The caller MUST keep the `ResolverInputs` value alive until esbuild has finished reading
-the virtual-module files — `Drop` deletes them from disk.
+`paths_entries` contains every plugin alias and each user-unclaimed virtual
+module. `virtual_module_alias_args` contains only those virtual modules.
+`plugin_alias_args` contains aliases whose target is an existing file, whose
+name passes the retained alias-key validation, which the user does not claim,
+and which have no equal or slash-prefix collision with another alias, virtual
+module, or reserved specifier (`a` overlaps `a/b`, but not `ab`). The page/SSR
+caller additionally admits direct plugin aliases only inside its staging root.
 
-### `merge_into_tsconfig_paths`
+`_temp_files` holds content-addressed `VirtualModuleFile` handles, not
+`NamedTempFile`s. A virtual module's filename is derived from its specifier and
+source. Concurrent holders can share it; the last holder removes it on drop.
+Keep the entire `ResolverInputs` alive until the native bundle operation has
+finished reading these files, including a module-worker job that uses them.
 
-```rust,ignore
-pub fn merge_into_tsconfig_paths(
-    paths: &mut BTreeMap<String, Vec<String>>,
-    entries: &[(String, String)],
-)
-```
+### Paths and raw-import helpers
 
-Folds `entries` into the caller's existing `compilerOptions.paths` map.
-**Collision policy: user wins.** Pre-existing entries (from `BundlerInput::tsconfig_paths`)
-are left untouched; plugin entries are additive.
+`merge_into_tsconfig_paths(&mut paths, &entries)` adds exact entries to the
+caller's `BTreeMap<String, Vec<String>>`; existing keys win. For virtual modules,
+`build_resolver_inputs` also handles wildcard user claims before this merge.
+
+`read_tsconfig_paths`, `read_tsconfig_paths_file`, and their `_into_map`
+variants read JSONC and the supported `extends` chain. `TsConfigPaths` carries
+`base_dir`, the explicit/inherited optional `base_url`, and `TsPathAlias`
+entries; `resolve_tsconfig_path_target` converts relative targets to absolute
+paths. `collect_tsconfig_dependency_inputs` and
+`collect_tsconfig_dependency_chain` expose config dependencies for invalidation.
+
+`RawImportAliasContext` and `resolve_raw_target_with_aliases` apply the shared
+first-party tsconfig paths/baseUrl context to terminal `?raw` imports.
+`resolve_raw_target` is the relative-target convenience form;
+`validate_raw_candidate` checks the candidate boundary.
 
 ## Tests
 
@@ -109,6 +99,7 @@ are left untouched; plugin entries are additive.
 cargo test -p zfb-plugin-resolver
 ```
 
-Tests in `src/lib.rs` cover: empty inputs, alias exact-match (no wildcard), virtual-module
-temp-file materialization under `working_dir`, system-tmpdir fallback when `working_dir`
-is missing, `merge_into_tsconfig_paths` (new keys, collision policy, combined).
+Tests cover exact alias entries, virtual-file materialization and sharing,
+missing-directory fallback, user exact/wildcard claims, single-file alias
+eligibility and reserved-specifier collisions, tsconfig merges and inheritance,
+and raw-import resolution.

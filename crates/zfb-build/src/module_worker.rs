@@ -1,8 +1,8 @@
 //! Module-worker discovery and source rewriting.
 //!
-//! esbuild's CLI does not treat
-//! `new Worker(new URL("./worker.ts", import.meta.url), { type: "module" })`
-//! as a child entry. zfb therefore discovers that exact SWC shape, resolves
+//! zfb discovers the exact SWC shape
+//! `new Worker(new URL("./worker.ts", import.meta.url), { type: "module" })`,
+//! registers a separate browser bundle job for each worker entry, resolves
 //! its first-party worker graph, and rewrites only the URL literal to the
 //! stable companion contract from `zfb-types`.
 //!
@@ -38,10 +38,10 @@ use zfb_types::{
 /// Every non-source input that can change emitted module-worker bytes.
 ///
 /// The stable worker filename is path-derived, so the rewritten `?v=` query
-/// must cover both the first-party source graph and the esbuild/resolver
-/// semantics used by the later browser-only emission pass. Callers construct
-/// one context from the same bundle options and plugin registrations they
-/// hand to esbuild, then pass it to every SSR/islands/client rewrite.
+/// must cover both the first-party source graph and the native compiler
+/// options used by the later browser-only emission pass. Callers construct one
+/// context from the bundle options and plugin registrations used by the native
+/// jobs, then pass that context to every SSR/islands/client rewrite.
 /// `preserve_symlinks` is intentionally absent: it is a preprocessing-shadow
 /// transport choice that may differ between SSR and browser staging but must
 /// resolve to the same logical graph. Hashing it would make those call sites
@@ -105,7 +105,7 @@ impl ModuleWorkerBuildContext {
         }
     }
 
-    /// Attach the exact plugin resolver inputs consumed by esbuild.
+    /// Attach the exact plugin resolver inputs consumed by the native bundler.
     pub fn with_plugins(
         mut self,
         alias_entries: Vec<(String, String)>,
@@ -268,7 +268,7 @@ pub struct ModuleWorkerDependency {
 /// Command-layer filesystem scans cannot see exact plugin aliases or virtual
 /// module imports. Returning these physical edges lets preprocessing shadows
 /// rewrite the importer and materialise the generated raw wrapper before the
-/// later esbuild worker job consumes it.
+/// later native worker bundle job consumes it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ModuleWorkerRawImportEdge {
     /// Physical project-local module containing the `?raw` import.
@@ -1826,8 +1826,8 @@ fn reject_pruned_project_tier_virtual_imports(
 /// Bare packages and paths outside both roots stay untouched, so only the
 /// live-project/live-workspace escape hatch is closed.
 ///
-/// This full-both-tiers form is the SSR bundler's (`run_esbuild`) and keeps
-/// the pre-#1700 project-tier behaviour. Callers that newly gain a remap and
+/// This full-both-tiers form is used by the SSR bundler (`run_native_bundle`)
+/// and keeps the pre-#1700 project-tier behaviour. Callers that newly gain a remap and
 /// only need the workspace tier (the command-layer client-preprocess/islands
 /// flows, issue #1701) should use
 /// [`remap_virtual_module_workspace_sibling_imports_to_shadow`] instead, so
@@ -2542,8 +2542,8 @@ pub fn discover_module_preprocessing_with_context(
 }
 
 /// Discover preprocessing through the exact TypeScript path map that the
-/// bundler's synthetic tsconfig will hand to esbuild. This prevents a reached
-/// workspace package's own nearest tsconfig from inventing a different alias
+/// bundler's synthetic tsconfig supplies to the native compiler. This prevents
+/// a reached workspace package's own nearest tsconfig from inventing a different alias
 /// graph during staging preflight.
 pub fn discover_module_preprocessing_with_tsconfig_paths(
     entry: &Path,

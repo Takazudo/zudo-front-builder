@@ -689,7 +689,7 @@ The inline script's body is a mechanical port of `ClientRouter.astro`'s `<script
 > inline script nor an explicit layout import: zfb's islands scanner detects a
 > page reaching `<ClientRouter />` and injects
 > `import "@takazudo/zfb-runtime/client-router"` into the islands asset
-> (`crates/zfb-islands/src/esbuild.rs`), which evaluates the shim and calls
+> (`crates/zfb-islands/src/bundle_job.rs`), which evaluates the shim and calls
 > `init()`.
 
 ### 13.7 `vite-plugin-transitions.ts` — SKIP

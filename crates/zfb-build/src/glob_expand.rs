@@ -14,13 +14,11 @@
 //! `import.meta.glob(...)` is a Vite-only build-time macro: Vite statically
 //! expands it at transform time into a set of `import * as ...` declarations
 //! plus an object literal mapping each matched relative path to its namespace.
-//! esbuild knows nothing about it and leaves it verbatim; at SSR render time
-//! the runtime evaluates `import.meta.glob` as `undefined` and throws, so the
-//! module's named exports surface as `undefined`. The esbuild CLI cannot load
-//! JS plugins (see the "Esbuild binary resolution" / MDX-precompile
-//! rationale in the [`crate::bundler`] module docs), so this expansion MUST
-//! run Rust-side, mirroring how MDX is pre-compiled inside
-//! `materialise_shadow` before esbuild ever sees the shadow tree.
+//! zfb expands this macro Rust-side before native bundling. The expansion
+//! produces ordinary module imports in the shadow tree, so the emitted SSR
+//! module does not depend on a runtime `import.meta.glob` implementation.
+//! This preprocessing boundary is shared with the MDX compilation performed
+//! by `materialise_shadow`; it does not depend on a compiler CLI or JS plugin.
 //!
 //! Scope of THIS step (Wave 1):
 //!   * Only the eager form `import.meta.glob('<literal>', { eager: true })`.
@@ -288,7 +286,7 @@ pub fn source_contains_import_meta_glob(source: &str) -> anyhow::Result<bool> {
 ///
 /// `file_dir` is the directory of the **original source file** (NOT the shadow
 /// copy); globs resolve against it so the matched relative paths line up with
-/// the files esbuild later resolves through the shadow tree.
+/// the files the native compiler later resolves through the shadow tree.
 ///
 /// `is_excluded` is consulted for every candidate match (absolute path); a
 /// `true` verdict drops that file from the expansion. In this Wave-1 task the

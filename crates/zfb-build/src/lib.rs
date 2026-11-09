@@ -11,21 +11,15 @@
 //! 4. The CSS pipeline (Epic 4 — `zfb-css`) and the islands bundler
 //!    (Epic 5 — `zfb-islands`).
 //!
-//! The orchestrator does *not* call those last three crates directly. It
-//! goes through pluggable callback functions ([`PageRenderer`],
-//! [`CssRunner`], [`IslandsRunner`]) so:
+//! The orchestrator invokes rendering, CSS, and islands through pluggable
+//! callbacks ([`PageRenderer`], [`CssRunner`], [`IslandsRunner`]). Tests can
+//! substitute fakes without compiling CSS or bundling JavaScript. This is a
+//! callback boundary, not a dependency boundary: the crate depends on
+//! `zfb-render`, `zfb-content`, and the native `zfb-bundler` directly.
 //!
-//! - the orchestrator's surface stays free of heavyweight transitive
-//!   dependencies (SWC's TSX→JS pipeline in `zfb-render`, and the
-//!   esbuild npm subprocess wrappers in `zfb-css` /
-//!   `zfb-islands`), and
-//! - tests can plug in fakes that count invocations rather than invoking
-//!   the CSS engine or spawning esbuild.
-//!
-//! The whole thing is exposed via the [`AssetPipeline`] trait + the
-//! default [`DevAssetPipeline`] impl. Production / SSR / edge builds can
-//! ship their own `AssetPipeline` implementation later without rewriting
-//! the orchestrator.
+//! The [`AssetPipeline`] trait has both [`DevAssetPipeline`] and
+//! [`ProductionAssetPipeline`] implementations. The command layer wires
+//! concrete page, CSS, and islands callbacks into each build context.
 //!
 //! ## Granularity policy
 //!

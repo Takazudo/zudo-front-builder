@@ -127,7 +127,7 @@ This is the normal workflow, including while slow native Mac qualification is ru
    dependents until diagnosed and repaired.
 2. Record the **development head** separately from each **qualification SHA**. Select an immutable
    commit for native qualification and keep that run on it while development advances. Record
-   OS/architecture, exact Rust/Cargo and engine/ICU/esbuild versions, target/profile/features,
+   OS/architecture, exact Rust/Cargo and engine/ICU/native-bundler revisions, target/profile/features,
    commands, lock/input/binary/artifact hashes, log or run/job IDs, first results and retries.
    Unknown evidence stays unknown; old-SHA success never becomes current-head acceptance.
 3. On a low-memory Mac, keep builds command-scoped and serial (`CARGO_BUILD_JOBS=1 cargo …`),

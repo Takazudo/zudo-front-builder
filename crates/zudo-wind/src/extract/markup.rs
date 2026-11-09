@@ -10,11 +10,77 @@ pub(super) fn scan(
     scripts: bool,
     carried: bool,
 ) -> bool {
+    scan_inner(source, base, out, scripts, carried, None)
+}
+
+/// A decoded JavaScript template body with its actual interpolation spans.
+/// Unlike carried HTML, its expression bodies are scanned by the JS caller.
+pub(super) fn scan_template(
+    source: &str,
+    out: &mut Collector<'_>,
+    spans: &[(usize, usize)],
+) -> bool {
+    scan_inner(source, 0, out, false, false, Some(spans))
+}
+
+#[derive(Clone, Copy)]
+enum Interpolations<'a> {
+    None,
+    Carried,
+    Template {
+        spans: &'a [(usize, usize)],
+        offset: usize,
+    },
+}
+
+impl Interpolations<'_> {
+    fn at(self, text: &str, at: usize) -> Option<usize> {
+        match self {
+            Self::None => None,
+            Self::Carried => interpolation_at(text, at),
+            Self::Template { spans, offset } => spans
+                .binary_search_by_key(&(offset + at), |&(start, _)| start)
+                .ok()
+                .and_then(|index| spans[index].1.checked_sub(offset))
+                .filter(|&close| close <= text.len()),
+        }
+    }
+
+    fn shifted(self, by: usize) -> Self {
+        match self {
+            Self::Template { spans, offset } => Self::Template {
+                spans,
+                offset: offset + by,
+            },
+            other => other,
+        }
+    }
+}
+
+fn scan_inner(
+    source: &str,
+    base: usize,
+    out: &mut Collector<'_>,
+    scripts: bool,
+    carried: bool,
+    template_spans: Option<&[(usize, usize)]>,
+) -> bool {
     let bytes = source.as_bytes();
     let mut i = 0;
     let mut class_attribute = false;
     let mut in_script = false;
     while i < bytes.len() {
+        let interpolations = match template_spans {
+            Some(spans) => Interpolations::Template { spans, offset: 0 },
+            None if carried && in_script => Interpolations::Carried,
+            None => Interpolations::None,
+        };
+        if template_spans.is_some() {
+            if let Some(close) = interpolations.at(source, i) {
+                i = close;
+                continue;
+            }
+        }
         if bytes[i..].starts_with(b"<!--") {
             i = source[i + 4..]
                 .find("-->")
@@ -40,7 +106,6 @@ pub(super) fn scan(
         if i >= bytes.len() || !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'/') {
             continue;
         }
-        let interpolations = carried && in_script;
         if carried {
             if let Some(name) = tag_name(&source[tag_start..]) {
                 in_script = name == "script";
@@ -50,11 +115,9 @@ pub(super) fn scan(
         let mut brace = 0usize;
         while i < bytes.len() {
             let b = bytes[i];
-            if interpolations {
-                if let Some(close) = interpolation_at(source, i) {
-                    i = close;
-                    continue;
-                }
+            if let Some(close) = interpolations.at(source, i) {
+                i = close;
+                continue;
             }
             if let Some(q) = quote {
                 if b == q && (i == 0 || bytes[i - 1] != b'\\') {
@@ -76,20 +139,31 @@ pub(super) fn scan(
             &source[tag_start..tag_end],
             base + tag_start,
             out,
-            interpolations,
+            interpolations.shifted(tag_start),
         );
         i = (tag_end + 1).min(bytes.len());
     }
     class_attribute
 }
 
-fn attributes(tag: &str, base: usize, out: &mut Collector<'_>, interpolations: bool) -> bool {
+fn attributes(
+    tag: &str,
+    base: usize,
+    out: &mut Collector<'_>,
+    interpolations: Interpolations<'_>,
+) -> bool {
     let bytes = tag.as_bytes();
     let mut i = 1;
     let mut class_attribute = false;
     while i < bytes.len() {
         while i < bytes.len() && !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
-            i += 1;
+            // Attribute-position expressions can themselves contain text
+            // such as `class="`. It is not a static attribute of this tag.
+            if let Some(close) = interpolations.at(tag, i) {
+                i = close;
+            } else {
+                i += 1;
+            }
         }
         let start = i;
         while i < bytes.len()
@@ -129,13 +203,13 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>, interpolations: b
         i += 1;
         let value_start = i;
         while i < bytes.len() && bytes[i] != q {
-            if interpolations {
-                if let Some(close) = interpolation_at(tag, i) {
-                    i = close;
-                    continue;
-                }
+            if let Some(close) = interpolations.at(tag, i) {
+                i = close;
+                continue;
             }
-            if bytes[i] == b'\\' {
+            // A real JS interpolation can follow a decoded backslash
+            // (an even raw backslash run). Its known span stays authoritative.
+            if bytes[i] == b'\\' && interpolations.at(tag, i + 1).is_none() {
                 i += 1;
             }
             i += 1;
@@ -150,11 +224,12 @@ fn attributes(tag: &str, base: usize, out: &mut Collector<'_>, interpolations: b
                 value_end
             };
             let value = &tag[value_start..value_end];
-            let segments = if interpolations && value.contains("${") {
-                static_segments(value, base + value_start, out)
-            } else {
-                vec![(0, value.len())]
-            };
+            let segments = static_segments(
+                value,
+                base + value_start,
+                out,
+                interpolations.shifted(value_start),
+            );
             let last = segments.len() - 1;
             for (index, (start, end)) in segments.into_iter().enumerate() {
                 let (decoded, mut source_map) = entities(&value[start..end]);
@@ -218,18 +293,23 @@ fn interpolation_at(text: &str, at: usize) -> Option<usize> {
 /// Splits a class value at each `${...}` that reads as interpolation, scanning
 /// each body for literals, and returns the byte ranges of the static text
 /// between them. Any other `${` stays text.
-fn static_segments(value: &str, base: usize, out: &mut Collector<'_>) -> Vec<(usize, usize)> {
+fn static_segments(
+    value: &str,
+    base: usize,
+    out: &mut Collector<'_>,
+    interpolations: Interpolations<'_>,
+) -> Vec<(usize, usize)> {
     let mut segments = Vec::new();
     let mut start = 0;
     let mut i = 0;
     while let Some(found) = value[i..].find("${") {
         let open = i + found;
-        let Some(close) = interpolation_at(value, open) else {
+        let Some(close) = interpolations.at(value, open) else {
             i = open + 2;
             continue;
         };
         segments.push((start, open));
-        if close - 1 > open + 2 {
+        if matches!(interpolations, Interpolations::Carried) && close - 1 > open + 2 {
             super::script::scan_interpolation(&value[open + 2..close - 1], base + open + 2, out);
         }
         start = close;

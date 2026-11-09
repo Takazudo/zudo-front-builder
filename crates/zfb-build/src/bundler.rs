@@ -5,7 +5,7 @@
 //!
 //! ## Why this lives in `zfb-build` (not `zfb-islands`)
 //!
-//! `zfb-islands` already wraps esbuild for the *client-side* island
+//! `zfb-islands` uses the native bundler for the *client-side* island
 //! bundle (`{outdir}/assets/islands-{hash}.js`). That work targets the
 //! browser and registers concrete boundary targets imported through
 //! `"use client"` modules.
@@ -34,14 +34,12 @@
 //! 2. **Pre-compile MDX** in-place via
 //!    [`zfb_content::compile_mdx_to_jsx_module_cached`]. Each `.mdx`
 //!    file is rewritten to its JSX output text but keeps the `.mdx`
-//!    extension; esbuild is told `--loader:.mdx=jsx` so the rewritten
-//!    text is parsed as JSX. This means user-authored `.mdx` import
-//!    paths keep working without a custom esbuild plugin (the CLI
-//!    cannot load JS plugins).
+//!    extension; the native bundle request maps `.mdx` to the JSX loader.
+//!    User-authored `.mdx` import paths therefore keep working.
 //! 3. **Emit a synthetic `tsconfig.json`** in the shadow root that
 //!    carries the user's [`BundlerInput::tsconfig_paths`] (resolved
-//!    against the project's `extends` chain by the caller). esbuild
-//!    reads this via `--tsconfig=` and uses it to resolve the user's
+//!    against the project's `extends` chain by the caller). The native
+//!    bundle request supplies this config to resolve the user's
 //!    path aliases (`@/components/foo` → `./components/foo`).
 //! 4. **Emit a synthetic `entry.mjs`** that imports every page module
 //!    found under `pages/`, plus `createPageRouter` from
@@ -49,8 +47,8 @@
 //!    route-path → page module and a Workers
 //!    entry shape `default { fetch }`. This is the single load-bearing
 //!    module the embedded V8 host and the runtime SSR adapter consume.
-//! 5. **Spawn esbuild** with the configured `--define`s, `--alias`es,
-//!    and the synthetic `tsconfig.json`.
+//! 5. **Run `zfb-bundler` in-process** with a typed bundle request carrying
+//!    defines, direct aliases, loaders, and the synthetic `tsconfig.json`.
 //!
 //! ## What the consumer (T6) sees
 //!
@@ -73,14 +71,14 @@
 //!   still emitted, so the bundle is unconditionally Workers-shaped.
 //!
 //! The companion `.map` file ([`BundlerOutput::sourcemap_path`]) is
-//! written next to the bundle (esbuild's `--sourcemap=linked` shape).
+//! written next to the bundle with a linked source-map comment.
 //!
 //! ## Server-secret protection
 //!
 //! Variables in [`BundlerInput::public_env_vars`] that are **not** prefixed
 //! with `PUBLIC_` are silently dropped — they never reach the bundle.
 //! Operator-authored [`BundlerInput::define_vars`] are a separate, raw
-//! esbuild-define channel populated from validated `bundle.define` config.
+//! bundler-define channel populated from validated `bundle.define` config.
 //! `import.meta.env.PROD` and `import.meta.env.DEV` are always emitted
 //! (driven by [`BundlerInput::mode`]). See [`BundleMode`] and the
 //! `server_secrets_are_not_bundled` test for the contract.
@@ -279,9 +277,9 @@ pub struct BundlerInput {
     /// they are relative; absolute paths pass through.
     pub project_root: PathBuf,
     /// Canonical real paths already emitted through the authored global-CSS
-    /// entry and its `@import` closure. Plain-CSS inputs reported by esbuild's
+    /// entry and its `@import` closure. Plain-CSS inputs reported by the native bundler's
     /// metafile are subtracted by this identity before they are warned as
-    /// dropped; esbuild remains the sole JS/TS resolution oracle.
+    /// dropped; the native bundler remains the sole JS/TS resolution oracle.
     pub authored_css_paths: BTreeSet<PathBuf>,
     /// Directory of route source files. Every file whose extension is in
     /// [`zfb_types::ROUTABLE_PAGE_EXTENSIONS`] (`.tsx`/`.ts`/`.jsx`/`.js`/
@@ -317,7 +315,7 @@ pub struct BundlerInput {
     pub injected_route_entrypoints: Vec<PathBuf>,
     /// Directory of content collections. `.mdx` files anywhere under
     /// this directory are pre-compiled with
-    /// [`compile_mdx_to_jsx_module_cached`] before esbuild sees them.
+    /// [`compile_mdx_to_jsx_module_cached`] before the native bundler sees them.
     ///
     /// **Legacy single-root path.** When [`Self::content_collections`]
     /// is non-empty, the bundler walks each configured collection
@@ -346,10 +344,10 @@ pub struct BundlerInput {
     /// This is the exact SSR allowlist shared with the client registry; the CLI
     /// checks distinct target bindings for collisions before projecting names.
     pub zudo_react_island_names: Option<Vec<String>>,
-    /// Browser graph identity prepared by the CLI using the actual client
-    /// esbuild pipeline. None retains compatibility for direct bundler callers.
+    /// Browser graph identity prepared by the CLI using the native client
+    /// bundler pipeline. None retains compatibility for direct callers.
     pub zudo_react_build: Option<String>,
-    /// Operator-authored raw esbuild `--define` substitutions populated from
+    /// Operator-authored raw bundler `define` substitutions populated from
     /// validated `bundle.define` config. Values are forwarded verbatim; string
     /// expressions must already be quoted JSON. This path is deliberately
     /// separate from [`Self::public_env_vars`].
@@ -362,8 +360,8 @@ pub struct BundlerInput {
     pub public_env_vars: HashMap<String, String>,
     /// `compilerOptions.paths`-style alias map (TS path aliases). The
     /// bundler writes a rebased copy into a synthetic `tsconfig.json`
-    /// inside the shadow tree; esbuild then resolves user imports
-    /// (`@/components/foo`) through it via `--tsconfig=`.
+    /// inside the shadow tree; the native bundler then resolves user imports
+    /// (`@/components/foo`) through the request's `tsconfig` path.
     ///
     /// Caller is responsible for resolving the project's `extends`
     /// chain (e.g. `tsconfig.base.json`) before passing the merged map
@@ -385,19 +383,12 @@ pub struct BundlerInput {
     /// runtime to provide at embedded V8 host load time. An
     /// empty vec means "bundle everything from node_modules".
     pub external: Vec<String>,
-    /// Explicit esbuild `--main-fields` list for the `--platform=neutral`
-    /// page/SSR pass. Under `neutral` esbuild's main-fields list is EMPTY by
-    /// default, so a dep resolved purely via `package.json` `main`/`module`
-    /// (no `exports` map) fails with `The "main" field here was ignored. Main
-    /// fields must be configured explicitly when using the "neutral"
-    /// platform.` Setting e.g. `["main", "module"]` lets such CJS-main-only
-    /// deps resolve (#676 -- `msw` -> `path-to-regexp@6`).
-    ///
-    /// Empty (the default) means no `--main-fields` argument is emitted. When
-    /// non-empty, this list is passed to esbuild.
+    /// Ordered package.json main fields for the neutral page/SSR pass.
+    /// A nonempty list is forwarded to `BundleRequest.resolve.main_fields`.
+    /// Empty leaves the native backend's defaults in effect.
     pub main_fields: Vec<String>,
-    /// Additional validated esbuild `--loader:<ext>=<loader>` arguments.
-    /// Appended after [`ESBUILD_LOADER_ARGS`] in deterministic config order.
+    /// Validated `--loader:<ext>=<loader>` compatibility strings, parsed into
+    /// typed loaders after [`SSR_LOADERS`] in deterministic config order.
     pub extra_loader_args: Vec<String>,
     /// Where the final `bundle.mjs` (and its `.map`) is written.
     pub outdir: PathBuf,
@@ -422,33 +413,33 @@ pub struct BundlerInput {
     /// inlines it verbatim; no validation is performed.
     pub content_snapshot_json: Option<String>,
     /// Optional directory to symlink into the shadow tree as
-    /// `node_modules` before esbuild runs. Useful in tests and
+    /// `node_modules` before the native bundler runs. Useful in tests and
     /// tooling environments where the shadow tree (a tempdir) cannot
     /// reach workspace-level `node_modules` via the standard
     /// ancestor-directory walk.
     ///
     /// When `Some(path)`, a **symlink** `<shadow>/node_modules →
-    /// <path>` is created so esbuild finds packages there first.
+    /// <path>` is created so the native bundler finds packages there first.
     /// The path MUST be an existing directory. Windows uses an unprivileged
     /// directory junction. Failure to create the link is a build error.
     ///
     /// In a typical pnpm workspace, pass
     /// `<workspace-root>/node_modules/.pnpm/node_modules` to give
-    /// esbuild access to the shared virtual store.
+    /// the native bundler access to the shared virtual store.
     ///
     /// Production builds leave this `None`; the project root's own
     /// `node_modules` tree is accessible via the ancestor walk.
     pub node_modules_dir: Option<PathBuf>,
 
-    /// When `true`, esbuild is invoked with `--preserve-symlinks` so it
+    /// When `true`, the native request enables `preserve_symlinks` so it
     /// keeps every importer anchored at its shadow-tree location during
     /// resolution. Set by callers that point
     /// [`Self::node_modules_dir`] at a synthetic vendored tree (e.g.
     /// the binary-embedded `@takazudo/zfb-runtime` extracted into a
     /// tempdir) where the package contents physically live OUTSIDE the
-    /// project root. With `--preserve-symlinks` esbuild stays at the
+    /// project root. With symlink preservation the native bundler stays at the
     /// `<shadow>/node_modules/<pkg>` symlink and finds transitive deps
-    /// in the injected vendor tree; without it, esbuild would canonicalise
+    /// in the injected vendor tree; without it, the native bundler would canonicalise
     /// the symlinked source back to the real path and walk up from there
     /// (where no `node_modules` exists).
     ///
@@ -458,8 +449,8 @@ pub struct BundlerInput {
     ///
     /// 1. The project root has a real `node_modules` directly above it,
     ///    so the canonicalised-then-walk-up path already finds it.
-    /// 2. `--preserve-symlinks` keeps workspace-package importers
-    ///    anchored at `<shadow>/node_modules/<pkg>/...`, and esbuild
+    /// 2. Symlink preservation keeps workspace-package importers
+    ///    anchored at `<shadow>/node_modules/<pkg>/...`, and the native bundler
     ///    skips `tsconfig.json` discovery for any importer whose path
     ///    contains a `node_modules` segment — so the synthetic
     ///    tsconfig's `paths` (e.g. `"@/*": ["src/*"]`) would not apply
@@ -546,13 +537,13 @@ pub struct BundlerInput {
 
     /// Plugin-registered import aliases. Each `(from, to)` pair maps a
     /// bare specifier (e.g. `@/foo`) to an absolute path string (e.g.
-    /// `/abs/src/foo.tsx`). Forwarded to esbuild as `--alias:<from>=<to>`
-    /// flags.
+    /// `/abs/src/foo.tsx`). Converted to exact tsconfig paths and eligible
+    /// direct resolver pairs by `zfb-plugin-resolver`.
     ///
     /// Populated by the command layer from `setup_registries.aliases` for
     /// both `zfb build` and `zfb dev`. Default: empty.
     ///
-    /// Mirrors `zfb_islands::EsbuildSubprocessConfig::alias_entries` so
+    /// Mirrors `zfb_islands::IslandsBundlerConfig::alias_entries` so
     /// the islands path and the main bundler path receive identical alias sets.
     pub plugin_alias_entries: Vec<(String, String)>,
 
@@ -564,14 +555,14 @@ pub struct BundlerInput {
     /// Populated by the command layer from `setup_registries.virtual_modules`
     /// (sources pre-fetched via `invoke_virtual_loader`). Default: empty.
     ///
-    /// Mirrors `zfb_islands::EsbuildSubprocessConfig::virtual_modules`.
+    /// Mirrors `zfb_islands::IslandsBundlerConfig::virtual_modules`.
     pub plugin_virtual_modules: Vec<(String, String)>,
 
     /// When `Some(set)`, the synthetic `entry.mjs` only imports + registers
     /// the routes whose [`RouteEntry::entry_key`] appears in the set. All
     /// other discovered routes are still visible to `BundlerOutput::manifest`
     /// (so build-time bookkeeping continues to know about them) but they
-    /// are unreachable from the entry — esbuild's tree-shaker drops them
+    /// are unreachable from the entry — the native bundler's tree-shaker drops them
     /// and their transitive deps from the final bundle.
     ///
     /// **The strings in the set MUST be Hono-form** (e.g. `/blog/:slug`,
@@ -621,7 +612,7 @@ pub struct BundlerInput {
     /// materialised source roots has an entry here, the bundler
     /// writes a JS module — `export default { "orig": "scoped", … }`
     /// — into the shadow tree in place of the raw CSS bytes, and adds
-    /// `--loader:.module.css=js` so esbuild parses it as JS. A user's
+    /// the `.module.css` JS loader so the native bundler parses it as JS. A user's
     /// `import styles from "./x.module.css"; styles.foo` then resolves
     /// to the scoped class string at bundle time.
     ///
@@ -666,7 +657,7 @@ pub struct BundlerInput {
     pub mdx_components_file: Option<PathBuf>,
 
     /// Gitignore-style globs for source files the bundler must keep OUT of the
-    /// esbuild graph.
+    /// native bundler graph.
     ///
     /// Mirrors `zfb::config::resolve_bundle_exclude(config.bundle)`. Patterns
     /// match a candidate file's relative POSIX path (e.g.
@@ -689,11 +680,11 @@ pub struct BundlerInput {
     /// diverge:
     ///
     /// 1. `materialise_shadow` SKIPS copying/symlinking it into the shadow
-    ///    tree (the file is never present for esbuild to resolve).
+    ///    tree (the file is never present for the native bundler to resolve).
     /// 2. The #665 `import.meta.glob` eager-expansion seam
     ///    ([`expand_import_meta_glob_with_matches`]) DROPS it from any glob
     ///    expansion, so an excluded file is never emitted as a static import
-    ///    (which would otherwise make esbuild error on the generated
+    ///    (which would otherwise make the native bundler error on the generated
     ///    import).
     ///
     /// Why this is needed: a `--platform=neutral` worker bundle rejects
@@ -809,18 +800,17 @@ pub struct BundlerOutput {
     /// Final ESM bundle on disk. ESM, not CommonJS — exports `routes`
     /// and a default Workers-style fetch handler.
     pub bundle_path: PathBuf,
-    /// Linked sourcemap next to `bundle_path` (esbuild's
-    /// `--sourcemap=linked` shape). When the bundler ran in
+    /// Linked sourcemap next to `bundle_path`. When the bundler ran in
     /// `mock_bundle_output` mode, this path is still returned but
     /// the file may not exist.
     pub sourcemap_path: PathBuf,
     /// Routes the bundle serves (also addressable through
     /// `bundle.routes` at runtime).
     pub manifest: BundleManifest,
-    /// Per-route transitive `Module` deps parsed from esbuild's `--metafile`
+    /// Per-route transitive `Module` deps parsed from native graph metadata
     /// (#1284/#1287). Populated only for [`BundleMode::Development`] (the live
     /// dev graph is the sole consumer); empty for the prod / SSG path, whose
-    /// esbuild arg set and output stay byte-identical to before. Each entry's
+    /// route dependency list stays empty. Each entry's
     /// `source_path` is the route's project-relative page source (`PageId`), and
     /// `module_deps` are the canonicalised real on-disk paths it transitively
     /// imports — what the dev graph upserts as `DepKind::Module` edges and what
@@ -829,7 +819,7 @@ pub struct BundlerOutput {
     pub route_module_deps: Vec<crate::metafile_deps::RouteModuleDeps>,
     /// Completed linked-package snapshots from this bundle's token walk.
     pub linked_package_snapshots: Vec<LinkedPackageIgnoreSnapshot>,
-    /// Wasm files emitted beside this bundle by esbuild's `.wasm=copy` loader.
+    /// Wasm files emitted beside this bundle by the native Wasm copy loader.
     ///
     /// Every path is relative to [`Self::bundle_path`]'s parent directory,
     /// sorted, deduplicated, and validated to exist under that directory before
@@ -851,7 +841,7 @@ pub struct BundlerOutput {
     /// bundler call is unaffected by construction. Empty by default — a
     /// project with no fallback pays nothing extra.
     pub content_bridge_fallback_pages: Vec<String>,
-    /// Canonical, sorted plain `.css` paths esbuild resolved from JS/TS but
+    /// Canonical, sorted plain `.css` paths the native bundler resolved from JS/TS but
     /// which are not emitted by the SSR bundler and are not already covered
     /// by the authored global-CSS entry or its `@import` closure.
     ///

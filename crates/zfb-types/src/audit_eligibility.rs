@@ -7,8 +7,8 @@
 //! metafile stage-escape audit at all.
 //!
 //! It does **not**, and must never, decide whether an escape actually
-//! occurred. That remains the sole job of esbuild's `--metafile` `inputs`
-//! record, audited by `zfb_build::metafile_deps::audit_metafile_stage_escape`.
+//! occurred. That remains the sole job of the native compiler's graph-metadata
+//! `inputs` record, audited by `zfb_build::metafile_deps::audit_metafile_stage_escape`.
 //! Keeping those two jobs apart is a hard rule of epic #1982: the #1497 loop
 //! diverged precisely because a predicate grew into a resolution predictor
 //! (see the `l-lessons-client-bundling` postmortem). Accordingly this module
@@ -257,7 +257,7 @@ impl AuditEligibility {
 /// decision table.
 ///
 /// This decides *whether to audit*, and nothing else. Whether an escape
-/// occurred is decided solely by esbuild's metafile inputs.
+/// occurred is decided solely by the native compiler's graph-metadata inputs.
 pub fn stage_escape_audit_eligibility(
     project_root: &Path,
     first_party_root: &Path,

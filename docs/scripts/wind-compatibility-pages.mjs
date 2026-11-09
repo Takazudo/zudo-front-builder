@@ -218,8 +218,10 @@ function localizedNote(value, locale, field) {
 // crates/zudo-wind and Cargo.toml are unchanged.
 // #4647 extraction only: `${...}` in a class value inside a <script> of JS-carried markup
 // splits as interpolation (crates/zudo-wind/src/extract/*); the utility catalog is unchanged.
+// #4658 extraction only: standalone script templates retain class context across interpolation,
+// including attribute-position expressions and escaped backslashes; the utility catalog is unchanged.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "79b44d465d98b973c6249c44524dc2709896f2c9c6e1efba8bac675a15c4fed1";
+  "a8770e4454ddaa1d2711b9a3b4d3ba798c0ac6bde2d6cbb07284b4f52a56ed33";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];

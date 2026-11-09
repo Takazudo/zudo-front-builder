@@ -1,41 +1,28 @@
 # zfb-test-utils
 
-Shared test helpers for `zfb` integration tests (std-only, no runtime dependencies).
+Shared test helpers for `zfb` integration tests. HTML normalization uses
+`html5ever` and `markup5ever_rcdom`; async HTTP/SSE helpers use Tokio, reqwest
+and futures-util (see `Cargo.toml`).
 
 This crate consolidates utilities used across multiple integration test suites in the
-workspace: esbuild binary location, the compiled `zfb` binary path, HTML normalization,
+workspace: the compiled `zfb` binary path, workspace-root discovery, HTML normalization,
 SSE parsing, watcher readiness handshakes, and cross-binary e2e serialization.
 
 ## Public API
 
-### `locate_esbuild() -> Option<PathBuf>`
+### `candidate_workspace_roots() -> Vec<PathBuf>`
 
-Finds an esbuild binary suitable for integration tests. Resolution order:
+Returns candidate workspace roots in priority order, without duplicates:
 
-1. `ZFB_ESBUILD_BIN` env var — if set and points to an existing file, return immediately.
-2. Workspace-local slot: `<workspace_root>/crates/zfb/binaries/esbuild/<binary>`, probed for
-   every candidate workspace root. Roots are re-derived **at runtime** (walk up from
-   `current_dir()`, then `current_exe()` ancestry, looking for the `Cargo.toml` + `crates/`
-   marker); the compile-time `CARGO_MANIFEST_DIR`-derived root is only a fallback. A stale
-   rlib reused from another checkout path (shared target dir, issue #1007) therefore cannot
-   pin an outdated path and silently skip gated tests.
-3. pnpm nested store, per root: `node_modules/.pnpm/*/node_modules/@esbuild/<suffix>/bin/<binary>`.
-4. pnpm flat store, per root: `node_modules/.pnpm/node_modules/esbuild/bin/<binary>`.
-5. Portable `PATH` walk via `std::env::split_paths` (no `which` shell-out — absent on Windows).
+1. Ancestors of the runtime `current_dir()`.
+2. Ancestors of the runtime `current_exe()`.
+3. The compile-time `CARGO_MANIFEST_DIR`-derived root as a fallback.
 
-Returns `None` if no candidate is found — a graceful skip; machines without esbuild stay
-green. Panics **only** on the harness-bug state: the expected slot binary exists as a file
-under a candidate root, yet lookup still failed (the issue #1007 silent-skip incident). The
-slot directory being non-empty never triggers the panic (it permanently holds `.gitkeep`
-and `README.md`). Callers should gate with:
-
-```rust,ignore
-let Some(esbuild) = zfb_test_utils::locate_esbuild() else { return; };
-```
-
-The lower-level `candidate_workspace_roots()`, `SkipKind`, and
-`classify_failed_lookup()` helpers are public so the lookup policy and its
-panic-vs-skip contract can be tested directly.
+Runtime candidates must have a `Cargo.toml` file and a `crates/` directory.
+Looking at runtime paths first keeps a shared target directory's stale rlib
+from pinning helpers to a different checkout. This helper discovers workspace
+roots; it does not locate a compiler executable. zfb uses its native compiler
+and no longer exports `locate_esbuild`, `SkipKind`, or `classify_failed_lookup`.
 
 ### `zfb_binary!()` macro
 
@@ -66,7 +53,7 @@ HTML5-spec-compliant normalization for snapshot-based integration tests. Impleme
 
 ### `CrossBinaryE2eLock`
 
-OS-level advisory lock for heavy V8/esbuild e2e tests that must not boot at
+OS-level advisory lock for heavy V8/native-bundler e2e tests that must not boot at
 the same time across separate integration-test binaries.
 
 ```rust,ignore
@@ -111,5 +98,6 @@ Tests in `src/html_normalize.rs` cover attribute ordering, entity encoding, bool
 attribute forms, void elements, whitespace collapse, literal preservation in raw-text
 contexts, and idempotency.
 
-Additional unit tests cover esbuild lookup classification, cross-binary lock
-mutual exclusion, SSE UTF-8 chunk decoding, and watcher-handshake timing.
+Additional tests cover cross-binary lock mutual exclusion, SSE framing and UTF-8
+chunk decoding, HTTP deadlines, module-entry probes, task teardown, and
+watcher-handshake timing.

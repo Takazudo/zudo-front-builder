@@ -347,6 +347,135 @@ fn interpolation_in_embedded_script_class_value_splits_the_candidates() {
     }
 }
 
+/// #4658: the standalone HTML script path must retain the class attribute
+/// across a template interpolation, including complete classes after it.
+#[test]
+fn standalone_script_template_preserves_static_classes_after_interpolation() {
+    let source = r#"<script>const html = `<div class="flex ${on} block"></div>`;</script>"#;
+    let result = extract_candidates(source.as_bytes(), SourceKind::Html);
+    assert_positions(source, &result);
+    for class in ["flex", "block"] {
+        let occurrence = class_occurrence(&result, class);
+        assert_eq!(occurrence.byte_offset, source.find(class).unwrap());
+        assert_eq!(occurrence.byte_length, class.len());
+        assert!(!occurrence.adjacent_interpolation, "{class}");
+    }
+}
+
+#[test]
+fn script_template_markup_maps_escapes_and_keeps_dynamic_boundaries() {
+    let script = r#"const html = `\n<div class=\"flex ${on ? ({ value: 'grid' }).value : `hidden ${nested ? 'inline' : 'contents'}`} block label-${kind} ${prefix}suffix text-lg${x} gap-2\"></div>`;"#;
+    for (source, kind) in [
+        (
+            format!("— 日本語\n<script>{script}</script>"),
+            SourceKind::Html,
+        ),
+        (format!("// — 日本語\n{script}"), SourceKind::Js),
+    ] {
+        let result = extract_candidates(source.as_bytes(), kind);
+        assert_positions(&source, &result);
+        for class in ["flex", "block", "text-lg", "gap-2"] {
+            let occurrence = class_occurrence(&result, class);
+            assert_eq!(
+                occurrence.byte_offset,
+                source.find(class).unwrap(),
+                "{class}"
+            );
+            assert_eq!(occurrence.byte_length, class.len(), "{class}");
+            assert_eq!(occurrence.line, 2, "{class}");
+            assert_eq!(occurrence.adjacent_interpolation, class == "text-lg");
+            let open = source.find(r#"class=\""#).unwrap() + "class=".len();
+            let close = source.find(r#"gap-2\""#).unwrap() + r#"gap-2\""#.len();
+            assert_eq!(occurrence.literal_byte_offset, open);
+            assert_eq!(occurrence.literal_byte_length, close - open);
+        }
+        for literal in ["grid", "hidden", "inline", "contents"] {
+            let candidate = result
+                .candidates
+                .iter()
+                .find(|c| c.text == literal)
+                .unwrap();
+            assert!(
+                candidate.occurrences.iter().any(|o| {
+                    o.position_kind == PositionKind::Literal
+                        && o.byte_offset == source.find(literal).unwrap()
+                }),
+                "{literal}: {result:?}"
+            );
+        }
+        for partial in ["label-", "suffix"] {
+            assert!(!result.candidates.iter().any(|c| c.text == partial));
+            assert!(
+                result
+                    .notes
+                    .iter()
+                    .any(|n| { n.kind == NoteKind::DynamicConstruction && n.text == partial }),
+                "{partial}: {result:?}"
+            );
+        }
+        assert!(!result.candidates.iter().any(|c| c.text.contains("${")));
+    }
+}
+
+#[test]
+fn script_template_expression_markup_does_not_break_outer_attribute() {
+    let source = r#"<script>const html = `<div class="flex ${on ? '<i class="grid">' : ''} block"></div>`;</script>"#;
+    let result = extract_candidates(source.as_bytes(), SourceKind::Html);
+    assert_positions(source, &result);
+    for class in ["flex", "grid", "block"] {
+        let occurrence = class_occurrence(&result, class);
+        assert_eq!(occurrence.byte_offset, source.find(class).unwrap());
+        assert_eq!(occurrence.byte_length, class.len());
+    }
+}
+
+#[test]
+fn script_template_attribute_expression_does_not_consume_static_class() {
+    let source = r#"<script>const html = `<div ${on ? 'class="' : ''} class="flex ${x} block"></div>`;</script>"#;
+    let result = extract_candidates(source.as_bytes(), SourceKind::Html);
+    assert_positions(source, &result);
+    for class in ["flex", "block"] {
+        let occurrence = class_occurrence(&result, class);
+        assert_eq!(occurrence.byte_offset, source.find(class).unwrap());
+        assert_eq!(occurrence.byte_length, class.len());
+        assert!(!occurrence.adjacent_interpolation);
+    }
+}
+
+#[test]
+fn script_template_interpolation_after_escaped_backslash_keeps_its_boundary() {
+    let source =
+        r#"<script>const html = `<div class="flex \\${on ? '"' : ''} block"></div>`;</script>"#;
+    let result = extract_candidates(source.as_bytes(), SourceKind::Html);
+    assert_positions(source, &result);
+    for class in ["flex", "block"] {
+        let occurrence = class_occurrence(&result, class);
+        assert_eq!(occurrence.byte_offset, source.find(class).unwrap());
+        assert_eq!(occurrence.byte_length, class.len());
+        assert!(!occurrence.adjacent_interpolation);
+    }
+}
+
+#[test]
+fn script_template_escaped_interpolation_stays_literal_after_decoding() {
+    let source =
+        r#"<script>const html = `<div class="flex \${name} grid ${on} block"></div>`;</script>"#;
+    let result = extract_candidates(source.as_bytes(), SourceKind::Html);
+    assert_positions(source, &result);
+    for class in ["flex", "grid", "block"] {
+        let occurrence = class_occurrence(&result, class);
+        assert_eq!(occurrence.byte_offset, source.find(class).unwrap());
+        assert!(!occurrence.adjacent_interpolation);
+    }
+    assert!(
+        result.notes.iter().any(|note| {
+            note.kind == NoteKind::MalformedClassCandidate && note.text == "${name}"
+        }),
+        "{result:?}"
+    );
+    assert!(!result.candidates.iter().any(|c| c.text == "name"));
+}
+
 /// Outside a `<script>` of JS-carried markup, and in plain HTML, `${` in a
 /// class attribute is literal text: it stays a malformed class candidate for
 /// the author to see.

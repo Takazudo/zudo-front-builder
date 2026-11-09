@@ -3,8 +3,8 @@
 //! ## Purpose
 //!
 //! Evaluates a pre-bundled ESM JavaScript module (the output of bundling
-//! `zfb.config.ts` with esbuild `--platform=neutral`) and returns its
-//! `default` export as a `serde_json::Value`.
+//! `zfb.config.ts` through the native compiler worker on the neutral platform)
+//! and returns its `default` export as a `serde_json::Value`.
 //!
 //! ## Serialisation contract — JSON.stringify inside the isolate
 //!

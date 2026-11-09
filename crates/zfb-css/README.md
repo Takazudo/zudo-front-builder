@@ -79,9 +79,9 @@ name to scoped class name:
 { "btn": "abc12345_btn", "btn-primary": "abc12345_btn-primary" }
 ```
 
-The `zfb-bundler` esbuild plugin intercepts `import styles from
-"./foo.module.css"` and replaces it with a virtual ESM module that re-exports
-this map as the default export. Using a static map (not a live `Proxy`)
+The build pipeline rewrites `import styles from "./foo.module.css"` to an
+ESM class-map stub before native bundling. The stub exports this map as the
+default export. Using a static map (not a live `Proxy`)
 allows tree-shaking, minification, and identical SSR rendering.
 
 When `class_map_dir` is `None`, no JSON is written to disk; the in-memory

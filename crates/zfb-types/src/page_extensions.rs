@@ -21,8 +21,8 @@
 //!   as a route: script pages plus the non-script `.mdx`/`.md`/`.html`
 //!   content pages.
 //! - [`SCRIPT_PAGE_EXTENSIONS`] — the subset that requires script bundling
-//!   (esbuild): `.tsx`/`.ts`/`.jsx`/`.js`. `.mdx`/`.md`/`.html` pages are
-//!   compiled/copied through their own dedicated pipelines instead, so they
+//!   through the native bundler: `.tsx`/`.ts`/`.jsx`/`.js`. The
+//!   `.mdx`/`.md`/`.html` pages are compiled/copied through their own dedicated pipelines instead, so they
 //!   are deliberately excluded from this narrower set.
 //!
 //! Each consumer takes the subset it actually means; forcing every consumer
@@ -37,8 +37,8 @@
 /// allowlist).
 pub const ROUTABLE_PAGE_EXTENSIONS: &[&str] = &["tsx", "ts", "jsx", "js", "mdx", "md", "html"];
 
-/// Subset of [`ROUTABLE_PAGE_EXTENSIONS`] whose page sources require script
-/// bundling (esbuild) rather than the dedicated MDX/Markdown/static-HTML
+/// Subset of [`ROUTABLE_PAGE_EXTENSIONS`] whose page sources require native
+/// script bundling rather than the dedicated MDX/Markdown/static-HTML
 /// pipelines.
 pub const SCRIPT_PAGE_EXTENSIONS: &[&str] = &["tsx", "ts", "jsx", "js"];
 

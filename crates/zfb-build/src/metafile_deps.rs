@@ -1,11 +1,9 @@
-//! Parse esbuild's `--metafile` JSON into per-route transitive module-dep
-//! edge sets (#1284/#1287).
+//! Parse the native bundler's compatible metafile JSON into per-route
+//! transitive module-dependency edge sets (#1284/#1287).
 //!
-//! esbuild already runs once per dev bundle; passing `--metafile=<path>` makes
-//! it emit a JSON describing every input file it resolved and that input's own
-//! imports. `metafile.inputs[file].imports[*].path` is the canonical
-//! *transitive* import graph esbuild itself resolved — no second Rust resolver
-//! pass to drift from the real bundle.
+//! The native bundle request emits the graph metadata alongside the bundle.
+//! `metafile.inputs[file].imports[*].path` records the import graph the
+//! compiler resolved, avoiding a second resolution pass in this module.
 //!
 //! This module is pure: it takes the metafile bytes plus the
 //! shadow-root / project-root / per-route entry mapping and returns, for each
@@ -22,14 +20,14 @@ use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 use zfb_types::{has_node_modules_segment, normalize_path_lexical};
 
-/// Minimal view of esbuild's metafile — only the `inputs` graph is needed.
+/// Minimal view of the native compiler's esbuild-compatible graph metadata;
+/// only the `inputs` graph is needed.
 ///
-/// Schema (esbuild stable): `{ "inputs": { "<path>": { "imports": [ { "path":
-/// "<path>", "kind": "..." }, ... ] }, ... }, "outputs": { ... } }`. Paths in
-/// `inputs` are relative to esbuild's working directory (the shadow root, since
-/// `run_esbuild` sets `current_dir(shadow)`), except node_modules deps which
-/// may appear canonicalised to their real location when esbuild does not
-/// preserve symlinks.
+/// Schema: `{ "inputs": { "<path>": { "imports": [ { "path": "<path>",
+/// "kind": "..." }, ... ] }, ... }, "outputs": { ... } }`. Relative input
+/// keys use the bundle request's working directory (`shadow` in
+/// `run_native_bundle`); canonicalized dependency paths may be absolute when
+/// symlinks are not preserved.
 #[derive(Debug, Deserialize)]
 struct Metafile {
     #[serde(default)]
@@ -47,7 +45,7 @@ struct MetaImport {
     path: String,
 }
 
-/// A route's entry file as esbuild sees it, paired with the route's
+/// A route's entry file as the native compiler sees it, paired with the route's
 /// project-relative source path the dependency graph keys pages on.
 #[derive(Debug, Clone)]
 pub struct RouteEntryRef {
@@ -55,7 +53,7 @@ pub struct RouteEntryRef {
     /// `pages/index.tsx`). This becomes the `PageId` the graph upserts.
     pub source_path: PathBuf,
     /// The same file as it appears in the metafile's `inputs` keys — i.e.
-    /// relative to the shadow root (esbuild's cwd). For an in-repo page this
+    /// relative to the shadow root (the native compiler's cwd). For an in-repo page this
     /// equals `source_path`; kept separate so a future shadow layout that
     /// differs from the project layout does not silently misresolve.
     pub metafile_key: String,
@@ -73,7 +71,7 @@ pub struct RouteModuleDeps {
 /// `inputs` import graph from that route's entry to collect every reachable
 /// source input, mapping each back to a real project path.
 ///
-/// `shadow_root` is esbuild's working directory; `project_root` is the real
+/// `shadow_root` is the native compiler's working directory; `project_root` is the real
 /// project tree the watcher reports paths against. A metafile input key is
 /// mapped to a real path by:
 /// 1. joining it onto `shadow_root` and, if that exists, mapping the
@@ -444,8 +442,8 @@ fn package_root_for_input(canonical: &Path, subpath: &[String]) -> Option<PathBu
 /// (issue #2047/#2086): used when the metafile KEY itself is not
 /// package-shaped, so there is no `node_modules`-relative subpath to strip
 /// from it in the first place. Under copy-mode staging (`node_modules_dir`
-/// set, no `--preserve-symlinks` — `esbuild_will_preserve_symlinks`,
-/// bundler.rs :10153/:2019), esbuild canonicalises a staged
+/// set and symlink preservation disabled), the native compiler canonicalises
+/// a staged
 /// `node_modules/<pkg>` symlink back to a `..`-climbing relative path
 /// instead of a `node_modules/...`-shaped one, so [`split_package_name_and_subpath`]
 /// finds no `node_modules` segment in the key at all.
@@ -595,7 +593,7 @@ fn declared_first_party_package_identity_from_canonical(
 /// decision — "should the stage-escape audit run for this bundle at all" —
 /// decided once, before any metafile input is ever classified. This roster
 /// instead backs the classification itself, so its trigger frequency tracks
-/// how many times a real esbuild subprocess's metafile is actually classified
+/// how many times a native bundle job's graph metadata is actually classified
 /// here, not how many bundles get built.
 ///
 /// Before issue #2142, that meant **twice per SSR bundle** on a build that
@@ -613,16 +611,9 @@ fn declared_first_party_package_identity_from_canonical(
 /// saving is specific to the call site that genuinely needs both projections
 /// from the SAME metafile.
 ///
-/// The one call site this does NOT cover is the islands/client per-job path
-/// (`crates/zfb-islands/src/esbuild.rs`): it still runs
-/// N+1 independent subprocess audits (one per island entry plus the runtime
-/// bundle), each building its own roster, because that call site reaches this
-/// module only through the public, single-purpose
-/// `audit_metafile_stage_escape_at_path` across a crate boundary — sharing a
-/// roster there would need new cross-crate session/cache plumbing that
-/// conflicts with epic #2140's narrowing goal for a later wave. That is a
-/// deliberate, documented exception, not an oversight this doc is hiding.
-///
+/// Browser jobs have their own stage-escape audits in
+/// `crates/zfb-islands/src/bundle_job.rs`. Each native job audits its emitted
+/// graph metadata independently; it does not share this SSR classifier.
 /// [`_at_path`]: audit_and_enrol_metafile_stage_escape_at_path
 struct ClaimedMemberRoster {
     workspace_root: PathBuf,
@@ -1328,10 +1319,10 @@ fn resolve_metafile_inputs<'a>(
         .collect()
 }
 
-/// Return the real paths of plain CSS inputs esbuild recorded in its metafile.
+/// Return the real paths of plain CSS inputs the native compiler recorded in its metafile.
 ///
-/// esbuild's `inputs` keys are the resolution oracle. In particular, a CSS
-/// input remains present there when `--loader:.css=empty` reports its size as
+/// The native compiler's `inputs` keys are the resolution oracle. In particular, a CSS
+/// input remains present there when the empty CSS loader reports its size as
 /// zero, so this reads keys rather than attempting to reconstruct imports.
 /// CSS Modules are excluded because their existing emission path owns them.
 /// The returned paths are canonicalised, deduplicated, and sorted.
@@ -1354,7 +1345,7 @@ pub fn plain_css_inputs(
         .collect()
 }
 
-/// Project-relative `.tsx`/`.jsx` files esbuild bundled straight from the
+/// Project-relative `.tsx`/`.jsx` files the native compiler bundled straight from the
 /// project tree: dependencies, files outside the project, synthetic inputs
 /// and staged copies without a project twin are left out.
 pub fn authored_jsx_inputs(metafile_bytes: &[u8], project_root: &Path) -> Vec<PathBuf> {
@@ -1379,7 +1370,7 @@ pub fn authored_jsx_inputs(metafile_bytes: &[u8], project_root: &Path) -> Vec<Pa
 }
 
 /// Fail-closed audit: prove that no `bundle.exclude`-matched source leaked
-/// into the bundle by cross-checking esbuild's `--metafile` `inputs` record
+/// into the bundle by cross-checking the native compiler's graph-metadata `inputs` record
 /// (its authoritative resolution log) against the exclude predicate.
 ///
 /// This deliberately diverges from [`route_module_deps`]'s posture above: that
@@ -1387,7 +1378,7 @@ pub fn authored_jsx_inputs(metafile_bytes: &[u8], project_root: &Path) -> Vec<Pa
 /// invalidation precision), but this audit is the last line of defense
 /// against a shadow-staging escape hatch — see
 /// `.claude/skills/l-lessons-client-bundling/SKILL.md`'s "not-yet-adopted
-/// fixed point" note. When `bundle.exclude` is active, esbuild's own
+/// fixed point" note. When `bundle.exclude` is active, the native compiler's own
 /// resolution record is the only oracle trusted for "did anything excluded
 /// get bundled anyway"; failing to read that oracle must not silently pass,
 /// it must hard-fail the build. Callers are expected to only invoke this when
@@ -1395,7 +1386,7 @@ pub fn authored_jsx_inputs(metafile_bytes: &[u8], project_root: &Path) -> Vec<Pa
 /// this primitive.
 ///
 /// Every `inputs` key is checked under BOTH spellings:
-/// 1. the logical key as esbuild wrote it, joined onto `project_root` (the
+/// 1. the logical key as the native compiler wrote it, joined onto `project_root` (the
 ///    pre-canonicalisation spelling); and
 /// 2. `map_to_real`'s canonicalised real path.
 ///
@@ -1745,10 +1736,9 @@ impl MetafileInputClassifier {
 /// own source" (the project root, or the widened workspace root for a
 /// sibling-mirrored build).
 ///
-/// Callers are expected to invoke this once per REAL esbuild subprocess in a
-/// widened stage, immediately after that subprocess succeeds — wiring which
-/// call sites invoke it, and when a stage counts as "widened", is wave 2/3
-/// (#1705/#1707), not this primitive.
+/// Callers invoke this after a successful native bundle job in a widened
+/// stage. The caller supplies the job's graph metadata and working directory;
+/// this classifier does not launch a subprocess.
 ///
 /// One pass over `meta`'s inputs through the shared classifier (issue
 /// #2141/#2142): both projections — the audit's offender details and the
@@ -1956,7 +1946,7 @@ pub struct AcceptedPackage {
     /// otherwise register — never a subset chosen by this contract.
     ///
     /// **Always LIVE workspace source, never a staged location.** For the
-    /// real-copy staging shape (issue #2127) the inputs esbuild actually read
+    /// real-copy staging shape (issue #2127) the inputs the native compiler actually read
     /// live inside the stage, and this deliberately names the claimed member's
     /// own directory instead: an enrolment consumer mirrors from workspace
     /// source, and pointing it at a build artifact inside the stage would be
@@ -2032,7 +2022,7 @@ impl AcceptedEnrolmentSet {
     }
 
     /// The canonical paths of the metafile inputs that made `name` accepted —
-    /// i.e. the files esbuild ACTUALLY read from that package in this bundle
+    /// i.e. the files the native compiler ACTUALLY read from that package in this bundle
     /// session, each one individually cleared by the declared-entry rule.
     ///
     /// This is the tightest bound a consumer can key off: strictly the bundled
@@ -2046,7 +2036,7 @@ impl AcceptedEnrolmentSet {
     /// is never recorded here, even when a sibling input made the same package
     /// accepted — see `accepted_enrolment_set`'s own docs for that boundary.
     ///
-    /// These are the paths esbuild RECORDED, which for the real-copy staging
+    /// These are the paths the native compiler RECORDED, which for the real-copy staging
     /// shape (issue #2127) sit inside the stage rather than under
     /// [`AcceptedPackage::package_root`] — deliberately, since the point of
     /// this method is "which bytes actually reached the bundle", and for that
@@ -2083,8 +2073,8 @@ impl<'a> IntoIterator for &'a AcceptedEnrolmentSet {
 /// second resolution pass, and not an enumeration of workspace membership. It
 /// remains the same non-goal the audit-eligibility predicate's own docs
 /// describe (see `zfb_types::audit_eligibility`'s module docs: a predicate
-/// must never grow into a second resolver). esbuild stays the only resolver;
-/// this only reclassifies what esbuild already recorded.
+/// must never grow into a second resolver). The native compiler is the resolver;
+/// this only reclassifies what the native compiler already recorded.
 ///
 /// # What is shared with the audit
 ///
@@ -2107,7 +2097,7 @@ impl<'a> IntoIterator for &'a AcceptedEnrolmentSet {
 ///
 /// # The bounded-set guarantee — never "every claimed workspace member"
 ///
-/// The result can only ever name a package esbuild ACTUALLY resolved an
+/// The result can only ever name a package the native compiler ACTUALLY resolved an
 /// input from in THIS metafile. A package `pnpm-workspace.yaml` claims but
 /// that nothing in this bundle session imports never appears here, no matter
 /// how many workspace members are claimed in total — see
@@ -2130,7 +2120,7 @@ impl<'a> IntoIterator for &'a AcceptedEnrolmentSet {
 /// # Arguments
 ///
 /// Identical shape to [`audit_metafile_stage_escape`]'s: `metafile_cwd` is
-/// esbuild's own working directory the metafile's keys resolve against;
+/// the native compiler's own working directory the metafile's keys resolve against;
 /// `stage_roots` is the full set of roots a legitimately staged input may
 /// live under; `first_party_root` is the outer boundary of "this build's own
 /// source" (the project root, or the widened workspace root for a
@@ -2170,11 +2160,8 @@ pub(crate) fn accepted_enrolment_set(
 ///
 /// [`accepted_enrolment_set`] answers "which declared consume-from-source
 /// packages did THIS bundle session's metafile show were reached and
-/// accepted". The islands/client pipeline's no-stage path
-/// (`crates/zfb/src/commands/build.rs`) has no metafile at all — esbuild runs
-/// there without `--metafile`, which is exactly why #2048's defect is silent
-/// in that pipeline — so its sanctioned loud-failure fallback has to apply the
-/// same declared-entry acceptance rule to a path it already holds. Delegating
+/// accepted". A source-path caller can use this fallback without graph
+/// metadata, applying the same declared-entry acceptance rule to a path it already holds. Delegating
 /// to [`declared_first_party_package_identity_from_canonical`] is what keeps
 /// that fallback from drifting away from what the audit itself accepts: the
 /// same four conditions (nearest `package.json` inside `first_party_root`, a
@@ -2182,7 +2169,7 @@ pub(crate) fn accepted_enrolment_set(
 /// the package's own declared entries), the same fail-closed posture.
 ///
 /// This is a QUERY over declared data (`package.json` + `pnpm-workspace.yaml`)
-/// and never a resolution pass: it says nothing about whether esbuild did, or
+/// and never a resolution pass: it says nothing about whether the native compiler did, or
 /// would, resolve `source` — only whether the package that owns it declares
 /// that location reachable. Callers bring their own evidence of reachability.
 pub fn declared_first_party_package_for_source(
