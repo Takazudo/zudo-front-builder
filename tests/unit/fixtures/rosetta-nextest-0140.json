@@ -1,0 +1,81 @@
+{
+  "provenance": "Nextest 0.9.140 real Darwin x64 first discovery, source f9527f2; paths sanitized; Cargo metadata reduced to fields read by host parser. Original refusal retained outside repository.",
+  "binaries": {
+    "rust-build-meta": {
+      "target-directory": "/qualification/target",
+      "build-directory": "/qualification/target",
+      "base-output-directories": ["debug"],
+      "non-test-binaries": {
+        "path+file:///qualification/crates/zfb-compiler-worker#0.0.0": [
+          {
+            "name": "compiler-worker-test-host",
+            "kind": "bin-exe",
+            "path": "debug/compiler-worker-test-host"
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#oxc_sourcemap@9.0.0": [
+          {
+            "name": "oxc_sourcemap",
+            "kind": "dylib",
+            "path": "debug/deps/liboxc_sourcemap-ee711b6c07020285.dylib"
+          },
+          {
+            "name": "oxc_sourcemap",
+            "kind": "dylib",
+            "path": "debug/deps/liboxc_sourcemap-ee711b6c07020285.rlib"
+          }
+        ]
+      },
+      "build-script-out-dirs": {},
+      "build-script-info": {},
+      "linked-paths": ["debug/build/blake3-a437927e08e9994a/out"],
+      "platforms": {
+        "host": {
+          "platform": {
+            "triple": "x86_64-apple-darwin",
+            "target-features": "unknown"
+          },
+          "libdir": {
+            "status": "available",
+            "path": "/toolchains/rustup/toolchains/1.99.0-x86_64-apple-darwin/lib/rustlib/x86_64-apple-darwin/lib"
+          }
+        },
+        "targets": []
+      },
+      "target-platforms": [
+        {
+          "triple": "x86_64-apple-darwin",
+          "target-features": "unknown"
+        }
+      ],
+      "target-platform": null
+    },
+    "rust-binaries": {
+      "zfb-compiler-worker": {
+        "binary-id": "zfb-compiler-worker",
+        "binary-name": "zfb_compiler_worker",
+        "package-id": "path+file:///qualification/crates/zfb-compiler-worker#0.0.0",
+        "kind": "lib",
+        "binary-path": "/qualification/target/debug/deps/zfb_compiler_worker-304f2c4ff0db2acd",
+        "build-platform": "target"
+      },
+      "zfb-compiler-worker::lifecycle": {
+        "binary-id": "zfb-compiler-worker::lifecycle",
+        "binary-name": "lifecycle",
+        "package-id": "path+file:///qualification/crates/zfb-compiler-worker#0.0.0",
+        "kind": "test",
+        "binary-path": "/qualification/target/debug/deps/lifecycle-47a4418e1575e415",
+        "build-platform": "target"
+      }
+    }
+  },
+  "cargo": {
+    "target_directory": "/qualification/target",
+    "packages": [
+      {
+        "id": "path+file:///qualification/crates/zfb-compiler-worker#0.0.0",
+        "name": "zfb-compiler-worker"
+      }
+    ]
+  }
+}
