@@ -144,6 +144,7 @@ def main():
         scope = ["--workspace"] if a.workspace else ["-p", "zfb-compiler-worker"]
         binaries_file = run(["cargo", "nextest", "list", "--locked", *scope, "--list-type", "binaries-only", "--message-format", "json"], "binaries-metadata")
         binary_data = json.loads(binaries_file.read_text())
+        require(Path(binary_data["rust-build-meta"]["target-directory"]).resolve() == target.resolve(), "metadata does not use exclusive target")
         host = host_from_metadata(binary_data, json.loads(cargo_file.read_text()))
         test_paths = [Path(v["binary-path"]) for v in binary_data["rust-binaries"].values()]
         test_identities = {str(f): identity(f) for f in test_paths}
