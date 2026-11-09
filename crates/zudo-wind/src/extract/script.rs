@@ -98,6 +98,12 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>, jsx: &JsxSp
             let known_non_class =
                 !class && known_non_class_context(&source[..i], &out.options.ignore_attributes);
             let open = i;
+            // Keep the class-attribute context across template segments. The
+            // ordinary walk below still scans each interpolation's literals.
+            let template_markup = quote == b'`'
+                && !class
+                && !known_non_class
+                && scan_template_markup(source, base, open, out);
             i += 1;
             let mut segment = i;
             let mut left = false;
@@ -107,7 +113,10 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>, jsx: &JsxSp
                     continue;
                 }
                 if quote == b'`' && bytes[i..].starts_with(b"${") {
-                    if !known_non_class && (class || !is_pure_url(&source[segment..i])) {
+                    if !template_markup
+                        && !known_non_class
+                        && (class || !is_pure_url(&source[segment..i]))
+                    {
                         emit(
                             source,
                             base,
@@ -140,7 +149,7 @@ fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>, jsx: &JsxSp
                     let right = source[i + 1..].trim_start().starts_with('+');
                     let left = left || source[..open].trim_end().ends_with('+');
                     let whole_url = !class && is_pure_url(&source[segment..i]);
-                    if !known_non_class && !whole_url {
+                    if !template_markup && !known_non_class && !whole_url {
                         emit(
                             source,
                             base,
@@ -651,6 +660,52 @@ pub(super) fn interpolation_close(source: &str, start: usize) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+/// Scan a closed template as one markup value. Record interpolation spans
+/// before decoding so an escaped `\${` cannot become an interpolation when
+/// decoding removes its backslash. Expression bodies remain the ordinary
+/// literal scanner's responsibility.
+fn scan_template_markup(source: &str, base: usize, open: usize, out: &mut Collector<'_>) -> bool {
+    let bytes = source.as_bytes();
+    let start = open + 1;
+    let mut i = start;
+    let mut spans = Vec::new();
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(bytes.len()),
+            b'$' if bytes[i..].starts_with(b"${") => {
+                let Some(close) = interpolation_close(source, i + 2) else {
+                    return false;
+                };
+                spans.push((i - start, close - start));
+                i = close;
+            }
+            b'`' => {
+                if spans.is_empty() {
+                    return false;
+                }
+                let (decoded, map) = decode(&source[start..i]);
+                if !decoded.contains('<') {
+                    return false;
+                }
+                let spans: Vec<_> = spans
+                    .into_iter()
+                    .map(|(start, end)| {
+                        (
+                            map.partition_point(|&at| at < start),
+                            map.partition_point(|&at| at < end),
+                        )
+                    })
+                    .collect();
+                return out.within_decoded(base + start, map, |out| {
+                    super::markup::scan_template(&decoded, out, &spans)
+                });
+            }
+            _ => i += 1,
+        }
+    }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
