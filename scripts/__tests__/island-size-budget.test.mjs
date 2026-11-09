@@ -2034,8 +2034,8 @@ describe("island shipped-size budget", () => {
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // Exact immediate predecessors of the live contracts: for Linux, the
 // schemaVersion-4 v5.2.2 bundler-backend contract (#4635, Actions evidence)
-// that the v6.0.0 release bump moved; for Darwin, the schemaVersion-3 v5.2.2
-// release-bump contract that its #4645 bundler-backend transition moved
+// that the v6.0.0 release bump moved; for Darwin, the schemaVersion-4 v5.2.2
+// bundler-backend contract that its #4645 v6.0.0 release bump moved
 // (owner-attested local evidence).
 // Each must equal a frozen verbatim fixture, so the metadata check also holds in
 // shallow CI; full checkouts also compare git bytes and that no intermediate
@@ -2056,16 +2056,15 @@ const repinnedFromContracts = [
     baselineRunId: 42405070022,
   },
   {
-    // The Darwin #4645 bundler-backend transition cites the frozen
-    // schemaVersion-3 v5.2.2 Darwin contract (its release bump at 0e6f9ca).
+    // The Darwin v6.0.0 release bump cites the authentic schema-4 predecessor.
     file: "decision.json",
-    commit: "933acb8c129218ef036341db0e2a6d1a19e5e8c5",
-    sha256: "51b177b70d1e618ac3de55fa2b723b248b18c2add0519ece53c665e979c4d8ac",
-    fixture: "fixtures/island-size-darwin-v5.2.2-release.json",
-    outcome: "release-version-stamp",
+    commit: "d9d64630c9336d68bab2b8374305b93e563cd1af",
+    sha256: "3f70750bd866f61615a61123111c9e7b95d335f92789de84c21e142ca93688e0",
+    fixture: "fixtures/island-size-darwin-v5.2.2-bundler-backend.json",
+    outcome: "bundler-backend-transition",
     packageVersion: "5.2.2",
-    baselineSourceSha: "0e6f9ca36c31b3961b69cd31837431e4dad3768b",
-    schemaVersion: 3,
+    baselineSourceSha: "933acb8c129218ef036341db0e2a6d1a19e5e8c5",
+    schemaVersion: 4,
     baselineRunId: undefined,
   },
 ];
@@ -4073,6 +4072,12 @@ describe("live contracts preserve released evidence and authentic predecessors",
       "51b177b70d1e618ac3de55fa2b723b248b18c2add0519ece53c665e979c4d8ac",
     );
 
+  const darwinV522Bundler = () =>
+    frozenDenoExit(
+      "fixtures/island-size-darwin-v5.2.2-bundler-backend.json",
+      "3f70750bd866f61615a61123111c9e7b95d335f92789de84c21e142ca93688e0",
+    );
+
   it("moves the frozen doc 9.1.1 Darwin contract only by the v5.2.0 release bump", () => {
     const predecessor = darwinV515Doc911();
     const live = darwinV520();
@@ -4141,7 +4146,18 @@ describe("live contracts preserve released evidence and authentic predecessors",
   // esbuild-free producer at 933acb8, re-pinned to schemaVersion 4 at v5.2.2.
   it("moves the frozen v5.2.2 schema-3 Darwin contract only by the bundler-backend transition", () => {
     const predecessor = darwinV522Esbuild();
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+    const live = darwinV522Bundler();
+    expect(live.baselineEvidence.repinnedFrom).toEqual({
+      schemaVersion: predecessor.schemaVersion,
+      outcome: predecessor.outcome,
+      packageVersion: predecessor.toolchain.packageVersion,
+      baselineSourceSha: predecessor.baselineSourceSha,
+      contract: {
+        sha256: "51b177b70d1e618ac3de55fa2b723b248b18c2add0519ece53c665e979c4d8ac",
+        commit: "933acb8c129218ef036341db0e2a6d1a19e5e8c5",
+        path: "research/v3-island-size/decision.json",
+      },
+    });
     expect(live.outcome).toBe("bundler-backend-transition");
     expect(live.schemaVersion).toBe(4);
     expect(live.toolchain).not.toHaveProperty("esbuildVersion");
@@ -4219,6 +4235,34 @@ describe("live contracts preserve released evidence and authentic predecessors",
         cargoTransitionMarkdown(live.baselineEvidence.cargoTransition) +
         " The package version",
     );
+  });
+
+  it("moves the frozen schema-4 Darwin contract only by the v6.0.0 release bump", () => {
+    const predecessor = darwinV522Bundler();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+    expect(live.schemaVersion).toBe(4);
+    expect(live.outcome).toBe("release-version-stamp");
+    expect(live.toolchain.packageVersion).toBe("6.0.0");
+    expect(live.baselineSourceSha).toBe("d9d64630c9336d68bab2b8374305b93e563cd1af");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "local-native",
+      sourceSha: "d9d64630c9336d68bab2b8374305b93e563cd1af",
+      stagingTool: { commit: "d9d64630c9336d68bab2b8374305b93e563cd1af" },
+      localReceipt: { sha256: "be15702d1c5d654d18f9a2062ecc2a420a41391a75e920441dc6ad9ac188b733" },
+      originalCheckerResult: { exitCode: 0 },
+    });
+    for (const key of [
+      "bundlerBackend",
+      "fingerprintTransition",
+      "cargoRewire",
+      "cargoTransition",
+      "cargoRemoval",
+      "runId",
+      "jobId",
+      "artifact",
+    ])
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    expectReleaseBumpOnly(predecessor, live);
   });
 
   it("keeps the dated README corrections", () => {
