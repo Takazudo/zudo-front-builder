@@ -68,7 +68,7 @@ import.
   one physical file, and the install must contain exactly one
   `@takazudo/zfb` package.
 - The server bundle's sourcemap (`.zfb-build/bundle.mjs.map`) lists every
-  module esbuild resolved. All zudo-react modules must come from one root, the
+  module the workspace native compiler resolved. All zudo-react modules must come from one root, the
   bundle must hold exactly one runtime definition site
   (`"@takazudo/zfb/zudo-react/runtime-definition-v1": true`, the witness
   defined in `packages/zfb/src/zudo-react/reactive.ts`), and the probe-path

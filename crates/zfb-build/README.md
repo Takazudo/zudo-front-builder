@@ -12,18 +12,15 @@ The dev-loop orchestrator for the zudo-front-builder framework.
 4. The CSS pipeline (Epic 4 — `zfb-css`) and the islands bundler
    (Epic 5 — `zfb-islands`).
 
-The orchestrator deliberately does **not** depend on those last three
-crates. They're injected as callback functions on a `BuildContext` so:
+The orchestrator invokes page rendering, CSS generation, and islands bundling
+through callback functions on a `BuildContext`. The command layer wires the
+concrete implementations, and tests can supply fakes that count invocations
+without compiling CSS or bundling JavaScript.
 
-- the orchestrator's surface stays free of heavyweight transitive
-  dependencies (the SWC pipeline in `zfb-render`, the in-process
-  zudo-wind engine in `zfb-css`, and the esbuild subprocess wrapper in
-  `zfb-islands`), and
-- tests can plug in fakes that count invocations without spawning
-  the esbuild subprocess or compiling utility CSS.
-
-Wiring concrete renderers / engines / bundlers happens in the bin crate
-(Epic 7's `zfb dev` command).
+This callback boundary is not a crate-dependency boundary: `zfb-build` directly
+depends on `zfb-render`, `zfb-content`, and the native `zfb-bundler`. Page/SSR
+bundles use Rolldown in-process; TypeScript plugin entries use the supervised
+native compiler worker. CSS and islands callbacks are supplied by `zfb dev`.
 
 ## Public API
 
@@ -109,8 +106,9 @@ The shape is intentionally minimal:
   shared with the dev preview server, so the pipeline must be safe to
   call from multiple threads.
 
-Why a trait when there's only one impl today? Production / SSR / edge
-builds will need different behaviour:
+The trait separates orchestration from asset behavior. Both `DevAssetPipeline`
+and `ProductionAssetPipeline` implement it; SSR and edge integrations can supply
+other implementations:
 
 | Build      | Differences from dev                                      |
 | ---------- | --------------------------------------------------------- |
@@ -119,7 +117,7 @@ builds will need different behaviour:
 | Edge       | Skip dist/ entirely; emit workerd-shaped artefacts in RAM. |
 
 Locking the orchestrator to a concrete struct now would force a
-refactor when production-build lands. Locking to a trait costs one
+refactor for each new asset pipeline. Locking to a trait costs one
 virtual call per rebuild tick and keeps the door open. The trait also
 guards the contract: if a future PR adds a method to `AssetPipeline`,
 the dev impl breaks here, not in production.

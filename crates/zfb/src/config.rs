@@ -375,7 +375,7 @@ pub struct Config {
     pub emit_render_artifacts: bool,
 
     /// Bundler options. `bundle.exclude` lists project-relative globs of
-    /// source files the bundler must keep out of the esbuild graph (see
+    /// source files the bundler must keep out of the native bundler graph (see
     /// [`BundleConfig::exclude`]). Absent / `None` → no files are skipped
     /// (byte-identical to a build without this knob).
     ///
@@ -1323,7 +1323,7 @@ pub struct PrefetchConfig {
 #[serde(rename_all = "camelCase")]
 pub struct BundleConfig {
     /// Project-relative glob patterns (gitignore-style) for source files
-    /// the bundler must NOT pull into the esbuild graph.
+    /// the bundler must NOT pull into the native bundler graph.
     ///
     /// Each pattern is matched against the file's path relative to the
     /// project root, in POSIX form (e.g. `components/Foo.stories.tsx` or
@@ -1346,22 +1346,16 @@ pub struct BundleConfig {
     #[serde(default)]
     pub exclude: Option<Vec<String>>,
 
-    /// Explicit esbuild `main-fields` list for the `--platform=neutral`
-    /// page/SSR pass. Under `neutral` esbuild's main-fields list is EMPTY by
-    /// default, so a dep resolved purely via `package.json` `main`/`module`
-    /// (no `exports` map) fails with `The "main" field here was ignored. Main
-    /// fields must be configured explicitly when using the "neutral"
-    /// platform.` Setting e.g. `["main", "module"]` lets such CJS-main-only
-    /// deps resolve (#676 -- `msw` -> `path-to-regexp@6`). A configured list
-    /// applies to every build mode; absent/empty means no `--main-fields`
-    /// argument is emitted.
+    /// Ordered package.json main fields for the neutral page/SSR pass.
+    /// A nonempty list is forwarded to the native bundle request; absent or
+    /// empty leaves the backend's defaults in effect.
     ///
     /// Mirrors `BundleConfig.mainFields` in `packages/zfb/src/config.ts`.
     #[serde(default)]
     pub main_fields: Option<Vec<String>>,
 
-    /// Bare specifiers to mark `--external` in the `--platform=neutral`
-    /// page/SSR pass, so esbuild leaves them unbundled instead of resolving
+    /// Bare specifiers to externalize in the neutral page/SSR pass,
+    /// so the native bundler leaves them unbundled instead of resolving
     /// them (the other #676 escape hatch -- externalize a CJS-only dep rather
     /// than resolving it). Appended to the framework-provided externals.
     /// Absent/empty -> no extra externals.
@@ -1370,7 +1364,7 @@ pub struct BundleConfig {
     #[serde(default)]
     pub external: Option<Vec<String>>,
 
-    /// Additional esbuild loaders keyed by file extension (for example
+    /// Additional native bundler loaders keyed by file extension (for example
     /// `".txt" -> "text"`). Only inline loaders are accepted; loaders that
     /// emit sibling assets (`file` / `copy`) are rejected during config
     /// validation because the client pipelines do not publish those outputs.
@@ -1617,9 +1611,9 @@ pub struct ResolveMarkdownLinksDir {
 /// module — skip this entry".
 ///
 /// Sub 3 / issue #108: on the TS load path the evaluator (in-process V8
-/// on default builds, `crates/zfb/js/config-loader.mjs` subprocess on
-/// slim builds) emits a `{ config, plugins }` envelope where `plugins[i]`
-/// is the absolute module specifier for `config.plugins[i].name`.
+/// on default builds, a Node subprocess on slim builds) emits a
+/// `{ config, plugins }` envelope where `plugins[i]` is the absolute module
+/// specifier for `config.plugins[i].name`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct PluginConfig {
     pub name: String,
@@ -1959,11 +1953,9 @@ pub fn resolve_bundle_exclude(bundle: Option<&BundleConfig>) -> Vec<String> {
     }
 }
 
-/// Resolve `bundle.mainFields` into the esbuild `--main-fields` list for the
-/// page/SSR pass. Empty when `bundle` is absent or `bundle.mainFields` is
-/// `None`, so callers can thread the result straight into
-/// `BundlerInput::main_fields` and an empty vec means "emit no
-/// `--main-fields`" (byte-identical to a build without the knob; #676).
+/// Resolve `bundle.mainFields` into the ordered package main-field list for
+/// the native page/SSR bundle request. Empty when the config is absent;
+/// callers thread the result into `BundlerInput::main_fields`.
 #[must_use]
 pub fn resolve_bundle_main_fields(bundle: Option<&BundleConfig>) -> Vec<String> {
     match bundle {
@@ -2017,7 +2009,7 @@ pub fn apply_define_overrides(cfg: &mut Config, overrides: &[(String, String)]) 
 }
 
 /// Resolve `bundle.define` into a deterministic key-to-expression map.
-/// Values remain raw esbuild expressions and are not JSON-encoded here.
+/// Values remain raw JavaScript expressions and are not JSON-encoded here.
 #[must_use]
 pub fn resolve_bundle_define(bundle: Option<&BundleConfig>) -> BTreeMap<String, String> {
     match bundle {

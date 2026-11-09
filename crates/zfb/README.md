@@ -119,7 +119,7 @@ top level by `report_error`, avoiding double-printing.
 Config is loaded at the start of every command via `Config::load_from_dir()`.
 Resolution order:
 
-1. `zfb.config.ts` - bundled by pinned esbuild and evaluated by
+1. `zfb.config.ts` - bundled through the supervised native compiler worker (Rolldown) and evaluated by
    `zfb-config-loader` (embedded V8 in default builds, node subprocess in
    slim builds).
 2. `zfb.config.json` - parsed directly by serde.
@@ -140,7 +140,7 @@ TypeScript wins over JSON when both files are present.
 | `wind` | `wind` | enabled | zudo-wind utility CSS configuration; `false` disables utility generation |
 | `prefetch` | `prefetch` | `None` | `disabled: true` disables runtime prefetch wiring |
 | `minify_html` | `minifyHtml` | `false` | Can be overridden per build by CLI flags |
-| `bundle` | `bundle` | `None` | `exclude` globs for files kept out of the esbuild graph |
+| `bundle` | `bundle` | `None` | `exclude` globs for files kept out of the native bundler graph |
 | `plugins` | `plugins` | `[]` | User plugin entries, with resolved module URLs on the TS path |
 | `adapter` | `adapter` | `None` | Deploy-target adapter package; `None` / `"none"` means static |
 | `strip_md_ext` | `stripMdExt` | `false` | Rewrite authored `.md` / `.mdx` links to route URLs |

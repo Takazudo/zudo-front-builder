@@ -1,9 +1,14 @@
 ---
 name: l-lessons-client-bundling
-description: "Project lessons learned for client bundling (zfb-build bundler, bundle.exclude, shadow staging, esbuild resolution) and for running autonomous review→fix loops on this area. Read PROACTIVELY before planning or implementing work touching crates/zfb-build/src/bundler.rs, bundle.exclude semantics, or any fully-autonomous epic run — contains traps, root causes, and \"watch for next time\" notes from previous attempts."
+description: "Project lessons learned for client bundling (zfb-build bundler, bundle.exclude, shadow staging, compiler resolution) and for running autonomous review→fix loops on this area. Read PROACTIVELY before planning or implementing work touching crates/zfb-build/src/bundler.rs, bundle.exclude semantics, or any fully-autonomous epic run — contains traps, root causes, and \"watch for next time\" notes from previous attempts."
 ---
 
 # Lessons: client bundling
+
+The dated record below describes the compiler used at the time. Current builds
+use typed requests to the native `zfb-bundler` (Rolldown), with no esbuild
+executable or subprocess. Preserve the staging and single-resolver lessons;
+check current source before applying historical CLI/interface restrictions.
 
 ## 2026-07-11 — bundle.exclude vs esbuild resolution: non-converging autonomous fix loop
 

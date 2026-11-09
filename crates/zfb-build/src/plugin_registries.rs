@@ -5,7 +5,7 @@
 //! register three kinds of contributions:
 //!
 //! - **Aliases** — exact-match import rewrites consulted by the V8
-//!   module loader (#260) and the islands esbuild plugin (#261).
+//!   module loader (#260) and the islands native bundler (#261).
 //! - **Virtual modules** — bare specifiers whose source text is
 //!   produced by a JS-side loader closure owned by the plugin host
 //!   subprocess. The Rust side stores an opaque [`VirtualLoaderId`]

@@ -184,8 +184,8 @@ pub struct BundleConfig {
     /// Minify the output. Production: `true`. Dev: `false`.
     pub minify: bool,
 
-    /// Emit a sourcemap alongside the asset (and, for esbuild, a
-    /// `//# sourceMappingURL=` comment). Production: `false`. Dev: `true`.
+    /// Emit a linked sourcemap alongside the asset.
+    /// Production: `false`. Dev: `true`.
     pub sourcemap: bool,
 
     /// Output root. The asset lands at the stable path
@@ -215,21 +215,21 @@ pub struct BundleConfig {
     /// Stable, non-absolute labels used only in the generated registration
     /// diagnostics. Keys are the bundled `Island::source_path`s, which may
     /// point into an islands shadow; import specifiers continue to use those
-    /// physical paths so esbuild can resolve them.
+    /// physical paths so the native bundler can resolve them.
     pub module_labels: BTreeMap<PathBuf, String>,
 
-    /// When `true`, esbuild is invoked with `--preserve-symlinks` so it
+    /// When `true`, the native request enables `preserve_symlinks` so it
     /// keeps every importer anchored at its on-disk location instead of
     /// canonicalising symlinks back to their real target (issue #1404).
     ///
     /// This is the load-bearing flag for the islands shadow's symlink mode:
     /// that shadow symlinks plain source files and writes REAL expanded
     /// copies of `import.meta.glob`-using files. Without
-    /// `--preserve-symlinks`, esbuild would resolve a symlinked island file
+    /// symlink preservation, the native bundler would resolve a symlinked island file
     /// to its real project path and then resolve THAT file's relative imports
     /// against the real tree — skipping the in-shadow expanded glob copy
     /// entirely and shipping the raw `import.meta.glob(` call to the browser
-    /// again. With the flag, esbuild stays at `<shadow>/…` so the expanded
+    /// again. With the flag, the native bundler stays at `<shadow>/…` so the expanded
     /// copies win.
     ///
     /// Some islands shadows use copy-mode instead: project-local source files
@@ -241,24 +241,24 @@ pub struct BundleConfig {
     ///
     /// Default `false` — the no-shadow path (no `import.meta.glob` reachable
     /// from an island, the overwhelming common case) never sets it, so the
-    /// esbuild argv and bundle bytes are byte-identical to a pre-#1404
-    /// build. Only `build_default_islands_payload` sets it, and only after
+    /// native request keeps its default symlink behavior.
+    /// `build_default_islands_payload` sets it only after
     /// it has materialised a shadow and remapped the island `source_path`s
     /// into it, and only when that shadow used symlink mode rather than
     /// copy-mode.
     pub preserve_symlinks: bool,
 
-    /// Additional inline esbuild loaders keyed by extension.
+    /// Additional inline native bundler loaders keyed by extension.
     ///
     /// The command-layer config validator restricts values to loaders that do
-    /// not emit sibling assets. A [`BTreeMap`] keeps the argv deterministic.
+    /// not emit sibling assets. A [`BTreeMap`] keeps the request order deterministic.
     pub loaders: BTreeMap<String, String>,
 
-    /// Operator-authored esbuild `--define` expressions.
+    /// Operator-authored bundler `define` expressions.
     ///
     /// Values are forwarded verbatim (string values therefore need to be
     /// pre-quoted JSON). Reserved mode keys are rejected by the command-layer
-    /// config validator. A [`BTreeMap`] keeps the argv deterministic.
+    /// config validator. A [`BTreeMap`] keeps the request order deterministic.
     pub define: BTreeMap<String, String>,
 
     /// Project-local module-worker entries to bundle beside the shared
@@ -267,7 +267,7 @@ pub struct BundleConfig {
     /// The command layer discovers these entries from the islands graph and
     /// constructs each value through [`ModuleWorkerBundleEntry::new`], which
     /// derives the stable flat filename from the locked `zfb-types` naming
-    /// contract. The esbuild implementation runs one non-splitting browser
+    /// contract. The native bundler implementation runs one non-splitting browser
     /// bundle pass per entry and returns the results through
     /// [`BundleOutput::workers`]. Empty by default, preserving the historical
     /// no-worker bundle path byte-for-byte.
@@ -351,7 +351,7 @@ impl BundleConfig {
         self
     }
 
-    /// Toggle `--preserve-symlinks` on the esbuild invocation (chainable).
+    /// Toggle `preserve_symlinks` on the native bundle request (chainable).
     ///
     /// See [`BundleConfig::preserve_symlinks`] — set by the islands-shadow
     /// path (#1404/#1413) and left `false` everywhere else.
@@ -360,13 +360,13 @@ impl BundleConfig {
         self
     }
 
-    /// Set additional inline esbuild loaders (chainable).
+    /// Set additional inline native bundler loaders (chainable).
     pub fn with_loaders(mut self, loaders: BTreeMap<String, String>) -> Self {
         self.loaders = loaders;
         self
     }
 
-    /// Set operator-authored raw esbuild define expressions (chainable).
+    /// Set operator-authored raw native bundler define expressions (chainable).
     pub fn with_define(mut self, define: BTreeMap<String, String>) -> Self {
         self.define = define;
         self
@@ -381,7 +381,7 @@ impl BundleConfig {
 
 /// One project-local module-worker entry to bundle as an islands companion.
 ///
-/// `source_path` is the physical file esbuild reads. It may point into the
+/// `source_path` is the physical file the native bundler reads. It may point into the
 /// command layer's preprocessing shadow, while `filename` is always derived
 /// from the corresponding logical project path. Keeping those identities
 /// separate lets rewritten/raw-expanded worker sources bundle from the
@@ -396,7 +396,7 @@ impl ModuleWorkerBundleEntry {
     /// Construct an entry using the shared path-derived filename contract.
     ///
     /// `logical_source_path` must be beneath `project_root`; `source_path`
-    /// is the physical path handed to esbuild (normally the same path, or its
+    /// is the physical path handed to the native bundler (normally the same path, or its
     /// materialised islands-shadow counterpart).
     ///
     /// Delegates to [`Self::new_scoped`] with `first_party_root ==
@@ -433,7 +433,7 @@ impl ModuleWorkerBundleEntry {
         })
     }
 
-    /// Physical source path esbuild should bundle.
+    /// Physical source path the native bundler should bundle.
     pub fn source_path(&self) -> &Path {
         &self.source_path
     }
@@ -443,7 +443,7 @@ impl ModuleWorkerBundleEntry {
         &self.filename
     }
 
-    /// esbuild entry-name template (the stable filename without `.js`).
+    /// Native bundler entry-name template (the stable filename without `.js`).
     pub(crate) fn entry_name_template(&self) -> &str {
         self.filename
             .strip_suffix(".js")
@@ -455,7 +455,7 @@ impl ModuleWorkerBundleEntry {
 ///
 /// See [`BundleOutput::chunks`] for the full chunk contract. `filename`
 /// is a **flat** basename (validated to contain no path separators and to
-/// match the `islands-chunk-*` shape) carrying esbuild's own content hash
+/// match the `islands-chunk-*` shape) carrying the native bundler's own content hash
 /// — e.g. `islands-chunk-WOEGGERP.js`. `bytes` is the chunk's raw JS.
 ///
 /// Downstream consumers (the prod pipeline, the dev server) MUST write
@@ -472,17 +472,17 @@ pub struct BundleChunk {
     /// Never contains a path separator. Never to be renamed downstream.
     pub filename: String,
 
-    /// The chunk's raw JS bytes, read back verbatim from esbuild's
+    /// The chunk's raw JS bytes, read back verbatim from the native bundler's
     /// staging outdir.
     pub bytes: Vec<u8>,
 }
 
-/// One non-entry resource emitted by esbuild's locked browser-islands file
+/// One non-entry resource emitted by the native bundler's locked browser-islands file
 /// loaders.
 ///
 /// Resources are deliberately distinct from code-split chunks and module
 /// workers. They are opaque `.zfb-resource.mjs` glue or `.wasm` payloads that
-/// esbuild has already named and whose relative URLs have already been baked
+/// the native bundler has already named and whose relative URLs have already been baked
 /// into the islands entry. Downstream writers must therefore place them beside
 /// the entry verbatim and must not re-hash, rename, or inspect their bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -491,7 +491,7 @@ pub struct BundleResource {
     /// `islands-resource-zfb_md_wasm_bg-ABCDE.wasm`.
     pub filename: String,
 
-    /// Raw file-loader output bytes, read back verbatim from esbuild's
+    /// Raw file-loader output bytes, read back verbatim from the native bundler's
     /// staging directory.
     pub bytes: Vec<u8>,
 }
@@ -527,23 +527,22 @@ pub struct BundleOutput {
     /// across runs for a given input.
     pub module_ids: Vec<ModuleId>,
 
-    /// Code-split chunks emitted by esbuild's `--splitting` alongside the
+    /// Code-split chunks emitted by the native bundler alongside the
     /// `islands.js` entry, one per shared/dynamically-imported module
     /// graph (see [`BundleChunk`]). Empty when the islands set has no
     /// dynamic `import()` — a zero-dynamic-import project yields exactly
     /// the entry and behaves identically to the pre-splitting build.
     ///
-    /// ## Chunk contract (consumed by the prod-shipping and dev-serving
-    /// sub-issues; a future bundler swap, e.g. the Rolldown spike #318,
-    /// MUST honour it)
+    /// ## Chunk contract (shared by native bundling, production shipping,
+    /// and development serving)
     ///
-    /// - esbuild owns the content hash. The entry is emitted under the
-    ///   stable name `islands.js` (via `--entry-names=islands`); chunks are
-    ///   `islands-chunk-<hash>.js` (via `--chunk-names=islands-chunk-[hash]`),
+    /// - The native bundler owns the content hash. The entry is emitted under the
+    ///   stable name `islands.js`; chunks are
+    ///   `islands-chunk-<hash>.js`,
     ///   **flat** in the same staging directory as the entry.
-    /// - The entry references chunks via **relative** imports esbuild bakes
+    /// - The entry references chunks via **relative** imports the native bundler bakes
     ///   into the JS (`import("./islands-chunk-<hash>.js")`). Because the
-    ///   hash is esbuild's, those names are content-stable across identical
+    ///   hash is the native bundler's, those names are content-stable across identical
     ///   rebuilds and the imports resolve as long as entry and chunks share
     ///   a directory.
     /// - **Downstream MUST NOT rename chunk files.** Only the *entry* is
@@ -571,7 +570,7 @@ pub struct BundleOutput {
     ///
     /// The [`BundleChunk`] byte/filename shape is reused, but workers live in
     /// a dedicated field so downstream code cannot confuse the stable
-    /// `worker-*.js` URL contract with esbuild's self-hashed
+    /// `worker-*.js` URL contract with the native bundler's self-hashed
     /// `islands-chunk-*` class. Worker filenames are written verbatim beside
     /// the islands entry in production and development; only their `?v=` URL
     /// query changes when the first-party worker graph changes.
@@ -581,7 +580,7 @@ pub struct BundleOutput {
     ///
     /// This is empty unless a reachable island statically imports a
     /// `.zfb-resource.mjs` or `.wasm` file. Resource filenames are flat,
-    /// self-hashed, metafile-backed names owned by esbuild and are sorted
+    /// self-hashed, metafile-backed names owned by the native bundler and are sorted
     /// deterministically before they reach this field.
     pub resources: Vec<BundleResource>,
 }
@@ -704,7 +703,7 @@ pub struct ProductionIslandsAsset {
     pub workers: Vec<IslandsChunk>,
 
     /// File-loader resource companions emitted alongside the islands entry.
-    /// These are shipped verbatim under their esbuild-owned names so relative
+    /// These are shipped verbatim under their native bundler-owned names so relative
     /// resource URLs in the entry continue to resolve after the entry itself
     /// receives its production hash.
     pub resources: Vec<IslandsResource>,
