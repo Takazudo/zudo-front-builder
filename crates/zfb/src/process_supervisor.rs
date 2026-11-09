@@ -505,16 +505,20 @@ mod unix {
             );
             time::sleep_until(started + Duration::from_secs(3)).await;
             fs::write(exit_marker, "exit").unwrap();
-            let result = time::timeout(Duration::from_secs(6), task)
+            // Outlasts a restarted window (child exit by about 4 s, then a full 6 s grace), so that
+            // regression reaches the explicit assertion below rather than this timeout.
+            let result = time::timeout(Duration::from_secs(10), task)
                 .await
                 .unwrap()
                 .unwrap()
                 .unwrap();
             assert_eq!(result.exit, ExitKind::Exited(0));
             assert_eq!(result.forwarded, Some(libc::SIGTERM));
-            // The old behavior spent another full grace window in the sweep (ending at 9 s or later).
+            // The shared deadline is armed by at most the 1.5 s ack bound plus 6 s, so a correct sweep
+            // ends by 7.5 s. A restarted window runs a full 6 s after the child exits at 3 s or later,
+            // so it ends at 9 s or later. 8.25 s leaves 0.75 s on each side.
             assert!(
-                started.elapsed() < Duration::from_millis(7500),
+                started.elapsed() < Duration::from_millis(8250),
                 "grace window restarted after child exit"
             );
             until(|| process_gone(pid)).await;
