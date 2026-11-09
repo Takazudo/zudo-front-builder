@@ -478,18 +478,29 @@ mod unix {
         }
         #[tokio::test]
         async fn descendant_sweep_uses_remaining_signal_grace() {
+            // #4653: the helper's `sleep .01` poll loop took up to 860 ms to notice the exit
+            // marker (Rosetta x86_64 under 10-core load), so the marker lands EXIT_WINDOW before
+            // the deadline. Every bound below is derived from these constants.
+            const GRACE: Duration = Duration::from_secs(6);
+            const EXIT_WINDOW: Duration = Duration::from_secs(3);
+            const ACK_BOUND: Duration = Duration::from_millis(1500);
+            let marker_at = GRACE - EXIT_WINDOW;
+            // `supervise_with` arms the shared deadline synchronously after forwarding the
+            // signal, before the helper's trap can write the ack, so a correct sweep ends by
+            // ACK_BOUND + GRACE. A restarted window starts when the child exits, after the
+            // marker, so it ends at marker_at + GRACE or later. Assert at the midpoint.
+            let correct_by = ACK_BOUND + GRACE;
+            let restarted_from = marker_at + GRACE;
+            let restart_bound = (correct_by + restarted_from) / 2;
             let dir = tempfile::tempdir().unwrap();
             let info = dir.path().join("helper.info");
             let ack = info.with_extension("ack");
             let exit_marker = info.with_extension("exit");
             let mut unrelated = Unrelated::new();
-            // The helper gets a 3 s window between the exit marker and the deadline: measured
-            // marker-to-exit latency reached 860 ms translated under load (#4653).
-            let grace = Duration::from_secs(6);
             let mut cmd = helper_command(&info, "near_deadline");
             cmd.env("ZFB_SUPERVISOR_IGNORE_TERM", "1");
             let (tx, rx) = mpsc::unbounded_channel();
-            let task = tokio::spawn(supervise_with(cmd, SuperviseOptions { grace }, rx));
+            let task = tokio::spawn(supervise_with(cmd, SuperviseOptions { grace: GRACE }, rx));
             until(|| info.exists()).await;
             let data = fs::read_to_string(&info).unwrap();
             let mut fields = data.split_whitespace();
@@ -500,25 +511,26 @@ mod unix {
             tx.send(libc::SIGTERM).unwrap();
             until(|| ack.exists()).await;
             assert!(
-                started.elapsed() < Duration::from_millis(1500),
+                started.elapsed() < ACK_BOUND,
                 "TERM acknowledgement was delayed"
             );
-            time::sleep_until(started + Duration::from_secs(3)).await;
+            time::sleep_until(started + marker_at).await;
             fs::write(exit_marker, "exit").unwrap();
-            // Outlasts a restarted window (child exit by about 4 s, then a full 6 s grace), so that
-            // regression reaches the explicit assertion below rather than this timeout.
-            let result = time::timeout(Duration::from_secs(10), task)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
+            // Measured from the marker write: the child exits by the deadline, at most
+            // EXIT_WINDOW + ACK_BOUND later, and a restarted window then runs a full GRACE. The
+            // timeout outlasts that so the regression reaches the restart assertion below (#4653).
+            let result = time::timeout(
+                EXIT_WINDOW + ACK_BOUND + GRACE + Duration::from_secs(1),
+                task,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
             assert_eq!(result.exit, ExitKind::Exited(0));
             assert_eq!(result.forwarded, Some(libc::SIGTERM));
-            // The shared deadline is armed by at most the 1.5 s ack bound plus 6 s, so a correct sweep
-            // ends by 7.5 s. A restarted window runs a full 6 s after the child exits at 3 s or later,
-            // so it ends at 9 s or later. 8.25 s leaves 0.75 s on each side.
             assert!(
-                started.elapsed() < Duration::from_millis(8250),
+                started.elapsed() < restart_bound,
                 "grace window restarted after child exit"
             );
             until(|| process_gone(pid)).await;
