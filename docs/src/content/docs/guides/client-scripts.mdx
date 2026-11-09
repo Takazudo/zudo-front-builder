@@ -67,9 +67,8 @@ production build pipeline rewrites this to the hashed URL
 
 `zfb build` runs three steps for each discovered entry:
 
-1. **Bundle** — each `.client.*` file is passed to the bundler (Rolldown by
-   default, or esbuild with `ZFB_BUNDLER=esbuild`) and bundled
-   independently as an ESM module. The bundle includes only the entry and its
+1. **Bundle** — each `.client.*` file is passed to the native Rolldown
+   bundler and bundled independently as an ESM module. The bundle includes only the entry and its
    transitive imports. If the entry imports a package, its dependencies are
    included in that entry's bundle as well.
 2. **Hash** — the `ProductionAssetPipeline` reads the bundle bytes,

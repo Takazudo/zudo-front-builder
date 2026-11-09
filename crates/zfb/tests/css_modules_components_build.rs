@@ -145,7 +145,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 /// Write a small component that imports its own `.module.css` and
 /// references three class names from it. The component renders a
@@ -266,7 +266,7 @@ export default function HomePage() {
 /// `scan_css_module_imports` → `materialise_shadow` (symlinks!) →
 /// `rewrite_css_modules_in_shadow` → esbuild.
 ///
-/// Pass the resolved esbuild path through `ZFB_ESBUILD_BIN` so the subprocess
+/// (Historical, pre-#4635:) the resolved esbuild path was passed through `ZFB_ESBUILD_BIN` so the subprocess
 /// uses the same binary the test discovered. Without this, environments where
 /// `locate_esbuild()` only found esbuild on `PATH` or under
 /// `node_modules/.pnpm` would fail with an unrelated "esbuild not found"
@@ -274,14 +274,12 @@ export default function HomePage() {
 /// finding, P2.)
 fn build_and_assert_corp_shape(
     root: &Path,
-    esbuild: &Path,
     module_css_paths: &[PathBuf],
     original_module_css: &[String],
 ) {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn `zfb build`");
 
@@ -404,18 +402,10 @@ fn build_and_assert_corp_shape(
 /// `bundler.rs::run_esbuild`.
 #[test]
 fn corp_shape_components_module_css_builds_with_hashed_classes() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[css_modules_components_build] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     let (module_css_paths, original_module_css) = write_corp_shape_fixture(root);
-    build_and_assert_corp_shape(root, &esbuild, &module_css_paths, &original_module_css);
+    build_and_assert_corp_shape(root, &module_css_paths, &original_module_css);
 }
 
 /// Wave 2 / #553 regression — corp's actual `pnpm install` shape.
@@ -436,14 +426,6 @@ fn corp_shape_components_module_css_builds_with_hashed_classes() {
 #[cfg(unix)]
 #[test]
 fn corp_shape_with_real_node_modules_and_no_tsconfig_paths_builds() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[css_modules_components_build] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     let (module_css_paths, original_module_css) = write_corp_shape_fixture(root);
@@ -462,7 +444,7 @@ fn corp_shape_with_real_node_modules_and_no_tsconfig_paths_builds() {
     // No `tsconfig.json` written — corp also has no `compilerOptions.paths`.
     // This combination is exactly what gate path 3 is meant to handle.
 
-    build_and_assert_corp_shape(root, &esbuild, &module_css_paths, &original_module_css);
+    build_and_assert_corp_shape(root, &module_css_paths, &original_module_css);
 }
 
 fn collect_files(dir: &Path, ext: &str) -> Vec<PathBuf> {

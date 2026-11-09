@@ -187,7 +187,7 @@ class LinkCheck(unittest.TestCase):
 
 class RequiredRows(unittest.TestCase):
     def report(self, names, rolldown=False):
-        return {"rolldown_prototype": rolldown, "rows": [{"name": name, "passed": True} for name in names]}
+        return {"rolldown_timing": rolldown, "rows": [{"name": name, "passed": True} for name in names]}
 
     def test_all_rows_pass(self):
         packed_consumer.assert_required_rows(self.report(packed_consumer.required_rows(False)))

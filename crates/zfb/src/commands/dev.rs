@@ -6274,19 +6274,6 @@ struct DevRebuildInputs {
     /// time — see [`Self::plugin_virtual_modules`] and
     /// [`Self::live_v8_plugin_hooks`].
     plugin_refresh: zfb_build::PluginRefreshState,
-    /// Process-lifetime embedded-esbuild extraction (#994 item A): the
-    /// `(TempDir, PathBuf)` pair from one boot-time
-    /// [`crate::render_pipeline::embedded_binary`] call, threaded into
-    /// `assemble_bundler_input` on every tick so the per-tick tempdir
-    /// extraction (the bulk of the measured P1 `asm` cost) is skipped.
-    /// The TempDir handle lives as long as the dev session — i.e. it
-    /// outlives every `bundle()` call, trivially satisfying the
-    /// [`crate::commands::bundler_input::AssembledBundlerInput`]
-    /// lifetime contract. `None` when boot-time extraction failed
-    /// (non-fatal: warn + per-tick fallback) or when `ZFB_ESBUILD_BIN`
-    /// overrides the embedded binary.
-    esbuild: Option<(tempfile::TempDir, PathBuf)>,
-
     /// Session-lifetime staging root for package-owned **injected routes**
     /// (epic #1228, S2 #1230 — the B1 multi-root dev mechanism). When a
     /// preset registered routes whose POST-precedence survivor set is
@@ -6355,11 +6342,6 @@ impl DevRebuildInputs {
             }
         }
         hooks
-    }
-
-    /// Path of the boot-time extracted esbuild binary (#994 item A), if any.
-    fn esbuild_path(&self) -> Option<&Path> {
-        self.esbuild.as_ref().map(|(_, path)| path.as_path())
     }
 
     /// Staged `pages` root for the injected package routes (S2 #1230), if a
@@ -8088,7 +8070,6 @@ impl DevRenderSession {
                 inputs.plugin_virtual_modules(),
                 timing_enabled,
                 session_guard.as_mut(),
-                inputs.esbuild_path(),
                 inputs.empty_user_pages_root(),
                 // S2 (#1230) — re-include the injected modules on every tick
                 // from the SAME session-lifetime staging dir (not
@@ -9115,10 +9096,7 @@ struct AssembledBundleResult {
 /// make a newly-added page render differently in dev than it did at boot).
 /// The embedded node_modules tempdir handle lives only for the
 /// synchronous `bundle()` call (which writes `bundle_path` to disk), so
-/// scoping it to this function is correct. The esbuild binary is the
-/// boot-time process-lifetime extraction passed via `pre_resolved_esbuild`
-/// (#994 item A); the per-call extraction only runs as a fallback when
-/// that is `None`.
+/// scoping it to this function is correct.
 ///
 /// `recompute snapshot` is implicit: `build_content_snapshot_json` re-reads
 /// the content collections from disk on every call, so a re-bundle here
@@ -9141,10 +9119,6 @@ fn assemble_and_bundle_dev(
     // so boot and refresh share one assembly path AND one shadow tree —
     // #659 configuration parity by construction.
     shadow_session: Option<&mut ShadowSession>,
-    // Boot-time extracted embedded esbuild binary (#994 item A) — see
-    // [`DevRebuildInputs::esbuild`]. Both boot and refresh pass the same
-    // path so every tick skips the per-call tempdir extraction.
-    pre_resolved_esbuild: Option<&Path>,
     // #1518 — a true zero-pages consumer has no real project-root `pages/`
     // directory. When surviving injected routes make it runnable, boot creates
     // a session-lifetime EMPTY internal root and passes it through this
@@ -9210,7 +9184,6 @@ fn assemble_and_bundle_dev(
     let crate::commands::bundler_input::AssembledBundlerInput {
         bundler_input,
         _node_modules_handle: _embedded_nm_handle,
-        _esbuild_handle: _embedded_esbuild_handle,
     } = crate::commands::bundler_input::assemble_bundler_input(
         project_root,
         bundle_outdir,
@@ -9220,7 +9193,6 @@ fn assemble_and_bundle_dev(
         content_snapshot_json,
         plugin_alias_entries,
         plugin_virtual_modules,
-        pre_resolved_esbuild,
         // #1518's internal empty root is the only dev-side replacement. It
         // exists solely for a consumer that has no real user `pages/` tree;
         // conventional dev sessions keep the default project-root path.
@@ -10103,28 +10075,6 @@ fn boot_dev_renderer(
         // plugin_virtual_modules.clone()` field: every POST-boot consumer
         // reads the live store via `plugin_refresh` instead.
         plugin_refresh: plugin_refresh.clone(),
-        // #994 item A — extract the embedded esbuild binary ONCE here;
-        // the handle lives on `DevRebuildInputs` for the whole dev
-        // session, so every tick's `assemble_bundler_input` skips its
-        // per-call tempdir extraction. Skipped when `ZFB_ESBUILD_BIN`
-        // overrides the embedded binary (the assemble-side skip
-        // condition would ignore the path anyway). Extraction failure
-        // is non-fatal, matching the assemble-side handling: warn and
-        // fall back to the per-tick extraction by passing `None`.
-        esbuild: if std::env::var_os("ZFB_ESBUILD_BIN").is_none_or(|v| v.is_empty()) {
-            match crate::render_pipeline::embedded_binary("esbuild") {
-                Ok(pair) => Some(pair),
-                Err(e) => {
-                    crate::output::warn(format!(
-                        "could not extract embedded esbuild at dev boot ({e}); \
-                         falling back to per-tick extraction"
-                    ));
-                    None
-                }
-            }
-        } else {
-            None
-        },
         // S2 (#1230) — the injected-route staging dir materialised above.
         // `None` on the parity path; `Some` holds the TempDir for the whole
         // session so the staged modules outlive every `bundle()` call.
@@ -10243,7 +10193,6 @@ fn boot_dev_renderer(
             plugin_virtual_modules,
             false,
             Some(&mut shadow_session),
-            rebuild_inputs.esbuild_path(),
             rebuild_inputs.empty_user_pages_root(),
             // S2 (#1230) — include the injected modules in the BOOT bundle from
             // the staging dir materialised above. `None` on the parity path.
@@ -11939,7 +11888,6 @@ pub(crate) fn stub_session_for_adapter_tests(
                 v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
                 plugin_alias_entries: Vec::new(),
                 plugin_refresh: zfb_build::PluginRefreshState::default(),
-                esbuild: None,
                 injected_pages_root: None,
                 empty_user_pages_root: None,
                 injected_route_entrypoints: Vec::new(),
@@ -14860,7 +14808,6 @@ mod tests {
                 v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
                 plugin_alias_entries: Vec::new(),
                 plugin_refresh: zfb_build::PluginRefreshState::default(),
-                esbuild: None,
                 injected_pages_root: None,
                 empty_user_pages_root: None,
                 injected_route_entrypoints: Vec::new(),
@@ -15011,8 +14958,7 @@ mod tests {
         };
         let err = format!("{err:#}");
         assert!(
-            err.contains("re-bundle failed")
-                && (err.contains("esbuild exited") || err.contains("Rolldown could not bundle")),
+            err.contains("re-bundle failed") && err.contains("bundler: could not bundle"),
             "the refresh must fail at the bundle step, got: {err}"
         );
         assert!(
@@ -22813,7 +22759,6 @@ mod tests {
             v8_plugin_hooks,
             plugin_alias_entries: Vec::new(),
             plugin_refresh,
-            esbuild: None,
             injected_pages_root: None,
             empty_user_pages_root: None,
             injected_route_entrypoints: Vec::new(),

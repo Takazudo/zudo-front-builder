@@ -27,8 +27,6 @@
 //!
 //! The test skips (prints a note, returns early) when:
 //!
-//! - No esbuild binary is available (resolves via `ZFB_ESBUILD_BIN`,
-//!   `crates/zfb/binaries/esbuild/esbuild`, or the pnpm store).
 //! - The pnpm store is missing the runtime deps the bundle needs
 //!   (`hono`) — run `pnpm install`
 //!   at the repo root.
@@ -49,7 +47,6 @@ use zfb_build::{
     bundle, render_all, Backend, BundleMode, BundlerInput, BundlerOutput, RendererInput,
     RouteUniverseEntry,
 };
-use zfb_test_utils::locate_esbuild;
 
 // ---------------------------------------------------------------------------
 // Infrastructure helpers
@@ -324,12 +321,7 @@ fn make_test_node_modules() -> Option<tempfile::TempDir> {
     Some(tmp)
 }
 
-fn build_bundle(
-    fixture_root: &Path,
-    esbuild: &Path,
-    dist: &Path,
-    node_modules: &Path,
-) -> BundlerOutput {
+fn build_bundle(fixture_root: &Path, dist: &Path, node_modules: &Path) -> BundlerOutput {
     let input = BundlerInput {
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
@@ -350,8 +342,7 @@ fn build_bundle(
         outdir: dist.to_path_buf(),
         mode: BundleMode::Development,
         minify: false,
-        esbuild_binary: Some(esbuild.to_path_buf()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: Some(node_modules.to_path_buf()),
         node_modules_preserve_symlinks: true,
@@ -393,14 +384,6 @@ fn build_bundle(
 ///       cargo test -p zfb-build --test integration_e2e_routing_rendering
 #[test]
 fn e2e_routing_rendering_with_embedded_host() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[e2e_routing_rendering] no esbuild binary; \
-             set ZFB_ESBUILD_BIN or place at crates/zfb/binaries/esbuild/esbuild. Skipping."
-        );
-        return;
-    };
-
     let fixture = fixture_root();
     assert!(
         fixture.exists(),
@@ -420,7 +403,7 @@ fn e2e_routing_rendering_with_embedded_host() {
         return;
     };
     let dist_owned = tempfile::tempdir().expect("tempdir");
-    let bundle_owned = build_bundle(&fixture, &esbuild, dist_owned.path(), node_modules.path());
+    let bundle_owned = build_bundle(&fixture, dist_owned.path(), node_modules.path());
 
     eprintln!("[e2e_routing_rendering] rendering all routes with the embedded V8 host…");
     let renderer_out = render_all(RendererInput {

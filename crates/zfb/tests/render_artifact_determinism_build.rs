@@ -32,7 +32,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 /// Symlink `node_modules/` to the extracted embedded `@takazudo` tree so
 /// `@takazudo/zfb` / `@takazudo/zfb-runtime` resolve. Returns the
@@ -46,11 +46,10 @@ fn link_embedded_node_modules(root: &Path) -> tempfile::TempDir {
     nm_handle
 }
 
-fn run_zfb_build(root: &Path, esbuild: &Path) -> std::process::Output {
+fn run_zfb_build(root: &Path) -> std::process::Output {
     Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn `zfb build`")
 }
@@ -93,12 +92,8 @@ fn collect_all_files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
 
 /// Run `zfb build` in `root`, returning `Some(dist_tree)` on success or
 /// `None` for a known-skip environment.
-fn build_and_collect(
-    root: &Path,
-    esbuild: &Path,
-    label: &str,
-) -> Option<BTreeMap<String, Vec<u8>>> {
-    let output = run_zfb_build(root, esbuild);
+fn build_and_collect(root: &Path, label: &str) -> Option<BTreeMap<String, Vec<u8>>> {
+    let output = run_zfb_build(root);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout}{stderr}");
@@ -190,18 +185,13 @@ export default function DocPage({ entry }) {
 
 #[test]
 fn render_artifact_double_build_is_byte_identical() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[render_artifact_determinism] no esbuild; skipping.");
-        return;
-    };
-
     // Build A — first clean run, fresh tempdir + fresh symlinked
     // node_modules.
     let tmp_a = tempfile::tempdir().expect("tempdir A");
     let root_a = tmp_a.path();
     let _nm_a = link_embedded_node_modules(root_a);
     write_multi_page_fixture(root_a);
-    let Some(tree_a) = build_and_collect(root_a, &esbuild, "render_artifact_determinism_A") else {
+    let Some(tree_a) = build_and_collect(root_a, "render_artifact_determinism_A") else {
         return;
     };
 
@@ -210,7 +200,7 @@ fn render_artifact_double_build_is_byte_identical() {
     let root_b = tmp_b.path();
     let _nm_b = link_embedded_node_modules(root_b);
     write_multi_page_fixture(root_b);
-    let Some(tree_b) = build_and_collect(root_b, &esbuild, "render_artifact_determinism_B") else {
+    let Some(tree_b) = build_and_collect(root_b, "render_artifact_determinism_B") else {
         return;
     };
 

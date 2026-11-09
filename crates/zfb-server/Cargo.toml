@@ -7,6 +7,15 @@ description = "zfb dev server: axum + WebSocket live-reload + CSS hot-swap"
 
 [lib]
 
+# Test-only embedding host for the `.ts` config embed test: a compiler worker
+# host whose executable is not the zfb CLI. Binaries of a dependency crate are
+# never built or installed with zfb.
+[[bin]]
+name = "zfb-server-test-worker"
+path = "src/bin/zfb-server-test-worker.rs"
+test = false
+doc = false
+
 # Feature-propagation seam for the V8 gate (issue #371, sub-task 4.1a).
 #
 # `zfb-server` is a leaf consumer of `zfb-build` — it doesn't touch any
@@ -31,6 +40,9 @@ zfb-build = { path = "../zfb-build", default-features = false }
 # CLI does, without a dependency cycle. `default-features = false` for the V8
 # gate — the `direct-v8` feature above propagates the toggle into one place.
 zfb-config-loader = { path = "../zfb-config-loader", default-features = false }
+# Re-exported worker-mode entry point and private argument, so an embedding
+# host can serve the compiler worker that bundles its `.ts` config (#4632).
+zfb-compiler-worker = { path = "../zfb-compiler-worker" }
 zfb-islands = { path = "../zfb-islands" }
 # Issue #229: shared `base` → mount-prefix normalisation lives in
 # zfb-types (the lowest-dep leaf) so the build-time link rewriter

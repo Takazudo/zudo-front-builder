@@ -524,7 +524,17 @@ describe("committed #4429 oxc edge declaration (rolldown-oxc-4429.json)", () => 
         declarationSource: { path: "rolldown-oxc-4429.json", sha256: sha(declarationBytes) },
         closures: { old: receipt("old"), new: receipt("new") },
         target,
-        readManifest: (path) => readFileSync(join(root, path)),
+        // #4635 renamed crates/zfb-rolldown-prototype to zfb-bundler after this frozen
+        // declaration; read the renamed manifest under the package name the declaration froze.
+        readManifest: (path) =>
+          path === "crates/zfb-rolldown-prototype/Cargo.toml"
+            ? Buffer.from(
+                readFileSync(join(root, "crates/zfb-bundler/Cargo.toml"), "utf8").replace(
+                  /^name = "zfb-bundler"$/m,
+                  'name = "zfb-rolldown-prototype"',
+                ),
+              )
+            : readFileSync(join(root, path)),
       });
       expect(proof.externalEdges).toEqual([
         expect.objectContaining({ from: "zfb-rolldown-prototype@0.0.0", to: "oxc@0.153.0" }),

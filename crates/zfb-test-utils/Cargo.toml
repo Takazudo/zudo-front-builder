@@ -32,8 +32,7 @@ reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "macros"] }
 
 [dev-dependencies]
-# `locate_esbuild_self.rs` builds a throwaway nested-worktree topology on
-# disk (issue #2178) instead of mutating process cwd.
+# The cross-binary lock tests use throwaway lock directories.
 tempfile = { workspace = true }
 # Raw-TCP SSE fixtures need sockets and async reads/writes only in tests.
 tokio = { version = "1", features = ["net", "io-util"] }

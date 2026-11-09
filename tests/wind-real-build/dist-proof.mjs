@@ -1,5 +1,5 @@
 import { readFile, realpath, writeFile } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { treeDigest } from "../../scripts/wind-compatibility/differential-runner.mjs";
 import { verifyProductionBuild } from "../../scripts/wind-compatibility/production-build.mjs";
@@ -26,7 +26,6 @@ export async function verifyRustBuildExport(
   if (digest(execution) !== digest(recorded))
     throw Error("Rust build execution sidecar contents changed");
   const stylesheet = resolve(distPath, execution.stylesheet ?? "");
-  const esbuild = execution.buildEnvironment?.ZFB_ESBUILD_BIN;
   if (
     execution.schemaVersion !== 1 ||
     execution.kind !== "zfb-rust-build-export" ||
@@ -36,10 +35,7 @@ export async function verifyRustBuildExport(
     !stylesheet.startsWith(`${distPath}/`) ||
     execution.stylesheetSha256 !== sha256(await readFile(stylesheet)) ||
     execution.buildEnvironment?.PATH !== "" ||
-    execution.buildEnvironment?.NODE_PATH !== null ||
-    !esbuild ||
-    !isAbsolute(esbuild) ||
-    execution.buildEnvironment.esbuildSha256 !== sha256(await readFile(esbuild))
+    execution.buildEnvironment?.NODE_PATH !== null
   )
     throw Error("Rust build execution does not match current-source dist or Node-free environment");
   return execution;

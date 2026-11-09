@@ -77,7 +77,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 /// Scaffold the zero-islands ClientRouter fixture into `root`.
 ///
@@ -186,14 +186,6 @@ fn collect_files(dir: &Path, ext: &str) -> Vec<PathBuf> {
 /// client-router runtime through the production `zfb build` path.
 #[test]
 fn named_client_router_import_in_ssr_layout_ships_runtime_with_zero_islands() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[client_router_autoinclude_build] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("create tempdir for client-router fixture");
     let root = tmp.path();
     // `_nm_handle` keeps the extracted embedded node_modules tempdir alive for
@@ -203,7 +195,6 @@ fn named_client_router_import_in_ssr_layout_ships_runtime_with_zero_islands() {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn `zfb build`");
 

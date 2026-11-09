@@ -18,9 +18,7 @@
 #     assertion stage above it);
 #   - a positive copy test that extracts the REAL export block's source text
 #     out of the script (not a reimplementation) and executes it via `bash`
-#     against a throwaway fixture "dist/", mirroring
-#     tests/unit/release-binary-slot-restore.sh's source-the-real-code
-#     technique.
+#     against a throwaway fixture "dist/" (source-the-real-code technique).
 #
 # Requires: sh, bash, awk, mktemp, diff, grep. No network.
 #

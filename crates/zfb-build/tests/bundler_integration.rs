@@ -34,23 +34,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_test_utils::locate_esbuild;
 
 #[test]
 fn end_to_end_bundles_aliases_mdx_islands_and_define() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_integration] no esbuild binary available; \
-             set ZFB_ESBUILD_BIN, place the binary at \
-             crates/zfb/binaries/esbuild/esbuild, or install esbuild on PATH \
-             to enable this test. Skipping."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     for d in ["pages", "content/posts", "components", "layouts"] {
@@ -168,8 +156,7 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         outdir: root.join("dist"),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.clone()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -235,17 +222,7 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
     //    "no-bundle" mode. This is the cheapest hermetic JS parse we
     //    have available — esbuild rejects non-parseable input with a
     //    non-zero exit.
-    let parse = Command::new(&esbuild)
-        .arg(&out.bundle_path)
-        .arg("--bundle=false")
-        .arg("--log-level=warning")
-        .output()
-        .expect("re-parse via esbuild");
-    assert!(
-        parse.status.success(),
-        "bundle is not parseable by esbuild: stderr={}",
-        String::from_utf8_lossy(&parse.stderr)
-    );
+    assert_parses_as_module(&out.bundle_path);
 
     // 7. The MDX body was actually compiled — the JSX output of
     //    `compile_mdx_to_jsx_module_cached` always declares `MDXContent`
@@ -273,17 +250,9 @@ fn snippet(s: &str) -> String {
 /// This mirrors the `import.meta.env.PROD` substitution test: build a fixture
 /// that globs a sibling directory, bundle it, and assert (a) the literal macro
 /// text is ABSENT from the emitted bundle and (b) the expanded relative keys
-/// are present. Gated on `locate_esbuild()`; self-skips when no binary.
+/// are present.
 #[test]
 fn import_meta_glob_eager_is_expanded_before_esbuild() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[import_meta_glob_eager_is_expanded_before_esbuild] no esbuild binary; \
-             set ZFB_ESBUILD_BIN, stage the slot, or install esbuild on PATH. Skipping."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     for d in ["pages", "components/widgets"] {
@@ -350,8 +319,7 @@ fn import_meta_glob_eager_is_expanded_before_esbuild() {
         outdir: root.join("dist"),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.clone()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -390,15 +358,30 @@ fn import_meta_glob_eager_is_expanded_before_esbuild() {
     );
 
     // 3. Sanity: the bundle re-parses cleanly through esbuild.
-    let parse = Command::new(&esbuild)
-        .arg(&out.bundle_path)
-        .arg("--bundle=false")
-        .arg("--log-level=warning")
-        .output()
-        .expect("re-parse via esbuild");
+    assert_parses_as_module(&out.bundle_path);
+}
+
+/// Parses `path` as an ES module, proving the bundle is well-formed JS.
+fn assert_parses_as_module(path: &std::path::Path) {
+    use swc_core::common::{sync::Lrc, FileName, SourceMap};
+    use swc_core::ecma::ast::EsVersion;
+    use swc_core::ecma::parser::{parse_file_as_module, EsSyntax, Syntax};
+    let source = std::fs::read_to_string(path).expect("read bundle");
+    let cm: Lrc<SourceMap> = Default::default();
+    let fm = cm.new_source_file(FileName::Anon.into(), source);
+    let mut recovered = Vec::new();
+    let parsed = parse_file_as_module(
+        &fm,
+        Syntax::Es(EsSyntax::default()),
+        EsVersion::latest(),
+        None,
+        &mut recovered,
+    );
     assert!(
-        parse.status.success(),
-        "expanded bundle is not parseable by esbuild: stderr={}",
-        String::from_utf8_lossy(&parse.stderr)
+        parsed.is_ok() && recovered.is_empty(),
+        "bundle {} is not a parseable ES module: {:?} {:?}",
+        path.display(),
+        parsed.err(),
+        recovered
     );
 }

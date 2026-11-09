@@ -164,7 +164,7 @@ The `@takazudo/zfb-md-wasm` `compile()` and `renderHtml()` options no longer acc
 
 Remove `ZFB_TAILWIND_BIN` and `ZFB_TAILWIND_OXIDE_WARMUP` from scripts and CI. Tailwind's bundled binary and pin are gone. `zfb css` remains the standalone CSS command and now compiles with zudo-wind; its explicit `--source` inputs still work, including package files under `node_modules` or `dist` when they are outside the project’s configured output directory. Matches under the configured `outDir`, at the `--output` path, or under zfb scratch roots are excluded: if all matches are excluded, `zfb css` fails with `ZW010`; if only some are excluded, it warns with `ZW010` and scans the rest. See the [CLI source rules](../api/cli.mdx#zfb-css). `zfb wind explain <candidate>` explains one candidate, and `zfb wind audit` inspects project candidates. Build and dev scan `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, and `.md`; standalone explicit sources can additionally use `.html` and `.mjs`.
 
-`zfb --version` now reports the release version and `embedded esbuild` version, with no Tailwind line. Use the [wind diagnostics guide](../zudo-wind/diagnostics-and-tools.mdx) to inspect migration failures.
+`zfb --version` reports the release version with no Tailwind line. v3 releases also printed an `embedded esbuild` version; current releases bundle natively and print an `embedded bundler:` line naming the Rolldown identity instead. Use the [wind diagnostics guide](../zudo-wind/diagnostics-and-tools.mdx) to inspect migration failures.
 
 ## Packages that ship classes or components
 

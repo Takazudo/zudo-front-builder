@@ -4,7 +4,7 @@
 //! `bundler_dot_path_staging.rs` proves the staging MATERIALISE pass writes
 //! the allowlisted `.zudo-doc/routes-src/**` + `.zfb/*.json` spellings into
 //! the shadow tree, but every one of its fixtures drives
-//! `bundle_with_session` with `mock_subprocess_output` (see its own header
+//! `bundle_with_session` with `mock_bundle_output` (see its own header
 //! comment) — the stage-escape audit (#1706, wired in `bundler.rs` wherever
 //! `workspace_rel.is_some()`) never runs under a mock, since `metafile_path`
 //! stays `None` when esbuild is never actually invoked. This file is the REAL
@@ -78,7 +78,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_test_utils::locate_esbuild;
 
 /// Standard content-root dirs `bundle()` expects under a project.
 fn scaffold_project_dirs(project: &Path) {
@@ -142,7 +141,7 @@ fn write_dot_path_fixture(project: &Path) {
 /// Shared `BundlerInput` defaults, mirroring
 /// `bundler_sibling_mirror_esbuild_regression.rs`'s `base_input`, plus the
 /// two dot-path tsconfig aliases.
-fn base_input(project: &Path, esbuild: PathBuf) -> BundlerInput {
+fn base_input(project: &Path) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
         BundleMode::Production,
@@ -154,7 +153,6 @@ fn base_input(project: &Path, esbuild: PathBuf) -> BundlerInput {
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
-    input.esbuild_binary = Some(esbuild);
     input.tsconfig_paths = BTreeMap::from([
         (
             "#generated-route".to_string(),
@@ -202,18 +200,13 @@ fn metafile_input_keys(shadow: &Path) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_dot_path_staging_esbuild_regression -- --ignored"]
 fn real_esbuild_resolves_dot_path_staged_spellings_and_passes_stage_escape_audit() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_dot_path_staging_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (_ws_root, project) = write_workspace(tmp.path());
     write_dot_path_fixture(&project);
 
     let mut session = ShadowSession::new(&project).expect("shadow session");
-    let input = base_input(&project, esbuild);
+    let input = base_input(&project);
     let out = bundle_with_session(input, Some(&mut session)).expect(
         "issue #1840/#1841: a workspace project's .zudo-doc/routes-src route \
          module and .zfb/*.json docHistory meta file, both reached through a \
@@ -336,18 +329,13 @@ fn write_injected_entrypoint_fixture(project: &Path) -> PathBuf {
 /// Restoring the `injected_route_entrypoints` assignment made the test pass
 /// again (GREEN).
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_dot_path_staging_esbuild_regression -- --ignored"]
 fn real_esbuild_resolves_injected_route_entrypoint_staged_spelling_and_passes_stage_escape_audit() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_dot_path_staging_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (_ws_root, project) = write_workspace(tmp.path());
     let entrypoint = write_injected_entrypoint_fixture(&project);
 
     let mut session = ShadowSession::new(&project).expect("shadow session");
-    let mut input = base_input(&project, esbuild);
+    let mut input = base_input(&project);
     input.tsconfig_paths.insert(
         "#injected-route".to_string(),
         vec![entrypoint.to_string_lossy().into_owned()],
@@ -393,12 +381,7 @@ fn real_esbuild_resolves_injected_route_entrypoint_staged_spelling_and_passes_st
 /// #3037: the real SSR remap must receive the filtered, materialized closure,
 /// including a helper that was never itself an injected entrypoint.
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_dot_path_staging_esbuild_regression -- --ignored"]
 fn real_esbuild_virtual_imports_only_accept_materialized_injected_route_files() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_dot_path_staging_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (_ws_root, project) = write_workspace(tmp.path());
     let entrypoint = write_injected_entrypoint_fixture(&project);
@@ -409,7 +392,7 @@ fn real_esbuild_virtual_imports_only_accept_materialized_injected_route_files() 
         "import { render } from 'virtual:injected-route'; export default function Home() { return render(); }\n",
     )
     .unwrap();
-    let mut input = base_input(&project, esbuild);
+    let mut input = base_input(&project);
     input.tsconfig_paths.clear();
     input.injected_route_entrypoints = vec![entrypoint.clone()];
     input.plugin_virtual_modules = vec![(

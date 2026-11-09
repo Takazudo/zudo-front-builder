@@ -59,8 +59,10 @@ function simulate(overrides = {}, cancelBefore) {
     const id = step.id ?? step.name ?? step.run ?? step.uses;
     if (id === cancelBefore) cancelled = true;
     const expression = String(step.if ?? "success()").replace(/^\$\{\{\s*|\s*\}\}$/g, "");
+    // Conditions over prior step outcomes/outputs and status functions are
+    // evaluated; ones that read event, input or other contexts stay skipped.
     const relevant =
-      !step.if || /steps\.(native_prerequisites|build_binary|size_)/.test(expression);
+      !step.if || !/\b(github|inputs|env|needs|matrix|runner|hashFiles)\b/.test(expression);
     let run = !failed && !cancelled;
     if (relevant && step.if) {
       const explicit = /\b(success|failure|cancelled|always)\(/.test(expression);
@@ -139,6 +141,73 @@ describe("Linux collection orchestration (synthetic outcomes)", () => {
     const name = "Declared linked dist dev watch row (#3931)";
     expect(simulate({}, name).seen).not.toContain(name);
     expect(simulate({ build_binary: "failure" }).seen).not.toContain(name);
+  });
+  const fastChecks = [
+    "pnpm format:check",
+    "Wind policy, inventory, accounting and mutation contracts",
+    "Assert md-wasm documentation matches shipped sizes",
+    "Check SSE endpoint literal ownership",
+  ];
+  const rustTests = [
+    "Test jsx_pragma without default features (#3939)",
+    "workspace_nextest",
+    "cargo test --workspace --doc",
+    "cargo nextest run -p zfb-md-extras --features test-utils --profile ci",
+    "cargo clippy -p zfb-md-extras --features test-utils --all-targets -- -D warnings",
+  ];
+  it("still reports the fast checks and the Rust lane after early tests fail", () => {
+    const run = simulate({ workspace_tests: "failure" });
+    for (const id of [...fastChecks, "workspace_clippy", ...rustTests]) {
+      expect(run.seen).toContain(id);
+    }
+    expect(run.result).toBe("failure");
+    for (const id of [...fastChecks, "workspace_clippy", ...rustTests]) {
+      const step = workflow.jobs.health.steps.find((s) => (s.id ?? s.name ?? s.run) === id);
+      expect(step["continue-on-error"]).toBeUndefined();
+    }
+  });
+  it("evaluates the Scanner and SDK-alias browser consumers on their own prerequisites", () => {
+    const scanner = "Scanner boundary acceptance (Chromium)";
+    const sdk = "SDK alias packed consumer and dev rebundle (#3939)";
+    const early = simulate({ workspace_tests: "failure" });
+    expect(early.seen).toContain(scanner);
+    expect(early.seen).toContain(sdk);
+    expect(early.result).toBe("failure");
+    const nextest = simulate({ workspace_nextest: "failure" });
+    expect(nextest.seen).not.toContain(scanner);
+    expect(nextest.seen).toContain(sdk);
+    const chromium = simulate({ chromium: "failure" });
+    expect(chromium.seen).not.toContain(scanner);
+    expect(chromium.seen).not.toContain(sdk);
+    const build = simulate({ build_binary: "failure" });
+    expect(build.seen).not.toContain(scanner);
+    expect(build.seen).not.toContain(sdk);
+    for (const id of [scanner, sdk]) expect(simulate({}, id).seen).not.toContain(id);
+  });
+  it("does not start a fast check or clippy after cancellation", () => {
+    for (const id of [...fastChecks, "workspace_clippy"]) {
+      const run = simulate({}, id);
+      expect(run.seen).not.toContain(id);
+      expect(run.result).toBe("cancelled");
+    }
+  });
+  it("lints and tests nothing after a stale packdump", () => {
+    const run = simulate({ packdump: "failure" });
+    for (const id of ["workspace_clippy", ...rustTests]) expect(run.seen).not.toContain(id);
+    expect(run.result).toBe("failure");
+  });
+  it("keeps the clippy short-circuit and the build prerequisite for the Rust tests", () => {
+    const lint = simulate({ workspace_clippy: "failure" });
+    for (const id of rustTests) expect(lint.seen).not.toContain(id);
+    expect(lint.result).toBe("failure");
+    const build = simulate({ build_binary: "failure" });
+    for (const id of ["workspace_clippy", ...rustTests]) expect(build.seen).not.toContain(id);
+    expect(build.result).toBe("failure");
+    const setup = simulate({ native_prerequisites: "failure" });
+    for (const id of [...fastChecks, "workspace_clippy", ...rustTests]) {
+      expect(setup.seen).not.toContain(id);
+    }
+    for (const id of rustTests) expect(simulate({}, id).seen).not.toContain(id);
   });
   it("retains old-pin-only evidence while red, but withholds other failures", () => {
     const run = simulate({ size_budget: "failure" });
@@ -297,6 +366,36 @@ describe("saved-byte eligibility (synthetic fixtures)", () => {
     expect(
       budgetAllowsRetention({ status: 1, stderr: fingerprintRejection.replace(/\n/g, "\r\n") }),
     ).toBe(true);
+  });
+  // #4635: the esbuild-free producer against the schemaVersion-3 contract.
+  const backendRejection =
+    "Island size budget rejected:\n" +
+    "- local measurement runners: SHA-256 values differ from the reviewed contract\n" +
+    "- local Cargo.lock: SHA-256 differs from the reviewed contract\n" +
+    ["workspace", "packed"]
+      .map(
+        (mode) =>
+          "- " +
+          mode +
+          " provenance: runner hashes differ from the contract\n- " +
+          mode +
+          " provenance: schema mismatch: esbuild-free producer (bundler rolldown-24bc2d0) needs a schemaVersion 4 contract\n- " +
+          mode +
+          " provenance: Cargo lockfile differs from the contract\n",
+      )
+      .join("");
+  it("retains the exact esbuild-free backend rejection of a schemaVersion-3 contract", () => {
+    expect(budgetAllowsRetention({ status: 1, stderr: backendRejection })).toBe(true);
+  });
+  it("refuses a partial, extended or foreign-bundler backend rejection", () => {
+    const lines = backendRejection.trimEnd().split("\n");
+    for (const stderr of [
+      lines.filter((line) => !line.includes("Cargo")).join("\n") + "\n",
+      lines.filter((line) => !line.includes("runner")).join("\n") + "\n",
+      backendRejection + "- workspace provenance: unsupported Node version\n",
+      backendRejection.replaceAll("rolldown-24bc2d0", "rolldown-0000000"),
+    ])
+      expect(budgetAllowsRetention({ status: 1, stderr })).toBe(false);
   });
   it("refuses extra diagnostics and abnormal exits", () => {
     const helperRejection = fingerprintRejection.replace("sha256 differs", "helperSha256 differs");

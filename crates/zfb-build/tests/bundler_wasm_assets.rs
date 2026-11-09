@@ -1,21 +1,16 @@
 //! Level-3 bundle-output coverage for Wasm imports in the SSR bundle.
 //!
-//! The fixture stops after esbuild: Wave 2 owns making the embedded V8 host
+//! The fixture stops after bundling: Wave 2 owns making the embedded V8 host
 //! execute these modules. This layer proves the deployable ESM output and its
 //! copied asset manifest agree for both production bundle passes.
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 use zfb_build::{bundle, BundleMode, BundlerInput, BundlerOutput};
-use zfb_test_utils::locate_esbuild;
 
 const WASM_BYTES: &[u8] = b"\0asm\x01\0\0\0";
-
-/// Serializes the tests here: the metafile test pins `ZFB_BUNDLER=esbuild`
-/// while it runs, and the others must see the default backend.
-static BUNDLER_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn scaffold_project(root: &Path, imports_wasm: bool) {
     for dir in ["pages", "content", "components", "layouts", "wasm"] {
@@ -43,7 +38,7 @@ fn scaffold_project(root: &Path, imports_wasm: bool) {
     }
 }
 
-fn make_input(root: &Path, esbuild: &Path, bundle_basename: Option<&str>) -> BundlerInput {
+fn make_input(root: &Path, bundle_basename: Option<&str>) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         root.to_path_buf(),
         BundleMode::Production,
@@ -53,12 +48,11 @@ fn make_input(root: &Path, esbuild: &Path, bundle_basename: Option<&str>) -> Bun
     input.zudo_react_island_names = Some(vec![]);
     // Keep the fixture hermetic: the synthetic SSR entry intentionally leaves
     // its runtime dependencies external, while the local `.wasm` import must
-    // stay in esbuild's graph and use the copy loader.
+    // stay in the bundle graph and use the copy loader.
     input.external = vec![
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime/server".into(),
     ];
-    input.esbuild_binary = Some(esbuild.to_path_buf());
     input.bundle_basename = bundle_basename.map(str::to_string);
     input
 }
@@ -104,16 +98,11 @@ fn assert_wasm_bundle(out: &BundlerOutput) {
 
 #[test]
 fn copied_wasm_assets_are_manifested_for_both_production_bundle_passes() {
-    let _env = BUNDLER_ENV.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_wasm_assets] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().unwrap();
     scaffold_project(tmp.path(), true);
 
-    let ssg = bundle(make_input(tmp.path(), &esbuild, None)).expect("SSG bundle should succeed");
-    let mut runtime_input = make_input(tmp.path(), &esbuild, Some("bundle-runtime.mjs"));
+    let ssg = bundle(make_input(tmp.path(), None)).expect("SSG bundle should succeed");
+    let mut runtime_input = make_input(tmp.path(), Some("bundle-runtime.mjs"));
     runtime_input.worker_only_routes = Some(BTreeSet::from(["/".to_string()]));
     let runtime = bundle(runtime_input).expect("runtime-only bundle should succeed");
 
@@ -129,94 +118,10 @@ fn copied_wasm_assets_are_manifested_for_both_production_bundle_passes() {
 
 #[test]
 fn wasm_free_projects_report_an_empty_wasm_manifest() {
-    let _env = BUNDLER_ENV.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_wasm_assets] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().unwrap();
     scaffold_project(tmp.path(), false);
 
-    let out =
-        bundle(make_input(tmp.path(), &esbuild, None)).expect("Wasm-free bundle should succeed");
+    let out = bundle(make_input(tmp.path(), None)).expect("Wasm-free bundle should succeed");
     assert!(out.emitted_wasm_assets.is_empty());
     assert!(out.bundle_path.is_file());
-}
-
-#[cfg(unix)]
-fn write_metafile_wrapper(root: &Path, esbuild: &Path, name: &str, action: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-
-    let wrapper = root.join(format!("esbuild-{name}.sh"));
-    let quoted_esbuild = format!(
-        "'{}'",
-        esbuild.display().to_string().replace('\'', "'\\\"'\\\"'")
-    );
-    fs::write(
-        &wrapper,
-        format!(
-            "#!/bin/sh\n\
-             {quoted_esbuild} \"$@\"\n\
-             status=$?\n\
-             [ \"$status\" -eq 0 ] || exit \"$status\"\n\
-             for arg in \"$@\"; do\n\
-               case \"$arg\" in\n\
-                 --metafile=*)\n\
-                   metafile=${{arg#--metafile=}}\n\
-                   {action}\n\
-                   ;;\n\
-               esac\n\
-             done\n\
-             exit \"$status\"\n"
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
-    wrapper
-}
-
-/// A real esbuild process emits the Wasm import and output first; the wrapper
-/// only damages the metafile afterward. This proves the bundle path fails
-/// closed instead of silently returning an empty deploy-asset manifest.
-#[cfg(unix)]
-#[test]
-fn wasm_importing_bundle_rejects_malformed_or_missing_metafile() {
-    // The wrapper damages the metafile the esbuild CLI writes; the Rolldown
-    // backend produces it in process, so this case pins esbuild.
-    let _env = BUNDLER_ENV.lock().unwrap_or_else(|e| e.into_inner());
-    let previous = std::env::var_os("ZFB_BUNDLER");
-    std::env::set_var("ZFB_BUNDLER", "esbuild");
-    struct Restore(Option<std::ffi::OsString>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(value) => std::env::set_var("ZFB_BUNDLER", value),
-                None => std::env::remove_var("ZFB_BUNDLER"),
-            }
-        }
-    }
-    let _restore = Restore(previous);
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_wasm_assets] no esbuild binary; skipping.");
-        return;
-    };
-    let tmp = tempfile::tempdir().unwrap();
-    scaffold_project(tmp.path(), true);
-
-    for (name, action) in [
-        ("malformed", "printf '%s' '{not json' > \"$metafile\""),
-        ("missing", "rm -f \"$metafile\""),
-    ] {
-        let wrapper = write_metafile_wrapper(tmp.path(), &esbuild, name, action);
-        let err = bundle(make_input(
-            tmp.path(),
-            &wrapper,
-            Some(&format!("{name}.mjs")),
-        ))
-        .expect_err("Wasm-importing bundle must reject an unusable metafile");
-        assert!(
-            err.to_string().contains("wasm asset manifest"),
-            "{name} metafile error should name the asset manifest: {err:#}"
-        );
-    }
 }

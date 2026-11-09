@@ -11,7 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const repo = resolve(import.meta.dirname, "../..");
@@ -19,10 +19,6 @@ const profile = process.env.ZFB_PROTOTYPE_PROFILE ?? "debug";
 assert.ok(["debug", "release"].includes(profile));
 const binary = resolve(repo, `target/${profile}/zfb`);
 assert.ok(existsSync(binary), `prepared CLI missing: ${binary}`);
-assert.ok(
-  isAbsolute(process.env.ZFB_ESBUILD_BIN ?? "") && existsSync(process.env.ZFB_ESBUILD_BIN),
-  "ZFB_ESBUILD_BIN must name an absolute installed esbuild binary",
-);
 const gate = spawnSync(process.execPath, [join(import.meta.dirname, "gate.mjs")], {
   cwd: repo,
   env: process.env,
@@ -35,6 +31,7 @@ const { chromium } = await import(pathToFileURL(join(tools, "node_modules/playwr
 const fixture = join(import.meta.dirname, "client-fixture");
 const output = join(repo, "target/rolldown-client-scripts");
 const deadlineMs = 30_000;
+const backend = "rolldown";
 
 function prepare(root) {
   rmSync(root, { recursive: true, force: true });
@@ -52,13 +49,14 @@ function prepare(root) {
   });
 }
 
-function environment(backend) {
+function environment() {
   const env = { ...process.env, ZFB_DEV_TIMING: "1" };
+  // The zfb CLI rejects both retired backend selectors, so never forward them.
   delete env.ZFB_ROLLDOWN_PROTOTYPE;
+  delete env.ZFB_BUNDLER;
   delete env.ZFB_DEV_EAGER;
   delete env.ZFB_LAZY_DEV_RENDER;
   delete env.ZFB_DEV_DEFER_BUNDLE;
-  env.ZFB_BUNDLER = backend;
   return env;
 }
 
@@ -78,7 +76,7 @@ function cli(root, env, shouldPass = true) {
   return result;
 }
 
-function attribution(stderr, backend, phase, workerStems) {
+function attribution(stderr, phase, workerStems) {
   const lines = stderr
     .split(/\r?\n/)
     .filter((line) => line.includes("rolldown-prototype client-script job="));
@@ -89,19 +87,16 @@ function attribution(stderr, backend, phase, workerStems) {
     assert.ok(match, `${phase}: malformed attribution: ${line}`);
     return { stem: match[1], kind: match[2] };
   });
-  if (backend === "esbuild") assert.deepEqual(jobs, [], `${phase}: native dispatch on esbuild`);
-  else {
-    assert.deepEqual(
-      jobs.map((job) => job.stem).sort(),
-      ["probe", ...workerStems].sort(),
-      `${phase}: native jobs`,
-    );
-    assert.deepEqual(
-      jobs.map((job) => `${job.stem}:${job.kind}`).sort(),
-      ["probe:entry", ...workerStems.map((stem) => `${stem}:worker`)].sort(),
-      `${phase}: native job kinds`,
-    );
-  }
+  assert.deepEqual(
+    jobs.map((job) => job.stem).sort(),
+    ["probe", ...workerStems].sort(),
+    `${phase}: native jobs`,
+  );
+  assert.deepEqual(
+    jobs.map((job) => `${job.stem}:${job.kind}`).sort(),
+    ["probe:entry", ...workerStems.map((stem) => `${stem}:worker`)].sort(),
+    `${phase}: native job kinds`,
+  );
   return { count: jobs.length, jobs };
 }
 
@@ -298,7 +293,7 @@ function strayTemps(root) {
   return found;
 }
 
-async function development(browser, root, env, backend, workerStems) {
+async function development(browser, root, env, workerStems) {
   const child = spawn(binary, ["dev", "--port", "0"], {
     cwd: root,
     env,
@@ -367,7 +362,7 @@ async function development(browser, root, env, backend, workerStems) {
       child,
     );
     const updated = await inspectPage(browser, origin, "WORKER_VALUE_V2");
-    const editJobs = attribution(stderr.slice(stderrOffset), backend, "dev edit", workerStems);
+    const editJobs = attribution(stderr.slice(stderrOffset), "dev edit", workerStems);
     console.log(
       `${backend}: one worker dependency edit, SSE, refreshed assets, Chromium, native attribution PASS`,
     );
@@ -389,75 +384,73 @@ const browser = await chromium.launch({
 });
 console.log(`Chromium ${browser.version()}`);
 try {
-  for (const backend of ["esbuild", "rolldown"]) {
-    const root = join(output, backend, "project");
-    const evidence = join(output, backend, "evidence");
-    prepare(root);
-    rmSync(evidence, { recursive: true, force: true });
-    mkdirSync(evidence, { recursive: true });
-    const env = environment(backend);
-    const build = cli(root, env);
-    const assets = productionAssets(root, entryFromHtml(root));
-    const buildJobs = attribution(build.stderr, backend, "production", assets.workerStems);
-    const server = await staticServer(join(root, "dist"));
-    let production;
-    try {
-      production = await inspectPage(browser, server.origin, "WORKER_VALUE_V1");
-    } finally {
-      await server.close();
-    }
-    console.log(`${backend}: production CLI, assets, Chromium, native attribution PASS`);
-    const dev = await development(browser, root, env, backend, assets.workerStems);
-    const missingRoot = join(output, backend, "missing-import");
-    prepare(missingRoot);
-    writeFileSync(
-      join(missingRoot, "components/probe.client.ts"),
-      'import "./missing-client-import.ts";\n' +
-        readFileSync(join(missingRoot, "components/probe.client.ts"), "utf8"),
-    );
-    const missing = cli(missingRoot, env, false);
-    assert.match(missing.stderr, /missing-client-import\.ts/);
-    const escapeRoot = join(output, backend, "worker-escape");
-    prepare(escapeRoot);
-    // A claimed workspace widens the first-party boundary to the parent.
-    // The worker dependency below is inside that boundary but outside the
-    // staged project, so the CLI arms and exercises the per-worker audit.
-    writeFileSync(
-      join(dirname(escapeRoot), "pnpm-workspace.yaml"),
-      "packages:\n  - 'worker-escape'\n",
-    );
-    const outside = join(dirname(escapeRoot), "outside-worker-dep.ts");
-    writeFileSync(outside, 'export const workerValue = "OUTSIDE";\n');
-    writeFileSync(
-      join(escapeRoot, "components/worker.ts"),
-      readFileSync(join(escapeRoot, "components/worker.ts"), "utf8").replace(
-        '"./worker-dep.ts"',
-        JSON.stringify(outside),
-      ),
-    );
-    const escape = cli(escapeRoot, env, false);
-    assert.match(escape.stderr, /stage-escape audit failed for client-script module worker/);
-    assert.match(escape.stderr, /worker\.ts/);
-    assert.match(escape.stderr, /outside-worker-dep\.ts/);
-    console.log(`${backend}: missing import and worker stage escape CLI negatives PASS`);
-    writeFileSync(
-      join(evidence, "report.json"),
-      JSON.stringify(
-        {
-          backend,
-          profile,
-          platform: process.platform,
-          arch: process.arch,
-          cli: binary,
-          production: { assets, ...production, attribution: buildJobs },
-          development: dev,
-          negatives: { missingImport: missing.status, workerStageEscape: escape.status },
-        },
-        null,
-        2,
-      ) + "\n",
-    );
+  const root = join(output, backend, "project");
+  const evidence = join(output, backend, "evidence");
+  prepare(root);
+  rmSync(evidence, { recursive: true, force: true });
+  mkdirSync(evidence, { recursive: true });
+  const env = environment();
+  const build = cli(root, env);
+  const assets = productionAssets(root, entryFromHtml(root));
+  const buildJobs = attribution(build.stderr, "production", assets.workerStems);
+  const server = await staticServer(join(root, "dist"));
+  let production;
+  try {
+    production = await inspectPage(browser, server.origin, "WORKER_VALUE_V1");
+  } finally {
+    await server.close();
   }
+  console.log(`${backend}: production CLI, assets, Chromium, native attribution PASS`);
+  const dev = await development(browser, root, env, assets.workerStems);
+  const missingRoot = join(output, backend, "missing-import");
+  prepare(missingRoot);
+  writeFileSync(
+    join(missingRoot, "components/probe.client.ts"),
+    'import "./missing-client-import.ts";\n' +
+      readFileSync(join(missingRoot, "components/probe.client.ts"), "utf8"),
+  );
+  const missing = cli(missingRoot, env, false);
+  assert.match(missing.stderr, /missing-client-import\.ts/);
+  const escapeRoot = join(output, backend, "worker-escape");
+  prepare(escapeRoot);
+  // A claimed workspace widens the first-party boundary to the parent.
+  // The worker dependency below is inside that boundary but outside the
+  // staged project, so the CLI arms and exercises the per-worker audit.
+  writeFileSync(
+    join(dirname(escapeRoot), "pnpm-workspace.yaml"),
+    "packages:\n  - 'worker-escape'\n",
+  );
+  const outside = join(dirname(escapeRoot), "outside-worker-dep.ts");
+  writeFileSync(outside, 'export const workerValue = "OUTSIDE";\n');
+  writeFileSync(
+    join(escapeRoot, "components/worker.ts"),
+    readFileSync(join(escapeRoot, "components/worker.ts"), "utf8").replace(
+      '"./worker-dep.ts"',
+      JSON.stringify(outside),
+    ),
+  );
+  const escape = cli(escapeRoot, env, false);
+  assert.match(escape.stderr, /stage-escape audit failed for client-script module worker/);
+  assert.match(escape.stderr, /worker\.ts/);
+  assert.match(escape.stderr, /outside-worker-dep\.ts/);
+  console.log(`${backend}: missing import and worker stage escape CLI negatives PASS`);
+  writeFileSync(
+    join(evidence, "report.json"),
+    JSON.stringify(
+      {
+        backend,
+        profile,
+        platform: process.platform,
+        arch: process.arch,
+        cli: binary,
+        production: { assets, ...production, attribution: buildJobs },
+        development: dev,
+        negatives: { missingImport: missing.status, workerStageEscape: escape.status },
+      },
+      null,
+      2,
+    ) + "\n",
+  );
 } finally {
   await browser.close();
 }

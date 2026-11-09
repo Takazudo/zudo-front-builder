@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 fn page(root: &Path) {
     fs::create_dir_all(root.join("pages")).unwrap();
@@ -11,12 +11,10 @@ fn page(root: &Path) {
 }
 
 fn build(root: &Path, args: &[&str]) -> Option<Output> {
-    let esbuild = locate_esbuild()?;
     let output = Command::new(zfb_binary!())
         .arg("build")
         .args(args)
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);

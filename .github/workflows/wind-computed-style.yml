@@ -88,6 +88,27 @@ jobs:
         with:
           prefix-key: "v2-wind-computed-style-zfb-ssr"
 
+      # rusty_v8's build script writes librusty_v8.a to target/<profile>/gn_out/obj/,
+      # which rust-cache does not keep. An exact restore's v8 rlib bundles it, but a
+      # partial restore can recompile v8 while its build-script run stays fresh, so
+      # the link fails (#4638). Since gn_out/ is never restored, this drops v8's
+      # build-script-run fingerprints after any restore: one archive fetch and a v8
+      # rebuild (~40 s measured in run 42423734546).
+      - name: Re-run the v8 build script when its archive is absent
+        run: |
+          shopt -s nullglob
+          for profile in target/*/; do
+            profile="${profile%/}"
+            [[ -d "$profile/.fingerprint" && ! -f "$profile/gn_out/obj/librusty_v8.a" ]] || continue
+            for fingerprint in "$profile"/.fingerprint/v8-*/; do
+              runs=("$fingerprint"run-build-script-*)
+              if (( ${#runs[@]} )); then
+                echo "re-run v8 build script: $fingerprint"
+                rm -rf "$fingerprint"
+              fi
+            done
+          done
+
       - name: Install project dependencies
         run: pnpm install --frozen-lockfile
 

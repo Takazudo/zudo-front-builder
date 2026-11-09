@@ -12,11 +12,11 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { build } from "esbuild";
 import { Miniflare } from "miniflare";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 
 import { assertPackedArchive } from "../scripts/assert-packed.mjs";
+import { bundle, copyResourcePlugin } from "./support/rolldown-harness.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = mkdtempSync(join(tmpdir(), "zfb-md-wasm-workerd-"));
@@ -115,22 +115,20 @@ export default { async fetch() {
     const entry = join(fixture, "worker.mjs");
     const outDir = join(fixture, "out");
     writeFileSync(entry, workerSource);
-    const result = await build({
-      entryPoints: [entry],
-      outdir: outDir,
-      bundle: true,
+    const copiedWasm: string[] = [];
+    const result = await bundle({
+      input: entry,
+      outDir,
       platform: "browser",
-      format: "esm",
-      conditions: ["workerd", "worker"],
-      loader: { ".wasm": "copy" },
-      metafile: true,
+      conditionNames: ["workerd", "worker", "browser", "import", "default"],
+      plugins: [copyResourcePlugin([".wasm"], outDir, copiedWasm)],
     });
-    const bundle = join(outDir, "worker.js");
-    const text = readFileSync(bundle, "utf8");
+    const bundlePath = join(outDir, "worker.js");
+    const text = readFileSync(bundlePath, "utf8");
     for (const forbidden of ["?url", "WebAssembly.compile", "node:", "import("]) {
       expect(text).not.toContain(forbidden);
     }
-    const inputs = Object.keys(result.metafile!.inputs);
+    const inputs = [...result.inputs, ...copiedWasm].map((path) => path.replaceAll("\\", "/"));
     expect(inputs.some((path) => path.endsWith("/dist/parse-workerd.js"))).toBe(true);
     expect(inputs.some((path) => path.endsWith("/dist/highlight-workerd.js"))).toBe(true);
     expect(inputs.filter((path) => path.endsWith("_bg.wasm"))).toHaveLength(2);
@@ -140,7 +138,7 @@ export default { async fetch() {
 
     miniflare = new Miniflare({
       modules: true,
-      scriptPath: bundle,
+      scriptPath: bundlePath,
       modulesRoot: outDir,
       modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"] }],
       compatibilityDate: "2026-05-01",

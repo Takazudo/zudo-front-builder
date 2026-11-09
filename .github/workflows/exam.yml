@@ -174,46 +174,13 @@ jobs:
           prefix-key: "v2-zfb"
           shared-key: "workspace-all-targets"
 
-      # Staged-binaries cache (issue 2385) — see health.yml's identically
-      # named step for the full rationale. Same key as health.yml's x86_64
-      # jobs.
-      - name: Cache staged esbuild binary (issue 2385)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        continue-on-error: true
-        with:
-          # Only the gitignored executable slot — never the whole dir:
-          # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
-          # and an exact-key restore would untar stale cached copies of those
-          # over the checkout whenever a PR edits them without touching the
-          # hashed pin files (codex review, zfb#2385 PR).
-          path: |
-            crates/zfb/binaries/esbuild/esbuild
-          key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
-
       - run: pnpm install --frozen-lockfile
 
-      # Compiles every target AND triggers crates/zfb's build.rs to download +
-      # SHA-verify + stage the pinned esbuild binary into
-      # its crates/zfb/binaries/ slot — the same side effect health.yml's
-      # esbuild staging step relies on.
+      # Compiles every target before the manifest run starts.
       - run: cargo build --workspace --all-targets
 
-      # Guard mirroring health.yml's "Assert esbuild was provisioned" step
-      # (issue #638): if the binary failed to stage, the env-gate tests
-      # below would either error clearly (good) or, worse, be silently
-      # skipped by --run-ignored not matching anything real. Fail loudly here
-      # instead of discovering a silent gap in the manifest run's log.
-      - name: Assert esbuild binary was provisioned
-        run: |
-          ESBUILD_SLOT="crates/zfb/binaries/esbuild/esbuild"
-          if [ ! -x "$ESBUILD_SLOT" ]; then
-            echo "::error::$ESBUILD_SLOT not staged — the env-gated manifest tests would not run for real. Failing the job instead."
-            exit 1
-          fi
-          "$ESBUILD_SLOT" --version
-
-      # The reconciled manifest, env-gate + heavy tags only (55 exact-name
-      # entries after issue #3412 — see crates/CLAUDE.md's manifest table for
+      # The reconciled manifest, env-gate + heavy tags only (31 exact-name
+      # entries after issue #4635 — see crates/CLAUDE.md's manifest table for
       # the authoritative list; this filterset's own count has drifted from
       # that table's total before, so re-measure both rather than trusting
       # either — scripts/check-exam-ignore-parity.sh (issue #2072) now does
@@ -223,12 +190,6 @@ jobs:
       # — a future pending-feature #[ignore] would still be left out of this
       # filterset (it would just fail every run with no new information)
       # until its blocking issue resolves.
-      # ZFB_ESBUILD_BIN must be an absolute path: nextest
-      # (like plain `cargo test`) runs each test binary with its CWD set to
-      # the owning package directory, not the workspace root, so the crates'
-      # relative default binary_path (`crates/zfb/binaries/...`) would not
-      # resolve — same reasoning as health.yml's ZFB_ESBUILD_BIN wiring.
-      #
       # rc is captured explicitly (not via continue-on-error) and the step
       # always exits 0 — see the header comment for why.
       # Quoted (issue #1394): an unquoted `#` preceded by whitespace starts a
@@ -237,32 +198,11 @@ jobs:
       - name: "Run the #1337 quarantine/heavy manifest (env-gate + heavy tags)"
         id: run_manifest
         shell: bash
-        env:
-          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
         run: |
           mkdir -p target/nextest-logs
           set +e
           cargo nextest run --workspace --profile ci --run-ignored ignored-only -E '
-            test(=subprocess_bundler_against_real_binary)
-              | test(=shared_bundle_keeps_islands_with_no_top_level_side_effect)
-              | test(=splitting_emits_chunk_for_dynamic_import)
-              | test(=no_dynamic_import_yields_single_file)
-              | test(=client_script_real_esbuild_bundles_discovered_entry)
-              | test(=client_script_shadow_jobs_resolve_project_tsconfig_aliases)
-              | test(=islands_shadow_raw_import_bundles_text)
-              | test(=client_script_raw_import_bundles_text)
-              | test(=island_module_worker_emits_contract_companion_and_dev_layout)
-              | test(=module_worker_define_only_change_updates_query_and_emitted_bytes)
-              | test(=module_worker_package_config_switch_updates_query_and_emitted_bytes)
-              | test(=module_worker_plugin_inputs_update_query_closure_and_emitted_bytes)
-              | test(=island_css_import_bundles_without_error)
-              | test(=island_module_css_import_bundles_without_error)
-              | test(=islands_shadow_expands_glob_and_executes)
-              | test(=islands_shadow_preserve_symlinks_is_load_bearing)
-              | test(=real_binary_build_and_dev_cover_client_bundling_contract)
-              | test(=wrangler_dry_run_attaches_runtime_wasm_as_compiled_module)
-              | test(=commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild)
-              | test(=commands::build::tests::plugin_alias_only_client_preprocessing_triggers_shadow_with_real_esbuild)
+            test(=wrangler_dry_run_attaches_runtime_wasm_as_compiled_module)
               | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths)
               | test(=version_stamp_from_env)
               | test(=e2e_src_component_edit_rerenders_route)
@@ -287,12 +227,6 @@ jobs:
               | test(=e2e_3210_injected_route_entrypoint_edit_before_the_watcher_is_armed_is_served)
               | test(=sibling_only_utility_class_reaches_wind_source_scan_and_is_emitted)
               | test(=sibling_generated_dir_utility_class_is_excluded_from_wind_source_scan)
-              | test(=islands_shadow_alias_raw_import_bundles_text)
-              | test(=shared_bundle_discovers_marked_glue_and_wasm_resources)
-              | test(=stage_escape_audit_rejects_workspace_package_symlink_escape)
-              | test(=stage_escape_audit_accepts_staged_symlink_through_symlink_aliased_working_dir)
-              | test(=real_binary_build_and_dev_cover_pnpm_workspace_raw_hardening_contract)
-              | test(=real_binary_build_and_dev_cover_workspace_reroot_host_contract)
               | test(=sibling_mdx_utility_class_reaches_dev_css_scan)
               | test(=cold_redirects_rewrite_target_is_prewarmed_and_resolves)
               | test(=ssr_only_healthy_deferred_publish_reloads_open_tab)
@@ -344,8 +278,8 @@ jobs:
       # Fail-closed gate (issues #1394, #2928). A bare
       # `steps.run_manifest.outputs.rc != '0'` implicitly ANDs in `success()`
       # (GitHub Actions' default for any `if:` referencing none of always()/
-      # failure()/cancelled()), so a job that failed BEFORE this step — the
-      # esbuild staging assert above, or a compile error in
+      # failure()/cancelled()), so a job that failed BEFORE this step — a
+      # compile error in
       # `cargo build --workspace --all-targets` — filed nothing at all.
       # `always()` did not rescue that, though this comment used to claim it
       # did. The old claim was that an unset `outputs.rc` makes `'' != '0'`
@@ -408,52 +342,13 @@ jobs:
         with:
           prefix-key: "v2-zfb-macos-exam"
 
-      # Staged-binaries cache (issue 2385) — see health.yml's identically
-      # named step for the full rationale. macos-15 runners are Apple Silicon,
-      # so this leg's key names the darwin-arm64 triple (the build script
-      # stages darwin-arm64 binaries here). Weekly cadence sits near GitHub's
-      # 7-day cache retention boundary, so treat this entry as opportunistic —
-      # a cold week just re-downloads once.
-      - name: Cache staged esbuild binary (issue 2385)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        continue-on-error: true
-        with:
-          # Only the gitignored executable slot — never the whole dir:
-          # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
-          # and an exact-key restore would untar stale cached copies of those
-          # over the checkout whenever a PR edits them without touching the
-          # hashed pin files (codex review, zfb#2385 PR).
-          path: |
-            crates/zfb/binaries/esbuild/esbuild
-          key: zfb-staged-binaries-v1-aarch64-apple-darwin-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
-
       # Install dependencies before cargo build so the build script can read
       # Hono from node_modules/.pnpm/ — same ordering as release.yml's macOS leg.
       - run: pnpm install --frozen-lockfile
 
-      # Compiles every target AND triggers crates/zfb's build.rs to stage the
-      # pinned esbuild binary — same as health.yml and this
-      # workflow's quarantine-heavy job above. Needed so the assert step below
-      # has something to check BEFORE the test run starts (nextest would
-      # otherwise trigger the same compile+stage implicitly, but only once the
-      # test run is already underway).
+      # Compiles every target before the test run starts, as this workflow's
+      # quarantine-heavy job above does.
       - run: cargo build --workspace --all-targets
-
-      # macOS staging assert (issue #1394): this leg had no equivalent of
-      # health.yml's / this workflow's own quarantine-heavy job's staging
-      # guard (issue #638), so a staging failure on the ONE FSEvents leg could
-      # let runtime-checked (non-`#[ignore]`d) tests that early-return when a
-      # binary is missing silently record themselves as PASS instead of
-      # failing loudly — on the only platform this workflow exists to give
-      # real coverage to.
-      - name: Assert esbuild binary was provisioned
-        run: |
-          ESBUILD_SLOT="crates/zfb/binaries/esbuild/esbuild"
-          if [ ! -x "$ESBUILD_SLOT" ]; then
-            echo "::error::$ESBUILD_SLOT not staged — runtime-checked tests could silently skip-as-pass. Failing the job instead."
-            exit 1
-          fi
-          "$ESBUILD_SLOT" --version
 
       # Full platform re-exam: EVERY non-ignored test in the workspace,
       # unfiltered, on FSEvents instead of Linux inotify — this is the whole

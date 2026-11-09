@@ -16,11 +16,9 @@
 //!
 //! ## Esbuild gating
 //!
-//! The byte-equivalence and dirty-reset tests need a real esbuild binary
-//! and self-skip when none is available (`ZFB_ESBUILD_BIN` → workspace
-//! slot → pnpm store → PATH), matching the other bundler integration
-//! tests. The prune and diagnostics-replay tests run everywhere via
-//! `mock_subprocess_output`.
+//! The byte-equivalence and dirty-reset tests run a real native Rolldown
+//! bundle (#4635 removed the esbuild self-skip). The prune and diagnostics-replay tests run everywhere via
+//! `mock_bundle_output`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,7 +27,6 @@ use zfb_build::{
     bundle, bundle_with_session, BundleMode, BundlerInput, ContentCollectionSpec, OnBrokenLinks,
     ResolveMarkdownLinksRoute, ResolveMarkdownLinksSpec, ShadowSession,
 };
-use zfb_test_utils::locate_esbuild;
 
 /// Write the base fixture project: pages (a css-module consumer, an
 /// `import.meta.glob` consumer, an `.md` page), a content collection,
@@ -96,7 +93,7 @@ export default function Glob() {
 
 /// BundlerInput for the fixture. `outdir_name` keeps the session and
 /// fresh outputs separate so they never clobber each other.
-fn make_input(root: &Path, esbuild: Option<&Path>, outdir_name: &str) -> BundlerInput {
+fn make_input(root: &Path, outdir_name: &str) -> BundlerInput {
     let mut css_names = std::collections::HashMap::new();
     css_names.insert("card".to_string(), "card_scoped1".to_string());
     let mut css_maps = std::collections::HashMap::new();
@@ -107,7 +104,6 @@ fn make_input(root: &Path, esbuild: Option<&Path>, outdir_name: &str) -> Bundler
             "@takazudo/zfb/zudo-react".into(),
             "@takazudo/zfb-runtime".into(),
         ],
-        esbuild_binary: esbuild.map(|p| p.to_path_buf()),
         content_collections: vec![ContentCollectionSpec::new(
             "posts",
             PathBuf::from("content/posts"),
@@ -128,13 +124,6 @@ fn make_input(root: &Path, esbuild: Option<&Path>, outdir_name: &str) -> Bundler
 /// bytes must equal a fresh `bundle()`'s bytes over the same tree.
 #[test]
 fn shadow_session_bundle_bytes_match_fresh_bundle() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[shadow_session_bundle_bytes_match_fresh_bundle] no esbuild binary; \
-             set ZFB_ESBUILD_BIN, stage the slot, or install esbuild on PATH. Skipping."
-        );
-        return;
-    };
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     write_fixture(root);
@@ -142,12 +131,9 @@ fn shadow_session_bundle_bytes_match_fresh_bundle() {
     let mut session = ShadowSession::new(tmp.path()).unwrap();
 
     let mut assert_equal_bytes = |step: &str| {
-        let session_out = bundle_with_session(
-            make_input(root, Some(&esbuild), "dist-session"),
-            Some(&mut session),
-        )
-        .unwrap_or_else(|e| panic!("session bundle failed at step `{step}`: {e:#}"));
-        let fresh_out = bundle(make_input(root, Some(&esbuild), "dist-fresh"))
+        let session_out = bundle_with_session(make_input(root, "dist-session"), Some(&mut session))
+            .unwrap_or_else(|e| panic!("session bundle failed at step `{step}`: {e:#}"));
+        let fresh_out = bundle(make_input(root, "dist-fresh"))
             .unwrap_or_else(|e| panic!("fresh bundle failed at step `{step}`: {e:#}"));
         let session_bytes = fs::read(&session_out.bundle_path).unwrap();
         let fresh_bytes = fs::read(&fresh_out.bundle_path).unwrap();
@@ -224,8 +210,8 @@ fn shadow_session_prunes_deleted_sources() {
 
     let mut session = ShadowSession::new(tmp.path()).unwrap();
     let input = BundlerInput {
-        mock_subprocess_output: Some("export default {};".to_string()),
-        ..make_input(root, None, "dist-session")
+        mock_bundle_output: Some("export default {};".to_string()),
+        ..make_input(root, "dist-session")
     };
     bundle_with_session(input, Some(&mut session)).unwrap();
 
@@ -244,8 +230,8 @@ fn shadow_session_prunes_deleted_sources() {
     fs::remove_file(root.join("pages/about.md")).unwrap();
 
     let input = BundlerInput {
-        mock_subprocess_output: Some("export default {};".to_string()),
-        ..make_input(root, None, "dist-session")
+        mock_bundle_output: Some("export default {};".to_string()),
+        ..make_input(root, "dist-session")
     };
     bundle_with_session(input, Some(&mut session)).unwrap();
 
@@ -273,13 +259,6 @@ fn shadow_session_prunes_deleted_sources() {
 /// identical to a fresh bundle.
 #[test]
 fn shadow_session_dirty_resets_after_error() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[shadow_session_dirty_resets_after_error] no esbuild binary; \
-             set ZFB_ESBUILD_BIN, stage the slot, or install esbuild on PATH. Skipping."
-        );
-        return;
-    };
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     write_fixture(root);
@@ -292,7 +271,7 @@ fn shadow_session_dirty_resets_after_error() {
             }],
             on_broken_links: OnBrokenLinks::Error,
         }),
-        ..make_input(root, Some(&esbuild), outdir)
+        ..make_input(root, outdir)
     };
 
     let mut session = ShadowSession::new(tmp.path()).unwrap();
@@ -376,13 +355,6 @@ fn shadow_session_dirty_resets_after_error() {
 /// would wrongly skip the re-write and drop the module from the bundle.
 #[test]
 fn shadow_session_survives_path_type_flips() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[shadow_session_survives_path_type_flips] no esbuild binary; \
-             set ZFB_ESBUILD_BIN, stage the slot, or install esbuild on PATH. Skipping."
-        );
-        return;
-    };
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     write_fixture(root);
@@ -392,12 +364,9 @@ fn shadow_session_survives_path_type_flips() {
     let mut session = ShadowSession::new(tmp.path()).unwrap();
 
     let mut assert_equal_bytes = |step: &str| {
-        let session_out = bundle_with_session(
-            make_input(root, Some(&esbuild), "dist-session"),
-            Some(&mut session),
-        )
-        .unwrap_or_else(|e| panic!("session bundle failed at step `{step}`: {e:#}"));
-        let fresh_out = bundle(make_input(root, Some(&esbuild), "dist-fresh"))
+        let session_out = bundle_with_session(make_input(root, "dist-session"), Some(&mut session))
+            .unwrap_or_else(|e| panic!("session bundle failed at step `{step}`: {e:#}"));
+        let fresh_out = bundle(make_input(root, "dist-fresh"))
             .unwrap_or_else(|e| panic!("fresh bundle failed at step `{step}`: {e:#}"));
         let session_bytes = fs::read(&session_out.bundle_path).unwrap();
         let fresh_bytes = fs::read(&fresh_out.bundle_path).unwrap();
@@ -465,7 +434,7 @@ fn shadow_session_survives_path_type_flips() {
 }
 
 /// Esbuild-free companion to the flip test above (mirrors the prune
-/// test's `mock_subprocess_output` pattern): asserts the SHADOW TREE
+/// test's `mock_bundle_output` pattern): asserts the SHADOW TREE
 /// shape directly across directory→file / file→directory mutations, for
 /// both the pages walk and a content-collection walk.
 #[test]
@@ -476,8 +445,8 @@ fn shadow_session_path_type_flips_update_shadow_tree() {
     fs::write(root.join("content/posts/media"), "extensionless asset\n").unwrap();
 
     let mock_input = || BundlerInput {
-        mock_subprocess_output: Some("export default {};".to_string()),
-        ..make_input(root, None, "dist-session")
+        mock_bundle_output: Some("export default {};".to_string()),
+        ..make_input(root, "dist-session")
     };
     let mut session = ShadowSession::new(tmp.path()).unwrap();
     bundle_with_session(mock_input(), Some(&mut session)).unwrap();
@@ -565,7 +534,7 @@ fn shadow_session_replays_diagnostics_on_unchanged_tick() {
     .unwrap();
 
     let broken_links_input = || BundlerInput {
-        mock_subprocess_output: Some("export default {};".to_string()),
+        mock_bundle_output: Some("export default {};".to_string()),
         resolve_markdown_links: Some(ResolveMarkdownLinksSpec {
             routes: vec![ResolveMarkdownLinksRoute {
                 docs_dir: PathBuf::from("content/posts"),
@@ -573,7 +542,7 @@ fn shadow_session_replays_diagnostics_on_unchanged_tick() {
             }],
             on_broken_links: OnBrokenLinks::Error,
         }),
-        ..make_input(root, None, "dist-session")
+        ..make_input(root, "dist-session")
     };
 
     let mut session = ShadowSession::new(tmp.path()).unwrap();

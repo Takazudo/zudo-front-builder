@@ -96,7 +96,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 const EXPECTED_WRANGLER_VERSION: &str = "4.85.0";
 const BOOT_DEADLINE: Duration = Duration::from_secs(90);
@@ -266,11 +266,10 @@ fn wire_adapter_node_modules(root: &Path, adapter_package: &Path) -> tempfile::T
     node_modules_handle
 }
 
-fn run_build(root: &Path, esbuild: &Path) {
+fn run_build(root: &Path) {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn `zfb build`");
     assert!(
@@ -475,14 +474,13 @@ async fn poll_for_marker(
     }
 }
 
-fn spawn_zfb_dev(root: &Path, esbuild: &Path) -> ServerSession {
+fn spawn_zfb_dev(root: &Path) -> ServerSession {
     let mut command = Command::new(zfb_binary!());
     command
         .arg("dev")
         .arg("--port")
         .arg("0")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
         .env_remove("ZFB_DEV_DEFER_BUNDLE")
@@ -569,13 +567,6 @@ fn assert_valid_v4_uuid(uuid: &str, runtime_label: &str) {
 async fn embedded_host_matches_real_workerd_for_supported_rows_and_documented_divergences() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
 
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[workerd_parity_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN to the pinned native binary."
-        );
-        return;
-    };
     if !pnpm_available() {
         eprintln!("[workerd_parity_e2e] pnpm is not available; skipping.");
         return;
@@ -600,7 +591,7 @@ async fn embedded_host_matches_real_workerd_for_supported_rows_and_documented_di
         .expect("canonicalize production fixture root");
     stage_fixture(&prod_root, loopback.port());
     let _node_modules_handle = wire_adapter_node_modules(&prod_root, &adapter_package);
-    run_build(&prod_root, &esbuild);
+    run_build(&prod_root);
 
     let mut wrangler_session = spawn_wrangler_dev(&prod_root, &wrangler);
     let Some(wrangler_port) = boot_or_skip(&mut wrangler_session).await else {
@@ -616,7 +607,7 @@ async fn embedded_host_matches_real_workerd_for_supported_rows_and_documented_di
         .expect("canonicalize dev fixture root");
     stage_fixture(&dev_root, loopback.port());
 
-    let mut dev_session = spawn_zfb_dev(&dev_root, &esbuild);
+    let mut dev_session = spawn_zfb_dev(&dev_root);
     let Some(dev_port) = boot_or_skip(&mut dev_session).await else {
         return;
     };

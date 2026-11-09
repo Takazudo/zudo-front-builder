@@ -107,7 +107,6 @@ class Selection(unittest.TestCase):
         self.assertEqual(qualify.selection_args("default"), ([], "default"))
         self.assertEqual(qualify.selection_args("direct-v8"),
                          (["--no-default-features", "--features", "direct-v8"], "direct-v8"))
-        self.assertEqual(qualify.selection_args("direct-v8", ["rolldown-prototype"])[1], "direct-v8,rolldown-prototype")
 
     def test_selections_match_graph_script(self):
         graph_spec = importlib.util.spec_from_file_location("record_graph", SCRIPT.with_name("record-graph.py"))
@@ -115,8 +114,7 @@ class Selection(unittest.TestCase):
         graph_spec.loader.exec_module(graph)
         self.assertEqual(qualify.SELECTIONS, graph.SELECTIONS)
         for selection in qualify.SELECTIONS:
-            self.assertEqual(qualify.selection_args(selection, ["rolldown-prototype"] if selection != "default" else []),
-                             graph.selection_args(selection, ["rolldown-prototype"] if selection != "default" else []))
+            self.assertEqual(qualify.selection_args(selection), graph.selection_args(selection))
 
 
 class Verdict(unittest.TestCase):
@@ -189,7 +187,7 @@ class Command(unittest.TestCase):
                 self.assertEqual("--features" in row["build_command"], flags)
                 self.assertNotIn("command", row["checks"]["build"])
 
-    def test_default_selection_cannot_combine_with_rolldown(self):
+    def test_retired_rolldown_flag_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = self.run_script(tmp, "--target", "x86_64-unknown-linux-gnu", "--binary", "missing", "--rolldown",
                                      "--selection", "default", "--source-sha", "0" * 40, "--output", Path(tmp) / "row")

@@ -45,7 +45,7 @@ pnpm install --frozen-lockfile
 cargo build --workspace
 ```
 
-That command is intentionally plain: it builds every workspace crate for your host target, and the `crates/zfb/build.rs` build script downloads, SHA-256-verifies, and stages the pinned esbuild binary before the `zfb` crate compiles. It also embeds Hono from the workspace pnpm store. If you also want to precompile test harnesses after the first dependency install, use:
+That command is intentionally plain: it builds every workspace crate for your host target, and the `crates/zfb/build.rs` build script stages the embedded vendor snapshot, including Hono from the workspace pnpm store, before the `zfb` crate compiles. If you also want to precompile test harnesses after the first dependency install, use:
 
 ```sh
 cargo build --workspace --all-targets
@@ -60,40 +60,18 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for tips on speeding up local Rust comp
 pnpm install --frozen-lockfile
 
 # 2. Build the Rust workspace (first run: 15-30 min; subsequent runs: fast).
-#    This also provisions the pinned esbuild binary.
 cargo build --workspace
 ```
 
-## Provisioned external binaries
+## Bundling
 
-The islands bundler uses the standalone `esbuild` executable. The CSS pipeline compiles utility classes with zudo-wind in-process and does not need a separate CSS CLI binary.
+zfb downloads, stages and runs no external bundler binary. Pages and the SSR bundle, islands, client scripts and module workers, TS-family plugins and `zfb.config.ts` are all bundled natively with Rolldown, which [`crates/zfb-bundler`](./crates/zfb-bundler) pins to a fixed upstream revision. `zfb --version` prints the embedded bundler identity on its `embedded bundler:` line. The CSS pipeline compiles utility classes with zudo-wind in-process and does not need a separate CSS CLI binary either.
 
-The default esbuild path is Cargo-driven. Any normal build that compiles `crates/zfb` runs [`crates/zfb/build.rs`](./crates/zfb/build.rs), which:
-
-- downloads the pinned platform-specific `@esbuild/*` npm tarball, extracts the standalone `esbuild` binary, verifies it against the `ESBUILD_SHA256_*` constants, and stages it under `crates/zfb/binaries/esbuild/`;
-- copies the verified esbuild executable into the embedded vendor snapshot so installed `zfb` binaries can run without a workspace checkout.
-
-Supported esbuild download platforms are `darwin-x64`, `darwin-arm64`, `linux-x64-gnu`, `linux-arm64-gnu`, and `win32-x64-msvc`, matched against Cargo's exact `TARGET` triple (not a substring match, so `x86_64-unknown-linux-musl` does not accidentally match the `-gnu` platform). For unsupported targets such as musl-libc Linux, set `ZFB_ESBUILD_BIN` to an absolute path to a pre-verified binary.
-
-### `ZFB_ESBUILD_BIN` override contract
-
-When `ZFB_ESBUILD_BIN` is set to a non-empty value, `build.rs`:
-
-- requires the value to be an **absolute path** (relative paths are rejected with a clear error);
-- requires the path to exist and be a regular file;
-- stages that exact file into the embedded vendor snapshot in place of a download — **it skips SHA-256 pinning entirely**. Overrides are a documented trust boundary: the operator supplying the path is responsible for verifying it, the same way a locally-built or vendor-mirrored binary would be trusted. `build.rs` never downloads anything for a binary that has a valid override.
-
-An empty-string value (e.g. an env var that is set but blank) is treated as unset, not as an override.
-
-Cargo re-runs the build script when `ZFB_ESBUILD_BIN` changes (`cargo:rerun-if-env-changed`), and — once an override path is validated — when that file's contents change (`cargo:rerun-if-changed=<path>`), so editing an override binary in place and rebuilding picks it up without a manual `touch`.
-
-See [`crates/zfb/binaries/README.md`](./crates/zfb/binaries/README.md) for the runtime resolution layout.
-
-[`scripts/verify-vendor-override.sh`](./scripts/verify-vendor-override.sh) proves this contract end-to-end on a clean tree: it `git archive`s `HEAD` into a scratch directory (so no gitignored binary slot can be present), symlinks in `node_modules/` from the source checkout so the build script can read the embedded Hono package from `node_modules/.pnpm/`, then runs an offline, isolated-`$CARGO_TARGET_DIR` `cargo check -p zfb --no-default-features --offline` with `ZFB_ESBUILD_BIN` pointed at the source checkout's staged binary. It asserts zero downloads occur, the staged `$OUT_DIR/vendor/bin/` bytes hash-equal the override source, and a bogus override path fails with the direct path + var-naming error. Run it locally with `scripts/verify-vendor-override.sh` (defaults to `crates/zfb/binaries/esbuild/esbuild` as the override source — populate it first with a plain `cargo build --workspace`, which also warms `$CARGO_HOME`'s registry cache so the script's isolated `--offline` check can resolve crates without network access; or point `ZFB_VERIFY_ESBUILD_SRC` at a pre-staged binary elsewhere). Unix hosts only (macOS/Linux). It is not wired into CI or `b4push` — it's a manual confirmation tool, several minutes per run (a cold, isolated `cargo check`).
+The `ZFB_BUNDLER` and `ZFB_ROLLDOWN_PROTOTYPE` selectors, which once chose the esbuild backend, were removed: setting either one, to any value, fails before any command runs. `ZFB_ESBUILD_BIN` no longer exists.
 
 ## Embedded npm packages
 
-`crates/zfb/build.rs` snapshots a small set of npm packages into `$OUT_DIR/vendor/` at compile time, then `crates/zfb/src/render_pipeline.rs` embeds the snapshot into the binary via `include_dir!`. At `zfb build` / `zfb dev` time, when the consumer has no `node_modules/`, the snapshot is extracted to a tempdir and esbuild resolves bare imports against it. Two groups of packages live in the snapshot:
+`crates/zfb/build.rs` snapshots a small set of npm packages into `$OUT_DIR/vendor/` at compile time, then `crates/zfb/src/render_pipeline.rs` embeds the snapshot into the binary via `include_dir!`. At `zfb build` / `zfb dev` time, when the consumer has no `node_modules/`, the snapshot is extracted to a tempdir and the bundler resolves bare imports against it. Two groups of packages live in the snapshot:
 
 | Group | Packages | Source | Pin location |
 | --- | --- | --- | --- |
@@ -150,7 +128,7 @@ cargo build --locked -p zfb --bin zfb
 - The ICU 77 data is vendored at `crates/zfb-js-host/icu/icudtl.dat` and embedded at compile time; no environment variable or download is needed. `python3 prototypes/direct-v8/prepare-icu.py --verify` checks it against the pin.
 - Run these builds through the heavy guard like any other V8 build.
 
-The CI lane [`.github/workflows/direct-v8.yml`](./.github/workflows/direct-v8.yml) runs only when a PR carries the `direct-v8` label (or `direct-v8-rolldown` to add the Rolldown prototype), or on manual dispatch. It records native rows on Linux x64, Linux arm64 and Windows x64 and is never a required check. Darwin rows need a Mac and are not run there.
+The CI lane [`.github/workflows/direct-v8.yml`](./.github/workflows/direct-v8.yml) runs only when a PR carries the `direct-v8` or `native-default` label, or on manual dispatch. It records native rows on Linux x64, Linux arm64 and Windows x64 and is never a required check. Darwin rows need a Mac and are not run there.
 
 The developer scripts in [`prototypes/direct-v8/`](prototypes/direct-v8/README.md) require Python >=3.11. On macOS, explicitly select an installed compatible interpreter, for example `ZFB_DEV_PYTHON="$(command -v python3.11)"`, and invoke the tools with `"$ZFB_DEV_PYTHON"`. Verify its version before running. This does not add a Python requirement to the production CLI.
 

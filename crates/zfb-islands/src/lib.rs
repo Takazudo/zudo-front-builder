@@ -9,11 +9,9 @@
 //!    public-marker collision checks. See [`scanner`].
 //!
 //! 2. Define the public [`ClientBundler`] trait — the contract the islands
-//!    bundler implements — and provide the production
-//!    `EsbuildSubprocessBundler` (Sub 2) that wraps the esbuild CLI
-//!    subprocess. The trait documents the swap-in story for a future
-//!    Rust-native bundler (placeholder lives in [`future_rust_native`],
-//!    analog of `zfb_css::native_engine`).
+//!    bundler implements — and provide the production [`IslandsBundler`],
+//!    which runs typed jobs on zfb's in-process native bundler. See
+//!    [`bundle_job`].
 //!
 //! ## Layering
 //!
@@ -23,10 +21,10 @@
 //! plus asset paths. Wiring into the full render orchestrator happens in
 //! Epic 7.
 
+pub mod bundle_job;
 pub mod bundler;
 pub mod client_scripts;
 mod entry_import_guard;
-pub mod esbuild;
 pub mod future_rust_native;
 mod graph_identity;
 pub mod html_tree;
@@ -34,10 +32,13 @@ pub mod manifest;
 pub mod scanner;
 
 /// Test oracle for emitted bundler output (#4449); not a public API.
-#[cfg(feature = "rolldown-prototype")]
 #[doc(hidden)]
-pub use zfb_rolldown_prototype::module_specifiers;
+pub use zfb_bundler::module_specifiers;
 
+pub use bundle_job::{
+    hash_8, is_zfb_islands_temp_file, render_shared_bundle_entry_source, ClientScriptBundleOutput,
+    IslandsBundleBuildIdentityError, IslandsBundler, IslandsBundlerConfig, StageAuditPolicy,
+};
 pub use bundler::{
     build_production_islands_asset, bundle_link_href, BundleChunk, BundleConfig, BundleMode,
     BundleOutput, BundleResource, ClientBundler, Island, IslandsChunk, IslandsResource, ModuleId,
@@ -49,11 +50,6 @@ pub use client_scripts::{
     ClientScriptCollision, ClientScriptEntry, ClientScriptWorkerEntry, ProductionClientScriptAsset,
     CLIENT_SCRIPT_DISCOVERY_ROOTS, CLIENT_SCRIPT_EXTENSIONS, CLIENT_SCRIPT_INFIX,
 };
-pub use esbuild::{
-    hash_8, is_zfb_islands_temp_file, render_shared_bundle_entry_source, ClientScriptBundleOutput,
-    EsbuildSubprocessBundler, EsbuildSubprocessConfig, IslandsBundleBuildIdentityError,
-    StageAuditPolicy, EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
-};
 pub use future_rust_native::NativeRustBundler;
 pub use html_tree::HtmlTree;
 pub use manifest::{is_same_package_duplicate, manifest_json, write_manifest, Collision, Manifest};
@@ -64,6 +60,7 @@ pub use scanner::{
     FsResolver, InMemoryResolver, IslandsSet, ModuleWorkerEdge, RawImportEdge,
     ReachableModulesMeta, Resolver, ScanError, ScanMeta, ScanResult, WorkspacePackageImportEdge,
 };
+pub use zfb_bundler::External;
 pub use zfb_types::{
     module_worker_content_hash, module_worker_filename, module_worker_url_specifier,
     ModuleWorkerPathError, MODULE_WORKER_CSP_GLOB, MODULE_WORKER_FILENAME_PREFIX,

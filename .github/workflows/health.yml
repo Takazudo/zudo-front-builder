@@ -346,28 +346,6 @@ jobs:
           # the `shared-key` on exam.yml's quarantine-heavy rust-cache step.
           shared-key: "workspace-all-targets"
 
-      # Cache the SHA-verified staged esbuild binary so the
-      # zfb build script skips its download in the steady state (issue 2385).
-      # Keyed on the files holding the version and SHA-256 pins; slot content is target-specific, so the
-      # key names the target triple (shared with every other x86_64-linux job
-      # carrying this step). Opportunistic by design: continue-on-error keeps
-      # a cache-infrastructure failure falling through to the SHA-verified
-      # download instead of becoming a new way to fail the job, and there are
-      # deliberately no restore-keys — an old pin's binaries would only be
-      # hashed and re-downloaded anyway.
-      - name: Cache staged esbuild binary (issue 2385)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        continue-on-error: true
-        with:
-          # Only the gitignored executable slot — never the whole dir:
-          # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
-          # and an exact-key restore would untar stale cached copies of those
-          # over the checkout whenever a PR edits them without touching the
-          # hashed pin files (codex review, zfb#2385 PR).
-          path: |
-            crates/zfb/binaries/esbuild/esbuild
-          key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
-
       - run: pnpm install --frozen-lockfile
 
       # TypeScript typecheck gate (issue #1332): b4push has run this since its
@@ -411,9 +389,15 @@ jobs:
         env:
           ZFB_SUPERVISOR_TIMELINE: "1"
 
+      # The fast checks and the Rust lane below gate on their own prerequisites,
+      # not on the implicit success(), so a red contract test (e.g. an island-size
+      # contract awaiting native evidence) does not hide their results. Each
+      # step's own failure still fails the job; nothing here turns a failure green.
       - run: pnpm format:check
+        if: ${{ !cancelled() && steps.native_prerequisites.outcome == 'success' }}
 
       - name: Wind policy, inventory, accounting and mutation contracts
+        if: ${{ !cancelled() && steps.native_prerequisites.outcome == 'success' }}
         run: |
           node scripts/wind-compatibility/inventory-cli.mjs validate
           node --test tests/wind-compatibility/*.test.mjs tests/wind-compatibility/reference/*.test.mjs tests/wind-compatibility/empty-token/*.test.mjs tests/wind-compatibility/corpus/*.test.mjs
@@ -422,6 +406,7 @@ jobs:
       # (issue #2482). This pure-Node check is cheap and belongs in the health
       # job's fast checks; it does not require the wasm-md package build.
       - name: Assert md-wasm documentation matches shipped sizes
+        if: ${{ !cancelled() && steps.native_prerequisites.outcome == 'success' }}
         run: node scripts/assert-md-wasm-size-docs.mjs
 
       # SSE endpoint literal guard (issue #2644): reqwest's `.timeout()` bounds
@@ -431,13 +416,11 @@ jobs:
       # probe; tests must use zfb_test_utils::open_sse(). This is an offline
       # source scan and mirrors scripts/run-b4push.sh's cheap guard step.
       - name: Check SSE endpoint literal ownership
+        if: ${{ !cancelled() && steps.native_prerequisites.outcome == 'success' }}
         run: node scripts/check-sse-endpoint.mjs
 
-      # Compiles every target (incl. benches/examples) AND triggers crates/zfb's
-      # build.rs to download + SHA-verify + stage the pinned esbuild 0.25.12 into
-      # crates/zfb/binaries/esbuild/esbuild — the slot that
-      # zfb_test_utils::locate_esbuild() resolves for the esbuild-gated
-      # integration tests run below.
+      # Compiles every target (incl. benches/examples). Since #4635 the zfb
+      # build stages no external bundler: native Rolldown is linked into zfb.
       - id: build_binary
         if: ${{ !cancelled() && steps.native_prerequisites.outcome == 'success' }}
         run: cargo build --workspace --all-targets
@@ -455,6 +438,7 @@ jobs:
       # Exercise the built CLI on the reduced Tailwind theme-variable case,
       # and keep the exact ZW016 lines in CI logs for migration review.
       - name: ZW016 built-CLI migration spot check
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' }}
         run: node scripts/verify-zw016-audit.mjs "$PWD/target/debug/zfb"
 
       # Freshness gate (issue #1871): the custom SyntaxSet dump is a tracked
@@ -463,6 +447,8 @@ jobs:
       # its crate-root CWD and uses normalized relative paths, keeping the dump
       # bytes independent of the checkout location that ran this step.
       - name: Verify syntect syntax-set.packdump is fresh
+        id: packdump
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' }}
         run: |
           DUMP=crates/zfb-content/assets/syntax-set.packdump
           # The generator writes unconditionally, and the dump is an include_bytes! input of
@@ -478,173 +464,19 @@ jobs:
       # short-circuits the expensive test run. Note: -D warnings on the stable
       # toolchain can surface new lints on a future toolchain bump — accepted
       # cost; a future maintainer seeing a red gate with no code change should
-      # check if a toolchain pin bump introduced new lints.
+      # check if a toolchain pin bump introduced new lints. The Rust test steps
+      # below keep that short-circuit through steps.workspace_clippy. A stale
+      # packdump exits before its mtime restore and leaves regenerated,
+      # uncommitted bytes in the tree, so nothing downstream may lint or test them.
       - run: cargo clippy --workspace --all-targets -- -D warnings
-
-      # Guard (issue #638): the esbuild-gated integration tests skip via an early
-      # `return` (recorded by cargo as a PASS) when no esbuild binary is found, so
-      # a green `cargo test` alone cannot prove they actually executed. Fail loudly
-      # here if build.rs did not stage the binary, making "green but silently
-      # skipped" impossible. (The binary's version + SHA-256 are already verified
-      # upstream by crates/zfb/build.rs before staging; the `--version` run here is
-      # just a smoke test that the staged binary actually executes on this runner's
-      # architecture — a corrupt or wrong-arch binary fails the step.)
-      - name: Assert esbuild binary was provisioned for the test suite
-        run: |
-          ESBUILD_SLOT="crates/zfb/binaries/esbuild/esbuild"
-          if [ ! -x "$ESBUILD_SLOT" ]; then
-            echo "::error::$ESBUILD_SLOT not staged — the env-gated tests would silently skip (issue #638). Failing the job instead."
-            exit 1
-          fi
-          "$ESBUILD_SLOT" --version
-
-      # Run the zfb-islands esbuild-gated suite (issue #1337): the package's 23
-      # `#[ignore]`d tests (tagged `env-gate:` per crates/CLAUDE.md's taxonomy) were
-      # staged by the assert step above but never actually executed by any CI
-      # step — `cargo test --workspace` below does not pass `--ignored`, so a
-      # green run proved nothing about them. `ZFB_ESBUILD_BIN` must be an
-      # ABSOLUTE path: `EsbuildSubprocessConfig`'s default binary_path is the
-      # literal relative string `crates/zfb/binaries/esbuild/esbuild`, but
-      # `cargo test` runs each test binary with its CWD set to the package
-      # directory (`crates/zfb-islands`), not the workspace root, so the
-      # relative default never resolves.
-      # (This count was re-measured, not incremented, during issue #2111 —
-      # it had already drifted stale to 21 by the time that issue started,
-      # before either of its own 2 additions: `grep -rn '#\[ignore = "'
-      # crates/zfb-islands/ | grep -v ':[0-9]*: *//' | wc -l` is the
-      # authoritative recount.)
-      # --tests scopes this to integration-test binaries only (where the 23
-      # target tests live, in tests/integration.rs) — the unscoped `-p
-      # zfb-islands` form also compiles+runs the crate's doctests, and 3 of
-      # those are pre-existing broken/illustrative examples never meant to
-      # run (issue found while wiring this step; see #1337 follow-up).
-      # Wave-4 client-bundling acceptance gate (#1504): unlike the focused
-      # zfb-islands tests above, this drives the real zfb binary through both
-      # production build and dev --port 0 over one cross-pipeline fixture.
-      # Keep it as its own attributable exact binary predicate because it boots
-      # V8, exercises SSR, and verifies both islands and *.client.ts worker
-      # namespaces.
-      # Real-esbuild stage-escape-audit confirmation for the first-party
-      # dot-path staging allowlist (issue #1841, epic #1836): the
-      # `bundler_dot_path_staging.rs` mock suite (#1840) drives every fixture
-      # through `mock_subprocess_output`, so the stage-escape audit
-      # (`workspace_rel.is_some()`, #1706) never actually runs there —
-      # `metafile_path` stays `None` on the mock path. This step proves real
-      # esbuild resolves both allowlisted dot-path spellings (`.zudo-doc/
-      # routes-src/**`, `.zfb/*.json`) out of the shadow and that the audit
-      # passes them. The SAME binary also carries issue #3021's twin
-      # (`real_esbuild_resolves_injected_route_entrypoint_staged_spelling_and_passes_stage_escape_audit`,
-      # epic #3019): identical fixture shape, but the hidden dir is OUTSIDE
-      # `KNOWN_FIRST_PARTY_STAGING_DIRS` and the staged spelling instead comes
-      # from `BundlerInput::injected_route_entrypoints` (#3004) — no new
-      # binary predicate needed below, since `binary(=...)` already selects
-      # every test in this target.
-      # Workspace-root alias regression (issue #1885, epic #1883): this is a
-      # separate real-esbuild binary because its positive fixture proves the
-      # #1884 staging claim composes with root-package TS/TSX/CSS/JSON, a
-      # claimed sibling package, and #1840's dot-path allowlist. Issue #1905
-      # extends that same env-gate with its 17-residual-input combined
-      # topology (six generated routes, nine package exports, two JSON
-      # leaves), while the separate negatives retain parent-relative rejection
-      # and guard (b)'s fail-closed metafile audit. The provisioning assertion above is
-      # deliberately shared, but this named target is not: `--ignored` is the
-      # only way these env-gated tests execute, so an explicit exact predicate
-      # prevents a future edit from silently dropping the binary from CI.
-      # Consume-from-source workspace idiom (issues #2039/#2040, epic #1982):
-      # a first-party sibling package whose `exports` point straight at
-      # `./src/*` with no `dist` is imported by bare package name through the
-      # workspace symlink, landing on the metafile audit's case-2 shape. These
-      # four env-gated tests are the acceptance rule's positive pair, the
-      # dist-shipping negative that stops it becoming a blanket "workspace
-      # siblings are always fine" exemption, and the copy-mode canonicalized-
-      # key twin (issue #2047, landed by sub #2086 of epic #2078) — an
-      # unwired binary would let any of these regress unnoticed. Same
-      # ABSOLUTE-path requirement for ZFB_ESBUILD_BIN as the steps above.
-      # Root-claimed-workspace stage-escape audit, SSR leg (issues
-      # #1984/#1988, epic #1982): when `project_root` is itself claimed by
-      # `pnpm-workspace.yaml`, guard (b) used to be skipped and SSR has no
-      # scan-time guard (a) at all — a completely silent stage escape. This
-      # env-gated test is the only proof the audit is ARMED there, so it needs
-      # its own exact predicate for the same reason as the two above: `--ignored`
-      # is the only way it ever executes.
-      # Root-claimed-workspace stage-escape audit DISARM pin (issues
-      # #2050/#2081, epic #2078): the sibling armed-regression step above
-      # proves guard (b) rejects an escape when the live node_modules
-      # symlink survives. This step covers the shape where it does NOT
-      # survive — active `bundle.exclude` forces REAL copies into
-      # `<shadow>/node_modules` instead. Closing that took two fixes: sub
-      # #2087 armed ELIGIBILITY (stage_escape_audit_eligibility recognises
-      # the staged real copy via declared identity — package.json name +
-      # workspace claim), and issue #2127 then fixed the CLASSIFICATION gap
-      # that arming eligibility alone left open (metafile_deps.rs used to
-      # admit any real-copy-staged package as an ordinary case-3 dependency,
-      # purely because its canonical path trivially keeps a node_modules
-      # segment). All FOUR of this binary's tests now run under this gate —
-      # #2127 deleted the `--skip` that used to exclude the RED twin, which
-      # has since flipped GREEN with its assertions untouched and its
-      # `pending-feature:` tag swapped for the ordinary `env-gate: esbuild`
-      # one, per epic #2078's corrected flip protocol. The other three: a
-      # preconditions test, proving the staging really is a real copy and
-      # eligibility really is armed; #2127's POSITIVE control, proving the
-      # identical topology with a DECLARED sibling still builds (the
-      # case-2/case-3 boundary governs all third-party classification, so an
-      # over-broad fix would break ordinary builds — and this crate's other
-      # consume-from-source acceptance tests all run with an EMPTY
-      # `bundle.exclude`, so they never reach the real-copy path); and a
-      # negative control proving the SECOND trigger shape #2050's own text
-      # named — a workspace package staged as an exact target with an empty
-      # `bundle.exclude` — is not actually reachable at a root-claimed
-      # workspace. See the file's own header for the investigation.
-      # Root-claimed-workspace LOOSE-FILE staging regression (issue #2208,
-      # epic #2205): the ACCEPT complement of the armed-regression step
-      # above. Arming guard (b) at root-claimed workspaces (#1988) exposed
-      # that repo-root loose files reached via a broad `@/*` alias were only
-      # staged under active exclusions — under an empty `bundle.exclude` the
-      # dual-target tsconfig's live-real fallback resolved them to LIVE
-      # source, which the now-armed audit rejects as case 4 (the next.96 →
-      # next.97 regression). The fix widens the staging gate (declared-data
-      # `workspace_root_claims_path` predicate); this binary proves real
-      # esbuild's shadow-first resolution now records the STAGED spelling,
-      # and its negative control proves the widened staging did not loosen
-      # the audit (an undeclared bare-package-name escape stays rejected).
-      # Folded into a shared workspace resolution (issue #2690): the exact
-      # binary predicates preserve the esbuild-only package scopes. The four
-      # command-layer tests formerly in the mixed lane now run here with only
-      # ZFB_ESBUILD_BIN set.
-      - name: Run ignored env gates (esbuild-only, workspace resolution)
-        shell: bash
-        env:
-          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        run: |
-          mkdir -p target/nextest-logs
-          cargo nextest run --workspace --profile ci --run-ignored ignored-only -E '
-            (package(zfb-islands) & binary(=integration))
-              | (package(zfb) & binary(=client_bundling_cross_pipeline))
-              | (package(zfb-build) & binary(=bundler_dot_path_staging_esbuild_regression))
-              | (package(zfb-build) & binary(=bundler_workspace_root_alias_esbuild_regression))
-              | (package(zfb-build) & binary(=bundler_consume_from_source_esbuild_regression))
-              | (package(zfb-build) & binary(=bundler_root_workspace_stage_escape_audit_armed_regression))
-              | (package(zfb-build) & binary(=bundler_root_workspace_stage_escape_audit_disarm_pin))
-              | (package(zfb-build) & binary(=bundler_root_workspace_loose_file_alias_esbuild_regression))
-              | (package(zfb) & (
-                  test(=commands::build::tests::bare_package_consume_from_source_sibling_glob_macro_reaches_islands_bundle_unexpanded)
-                    | test(=commands::build::tests::plugin_alias_only_client_preprocessing_triggers_shadow_with_real_esbuild)
-                    | test(=commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild)
-                    | test(=commands::build::tests::root_workspace_islands_stage_escape_audit_is_now_armed_and_undeclared_child_escape_is_rejected)
-                ))
-          ' 2>&1 | tee target/nextest-logs/env-esbuild-only.log
-
-      - name: Stash esbuild-only env-gate JUnit
-        if: always()
-        run: |
-          if [ -f target/nextest/ci/junit.xml ]; then
-            mv target/nextest/ci/junit.xml target/nextest/ci/junit-env-esbuild-only.xml
-          fi
+        id: workspace_clippy
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.packdump.outcome == 'success' }}
 
       # The SDK-alias confirm must exercise jsx_pragma without zfb-build's
       # default V8 feature; the normal workspace nextest lane below uses the
       # default feature set and does not cover this compile configuration.
       - name: Test jsx_pragma without default features (#3939)
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.workspace_clippy.outcome == 'success' }}
         run: cargo test -p zfb-build --no-default-features --lib jsx_pragma
 
       # Run the workspace test suite under cargo-nextest (issue #1340). CI
@@ -652,7 +484,7 @@ jobs:
       # step above) then ran it under plain `cargo test`; nextest adds a CI retry
       # budget (retries = 1, pass-on-retry RECORDED not hidden — #1341 consumes
       # it), per-test timeouts, and JUnit output. The `ci` profile
-      # (.config/nextest.toml) splits the 41 heavy V8/esbuild e2e binaries into
+      # (.config/nextest.toml) splits the 41 heavy V8/bundler e2e binaries into
       # locked (24) and unlocked (17) `max-threads = 1` groups; the locked lane
       # also adopts #1339's cross-binary flock. Per-binary inventory was
       # reconciled against
@@ -664,6 +496,8 @@ jobs:
       # (per-test TRY/PASS/FAIL lines, panic messages) that the JUnit report
       # alone doesn't carry.
       - name: cargo nextest run --workspace --profile ci
+        id: workspace_nextest
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.workspace_clippy.outcome == 'success' }}
         shell: bash
         env:
           ZFB_DEFAULT_LAYOUT_EVIDENCE_DIR: ${{ runner.temp }}/default-layout-workspace
@@ -718,13 +552,16 @@ jobs:
         if: ${{ !cancelled() && steps.build_binary.outcome == 'success' }}
         run: node scripts/install-playwright-linux.mjs --label health-chromium --engines chromium --acquire-timeout 180 --install-timeout 180 --browser-timeout 180 --total-timeout 600
 
+      # Consumes the production dist the workspace nextest run preserves.
       - name: Scanner boundary acceptance (Chromium)
+        if: ${{ !cancelled() && steps.chromium.outcome == 'success' && steps.workspace_nextest.outcome == 'success' }}
         run: pnpm exec playwright test --config tests/scanner-boundary-acceptance/playwright.config.mjs
 
       # #3939 runs the documented MDX recipe as a packed external consumer.
       # Its JS packages are packed from this checkout, and the Rust binary
       # built above must match the exact checked-out source SHA.
       - name: SDK alias packed consumer and dev rebundle (#3939)
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.chromium.outcome == 'success' }}
         env:
           ZFB_SDK_ALIAS_EVIDENCE_DIR: ${{ runner.temp }}/sdk-alias-consumer
         run: |
@@ -825,6 +662,7 @@ jobs:
       # plus 8 ignored/no_run examples across zfb-islands, zfb-server,
       # zfb-test-utils, and zfb-render — 11 entries across 5 crates.
       - run: cargo test --workspace --doc
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.workspace_clippy.outcome == 'success' }}
 
       # Run the zfb-md-extras integration suite gated behind the `test-utils`
       # feature (issue #1091). The `test-utils` feature is not in the default
@@ -841,6 +679,7 @@ jobs:
       # Output is teed to a log file (issue #1341) for the same reason as the
       # workspace run above.
       - name: cargo nextest run -p zfb-md-extras --features test-utils --profile ci
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.workspace_clippy.outcome == 'success' }}
         shell: bash
         run: |
           cargo nextest run -p zfb-md-extras --features test-utils --profile ci 2>&1 | tee target/nextest-logs/md-extras.log
@@ -848,6 +687,7 @@ jobs:
       # Lint the test-utils-gated targets (they are excluded from the workspace
       # clippy step above for the same reason as cargo test).
       - run: cargo clippy -p zfb-md-extras --features test-utils --all-targets -- -D warnings
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.workspace_clippy.outcome == 'success' }}
 
       # Upload nextest JUnit reports (issue #1340) so retry/flaky telemetry
       # survives the run — the machine-readable feed issue #1341 consumes
@@ -855,8 +695,7 @@ jobs:
       # emits JUnit on failure too) — this is deliberately trend data, not
       # just failure diagnostics: a pass-on-retry only shows up in a run that
       # otherwise went green. junit-workspace.xml is the stashed
-      # full-workspace run; junit-env-esbuild-only.xml is the immediately
-      # stashed env-gate lane; junit.xml is the last writer (the zfb-md-extras
+      # full-workspace run; junit.xml is the last writer (the zfb-md-extras
       # lane). `if-no-files-found: warn` tolerates an early failure (e.g. a
       # compile error) that produced no report. `retention-days: 7` — short
       # retention is fine since #1341's flaky-detection step below consumes
@@ -868,7 +707,6 @@ jobs:
         with:
           name: nextest-junit-ci
           path: |
-            target/nextest/ci/junit-env-esbuild-only.xml
             target/nextest/ci/junit-workspace.xml
             target/nextest/ci/junit-default-layout-checkpoint.xml
             target/nextest/ci/junit.xml
@@ -886,7 +724,6 @@ jobs:
         with:
           name: nextest-diagnostics
           path: |
-            target/nextest-logs/env-esbuild-only.log
             target/nextest-logs/workspace.log
             target/nextest-logs/md-extras.log
           if-no-files-found: warn
@@ -910,7 +747,6 @@ jobs:
           GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: >-
           scripts/report-flaky-tests.sh
-          target/nextest/ci/junit-env-esbuild-only.xml
           target/nextest/ci/junit-workspace.xml
           target/nextest/ci/junit.xml
 
@@ -1077,7 +913,9 @@ jobs:
       # run, normalize-identity.mjs writes measurement.normalized.json next to
       # measurement.json from the saved pass bytes, and check-budget.mjs
       # recomputes both metrics from those bytes before comparing raw and
-      # gzipNormalized against the zero-allowance ceilings.
+      # gzipNormalized against the zero-allowance ceilings. zfb bundles with
+      # its embedded native Rolldown (#4635); measure-real.mjs records the
+      # identity `zfb --version` reports instead of an esbuild binary.
       - name: Collect Linux x64 island-size measurements
         id: size_measurements
         if: ${{ !cancelled() && steps.size_packages.outcome == 'success' }}
@@ -1086,7 +924,6 @@ jobs:
           set -euo pipefail
           ZFB_SIZE_SHA="$(git rev-parse HEAD)"
           ZFB_SIZE_BIN="$GITHUB_WORKSPACE/target/debug/zfb"
-          ZFB_SIZE_ESBUILD="$GITHUB_WORKSPACE/crates/zfb/binaries/esbuild/esbuild"
           ZFB_SIZE_HONO="$GITHUB_WORKSPACE/packages/zfb-runtime/node_modules/hono"
           ZFB_SIZE_OUT="$GITHUB_WORKSPACE/target/island-size"
           ZFB_SIZE_VERSION="$(node -p "require('./packages/zfb/package.json').version")"
@@ -1099,7 +936,6 @@ jobs:
             --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" \
             --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" \
             --zfb "$ZFB_SIZE_BIN" \
-            --esbuild "$ZFB_SIZE_ESBUILD" \
             --source-sha "$ZFB_SIZE_SHA" \
             --out "$ZFB_SIZE_OUT/real-workspace"
           node research/v3-island-size/measure-real.mjs \
@@ -1111,7 +947,6 @@ jobs:
             --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" \
             --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" \
             --zfb "$ZFB_SIZE_BIN" \
-            --esbuild "$ZFB_SIZE_ESBUILD" \
             --source-sha "$ZFB_SIZE_SHA" \
             --out "$ZFB_SIZE_OUT/real-packed"
           node research/v3-island-size/normalize-identity.mjs \
@@ -1196,24 +1031,6 @@ jobs:
           # rmeta).
           prefix-key: "v2-zfb-no-v8"
 
-      # Staged-binaries cache (issue 2385) — same step as the health job
-      # above (the build script runs feature-independently, so this job
-      # downloads too); see that step's comment for the full rationale.
-      # The key is deliberately identical: slot content depends only on the
-      # target platform, so both jobs share one cache entry.
-      - name: Cache staged esbuild binary (issue 2385)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        continue-on-error: true
-        with:
-          # Only the gitignored executable slot — never the whole dir:
-          # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
-          # and an exact-key restore would untar stale cached copies of those
-          # over the checkout whenever a PR edits them without touching the
-          # hashed pin files (codex review, zfb#2385 PR).
-          path: |
-            crates/zfb/binaries/esbuild/esbuild
-          key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
-
       # crates/zfb/build.rs embeds Hono from node_modules/.pnpm at compile
       # time. Without this install, the build script cannot find the Hono tree.
       - run: pnpm install --frozen-lockfile
@@ -1246,6 +1063,11 @@ jobs:
       # V8-off toggle, not the backend choice — pin the native default.
       - name: cargo test (zfb-render --no-default-features)
         run: cargo test --no-default-features -p zfb-render --features syntect-onig
+
+      # TS-config unit tests host the compiler worker in the debug `zfb`
+      # binary beside the test executable (#4632); `--lib` alone never builds it.
+      - name: cargo build (zfb --no-default-features debug binary for the compiler worker)
+        run: cargo build --no-default-features -p zfb --bin zfb
 
       - name: cargo test (zfb --no-default-features --lib)
         run: cargo test --no-default-features -p zfb --lib

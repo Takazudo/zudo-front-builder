@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
 // Each entry is one exact owner-approved replacement (the #4314 security fixes,
-// the #4268 noyalib adoption, the #4569 tokio security fix): the decision bytes and both complete lock hashes
+// the #4268 noyalib adoption, the #4569 tokio security fix, the owner-approved #4635
+// esbuild-removal lock move): the decision bytes and both complete lock hashes
 // are pinned here, so caller-supplied JSON is not authority. Adding an entry is
 // a reviewed provenance decision, not a refactor.
 function securityLockTransition({
@@ -74,11 +75,23 @@ export const TOKIO_SECURITY_TRANSITION = securityLockTransition({
   newLockSha256: "216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810",
 });
 
+// The esbuild-removal milestone's internal rewire plus the tar/xattr removal
+// (#4635); research/v3-island-size/cargo-transitions/ESBUILD-REMOVAL-4635.md.
+export const ESBUILD_REMOVAL_LOCK_TRANSITION = securityLockTransition({
+  id: "esbuild-removal-4635",
+  label: "esbuild-removal",
+  kind: "milestone",
+  decisionSha256: "124afe58a656e64709496b04276821ab78b8f7dd0371d1d17ed4d6a96d149958",
+  oldLockSha256: "216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810",
+  newLockSha256: "b4e8f2413e0c8df9df8cd47fb8e555189560ad01bae65d3e9d637d6a51810634",
+});
+
 export const SECURITY_LOCK_TRANSITIONS = Object.freeze([
   RUSTLS_SECURITY_TRANSITION,
   WEBPKI_SECURITY_TRANSITION,
   NOYALIB_LOCK_TRANSITION,
   TOKIO_SECURITY_TRANSITION,
+  ESBUILD_REMOVAL_LOCK_TRANSITION,
 ]);
 
 export function securityLockTransitionById(id) {

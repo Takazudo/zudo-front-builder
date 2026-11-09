@@ -49,7 +49,11 @@ describe.each([
             packageVersion: checkout.version,
             runtimePackageVersion: checkout.version,
             honoPackageVersion: live.toolchain.honoVersion,
-            esbuildVersion: live.toolchain.esbuildVersion,
+            // The producer the live contract pins: the embedded bundler under
+            // the schemaVersion-4 Linux contract (#4635), esbuild before it.
+            ...(live.schemaVersion === 4
+              ? { bundlerIdentity: live.toolchain.bundlerIdentity }
+              : { esbuildVersion: live.toolchain.esbuildVersion }),
             nodeVersion: live.toolchain.nodeVersion,
             zlibVersion: live.toolchain.zlibVersion,
             compression: live.compression,

@@ -792,37 +792,34 @@ fn dev_mode_renderer_path_does_not_inject_head_assets() {
 // ---------------------------------------------------------------------------
 
 /// S5 contract — the bundler must NOT inline user CSS into the
-/// Worker bundle. The fix is `--loader:.css=empty` on the esbuild
-/// invocation, which substitutes an empty module for every `.css`
+/// Worker bundle. The fix is the `empty` loader for `.css` on the SSR
+/// bundle request, which substitutes an empty module for every `.css`
 /// import at compile time. The previous default behaviour either
 /// emitted a sibling `_zfb_inner.css` (orphan) or inlined the CSS as
 /// JS bytes — both ship duplicate CSS alongside the externally-hashed
 /// `dist/assets/styles-<hash>.css` produced by S2 + S4.
 ///
 /// This test verifies the contract by reading the public bundler
-/// constant rather than running esbuild end-to-end. The full
+/// constant rather than bundling end-to-end. The full
 /// fixture-based marker check (load a real built bundle, grep for
 /// `@import "tailwindcss"`) lives in
 /// `prod_asset_graph_with_real_wind_engine_against_fixture`,
 /// gated under `#[ignore]` until the binary slot is staged.
 #[test]
 fn worker_bundle_does_not_inline_legacy_css_marker_after_s5() {
-    use zfb_build::bundler::ESBUILD_LOADER_ARGS;
+    use zfb_build::bundler::SSR_LOADERS;
+    use zfb_bundler::Loader;
 
     assert!(
-        ESBUILD_LOADER_ARGS.contains(&"--loader:.css=empty"),
-        "Worker bundle must use --loader:.css=empty so .css imports \
+        SSR_LOADERS.contains(&(".css", Loader::Empty)),
+        "Worker bundle must load .css with the empty loader so .css imports \
          are dropped at compile time. Got: {:?}",
-        ESBUILD_LOADER_ARGS,
+        SSR_LOADERS,
     );
     assert!(
-        !ESBUILD_LOADER_ARGS
-            .iter()
-            .any(|a| a.contains("external:") && a.contains(".css")),
-        "Worker bundle must NOT mark .css as external — esbuild leaves \
-         runtime `import` statements workerd cannot resolve. Use \
-         --loader:.css=empty instead. Got: {:?}",
-        ESBUILD_LOADER_ARGS,
+        !SSR_LOADERS.iter().any(|(_, loader)| *loader == Loader::Css),
+        "Worker bundle must not hand raw CSS to the bundler. Got: {:?}",
+        SSR_LOADERS,
     );
 }
 

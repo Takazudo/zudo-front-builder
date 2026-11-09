@@ -48,7 +48,7 @@ shutdown scheduler. Revisit it when the Rolldown pin changes.
 
 ## Checks and observed failures
 
-`cargo test --locked -p zfb-rolldown-prototype --features native --example plugin_prebundle`
+`cargo test --locked -p zfb-bundler --features native --example plugin_prebundle`
 exercises real native generation, close-hook observation and native asset
 emission. Coverage includes success, render errors, unresolved warnings, missing
 relative imports, rejected additional assets, close failures, simultaneous

@@ -6,14 +6,13 @@
 //!
 //! ## Roadmap
 //!
-//! esbuild ships as a Go-built CLI. A pure-Rust port (oxc_minifier on top
-//! of oxc_resolver, rolldown, mako, …) is out of scope for the v0 build
+//! A further bundler implementation is out of scope for the v0 build
 //! pipeline (Epic 6 / Sub 2). When one becomes viable, we want the swap
 //! to be a one-line change at the call site:
 //!
 //! ```ignore
 //! // before:
-//! let bundler = EsbuildSubprocessBundler::with_default_config();
+//! let bundler = IslandsBundler::with_default_config();
 //! // after:
 //! let bundler = NativeRustBundler::default();
 //! ```
@@ -48,7 +47,7 @@ impl ClientBundler for NativeRustBundler {
     fn bundle(&self, _islands: &[Island], _config: &BundleConfig) -> Result<BundleOutput> {
         Err(anyhow!(
             "NativeRustBundler: not yet implemented. \
-             Use EsbuildSubprocessBundler (Sub 2) for now; \
+             Use IslandsBundler (Sub 2) for now; \
              see crate::future_rust_native for the roadmap."
         ))
     }

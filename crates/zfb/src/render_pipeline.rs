@@ -97,7 +97,7 @@ use zfb_router::{Route, RouteKind, Segment};
 //
 // At runtime, [`embedded_node_modules`] extracts the tree into a freshly
 // allocated tempdir shaped as a proper `node_modules/<pkg>/` layout, ready
-// for esbuild resolution. The tempdir is kept alive for the duration of the
+// for bundler resolution. The tempdir is kept alive for the duration of the
 // build by returning the `TempDir` handle alongside the path.
 
 /// Compile-time embedding of `$OUT_DIR/vendor/` (`@takazudo/*` packages and
@@ -109,11 +109,11 @@ use zfb_router::{Route, RouteKind, Segment};
 static EMBEDDED_VENDOR: Dir<'_> = include_dir!("$ZFB_VENDOR_DIR");
 
 /// Extract the embedded `@takazudo/*` packages and framework runtime packages
-/// into a temporary directory structured as a `node_modules/` layout esbuild
-/// can resolve.
+/// into a temporary directory structured as a `node_modules/` layout the
+/// native bundler can resolve.
 ///
 /// Returns a `(TempDir, PathBuf)` pair where:
-/// - `TempDir` must be kept alive for as long as esbuild runs (dropping it
+/// - `TempDir` must be kept alive for as long as bundling runs (dropping it
 ///   removes the temp directory).
 /// - `PathBuf` is the path to the `node_modules` root (i.e. the directory
 ///   that should be passed as `BundlerInput::node_modules_dir`).
@@ -125,13 +125,8 @@ static EMBEDDED_VENDOR: Dir<'_> = include_dir!("$ZFB_VENDOR_DIR");
 pub fn embedded_node_modules() -> Result<(tempfile::TempDir, PathBuf)> {
     let dir = tempfile::tempdir().context("failed to create tempdir for embedded packages")?;
     let node_modules = dir.path().join("node_modules");
-    // Skip the top-level `bin/` entry: esbuild is staged there for
-    // `embedded_binary()` to extract on demand. It does not belong in
-    // node_modules, and skipping it avoids a copy on every bundle.
-    extract_dir_with_prefix_filtered(&EMBEDDED_VENDOR, &node_modules, Path::new(""), &|p| {
-        p.iter().next().map(|s| s == "bin").unwrap_or(false)
-    })
-    .context("failed to extract embedded packages")?;
+    extract_dir_with_prefix(&EMBEDDED_VENDOR, &node_modules, Path::new(""))
+        .context("failed to extract embedded packages")?;
     let nm_path = node_modules;
     Ok((dir, nm_path))
 }
@@ -146,74 +141,6 @@ pub(crate) fn embedded_node_modules_for_project(
     )
 }
 
-/// Extract an embedded helper binary (esbuild) from
-/// the `bin/` subtree of [`EMBEDDED_VENDOR`] into a fresh tempdir so the TS
-/// config loader can shell out to it without a
-/// workspace-relative `crates/zfb/binaries/` slot.
-///
-/// `name` is the binary's stem (e.g. `"esbuild"`). On
-/// Windows this function additionally probes for `<name>.exe` so a caller
-/// passing `"esbuild"` resolves the Windows variant transparently.
-///
-/// Returns a `(TempDir, PathBuf)` pair where:
-/// - `TempDir` must be kept alive for as long as the subprocess runs
-///   (dropping it removes the temp directory and the extracted binary).
-/// - `PathBuf` is the path to the extracted binary on disk; on Unix the
-///   executable bit is set at write time.
-///
-/// # Errors
-///
-/// Returns an error pointing the operator at the build-script staging step
-/// (`stage_binaries_into_vendor` in `crates/zfb/build.rs`) when the binary is
-/// not present in [`EMBEDDED_VENDOR`].
-pub fn embedded_binary(name: &str) -> Result<(tempfile::TempDir, PathBuf)> {
-    // Probe `bin/<name>` first; on Windows fall back to `bin/<name>.exe` so
-    // callers can pass the stem without worrying about target_os.
-    let primary = format!("bin/{name}");
-    let file = EMBEDDED_VENDOR.get_file(&primary).or_else(|| {
-        if cfg!(target_os = "windows") {
-            EMBEDDED_VENDOR.get_file(format!("bin/{name}.exe"))
-        } else {
-            None
-        }
-    });
-    let file = file.ok_or_else(|| {
-        anyhow::anyhow!(
-            "embedded binary `{name}` not found under bin/ inside the embedded vendor snapshot. \
-             Make sure `crates/zfb/build.rs::stage_binaries_into_vendor` ran during the last \
-             build (it copies crates/zfb/binaries/esbuild/esbuild into \
-             $OUT_DIR/vendor/bin/ so include_dir! picks them up)."
-        )
-    })?;
-
-    let dir = tempfile::tempdir()
-        .with_context(|| format!("failed to create tempdir for embedded binary `{name}`"))?;
-
-    // Preserve any `.exe` suffix from the matched embedded path so callers
-    // don't need to know the host platform.
-    let dst_name = file
-        .path()
-        .file_name()
-        .map(|s| s.to_os_string())
-        .unwrap_or_else(|| std::ffi::OsString::from(name));
-    let dst = dir.path().join(&dst_name);
-    std::fs::write(&dst, file.contents()).with_context(|| {
-        format!(
-            "failed to write embedded binary `{name}` to {}",
-            dst.display()
-        )
-    })?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("failed to set executable bit on {}", dst.display()))?;
-    }
-
-    Ok((dir, dst))
-}
-
 /// Recursively extract all entries from `embedded` into `dest`, stripping
 /// `prefix` from each entry's embedded path so that the layout under `dest`
 /// mirrors only the relative structure beneath `prefix`.
@@ -221,35 +148,19 @@ pub fn embedded_binary(name: &str) -> Result<(tempfile::TempDir, PathBuf)> {
 /// For example, if the embedded root is `$OUT_DIR/vendor` and `prefix` is
 /// `""` (empty), the entry `@takazudo/zfb/src/index.ts` is written to
 /// `dest/@takazudo/zfb/src/index.ts`.
-/// Recursively extract entries from `embedded` into `dest`, stripping
-/// `prefix` from each entry's embedded path. Skips any entry whose
-/// `prefix`-stripped path satisfies `skip`. Used by [`embedded_node_modules`]
-/// to filter out the `bin/` subtree that's only relevant to
-/// [`embedded_binary`].
-fn extract_dir_with_prefix_filtered(
-    embedded: &Dir<'_>,
-    dest: &Path,
-    prefix: &Path,
-    skip: &dyn Fn(&Path) -> bool,
-) -> Result<()> {
+fn extract_dir_with_prefix(embedded: &Dir<'_>, dest: &Path, prefix: &Path) -> Result<()> {
     use include_dir::DirEntry;
     for entry in embedded.entries() {
         match entry {
             DirEntry::Dir(sub) => {
                 let rel = sub.path().strip_prefix(prefix).unwrap_or(sub.path());
-                if skip(rel) {
-                    continue;
-                }
                 let target = dest.join(rel);
                 std::fs::create_dir_all(&target)
                     .with_context(|| format!("failed to create dir {}", target.display()))?;
-                extract_dir_with_prefix_filtered(sub, dest, prefix, skip)?;
+                extract_dir_with_prefix(sub, dest, prefix)?;
             }
             DirEntry::File(file) => {
                 let rel = file.path().strip_prefix(prefix).unwrap_or(file.path());
-                if skip(rel) {
-                    continue;
-                }
                 let target = dest.join(rel);
                 if let Some(parent) = target.parent() {
                     std::fs::create_dir_all(parent).with_context(|| {
@@ -2174,26 +2085,16 @@ mod tests {
             .map(|entry| entry.path().to_str().expect("vendor entry is UTF-8"))
             .collect();
         actual.sort_unstable();
-        assert_eq!(actual, ["@takazudo", "bin", "hono"]);
-
-        let bin = EMBEDDED_VENDOR
-            .get_dir("bin")
-            .expect("embedded bin directory");
-        let mut binaries: Vec<_> = bin
-            .entries()
-            .iter()
-            .map(|entry| entry.path().file_name().unwrap().to_str().unwrap())
-            .collect();
-        binaries.sort_unstable();
-        let exe_suffix = zfb_toolchain_pins::exe_suffix_for_target(env!("ZFB_BUILD_TARGET"));
-        assert_eq!(binaries, [format!("esbuild{exe_suffix}")]);
+        // No `bin/` subtree: bundling is native, so the executable embeds
+        // no external bundler binary.
+        assert_eq!(actual, ["@takazudo", "hono"]);
     }
 
     /// Smoke-test that [`embedded_node_modules`] extracts a proper
     /// `node_modules/@takazudo/zfb/package.json`,
     /// `node_modules/@takazudo/zfb-runtime/package.json`, and Hono's
     /// `node_modules/hono/` layout
-    /// that `check_runtime_installed_with_exe_dir` (and esbuild) can resolve.
+    /// that `check_runtime_installed_with_exe_dir` (and the bundler) can resolve.
     #[test]
     fn embedded_node_modules_extracts_runtime_layout() {
         let (handle, nm_path) =
@@ -2280,59 +2181,6 @@ mod tests {
             .expect("runtime should resolve via embedded nm_path");
 
         drop(handle); // explicit: tempdir is removed here
-    }
-
-    /// Smoke-test [`embedded_binary`] for the `esbuild` slot:
-    ///
-    /// 1. The path returned exists on disk.
-    /// 2. On Unix the executable bit is set so a subprocess can spawn it.
-    /// 3. The file is non-empty (we don't shell out — that's the
-    ///    `#[ignore]`-gated integration test's job).
-    ///
-    /// Mirrors `embedded_node_modules_extracts_runtime_layout` for the
-    /// `bin/` half of the embedded vendor tree (sub #212).
-    #[test]
-    fn embedded_binary_extracts_executable_esbuild_path() {
-        let (handle, path) =
-            embedded_binary("esbuild").expect("embedded_binary(\"esbuild\") should succeed");
-        assert!(
-            path.exists(),
-            "extracted esbuild path should exist: {}",
-            path.display()
-        );
-        let meta = std::fs::metadata(&path).expect("metadata should be readable");
-        assert!(
-            meta.len() > 0,
-            "extracted esbuild binary should not be empty: {}",
-            path.display()
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = meta.permissions().mode();
-            assert!(
-                mode & 0o111 != 0,
-                "extracted esbuild binary should be executable: mode = {mode:o}"
-            );
-        }
-        drop(handle);
-    }
-
-    /// `embedded_binary` returns a clear error when the requested name is
-    /// not present in `EMBEDDED_VENDOR/bin/`. The error message must point
-    /// the operator at the build-script staging step.
-    #[test]
-    fn embedded_binary_errors_with_actionable_hint_when_missing() {
-        let err = embedded_binary("does-not-exist-xyz").unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("does-not-exist-xyz"),
-            "msg should name the requested binary: {msg}"
-        );
-        assert!(
-            msg.contains("stage_binaries_into_vendor"),
-            "msg should point at the build-script staging step: {msg}"
-        );
     }
 
     // ---- expand_dynamic_routes -------------------------------------------
@@ -2785,7 +2633,7 @@ mod tests {
     /// Integration test: `eval_deferred_paths_via_worker` drives
     /// `crate::v8_host_adapter::ThreadedV8Host`'s `dispatch_fetch` for a page
     /// whose `paths()` is non-literal (reads a content collection at
-    /// runtime). Boots a real esbuild subprocess and a real embedded V8
+    /// runtime). Bundles natively with Rolldown and boots a real embedded V8
     /// isolate — heavy, `#[ignore]`d by default (see the tag below).
     ///
     /// Route-key trap: the fixture page lives at `pages/blog/[slug].tsx`, so
@@ -2797,23 +2645,8 @@ mod tests {
     /// the assertions below print the deferred reasons on failure.
     #[cfg(feature = "direct-v8")]
     #[test]
-    #[ignore = "heavy: run with --ignored — boots real esbuild + V8"]
+    #[ignore = "heavy: run with --ignored — boots native Rolldown + real V8"]
     fn eval_deferred_paths_via_worker_embedded_v8_non_literal_paths() {
-        // Self-skip only when the toolchain is genuinely absent would be a
-        // pass-by-skip — the acceptance criteria require a genuine PASS, so
-        // panic loudly instead (mirrors the #1007 "slot binary present but
-        // unresolved must panic, not skip" rule already applied elsewhere in
-        // this crate, e.g. `config.rs`'s `zfb_test_utils::locate_esbuild()`
-        // callers).
-        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
-            panic!(
-                "eval_deferred_paths_via_worker_embedded_v8_non_literal_paths requires a \
-                 real esbuild binary to genuinely PASS (not pass-by-skip) — set \
-                 ZFB_ESBUILD_BIN or stage the workspace slot binary before running with \
-                 --ignored"
-            );
-        };
-
         let project_tmp = tempdir().unwrap();
         let project_root = project_tmp.path();
         std::fs::create_dir_all(project_root.join("pages/blog")).unwrap();
@@ -2891,8 +2724,7 @@ export default function PostPage({ title, params }: Props) {
             outdir: dist_tmp.path().to_path_buf(),
             mode: zfb_build::BundleMode::Production,
             minify: false,
-            esbuild_binary: Some(esbuild),
-            mock_subprocess_output: None,
+            mock_bundle_output: None,
             content_snapshot_json: Some(snap_json),
             node_modules_dir: Some(node_modules_path),
             node_modules_preserve_symlinks: true,

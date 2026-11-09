@@ -44,7 +44,7 @@ use process_guard::{ProcessTreeGuard, ProcessTreeSpawner};
 mod e2e_platform;
 
 use e2e_platform::{link_dir, PNPM_PROGRAM};
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
@@ -116,11 +116,10 @@ impl Finished {
     }
 }
 
-fn run_zfb(root: &Path, esbuild: &Path, args: &[&str]) -> Finished {
+fn run_zfb(root: &Path, args: &[&str]) -> Finished {
     let output = Command::new(zfb_binary!())
         .args(args)
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .env_remove("ZFB_SCRATCH_DIR")
         .output()
         .unwrap_or_else(|error| panic!("spawn `zfb {}`: {error}", args.join(" ")));
@@ -131,8 +130,8 @@ fn run_zfb(root: &Path, esbuild: &Path, args: &[&str]) -> Finished {
     }
 }
 
-fn run_zfb_ok(root: &Path, esbuild: &Path, args: &[&str]) -> Finished {
-    let finished = run_zfb(root, esbuild, args);
+fn run_zfb_ok(root: &Path, args: &[&str]) -> Finished {
+    let finished = run_zfb(root, args);
     assert!(
         finished.success,
         "`zfb {}` must exit 0\n{}",
@@ -219,7 +218,7 @@ impl DevSession {
     }
 }
 
-fn spawn_dev(root: &Path, esbuild: &Path, extra_args: &[&str]) -> DevSession {
+fn spawn_dev(root: &Path, extra_args: &[&str]) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let mut command = Command::new(zfb_binary!());
@@ -227,7 +226,6 @@ fn spawn_dev(root: &Path, esbuild: &Path, extra_args: &[&str]) -> DevSession {
         .args(["dev", "--port", "0"])
         .args(extra_args)
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .env("ZFB_DEV_TIMING", "1")
         .env_remove("ZFB_SCRATCH_DIR")
         .env_remove("ZFB_DEV_EAGER")
@@ -448,10 +446,6 @@ fn dir_entry_names(dir: &Path) -> Vec<String> {
 }
 
 async fn concurrent_scenario() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[scratch_dir_concurrent_e2e] no esbuild binary available; skipping.");
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().canonicalize().expect("canonicalize root");
     copy_dir(&fixture_dir("scratch-dir-concurrent"), &root).expect("copy fixture");
@@ -500,7 +494,7 @@ async fn concurrent_scenario() {
     ).unwrap();
 
     // Step 1: a prebuilt dist/ that carries the WRONG define.
-    run_zfb_ok(&root, &esbuild, &["build", "--define", DEFINE_B]);
+    run_zfb_ok(&root, &["build", "--define", DEFINE_B]);
     let built_probe = root.join("dist/assets").join(PUBLIC_PROBE);
     assert_eq!(
         read_text(&built_probe),
@@ -518,11 +512,7 @@ async fn concurrent_scenario() {
     let default_bundle = read_bytes(&root.join(".zfb-build/bundle.mjs"));
 
     // Step 2: a live session dev with a different define.
-    let mut session = spawn_dev(
-        &root,
-        &esbuild,
-        &["--scratch-dir", SESSION_A, "--define", DEFINE_A],
-    );
+    let mut session = spawn_dev(&root, &["--scratch-dir", SESSION_A, "--define", DEFINE_A]);
     let port = wait_for_ready_port(&mut session).await;
     let base = format!("http://localhost:{port}");
     let client = build_client();
@@ -583,11 +573,7 @@ async fn concurrent_scenario() {
     );
 
     // Same scratch dir as the live dev: the lock refuses (#3342).
-    let contended = run_zfb(
-        &root,
-        &esbuild,
-        &["check", "--skip-tsc", "--scratch-dir", SESSION_A],
-    );
+    let contended = run_zfb(&root, &["check", "--skip-tsc", "--scratch-dir", SESSION_A]);
     assert!(!contended.success, "{}", contended.combined());
     assert!(
         contended.stderr.contains("in use by another zfb process"),
@@ -599,15 +585,10 @@ async fn concurrent_scenario() {
     let session_a_bundle = read_bytes(&session_a.join("bundle.mjs"));
     run_zfb_ok(
         &root,
-        &esbuild,
         &["build", "--scratch-dir", SESSION_B, "--define", DEFINE_B],
     );
     // `--skip-tsc`: the fixture has no TypeScript install for tsc to find.
-    run_zfb_ok(
-        &root,
-        &esbuild,
-        &["check", "--skip-tsc", "--scratch-dir", SESSION_C],
-    );
+    run_zfb_ok(&root, &["check", "--skip-tsc", "--scratch-dir", SESSION_C]);
 
     assert_eq!(
         read_bytes(&session_a.join("bundle.mjs")),
@@ -837,11 +818,9 @@ async fn in_project_scratch_dir_outside_zfb_build_is_rejected() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().canonicalize().unwrap();
     copy_dir(&fixture_dir("scratch-dir-concurrent"), &root).expect("copy fixture");
-    let esbuild = locate_esbuild().unwrap_or_default();
 
     let finished = run_zfb(
         &root,
-        &esbuild,
         &["check", "--skip-tsc", "--scratch-dir", "tmp-scratch"],
     );
     assert!(!finished.success, "{}", finished.combined());
@@ -949,10 +928,6 @@ console.log(JSON.stringify({ status: response.status, body: await response.text(
 async fn cloudflare_adapter_build_with_out_of_project_scratch_dir_runs_the_emitted_worker() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[scratch_dir_concurrent_e2e] no esbuild binary available; skipping.");
-        return;
-    };
     let pnpm_ok = Command::new(PNPM_PROGRAM)
         .arg("--version")
         .output()
@@ -1005,7 +980,7 @@ async fn cloudflare_adapter_build_with_out_of_project_scratch_dir_runs_the_emitt
     link_dir(&node_modules, &root.join("node_modules")).unwrap();
 
     let scratch_arg = scratch.to_str().unwrap();
-    run_zfb_ok(&root, &esbuild, &["build", "--scratch-dir", scratch_arg]);
+    run_zfb_ok(&root, &["build", "--scratch-dir", scratch_arg]);
 
     let scratch_names = dir_entry_names(&scratch);
     for name in [LOCK_FILE, "bundle.mjs", "bundle-runtime.mjs"] {

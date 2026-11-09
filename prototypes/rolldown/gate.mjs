@@ -15,16 +15,39 @@ writeFileSync(
 );
 writeFileSync(join(root, "dep.mjs"), "export const answer = 42;");
 writeFileSync(join(root, "lazy.mjs"), "export const answer = 43;");
-const args = [
-  "entry.mjs",
-  "--bundle",
-  "--format=esm",
-  "--platform=neutral",
-  "--splitting",
-  "--outdir=out",
-  "--sourcemap=linked",
-  "--metafile=meta.json",
-];
+// A JSON-serialized typed `BundleRequest`; an empty cwd is the runner's cwd.
+const request = join(root, "request.json");
+writeFileSync(
+  request,
+  JSON.stringify({
+    cwd: "",
+    entry: "entry.mjs",
+    output: { Dir: { dir: "out", entry_names: null, chunk_names: null, asset_names: null } },
+    format: "Esm",
+    platform: "Neutral",
+    target: null,
+    jsx: { runtime: null, import_source: null },
+    tsconfig: null,
+    resolve: {
+      aliases: [],
+      conditions: null,
+      main_fields: null,
+      preserve_symlinks: false,
+      extra_module_dirs: [],
+      packages: "Bundle",
+    },
+    defines: [],
+    loaders: [],
+    externals: [],
+    splitting: true,
+    minify: false,
+    keep_names: false,
+    source_map: "Linked",
+    banner: null,
+    graph: "meta.json",
+  }),
+);
+const args = [request];
 const result = spawnSync(binary, args, { cwd: root, encoding: "utf8" });
 assert.equal(result.status, 0, result.stderr);
 const meta = JSON.parse(readFileSync(join(root, "meta.json")));

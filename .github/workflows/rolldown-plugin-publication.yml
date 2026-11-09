@@ -51,30 +51,26 @@ jobs:
         with:
           shared-key: rolldown-4120-debug-no-debuginfo
           cache-on-failure: true
-      - name: Record exact source and prepare pinned reference
+      - name: Record exact source
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p target/plugin-publication-evidence
           { git rev-parse HEAD; rustc -vV; node -v; uname -a; sha256sum Cargo.lock pnpm-lock.yaml; } > target/plugin-publication-evidence/identity.txt
-          npm install --prefix "$PWD/target/rolldown-plugin-tools" --no-audit --no-fund @esbuild/linux-x64@0.25.12
-          ESBUILD="$PWD/target/rolldown-plugin-tools/node_modules/@esbuild/linux-x64/bin/esbuild"
-          echo "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014  $ESBUILD" | sha256sum -c -
-          echo "ZFB_ESBUILD_BIN=$ESBUILD" >> "$GITHUB_ENV"
       - name: Check native lifecycle regressions
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked -p zfb-rolldown-prototype --features native --example plugin_prebundle 2>&1 | tee target/plugin-publication-evidence/native-tests.log
-          cargo test --locked -p zfb-rolldown-prototype --features native --lib 2>&1 | tee target/plugin-publication-evidence/library-tests.log
-          cargo check --locked -p zfb-rolldown-prototype --no-default-features --all-targets 2>&1 | tee target/plugin-publication-evidence/feature-off.log
-          cargo build --locked -p zfb-rolldown-prototype --features native --example plugin_prebundle 2>&1 | tee target/plugin-publication-evidence/build.log
-      - name: Replay every existing esbuild and native semantic contract
+          cargo test --locked -p zfb-bundler --features native --example plugin_prebundle 2>&1 | tee target/plugin-publication-evidence/native-tests.log
+          cargo test --locked -p zfb-bundler --features native --lib 2>&1 | tee target/plugin-publication-evidence/library-tests.log
+          cargo check --locked -p zfb-bundler --no-default-features --all-targets 2>&1 | tee target/plugin-publication-evidence/feature-off.log
+          cargo build --locked -p zfb-bundler --features native --example plugin_prebundle 2>&1 | tee target/plugin-publication-evidence/build.log
+      - name: Replay every native semantic contract
         shell: bash
         run: |
           set -euo pipefail
           node prototypes/rolldown/plugin-prebundle.mjs 2>&1 | tee target/plugin-publication-evidence/semantic-probe.log
-          sha256sum target/debug/examples/plugin_prebundle "$ZFB_ESBUILD_BIN" > target/plugin-publication-evidence/binaries.txt
+          sha256sum target/debug/examples/plugin_prebundle > target/plugin-publication-evidence/binaries.txt
           git diff --exit-code
           test -z "$(git status --porcelain --untracked-files=no)"
       - name: Check Rust formatting
@@ -98,7 +94,7 @@ jobs:
           npm install --prefix "$PWD/target/rolldown-tools" --no-audit --no-fund hono@4.12.25 @playwright/test@1.58.2
           "$PWD/target/rolldown-tools/node_modules/.bin/playwright" install --with-deps chromium
           echo "ZFB_PROTOTYPE_TOOLS=$PWD/target/rolldown-tools" >> "$GITHUB_ENV"
-      - name: Verify experimental dispatch and ordinary configurations
+      - name: Verify native integration and ordinary configurations
         shell: bash
         run: bash prototypes/rolldown/verify-integration.sh
       - name: Retain reports including failures
@@ -110,7 +106,6 @@ jobs:
             target/plugin-publication-evidence
             target/rolldown-plugin-probe
             target/rolldown-integration-evidence
-            !target/rolldown-integration-evidence/zfb-feature-absent
             target/rolldown-prototype/*.json
             target/rolldown-client-scripts/*/evidence
             target/rolldown-production/*/evidence

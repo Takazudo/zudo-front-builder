@@ -122,16 +122,6 @@ jobs:
             sha256sum Cargo.lock pnpm-lock.yaml
           } > "$EVIDENCE/identity.txt"
 
-      # Sha-checked esbuild, copied from rolldown-plugin-publication.yml.
-      - name: Prepare pinned esbuild
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm install --prefix "$PWD/target/rolldown-plugin-tools" --no-audit --no-fund @esbuild/linux-x64@0.25.12
-          ESBUILD="$PWD/target/rolldown-plugin-tools/node_modules/@esbuild/linux-x64/bin/esbuild"
-          echo "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014  $ESBUILD" | sha256sum -c -
-          echo "ZFB_ESBUILD_BIN=$ESBUILD" >> "$GITHUB_ENV"
-
       - name: Prepare pnpm, packages, Hono and Playwright chromium
         shell: bash
         run: |
@@ -156,7 +146,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked -p zfb-rolldown-prototype --features native --lib 2>&1 | tee "$EVIDENCE/library-tests.log"
+          cargo test --locked -p zfb-bundler --features native --lib 2>&1 | tee "$EVIDENCE/library-tests.log"
 
       - name: Prepare probe project
         shell: bash
@@ -169,20 +159,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked -p zfb -p zfb-build -p zfb-islands -p zfb-rolldown-prototype --features zfb/rolldown-prototype,zfb-build/rolldown-prototype,zfb-islands/rolldown-prototype,zfb-rolldown-prototype/native --bin zfb --example rolldown_production --example rolldown_ssr --example rolldown_browser --example prepared --example plugin_prebundle 2>&1 | tee "$EVIDENCE/native-build.log"
+          cargo build --locked -p zfb -p zfb-build -p zfb-islands -p zfb-bundler --features zfb-bundler/native --bin zfb --example rolldown_production --example rolldown_ssr --example rolldown_browser --example prepared --example plugin_prebundle 2>&1 | tee "$EVIDENCE/native-build.log"
 
       - name: Prepared SSR and browser probe (verify.mjs)
         shell: bash
         run: |
           set -euo pipefail
-          unset ZFB_ROLLDOWN_PROTOTYPE
+          unset ZFB_ROLLDOWN_PROTOTYPE ZFB_BUNDLER
           node prototypes/rolldown/verify.mjs 2>&1 | tee "$EVIDENCE/verify.log"
 
       - name: Production probe (production.mjs)
         shell: bash
         run: |
           set -euo pipefail
-          unset ZFB_ROLLDOWN_PROTOTYPE
+          unset ZFB_ROLLDOWN_PROTOTYPE ZFB_BUNDLER
           node prototypes/rolldown/production.mjs 2>&1 | tee "$EVIDENCE/production.log"
 
       - name: Record browser version and built binary hashes
@@ -197,7 +187,7 @@ jobs:
               [ -x "$chrome" ] && "$chrome" --version || true
             done
           } > "$EVIDENCE/browser.txt" 2>&1 || true
-          sha256sum target/debug/zfb target/debug/examples/rolldown_production target/debug/examples/rolldown_ssr target/debug/examples/rolldown_browser target/debug/examples/prepared target/debug/examples/plugin_prebundle "$ZFB_ESBUILD_BIN" > "$EVIDENCE/binaries.txt" 2>&1 || true
+          sha256sum target/debug/zfb target/debug/examples/rolldown_production target/debug/examples/rolldown_ssr target/debug/examples/rolldown_browser target/debug/examples/prepared target/debug/examples/plugin_prebundle > "$EVIDENCE/binaries.txt" 2>&1 || true
 
       - name: Retain logs and evidence
         if: always()

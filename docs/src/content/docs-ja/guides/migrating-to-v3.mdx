@@ -157,7 +157,7 @@ ZR_ISLAND_IDENTITY: dc conflicts with displayName SidebarToggle
 
 スクリプトと CI から `ZFB_TAILWIND_BIN` と `ZFB_TAILWIND_OXIDE_WARMUP` を削除します。Tailwind の同梱バイナリとピンは削除されました。`zfb css` は単独の CSS コマンドとして残り、zudo-wind でコンパイルします。明示的な `--source` 入力も引き続き使えます。`node_modules` や `dist` 内のパッケージファイルも、プロジェクトの設定済み出力ディレクトリの外なら指定できます。ただし、設定済みの `outDir`、`--output` のパス、zfb のスクラッチルート内の一致ファイルは除外されます。すべて除外されると `zfb css` は `ZW010` エラーで失敗し、一部だけ除外されると `ZW010` 警告を出して残りを走査します。[CLI のソース規則](../api/cli.mdx#zfb-css)を参照してください。`zfb wind explain <candidate>` は一つの候補を説明し、`zfb wind audit` はプロジェクト内の候補を調べます。build と dev は `.tsx`、`.ts`、`.jsx`、`.js`、`.mdx`、`.md` をスキャンし、単独コマンドの明示的なソースには `.html` と `.mjs` も指定できます。
 
-`zfb --version` はリリースバージョンと `embedded esbuild` のバージョンを表示し、Tailwind の行は表示しません。移行中のエラーの調査には [wind の診断ガイド](../zudo-wind/diagnostics-and-tools.mdx)を使ってください。
+`zfb --version` はリリースバージョンを表示し、Tailwind の行は表示しません。v3 のリリースは `embedded esbuild` のバージョンも表示していましたが、現在のリリースはネイティブにバンドルし、代わりに Rolldown の識別子を示す `embedded bundler:` 行を表示します。移行中のエラーの調査には [wind の診断ガイド](../zudo-wind/diagnostics-and-tools.mdx)を使ってください。
 
 ## クラスやコンポーネントを配布するパッケージ
 

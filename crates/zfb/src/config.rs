@@ -15,9 +15,9 @@
 //!
 //! [`load_from_dir`] picks exactly one source per call:
 //!
-//! 1. `dir/zfb.config.ts` — bundled to ESM by the pinned `esbuild` binary
-//!    (the same one zfb-islands uses), then evaluated **in-process** by the
-//!    embedded V8 isolate (default builds). The default export is returned as
+//! 1. `dir/zfb.config.ts` — bundled to ESM by the native compiler worker
+//!    (the private worker mode of the zfb executable), then evaluated
+//!    **in-process** by the embedded V8 isolate (default builds). The default export is returned as
 //!    a JSON envelope and fed into `serde_json::from_str`.
 //!    **TS wins over JSON when both files are present** — the TS form is the
 //!    canonical, recommended way to author a zfb config.
@@ -28,15 +28,15 @@
 //! `zfb.config.ts` is evaluated in-process via the embedded V8 isolate that
 //! ships with the default `zfb` binary. There is no runtime Node dependency.
 //! `zfb.config.ts` is a data config — `node:*` imports, `process.env`, and
-//! other Node-only APIs are not available inside the evaluator (esbuild
-//! `--platform=neutral` rejects them at bundle time).
+//! other Node-only APIs are not available inside the evaluator (a `node:*`
+//! or bare Node builtin import is rejected before evaluation).
 //!
 //! **Slim-build fallback** (`--no-default-features` / no `direct-v8`): the
 //! in-process evaluator is compiled out; TS config evaluation falls back to
 //! the `node` subprocess path. This path requires `node` in `PATH` and
 //! surfaces a clean error when it is absent.
 //!
-//! The TS evaluator itself (esbuild bundle + V8 / node) lives in the shared
+//! The TS evaluator itself (native bundle + V8 / node) lives in the shared
 //! leaf crate [`zfb_config_loader`] (issue #1037); this module wraps it,
 //! deserialising the evaluated value into the strongly-typed [`Config`].
 //!
@@ -52,13 +52,6 @@ use zfb_css::{TokenCategory, TokenOverride};
 
 // OsString is used by LoadOptions::node_binary (always compiled in).
 use std::ffi::OsString;
-
-// Canonical default slot path — defined once in zfb-build, imported here so
-// the slim-build node-not-found test can reference it without repeating the
-// string literal. Only the no-direct-v8 test item uses it, so the import is
-// gated the same way.
-#[cfg(all(test, not(feature = "direct-v8")))]
-use zfb_build::DEFAULT_ESBUILD_SLOT;
 
 // --- JsonSchema newtype --------------------------------------------------------
 
@@ -1384,7 +1377,7 @@ pub struct BundleConfig {
     #[serde(default)]
     pub loaders: Option<BTreeMap<String, String>>,
 
-    /// Operator-authored esbuild `--define` substitutions.
+    /// Operator-authored bundler `define` substitutions.
     ///
     /// Values are raw JavaScript expressions. A string value therefore needs
     /// to be pre-quoted JSON (for example `"\"production\""`). Reserved
@@ -2091,52 +2084,73 @@ fn default_true() -> bool {
 
 // --- loader ----------------------------------------------------------------
 //
-// The esbuild + V8 / node TS evaluator was hoisted out of this bin crate into
-// the leaf crate `zfb-config-loader` (issue #1037) so `zfb-server` can call it
-// too without a dependency cycle (`zfb` depends on `zfb-server`, not the
-// reverse). This crate now wraps that loader: it injects the embedded-esbuild
-// extraction getter (which needs the `EMBEDDED_VENDOR` snapshot that lives in
-// `crate::render_pipeline`), then deserialises the evaluated value into the
-// strongly-typed [`Config`] defined above.
+// The TS evaluator (native bundle through the supervised compiler worker, then
+// V8 / node) was hoisted out of this bin crate into the leaf crate
+// `zfb-config-loader` (issue #1037) so `zfb-server` can call it too without a
+// dependency cycle (`zfb` depends on `zfb-server`, not the reverse). This
+// crate now wraps that loader: it supplies the zfb CLI's compiler worker
+// launcher, then deserialises the evaluated value into the strongly-typed
+// [`Config`] defined above.
 
-/// Knobs that tweak loader behaviour. Public so build/dev/preview can
-/// thread an explicit esbuild override through if they ever need to;
-/// `Default` is the production path.
+/// Knobs that tweak loader behaviour. `Default` is the production path.
 #[derive(Debug, Clone, Default)]
 pub struct LoadOptions {
-    /// Override the esbuild binary path. `None` falls back to
-    /// `ZFB_ESBUILD_BIN`, then the embedded esbuild snapshot, then
-    /// `zfb_build::DEFAULT_ESBUILD_SLOT`.
-    pub esbuild_binary: Option<PathBuf>,
+    /// Override the compiler worker launcher. `None` uses this zfb
+    /// executable's private worker mode ([`WorkerLauncher::zfb_cli`]).
+    pub compiler_worker: Option<zfb_config_loader::WorkerLauncher>,
     /// Override the `node` binary. `None` uses `node` from `PATH`.
     pub node_binary: Option<OsString>,
-    /// Test-only escape hatch: when `Some`, skip the esbuild + node
-    /// subprocesses entirely and treat this string as the JSON form
-    /// of `default` from the user's `zfb.config.ts`. Production code
-    /// leaves this `None`.
+    /// Test-only escape hatch: when `Some`, skip bundling and evaluation
+    /// entirely and treat this string as the JSON form of `default` from
+    /// the user's `zfb.config.ts`. Production code leaves this `None`.
     #[doc(hidden)]
     pub test_default_export_json: Option<String>,
 }
 
 impl LoadOptions {
-    /// Build the [`zfb_config_loader::LoadOptions`] for a real load, wiring in
-    /// the embedded-esbuild extraction getter backed by this crate's
-    /// `EMBEDDED_VENDOR` snapshot. A `cargo install`-ed `zfb` binary has no
-    /// `crates/zfb/binaries/` workspace dir, so this getter is what lets the
-    /// config loader find esbuild without the env var or workspace slot.
-    fn to_loader_options(&self) -> zfb_config_loader::LoadOptions {
-        zfb_config_loader::LoadOptions {
-            esbuild_binary: self.esbuild_binary.clone(),
+    /// Build the [`zfb_config_loader::LoadOptions`] for a real load.
+    fn to_loader_options(&self) -> Result<zfb_config_loader::LoadOptions> {
+        let compiler_worker = match &self.compiler_worker {
+            Some(launcher) => launcher.clone(),
+            None => default_compiler_worker()?,
+        };
+        Ok(zfb_config_loader::LoadOptions {
+            compiler_worker: Some(compiler_worker),
             node_binary: self.node_binary.clone(),
-            embedded_esbuild_getter: Some(Box::new(|| {
-                crate::render_pipeline::embedded_binary("esbuild").ok()
-            })),
             // The CLI loads and runs plugins — always resolve them. Only the
             // embed API (zfb-server) opts out via `resolve_plugins: false`.
             resolve_plugins: true,
             test_default_export_json: self.test_default_export_json.clone(),
-        }
+        })
     }
+}
+
+#[cfg(not(test))]
+fn default_compiler_worker() -> Result<zfb_config_loader::WorkerLauncher> {
+    zfb_config_loader::WorkerLauncher::zfb_cli()
+        .context("config loader: cannot locate the zfb executable to start its compiler worker")
+}
+
+/// Unit tests run inside the libtest harness, which has no worker mode, so
+/// they start the `zfb` binary Cargo builds beside the test executable
+/// (`<target>/<profile>/deps/zfb-<hash>` → `<target>/<profile>/zfb`).
+#[cfg(test)]
+fn default_compiler_worker() -> Result<zfb_config_loader::WorkerLauncher> {
+    let exe = std::env::current_exe().context("locate the unit-test executable")?;
+    let zfb = exe
+        .parent()
+        .and_then(Path::parent)
+        .map(|profile| profile.join(format!("zfb{}", std::env::consts::EXE_SUFFIX)))
+        .filter(|zfb| zfb.is_file())
+        .with_context(|| {
+            format!(
+                "zfb unit tests need the zfb binary beside {} to host the compiler worker; \
+                 build it with `cargo build -p zfb --bin zfb` (a full `cargo test -p zfb` or \
+                 workspace nextest run builds it too)",
+                exe.display()
+            )
+        })?;
+    Ok(zfb_config_loader::WorkerLauncher::new(zfb).arg(zfb_compiler_worker::PRIVATE_ARG))
 }
 
 /// Load and validate a config from `dir`.
@@ -2493,14 +2507,14 @@ fn resolve_plugin_modules_where(
 }
 
 /// Load a single `zfb.config.ts` file via the shared
-/// [`zfb_config_loader`] crate (issue #1037 hoisted the esbuild + V8 / node
+/// [`zfb_config_loader`] crate (issue #1037 hoisted the bundle + V8 / node
 /// evaluator out of this bin crate so `zfb-server` can call it too without a
 /// dependency cycle), then deserialise the evaluated `default` export into a
 /// strongly-typed [`Config`] and merge the resolved plugin module specifiers
 /// back onto `Config.plugins[].resolved_module`.
 async fn load_from_ts_file(ts_path: &Path, dir: &Path, opts: &LoadOptions) -> Result<Config> {
     let loaded =
-        zfb_config_loader::load_from_ts_file(ts_path, dir, &opts.to_loader_options()).await?;
+        zfb_config_loader::load_from_ts_file(ts_path, dir, &opts.to_loader_options()?).await?;
     parse_loaded_config(loaded, ts_path, dir)
 }
 
@@ -6793,7 +6807,7 @@ mod tests {
 
     #[tokio::test]
     async fn ts_config_loads_via_test_override() {
-        // Drives the TS-loading code path WITHOUT running esbuild + node:
+        // Drives the TS-loading code path WITHOUT bundling or running node:
         // `LoadOptions::test_default_export_json` short-circuits the
         // subprocess and feeds the canned JSON into the same parse +
         // validate pipeline the production path uses.
@@ -7099,24 +7113,12 @@ mod tests {
     async fn ts_config_missing_node_emits_actionable_error() {
         // Force the node binary to a path that doesn't exist so the
         // spawn fails with NotFound, mirroring what the user sees when
-        // node is not on PATH. We also point esbuild at a nonexistent
-        // path so we never get past the binary-resolution step on
-        // machines where esbuild happens to be installed — the test is
-        // checking the shape of the error, not the full pipeline.
+        // node is not on PATH. The config bundles through the compiler
+        // worker first; the test checks the shape of the node error.
         let tmp = TempDir::new().unwrap();
         tokio::fs::write(tmp.path().join("zfb.config.ts"), "export default {};\n")
             .await
             .unwrap();
-        // We need esbuild to succeed first; supply a fake one only if
-        // the real default slot exists. Otherwise the esbuild lookup
-        // bails first and this assertion would not exercise the node
-        // path. Skip in that case — the message we want to test is
-        // covered by the resolve_esbuild_binary check anyway.
-        if !PathBuf::from(DEFAULT_ESBUILD_SLOT).exists()
-            && std::env::var_os("ZFB_ESBUILD_BIN").is_none()
-        {
-            return;
-        }
         let opts = LoadOptions {
             node_binary: Some(OsString::from("zfb-no-such-node-binary-xyz")),
             ..LoadOptions::default()
@@ -7130,49 +7132,6 @@ mod tests {
             "msg should call out PATH: {msg}"
         );
         assert!(msg.contains("Node.js"), "msg should mention Node.js: {msg}");
-    }
-
-    /// Sub #212 — when neither `LoadOptions::esbuild_binary` nor the
-    /// `ZFB_ESBUILD_BIN` env var is set, the resolver falls through to the
-    /// embedded extraction tier (the binary staged inside the zfb crate at
-    /// build time). The returned path must exist and the function must
-    /// hand back a TempDir handle so the caller can keep the extracted
-    /// binary alive for the lifetime of the spawned subprocess.
-    ///
-    /// Exercises the `zfb`-side integration: `LoadOptions::to_loader_options`
-    /// wires the `EMBEDDED_VENDOR`-backed getter into the shared resolver in
-    /// `zfb-config-loader` (issue #1037).
-    #[test]
-    fn resolve_esbuild_binary_picks_embedded_path_without_env_or_explicit() {
-        // Defensive: if a parent process has set ZFB_ESBUILD_BIN, this
-        // test would short-circuit on the env tier instead of testing the
-        // embedded tier we care about. Skip cleanly in that case.
-        // SAFETY: tests run sequentially within this thread and we do not
-        // touch ZFB_ESBUILD_BIN ourselves. Other tests must not depend on
-        // a leaked override.
-        if std::env::var_os("ZFB_ESBUILD_BIN").is_some() {
-            eprintln!(
-                "skipping resolve_esbuild_binary_picks_embedded_path_without_env_or_explicit \
-                 because ZFB_ESBUILD_BIN is set in the surrounding env"
-            );
-            return;
-        }
-        let loader_opts = LoadOptions::default().to_loader_options();
-        let (handle, path) = zfb_config_loader::resolve_esbuild_binary_with_handle(&loader_opts)
-            .expect("embedded extraction should succeed for esbuild");
-        assert!(
-            path.exists(),
-            "resolved esbuild path should exist: {}",
-            path.display()
-        );
-        // The embedded tier always returns a Some(TempDir). The
-        // workspace-relative dev fallback would return None, but we expect
-        // the embedded tier to win because the include_dir! snapshot
-        // always carries the binary in a release build.
-        assert!(
-            handle.is_some(),
-            "expected the embedded extraction tier to be selected"
-        );
     }
 
     #[tokio::test]
@@ -8132,10 +8091,10 @@ mod tests {
         );
     }
 
-    /// esbuild `--platform=neutral` rejects `node:fs` at bundle time.
+    /// The neutral-platform config bundle rejects `node:fs` before evaluation.
     ///
     /// Asserts that a `zfb.config.ts` containing `import fs from "node:fs"`
-    /// produces an esbuild bundle-time error (not a V8 eval error) and that
+    /// produces a bundle-time data-config error (not a V8 eval error) and that
     /// the error message names the offending import. This is the data-config
     /// contract: `zfb.config.ts` must not import Node built-ins.
     #[cfg(feature = "direct-v8")]
@@ -8155,10 +8114,10 @@ mod tests {
             .expect_err("node:fs import must fail at bundle time");
         let msg = format!("{err:#}");
 
-        // Must be an esbuild error, not a V8 eval error.
+        // Must be the bundle-time data-config error, not a V8 eval error.
         assert!(
-            msg.contains("esbuild failed"),
-            "error should come from esbuild (bundle time), got: {msg}"
+            msg.contains("must be self-contained data config"),
+            "error should come from the config bundle step, got: {msg}"
         );
         // Must name the offending import so users know what to fix.
         assert!(
@@ -8178,7 +8137,7 @@ mod tests {
     /// `zfb-render/tests/error_messages.rs` — see that file's pointer comment
     /// for why the real pipeline is only reachable from this crate.
     ///
-    /// Goes through the FULL real pipeline: embedded esbuild bundles the
+    /// Goes through the FULL real pipeline: the compiler worker bundles the
     /// file, the in-process V8 isolate evaluates it, and
     /// `serde_path_to_error` (adopted by this issue) turns the resulting
     /// `serde_json` error into a field-path diagnostic. No
@@ -8272,11 +8231,6 @@ mod tests {
         tokio::fs::write(tmp.path().join("zfb.config.ts"), "export default {};\n")
             .await
             .unwrap();
-        if !PathBuf::from(DEFAULT_ESBUILD_SLOT).exists()
-            && std::env::var_os("ZFB_ESBUILD_BIN").is_none()
-        {
-            return;
-        }
         let opts = LoadOptions {
             node_binary: Some(OsString::from("zfb-no-such-node-binary-slim-xyz")),
             ..LoadOptions::default()
@@ -9950,22 +9904,22 @@ mod tests {
     // --- T5 preset-provenance end-to-end tests (#1217) -----------------------
 
     /// T5.1 — CONFIRM (real capture-chain): the `definePreset(sourcePackage, …)`
-    /// string literal survives esbuild bundling and V8 evaluation end-to-end.
+    /// string literal survives native bundling and V8 evaluation end-to-end.
     ///
     /// This is the authoritative proof that provenance flows all the way from
-    /// `zfb.config.ts` (imports a preset that calls `definePreset`) → esbuild
+    /// `zfb.config.ts` (imports a preset that calls `definePreset`) → native
     /// bundle (alias rewrites `@takazudo/zfb/config` to the stub) → V8 eval
     /// (stub stamps `source_package`) → Rust resolver (anchors at preset dir).
     ///
     /// Gated on `direct-v8` (the default feature). CI has V8 compiled in, so
     /// this test runs in `cargo test -p zfb` at the PR gate without `#[ignore]`.
     /// The slim-build path (no V8) uses the node subprocess instead, which has
-    /// the same esbuild alias and identical stub — the capture chain is the same;
+    /// the same bundle alias and identical stub — the capture chain is the same;
     /// only the evaluator differs.
     ///
     /// **Slim-path companion:** the slim-build (`--no-default-features`) node
     /// subprocess path is exercised by
-    /// `e2e_capture_chain_define_preset_source_package_survives_esbuild_slim`
+    /// `e2e_capture_chain_define_preset_source_package_survives_bundling_slim`
     /// (below, gated `cfg(not(feature = "direct-v8"))`). The PR gate's `build-no-v8`
     /// job compile-checks it via `cargo check --no-default-features -p zfb --tests`,
     /// and it runs locally under `cargo test --no-default-features -p zfb`.
@@ -9974,7 +9928,7 @@ mod tests {
     /// the gate + runnable locally, not yet CI-executed.
     #[cfg(feature = "direct-v8")]
     #[tokio::test]
-    async fn e2e_capture_chain_define_preset_source_package_survives_esbuild_v8() {
+    async fn e2e_capture_chain_define_preset_source_package_survives_bundling_v8() {
         use std::fs;
 
         let tmp = TempDir::new().unwrap();
@@ -9989,7 +9943,7 @@ mod tests {
         //   - dist/index.mjs (the preset's main export, imports from
         //                     @takazudo/zfb/config and calls definePreset)
         //
-        // esbuild runs with --alias:@takazudo/zfb/config=<stub>, so the preset's
+        // The bundle aliases @takazudo/zfb/config to <stub>, so the preset's
         // `import { definePreset } from "@takazudo/zfb/config"` is rewritten to
         // the stub at bundle time. The stub stamps each plugin with
         // `source_package: "@scope/zfb-preset-e2e"`.
@@ -10000,7 +9954,7 @@ mod tests {
         fs::create_dir_all(preset_dir.join("dist")).unwrap();
 
         // Relative plugin file — only present INSIDE the preset dir, NOT at the
-        // project root. If `source_package` does NOT survive esbuild→V8, the
+        // project root. If `source_package` does NOT survive bundle→V8, the
         // resolver falls back to project root and fails to find the file (the
         // file is missing from root), which would cause the load to error.
         fs::write(preset_dir.join("e2e-plugin.mjs"), "export default {};\n").unwrap();
@@ -10023,7 +9977,7 @@ mod tests {
         .unwrap();
 
         // Preset entry-point: calls definePreset so the plugin gets stamped.
-        // esbuild will alias `@takazudo/zfb/config` → stub at bundle time.
+        // The bundle aliases `@takazudo/zfb/config` → stub.
         fs::write(
             preset_dir.join("dist").join("index.mjs"),
             r#"import { definePreset } from "@takazudo/zfb/config";
@@ -10046,7 +10000,7 @@ export default {
         .await
         .unwrap();
 
-        // Load via the REAL esbuild + V8 path (no test_default_export_json override).
+        // Load via the REAL bundle + V8 path (no test_default_export_json override).
         let cfg = load_from_dir(root)
             .await
             .expect("e2e preset-provenance config must load successfully");
@@ -10100,10 +10054,10 @@ export default {
     }
 
     /// T5.1-slim — CONFIRM (real capture-chain, slim build): the slim companion to
-    /// `e2e_capture_chain_define_preset_source_package_survives_esbuild_v8`. It proves
+    /// `e2e_capture_chain_define_preset_source_package_survives_bundling_v8`. It proves
     /// the `definePreset(sourcePackage, …)` provenance survives the **node subprocess**
     /// evaluator (the `--no-default-features` slim path, `config-loader.mjs`) end-to-end,
-    /// not just the in-process V8 evaluator. The fixture, esbuild alias, `definePreset`
+    /// not just the in-process V8 evaluator. The fixture, bundle alias, `definePreset`
     /// stub, and Rust-side resolution are identical to the V8 test — only the JS evaluator
     /// differs — so this is a line-for-line mirror that swaps the evaluator.
     ///
@@ -10112,30 +10066,16 @@ export default {
     /// until a T3 slim-test lane exists. Run it locally with
     /// `cargo test --no-default-features -p zfb`.
     ///
-    /// Self-skips (returns) when its toolchain is genuinely absent: esbuild not found by
-    /// `zfb_test_utils::locate_esbuild()` (the canonical probe — which *panics* rather than
-    /// skip if the workspace slot binary is present but unresolved, per #1007, so a silent
-    /// no-coverage skip cannot happen), or no runnable `node` on PATH (this is the first
+    /// Self-skips (returns) only when no runnable `node` is on PATH (this is the first
     /// *positive* slim test that actually spawns node, so it guards on node availability
-    /// rather than hard-fail on a node-less host).
+    /// rather than hard-fail on a node-less host). Bundling goes through the compiler
+    /// worker hosted by the `zfb` binary beside the test executable.
     #[cfg(not(feature = "direct-v8"))]
     #[tokio::test]
-    async fn e2e_capture_chain_define_preset_source_package_survives_esbuild_slim() {
+    async fn e2e_capture_chain_define_preset_source_package_survives_bundling_slim() {
         use std::fs;
 
-        // Skip guard 1 — esbuild: locate the real binary via the canonical test-utils
-        // probe. Unlike a CWD-relative `DEFAULT_ESBUILD_SLOT` existence check, this walks
-        // absolute candidate workspace roots, so it actually finds the workspace slot
-        // under the documented `cargo test --no-default-features -p zfb` run (cwd is the
-        // crate dir, not the workspace root) instead of silently skipping and providing
-        // zero coverage. It also trips a #1007 panic if the slot binary exists but lookup
-        // fails. The located path is threaded explicitly through `esbuild_binary` below so
-        // the load is deterministic (no reliance on the loader's CWD-relative slot leg).
-        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
-            return;
-        };
-
-        // Skip guard 2 — node availability: the slim path spawns `node` to evaluate the
+        // Skip guard — node availability: the slim path spawns `node` to evaluate the
         // bundled config. Probe it (status check, null stdio — catches "spawned but
         // unusable", avoids captured noise) and skip rather than fail when node is not on
         // PATH. No race: if node vanishes between probe and load, the test just fails,
@@ -10165,7 +10105,7 @@ export default {
         //   - dist/index.mjs (the preset's main export, imports from
         //                     @takazudo/zfb/config and calls definePreset)
         //
-        // esbuild runs with --alias:@takazudo/zfb/config=<stub>, so the preset's
+        // The bundle aliases @takazudo/zfb/config to <stub>, so the preset's
         // `import { definePreset } from "@takazudo/zfb/config"` is rewritten to
         // the stub at bundle time. The stub stamps each plugin with
         // `source_package: "@scope/zfb-preset-e2e"`.
@@ -10176,7 +10116,7 @@ export default {
         fs::create_dir_all(preset_dir.join("dist")).unwrap();
 
         // Relative plugin file — only present INSIDE the preset dir, NOT at the
-        // project root. If `source_package` does NOT survive esbuild→node, the
+        // project root. If `source_package` does NOT survive bundle→node, the
         // resolver falls back to project root and fails to find the file (the
         // file is missing from root), which would cause the load to error.
         fs::write(preset_dir.join("e2e-plugin.mjs"), "export default {};\n").unwrap();
@@ -10199,7 +10139,7 @@ export default {
         .unwrap();
 
         // Preset entry-point: calls definePreset so the plugin gets stamped.
-        // esbuild will alias `@takazudo/zfb/config` → stub at bundle time.
+        // The bundle aliases `@takazudo/zfb/config` → stub.
         fs::write(
             preset_dir.join("dist").join("index.mjs"),
             r#"import { definePreset } from "@takazudo/zfb/config";
@@ -10222,15 +10162,11 @@ export default {
         .await
         .unwrap();
 
-        // Load via the REAL esbuild + node-subprocess path (slim build). Pass the located
-        // esbuild explicitly (deterministic — no reliance on the loader's CWD-relative slot
-        // resolution), but leave `node_binary` unset so the genuine `node` subprocess
-        // evaluator runs, and `test_default_export_json` unset so esbuild + node really
-        // execute (not the envelope bypass).
-        let opts = LoadOptions {
-            esbuild_binary: Some(esbuild),
-            ..LoadOptions::default()
-        };
+        // Load via the REAL bundle + node-subprocess path (slim build): `node_binary`
+        // unset so the genuine `node` subprocess evaluator runs, and
+        // `test_default_export_json` unset so bundling + node really execute (not the
+        // envelope bypass).
+        let opts = LoadOptions::default();
         let cfg = load_from_dir_with_options(root, &opts)
             .await
             .expect("e2e preset-provenance config (slim) must load successfully");
@@ -10284,7 +10220,7 @@ export default {
     }
 
     /// T5.2 — Rust-threading via envelope: a `source_package`-stamped preset
-    /// plugin injected through `test_default_export_json` (bypasses esbuild+V8,
+    /// plugin injected through `test_default_export_json` (bypasses bundling + V8,
     /// tests only the Rust resolver threading) resolves to the preset dir.
     ///
     /// Mirrors `ts_path_preset_plugin_is_resolved` but additionally verifies

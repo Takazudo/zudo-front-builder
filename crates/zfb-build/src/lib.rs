@@ -52,11 +52,10 @@ pub mod adapter;
 pub mod atomic;
 pub mod bundler;
 pub mod content_provenance;
-/// Bounded ETXTBSY spawn retries shared by the crate's two esbuild spawn
-/// sites (#2378, #2380) and by `zfb-islands`' esbuild version gate (#2896).
+/// Bounded ETXTBSY spawn retries for the adapter subprocess (#2378, #2380).
 /// Only [`crate::etxtbsy::spawn_with_etxtbsy_retry_blocking`] is exported;
-/// the budget constants, the classification predicate, the backoff, and
-/// the async form all stay crate-internal.
+/// the budget constants, the classification predicate and the backoff stay
+/// crate-internal.
 pub mod etxtbsy;
 pub mod glob_expand;
 pub mod head_inject;
@@ -84,10 +83,9 @@ pub use adapter::{
 };
 pub use atomic::{atomic_write, atomic_write_string, validate_output_path};
 pub use bundler::{
-    bundle, bundle_with_session, resolve_esbuild_binary_with_env, BundleManifest, BundleMode,
-    BundlerInput, BundlerOutput, ContentCollectionSpec, NodeModulesStagingStats, OnBrokenLinks,
-    ResolveMarkdownLinksRoute, ResolveMarkdownLinksSpec, RouteEntry, ShadowSession,
-    SiblingMirrorPlan, DEFAULT_ESBUILD_SLOT,
+    bundle, bundle_with_session, BundleManifest, BundleMode, BundlerInput, BundlerOutput,
+    ContentCollectionSpec, NodeModulesStagingStats, OnBrokenLinks, ResolveMarkdownLinksRoute,
+    ResolveMarkdownLinksSpec, RouteEntry, ShadowSession, SiblingMirrorPlan,
 };
 pub use content_provenance::{
     ContentCollectionId, ContentCollectionMembership, ContentEdgeGroup, ContentProvenance,
@@ -125,8 +123,8 @@ pub use pipeline::{
 };
 pub use plan::{ContentNarrowing, CssChangeSet, PageSelection, RebuildPlan};
 pub use plugin_bundler::{
-    bundle_plugin_entry, needs_bundling, resolve_esbuild_for_plugins, EmbeddedEsbuildGetter,
-    StagedPluginBundle, PLUGIN_BUNDLE_TEMP_PREFIX, PLUGIN_BUNDLE_TEMP_SUFFIX,
+    bundle_plugin_entry, needs_bundling, plugin_compile_request, StagedPluginBundle,
+    PLUGIN_BUNDLE_TEMP_PREFIX, PLUGIN_BUNDLE_TEMP_SUFFIX,
 };
 pub use plugin_refresh::{
     PluginRefreshOutcome, PluginRefreshState, PluginVirtualModuleStore, PluginWatchOwnership,

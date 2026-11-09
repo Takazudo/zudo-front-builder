@@ -178,9 +178,7 @@ use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{
-    locate_esbuild, watcher_live_handshake, zfb_binary, CrossBinaryE2eLock, HandshakeOpts,
-};
+use zfb_test_utils::{watcher_live_handshake, zfb_binary, CrossBinaryE2eLock, HandshakeOpts};
 
 /// Serializes the spawning tests in this file (each boots a full V8 +
 /// esbuild dev session; running them concurrently would double memory
@@ -328,7 +326,7 @@ impl DevSession {
 /// export. `extra_env` is applied AFTER the strip, so this file's own
 /// tests must pass `ZFB_DEV_TEST_ORCH_PANIC_ON_TICK` /
 /// `ZFB_DEV_TEST_ORCH_STOP_MS` there explicitly to re-inject them.
-fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, extra_env: &[(&str, &str)]) -> DevSession {
+fn spawn_dev(tmp: &tempfile::TempDir, extra_env: &[(&str, &str)]) -> DevSession {
     // macOS /tmp is a symlink to /private/tmp; notify reports canonical
     // paths, so every path the dev process and this test compare must
     // agree on the canonical form (watch_add_confirm.rs pattern).
@@ -348,7 +346,6 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, extra_env: &[(&str, &str)]
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
@@ -613,15 +610,11 @@ fn assert_desired_supervision_contract(
 #[tokio::test(flavor = "multi_thread")]
 async fn orch_panic_on_tick_takes_the_whole_process_down() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_supervision_e2e] esbuild not found; skipping test.");
-        return;
-    };
     let _serial = SERIAL.lock().await;
 
     let overall_start = Instant::now();
     let tmp = tempfile::tempdir().expect("create tempdir");
-    let mut session = spawn_dev(&tmp, &esbuild, &[("ZFB_DEV_TEST_ORCH_PANIC_ON_TICK", "1")]);
+    let mut session = spawn_dev(&tmp, &[("ZFB_DEV_TEST_ORCH_PANIC_ON_TICK", "1")]);
 
     let Some((base, client)) = boot_and_wait_ready(&mut session).await else {
         return; // recognized environmental skip
@@ -707,17 +700,12 @@ async fn orch_panic_on_tick_takes_the_whole_process_down() {
 #[tokio::test(flavor = "multi_thread")]
 async fn orch_stop_ms_takes_the_whole_process_down() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_supervision_e2e] esbuild not found; skipping test.");
-        return;
-    };
     let _serial = SERIAL.lock().await;
 
     let overall_start = Instant::now();
     let tmp = tempfile::tempdir().expect("create tempdir");
     let mut session = spawn_dev(
         &tmp,
-        &esbuild,
         &[("ZFB_DEV_TEST_ORCH_STOP_MS", STOP_MS.to_string().as_str())],
     );
 
@@ -849,15 +837,11 @@ async fn orch_stop_ms_takes_the_whole_process_down() {
 #[tokio::test(flavor = "multi_thread")]
 async fn graceful_sigint_exits_zero_and_persists_the_graph() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dev_supervision_e2e] esbuild not found; skipping test.");
-        return;
-    };
     let _serial = SERIAL.lock().await;
 
     let overall_start = Instant::now();
     let tmp = tempfile::tempdir().expect("create tempdir");
-    let mut session = spawn_dev(&tmp, &esbuild, &[]);
+    let mut session = spawn_dev(&tmp, &[]);
 
     let Some((base, client)) = boot_and_wait_ready(&mut session).await else {
         return; // recognized environmental skip

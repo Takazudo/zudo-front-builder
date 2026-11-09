@@ -169,7 +169,6 @@ export async function validateShippingEvidence(report, comparison, output, toolc
     digest({
       PATH: "",
       NODE_PATH: null,
-      ZFB_ESBUILD_BIN: report.distProof.execution?.buildEnvironment?.ZFB_ESBUILD_BIN,
     })
   )
     throw Error("Node-free dev environment unverified");

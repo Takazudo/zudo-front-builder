@@ -80,9 +80,7 @@
 //!
 //! ## Self-skip, not `#[ignore]` (per `crates/CLAUDE.md`'s taxonomy)
 //!
-//! Skips (without failing) when esbuild is unavailable
-//! (`zfb_test_utils::locate_esbuild`, matching every other real-binary e2e
-//! in this crate) or when `node` is not on PATH (the plugin host always
+//! Skips (without failing) when `node` is not on PATH (the plugin host always
 //! spawns `node`, and bundling a `.ts` plugin entry additionally shells out
 //! to esbuild — `build_cleans_outdir.rs`'s `prebuild_plugin_emitted_file_survives_wipe`
 //! is the precedent for gating a plugin-bearing build test on both). health.yml
@@ -109,7 +107,7 @@ use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 use walkdir::WalkDir;
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 /// Comfortably past `zfb_build::plugin_bundler::PLUGIN_BUNDLE_TEMP_STALE_AFTER`
 /// (600s — itself pinned above the 5-minute esbuild bundle timeout, since a
@@ -224,13 +222,6 @@ fn find_plugin_bundle_temp_files(root: &Path) -> Vec<std::path::PathBuf> {
 #[test]
 fn setup_and_postbuild_logging_and_stderr_reach_the_terminal_and_temp_bundle_is_swept_and_cleaned()
 {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[plugin_diagnostics_confirm_2375_e2e] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
     if !host_node_available() {
         eprintln!(
             "[plugin_diagnostics_confirm_2375_e2e] node not on PATH; skipping — the plugin \
@@ -251,7 +242,6 @@ fn setup_and_postbuild_logging_and_stderr_reach_the_terminal_and_temp_bundle_is_
     let out = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn `zfb build`");
 

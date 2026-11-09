@@ -61,8 +61,14 @@ import {
 vi.setConfig({ testTimeout: 15_000 });
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const liveContract = JSON.parse(
-  readFileSync(join(root, "research/v3-island-size/decision-linux-x64.json"), "utf8"),
+// Verbatim v5.2.2 release Linux contract (7ea8f771): the last schemaVersion-3
+// contract that pins the esbuild producer, before the #4635 bundler-backend
+// transition. The esbuild-producer runs below are shaped like it.
+const esbuildContract = JSON.parse(
+  readFileSync(
+    join(root, "scripts/__tests__/fixtures/island-size-linux-x64-v5.2.2-release.json"),
+    "utf8",
+  ),
 );
 // Verbatim released v4.5.3 Linux contract (main d70dd6d9): a genuine schemaVersion 3
 // contract that predates every declaration-bound Cargo transition.
@@ -137,7 +143,7 @@ describe("cargo-removal (#4388) proof", () => {
       outcome: "cargo-removal-transition",
       heading: "cargo-removal transition",
       requires: 3,
-      accepts: [3],
+      accepts: [3, 4],
     });
     expect(PAIRED_REASONS).toContain("cargo-removal");
     expect(SOURCE_BOUND_REASONS).toContain("cargo-removal");
@@ -652,21 +658,21 @@ describe("cargo-removal (#4388) end to end", () => {
   };
   const linuxArtifact = (edit, cargoLockSha256 = NEW) => {
     const dir = tempDir("zfb-removal-artifact-");
-    writeRuns(dir, Object.keys(liveContract.ceilings.workspace), (mode) => {
+    writeRuns(dir, Object.keys(esbuildContract.ceilings.workspace), (mode) => {
       const provenance = {
         sourceSha: SOURCE_SHA,
         mode,
         platform: { os: "linux", arch: "x64" },
-        fixtureVersion: liveContract.fixtureVersion,
+        fixtureVersion: esbuildContract.fixtureVersion,
         fixtureSha256: repo.fixtureSha256,
         runnerSha256: repo.runnerSha256,
         packageVersion: repo.version,
         runtimePackageVersion: repo.version,
-        honoPackageVersion: liveContract.toolchain.honoVersion,
-        esbuildVersion: liveContract.toolchain.esbuildVersion,
-        nodeVersion: liveContract.toolchain.nodeVersion,
-        zlibVersion: liveContract.toolchain.zlibVersion,
-        compression: liveContract.compression,
+        honoPackageVersion: esbuildContract.toolchain.honoVersion,
+        esbuildVersion: esbuildContract.toolchain.esbuildVersion,
+        nodeVersion: esbuildContract.toolchain.nodeVersion,
+        zlibVersion: esbuildContract.toolchain.zlibVersion,
+        compression: esbuildContract.compression,
         repeats: 2,
         pnpmLockSha256: repo.pnpmLockSha256,
         dependencyFingerprint: {
@@ -997,7 +1003,8 @@ describe("cargo-removal (#4388) end to end", () => {
         delete c.dependencyFingerprint;
         c.schemaVersion = 2;
       },
-      message: /--reason cargo-removal needs a schemaVersion 3 contract, found schemaVersion 2/,
+      message:
+        /--reason cargo-removal needs a schemaVersion 3 or 4 contract, found schemaVersion 2/,
     },
     {
       name: "a contract pinning the new lock already",

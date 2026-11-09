@@ -24,16 +24,16 @@ class Rows(unittest.TestCase):
 
 
 class Summary(unittest.TestCase):
-    def test_names_the_variant_and_every_row(self):
-        report = {"rolldown_prototype": "1", "passed": False, "rows": [
+    def test_names_every_row(self):
+        report = {"passed": False, "rows": [
             {"name": "a", "passed": True}, {"name": "b", "passed": False, "error": "AssertionError: x"}]}
         self.assertEqual(cases.summary(report),
-                         "CLI cases (Rolldown): FAIL\n- a: True\n- b: False AssertionError: x")
+                         "CLI cases: FAIL\n- a: True\n- b: False AssertionError: x")
 
     def test_lists_rows_not_run_without_counting_them(self):
-        report = {"rolldown_prototype": None, "passed": True, "rows": [{"name": "a", "passed": True}],
+        report = {"passed": True, "rows": [{"name": "a", "passed": True}],
                   "not_run": [{"name": "browser-hydration", "reason": "no --chromium given"}]}
-        self.assertEqual(cases.summary(report), "CLI cases (default bundler): PASS\n- a: True\n"
+        self.assertEqual(cases.summary(report), "CLI cases: PASS\n- a: True\n"
                          "- browser-hydration: NOT RUN (no --chromium given)")
 
 

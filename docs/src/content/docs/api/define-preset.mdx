@@ -34,7 +34,7 @@ The problem is that zfb evaluates `zfb.config.ts` in the **consumer project**, n
 
 ## The `source_package` marker
 
-`source_package` is a snake_case field that `definePreset` adds to each object in `config.plugins`. Its value is the preset's own npm package name — the string you would write in `package.json`'s `"name"` field (e.g. `"@scope/zfb-preset-docs"`). Because it is a plain string literal it survives esbuild bundling intact, flows through the Value-layer preset merge, and reaches the Rust loader as structured data.
+`source_package` is a snake_case field that `definePreset` adds to each object in `config.plugins`. Its value is the preset's own npm package name — the string you would write in `package.json`'s `"name"` field (e.g. `"@scope/zfb-preset-docs"`). Because it is a plain string literal it survives config bundling intact, flows through the Value-layer preset merge, and reaches the Rust loader as structured data.
 
 The Rust field name is `source_package` (verbatim snake_case). Do **not** use `sourcePackage` — zfb's `PluginConfig` struct has no `#[serde(rename_all)]` attribute, so the JSON key must match the field name exactly.
 
@@ -65,7 +65,7 @@ If all of a preset's plugins are hoisted bare specifiers and no relative paths a
 
 | Path / case | Behavior |
 | --- | --- |
-| Default in-process V8 (common path) | `source_package` literal survives esbuild bundling → Rust resolves package name → preset-dir anchoring works |
+| Default in-process V8 (common path) | `source_package` literal survives config bundling → Rust resolves package name → preset-dir anchoring works |
 | Slim node subprocess | Identical — the marker flows through the same Value pipeline |
 | `zfb.config.json` (no evaluator) | Inline preset literals have no `source_package` → project-root anchoring (unchanged) + clearer error message if a plugin is unresolvable |
 | Preset without `definePreset` / no-marker plugin | Project-root anchoring (unchanged) + clearer error message if the plugin is unresolvable; fully backward-compatible |

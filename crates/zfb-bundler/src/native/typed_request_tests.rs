@@ -1,0 +1,147 @@
+//! Typed requests (#4629) drive the planner, and `generate` publishes nothing
+//! until the caller asks.
+use crate::request::*;
+use std::{fs, path::PathBuf};
+
+fn temp_dir(label: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "zfb-typed-{label}-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::canonicalize(dir).unwrap()
+}
+
+#[test]
+fn generate_publishes_nothing_until_asked_and_reports_the_graph() {
+    let dir = temp_dir("generate");
+    fs::write(dir.join("dep.mjs"), "export const v = 'DEP_VALUE';\n").unwrap();
+    fs::write(
+        dir.join("entry.mjs"),
+        "import { v } from '#dep';\nimport fs from 'node:fs';\nconsole.log(v, fs);\n",
+    )
+    .unwrap();
+    let mut request = BundleRequest::new(
+        &dir,
+        "entry.mjs",
+        OutputLayout::file("out/bundle.mjs"),
+        Platform::Neutral,
+    );
+    request
+        .resolve
+        .aliases
+        .push(("#dep".into(), "./dep.mjs".into()));
+    request.externals.push(External::Prefix("node:".into()));
+    request.graph = Some("out/meta.json".into());
+    let generated = crate::generate(&request).unwrap();
+    assert!(!dir.join("out").exists(), "generate must not write");
+    let bundle = String::from_utf8(
+        generated
+            .file(&dir.join("out/bundle.mjs"))
+            .expect("bundle generated")
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(bundle.contains("DEP_VALUE"), "{bundle}");
+    assert!(bundle.contains("node:fs"), "{bundle}");
+    assert_eq!(generated.graph["zfbBackend"], BACKEND_IDENTITY);
+    let imports = generated.graph["inputs"]["entry.mjs"]["imports"]
+        .as_array()
+        .unwrap();
+    assert_eq!(imports[0]["path"], "dep.mjs");
+    assert_eq!(imports[1]["path"], "node:fs");
+    assert_eq!(imports[1]["external"], true);
+    generated.publish().unwrap();
+    assert!(dir.join("out/bundle.mjs").is_file());
+    assert!(dir.join("out/meta.json").is_file());
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn raw_css_is_rejected_with_the_supported_path() {
+    let dir = temp_dir("css");
+    fs::write(dir.join("a.css"), "a{color:red}\n").unwrap();
+    fs::write(dir.join("entry.mjs"), "import './a.css';\n").unwrap();
+    let mut request = BundleRequest::new(
+        &dir,
+        "entry.mjs",
+        OutputLayout::file("out/bundle.mjs"),
+        Platform::Browser,
+    );
+    request.loaders.push((".css".into(), Loader::Css));
+    let error = format!("{:#}", crate::generate(&request).unwrap_err());
+    assert!(
+        error.contains("ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED"),
+        "{error}"
+    );
+    assert!(error.contains("*.module.css"), "{error}");
+    assert!(error.contains("Wind"), "{error}");
+    assert!(error.contains("Lightning CSS"), "{error}");
+    assert!(!error.contains("esbuild"), "{error}");
+    assert!(!error.contains("ZFB_BUNDLER"), "{error}");
+    assert!(!dir.join("out").exists());
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn splitting_requires_a_directory_output() {
+    let mut request = BundleRequest::new(
+        "/srv",
+        "e.mjs",
+        OutputLayout::file("o.mjs"),
+        Platform::Browser,
+    );
+    request.splitting = true;
+    let error = format!("{:#}", crate::generate(&request).unwrap_err());
+    assert!(error.contains("requires a directory output"), "{error}");
+}
+
+#[test]
+fn every_loader_name_round_trips() {
+    for name in [
+        "js", "jsx", "ts", "tsx", "json", "text", "base64", "dataurl", "binary", "empty", "file",
+        "copy", "css",
+    ] {
+        assert_eq!(Loader::parse(name).map(Loader::name), Some(name));
+    }
+    assert_eq!(Loader::parse("asset"), None);
+}
+
+#[test]
+fn single_file_output_keeps_the_asset_name_pattern() {
+    let dir = temp_dir("file-assets");
+    fs::write(dir.join("data.wasm"), b"\0asm\x01\0\0\0").unwrap();
+    fs::write(
+        dir.join("entry.mjs"),
+        "import url from './data.wasm';\nconsole.log(url);\n",
+    )
+    .unwrap();
+    let mut request = BundleRequest::new(
+        &dir,
+        "entry.mjs",
+        OutputLayout::File {
+            file: "out/server/bundle.mjs".into(),
+            asset_names: Some("assets/[name]-[hash]".into()),
+        },
+        Platform::Neutral,
+    );
+    request.loaders.push((".wasm".into(), Loader::File));
+    let generated = crate::generate(&request).unwrap();
+    let asset = generated
+        .files
+        .iter()
+        .map(|(path, _)| path)
+        .find(|path| path.extension().is_some_and(|ext| ext == "wasm"))
+        .expect("asset generated");
+    let name = asset.file_name().unwrap().to_string_lossy();
+    assert_eq!(asset.parent().unwrap(), dir.join("out/server/assets"));
+    assert!(
+        name.starts_with("data-") && name.ends_with(".wasm"),
+        "{name}"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}

@@ -39,7 +39,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 fn collect_files(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -171,21 +171,12 @@ export default function Widget() {
 /// emitted stylesheet, under an UNRELATED non-empty `bundle.exclude`.
 #[test]
 fn sibling_module_css_class_map_is_discovered_and_emitted_by_real_zfb_build() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[sibling_css_module_command_layer_build] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let (project, _nm_handle) = write_fixture(tmp.path());
 
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(&project)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn `zfb build`");
 
@@ -444,20 +435,11 @@ export function RootCard() {
 
 #[test]
 fn broad_root_alias_only_discovers_root_package_css_module_class_map() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[sibling_css_module_command_layer_build] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let (project, _nm_handle) = write_broad_root_alias_only_fixture(tmp.path());
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(&project)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn `zfb build`");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -493,20 +475,11 @@ fn broad_root_alias_only_discovers_root_package_css_module_class_map() {
 /// rather than the lower-level bundler's prepared output.
 #[test]
 fn workspace_root_alias_graph_builds_through_real_zfb_command() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[sibling_css_module_command_layer_build] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let (project, _nm_handle) = write_workspace_root_alias_fixture(tmp.path());
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(&project)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn `zfb build`");
 
@@ -666,21 +639,12 @@ export default function Panel() {
 /// already covers.
 #[test]
 fn sibling_module_css_reached_only_via_virtual_module_is_discovered_and_emitted() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[sibling_css_module_command_layer_build] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let (project, _nm_handle) = write_virtual_only_fixture(tmp.path());
 
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(&project)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn `zfb build`");
 
@@ -848,21 +812,12 @@ export default function HomePage() {
 /// (component-mediated) virtual-module test above did not cover.
 #[test]
 fn sibling_module_css_imported_directly_by_virtual_module_is_discovered_and_emitted() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[sibling_css_module_command_layer_build] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let (project, _nm_handle) = write_direct_virtual_css_fixture(tmp.path());
 
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(&project)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn `zfb build`");
 
@@ -1018,23 +973,14 @@ export default function HomePage() {
 /// build`, proving the tsconfig-claimed mirror root reaches the wind source
 /// plan as well as CSS Modules discovery.
 #[test]
-#[ignore = "env-gate: esbuild — run with ZFB_ESBUILD_BIN and --ignored"]
+#[ignore = "heavy: run with --ignored — spawns a real zfb build/dev e2e (native Rolldown + V8)"]
 fn sibling_only_utility_class_reaches_wind_source_scan_and_is_emitted() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[sibling_css_module_command_layer_build] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let (project, _nm_handle) = write_utility_only_sibling_fixture(tmp.path());
 
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(&project)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn `zfb build`");
 
@@ -1105,16 +1051,8 @@ fn write_utility_only_sibling_fixture_with_generated_dir_leak(
 /// the authored sibling class remains present. The paired assertions prevent
 /// a false pass caused by excluding the entire mirror root.
 #[test]
-#[ignore = "env-gate: esbuild — run with ZFB_ESBUILD_BIN and --ignored"]
+#[ignore = "heavy: run with --ignored — spawns a real zfb build/dev e2e (native Rolldown + V8)"]
 fn sibling_generated_dir_utility_class_is_excluded_from_wind_source_scan() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[sibling_css_module_command_layer_build] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let (project, _nm_handle) =
         write_utility_only_sibling_fixture_with_generated_dir_leak(tmp.path());
@@ -1122,7 +1060,6 @@ fn sibling_generated_dir_utility_class_is_excluded_from_wind_source_scan() {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(&project)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn `zfb build`");
 
@@ -1282,18 +1219,12 @@ export default function HomePage() {
 /// in neither, while a candidate it shares with a kept page survives.
 #[test]
 fn wind_build_and_audit_build_plan_cover_the_same_origins() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[wind_build_and_audit_build_plan] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let (project, _nm_handle) = write_wind_origin_fixture(tmp.path());
 
     let build = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(&project)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn `zfb build`");
     assert!(
@@ -1332,7 +1263,6 @@ fn wind_build_and_audit_build_plan_cover_the_same_origins() {
         .args(["wind", "audit", "--plan", "build", "--project-root"])
         .arg(&project)
         .current_dir(&project)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn `zfb wind audit --plan build`");
     let stdout = String::from_utf8_lossy(&audit.stdout);

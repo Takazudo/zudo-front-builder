@@ -46,7 +46,6 @@ use std::fs;
 use std::path::Path;
 
 use zfb_build::{bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_test_utils::locate_esbuild;
 
 fn write(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
@@ -74,11 +73,7 @@ fn write_root_workspace(root: &Path) {
     }
 }
 
-fn base_input(
-    project: &Path,
-    esbuild: std::path::PathBuf,
-    node_modules: std::path::PathBuf,
-) -> BundlerInput {
+fn base_input(project: &Path, node_modules: std::path::PathBuf) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
         BundleMode::Production,
@@ -90,21 +85,13 @@ fn base_input(
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
-    input.esbuild_binary = Some(esbuild);
     input.node_modules_dir = Some(node_modules);
     input
 }
 
 #[cfg(unix)]
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_armed_regression -- --ignored"]
 fn real_esbuild_now_rejects_root_workspace_child_package_escape_through_node_modules_symlink() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_root_workspace_stage_escape_audit_armed_regression] no esbuild binary; skipping."
-        );
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
     write_root_workspace(root);
@@ -145,12 +132,11 @@ fn real_esbuild_now_rejects_root_workspace_child_package_escape_through_node_mod
     );
 
     let mut session = ShadowSession::new(root).expect("shadow session");
-    let error = bundle_with_session(base_input(root, esbuild, node_modules), Some(&mut session))
-        .expect_err(
-            "now that the eligibility predicate (issue #1986) arms guard (b) at a root-claimed \
+    let error = bundle_with_session(base_input(root, node_modules), Some(&mut session)).expect_err(
+        "now that the eligibility predicate (issue #1986) arms guard (b) at a root-claimed \
              workspace, the undeclared child package's bare-package-name import must be \
              rejected as a stage escape instead of silently resolving to live source",
-        );
+    );
 
     // Guard (b)'s metafile stage-escape audit names the escaped input
     // explicitly — the epic's documented "case 2" shape (a

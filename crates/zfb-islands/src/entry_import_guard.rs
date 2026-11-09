@@ -20,7 +20,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 use zfb_types::normalize_path_lexical;
 
-use crate::esbuild::metafile_output_path;
+use crate::bundle_job::metafile_output_path;
 
 /// Import kinds that load a module at runtime and would 404 on the renamed entry.
 const LOADING_IMPORT_KINDS: [&str; 2] = ["import-statement", "dynamic-import"];
@@ -523,7 +523,6 @@ mod tests {
     /// Real Rolldown splitting bundles, run exactly as the shared islands pass
     /// asks, pass the audit with their real metafile spelling; the bundle is
     /// the oracle for chunk placement.
-    #[cfg(feature = "rolldown-prototype")]
     #[test]
     fn real_rolldown_splitting_bundle_passes() {
         let tmp = tempfile::tempdir().unwrap();
@@ -554,18 +553,21 @@ mod tests {
             .unwrap();
         }
         std::fs::write(cwd.join("common.js"), "export const common = 42;\n").unwrap();
-        let mut cmd = std::process::Command::new("unused-prepared-esbuild");
-        cmd.current_dir(cwd).arg(&entry).args([
-            "--bundle",
-            "--format=esm",
-            "--platform=browser",
-            "--splitting=true",
-            "--outdir=out",
-            "--entry-names=islands",
-            "--chunk-names=islands-chunk-[hash]",
-            "--metafile=out/meta.json",
-        ]);
-        zfb_rolldown_prototype::run_prepared(&cmd).unwrap();
+        use zfb_bundler::{BundleRequest, OutputLayout, Platform};
+        let mut request = BundleRequest::new(
+            cwd,
+            &entry,
+            OutputLayout::Dir {
+                dir: "out".into(),
+                entry_names: Some("islands".into()),
+                chunk_names: Some("islands-chunk-[hash]".into()),
+                asset_names: None,
+            },
+            Platform::Browser,
+        );
+        request.splitting = true;
+        request.graph = Some("out/meta.json".into());
+        zfb_bundler::bundle(&request).unwrap();
         let inspected =
             audit_entry_imports_at_path(&cwd.join("out/meta.json"), cwd, &entry).unwrap();
         assert!(

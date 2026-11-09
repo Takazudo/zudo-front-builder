@@ -59,7 +59,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 /// Serializes the `zfb dev`-spawning tests in this file (each boots a full
 /// V8 + esbuild dev session; running them concurrently would double memory
@@ -173,7 +173,7 @@ impl DevSession {
 /// Copy the fixture into a fresh tempdir, optionally write a modified
 /// `zfb.config.json` (pass `None` to keep the default no-base config), and
 /// spawn `zfb dev --port 0` in its own process group.
-fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, config_override: Option<&str>) -> DevSession {
+fn spawn_dev(tmp: &tempfile::TempDir, config_override: Option<&str>) -> DevSession {
     let root = tmp
         .path()
         .canonicalize()
@@ -194,7 +194,6 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, config_override: Option<&s
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
@@ -329,7 +328,7 @@ async fn poll_until_status_not_containing(
 
 /// Run `zfb build` against a copy of the fixture in `root`. Returns `false`
 /// when the process exits with a known-skip indicator (V8/esbuild absent).
-fn run_build(root: &Path, esbuild: &Path, config_override: Option<&str>) -> bool {
+fn run_build(root: &Path, config_override: Option<&str>) -> bool {
     if let Some(cfg) = config_override {
         fs::write(root.join("zfb.config.json"), cfg).expect("write zfb.config.json override");
     }
@@ -337,7 +336,6 @@ fn run_build(root: &Path, esbuild: &Path, config_override: Option<&str>) -> bool
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn `zfb build`");
 
@@ -376,19 +374,12 @@ fn run_build(root: &Path, esbuild: &Path, config_override: Option<&str>) -> bool
 #[test]
 fn build_output_no_base_static_parity() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dev_build_static_parity] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir for no-base build");
     let root = tmp.path();
     copy_dir(&fixture_dir(), root).expect("copy fixture");
 
-    if !run_build(root, &esbuild, None) {
+    if !run_build(root, None) {
         return; // known-skip
     }
 
@@ -468,13 +459,6 @@ fn build_output_no_base_static_parity() {
 #[test]
 fn build_output_with_base_static_parity() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dev_build_static_parity] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir for base build");
     let root = tmp.path();
@@ -482,7 +466,7 @@ fn build_output_with_base_static_parity() {
 
     // Inject base: "/mysite/" via config override.
     let config_with_base = r#"{ "base": "/mysite/" }"#;
-    if !run_build(root, &esbuild, Some(config_with_base)) {
+    if !run_build(root, Some(config_with_base)) {
         return;
     }
 
@@ -533,16 +517,9 @@ fn build_output_with_base_static_parity() {
 async fn dev_serves_no_base_static_parity() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dev_build_static_parity] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir for no-base dev");
-    let mut session = spawn_dev(&tmp, &esbuild, None);
+    let mut session = spawn_dev(&tmp, None);
 
     let Some(port) = boot_and_get_port(&mut session).await else {
         return;
@@ -632,17 +609,10 @@ async fn dev_serves_no_base_static_parity() {
 async fn dev_serves_with_base_prefix_static_parity() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[dev_build_static_parity] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
 
     let tmp = tempfile::tempdir().expect("tempdir for base-prefix dev");
     let config_with_base = r#"{ "base": "/mysite/" }"#;
-    let mut session = spawn_dev(&tmp, &esbuild, Some(config_with_base));
+    let mut session = spawn_dev(&tmp, Some(config_with_base));
 
     let Some(port) = boot_and_get_port(&mut session).await else {
         return;

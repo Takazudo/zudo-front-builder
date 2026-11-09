@@ -57,22 +57,6 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # locate_esbuild's pnpm-store lookup picked a non-pinned esbuild on
-      # Windows (#4366 row e: graph_identity failed with "esbuild version
-      # mismatch"), so stage the version pinned in crates/zfb-toolchain-pins
-      # and export ZFB_ESBUILD_BIN, which locate_esbuild honours first.
-      - name: Stage pinned esbuild
-        run: |
-          version=$(sed -n 's/^pub const EXPECTED_ESBUILD_VERSION: &str = "\(.*\)";$/\1/p' crates/zfb-toolchain-pins/src/lib.rs)
-          test -n "$version"
-          stage="$RUNNER_TEMP/esbuild-$version"
-          mkdir -p "$stage"
-          cd "$stage"
-          tarball=$(npm pack "@esbuild/win32-x64@$version" --silent | tail -n 1)
-          tar -xzf "$tarball"
-          "$stage/package/esbuild.exe" --version | grep -Fx "$version"
-          echo "ZFB_ESBUILD_BIN=$(cygpath -w "$stage/package/esbuild.exe")" >> "$GITHUB_ENV"
-
       # One test thread, matching the native run that produced #4371's list;
       # the whole zfb-build suite ran in under 10 s that way.
       - name: zfb-content lib tests
@@ -97,9 +81,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --locked -p zfb-islands --lib graph_identity::tests -- --test-threads=1
 
-      # Real-esbuild integration binary; locate_esbuild resolves the staged
-      # ZFB_ESBUILD_BIN above. The two symlink tests are cfg(unix), so Windows
-      # selects the remaining 6.
+      # Native-Rolldown integration binary (#4635 removed its esbuild staging).
+      # The two symlink tests are cfg(unix), so Windows selects the remaining 6.
       - name: zfb-islands graph identity integration tests
         if: ${{ !cancelled() }}
         run: cargo test --locked -p zfb-islands --test graph_identity -- --test-threads=1
@@ -108,8 +91,8 @@ jobs:
   # (crates/zfb/tests/support/process_guard.rs, tested by the
   # process_guard_support binary) and the real-process e2e binaries, including the graceful
   # Ctrl-C stop in scratch_dir_concurrent_e2e. The e2e binaries self-skip when
-  # esbuild/node/pnpm are missing; the pnpm install and setup-node above provide
-  # all three on PATH, and the log is kept so a skip would be visible.
+  # node/pnpm are missing; the pnpm install and setup-node above provide
+  # both on PATH, and the log is kept so a skip would be visible.
   windows-e2e:
     name: Windows e2e (process guard, scanner/reproducibility/scratch-dir e2e)
     runs-on: windows-latest
@@ -132,22 +115,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
 
       - run: pnpm install --frozen-lockfile
-
-      # locate_esbuild's pnpm-store lookup picked a non-pinned esbuild on
-      # Windows (#4366 row e: graph_identity failed with "esbuild version
-      # mismatch"), so stage the version pinned in crates/zfb-toolchain-pins
-      # and export ZFB_ESBUILD_BIN, which locate_esbuild honours first.
-      - name: Stage pinned esbuild
-        run: |
-          version=$(sed -n 's/^pub const EXPECTED_ESBUILD_VERSION: &str = "\(.*\)";$/\1/p' crates/zfb-toolchain-pins/src/lib.rs)
-          test -n "$version"
-          stage="$RUNNER_TEMP/esbuild-$version"
-          mkdir -p "$stage"
-          cd "$stage"
-          tarball=$(npm pack "@esbuild/win32-x64@$version" --silent | tail -n 1)
-          tar -xzf "$tarball"
-          "$stage/package/esbuild.exe" --version | grep -Fx "$version"
-          echo "ZFB_ESBUILD_BIN=$(cygpath -w "$stage/package/esbuild.exe")" >> "$GITHUB_ENV"
 
       # Only the guard's binary here; zfb-test-utils' own lib tests run in the
       # windows-lib-tests job above (#4512, fixing the #4498 failures).

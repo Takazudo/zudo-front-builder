@@ -1,9 +1,9 @@
-import { transformSync } from "esbuild";
 import { describe, expect, it } from "vite-plus/test";
 
 import * as runtime from "../../../../packages/zfb/src/zudo-react/jsx-runtime.js";
 import type { Description } from "../../../../packages/zfb/src/zudo-react/description.js";
 import { compile } from "../dist/index.js";
+import { bundleToCommonJs } from "./support/rolldown-harness.mjs";
 
 async function execute(
   source: string,
@@ -14,7 +14,7 @@ async function execute(
   expect(out.diagnostics).toEqual([]);
   expect(out.code).toBeTypeOf("string");
   const module = { exports: {} as { default: (props: unknown) => Description } };
-  const code = transformSync(out.code!, { format: "cjs" }).code;
+  const code = await bundleToCommonJs(out.code!);
   new Function("require", "module", "exports", code)(
     (specifier: string) => {
       expect(specifier).toBe("@takazudo/zfb/zudo-react/jsx-runtime");

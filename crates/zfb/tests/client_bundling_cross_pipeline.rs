@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
 const BOOT_DEADLINE: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -525,21 +525,13 @@ fn assert_client_pipeline(
     }
 }
 
-fn run_zfb_build(root: &Path, esbuild: &Path, label: &str) -> (String, String) {
-    run_zfb_build_with_timing(root, esbuild, label, false)
+fn run_zfb_build(root: &Path, label: &str) -> (String, String) {
+    run_zfb_build_with_timing(root, label, false)
 }
 
-fn run_zfb_build_with_timing(
-    root: &Path,
-    esbuild: &Path,
-    label: &str,
-    timing: bool,
-) -> (String, String) {
+fn run_zfb_build_with_timing(root: &Path, label: &str, timing: bool) -> (String, String) {
     let mut command = Command::new(zfb_binary!());
-    command
-        .arg("build")
-        .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild);
+    command.arg("build").current_dir(root);
     if timing {
         command.env("ZFB_DEV_TIMING", "1");
     }
@@ -554,9 +546,8 @@ fn run_zfb_build_with_timing(
     (stdout, stderr)
 }
 
-fn run_and_assert_production(root: &Path, esbuild: &Path) -> String {
-    let (stdout, stderr) =
-        run_zfb_build_with_timing(root, esbuild, "the cross-pipeline fixture", true);
+fn run_and_assert_production(root: &Path) -> String {
+    let (stdout, stderr) = run_zfb_build_with_timing(root, "the cross-pipeline fixture", true);
     assert_build_output_omits_sub_packages(&stdout, &stderr, "cross-pipeline production build");
 
     let names = WorkerNames::for_root(root);
@@ -688,7 +679,7 @@ impl DevSession {
     }
 }
 
-fn spawn_dev(root: &Path, esbuild: &Path) -> DevSession {
+fn spawn_dev(root: &Path) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout = fs::File::create(&stdout_path).expect("create dev stdout log");
@@ -699,7 +690,6 @@ fn spawn_dev(root: &Path, esbuild: &Path) -> DevSession {
         .arg("--port")
         .arg("0")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
         .env_remove("ZFB_DEV_DEFER_BUNDLE")
@@ -842,9 +832,9 @@ async fn assert_alias_raw_dev_invalidation(
     );
 }
 
-async fn run_and_assert_development(root: &Path, esbuild: &Path) {
+async fn run_and_assert_development(root: &Path) {
     let names = WorkerNames::for_root(root);
-    let mut session = spawn_dev(root, esbuild);
+    let mut session = spawn_dev(root);
     let port = wait_for_ready(&mut session).await;
     let origin = format!("http://localhost:{port}");
     let client = reqwest::Client::builder()
@@ -979,8 +969,8 @@ async fn run_and_assert_development(root: &Path, esbuild: &Path) {
     assert_text_omits_sub_packages(&session.logs(), "cross-pipeline development output");
 }
 
-fn run_and_assert_workspace_shape_production(root: &Path, esbuild: &Path) {
-    let (stdout, stderr) = run_zfb_build(root, esbuild, "the pnpm-workspace raw-hardening fixture");
+fn run_and_assert_workspace_shape_production(root: &Path) {
+    let (stdout, stderr) = run_zfb_build(root, "the pnpm-workspace raw-hardening fixture");
     assert_build_output_omits_sub_packages(&stdout, &stderr, "pnpm-workspace raw-hardening build");
 
     let client_dir = root.join("dist/assets/client");
@@ -997,8 +987,8 @@ fn run_and_assert_workspace_shape_production(root: &Path, esbuild: &Path) {
     );
 }
 
-async fn run_and_assert_workspace_shape_development(root: &Path, esbuild: &Path) {
-    let mut session = spawn_dev(root, esbuild);
+async fn run_and_assert_workspace_shape_development(root: &Path) {
+    let mut session = spawn_dev(root);
     let port = wait_for_ready(&mut session).await;
     let origin = format!("http://localhost:{port}");
     let client = reqwest::Client::builder()
@@ -1077,8 +1067,8 @@ fn reroot_vmodule_worker_filename(host_root: &Path) -> String {
         .expect("derive virtual-module sibling worker companion filename")
 }
 
-fn run_and_assert_reroot_host_production(host_root: &Path, esbuild: &Path) {
-    run_zfb_build(host_root, esbuild, "the workspace reroot host");
+fn run_and_assert_reroot_host_production(host_root: &Path) {
+    run_zfb_build(host_root, "the workspace reroot host");
 
     let client_dir = host_root.join("dist/assets/client");
     let client_entry = read_text(&find_single_asset(&client_dir, "reroot-"));
@@ -1201,8 +1191,8 @@ fn run_and_assert_reroot_host_production(host_root: &Path, esbuild: &Path) {
     );
 }
 
-async fn run_and_assert_reroot_host_development(host_root: &Path, esbuild: &Path) {
-    let mut session = spawn_dev(host_root, esbuild);
+async fn run_and_assert_reroot_host_development(host_root: &Path) {
+    let mut session = spawn_dev(host_root);
     let port = wait_for_ready(&mut session).await;
     let origin = format!("http://localhost:{port}");
     let client = reqwest::Client::builder()
@@ -1340,25 +1330,12 @@ async fn run_and_assert_reroot_host_development(host_root: &Path, esbuild: &Path
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: pinned esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored"]
 async fn real_binary_build_and_dev_cover_client_bundling_contract() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let esbuild = locate_esbuild().expect(
-        "client-bundling cross-pipeline test requires the pinned esbuild binary; \
-         set ZFB_ESBUILD_BIN to an absolute executable path",
-    );
-    assert!(
-        esbuild.is_absolute(),
-        "locate_esbuild must resolve an absolute binary path, got {}",
-        esbuild.display(),
-    );
-
     let production = tempfile::tempdir().expect("production fixture tempdir");
     copy_fixture(&fixture_dir(), production.path()).expect("copy production fixture");
-    let build_stderr = run_and_assert_production(production.path(), &esbuild);
-    #[cfg(feature = "rolldown-prototype")]
+    let build_stderr = run_and_assert_production(production.path());
     {
         use std::collections::BTreeSet;
 
@@ -1395,79 +1372,45 @@ async fn real_binary_build_and_dev_cover_client_bundling_contract() {
                 (job.to_string(), kind.to_string())
             })
             .collect::<Vec<_>>();
-        if rolldown_selected() {
-            assert_eq!(
-                observed.len(),
-                expected.len(),
-                "one timing line per client job: {build_stderr}"
-            );
-            assert_eq!(observed.into_iter().collect::<BTreeSet<_>>(), expected);
-        } else {
-            assert!(
-                observed.is_empty(),
-                "native client jobs appeared without opt-in: {build_stderr}"
-            );
-        }
+        assert_eq!(
+            observed.len(),
+            expected.len(),
+            "one timing line per client job: {build_stderr}"
+        );
+        assert_eq!(observed.into_iter().collect::<BTreeSet<_>>(), expected);
     }
-    #[cfg(not(feature = "rolldown-prototype"))]
-    let _ = build_stderr;
 
     let development = tempfile::tempdir().expect("development fixture tempdir");
     copy_fixture(&fixture_dir(), development.path()).expect("copy development fixture");
-    run_and_assert_development(development.path(), &esbuild).await;
+    run_and_assert_development(development.path()).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: pinned esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored"]
 async fn real_binary_build_and_dev_cover_pnpm_workspace_raw_hardening_contract() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let esbuild = locate_esbuild().expect(
-        "pnpm-workspace raw-hardening cross-pipeline test requires the pinned esbuild binary; \
-         set ZFB_ESBUILD_BIN to an absolute executable path",
-    );
-    assert!(
-        esbuild.is_absolute(),
-        "locate_esbuild must resolve an absolute binary path, got {}",
-        esbuild.display(),
-    );
-
     let production = tempfile::tempdir().expect("pnpm-workspace production fixture tempdir");
     copy_fixture(&fixture_dir(), production.path())
         .expect("copy pnpm-workspace production fixture");
-    run_and_assert_workspace_shape_production(production.path(), &esbuild);
+    run_and_assert_workspace_shape_production(production.path());
 
     let development = tempfile::tempdir().expect("pnpm-workspace development fixture tempdir");
     copy_fixture(&fixture_dir(), development.path())
         .expect("copy pnpm-workspace development fixture");
-    run_and_assert_workspace_shape_development(development.path(), &esbuild).await;
+    run_and_assert_workspace_shape_development(development.path()).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: pinned esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored"]
 async fn real_binary_build_and_dev_cover_workspace_reroot_host_contract() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let esbuild = locate_esbuild().expect(
-        "workspace reroot-host cross-pipeline test requires the pinned esbuild binary; \
-         set ZFB_ESBUILD_BIN to an absolute executable path",
-    );
-    assert!(
-        esbuild.is_absolute(),
-        "locate_esbuild must resolve an absolute binary path, got {}",
-        esbuild.display(),
-    );
-
     let production = tempfile::tempdir().expect("reroot-host production fixture tempdir");
     copy_fixture(&fixture_dir(), production.path()).expect("copy reroot-host production fixture");
-    run_and_assert_reroot_host_production(&production.path().join(REROOT_HOST_REL), &esbuild);
+    run_and_assert_reroot_host_production(&production.path().join(REROOT_HOST_REL));
 
     let development = tempfile::tempdir().expect("reroot-host development fixture tempdir");
     copy_fixture(&fixture_dir(), development.path()).expect("copy reroot-host development fixture");
-    run_and_assert_reroot_host_development(&development.path().join(REROOT_HOST_REL), &esbuild)
-        .await;
+    run_and_assert_reroot_host_development(&development.path().join(REROOT_HOST_REL)).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1619,25 +1562,19 @@ fn assert_sibling_macro_body(body: &str, label: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: pinned esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored"]
 async fn real_binary_build_and_dev_expand_sibling_alias_macros_under_workspace() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let esbuild = locate_esbuild().expect(
-        "sibling-macro-workspace cross-pipeline test requires the pinned esbuild binary; \
-         set ZFB_ESBUILD_BIN to an absolute executable path",
-    );
 
     let production = tempfile::tempdir().expect("sibling-macro production tempdir");
     let production_project = write_sibling_macro_workspace(production.path());
-    run_zfb_build(&production_project, &esbuild, "sibling-macro production");
+    run_zfb_build(&production_project, "sibling-macro production");
     let html = read_text(&production_project.join("dist/index.html"));
     assert_sibling_macro_body(&html, "sibling-macro production SSR HTML");
 
     let development = tempfile::tempdir().expect("sibling-macro development tempdir");
     let development_project = write_sibling_macro_workspace(development.path());
-    let mut session = spawn_dev(&development_project, &esbuild);
+    let mut session = spawn_dev(&development_project);
     let port = wait_for_ready(&mut session).await;
     let origin = format!("http://localhost:{port}");
     let client = reqwest::Client::builder()
@@ -1886,11 +1823,10 @@ export default function Home() {
     .expect("write pages/index.tsx");
 }
 
-fn run_zfb_build_expect_stage_escape_rejection(root: &Path, esbuild: &Path, label: &str) -> String {
+fn run_zfb_build_expect_stage_escape_rejection(root: &Path, label: &str) -> String {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn `zfb build`");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -1922,19 +1858,13 @@ fn run_zfb_build_expect_stage_escape_rejection(root: &Path, esbuild: &Path, labe
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: pinned esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored"]
 async fn real_binary_build_and_dev_accept_root_claimed_declared_sibling() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let esbuild = locate_esbuild().expect(
-        "root-claimed-workspace cross-pipeline test requires the pinned esbuild binary; \
-         set ZFB_ESBUILD_BIN to an absolute executable path",
-    );
 
     let production = tempfile::tempdir().expect("root-claimed-legit production tempdir");
     write_root_claimed_legitimate_workspace(production.path());
-    run_zfb_build(production.path(), &esbuild, "root-claimed-legit production");
+    run_zfb_build(production.path(), "root-claimed-legit production");
     let html = read_text(&production.path().join("dist/index.html"));
     assert_contains_all(
         &html,
@@ -1944,7 +1874,7 @@ async fn real_binary_build_and_dev_accept_root_claimed_declared_sibling() {
 
     let development = tempfile::tempdir().expect("root-claimed-legit development tempdir");
     write_root_claimed_legitimate_workspace(development.path());
-    let mut session = spawn_dev(development.path(), &esbuild);
+    let mut session = spawn_dev(development.path());
     let port = wait_for_ready(&mut session).await;
     let origin = format!("http://localhost:{port}");
     let client = reqwest::Client::builder()
@@ -1968,23 +1898,14 @@ async fn real_binary_build_and_dev_accept_root_claimed_declared_sibling() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: pinned esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored"]
 async fn real_binary_build_rejects_root_claimed_undeclared_sibling_escape_on_both_legs() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    let esbuild = locate_esbuild().expect(
-        "root-claimed-workspace escape cross-pipeline test requires the pinned esbuild binary; \
-         set ZFB_ESBUILD_BIN to an absolute executable path",
-    );
 
     let ssr_case = tempfile::tempdir().expect("root-claimed SSR-leg escape tempdir");
     write_root_claimed_ssr_escape_workspace(ssr_case.path());
-    let ssr_logs = run_zfb_build_expect_stage_escape_rejection(
-        ssr_case.path(),
-        &esbuild,
-        "root-claimed SSR-leg escape",
-    );
+    let ssr_logs =
+        run_zfb_build_expect_stage_escape_rejection(ssr_case.path(), "root-claimed SSR-leg escape");
     assert!(
         ssr_logs.contains("@scope/child"),
         "SSR-leg rejection must name the escaped @scope/child input: {ssr_logs}"
@@ -1994,21 +1915,10 @@ async fn real_binary_build_rejects_root_claimed_undeclared_sibling_escape_on_bot
     write_root_claimed_islands_escape_workspace(islands_case.path());
     let islands_logs = run_zfb_build_expect_stage_escape_rejection(
         islands_case.path(),
-        &esbuild,
         "root-claimed islands-leg escape",
     );
     assert!(
         islands_logs.contains("@scope/child"),
         "islands-leg rejection must name the escaped @scope/child input: {islands_logs}"
     );
-}
-
-/// Mirrors `zfb_rolldown_prototype::enabled()` for the child `zfb` binary this
-/// test spawns: Rolldown unless the env selects esbuild.
-#[cfg(feature = "rolldown-prototype")]
-fn rolldown_selected() -> bool {
-    match std::env::var_os("ZFB_BUNDLER") {
-        Some(value) => value != "esbuild",
-        None => std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").is_none_or(|value| value != "0"),
-    }
 }

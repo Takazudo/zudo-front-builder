@@ -53,7 +53,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 // ---------------------------------------------------------------------------
 // Shared helpers (mirrors build_package_routes.rs patterns)
@@ -90,11 +90,10 @@ fn materialize_embedded_node_modules(root: &Path) {
 }
 
 /// Run `zfb build` in `root` with the supplied esbuild binary.
-fn run_zfb_build(root: &Path, esbuild: &Path) -> std::process::Output {
+fn run_zfb_build(root: &Path) -> std::process::Output {
     Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn `zfb build`")
 }
@@ -136,8 +135,8 @@ fn collect_all_files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
 /// Run `zfb build` in `root`, returning `Some(dist_tree)` on success
 /// (where `dist_tree` is a `BTreeMap<rel-path, bytes>`) or `None` for
 /// known-skip environments (no V8 / no esbuild).
-fn build_and_collect(root: &Path, esbuild: &Path, test: &str) -> Option<BTreeMap<String, Vec<u8>>> {
-    let output = run_zfb_build(root, esbuild);
+fn build_and_collect(root: &Path, test: &str) -> Option<BTreeMap<String, Vec<u8>>> {
+    let output = run_zfb_build(root);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout}{stderr}");
@@ -200,10 +199,6 @@ fn fixture_dir() -> PathBuf {
 ///   (CONSUMER_PRESET_DOCS_MARKER_api-reference)
 #[test]
 fn consumer_build_emits_full_dist_tree() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[consumer_build] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[consumer_build] node not on PATH; skipping.");
         return;
@@ -214,7 +209,7 @@ fn consumer_build_emits_full_dist_tree() {
     let _nm = link_embedded_node_modules(root);
     copy_dir(&fixture_dir(), root);
 
-    let Some(dist) = build_and_collect(root, &esbuild, "consumer_build") else {
+    let Some(dist) = build_and_collect(root, "consumer_build") else {
         return;
     };
 
@@ -297,10 +292,6 @@ fn consumer_build_emits_full_dist_tree() {
 /// symlinked node_modules) to ensure the comparison is cross-invocation.
 #[test]
 fn pages_only_build_is_byte_identical_across_two_runs() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[parity] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[parity] node not on PATH; skipping.");
         return;
@@ -311,7 +302,7 @@ fn pages_only_build_is_byte_identical_across_two_runs() {
     let root_a = tmp_a.path();
     let _nm_a = link_embedded_node_modules(root_a);
     write_control_project(root_a);
-    let Some(tree_a) = build_and_collect(root_a, &esbuild, "parity_A") else {
+    let Some(tree_a) = build_and_collect(root_a, "parity_A") else {
         return;
     };
 
@@ -320,7 +311,7 @@ fn pages_only_build_is_byte_identical_across_two_runs() {
     let root_b = tmp_b.path();
     let _nm_b = link_embedded_node_modules(root_b);
     write_control_project(root_b);
-    let Some(tree_b) = build_and_collect(root_b, &esbuild, "parity_B") else {
+    let Some(tree_b) = build_and_collect(root_b, "parity_B") else {
         return;
     };
 
@@ -409,10 +400,6 @@ fn write_control_project(root: &Path) {
 /// pages selected by that virtual data in a full `zfb build`.
 #[test]
 fn compiled_node_modules_virtual_paths_certify_zudo_doc_can_drop_staging() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[node_modules_virtual_paths] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[node_modules_virtual_paths] node not on PATH; skipping.");
         return;
@@ -527,7 +514,7 @@ export { DocsPage as default, paths };
     )
     .unwrap();
 
-    let Some(dist) = build_and_collect(root, &esbuild, "node_modules_virtual_paths") else {
+    let Some(dist) = build_and_collect(root, "node_modules_virtual_paths") else {
         return;
     };
 
@@ -550,10 +537,6 @@ export { DocsPage as default, paths };
 /// ordinary installed route package, its dependency, and a virtual module.
 #[test]
 fn nested_workspace_npm_injected_routes_survive_empty_exclude_staging() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[nested_npm_routes] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[nested_npm_routes] node not on PATH; skipping.");
         return;
@@ -720,7 +703,7 @@ export default {
         .unwrap();
 
         let label = ui_mode;
-        let Some(dist) = build_and_collect(&host, &esbuild, label) else {
+        let Some(dist) = build_and_collect(&host, label) else {
             return;
         };
         for name in ["catalog", "detail", "preview", "tokens"] {
@@ -765,10 +748,6 @@ export default {
 /// prove the freshly staged source — not a live-tree fallback — reached V8.
 #[test]
 fn project_local_generated_package_routes_resolve_from_the_staged_workspace_copy() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[project_local_generated_routes] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[project_local_generated_routes] node not on PATH; skipping.");
         return;
@@ -786,7 +765,7 @@ fn project_local_generated_package_routes_resolve_from_the_staged_workspace_copy
     let _nm = link_embedded_node_modules(&root);
     write_project_local_generated_routes_fixture(&root);
 
-    let Some(dist) = build_and_collect(&root, &esbuild, "project_local_generated_routes") else {
+    let Some(dist) = build_and_collect(&root, "project_local_generated_routes") else {
         return;
     };
 
@@ -932,10 +911,6 @@ export default function GeneratedNestedRoute() {
 /// entrypoint through to the bundler end to end.
 #[test]
 fn injected_route_entrypoint_outside_dot_path_allowlist_resolves_from_the_staged_workspace_copy() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[injected_route_entrypoint_outside_allowlist] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[injected_route_entrypoint_outside_allowlist] node not on PATH; skipping.");
         return;
@@ -953,11 +928,7 @@ fn injected_route_entrypoint_outside_dot_path_allowlist_resolves_from_the_staged
     let _nm = link_embedded_node_modules(&root);
     write_injected_entrypoint_consumer_fixture(&root);
 
-    let Some(dist) = build_and_collect(
-        &root,
-        &esbuild,
-        "injected_route_entrypoint_outside_allowlist",
-    ) else {
+    let Some(dist) = build_and_collect(&root, "injected_route_entrypoint_outside_allowlist") else {
         return;
     };
 
@@ -1135,10 +1106,6 @@ export default function Home() {
 
 #[test]
 fn combined_stage_escape_consumer_build_renders_routes_root_alias_and_package_source() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[combined_stage_escape_consumer] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[combined_stage_escape_consumer] node not on PATH; skipping.");
         return;
@@ -1146,7 +1113,7 @@ fn combined_stage_escape_consumer_build_renders_routes_root_alias_and_package_so
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = write_combined_stage_escape_consumer_fixture(tmp.path());
-    let Some(dist) = build_and_collect(&root, &esbuild, "combined_stage_escape_consumer") else {
+    let Some(dist) = build_and_collect(&root, "combined_stage_escape_consumer") else {
         return;
     };
 

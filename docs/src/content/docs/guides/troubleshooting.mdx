@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Known failure modes with concrete fixes — install errors, bundle config, import queries, module workers, out-of-root imports, bundler selection, and missing esbuild binaries.
+description: Known failure modes with concrete fixes — install errors, bundle config, import queries, module workers, out-of-root imports, removed bundler selectors, and embedded `.ts` configs.
 sidebar_position: 9
 ---
 
@@ -315,11 +315,11 @@ package-specific tooling. See
 
 ## A build fails with `ZFB_BUNDLER` or `ZFB_ROLLDOWN_*` in the message
 
-**Symptom:** `zfb` exits before building with `` ZFB_BUNDLER=…: expected `rolldown` or `esbuild` ``, or a build that passed with esbuild fails with a message starting `ZFB_ROLLDOWN_TRAILING_ROOT_DIRS_UNSUPPORTED` or `ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED`.
+**Symptom:** `zfb` exits before running any command with `` ZFB_BUNDLER=…: the esbuild bundler backend and its ZFB_BUNDLER selector were removed; zfb always bundles natively. Unset ZFB_BUNDLER. `` (or the same message for `ZFB_ROLLDOWN_PROTOTYPE`), or a build fails with a message starting `ZFB_ROLLDOWN_TRAILING_ROOT_DIRS_UNSUPPORTED` or `ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED`.
 
-**Cause:** Rolldown bundles pages, islands, client scripts and module workers by default. `ZFB_BUNDLER` accepts only `rolldown` and `esbuild`; any other value is a usage error. Rolldown also refuses two inputs it does not support yet: a `tsconfig.json` that sets `compilerOptions.rootDirs` together with a `paths` target ending in a directory, and raw CSS loaded into a JavaScript bundle.
+**Cause:** zfb bundles pages, islands, client scripts, module workers, TypeScript plugins and `zfb.config.ts` natively with Rolldown. It no longer ships or runs esbuild, so the `ZFB_BUNDLER` and `ZFB_ROLLDOWN_PROTOTYPE` selectors were removed. Setting either one, to any value, is an error, so a script that still asks for esbuild is not silently built with another bundler. The bundler also refuses two inputs: a `tsconfig.json` that sets `compilerOptions.rootDirs` together with a `paths` target ending in a directory, and a module loaded as raw CSS into a JavaScript bundle.
 
-**Fix:** set `ZFB_BUNDLER=esbuild` for that project to build with the embedded esbuild, as releases before Rolldown became the default did. Unset it, or fix its value, to clear the usage error. If esbuild and Rolldown produce different output for the same project, report it with both builds' output.
+**Fix:** unset `ZFB_BUNDLER` and `ZFB_ROLLDOWN_PROTOTYPE`. For the `rootDirs` error, remove `rootDirs` or map the specifier without a trailing separator. For the raw CSS error, import styles through a CSS Module (`*.module.css`) or the zfb CSS pipeline (Wind utilities and authored stylesheets compiled with Lightning CSS).
 
 ## A relative import "Could not resolve" outside the project root
 
@@ -329,13 +329,13 @@ package-specific tooling. See
 
 **Fix:** expose the out-of-root target as a package import instead of a relative one — add a wildcard `exports` entry to the target package's `package.json` (e.g. `"./src/*": "./src/*"`) and import it by package specifier (e.g. `@scope/pkg/src/button.tsx`). `node_modules` (including `file:`/workspace-linked packages) IS included in the shadow copy, so package-specifier imports resolve normally. Full details: [`defineConfig`: Watching paths outside the project root](../api/define-config.mdx#watching-paths-outside-the-project-root); tracked at [issue #1385](https://github.com/Takazudo/zudo-front-builder/issues/1385).
 
-## `esbuild binary not found` from an embedded `zfb-server`
+## An embedded `zfb-server` says a `.ts` config needs a compiler worker
 
-**Symptom:** a Rust host embedding `zfb-server` (see [Embed as library](./embed-as-library.mdx)) fails with an "esbuild binary not found" error when `config_path` points at a `zfb.config.ts` file.
+**Symptom:** a Rust host embedding `zfb-server` (see [Embed as library](./embed-as-library.mdx)) fails in `build()` with `` … is a `.ts` config, which needs a compiler worker `` when `config_path` points at a `zfb.config.ts` file.
 
-**Cause:** evaluating a TypeScript config first bundles it with esbuild, and an embedded `zfb-server` does not ship its own esbuild binary the way the `zfb` CLI does.
+**Cause:** a TypeScript config is bundled by a supervised native compiler worker started from the host's own executable, and the library never guesses a launcher for it.
 
-**Fix:** either switch `config_path` to a `zfb.config.json` file (no esbuild needed at all — the simplest fix), or set the `ZFB_ESBUILD_BIN` environment variable to a usable esbuild CLI binary before calling `build()`. See [Embed as library: config format](./embed-as-library.mdx#builder-shape-config-format-prefer-zfb-config-json) for the full explanation.
+**Fix:** either switch `config_path` to a `zfb.config.json` file (no worker needed at all — the simplest fix), or call `zfb_server::run_compiler_worker_if_requested()` first in `main` and pass `ServerBuilder::compiler_worker(WorkerLauncher::new(std::env::current_exe()?).arg(zfb_server::COMPILER_WORKER_ARG))`. See [Embed as library: config format](./embed-as-library.mdx#builder-shape-config-format-prefer-zfb-config-json) for the full explanation.
 
 ## A `prerender = false` route always returns 405
 

@@ -15,10 +15,8 @@
 //!
 //! ## Esbuild gating
 //!
-//! Same precedence as other bundler integration tests: `ZFB_ESBUILD_BIN` env
-//! var → `crates/zfb/binaries/esbuild/esbuild` slot → `which esbuild` PATH
-//! fallback.  If no binary is available the test prints a skip note and
-//! returns early rather than failing.
+//! Bundling runs in-process through native Rolldown (#4635), so these tests
+//! never skip for a missing bundler binary.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -26,7 +24,6 @@ use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec};
 use zfb_content::{ImageDimensionsConfig, MarkdownFeaturesConfig, PipelineSpec, TranscludeConfig};
-use zfb_test_utils::locate_esbuild;
 
 // ── Shared fixture helpers ──────────────────────────────────────────────────
 
@@ -52,12 +49,7 @@ fn write_common_dirs(root: &Path) {
 }
 
 /// Base `BundlerInput` with the standard collection wiring.
-fn make_base_input(
-    root: &Path,
-    esbuild: &Path,
-    outdir_name: &str,
-    pipeline_spec: PipelineSpec,
-) -> BundlerInput {
+fn make_base_input(root: &Path, outdir_name: &str, pipeline_spec: PipelineSpec) -> BundlerInput {
     BundlerInput {
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
@@ -81,8 +73,7 @@ fn make_base_input(
         outdir: root.join(outdir_name),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.to_path_buf()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
@@ -142,14 +133,6 @@ fn armed_image_dimensions_spec(root: &Path) -> PipelineSpec {
 /// complete.
 #[test]
 fn armed_transclude_missing_include_fails_build() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_markdown_diagnostics] no esbuild binary available; \
-             set ZFB_ESBUILD_BIN or install esbuild on PATH. Skipping."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_common_dirs(&root);
@@ -162,7 +145,7 @@ fn armed_transclude_missing_include_fails_build() {
     .unwrap();
 
     let spec = armed_transclude_spec(&root);
-    let input = make_base_input(&root, &esbuild, "dist-transclude-err", spec);
+    let input = make_base_input(&root, "dist-transclude-err", spec);
     let err = bundle(input)
         .expect_err("bundle should fail with a missing transclude include (Error severity)");
     let msg = format!("{err:#}");
@@ -188,11 +171,6 @@ fn armed_transclude_missing_include_fails_build() {
 /// warning to stderr and continues.
 #[test]
 fn armed_image_dimensions_missing_image_warns_and_succeeds() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_markdown_diagnostics] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_common_dirs(&root);
@@ -205,7 +183,7 @@ fn armed_image_dimensions_missing_image_warns_and_succeeds() {
     .unwrap();
 
     let spec = armed_image_dimensions_spec(&root);
-    let input = make_base_input(&root, &esbuild, "dist-imgdim-warn", spec);
+    let input = make_base_input(&root, "dist-imgdim-warn", spec);
     // Must succeed — Warning severity must not fail the build.
     let out = bundle(input)
         .expect("bundle should succeed with imageDimensions warning (Warning severity)");
@@ -225,11 +203,6 @@ fn armed_image_dimensions_missing_image_warns_and_succeeds() {
 /// plumbing when the config doesn't opt in.
 #[test]
 fn unarmed_config_no_new_diagnostics() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_markdown_diagnostics] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_common_dirs(&root);
@@ -243,7 +216,7 @@ fn unarmed_config_no_new_diagnostics() {
     .unwrap();
 
     // Default (unarmed) spec — no features, no build_context_roots.
-    let input = make_base_input(&root, &esbuild, "dist-unarmed", PipelineSpec::default());
+    let input = make_base_input(&root, "dist-unarmed", PipelineSpec::default());
     // Must succeed with no errors — unarmed pipeline ignores the directive.
     let out = bundle(input).expect("unarmed bundle should succeed (no new diagnostics)");
     assert!(

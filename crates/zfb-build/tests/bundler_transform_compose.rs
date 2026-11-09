@@ -25,7 +25,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_test_utils::locate_esbuild;
 
 /// Absolutise each `compilerOptions.paths` target against the project root
 /// (preserving a trailing `/*`) — the exact shape `read_tsconfig_paths`
@@ -61,7 +60,6 @@ fn make_real_node_modules(root: &Path) -> PathBuf {
 
 fn branch4_input(
     root: &Path,
-    esbuild: &Path,
     tsconfig_paths: BTreeMap<String, Vec<String>>,
     class_maps: HashMap<PathBuf, HashMap<String, String>>,
 ) -> BundlerInput {
@@ -76,7 +74,6 @@ fn branch4_input(
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
-    input.esbuild_binary = Some(esbuild.to_path_buf());
     // The two conditions that, with non-empty tsconfig_paths, select branch 4
     // (no --preserve-symlinks → copy_mode on).
     input.node_modules_dir = Some(make_real_node_modules(root));
@@ -91,10 +88,6 @@ fn branch4_input(
 /// in the shadow, so esbuild reads the Rust-expanded barrel.
 #[test]
 fn branch4_relative_glob_transform_is_visible() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_transform_compose] no esbuild binary; set ZFB_ESBUILD_BIN. Skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     for d in ["pages", "components", "layouts", "content"] {
@@ -122,7 +115,7 @@ fn branch4_relative_glob_transform_is_visible() {
     // Non-empty tsconfig_paths (an unrelated alias) is enough to put us in
     // branch 4; the page reaches the transform purely via the relative import.
     let paths = tsconfig_paths_absolute(root, &[("@unused/*", "src/*")]);
-    let out = bundle(branch4_input(root, &esbuild, paths, HashMap::new()))
+    let out = bundle(branch4_input(root, paths, HashMap::new()))
         .expect("branch4 relative-glob build must succeed");
     let body = fs::read_to_string(&out.bundle_path).unwrap();
 
@@ -141,10 +134,6 @@ fn branch4_relative_glob_transform_is_visible() {
 /// relative `.module.css` to the rewritten JS shim in the shadow.
 #[test]
 fn branch4_relative_css_module_transform_is_visible() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_transform_compose] no esbuild binary; set ZFB_ESBUILD_BIN. Skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     for d in ["pages", "components", "layouts", "content"] {
@@ -166,7 +155,7 @@ fn branch4_relative_css_module_transform_is_visible() {
     class_maps.insert(module_css, names);
 
     let paths = tsconfig_paths_absolute(root, &[("@unused/*", "src/*")]);
-    let out = bundle(branch4_input(root, &esbuild, paths, class_maps))
+    let out = bundle(branch4_input(root, paths, class_maps))
         .expect("branch4 relative-css build must succeed");
     let body = fs::read_to_string(&out.bundle_path).unwrap();
 
@@ -181,10 +170,6 @@ fn branch4_relative_css_module_transform_is_visible() {
 /// rebase + copy_mode make the Rust-expanded barrel visible.
 #[test]
 fn branch4_alias_glob_transform_is_visible() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_transform_compose] no esbuild binary; set ZFB_ESBUILD_BIN. Skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     for d in ["pages", "components", "layouts", "content", "src/lib"] {
@@ -210,7 +195,7 @@ fn branch4_alias_glob_transform_is_visible() {
     .unwrap();
 
     let paths = tsconfig_paths_absolute(root, &[("@lib/*", "src/lib/*")]);
-    let out = bundle(branch4_input(root, &esbuild, paths, HashMap::new()))
+    let out = bundle(branch4_input(root, paths, HashMap::new()))
         .expect("branch4 alias-glob build must succeed");
     let body = fs::read_to_string(&out.bundle_path).unwrap();
 
@@ -229,10 +214,6 @@ fn branch4_alias_glob_transform_is_visible() {
 /// route the aliased import to the shadow-rewritten JS shim.
 #[test]
 fn branch4_alias_css_module_transform_is_visible() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_transform_compose] no esbuild binary; set ZFB_ESBUILD_BIN. Skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     for d in ["pages", "components", "layouts", "content", "src/lib"] {
@@ -254,7 +235,7 @@ fn branch4_alias_css_module_transform_is_visible() {
     class_maps.insert(module_css, names);
 
     let paths = tsconfig_paths_absolute(root, &[("@lib/*", "src/lib/*")]);
-    let out = bundle(branch4_input(root, &esbuild, paths, class_maps))
+    let out = bundle(branch4_input(root, paths, class_maps))
         .expect("branch4 alias-css build must succeed");
     let body = fs::read_to_string(&out.bundle_path).unwrap();
 
@@ -270,10 +251,6 @@ fn branch4_alias_css_module_transform_is_visible() {
 /// `@/...` is visible.
 #[test]
 fn branch4_whole_root_alias_css_module_transform_is_visible() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_transform_compose] no esbuild binary; set ZFB_ESBUILD_BIN. Skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     for d in ["pages", "components", "layouts", "content", "src/ui"] {
@@ -295,7 +272,7 @@ fn branch4_whole_root_alias_css_module_transform_is_visible() {
     class_maps.insert(module_css, names);
 
     let paths = tsconfig_paths_absolute(root, &[("@/*", "src/*")]);
-    let out = bundle(branch4_input(root, &esbuild, paths, class_maps))
+    let out = bundle(branch4_input(root, paths, class_maps))
         .expect("branch4 whole-root alias-css build must succeed");
     let body = fs::read_to_string(&out.bundle_path).unwrap();
 

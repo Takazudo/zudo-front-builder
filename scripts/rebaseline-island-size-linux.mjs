@@ -157,9 +157,26 @@
 // every destination to a temporary sibling first and only then renames them
 // into place, restoring already-renamed files if a rename fails. There is no
 // force or ignore-provenance option of any kind.
+// `--reason bundler-backend` (#4635, schemaVersion 3 -> 4) records the move to
+// the esbuild-free producer: zfb bundles with its embedded native Rolldown and
+// no longer spawns esbuild, so measure-real.mjs records the embedded bundler
+// identity instead of an esbuild version and binary digest. From a fresh
+// artifact whose bundlerIdentity equals both the reviewed EXPECTED_BUNDLER_IDENTITY
+// and the checkout's crates/zfb-bundler BACKEND_IDENTITY, it writes the
+// schemaVersion 4 contract shape (toolchain.bundlerIdentity replaces
+// toolchain.esbuildVersion), the measure-real.mjs runner digest, the recorded
+// pnpm-lock.yaml hash (baseline provenance only: the dependency fingerprint
+// must be unchanged) and, when Cargo.lock moved, only a Cargo hash proven by a
+// --reviewed-cargo-transition through the cargo-producer-lock proof. Totals,
+// ceilings, allowance, metric, normalizer, fixtures, measure.mjs, Hono/Node/zlib,
+// fingerprint and package version must be unchanged (BUNDLER_BACKEND_MOVEMENT).
+// It is source-bound but not paired: each platform moves from its own native
+// evidence, and this script never repins Darwin.
+//
 // Optional --reviewed-cargo-transition recognizes only the separately reviewed
-// #318 non-additive lock pair, an exact #4314 or #4569 security replacement, or
-// the exact #4268 noyalib adoption (security-lock-transitions.mjs). It does not
+// #318 non-additive lock pair, an exact #4314 or #4569 security replacement,
+// the exact #4268 noyalib adoption, or the exact #4635 esbuild-removal lock
+// move (security-lock-transitions.mjs). It does not
 // bypass artifact, platform, identity or unchanged-total validation.
 
 import { securityLockTransitionById } from "./security-lock-transitions.mjs";
@@ -183,7 +200,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // Compare canonical paths: a symlinked invocation path (macOS /var -> /private/var) must still run main() (#4465).
 import { realpathSync as realpathSyncForMain } from "node:fs";
 
-import { sameHashMaps } from "../research/v3-island-size/check-budget.mjs";
+import {
+  BUNDLER_SCHEMA_VERSION,
+  EXPECTED_BUNDLER_IDENTITY,
+  LEGACY_ESBUILD_VERSION,
+  readBundlerIdentity,
+  sameHashMaps,
+} from "../research/v3-island-size/check-budget.mjs";
 import {
   IDENTITY_NORMALIZATION_VERSION,
   IDENTITY_NORMALIZED_METRIC,
@@ -204,7 +227,7 @@ export const REASONS = Object.freeze({
     outcome: "release-version-stamp",
     heading: "release baseline",
     requires: 2,
-    accepts: [2, 3],
+    accepts: [2, 3, 4],
   },
   "metric-migration": {
     outcome: "metric-migration",
@@ -215,7 +238,7 @@ export const REASONS = Object.freeze({
     outcome: "runtime-identity-repin",
     heading: "runtime-identity re-pin",
     requires: 2,
-    accepts: [2, 3],
+    accepts: [2, 3, 4],
   },
   "lockfile-provenance": {
     outcome: "lockfile-provenance-repin",
@@ -231,35 +254,41 @@ export const REASONS = Object.freeze({
     outcome: "fingerprint-helper-repin",
     heading: "fingerprint-helper re-pin",
     requires: 3,
-    accepts: [3],
+    accepts: [3, 4],
   },
   "cargo-producer-lock": {
     outcome: "cargo-producer-lock-transition",
     heading: "cargo-producer-lock transition",
     requires: 3,
-    accepts: [3],
+    accepts: [3, 4],
   },
   "dependency-graph": {
     outcome: "dependency-graph-repin",
     heading: "dependency-graph re-pin",
     requires: 3,
-    accepts: [3],
+    accepts: [3, 4],
   },
   "fingerprint-policy": {
     outcome: "fingerprint-policy",
     heading: "fingerprint-policy re-pin",
     requires: 3,
-    accepts: [3],
+    accepts: [3, 4],
   },
   "cargo-internal-rewire": {
     outcome: "cargo-internal-rewire-transition",
     heading: "cargo-internal-rewire transition",
     requires: 3,
-    accepts: [3],
+    accepts: [3, 4],
   },
   "cargo-removal": {
     outcome: "cargo-removal-transition",
     heading: "cargo-removal transition",
+    requires: 3,
+    accepts: [3, 4],
+  },
+  "bundler-backend": {
+    outcome: "bundler-backend-transition",
+    heading: "bundler-backend transition",
     requires: 3,
     accepts: [3],
   },
@@ -282,6 +311,22 @@ export const CARGO_REMOVAL_REASON = "cargo-removal";
 // replaced as a whole and carries the `cargoRemoval` transition record.
 export const CARGO_REMOVAL_MOVEMENT = Object.freeze([
   "toolchain.cargoLockSha256",
+  "outcome",
+  "baselineSourceSha",
+  "platformStatus",
+  "baselineEvidence",
+]);
+export const BUNDLER_BACKEND_REASON = "bundler-backend";
+// The only keys a bundler-backend transition may write; baselineEvidence is
+// replaced as a whole and carries the `bundlerBackend` (and, when Cargo.lock
+// moved, the `cargoTransition`) record.
+export const BUNDLER_BACKEND_MOVEMENT = Object.freeze([
+  "schemaVersion",
+  "toolchain.esbuildVersion",
+  "toolchain.bundlerIdentity",
+  "runnerSha256.measure-real.mjs",
+  "toolchain.cargoLockSha256",
+  "toolchain.pnpmLockSha256",
   "outcome",
   "baselineSourceSha",
   "platformStatus",
@@ -319,6 +364,7 @@ export const SOURCE_BOUND_REASONS = Object.freeze([
   FINGERPRINT_POLICY_REASON,
   CARGO_INTERNAL_REWIRE_REASON,
   CARGO_REMOVAL_REASON,
+  BUNDLER_BACKEND_REASON,
 ]);
 // Reasons that are applied only once both platforms are staged.
 export const PAIRED_REASONS = Object.freeze([
@@ -343,9 +389,20 @@ export function acceptedSchemas(reason) {
   return policy.accepts ?? [policy.requires];
 }
 
+// "3", "3 or 4", "2, 3 or 4": the accepted schema versions in a refusal.
+export function schemaList(schemas) {
+  return schemas.length < 2
+    ? schemas.join("")
+    : schemas.slice(0, -1).join(", ") + " or " + schemas[schemas.length - 1];
+}
+
 // Both identity-normalized schemas carry {raw, gzipNormalized} ceilings.
 function normalizedSchema(contract) {
-  return contract.schemaVersion === 2 || contract.schemaVersion === 3;
+  return (
+    contract.schemaVersion === 2 ||
+    contract.schemaVersion === 3 ||
+    contract.schemaVersion === BUNDLER_SCHEMA_VERSION
+  );
 }
 
 const CONTRACT_FINGERPRINT_KEYS = ["policyVersion", "parser", "helperSha256", "sha256"];
@@ -539,7 +596,7 @@ export function assertFingerprintMigrationMovement(contract, evidence) {
   }
 }
 
-// release-bump / runtime-identity on a schemaVersion-3 contract: the measured
+// release-bump / runtime-identity on a schemaVersion-3 or -4 contract: the measured
 // artifact must carry this checkout's fingerprint and the contract's must not move.
 export function assertFingerprintUnchanged(contract, evidence, reason) {
   const problem = artifactFingerprintProblem(evidence.artifactFingerprint, evidence);
@@ -870,7 +927,13 @@ export function assertAllowedMovement(reason, allowlist, before, after) {
   }
 }
 
-const IDENTITY_TOOLCHAIN_KEYS = ["honoVersion", "esbuildVersion", "nodeVersion", "zlibVersion"];
+const IDENTITY_TOOLCHAIN_KEYS = [
+  "honoVersion",
+  "esbuildVersion",
+  "bundlerIdentity",
+  "nodeVersion",
+  "zlibVersion",
+];
 
 // The reviewed identity a measurement artifact carries, in contract shape.
 export function measuredIdentity(provenance) {
@@ -881,6 +944,7 @@ export function measuredIdentity(provenance) {
     toolchain: {
       honoVersion: provenance.honoPackageVersion,
       esbuildVersion: provenance.esbuildVersion,
+      bundlerIdentity: provenance.bundlerIdentity,
       nodeVersion: provenance.nodeVersion,
       zlibVersion: provenance.zlibVersion,
     },
@@ -1023,6 +1087,24 @@ export function parseAddedPackages(text) {
 // the two lock-moving reasons: `--added-packages` to cargo-producer-lock alone
 // (which requires all but OPTIONAL_CARGO_ARGS), the rest to both.
 export function checkCargoProducerLockArgs(values) {
+  if (values.reason === BUNDLER_BACKEND_REASON) {
+    // Cargo.lock stays put, or moves only through a reviewed exact transition.
+    if (!CARGO_ARGS.some((key) => Object.hasOwn(values, key))) return;
+    for (const key of CARGO_ARGS) {
+      if (key !== "old-cargo-lock" && !values[key]) {
+        throw new Error(
+          "required --" +
+            key +
+            " (--reason " +
+            BUNDLER_BACKEND_REASON +
+            " moves Cargo.lock only through a reviewed transition)",
+        );
+      }
+    }
+    checkSharedCargoArgs(values);
+    parseAddedPackages(values["added-packages"]);
+    return;
+  }
   if (!LOCK_MOVING_REASONS.includes(values.reason)) {
     const stray = CARGO_ARGS.filter((key) => Object.hasOwn(values, key));
     if (stray.length > 0) {
@@ -1116,6 +1198,7 @@ export const REPINNED_FROM_REASONS = Object.freeze([
   FINGERPRINT_POLICY_REASON,
   CARGO_INTERNAL_REWIRE_REASON,
   CARGO_REMOVAL_REASON,
+  BUNDLER_BACKEND_REASON,
 ]);
 
 export function checkPreviousContractRefArgs(values, reasons = REPINNED_FROM_REASONS) {
@@ -1509,6 +1592,198 @@ function assertCargoOnlyMovement(contract, evidence, reason = CARGO_PRODUCER_LOC
         " differ from the contract; use the reason that matches the change",
     );
   }
+}
+
+function bundlerBackendError(message) {
+  return new Error("--reason " + BUNDLER_BACKEND_REASON + ": " + message);
+}
+
+// bundler-backend may move only the esbuild -> embedded-bundler identity, the
+// measure-real.mjs runner digest (the runner that records it) and a reviewed
+// Cargo.lock transition; every other reviewed identity input must equal the
+// contract, the measured artifact and this checkout.
+export function assertBundlerBackendMovement(contract, evidence) {
+  const identity = evidence.identity;
+  if (!identity) throw bundlerBackendError("needs the artifact's measured identity inputs");
+  if (
+    contract.toolchain?.esbuildVersion !== LEGACY_ESBUILD_VERSION ||
+    Object.hasOwn(contract.toolchain ?? {}, "bundlerIdentity")
+  ) {
+    throw bundlerBackendError(
+      "needs a contract that pins the esbuild " + LEGACY_ESBUILD_VERSION + " producer",
+    );
+  }
+  if (identity.toolchain?.esbuildVersion !== undefined) {
+    throw bundlerBackendError(
+      "the artifact measured an esbuild producer (esbuild " +
+        String(identity.toolchain.esbuildVersion) +
+        "), not the esbuild-free one",
+    );
+  }
+  const bundler = identity.toolchain?.bundlerIdentity;
+  if (bundler !== EXPECTED_BUNDLER_IDENTITY) {
+    throw bundlerBackendError(
+      "the artifact measured bundler " +
+        String(bundler) +
+        ", not the reviewed " +
+        EXPECTED_BUNDLER_IDENTITY,
+    );
+  }
+  if (evidence.checkoutBundlerIdentity !== bundler) {
+    throw bundlerBackendError(
+      "the checkout's BACKEND_IDENTITY is " +
+        String(evidence.checkoutBundlerIdentity) +
+        ", not the measured " +
+        bundler,
+    );
+  }
+  const moved = [];
+  if (evidence.version !== contract.toolchain.packageVersion) moved.push("packageVersion");
+  if (evidence.normalizerSha256 !== contract.normalizerSha256) moved.push("normalizerSha256");
+  if (!sameHashMaps(identity.fixtureSha256, contract.fixtureSha256)) moved.push("fixtureSha256");
+  const runnerKeys = Object.keys(identity.runnerSha256 ?? {}).sort();
+  if (!isDeepStrictEqual(runnerKeys, Object.keys(contract.runnerSha256).sort())) {
+    moved.push("runnerSha256 files");
+  } else {
+    for (const file of runnerKeys) {
+      if (
+        file !== "measure-real.mjs" &&
+        identity.runnerSha256[file] !== contract.runnerSha256[file]
+      )
+        moved.push("runnerSha256." + file);
+    }
+  }
+  for (const key of ["honoVersion", "nodeVersion", "zlibVersion"]) {
+    if (identity.toolchain?.[key] !== contract.toolchain[key]) moved.push("toolchain." + key);
+  }
+  if (moved.length > 0) {
+    throw bundlerBackendError(
+      "moves only the bundler identity, the measure-real.mjs runner digest and a reviewed " +
+        "Cargo.lock transition, but " +
+        moved.join(", ") +
+        " differ from the contract; use the reason that matches the change",
+    );
+  }
+  const cargoMoved = identity.cargoLockSha256 !== contract.toolchain.cargoLockSha256;
+  if (cargoMoved && !evidence.cargoLock) {
+    throw bundlerBackendError(
+      "the artifact measured Cargo.lock " +
+        String(identity.cargoLockSha256) +
+        " while the contract pins " +
+        contract.toolchain.cargoLockSha256 +
+        "; pass the reviewed transition's Cargo arguments",
+    );
+  }
+  if (!cargoMoved && evidence.cargoLock) {
+    throw bundlerBackendError("Cargo.lock is unchanged; drop the Cargo arguments");
+  }
+  if (evidence.cargoLock && evidence.cargoLock.reviewedTransitionText === undefined) {
+    throw bundlerBackendError("moves Cargo.lock only through --reviewed-cargo-transition");
+  }
+}
+
+// The `bundlerBackend` evidence record of a bundler-backend transition.
+export function bundlerBackendRecord(contract, evidence) {
+  return {
+    schemaVersion: { from: contract.schemaVersion, to: BUNDLER_SCHEMA_VERSION },
+    from: { esbuildVersion: contract.toolchain.esbuildVersion },
+    to: { bundlerIdentity: evidence.identity.toolchain.bundlerIdentity },
+    runner: {
+      file: "measure-real.mjs",
+      beforeSha256: contract.runnerSha256["measure-real.mjs"],
+      afterSha256: evidence.identity.runnerSha256["measure-real.mjs"],
+    },
+    pnpmLockSha256: {
+      before: contract.toolchain.pnpmLockSha256,
+      after: evidence.pnpmLockSha256,
+    },
+  };
+}
+
+// Every reason but bundler-backend keeps the contract's producer: a
+// schemaVersion-4 contract admits only its own embedded-bundler identity, and
+// an esbuild-producer contract (schemaVersion 3 or older) only an esbuild run.
+export function assertProducerMatchesSchema(contract, evidence, reason) {
+  const toolchain = evidence.identity?.toolchain;
+  if (toolchain === undefined) return;
+  const prefix = "--reason " + reason + ": ";
+  if (contract.schemaVersion === BUNDLER_SCHEMA_VERSION) {
+    if (toolchain.esbuildVersion !== undefined) {
+      throw new Error(
+        prefix +
+          "the artifact measured an esbuild producer (esbuild " +
+          String(toolchain.esbuildVersion) +
+          ") but the schemaVersion 4 contract pins the embedded bundler " +
+          String(contract.toolchain.bundlerIdentity) +
+          "; refusing",
+      );
+    }
+    if (toolchain.bundlerIdentity !== contract.toolchain.bundlerIdentity) {
+      throw new Error(
+        prefix +
+          "the artifact measured bundler " +
+          String(toolchain.bundlerIdentity) +
+          " but the schemaVersion 4 contract pins " +
+          String(contract.toolchain.bundlerIdentity) +
+          "; refusing",
+      );
+    }
+    return;
+  }
+  if (toolchain.bundlerIdentity !== undefined) {
+    throw new Error(
+      prefix +
+        "the artifact measured the esbuild-free producer (bundler " +
+        String(toolchain.bundlerIdentity) +
+        ") but the contract is schemaVersion " +
+        String(contract.schemaVersion) +
+        "; only `--reason " +
+        BUNDLER_BACKEND_REASON +
+        "` moves a contract to schemaVersion " +
+        BUNDLER_SCHEMA_VERSION,
+    );
+  }
+}
+
+// Only bundler-backend writes schemaVersion 4, and a schemaVersion-4 contract
+// never regains toolchain.esbuildVersion.
+export function assertSchemaShape(before, after, reason) {
+  if (
+    reason !== BUNDLER_BACKEND_REASON &&
+    before.schemaVersion !== BUNDLER_SCHEMA_VERSION &&
+    after.schemaVersion === BUNDLER_SCHEMA_VERSION
+  ) {
+    throw new Error("--reason " + reason + " cannot write schemaVersion 4; refusing");
+  }
+  if (
+    after.schemaVersion === BUNDLER_SCHEMA_VERSION &&
+    (Object.hasOwn(after.toolchain, "esbuildVersion") ||
+      !Object.hasOwn(after.toolchain, "bundlerIdentity"))
+  ) {
+    throw new Error(
+      "--reason " +
+        reason +
+        " would write a schemaVersion 4 contract without exactly toolchain.bundlerIdentity; refusing",
+    );
+  }
+}
+
+export function bundlerBackendText(record, cargoTransition) {
+  return (
+    "schemaVersion " +
+    record.schemaVersion.from +
+    " to " +
+    record.schemaVersion.to +
+    ": esbuild " +
+    record.from.esbuildVersion +
+    " replaced by the embedded bundler " +
+    record.to.bundlerIdentity +
+    "; measure-real.mjs " +
+    short(record.runner.beforeSha256) +
+    " -> " +
+    short(record.runner.afterSha256) +
+    (cargoTransition ? "; " + cargoTransitionText(cargoTransition) : "; Cargo.lock unchanged")
+  );
 }
 
 function rewireError(message) {
@@ -3630,11 +3905,12 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       "--reason " +
         reason +
         " needs a schemaVersion " +
-        schemas.join(" or ") +
+        schemaList(schemas) +
         " contract, found schemaVersion " +
         String(contract.schemaVersion),
     );
   }
+  if (reason !== BUNDLER_BACKEND_REASON) assertProducerMatchesSchema(contract, evidence, reason);
   const repinnedFrom = REPINNED_FROM_REASONS.includes(reason)
     ? repinnedFromRecord(contract, evidence.previousContract)
     : null;
@@ -3675,7 +3951,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
   const fingerprintPolicy = reason === FINGERPRINT_POLICY_REASON;
   if (dependencyGraph) assertDependencyGraphMovement(contract, evidence);
   else if (fingerprintPolicy) assertFingerprintPolicyMovement(contract, evidence);
-  else if (contract.schemaVersion === 3) assertFingerprintUnchanged(contract, evidence, reason);
+  else if (contract.schemaVersion >= 3) assertFingerprintUnchanged(contract, evidence, reason);
   const fingerprintTransition = dependencyGraph
     ? fingerprintTransitionRecord(contract, evidence.dependencyFingerprint)
     : null;
@@ -3702,6 +3978,19 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       contractSha: contract.toolchain.cargoLockSha256,
       artifactSha: evidence.identity.cargoLockSha256,
     });
+  }
+  const bundlerBackend = reason === BUNDLER_BACKEND_REASON;
+  let bundlerBackendTransition = null;
+  if (bundlerBackend) {
+    assertBundlerBackendMovement(contract, evidence);
+    bundlerBackendTransition = bundlerBackendRecord(contract, evidence);
+    if (evidence.cargoLock) {
+      cargoTransition = proveCargoProducerLock({
+        ...evidence.cargoLock,
+        contractSha: contract.toolchain.cargoLockSha256,
+        artifactSha: evidence.identity.cargoLockSha256,
+      });
+    }
   }
   const cargoRemovalReason = reason === CARGO_REMOVAL_REASON;
   let cargoRemoval = null;
@@ -3734,6 +4023,22 @@ export function rebaselineContract(contract, totals, evidence, reason) {
     Object.assign(next, migrated);
     next.allowance = { raw: 0, gzipNormalized: 0 };
   }
+  if (bundlerBackend) {
+    next.schemaVersion = BUNDLER_SCHEMA_VERSION;
+    next.toolchain = Object.fromEntries(
+      Object.entries(next.toolchain).map(([key, value]) =>
+        key === "esbuildVersion"
+          ? ["bundlerIdentity", bundlerBackendTransition.to.bundlerIdentity]
+          : [key, value],
+      ),
+    );
+    next.runnerSha256 = Object.fromEntries(
+      Object.keys(contract.runnerSha256).map((file) => [
+        file,
+        evidence.identity.runnerSha256[file],
+      ]),
+    );
+  }
   if (reason === "fingerprint-migration") {
     const migrated = {};
     for (const [key, value] of Object.entries(next)) {
@@ -3747,6 +4052,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
     Object.assign(next, migrated);
     next.runnerSha256 = { ...evidence.identity.runnerSha256 };
   }
+  assertSchemaShape(contract, next, reason);
   next.outcome = policy.outcome;
   next.baselineSourceSha = evidence.headSha;
   next.toolchain.packageVersion = evidence.version;
@@ -3832,6 +4138,22 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       " at " +
       sourceText(evidence.sourceSha, evidence.headSha) +
       " after a consumer-only pnpm-lock.yaml change. The producer version, fixtures, runners, Cargo.lock, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the lock hash moved. This is not a release or runtime change. " +
+      gzipSummary +
+      "." +
+      matrices;
+  } else if (bundlerBackend) {
+    next.platformStatus =
+      "Linux x64 has exact zero-allowance v" +
+      evidence.version +
+      " ceilings on metric " +
+      metricText() +
+      ", re-pinned from workflow run " +
+      evidence.runId +
+      " at " +
+      sourceText(evidence.sourceSha, evidence.headSha) +
+      " for the esbuild-free producer (" +
+      bundlerBackendText(bundlerBackendTransition, cargoTransition) +
+      "). The producer version, fixtures, measure.mjs, Hono/Node/zlib, dependency fingerprint and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; the recorded pnpm-lock.yaml hash is baseline provenance only. Equal totals alone do not prove byte-identical product code. " +
       gzipSummary +
       "." +
       matrices;
@@ -3948,6 +4270,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
         }
       : {}),
     ...(repinnedFrom ? { repinnedFrom } : {}),
+    ...(bundlerBackendTransition ? { bundlerBackend: bundlerBackendTransition } : {}),
     ...(cargoTransition ? { cargoTransition } : {}),
     ...(cargoRewire ? { cargoRewire } : {}),
     ...(cargoRemoval ? { cargoRemoval } : {}),
@@ -3984,53 +4307,61 @@ export function rebaselineContract(contract, totals, evidence, reason) {
               " with every other reviewed identity input unchanged; raw and gzipNormalized totals did not change; " +
               gzipSummary +
               "."
-            : reason === CARGO_PRODUCER_LOCK_REASON
-              ? "Reviewed " +
-                (cargoTransition.review ? "non-additive" : "additive") +
-                " Cargo.lock transition at unchanged v" +
+            : bundlerBackend
+              ? "Reviewed bundler-backend transition at unchanged v" +
                 previousVersion +
                 " (" +
-                cargoTransitionText(cargoTransition) +
+                bundlerBackendText(bundlerBackendTransition, cargoTransition) +
                 "); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; " +
                 gzipSummary +
                 "."
-              : cargoRewireReason
-                ? "Reviewed internal Cargo.lock rewire at unchanged v" +
+              : reason === CARGO_PRODUCER_LOCK_REASON
+                ? "Reviewed " +
+                  (cargoTransition.review ? "non-additive" : "additive") +
+                  " Cargo.lock transition at unchanged v" +
                   previousVersion +
                   " (" +
-                  cargoRewireText(cargoRewire) +
+                  cargoTransitionText(cargoTransition) +
                   "); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; " +
                   gzipSummary +
                   "."
-                : cargoRemovalReason
-                  ? "Reviewed removal-only Cargo.lock transition at unchanged v" +
+                : cargoRewireReason
+                  ? "Reviewed internal Cargo.lock rewire at unchanged v" +
                     previousVersion +
                     " (" +
-                    cargoRemovalText(cargoRemoval) +
+                    cargoRewireText(cargoRewire) +
                     "); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; " +
                     gzipSummary +
                     "."
-                  : dependencyGraph
-                    ? "Reviewed dependency-graph re-pin at unchanged v" +
+                  : cargoRemovalReason
+                    ? "Reviewed removal-only Cargo.lock transition at unchanged v" +
                       previousVersion +
                       " (" +
-                      fingerprintTransitionText(fingerprintTransition) +
-                      "): the new fingerprint was computed by lock-fingerprint.mjs on the checkout and equals the artifact's; every other reviewed identity input, Cargo.lock included, is unchanged; raw and gzipNormalized totals did not change; " +
+                      cargoRemovalText(cargoRemoval) +
+                      "); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; " +
                       gzipSummary +
                       "."
-                    : fingerprintPolicy
-                      ? "Reviewed fingerprint-policy re-pin at unchanged v" +
+                    : dependencyGraph
+                      ? "Reviewed dependency-graph re-pin at unchanged v" +
                         previousVersion +
                         " (" +
-                        fingerprintPolicyTransitionText(fingerprintPolicyTransition) +
-                        "): policyVersion stepped by exactly one to the checkout helper's exported FINGERPRINT_POLICY_VERSION; the new policyVersion and sha256 equal the artifact's, and parser and helperSha256 are the checkout helper's own; every other reviewed identity input, Cargo.lock included, is unchanged; raw and gzipNormalized totals did not change; " +
+                        fingerprintTransitionText(fingerprintTransition) +
+                        "): the new fingerprint was computed by lock-fingerprint.mjs on the checkout and equals the artifact's; every other reviewed identity input, Cargo.lock included, is unchanged; raw and gzipNormalized totals did not change; " +
                         gzipSummary +
                         "."
-                      : "Raw and gzipNormalized totals did not change from the v" +
-                        previousVersion +
-                        " contract; " +
-                        gzipSummary +
-                        ".") +
+                      : fingerprintPolicy
+                        ? "Reviewed fingerprint-policy re-pin at unchanged v" +
+                          previousVersion +
+                          " (" +
+                          fingerprintPolicyTransitionText(fingerprintPolicyTransition) +
+                          "): policyVersion stepped by exactly one to the checkout helper's exported FINGERPRINT_POLICY_VERSION; the new policyVersion and sha256 equal the artifact's, and parser and helperSha256 are the checkout helper's own; every other reviewed identity input, Cargo.lock included, is unchanged; raw and gzipNormalized totals did not change; " +
+                          gzipSummary +
+                          "."
+                        : "Raw and gzipNormalized totals did not change from the v" +
+                          previousVersion +
+                          " contract; " +
+                          gzipSummary +
+                          ".") +
       " Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
   };
   for (const mode of MODES) {
@@ -4041,7 +4372,9 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       };
     }
   }
-  if (cargoTransition) assertCargoProducerLockMovement(contract, next);
+  if (bundlerBackend) {
+    assertAllowedMovement(BUNDLER_BACKEND_REASON, BUNDLER_BACKEND_MOVEMENT, contract, next);
+  } else if (cargoTransition) assertCargoProducerLockMovement(contract, next);
   if (cargoRewire) assertCargoInternalRewireMovement(contract, next);
   if (cargoRemoval) assertCargoRemovalMovement(contract, next);
   if (dependencyGraph) {
@@ -4141,6 +4474,7 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
     FINGERPRINT_POLICY_REASON,
     CARGO_INTERNAL_REWIRE_REASON,
     CARGO_REMOVAL_REASON,
+    BUNDLER_BACKEND_REASON,
   ].includes(reason)
     ? "workflow run "
     : "health run ";
@@ -4251,6 +4585,36 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
       "toolchain and normalizer are unchanged, and every raw and `gzipNormalized` total is " +
       "unchanged; only `toolchain.cargoLockSha256` moved. These totals alone do not prove " +
       "byte-identical product code. " +
+      evidence +
+      closing;
+  } else if (reason === BUNDLER_BACKEND_REASON) {
+    const record = contract.baselineEvidence.bundlerBackend;
+    const cargo = contract.baselineEvidence.cargoTransition;
+    body =
+      "The Linux contract moved to the esbuild-free producer (schemaVersion " +
+      record.schemaVersion.from +
+      " to " +
+      record.schemaVersion.to +
+      ") at v" +
+      version +
+      " from " +
+      run +
+      ": `toolchain.esbuildVersion` `" +
+      record.from.esbuildVersion +
+      "` is replaced by `toolchain.bundlerIdentity` `" +
+      record.to.bundlerIdentity +
+      "`, the embedded native bundler that `zfb --version` reports and " +
+      "`crates/zfb-bundler/src/request.rs` pins, and the `measure-real.mjs` runner digest moved " +
+      "from `" +
+      record.runner.beforeSha256 +
+      "` to `" +
+      record.runner.afterSha256 +
+      "` because the runner now records that identity. " +
+      (cargo ? cargoTransitionMarkdown(cargo) + " " : "`Cargo.lock` is unchanged. ") +
+      "The producer version, fixtures, `measure.mjs`, Hono/Node/zlib, the dependency fingerprint " +
+      "and the normalizer are unchanged, and every raw and `gzipNormalized` total is unchanged; " +
+      "`toolchain.pnpmLockSha256` follows the artifact as baseline provenance only. These totals " +
+      "alone do not prove byte-identical product code. " +
       evidence +
       closing;
   } else if (reason === CARGO_INTERNAL_REWIRE_REASON) {
@@ -4617,9 +4981,14 @@ export function repinFingerprintHelper(contracts, proof) {
     return { name, file, contract: contracts[name] };
   });
   for (const { file, contract } of entries) {
-    if (contract.schemaVersion !== 3 || !isRecord(contract.dependencyFingerprint)) {
+    if (
+      !acceptedSchemas(FINGERPRINT_HELPER_REASON).includes(contract.schemaVersion) ||
+      !isRecord(contract.dependencyFingerprint)
+    ) {
       throw helperRepinError(
-        "needs a schemaVersion 3 contract, found " +
+        "needs a schemaVersion " +
+          schemaList(acceptedSchemas(FINGERPRINT_HELPER_REASON)) +
+          " contract, found " +
           String(contract.schemaVersion) +
           " in " +
           file +
@@ -5748,6 +6117,7 @@ export async function main(argv = process.argv.slice(2), root = ".", stageIo = u
     "fingerprint-policy": "Fingerprint-policy re-pin run at v" + version,
     "cargo-internal-rewire": "Cargo internal-rewire transition run at v" + version,
     "cargo-removal": "Cargo removal transition run at v" + version,
+    "bundler-backend": "Bundler-backend transition run at v" + version,
   }[args.reason];
   const result = rebaselineContract(
     contract,
@@ -5774,6 +6144,14 @@ export async function main(argv = process.argv.slice(2), root = ".", stageIo = u
         : {}),
       ...(args.reason === CARGO_REMOVAL_REASON
         ? { cargoRemoval: readCargoRemovalEvidence(args, root, LINUX_PRODUCER_TARGET) }
+        : {}),
+      ...(args.reason === BUNDLER_BACKEND_REASON
+        ? {
+            checkoutBundlerIdentity: readBundlerIdentity(root),
+            ...(Object.hasOwn(args, "old-cargo-ref")
+              ? { cargoLock: readCargoLockEvidence(args, root) }
+              : {}),
+          }
         : {}),
       ...(REPINNED_FROM_REASONS.includes(args.reason)
         ? {

@@ -33,17 +33,20 @@ path = "src/lib.rs"
 # Default JS runtime (#4390); the deno_core host was removed in #4395.
 direct-v8 = ["zfb-render/direct-v8", "zfb-build/direct-v8", "zfb-server/direct-v8", "zfb-config-loader/direct-v8"]
 
-rolldown-prototype = ["zfb-build/rolldown-prototype", "zfb-islands/rolldown-prototype"]
-default = ["direct-v8", "rolldown-prototype"]
+default = ["direct-v8"]
 
 [dependencies]
 zfb-diagnostics = { path = "../zfb-diagnostics" }
 zfb-toolchain-pins = { path = "../zfb-toolchain-pins" }
+# `zfb --version` reports the native bundler backend identity.
+zfb-bundler = { path = "../zfb-bundler", features = ["native"] }
 # TS-config evaluator, hoisted out of this crate (issue #1037) into a leaf
 # crate so `zfb-server` can call it too without a dependency cycle. This crate
 # re-exports / wraps it in `config.rs`. `default-features = false` for the V8
 # gate (issue #371) — the `direct-v8` feature above propagates the toggle.
 zfb-config-loader = { path = "../zfb-config-loader", default-features = false }
+# Private `__zfb-compiler-worker` mode dispatched first in `main` (#4630).
+zfb-compiler-worker = { path = "../zfb-compiler-worker" }
 anyhow = { workspace = true }
 # Sub 3 / #108: dyn-compat async trait used by the plugin-host →
 # zfb-server dispatcher adapter in `commands::plugins`.
@@ -122,29 +125,14 @@ zfb-server = { path = "../zfb-server" }
 zfb-types = { path = "../zfb-types" }
 zfb-watcher = { path = "../zfb-watcher" }
 # SHA-256 for the Phase-B bundle-skip key (issue #940). The same version is
-# already used as a build-dependency (binary verification in build.rs) and by
-# zfb-graph for its ManifestDigest; adding it here avoids pulling a new crate.
+# already used by zfb-graph for its ManifestDigest; adding it here avoids
+# pulling a new crate.
 sha2 = "0.10"
 # KEEP: bind-all ready URLs enumerate every non-loopback IPv4 interface; UDP connect selects only one egress address (#487/#499).
 local-ip-address = "0.6"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[build-dependencies]
-# Single source of truth for EXPECTED_ESBUILD_VERSION (and other tool pins).
-# build.rs reads zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION to construct
-# the npm registry download URL for the pinned esbuild binary.
-zfb-toolchain-pins = { path = "../zfb-toolchain-pins" }
-# Streaming retry downloader used by build.rs; owns reqwest + rustls-tls
-# so we no longer need a direct reqwest build-dependency here.
-zfb-binfetch = { path = "../zfb-binfetch" }
-# SHA-256 for binary verification (same version used by zfb-build).
-sha2 = "0.10"
-hex = "0.4"
-# Gzip + tar extraction for the esbuild npm package (.tgz).
-flate2 = "1"
-tar = "0.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -166,9 +154,3 @@ zfb-test-utils = { path = "../zfb-test-utils" }
 # Unix-only; the test is #[cfg(unix)]-gated.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
-
-[package.metadata.cargo-machete]
-# These are [build-dependencies] used in build.rs; cargo-machete does not parse
-# build.rs and reports them as unused. Verified used: flate2/tar (tarball
-# extraction), zfb-binfetch (binary download), hex (digest encoding).
-ignored = ["flate2", "tar", "hex", "zfb-binfetch"]

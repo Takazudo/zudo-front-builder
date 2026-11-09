@@ -42,74 +42,68 @@ const base = {
   ZFB_PROTOTYPE_PROFILE: "release",
   ZFB_PROTOTYPE_CLI: resolve("target/release/zfb"),
 };
+// The zfb CLI rejects both retired backend selectors, so never forward them.
 delete base.ZFB_ROLLDOWN_PROTOTYPE;
 delete base.ZFB_BUNDLER;
 const before = tree(root);
 const productionInputs = tree("prototypes/rolldown/production-fixture");
 const samples = [];
-// AB / BA counters order bias without claiming a statistical speed result.
-for (const [round, order] of [
-  [0, ["esbuild", "rolldown"]],
-  [1, ["rolldown", "esbuild"]],
-]) {
-  for (const backend of order) {
-    const env = { ...base };
-    env.ZFB_BUNDLER = backend;
-    for (const fixture of ["ssr", "browser", "production"]) {
-      const label = `${round}-${backend}-${fixture}`;
-      const { elapsed_us, log } = run(
-        `target/release/examples/rolldown_${fixture}`,
-        fixture === "production" ? [] : [root],
-        env,
-        label,
+const backend = "rolldown";
+const env = { ...base };
+// Two fresh rounds without claiming a statistical speed result.
+for (const round of [0, 1]) {
+  for (const fixture of ["ssr", "browser", "production"]) {
+    const label = `${round}-${backend}-${fixture}`;
+    const { elapsed_us, log } = run(
+      `target/release/examples/rolldown_${fixture}`,
+      fixture === "production" ? [] : [root],
+      env,
+      label,
+    );
+    const record = { round, backend, fixture, probe_process_us: elapsed_us };
+    if (fixture === "production") {
+      const evidence = `target/rolldown-production/${backend}/evidence`;
+      cpSync(evidence, join(destination, label), { recursive: true });
+      record.positive_cli_calls = [0, 1].map((iteration) => {
+        const timing = JSON.parse(readFileSync(`${evidence}/positive-${iteration}-timing.json`));
+        const positiveLog = readFileSync(`${evidence}/positive-${iteration}.log`, "utf8");
+        return {
+          ...timing,
+          phase_lines: positiveLog
+            .split("\n")
+            .filter((line) => line.includes("bundle():") || line.includes("rolldown-prototype:")),
+        };
+      });
+    } else {
+      const key = fixture === "ssr" ? "selected_pipeline_us" : "selected_bundle_call_us";
+      const values = log.match(new RegExp(`${key}=\\[([^\\]]+)\\]`));
+      assert.ok(values, `missing ${key}`);
+      record[key] = values[1].split(",").map(Number);
+      assert.equal(record[key].length, 3);
+      // SSR negative probes follow the first three positive calls. Never pool
+      // their timings into the measured positive sample set.
+      record.positive_pipeline_phase_lines = log
+        .split("\n")
+        .filter((line) => line.includes("bundle():"))
+        .slice(0, fixture === "ssr" ? 3 : 0);
+      const native = [...log.matchAll(/rolldown-prototype: bundle=(\d+)us metadata=(\d+)us/g)].map(
+        (match) => ({ bundle_us: Number(match[1]), metadata_us: Number(match[2]) }),
       );
-      const record = { round, backend, fixture, probe_process_us: elapsed_us };
-      if (fixture === "production") {
-        const evidence = `target/rolldown-production/${backend}/evidence`;
-        cpSync(evidence, join(destination, label), { recursive: true });
-        record.positive_cli_calls = [0, 1].map((iteration) => {
-          const timing = JSON.parse(readFileSync(`${evidence}/positive-${iteration}-timing.json`));
-          const positiveLog = readFileSync(`${evidence}/positive-${iteration}.log`, "utf8");
-          return {
-            ...timing,
-            phase_lines: positiveLog
-              .split("\n")
-              .filter((line) => line.includes("bundle():") || line.includes("rolldown-prototype:")),
-          };
-        });
-      } else {
-        const key = fixture === "ssr" ? "selected_pipeline_us" : "selected_bundle_call_us";
-        const values = log.match(new RegExp(`${key}=\\[([^\\]]+)\\]`));
-        assert.ok(values, `missing ${key}`);
-        record[key] = values[1].split(",").map(Number);
-        assert.equal(record[key].length, 3);
-        // SSR negative probes follow the first three positive calls. Never pool
-        // their timings into the measured positive sample set.
-        record.positive_pipeline_phase_lines = log
-          .split("\n")
-          .filter((line) => line.includes("bundle():"))
-          .slice(0, fixture === "ssr" ? 3 : 0);
-        const native = [
-          ...log.matchAll(/rolldown-prototype: bundle=(\d+)us metadata=(\d+)us/g),
-        ].map((match) => ({ bundle_us: Number(match[1]), metadata_us: Number(match[2]) }));
-        if (backend === "rolldown") {
-          const jobsPerCall = fixture === "browser" ? 2 : 1; // main + module worker
-          assert.ok(native.length >= 3 * jobsPerCall);
-          record.positive_native_jobs_by_call = Array.from({ length: 3 }, (_, index) =>
-            native.slice(index * jobsPerCall, (index + 1) * jobsPerCall),
-          );
-        }
-        if (fixture === "browser") {
-          const publish = log.match(/production_publish_us=\[([^\]]+)\]/);
-          assert.ok(publish);
-          record.production_publish_us = publish[1].split(",").map(Number);
-        }
+      const jobsPerCall = fixture === "browser" ? 2 : 1; // main + module worker
+      assert.ok(native.length >= 3 * jobsPerCall);
+      record.positive_native_jobs_by_call = Array.from({ length: 3 }, (_, index) =>
+        native.slice(index * jobsPerCall, (index + 1) * jobsPerCall),
+      );
+      if (fixture === "browser") {
+        const publish = log.match(/production_publish_us=\[([^\]]+)\]/);
+        assert.ok(publish);
+        record.production_publish_us = publish[1].split(",").map(Number);
       }
-      samples.push(record);
-      console.log(
-        `${label}: semantic probe PASS (${elapsed_us}us entire probe, not a bundle metric)`,
-      );
     }
+    samples.push(record);
+    console.log(
+      `${label}: semantic probe PASS (${elapsed_us}us entire probe, not a bundle metric)`,
+    );
   }
 }
 assert.deepEqual(tree(root), before, "prepared input tree changed during comparison");
@@ -118,12 +112,10 @@ assert.deepEqual(tree("prototypes/rolldown/production-fixture"), productionInput
 run(process.execPath, ["prototypes/rolldown/browser.mjs", root], base, "chromium");
 run(process.execPath, ["prototypes/rolldown/gate.mjs"], base, "direct-gate");
 for (const round of [0, 1]) {
-  const reports = ["esbuild", "rolldown"].map((backend) =>
-    JSON.parse(readFileSync(join(destination, `${round}-${backend}-production/report.json`))),
+  const production = JSON.parse(
+    readFileSync(join(destination, `${round}-rolldown-production/report.json`)),
   );
-  for (const route of ["/runtime", "/api/admin/a/b", "/api/admin/c"])
-    assert.equal(reports[0].adapter[route].body, reports[1].adapter[route].body);
-  assert.deepEqual(reports[0].wasm_values, reports[1].wasm_values);
+  assert.equal(production.backend, "rolldown");
 }
 const git = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
 const report = {
@@ -131,7 +123,7 @@ const report = {
   worktree_status: spawnSync("git", ["status", "--porcelain"], { encoding: "utf8" }).stdout,
   dirty_diff_sha256: hash(spawnSync("git", ["diff", "HEAD", "--"], { encoding: "utf8" }).stdout),
   input_snapshot_scope:
-    "Materialised fixture sources and top-level copied runtime dependencies, excluding nested package node_modules development installs. This is not a byte-for-byte prepared argv/stage hash; both backends use the same existing preparation/policy code.",
+    "Materialised fixture sources and top-level copied runtime dependencies, excluding nested package node_modules development installs. This is not a byte-for-byte prepared argv/stage hash.",
   platform: platform(),
   arch: arch(),
   kernel: release(),
@@ -139,7 +131,7 @@ const report = {
   node: process.version,
   profile: "Cargo release, unchanged workspace settings",
   interpretation:
-    "Two fresh probe processes/backend; each SSR/browser has three calls (first then two same-process warm calls, no bundler instance reuse). Production samples each spawn a fresh CLI; second has an existing dist. No OS cache flush. Compilation excluded. Native internal phases available; esbuild internal metadata phase unavailable. Probe process time includes validation/negative cases and is not pipeline time.",
+    "Two fresh native Rolldown probe rounds; each SSR/browser has three calls (first then two same-process warm calls, no bundler instance reuse). Production samples each spawn a fresh CLI; second has an existing dist. No OS cache flush. Compilation excluded. Native internal phases available. Probe process time includes validation/negative cases and is not pipeline time.",
   prepared_inputs: before,
   production_inputs: productionInputs,
   binaries: Object.fromEntries(
@@ -148,7 +140,6 @@ const report = {
       "target/release/examples/rolldown_ssr",
       "target/release/examples/rolldown_browser",
       "target/release/examples/rolldown_production",
-      process.env.ZFB_ESBUILD_BIN,
     ].map((path) => {
       assert.ok(path);
       return [path, hash(readFileSync(path))];

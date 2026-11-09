@@ -1,18 +1,15 @@
 //! [`ClientBundler`] trait and shared types.
 //!
-//! Sub 2 of Epic #6 implements the production `EsbuildSubprocessBundler` —
-//! today that means shelling out to the esbuild CLI binary. The trait below
+//! The production implementation is [`crate::IslandsBundler`], which runs
+//! typed jobs on zfb's in-process native bundler. The trait below
 //! is the seam between scanning ([`crate::scanner`]) and bundling: anything
 //! handed an islands set and a [`BundleConfig`] can produce a
 //! `dist/assets/islands-{hash}.js` asset.
 //!
 //! ## Why a trait?
 //!
-//! esbuild is delivered as a Go-built CLI. To keep the build pipeline
-//! portable we shell out today, but the long-term plan is to swap in a
-//! Rust-native bundler (e.g. `oxc_minifier` on `oxc_resolver`, or
-//! `rolldown`, or whichever lands first) without touching the scanner or
-//! the render orchestrator. See [`crate::future_rust_native`] for the
+//! The trait keeps bundling swappable without touching the scanner or the
+//! render orchestrator. See [`crate::future_rust_native`] for the
 //! placeholder bundler that documents the swap path.
 //!
 //! ## Contract

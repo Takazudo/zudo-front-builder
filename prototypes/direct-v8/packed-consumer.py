@@ -15,10 +15,10 @@ copy of the scaffold is built a second time against the same packed packages,
 extracted into a small pnpm workspace and `link:`ed into the site, and the two
 dist/ trees must be byte-identical (scripts/assert-dist-byte-parity.sh semantics).
 
-`--rolldown` builds the scaffolded site with ZFB_ROLLDOWN_PROTOTYPE=1 (the binary
-must carry the rolldown-prototype feature) and ZFB_DEV_TIMING=1, and requires the
-backend's own timing line in the build output as proof that Rolldown bundled it;
-without it an inherited ZFB_ROLLDOWN_PROTOTYPE is removed.
+`--rolldown-timing` builds the scaffolded site with ZFB_DEV_TIMING=1 and requires
+the native Rolldown compiler's own timing line in the build output as proof that
+it bundled the site. Inherited ZFB_BUNDLER and ZFB_ROLLDOWN_PROTOTYPE values are
+always removed: the CLI rejects both retired backend selectors.
 
 The injected files are removed again afterwards. Exit 0 PASS, 1 FAIL.
 
@@ -45,7 +45,9 @@ NON_CARRIER_PACKAGES = ["zfb-slugify", "zfb", "zfb-runtime", "zfb-adapter-cloudf
 CLEAN_ROOM_OVERRIDES = ["zfb", "zfb-slugify", "zfb-runtime", "zfb-adapter-cloudflare"]
 CONSUMER_OVERRIDES = ["zfb", "zfb-slugify", "zfb-runtime"]
 SITE_NAME = "packed-e2e-site"
-# Printed by crates/zfb-rolldown-prototype/src/native.rs when ZFB_DEV_TIMING is set.
+# Retired backend selectors the CLI rejects at any value (#4628); never forwarded.
+REMOVED_BUNDLER_SELECTORS = ("ZFB_BUNDLER", "ZFB_ROLLDOWN_PROTOTYPE")
+# Printed by crates/zfb-bundler/src/native.rs when ZFB_DEV_TIMING is set.
 ROLLDOWN_TIMING_LINE = "[zfb-timing] rolldown-prototype:"
 # Stage 7 (smoke-packed-clean-room.sh): extracted workspace members, and the two the site `link:`s.
 LINKED_WORKSPACE_PACKAGES = ["zfb", "zfb-runtime", "zfb-slugify"]
@@ -176,14 +178,14 @@ def assert_dist_parity(first, second, required, log):
     return {"files": len(manifest_a), "islands": islands}
 
 
-def required_rows(rolldown):
+def required_rows(rolldown_timing):
     rows = ["css-addon-loads", "carrier-packed", "packages-packed", "clean-room-install", "scaffold", "site-build"]
-    return rows + (["rolldown-backend-observed"] if rolldown else []) + ["linked-build-parity"]
+    return rows + (["rolldown-backend-observed"] if rolldown_timing else []) + ["linked-build-parity"]
 
 
 def assert_required_rows(report):
     recorded = [row["name"] for row in report["rows"] if row.get("passed") is True]
-    missing = [name for name in required_rows(report["rolldown_prototype"]) if name not in recorded]
+    missing = [name for name in required_rows(report["rolldown_timing"]) if name not in recorded]
     assert not missing, f"required rows missing: {', '.join(missing)}"
 
 
@@ -328,16 +330,17 @@ def main():
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--css-addon", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path, help="New directory for the report and log")
-    parser.add_argument("--rolldown", action="store_true", help="Build the site with the Rolldown prototype")
+    parser.add_argument("--rolldown-timing", action="store_true",
+                        help="Build with ZFB_DEV_TIMING=1 and require the native Rolldown timing line")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     carrier_dir = ROOT / "packages" / f"zfb-{args.carrier}"
-    report = {"carrier": args.carrier, "binary": str(args.binary.resolve()), "rolldown_prototype": args.rolldown,
+    report = {"carrier": args.carrier, "binary": str(args.binary.resolve()), "rolldown_timing": args.rolldown_timing,
               "rows": [], "passed": False}
-    build_env = {key: value for key, value in os.environ.items() if key != "ZFB_ROLLDOWN_PROTOTYPE"}
-    if args.rolldown:
-        build_env.update(ZFB_ROLLDOWN_PROTOTYPE="1", ZFB_DEV_TIMING="1")
+    build_env = {key: value for key, value in os.environ.items() if key not in REMOVED_BUNDLER_SELECTORS}
+    if args.rolldown_timing:
+        build_env["ZFB_DEV_TIMING"] = "1"
     injected, preexisting, workdir = [], {}, None
     with (output / "packed-consumer.log").open("w", encoding="utf-8", errors="replace") as log:
         try:
@@ -417,7 +420,7 @@ def main():
             for marker in ["basic-blog", "Hello, zfb"]:
                 assert marker in html, f"dist/index.html does not contain {marker!r}"
             report["rows"].append({"name": "site-build", "passed": True})
-            if args.rolldown:
+            if args.rolldown_timing:
                 assert ROLLDOWN_TIMING_LINE in build_output, "the site build printed no Rolldown backend timing line"
                 report["rows"].append({"name": "rolldown-backend-observed", "passed": True})
 
@@ -456,7 +459,7 @@ def main():
             except AssertionError:
                 linked_build_diagnostics(log, pnpm, linked_site, packages_ws, build_env)
                 raise
-            if args.rolldown:
+            if args.rolldown_timing:
                 assert ROLLDOWN_TIMING_LINE in linked_output, "the linked build printed no Rolldown backend timing line"
             parity = assert_dist_parity(site / "dist", linked_site / "dist", REQUIRED_DIST_GLOBS, log)
             report["rows"].append({"name": "linked-build-parity", "links": links,

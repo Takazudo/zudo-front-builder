@@ -37,7 +37,6 @@
 use std::fs;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_test_utils::locate_esbuild;
 
 /// Write a hand-rolled CJS-only package into `<root>/node_modules/<name>`.
 ///
@@ -96,7 +95,6 @@ fn scaffold_project_importing(root: &std::path::Path, dep: &str) {
 /// itself bundles. `main_fields` / extra `external` are the knobs under test.
 fn make_input(
     root: &std::path::Path,
-    esbuild: std::path::PathBuf,
     main_fields: Vec<String>,
     extra_external: Vec<String>,
 ) -> BundlerInput {
@@ -113,7 +111,6 @@ fn make_input(
     ];
     input.external.extend(extra_external);
     input.main_fields = main_fields;
-    input.esbuild_binary = Some(esbuild);
     input.node_modules_dir = Some(root.join("node_modules"));
     input
 }
@@ -123,21 +120,11 @@ fn make_input(
 /// resolved + inlined) when `main_fields = ["main", "module"]`.
 #[test]
 fn main_fields_knob_resolves_cjs_main_only_dep_fails_without_passes_with() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_main_fields] no esbuild binary; skipping.");
-        return;
-    };
-
     // --- Negative control: NO main_fields → must FAIL. ---
     let tmp_fail = tempfile::tempdir().expect("tempdir");
     scaffold_project_importing(tmp_fail.path(), "badcjs");
     write_cjs_only_package(tmp_fail.path(), "badcjs");
-    let fail = bundle(make_input(
-        tmp_fail.path(),
-        esbuild.clone(),
-        Vec::new(),
-        Vec::new(),
-    ));
+    let fail = bundle(make_input(tmp_fail.path(), Vec::new(), Vec::new()));
     assert!(
         fail.is_err(),
         "WITHOUT bundle.mainFields the external-runtime/neutral pass has an empty \
@@ -157,7 +144,6 @@ fn main_fields_knob_resolves_cjs_main_only_dep_fails_without_passes_with() {
     write_cjs_only_package(tmp_pass.path(), "badcjs");
     let out = bundle(make_input(
         tmp_pass.path(),
-        esbuild,
         vec!["main".to_string(), "module".to_string()],
         Vec::new(),
     ))
@@ -177,21 +163,11 @@ fn main_fields_knob_resolves_cjs_main_only_dep_fails_without_passes_with() {
 /// instead of resolving it.
 #[test]
 fn external_knob_lets_build_skip_cjs_main_only_dep() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_main_fields] no esbuild binary; skipping.");
-        return;
-    };
-
     // --- Negative control: NO external → must FAIL. ---
     let tmp_fail = tempfile::tempdir().expect("tempdir");
     scaffold_project_importing(tmp_fail.path(), "badcjs");
     write_cjs_only_package(tmp_fail.path(), "badcjs");
-    let fail = bundle(make_input(
-        tmp_fail.path(),
-        esbuild.clone(),
-        Vec::new(),
-        Vec::new(),
-    ));
+    let fail = bundle(make_input(tmp_fail.path(), Vec::new(), Vec::new()));
     assert!(
         fail.is_err(),
         "negative control: must fail without any knob"
@@ -203,7 +179,6 @@ fn external_knob_lets_build_skip_cjs_main_only_dep() {
     write_cjs_only_package(tmp_pass.path(), "badcjs");
     let out = bundle(make_input(
         tmp_pass.path(),
-        esbuild,
         Vec::new(),
         vec!["badcjs".to_string()],
     ))

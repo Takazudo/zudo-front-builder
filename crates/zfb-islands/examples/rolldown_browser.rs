@@ -6,16 +6,10 @@ use zfb_build::pipeline::prod::{
 };
 use zfb_build::pipeline::{AssetPipeline, BuildContext};
 use zfb_islands::bundler::ModuleWorkerBundleEntry;
-use zfb_islands::{
-    BundleConfig, ClientBundler, EsbuildSubprocessBundler, EsbuildSubprocessConfig, Island,
-};
+use zfb_islands::{BundleConfig, ClientBundler, Island, IslandsBundler, IslandsBundlerConfig};
 fn main() -> Result<()> {
     let root = PathBuf::from(std::env::args().nth(1).expect("project root")).canonicalize()?;
-    let backend = if std::env::var("ZFB_BUNDLER").as_deref() != Ok("esbuild") {
-        "rolldown"
-    } else {
-        "esbuild"
-    };
+    let backend = "rolldown";
     let build = zfb_build::bundler::zudo_react_build_token(&root)?;
     // Reuse the actual worker URL preparation against logical authored paths.
     let stage = tempfile::tempdir()?;
@@ -72,9 +66,8 @@ fn main() -> Result<()> {
             .into_iter()
             .collect(),
         );
-    let bundler = EsbuildSubprocessBundler::new(
-        EsbuildSubprocessConfig::default().with_working_dir(stage.path()),
-    );
+    let bundler =
+        IslandsBundler::new(IslandsBundlerConfig::default().with_working_dir(stage.path()));
     let islands = [Island::new(
         "Counter",
         stage.path().join("components/Counter.tsx"),

@@ -204,10 +204,22 @@ function localizedNote(value, locale, field) {
 // reachable from it (every edge kind) are byte-identical versus main 7b06241.
 // #4569 tokio 1.54.1 (RUSTSEC-2026-0386): Cargo.lock only (tokio version + checksum); tokio is
 // unreachable from zudo-wind (every edge kind, all targets).
+// #4629 typed bundler API: Cargo.lock only (zfb-rolldown-prototype gains an edge to the
+// already-locked serde); zudo-wind depends on no zfb-* crate and crates/zudo-wind and
+// Cargo.toml are unchanged versus main 0e6f9ca. #4630 compiler worker adds the zfb-compiler-worker
+// lock record (already-locked hex/libc/serde/serde_json/sha2/tokio) and its edge from zfb.
+// #4631/#4633 native bundling: Cargo.lock dependency lists only (zfb gains a dev edge to
+// zfb-rolldown-prototype, zfb-build to zfb-compiler-worker, and zfb-islands drops zfb-test-utils
+// and zfb-toolchain-pins); no record is added or removed and none is reachable from zudo-wind.
+// #4632 config compilation: dependency lists only (zfb-config-loader swaps zfb-build for
+// zfb-compiler-worker + zfb-rolldown-prototype; zfb-server gains zfb-compiler-worker).
+// #4635 esbuild removal: Cargo.lock only (tar, xattr and zfb-binfetch leave with zfb's esbuild
+// staging, zfb-rolldown-prototype is renamed zfb-bundler); none is reachable from zudo-wind, and
+// crates/zudo-wind and Cargo.toml are unchanged.
 // #4647 extraction only: `${...}` in a class value inside a <script> of JS-carried markup
 // splits as interpolation (crates/zudo-wind/src/extract/*); the utility catalog is unchanged.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "642e5f0b87d2717932d883b7867bb734d35d4e4fda27aac5895a5c60f0392d04";
+  "79b44d465d98b973c6249c44524dc2709896f2c9c6e1efba8bac675a15c4fed1";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];

@@ -44,7 +44,6 @@
 use std::fs;
 
 use zfb_build::{bundle, bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_test_utils::locate_esbuild;
 
 /// Write a hand-rolled CJS-only package into `<root>/node_modules/<name>`.
 ///
@@ -83,11 +82,7 @@ fn write_cjs_only_package(root: &std::path::Path, name: &str) {
 /// (the failing combination), node_modules adjacent to the project so the
 /// hand-rolled package is resolvable, owned runtime bare specifiers marked
 /// external so the synthetic `entry.mjs` itself bundles.
-fn make_input(
-    root: &std::path::Path,
-    esbuild: std::path::PathBuf,
-    bundle_exclude: Vec<String>,
-) -> BundlerInput {
+fn make_input(root: &std::path::Path, bundle_exclude: Vec<String>) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         root.to_path_buf(),
         BundleMode::Production,
@@ -99,7 +94,6 @@ fn make_input(
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
-    input.esbuild_binary = Some(esbuild);
     input.node_modules_dir = Some(root.join("node_modules"));
     input.bundle_exclude = bundle_exclude;
     input
@@ -132,10 +126,6 @@ fn scaffold_project(root: &std::path::Path) {
 /// bundle; the *load-bearing* proof is the negative control below.
 #[test]
 fn bundle_exclude_drops_unreferenced_story_with_bad_cjs_dep() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exclude_glob] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
@@ -150,7 +140,7 @@ fn bundle_exclude_drops_unreferenced_story_with_bad_cjs_dep() {
     )
     .unwrap();
 
-    let input = make_input(root, esbuild, vec!["components/*.stories.tsx".to_string()]);
+    let input = make_input(root, vec!["components/*.stories.tsx".to_string()]);
     let out = bundle(input).expect(
         "build must succeed: the excluded story is never materialised, so its \
          CJS-only import cannot reach esbuild",
@@ -176,11 +166,6 @@ fn bundle_exclude_drops_unreferenced_story_with_bad_cjs_dep() {
 /// proving that `bundle.exclude` is what fixes the build, not tree-shaking.
 #[test]
 fn bundle_exclude_glob_composition_fails_without_exclude_passes_with() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exclude_glob] no esbuild binary; skipping.");
-        return;
-    };
-
     // Build the identical tree in a fresh tempdir for each half so the
     // shadow materialisation cannot leak between runs.
     let build_tree = |dir: &std::path::Path| {
@@ -232,7 +217,7 @@ fn bundle_exclude_glob_composition_fails_without_exclude_passes_with() {
     // --- Negative control: NO bundle.exclude → must FAIL. ---
     let tmp_fail = tempfile::tempdir().expect("tempdir");
     build_tree(tmp_fail.path());
-    let fail_input = make_input(tmp_fail.path(), esbuild.clone(), Vec::new());
+    let fail_input = make_input(tmp_fail.path(), Vec::new());
     let fail_result = bundle(fail_input);
     assert!(
         fail_result.is_err(),
@@ -253,7 +238,6 @@ fn bundle_exclude_glob_composition_fails_without_exclude_passes_with() {
     build_tree(tmp_pass.path());
     let pass_input = make_input(
         tmp_pass.path(),
-        esbuild,
         vec!["components/Bad.stories.tsx".to_string()],
     );
     let out = bundle(pass_input).expect(
@@ -292,10 +276,6 @@ fn bundle_exclude_glob_composition_fails_without_exclude_passes_with() {
 /// the audit exists to catch as a last line of defense, regardless of cause.
 #[test]
 fn bundle_exclude_audit_fails_build_on_leaked_metafile_input() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_exclude_glob] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     scaffold_project(root);
@@ -310,7 +290,7 @@ fn bundle_exclude_audit_fails_build_on_leaked_metafile_input() {
     // between the two calls). The Wasm asset-manifest contract requests a
     // metafile for every real bundle pass, so verify this baseline has one
     // before manufacturing the exclusion leak below.
-    let priming_input = make_input(root, esbuild.clone(), Vec::new());
+    let priming_input = make_input(root, Vec::new());
     bundle_with_session(priming_input, Some(&mut session)).expect("priming build must succeed");
     assert!(
         session.shadow_root().join(".zfb-metafile.json").exists(),
@@ -345,11 +325,7 @@ fn bundle_exclude_audit_fails_build_on_leaked_metafile_input() {
     )
     .unwrap();
 
-    let audited_input = make_input(
-        root,
-        esbuild,
-        vec!["components/Bad.stories.tsx".to_string()],
-    );
+    let audited_input = make_input(root, vec!["components/Bad.stories.tsx".to_string()]);
     let err = bundle_with_session(audited_input, Some(&mut session)).expect_err(
         "esbuild's metafile records the leaked, excluded-matching input; the \
          fail-closed audit wired into bundle() must reject the build",

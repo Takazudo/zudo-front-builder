@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 #[path = "support/e2e_platform.rs"]
 mod e2e_platform;
@@ -70,20 +70,16 @@ fn pnpm_available() -> bool {
         .is_ok_and(|status| status.success())
 }
 
-fn toolchain() -> Option<PathBuf> {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[build_reproducibility_e2e] no esbuild binary available; skipping");
-        return None;
-    };
+fn toolchain() -> bool {
     if !node_available() {
         eprintln!("[build_reproducibility_e2e] node is unavailable; skipping");
-        return None;
+        return false;
     }
     if !pnpm_available() {
         eprintln!("[build_reproducibility_e2e] pnpm is unavailable; skipping");
-        return None;
+        return false;
     }
-    Some(esbuild)
+    true
 }
 
 /// Recreates the symlink `source_path` at `target_path`, keeping its target.
@@ -348,14 +344,11 @@ fn ensure_repro_dependency(root: &Path) {
     );
 }
 
-fn run_build(root: &Path, esbuild: &Path, scratch_dir: Option<&Path>, define_value: Option<&str>) {
+fn run_build(root: &Path, scratch_dir: Option<&Path>, define_value: Option<&str>) {
     ensure_repro_dependency(root);
     assert_repro_store_entry(root);
     let mut command = Command::new(zfb_binary!());
-    command
-        .arg("build")
-        .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild);
+    command.arg("build").current_dir(root);
     if let Some(scratch_dir) = scratch_dir {
         command.arg("--scratch-dir").arg(scratch_dir);
     }
@@ -461,11 +454,10 @@ fn string_assignment(source: &str, name: &str) -> String {
 
 fn capture_build(
     root: &Path,
-    esbuild: &Path,
     scratch_dir: Option<&Path>,
     define_value: Option<&str>,
 ) -> BuildSnapshot {
-    run_build(root, esbuild, scratch_dir, define_value);
+    run_build(root, scratch_dir, define_value);
     let dist = read_dist_inventory(root);
     let html_bytes = dist
         .get(Path::new("index.html"))
@@ -625,9 +617,9 @@ fn assert_clean_build(snapshot: &BuildSnapshot, root: &Path, scratch_dir: Option
 #[test]
 fn two_checkout_roots_emit_identical_dist_bytes() {
     let _guard = BUILD_LOCK.lock().unwrap();
-    let Some(esbuild) = toolchain() else { return };
-    eprintln!("[build_reproducibility_e2e] esbuild: {}", esbuild.display());
-
+    if !toolchain() {
+        return;
+    }
     let temp = tempfile::tempdir().expect("create two-root parent tempdir");
     let shallow = temp.path().join("a/app");
     let deep = temp.path().join("b/x/y/app");
@@ -661,8 +653,8 @@ fn two_checkout_roots_emit_identical_dist_bytes() {
         );
     }
 
-    let a = capture_build(&shallow, &esbuild, None, None);
-    let b = capture_build(&deep, &esbuild, None, None);
+    let a = capture_build(&shallow, None, None);
+    let b = capture_build(&deep, None, None);
     assert_eq!(a.build_id, b.build_id, "same inputs must share an identity");
     assert_dist_equal(&a, &b, "different checkout roots");
     assert_clean_build(&a, &shallow, None);
@@ -672,15 +664,17 @@ fn two_checkout_roots_emit_identical_dist_bytes() {
 #[test]
 fn scratch_location_does_not_change_dist_bytes() {
     let _guard = BUILD_LOCK.lock().unwrap();
-    let Some(esbuild) = toolchain() else { return };
+    if !toolchain() {
+        return;
+    }
     let temp = tempfile::tempdir().expect("create scratch-path tempdir");
     let root = temp.path().join("app");
     let inside = root.join(".zfb-build/repro-inside");
     let outside = temp.path().join("outside-scratch");
     scaffold_project(&root);
 
-    let inside_build = capture_build(&root, &esbuild, Some(&inside), None);
-    let outside_build = capture_build(&root, &esbuild, Some(&outside), None);
+    let inside_build = capture_build(&root, Some(&inside), None);
+    let outside_build = capture_build(&root, Some(&outside), None);
     assert_eq!(inside_build.build_id, outside_build.build_id);
     assert_dist_equal(
         &inside_build,
@@ -694,16 +688,18 @@ fn scratch_location_does_not_change_dist_bytes() {
 #[test]
 fn gitignored_test_results_do_not_change_dist_or_identity() {
     let _guard = BUILD_LOCK.lock().unwrap();
-    let Some(esbuild) = toolchain() else { return };
+    if !toolchain() {
+        return;
+    }
     let temp = tempfile::tempdir().expect("create ignored-file tempdir");
     let root = temp.path().join("app");
     scaffold_project(&root);
 
-    let baseline = capture_build(&root, &esbuild, None, None);
+    let baseline = capture_build(&root, None, None);
     let result = root.join("test-results/.last-run.json");
     fs::create_dir_all(result.parent().unwrap()).expect("create gitignored result directory");
     fs::write(&result, "{\"run\":\"one\"}\n").expect("write gitignored result file");
-    let with_result = capture_build(&root, &esbuild, None, None);
+    let with_result = capture_build(&root, None, None);
     assert_eq!(
         baseline.build_id, with_result.build_id,
         "gitignored test-results files must not affect the owned build identity"
@@ -716,7 +712,9 @@ fn gitignored_test_results_do_not_change_dist_or_identity() {
 #[test]
 fn linked_workspace_ignored_artifacts_do_not_change_identity_but_declared_dist_edits_do() {
     let _guard = BUILD_LOCK.lock().unwrap();
-    let Some(esbuild) = toolchain() else { return };
+    if !toolchain() {
+        return;
+    }
     let temp = tempfile::tempdir().expect("create linked-workspace tempdir");
     let workspace_root = temp.path();
     let app = workspace_root.join("app");
@@ -781,7 +779,7 @@ fn linked_workspace_ignored_artifacts_do_not_change_identity_but_declared_dist_e
     let widget_entry = widget.join("dist/index.js");
     fs::write(&widget_entry, "export const label = 'Widget';\n").expect("write widget entry");
 
-    let baseline = capture_build(&app, &esbuild, None, None);
+    let baseline = capture_build(&app, None, None);
     let artifacts = widget.join("test-results");
     fs::create_dir_all(&artifacts).expect("create ignored widget test-results directory");
     fs::write(artifacts.join("probe.json"), "{\"run\":\"one\"}\n")
@@ -791,7 +789,7 @@ fn linked_workspace_ignored_artifacts_do_not_change_identity_but_declared_dist_e
         "<!doctype html><title>test report</title>\n",
     )
     .expect("write ignored widget HTML report");
-    let with_artifacts = capture_build(&app, &esbuild, None, None);
+    let with_artifacts = capture_build(&app, None, None);
     assert_eq!(
         baseline.build_id, with_artifacts.build_id,
         "ignored sibling test-results artifacts must not affect the owned build identity"
@@ -808,7 +806,7 @@ fn linked_workspace_ignored_artifacts_do_not_change_identity_but_declared_dist_e
 
     fs::write(&widget_entry, "export const label = 'Widget changed';\n")
         .expect("edit declared widget dist entry");
-    let with_declared_edit = capture_build(&app, &esbuild, None, None);
+    let with_declared_edit = capture_build(&app, None, None);
     assert_ne!(
         with_artifacts.build_id, with_declared_edit.build_id,
         "edits to the widget's declared dist entry must affect the owned build identity"
@@ -819,16 +817,18 @@ fn linked_workspace_ignored_artifacts_do_not_change_identity_but_declared_dist_e
 #[test]
 fn hidden_wrangler_state_does_not_change_dist_or_identity() {
     let _guard = BUILD_LOCK.lock().unwrap();
-    let Some(esbuild) = toolchain() else { return };
+    if !toolchain() {
+        return;
+    }
     let temp = tempfile::tempdir().expect("create hidden-file tempdir");
     let root = temp.path().join("app");
     scaffold_project(&root);
 
-    let baseline = capture_build(&root, &esbuild, None, None);
+    let baseline = capture_build(&root, None, None);
     let state = root.join(".wrangler/state/x.json");
     fs::create_dir_all(state.parent().unwrap()).expect("create hidden Wrangler state directory");
     fs::write(&state, "{\"state\":\"one\"}\n").expect("write hidden Wrangler state file");
-    let with_state = capture_build(&root, &esbuild, None, None);
+    let with_state = capture_build(&root, None, None);
     assert_eq!(
         baseline.build_id, with_state.build_id,
         "unignored hidden Wrangler state must not affect the owned build identity"
@@ -841,13 +841,15 @@ fn hidden_wrangler_state_does_not_change_dist_or_identity() {
 #[test]
 fn different_defines_produce_different_lockstep_build_ids() {
     let _guard = BUILD_LOCK.lock().unwrap();
-    let Some(esbuild) = toolchain() else { return };
+    if !toolchain() {
+        return;
+    }
     let temp = tempfile::tempdir().expect("create define tempdir");
     let root = temp.path().join("app");
     scaffold_project(&root);
 
-    let one = capture_build(&root, &esbuild, None, Some("1"));
-    let two = capture_build(&root, &esbuild, None, Some("2"));
+    let one = capture_build(&root, None, Some("1"));
+    let two = capture_build(&root, None, Some("2"));
     assert_ne!(
         one.build_id, two.build_id,
         "define values are build identity inputs"
@@ -859,12 +861,14 @@ fn different_defines_produce_different_lockstep_build_ids() {
 #[test]
 fn dist_has_no_build_machine_paths_or_realpath_comments() {
     let _guard = BUILD_LOCK.lock().unwrap();
-    let Some(esbuild) = toolchain() else { return };
+    if !toolchain() {
+        return;
+    }
     let temp = tempfile::tempdir().expect("create path-leak tempdir");
     let root = temp.path().join("a/app");
     scaffold_project(&root);
 
-    let snapshot = capture_build(&root, &esbuild, None, None);
+    let snapshot = capture_build(&root, None, None);
     assert_no_path_leaks(&snapshot, &root, None);
     assert!(
         ["// ", "//#region "].iter().any(|prefix| snapshot
@@ -878,12 +882,14 @@ fn dist_has_no_build_machine_paths_or_realpath_comments() {
 #[test]
 fn remapped_island_registration_uses_project_relative_label() {
     let _guard = BUILD_LOCK.lock().unwrap();
-    let Some(esbuild) = toolchain() else { return };
+    if !toolchain() {
+        return;
+    }
     let temp = tempfile::tempdir().expect("create island-label tempdir");
     let root = temp.path().join("app");
     scaffold_project(&root);
 
-    let snapshot = capture_build(&root, &esbuild, None, None);
+    let snapshot = capture_build(&root, None, None);
     assert_island_label(&snapshot, "Counter", ISLAND_LABEL);
     assert_clean_build(&snapshot, &root, None);
 }
@@ -893,7 +899,9 @@ fn remapped_island_registration_uses_project_relative_label() {
 #[test]
 fn unrelated_title_and_markdown_edits_preserve_island_entry_and_chunk_bytes() {
     let _guard = BUILD_LOCK.lock().unwrap();
-    let Some(esbuild) = toolchain() else { return };
+    if !toolchain() {
+        return;
+    }
     let temp = tempfile::tempdir().expect("create graph-identity tempdir");
     let root = temp.path().join("app");
     scaffold_project(&root);
@@ -929,7 +937,7 @@ fn unrelated_title_and_markdown_edits_preserve_island_entry_and_chunk_bytes() {
             .map(|(path, bytes)| (path.clone(), bytes.clone()))
             .collect()
     };
-    let baseline = capture_build(&root, &esbuild, None, None);
+    let baseline = capture_build(&root, None, None);
     let original_js = browser_js(&baseline);
     assert!(
         original_js.len() >= 2,
@@ -945,7 +953,7 @@ fn unrelated_title_and_markdown_edits_preserve_island_entry_and_chunk_bytes() {
         page.replace("Bundle reproducibility", "Changed page title"),
     )
     .unwrap();
-    let title_edit = capture_build(&root, &esbuild, None, None);
+    let title_edit = capture_build(&root, None, None);
     assert_ne!(
         baseline.dist.get(Path::new("index.html")),
         title_edit.dist.get(Path::new("index.html")),
@@ -959,7 +967,7 @@ fn unrelated_title_and_markdown_edits_preserve_island_entry_and_chunk_bytes() {
     );
 
     fs::write(&markdown_path, "# Unrelated page\n\nChanged prose.\n").unwrap();
-    let markdown_edit = capture_build(&root, &esbuild, None, None);
+    let markdown_edit = capture_build(&root, None, None);
     assert_ne!(
         title_edit.dist, markdown_edit.dist,
         "the Markdown edit must reach emitted output"
@@ -976,7 +984,7 @@ fn unrelated_title_and_markdown_edits_preserve_island_entry_and_chunk_bytes() {
         "RELEVANT-RAW-INPUT-CHANGED\n",
     )
     .unwrap();
-    let relevant_edit = capture_build(&root, &esbuild, None, None);
+    let relevant_edit = capture_build(&root, None, None);
     assert_ne!(
         markdown_edit.build_id, relevant_edit.build_id,
         "an imported raw input must invalidate SSR/client identity"
@@ -997,7 +1005,9 @@ fn unrelated_title_and_markdown_edits_preserve_island_entry_and_chunk_bytes() {
 #[test]
 fn virtual_sibling_raw_import_identity_survives_fresh_preprocessing_shadows() {
     let _guard = BUILD_LOCK.lock().unwrap();
-    let Some(esbuild) = toolchain() else { return };
+    if !toolchain() {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("app");
     let sibling = temp.path().join("widget");
@@ -1047,8 +1057,8 @@ export default {
 
     // Each capture performs independent SSR and client preparations. Their
     // random shadow paths must never leak into the shared build identity.
-    let first = capture_build(&root, &esbuild, None, None);
-    let second = capture_build(&root, &esbuild, None, None);
+    let first = capture_build(&root, None, None);
+    let second = capture_build(&root, None, None);
     assert_eq!(first.build_id, second.build_id);
     assert_dist_equal(
         &first,
@@ -1057,7 +1067,7 @@ export default {
     );
     assert!(second.islands_entry.contains("VIRTUAL-SIBLING-RAW-ONE"));
     fs::write(sibling.join("note.txt"), "VIRTUAL-SIBLING-RAW-TWO\n").unwrap();
-    let changed = capture_build(&root, &esbuild, None, None);
+    let changed = capture_build(&root, None, None);
     assert_ne!(second.build_id, changed.build_id);
     assert!(changed.islands_entry.contains("VIRTUAL-SIBLING-RAW-TWO"));
 }
@@ -1066,11 +1076,10 @@ export default {
 // #4449 (epic #4448, source bug #4444): production renames only the islands
 // entry (`islands.js` -> `islands-<hash>.js`) and writes chunks verbatim, so a
 // chunk importing the entry 404s. The emitted `dist/` is the oracle; nothing
-// here predicts how either bundler splits the graph.
+// here predicts how the bundler splits the graph.
 // ---------------------------------------------------------------------------
 // The specifier oracle is the Rolldown crate's parser helper, re-exported by
-// zfb-islands only when `rolldown-prototype` (a default feature) is on.
-#[cfg(feature = "rolldown-prototype")]
+// zfb-islands.
 mod lazy_shared_island {
     use super::*;
 
@@ -1112,12 +1121,11 @@ mod lazy_shared_island {
                 && file.ends_with(".js"))
     }
 
-    fn run_lazy_shared_build(root: &Path, esbuild: &Path, bundler: &str) {
+    fn run_lazy_shared_build(root: &Path, bundler: &str) {
         let output = Command::new(zfb_binary!())
             .arg("build")
             .current_dir(root)
-            .env("ZFB_ESBUILD_BIN", esbuild)
-            .env("ZFB_BUNDLER", bundler)
+            .env_remove("ZFB_BUNDLER")
             .env_remove("ZFB_ROLLDOWN_PROTOTYPE")
             .output()
             .expect("spawn real `zfb build`");
@@ -1131,13 +1139,13 @@ mod lazy_shared_island {
         );
     }
 
-    fn assert_no_chunk_imports_the_islands_entry(bundler: &str, esbuild: &Path) {
+    fn assert_no_chunk_imports_the_islands_entry(bundler: &str) {
         let temp = tempfile::tempdir().expect("create lazy-shared tempdir");
         let root = temp.path().join("app");
         let fixture =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lazy-shared-island");
         copy_fixture(&fixture, &root).expect("copy lazy-shared-island fixture");
-        run_lazy_shared_build(&root, esbuild, bundler);
+        run_lazy_shared_build(&root, bundler);
         let dist = read_dist_inventory(&root);
         let render_js = || -> String {
             dist.iter()
@@ -1256,20 +1264,6 @@ mod lazy_shared_island {
     #[test]
     fn rolldown_lazy_chunks_never_import_the_fingerprinted_islands_entry() {
         let _guard = BUILD_LOCK.lock().unwrap();
-        let Some(esbuild) = locate_esbuild() else {
-            eprintln!("[build_reproducibility_e2e] no esbuild binary available; skipping");
-            return;
-        };
-        assert_no_chunk_imports_the_islands_entry("rolldown", &esbuild);
-    }
-
-    #[test]
-    fn esbuild_lazy_chunks_never_import_the_fingerprinted_islands_entry() {
-        let _guard = BUILD_LOCK.lock().unwrap();
-        let Some(esbuild) = locate_esbuild() else {
-            eprintln!("[build_reproducibility_e2e] no esbuild binary available; skipping");
-            return;
-        };
-        assert_no_chunk_imports_the_islands_entry("esbuild", &esbuild);
+        assert_no_chunk_imports_the_islands_entry("rolldown");
     }
 }

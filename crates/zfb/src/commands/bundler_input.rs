@@ -159,25 +159,21 @@ pub(crate) enum CssModuleFailMode {
     WarnAndEmpty,
 }
 
-/// Assembled [`BundlerInput`] plus the two optional resource handles that
-/// must stay alive as long as the bundler is running.
+/// Assembled [`BundlerInput`] plus the optional resource handle that must
+/// stay alive as long as the bundler is running.
 ///
 /// * `node_modules_handle` — non-`None` when the embedded `@takazudo`
 ///   packages are used from either an owned extraction or the shared cache
 ///   (cargo-install scenario with no project-side `node_modules/`).
-/// * `esbuild_handle` — non-`None` when the embedded `esbuild` binary was
-///   extracted into a temp dir.
 ///
-/// Both handles must be kept in scope until the [`BundlerInput`] has been
-/// consumed by [`zfb_build::bundler::bundle`].  Dropping them early
-/// deallocates the temp dirs while esbuild is still reading from them.
+/// The handle must be kept in scope until the [`BundlerInput`] has been
+/// consumed by [`zfb_build::bundler::bundle`].  Dropping it early
+/// deallocates the temp dir while the bundler is still reading from it.
 pub(crate) struct AssembledBundlerInput {
     pub(crate) bundler_input: BundlerInput,
     /// Keeps the owned extraction or shared-cache read lock alive for bundling.
     pub(crate) _node_modules_handle:
         Option<crate::render_pipeline::embedded_node_modules_cache::EmbeddedNodeModulesLease>,
-    /// Keeps the extracted esbuild binary temp dir alive for the bundle step.
-    pub(crate) _esbuild_handle: Option<tempfile::TempDir>,
 }
 
 /// Assemble a fully-configured [`BundlerInput`] from the project [`Config`].
@@ -194,16 +190,7 @@ pub(crate) struct AssembledBundlerInput {
 /// (`plugin_alias_entries`, `plugin_virtual_modules`) from the plugin
 /// lifecycle setup step ([`super::plugins::run_plugin_setup`]).
 ///
-/// `pre_resolved_esbuild` (#994 item A) — an already-extracted embedded
-/// esbuild binary whose backing directory the CALLER keeps alive for at
-/// least as long as the returned [`AssembledBundlerInput`] is in use.
-/// `zfb dev` extracts once at boot and passes it on every tick so the
-/// per-call tempdir extraction below is skipped; `zfb build` passes
-/// `None` and keeps the per-call extraction (one extraction per build is
-/// already process-lifetime there). Ignored when an explicit
-/// `esbuild_binary` or `ZFB_ESBUILD_BIN` override is in play — the
-/// existing precedence is preserved.
-#[allow(clippy::too_many_arguments)] // 12 params: #3341 added bundle_outdir, #994 added pre_resolved_esbuild, #1193 added build_pages_root, #1230 added injected_pages_root, #3021 added injected_route_entrypoints; a struct would obscure the caller-keeps-alive contract documented above
+#[allow(clippy::too_many_arguments)] // 11 params: #3341 added bundle_outdir, #1193 added build_pages_root, #1230 added injected_pages_root, #3021 added injected_route_entrypoints; a struct would obscure the caller-keeps-alive contract documented above
 pub(crate) fn assemble_bundler_input(
     project_root: &Path,
     bundle_outdir: &Path,
@@ -213,7 +200,6 @@ pub(crate) fn assemble_bundler_input(
     content_snapshot_json: Option<String>,
     plugin_alias_entries: Vec<(String, String)>,
     plugin_virtual_modules: Vec<(String, String)>,
-    pre_resolved_esbuild: Option<&Path>,
     // #1193 — the primary pages root the bundler should walk. `Some(root)`
     // points the bundle at that root (the package-owned-routes overlay when
     // build routes are present, or `project_root/pages` when not; passing the
@@ -583,46 +569,6 @@ pub(crate) fn assemble_bundler_input(
         bundler_input.zudo_react_island_names = Some(validated_island_names(&islands)?);
     }
 
-    // Sub #212 follow-up — pre-extract the embedded esbuild binary and pin
-    // its path on the input so consumer projects without the
-    // `crates/zfb/binaries/esbuild/` slot don't blow up.
-    // Skip when an explicit override is in play (input field or env var).
-    let _esbuild_handle: Option<tempfile::TempDir>;
-    if bundler_input.esbuild_binary.is_none()
-        && std::env::var_os("ZFB_ESBUILD_BIN").is_none_or(|v| v.is_empty())
-    {
-        if let Some(path) = pre_resolved_esbuild {
-            // #994 item A — the caller already extracted the embedded
-            // esbuild binary and keeps its tempdir alive beyond this
-            // input's lifetime (process-lifetime in `zfb dev`), so the
-            // per-call extraction is skipped. No handle is stored here:
-            // the lifetime contract on `AssembledBundlerInput` is
-            // satisfied by the caller's longer-lived handle.
-            bundler_input.esbuild_binary = Some(path.to_path_buf());
-            _esbuild_handle = None;
-        } else {
-            match crate::render_pipeline::embedded_binary("esbuild") {
-                Ok((handle, path)) => {
-                    bundler_input.esbuild_binary = Some(path);
-                    _esbuild_handle = Some(handle);
-                }
-                Err(e) => {
-                    // Non-fatal: log and let the bundler's own resolver fall
-                    // through to the on-disk slot, which still produces a
-                    // useful error message pointing at
-                    // `crates/zfb/binaries/esbuild/`.
-                    crate::output::warn(format!(
-                        "could not extract embedded esbuild ({e}); \
-                         falling back to bundler resolver"
-                    ));
-                    _esbuild_handle = None;
-                }
-            }
-        }
-    } else {
-        _esbuild_handle = None;
-    }
-
     bundler_input.zudo_react_build =
         Some(crate::commands::build::derive_default_islands_build_token(
             project_root,
@@ -643,7 +589,6 @@ pub(crate) fn assemble_bundler_input(
     Ok(AssembledBundlerInput {
         bundler_input,
         _node_modules_handle,
-        _esbuild_handle,
     })
 }
 
@@ -759,7 +704,6 @@ mod tests {
             None,
             Vec::new(),
             Vec::new(),
-            None,
             None,
             None,
             vec![injected_entry],

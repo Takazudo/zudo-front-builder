@@ -6,6 +6,7 @@ import {
   proveReviewedCargoTransition,
 } from "../rebaseline-island-size-linux.mjs";
 import {
+  ESBUILD_REMOVAL_LOCK_TRANSITION,
   NOYALIB_LOCK_TRANSITION,
   TOKIO_SECURITY_TRANSITION,
 } from "../security-lock-transitions.mjs";
@@ -46,7 +47,7 @@ describe("exact noyalib 0.0.58 adoption", () => {
   it("starts from the lock the webpki transition produced", () => {
     expect(NOYALIB_LOCK_TRANSITION.oldLockSha256).toBe(sha(webpkiSecurityLock().newText));
   });
-  it("leads to the committed Cargo.lock through the Deno-exit removal (#4396), the #4429 oxc edge and the #4569 tokio replacement", () => {
+  it("leads to the committed Cargo.lock through the Deno-exit removal (#4396), the #4429 oxc edge, the #4569 tokio replacement and the #4635 esbuild-removal move", () => {
     const declaration = (name) =>
       JSON.parse(
         readFileSync(
@@ -60,7 +61,10 @@ describe("exact noyalib 0.0.58 adoption", () => {
     expect(denoExit.oldCargoLockSha256).toBe(NOYALIB_LOCK_TRANSITION.newLockSha256);
     expect(oxcEdge.oldCargoLockSha256).toBe(denoExit.newCargoLockSha256);
     expect(TOKIO_SECURITY_TRANSITION.oldLockSha256).toBe(oxcEdge.newCargoLockSha256);
-    expect(sha(live)).toBe(TOKIO_SECURITY_TRANSITION.newLockSha256);
+    expect(ESBUILD_REMOVAL_LOCK_TRANSITION.oldLockSha256).toBe(
+      TOKIO_SECURITY_TRANSITION.newLockSha256,
+    );
+    expect(sha(live)).toBe(ESBUILD_REMOVAL_LOCK_TRANSITION.newLockSha256);
   });
   it("admits only the approved pair and records the decision", () => {
     expect(proof()).toMatchObject({

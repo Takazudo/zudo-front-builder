@@ -19,7 +19,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_test_utils::locate_esbuild;
 
 /// Regression test: SSR catch-all route survives `worker_only_routes` filter.
 ///
@@ -34,16 +33,6 @@ use zfb_test_utils::locate_esbuild;
 ///    the route was NOT tree-shaken.
 #[test]
 fn ssr_catchall_survives_worker_only_routes_filter() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[worker_only_routes_filter] no esbuild binary available; \
-             set ZFB_ESBUILD_BIN, place the binary at \
-             crates/zfb/binaries/esbuild/esbuild, or install esbuild on PATH \
-             to enable this test. Skipping."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
 
@@ -107,8 +96,7 @@ fn ssr_catchall_survives_worker_only_routes_filter() {
         outdir: root.join("dist"),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,

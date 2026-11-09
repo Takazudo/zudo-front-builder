@@ -58,7 +58,7 @@ zfb の対象読者は、すでに TSX と npm を知っている frontend 開�
 
 ## 今日動いているもの
 
-`zfb build` / `zfb dev` では、Rust のオーケストレーターが `zfb-js-host` クレートの direct V8 ホストを介してインプロセスの V8 アイソレートを生成します。それは、バンドラーが `@takazudo/zfb-runtime/server` の `createPageRouter` を中心にビルドする workerd 形のバンドルを読み込みます（デフォルトは Rolldown。[現在のデフォルトと実験](#現在のデフォルトと実験) を参照）。ルートごとの props は JSON として渡され、アイソレートは合成された `Request` でバンドルの `fetch` エントリを呼び、`Response`（HTML）を集めて返します。オーケストレーターは素の HTML を `dist/` に書き込みます。サブプロセスは生成されず、Node.js も不要です。
+`zfb build` / `zfb dev` では、Rust のオーケストレーターが `zfb-js-host` クレートの direct V8 ホストを介してインプロセスの V8 アイソレートを生成します。それは、バンドラーが `@takazudo/zfb-runtime/server` の `createPageRouter` を中心にビルドする workerd 形のバンドルを読み込みます（ネイティブの Rolldown バンドラー。[現在のデフォルトと実験](#現在のデフォルトと実験) を参照）。ルートごとの props は JSON として渡され、アイソレートは合成された `Request` でバンドルの `fetch` エントリを呼び、`Response`（HTML）を集めて返します。オーケストレーターは素の HTML を `dist/` に書き込みます。サブプロセスは生成されず、Node.js も不要です。
 
 V8 自体はプロセスごとに 1 回、CLI が Tokio やホストのスレッドを起動する前にメインスレッドで初期化されます（`zfb-js-host::process::initialize`）。1 つのスレッドで同時に生きていられるホストは 1 つだけです。
 
@@ -70,7 +70,7 @@ V8 自体はプロセスごとに 1 回、CLI が Tokio やホストのスレッ
 
 | 責務 | それは何か | zfb のどこで行われるか |
 | --- | --- | --- |
-| **変換** | TSX/JSX/MDX をパースし、JavaScript モジュールにバンドルすること。純粋な構文操作で、エンジンは関与しません。 | `zfb` CLI に内蔵されたバンドラー（デフォルトは Rolldown、`ZFB_BUNDLER=esbuild` なら組み込みの esbuild）が、zudo-react の自動 JSX ランタイム（`@takazudo/zfb/zudo-react/jsx-runtime`）を使って行います。一部のソース解析には SWC を使います。 |
+| **変換** | TSX/JSX/MDX をパースし、JavaScript モジュールにバンドルすること。純粋な構文操作で、エンジンは関与しません。 | `zfb` CLI に組み込まれたネイティブの Rolldown バンドラーが、zudo-react の自動 JSX ランタイム（`@takazudo/zfb/zudo-react/jsx-runtime`）を使って行います。一部のソース解析には SWC を使います。 |
 | **JavaScript エンジン** | 変換された JavaScript を実行するもの。 | どこでも V8 です。ビルドマシンでは CLI に組み込まれた V8、Worker では workerd の中の V8、ブラウザではブラウザのエンジンです。zfb の direct V8 ホストは V8 の *周りの* ホストであり、別のエンジンではありません。 |
 | **ホスト API** | ホストが公開するグローバルや組み込みモジュール。 | 組み込みホストはモジュールの読み込みと、ページルーターに必要な Web のリクエスト／レスポンスのサービスを実装します。`node:fs`、`node:fs/promises`、`node:path`、`node:url`、`node:buffer`、`node:async_hooks` はスタブで、使うと `node:* is not available under the SSG runtime` を投げます（`crates/zfb-js-host/src/shims.rs`）。Worker では Cloudflare のランタイムが決め、アダプターは `node:async_hooks` のために `nodejs_compat` を必要とします。ブラウザは DOM を提供します。 |
 | **UI のレンダリング** | コンポーネントを HTML 文字列や動く DOM にすること。 | zudo-react です。ページルーターでは `@takazudo/zfb/zudo-react/server` の `renderToString`、ブラウザでは `@takazudo/zfb/zudo-react/client` の `hydrate`/`mount` を使います。 |
@@ -89,9 +89,9 @@ V8 自体はプロセスごとに 1 回、CLI が Tokio やホストのスレッ
 |-------|-------------|----------------------|
 | **あなたのソース** | ページ、コンポーネント、コンテンツ、スタイル | ビルドの仕組み |
 | **zfb** | ビルドのコントラクト — ルートテーブル、ページ props の形、島のプロトコル、クライアントスクリプトのパイプライン、`dist/` のレイアウト | どのバンドラーか、どの JS ホストか |
-| **ツール** | バンドラー（Rolldown または esbuild）、組み込み V8 ホスト（ビルド時の評価） | あなたのコードのセマンティクス |
+| **ツール** | バンドラー（Rolldown）、組み込み V8 ホスト（ビルド時の評価） | あなたのコードのセマンティクス |
 
-バンドラーと組み込み V8 ホストは、ユーザーのコードに触れずに差し替えられる実装詳細です。バンドラーは `ZFB_BUNDLER` の背後に、ホストは `RenderHost` トレイトの背後にあります（[境界](#境界)）。
+バンドラーと組み込み V8 ホストは、ユーザーのコードに触れずに差し替えられる実装詳細です。バンドラーは `zfb-bundler` クレートの型付きバンドルリクエストの背後に、ホストは `RenderHost` トレイトの背後にあります（[境界](#境界)）。
 
 ## 必要性
 
@@ -185,6 +185,6 @@ direct ホストの既知の制限:
 
 ラベルで起動する必須ではない CI レーン（`direct-v8.yml`）が、Linux x64、Linux arm64、Windows x64 のネイティブ行を記録します。Darwin の行は Mac 上で手作業で実行します。コントリビューター向けの詳細は [`prototypes/direct-v8/CLI.md`](https://github.com/Takazudo/zudo-front-builder/blob/main/prototypes/direct-v8/CLI.md) にあります。
 
-ページと島は、デフォルトで Rolldown がバンドルします（`rolldown-prototype` フィーチャーはデフォルトフィーチャーに含まれます）。`ZFB_BUNDLER=esbuild` を設定すると、これらのバンドルに組み込みの esbuild を使います。`zfb.config.ts` とプラグインのコンパイルには引き続き esbuild を使います。`direct-v8-rolldown` レーンは Rolldown を direct V8 と一緒にビルドします。
+ページ、島、クライアントスクリプト、プラグイン、`zfb.config.ts` は、ネイティブの Rolldown コンパイラがバンドルします。zfb は esbuild をもう同梱も実行もしません。`ZFB_BUNDLER` または `ZFB_ROLLDOWN_PROTOTYPE` をどの値に設定してもエラーになります。
 
 `zfb preview` は再ビルドせず、ビルド済み出力を配信します。Cloudflare アダプターでは Wrangler に委譲します。一般に組み込み V8 でページを再レンダリングするコマンドではありません。

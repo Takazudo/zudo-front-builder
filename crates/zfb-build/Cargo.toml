@@ -7,6 +7,14 @@ description = "zfb build orchestrator: ties watcher + dependency graph + render/
 
 [lib]
 
+# Test-only compiler worker host for the plugin bundling tests; the zfb CLI is
+# the production host. Binaries of a dependency crate are never installed.
+[[bin]]
+name = "zfb-build-test-compiler-worker"
+path = "src/bin/zfb-build-test-compiler-worker.rs"
+test = false
+doc = false
+
 # Feature-propagation seam for the V8 gate (issue #371, sub-task 4.1a).
 #
 # `zfb-render` declares the inner `direct-v8` feature that pulls the V8
@@ -24,11 +32,12 @@ description = "zfb build orchestrator: ties watcher + dependency graph + render/
 # Default JS runtime (#4390); the deno_core host was removed in #4395.
 direct-v8 = ["zfb-render/direct-v8"]
 
-rolldown-prototype = ["dep:zfb-rolldown-prototype", "zfb-rolldown-prototype/native"]
 default = ["direct-v8"]
 
 [dependencies]
-zfb-rolldown-prototype = { path = "../zfb-rolldown-prototype", optional = true }
+zfb-bundler = { path = "../zfb-bundler", features = ["native"] }
+# Compiles `.ts`/`.tsx`/`.mts`/`.cts` plugin entries (plugin_bundler.rs).
+zfb-compiler-worker = { path = "../zfb-compiler-worker" }
 zfb-watcher = { path = "../zfb-watcher" }
 zfb-graph = { path = "../zfb-graph" }
 # Read-only consumption of the MDX → JSX emitter (Wave 1 / T3 bundler).
@@ -48,7 +57,6 @@ zfb-render = { path = "../zfb-render", default-features = false }
 # on-disk filenames the emitter adapters write. `zfb-types` is a
 # zero-zfb-dep leaf crate, so this introduces no transitive cost.
 zfb-types = { path = "../zfb-types" }
-zfb-toolchain-pins = { path = "../zfb-toolchain-pins" }
 # Shared helper that turns plugin-registered aliases + virtual modules
 # into exact-match `compilerOptions.paths` entries for the synthetic
 # tsconfig. Replaces the prefix-with-slash `--alias` flag emission so
@@ -148,9 +156,7 @@ zfb-router = { path = "../zfb-router" }
 # `prod_asset_graph_with_real_wind_engine_against_fixture` exercises the
 # in-process compiler without a helper CLI binary.
 zfb-css = { path = "../zfb-css" }
-# Shared test utilities: locate_esbuild() and zfb_binary!(). Replaces
-# the duplicated locate_esbuild() bodies that previously lived in each
-# integration test file.
+# Shared test utilities: zfb_binary!() and the cross-binary e2e lock.
 zfb-test-utils = { path = "../zfb-test-utils" }
 # Captures `tracing` output in-test via `#[traced_test]` / `logs_contain`
 # (issue #1838's dangling-symlink warning assertion). Same version already

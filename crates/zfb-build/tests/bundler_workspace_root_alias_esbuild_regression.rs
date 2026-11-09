@@ -14,7 +14,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_test_utils::locate_esbuild;
 
 fn write(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
@@ -62,7 +61,7 @@ fn write_hoisted_node_modules(workspace: &Path) -> PathBuf {
     node_modules
 }
 
-fn base_input(project: &Path, esbuild: PathBuf, node_modules: PathBuf) -> BundlerInput {
+fn base_input(project: &Path, node_modules: PathBuf) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
         BundleMode::Production,
@@ -74,7 +73,6 @@ fn base_input(project: &Path, esbuild: PathBuf, node_modules: PathBuf) -> Bundle
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
-    input.esbuild_binary = Some(esbuild);
     input.node_modules_dir = Some(node_modules);
     input.tsconfig_paths = BTreeMap::from([
         (
@@ -127,12 +125,7 @@ fn bundle_text(path: &Path) -> String {
 }
 
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_workspace_root_alias_esbuild_regression -- --ignored"]
 fn real_esbuild_stages_workspace_root_alias_graph_with_sibling_and_dot_paths() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_workspace_root_alias_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let (workspace, project) = write_workspace(temp.path());
     let node_modules = write_hoisted_node_modules(&workspace);
@@ -209,11 +202,8 @@ fn real_esbuild_stages_workspace_root_alias_graph_with_sibling_and_dot_paths() {
     );
 
     let mut session = ShadowSession::new(&project).expect("shadow session");
-    let output = bundle_with_session(
-        base_input(&project, esbuild, node_modules),
-        Some(&mut session),
-    )
-    .expect("#1884 must stage concretely reached workspace-root aliases for real esbuild");
+    let output = bundle_with_session(base_input(&project, node_modules), Some(&mut session))
+        .expect("#1884 must stage concretely reached workspace-root aliases for real esbuild");
 
     let body = bundle_text(&output.bundle_path);
     for marker in [
@@ -276,12 +266,7 @@ fn real_esbuild_stages_workspace_root_alias_graph_with_sibling_and_dot_paths() {
 /// a staged input apart from a live-tree fallback.
 #[cfg(unix)]
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_workspace_root_alias_esbuild_regression -- --ignored"]
 fn real_esbuild_combines_all_next_92_residual_stage_escape_classes() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_workspace_root_alias_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let (workspace, project) = write_workspace(temp.path());
     let node_modules = write_hoisted_node_modules(&workspace);
@@ -414,7 +399,7 @@ fn real_esbuild_combines_all_next_92_residual_stage_escape_classes() {
         ),
     );
 
-    let mut input = base_input(&project, esbuild, node_modules);
+    let mut input = base_input(&project, node_modules);
     for (index, (file, _)) in route_files.iter().enumerate() {
         input.tsconfig_paths.insert(
             format!("#route-{index}"),
@@ -502,12 +487,7 @@ fn real_esbuild_combines_all_next_92_residual_stage_escape_classes() {
 }
 
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_workspace_root_alias_esbuild_regression -- --ignored"]
 fn parent_relative_root_tree_crossing_stays_rejected_even_when_alias_target_is_legal() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_workspace_root_alias_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let (workspace, project) = write_workspace(temp.path());
     let node_modules = write_hoisted_node_modules(&workspace);
@@ -535,7 +515,7 @@ fn parent_relative_root_tree_crossing_stays_rejected_even_when_alias_target_is_l
     );
 
     let error = bundle_with_session(
-        base_input(&project, esbuild, node_modules),
+        base_input(&project, node_modules),
         Some(&mut ShadowSession::new(&project).expect("shadow session")),
     )
     .expect_err("parent-relative root-package tree crossings must remain prohibited");
@@ -552,12 +532,7 @@ fn parent_relative_root_tree_crossing_stays_rejected_even_when_alias_target_is_l
 }
 
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_workspace_root_alias_esbuild_regression -- --ignored"]
 fn real_metafile_guard_b_rejects_genuinely_unstaged_workspace_input() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_workspace_root_alias_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let (workspace, project) = write_workspace(temp.path());
     let node_modules = write_hoisted_node_modules(&workspace);
@@ -576,7 +551,7 @@ fn real_metafile_guard_b_rejects_genuinely_unstaged_workspace_input() {
         "#,
     );
 
-    let mut input = base_input(&project, esbuild, node_modules);
+    let mut input = base_input(&project, node_modules);
     input.tsconfig_paths.insert(
         "@unstaged".to_string(),
         vec![workspace

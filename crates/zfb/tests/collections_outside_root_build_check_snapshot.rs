@@ -177,7 +177,7 @@ async fn out_of_root_collection_passes_check_snapshot_and_build_materialisation(
         // content-collection walk under test) still runs in full before
         // esbuild would have been invoked, so this is a genuine exercise of
         // `materialise_collection`, not a stub of it.
-        mock_subprocess_output: Some("export default {};".to_string()),
+        mock_bundle_output: Some("export default {};".to_string()),
         ..BundlerInput::for_project(
             project_root.clone(),
             BundleMode::Production,

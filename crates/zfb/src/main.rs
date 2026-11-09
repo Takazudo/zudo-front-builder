@@ -3,19 +3,24 @@ use clap::Parser;
 use zfb::cli::{Cli, Command};
 use zfb::commands;
 
-fn main() {
+fn main() -> std::process::ExitCode {
+    // Must stay first: the compiler worker mode initializes nothing else.
+    if let Some(code) = zfb_compiler_worker::run_if_requested() {
+        return code;
+    }
     #[cfg(feature = "direct-v8")]
     if let Err(error) = zfb_render::initialize_v8() {
         eprintln!("V8 initialization failed: {error}");
         std::process::exit(1);
     }
     run();
+    std::process::ExitCode::SUCCESS
 }
 
 #[tokio::main]
 async fn run() {
     let cli = Cli::parse();
-    if let Err(e) = zfb::check_bundler_selection(std::env::var_os("ZFB_BUNDLER").as_deref()) {
+    if let Err(e) = zfb::reject_removed_bundler_selectors(|name| std::env::var_os(name)) {
         zfb::report_error(&e);
         std::process::exit(1);
     }

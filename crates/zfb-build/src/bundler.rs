@@ -84,32 +84,12 @@
 //! `import.meta.env.PROD` and `import.meta.env.DEV` are always emitted
 //! (driven by [`BundlerInput::mode`]). See [`BundleMode`] and the
 //! `server_secrets_are_not_bundled` test for the contract.
-//!
-//! ## Esbuild binary resolution
-//!
-//! Handled by the shared resolver [`resolve_esbuild_binary_with_env`], which
-//! is also used by `zfb::config` (the config-loader). The lookup order for
-//! this (bundler) call site is:
-//!
-//! 1. [`BundlerInput::esbuild_binary`] (explicit override).
-//! 2. `ZFB_ESBUILD_BIN` environment variable.
-//! 3. `crates/zfb/binaries/esbuild/esbuild` ([`DEFAULT_ESBUILD_SLOT`] —
-//!    release-tarball slot; see that directory's README).
-//!
-//! The config-loader call site additionally inserts an embedded-extraction
-//! tier (tier 3 of 4) between the env var and the slot; see
-//! [`resolve_esbuild_binary_with_env`] for the full superset documentation.
-//!
-//! If the resolved path does not exist, [`bundle`] returns a clear error
-//! instructing the operator to either set the env var or stage the
-//! binary in the slot.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -146,7 +126,7 @@ use zfb_types::{
     REGION_ID_ATTR, RENDER_REGION_ATTR,
 };
 
-use crate::adapter::run_capturing;
+use zfb_bundler::{BundleRequest, External, Loader, OutputLayout, Platform, SourceMap};
 // The `import.meta.glob` expansion helpers moved to their own `pub` module
 // (issue #1402) so #1404's downstream orchestration in `crates/zfb` can
 // reuse them without `zfb-islands` gaining a `zfb-build` dependency. Only
@@ -425,14 +405,10 @@ pub struct BundlerInput {
     pub mode: BundleMode,
     /// `--minify` toggle. Only meaningful in `Production` mode.
     pub minify: bool,
-    /// Override for the esbuild binary path. See module-level docs for
-    /// the resolution precedence when `None`.
-    pub esbuild_binary: Option<PathBuf>,
-    /// Test escape hatch: when `Some`, **skip the esbuild subprocess**
-    /// and write `mock_subprocess_output` to the bundle path instead.
-    /// Mirrors `zfb_islands::EsbuildSubprocessConfig::mock_output` so
-    /// unit tests don't need the real binary on disk.
-    pub mock_subprocess_output: Option<String>,
+    /// Test escape hatch: when `Some`, **skip bundling** and write
+    /// `mock_bundle_output` to the bundle path instead, so staging tests
+    /// do not pay for a real bundle.
+    pub mock_bundle_output: Option<String>,
     /// Optional JSON-serialized content snapshot to embed in the worker
     /// bundle. When `Some`, the bundler replaces the placeholder empty
     /// `{ collections: {} }` with the supplied JSON so the worker's
@@ -773,8 +749,8 @@ impl BundlerInput {
     ///   `layouts`).
     /// - Empty raw `define_vars`, `public_env_vars`, `tsconfig_paths`,
     ///   `external`, and `extra_loader_args`.
-    /// - `minify: false`, `esbuild_binary: None`, `mock_subprocess_output:
-    ///   None`, `node_modules_dir: None`.
+    /// - `minify: false`, `mock_bundle_output: None`,
+    ///   `node_modules_dir: None`.
     ///
     /// Callers that need to override additional fields (e.g. test escape
     /// hatches) should use struct-update syntax: `BundlerInput { field:
@@ -806,8 +782,7 @@ impl BundlerInput {
             outdir,
             mode,
             minify: false,
-            esbuild_binary: None,
-            mock_subprocess_output: None,
+            mock_bundle_output: None,
             content_snapshot_json,
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
@@ -836,7 +811,7 @@ pub struct BundlerOutput {
     pub bundle_path: PathBuf,
     /// Linked sourcemap next to `bundle_path` (esbuild's
     /// `--sourcemap=linked` shape). When the bundler ran in
-    /// `mock_subprocess_output` mode, this path is still returned but
+    /// `mock_bundle_output` mode, this path is still returned but
     /// the file may not exist.
     pub sourcemap_path: PathBuf,
     /// Routes the bundle serves (also addressable through
@@ -1213,12 +1188,12 @@ const MDX_COMPONENTS_FILENAME: &str = "mdx-components.tsx";
 ///   module beside the Worker bundle. `--external:*.wasm` is intentionally not
 ///   used: its relative path would be anchored to the ephemeral shadow tree,
 ///   not the deployable bundle directory.
-pub const ESBUILD_LOADER_ARGS: &[&str] = &[
-    "--loader:.mdx=jsx",
-    "--loader:.md=jsx",
-    "--loader:.css=empty",
-    "--loader:.module.css=js",
-    "--loader:.wasm=copy",
+pub const SSR_LOADERS: &[(&str, Loader)] = &[
+    (".mdx", Loader::Jsx),
+    (".md", Loader::Jsx),
+    (".css", Loader::Empty),
+    (".module.css", Loader::Js),
+    (".wasm", Loader::Copy),
 ];
 
 #[derive(Debug, Clone)]
@@ -1425,34 +1400,23 @@ fn ensure_shadow_path_outside_project(
     }
 }
 
-fn esbuild_loader_args(input: &BundlerInput) -> impl Iterator<Item = &str> {
-    ESBUILD_LOADER_ARGS
-        .iter()
-        .copied()
-        .chain(input.extra_loader_args.iter().map(String::as_str))
-}
-
-fn bundle_mode_define_args(mode: BundleMode) -> [String; 3] {
+fn bundle_mode_defines(mode: BundleMode) -> [(String, String); 3] {
     let prod = mode.is_prod();
     let node_env = if prod { "production" } else { "development" };
     [
-        format!("--define:import.meta.env.PROD={prod}"),
-        format!("--define:import.meta.env.DEV={}", !prod),
-        format!("--define:process.env.NODE_ENV=\"{node_env}\""),
+        ("import.meta.env.PROD".to_string(), prod.to_string()),
+        ("import.meta.env.DEV".to_string(), (!prod).to_string()),
+        (
+            "process.env.NODE_ENV".to_string(),
+            format!("\"{node_env}\""),
+        ),
     ]
 }
 
-fn operator_define_args(define_vars: &BTreeMap<String, String>) -> Vec<String> {
-    define_vars
-        .iter()
-        .map(|(key, value)| format!("--define:{key}={value}"))
-        .collect()
-}
-
-fn public_env_define_args(
+fn public_env_defines(
     public_env_vars: &HashMap<String, String>,
     operator_define_vars: &BTreeMap<String, String>,
-) -> Vec<String> {
+) -> Vec<(String, String)> {
     let mut entries: Vec<(&String, &String)> = public_env_vars.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
 
@@ -1472,20 +1436,12 @@ fn public_env_define_args(
             // SSR agrees with the browser bundlers, which receive the
             // operator definitions but not this generated PUBLIC map.
             if !operator_define_vars.contains_key(&expression) {
-                args.push(format!("--define:{expression}={json_value}"));
+                args.push((expression, json_value.clone()));
             }
         }
     }
     args
 }
-
-/// Default release-tarball slot for the esbuild binary. Mirrors
-/// `zfb_islands::EsbuildSubprocessConfig::default`'s default — kept in
-/// sync deliberately, both crates resolve the same slot.
-///
-/// This is the canonical definition; `crates/zfb/src/config.rs` formerly
-/// kept a private duplicate that has been removed in favour of this one.
-pub const DEFAULT_ESBUILD_SLOT: &str = "crates/zfb/binaries/esbuild/esbuild";
 
 /// `ZFB_DEV_TIMING` gate for the per-call [`bundle`] phase-split line
 /// (issue #993 Step 0 — extends the #991 instrumentation INSIDE the
@@ -4586,10 +4542,10 @@ pub fn bundle_with_session(
     // we materialise source files as REAL COPIES (not symlinks) so the
     // transformed shadow file is the one esbuild reads. Derived from the
     // SAME predicate that gates the `--preserve-symlinks` flag in
-    // `run_esbuild`, so the two decisions cannot drift. `node_modules` is
+    // `run_native_bundle`, so the two decisions cannot drift. `node_modules` is
     // always symlinked regardless (see the 2b block) — copy_mode only
     // affects source files.
-    let copy_mode = !esbuild_will_preserve_symlinks(&input);
+    let copy_mode = !ssr_preserves_symlinks(&input);
 
     // 1b. Build the resolve-links source map when the feature is enabled.
     //
@@ -4762,7 +4718,7 @@ pub fn bundle_with_session(
     // Build the shared materialisation context from the fields of `input`
     // that are invariant across every materialise_shadow / materialise_collection
     // call in this bundle invocation.
-    let worker_build_context = ModuleWorkerBuildContext::from_esbuild_loader_args(
+    let worker_build_context = ModuleWorkerBuildContext::from_loader_args(
         input.mode.is_prod(),
         &input.extra_loader_args,
         &input.define_vars,
@@ -5197,12 +5153,12 @@ pub fn bundle_with_session(
         &project_root,
         input.node_modules_dir.as_deref(),
         &bundle_exclude,
-        !esbuild_will_preserve_symlinks(&input),
+        !ssr_preserves_symlinks(&input),
         bundle_exclude.is_empty() && !input.node_modules_preserve_symlinks,
         // Canonical esbuild resolution already sees pnpm's physical sibling
         // links. Only the automatic preserve-symlinks path needs an owned
         // staged view; explicit vendored preserve-symlinks keeps its contract.
-        esbuild_will_preserve_symlinks(&input) && !input.node_modules_preserve_symlinks,
+        ssr_preserves_symlinks(&input) && !input.node_modules_preserve_symlinks,
         &root_entry_dependency_seed_files,
         &staging_ineligible_seed_files,
         &root_entry_dependency_logical_importers,
@@ -6159,7 +6115,7 @@ pub fn bundle_with_session(
     // absent from the conventional source-root walks above. Materialise the
     // complete plugin-aware first-party closure explicitly so `?raw` wrappers and
     // nested Worker URL rewrites are consumed from the shadow. The resolver
-    // call in `run_esbuild` remaps an alias to this copy when it exists.
+    // call in `run_native_bundle` remaps an alias to this copy when it exists.
     let is_plugin_preprocessing_excluded = |path: &Path| {
         mat_ctx
             .bundle_exclude
@@ -6192,7 +6148,7 @@ pub fn bundle_with_session(
         );
         if bundle_exclude.is_empty()
             && isolated_dependency_view_active
-            && !esbuild_will_preserve_symlinks(&input)
+            && !ssr_preserves_symlinks(&input)
             && link_ordinary_dependency_to_canonical_source(
                 logical_root,
                 logical_root,
@@ -6236,7 +6192,7 @@ pub fn bundle_with_session(
         );
         if bundle_exclude.is_empty()
             && isolated_dependency_view_active
-            && !esbuild_will_preserve_symlinks(&input)
+            && !ssr_preserves_symlinks(&input)
             && link_ordinary_dependency_to_canonical_source(
                 logical_root,
                 source_root,
@@ -6549,7 +6505,7 @@ pub fn bundle_with_session(
     //    under-project_root alias targets to a shadow-first dual-target so
     //    an aliased import reaches the in-shadow transform (see
     //    `rebase_tsconfig_paths_to_shadow`). This first write is overwritten
-    //    by the plugin-merged write inside `run_esbuild` for real builds; it
+    //    by the plugin-merged write inside `run_native_bundle` for real builds; it
     //    matters for the mock-subprocess path and as a behaviour-preserving
     //    baseline. esbuild reads the array in order, first existing file
     //    wins, a miss is NOT an error — that fallthrough is what makes the
@@ -6655,7 +6611,7 @@ pub fn bundle_with_session(
     //     would not (the #727 wrong-output hazard family). Runs after ALL
     //     materialise passes so the visited set is complete; the
     //     `.zfb-virtual-*.mjs` NamedTempFiles are created inside
-    //     `run_esbuild` AFTER this pass and self-delete — they never
+    //     `run_native_bundle` AFTER this pass and self-delete — they never
     //     interact with the prune.
     writer.prune_stale()?;
     // #3037: a virtual import alone must not authorize a pruned location.
@@ -6697,13 +6653,13 @@ pub fn bundle_with_session(
     // Mock-subprocess builds bypass esbuild and therefore cannot produce a
     // trustworthy metafile. Real invocations always request one so both bundle
     // passes publish the exact Wasm assets their emitted ESM imports require.
-    let metafile_path: Option<PathBuf> = if input.mock_subprocess_output.is_none() {
+    let metafile_path: Option<PathBuf> = if input.mock_bundle_output.is_none() {
         Some(shadow.join(".zfb-metafile.json"))
     } else {
         None
     };
 
-    if let Some(mock) = input.mock_subprocess_output.as_ref() {
+    if let Some(mock) = input.mock_bundle_output.as_ref() {
         fs::write(&bundle_path, mock).with_context(|| {
             format!(
                 "bundler: failed to write mock bundle to {}",
@@ -6711,7 +6667,7 @@ pub fn bundle_with_session(
             )
         })?;
     } else {
-        run_esbuild(
+        run_native_bundle(
             &input,
             shadow,
             &first_party_root,
@@ -6789,7 +6745,7 @@ pub fn bundle_with_session(
     // scans its own stage root's `node_modules` the same way.
     //
     // esbuild runs from `shadow` (its cwd — `cmd.current_dir(shadow)` in
-    // `run_esbuild`), so metafile keys resolve against it; `work` is the
+    // `run_native_bundle`), so metafile keys resolve against it; `work` is the
     // mirror boundary every legitimately staged input (the project shadow at
     // `work/<workspace_rel>` plus wholesale-mirrored siblings under `work`)
     // lives under. A metafile input that canonicalises to live first-party
@@ -7333,35 +7289,30 @@ mod esbuild_module_label_tests {
     }
 
     #[test]
-    fn real_esbuild_comment_spelling_matches_metafile_key() {
-        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
-            return;
-        };
+    fn native_region_label_spelling_matches_metafile_key() {
         let temp = tempfile::tempdir().unwrap();
         let shadow = temp.path().join("shadow");
         let outside = temp.path().join("outside");
         fs::create_dir_all(&shadow).unwrap();
         fs::create_dir_all(&outside).unwrap();
-        fs::write(outside.join("dep.js"), "export const value = 1;\n").unwrap();
+        fs::write(
+            outside.join("dep.js"),
+            "globalThis.depLoaded = true;\nexport const value = 1;\n",
+        )
+        .unwrap();
         fs::write(
             shadow.join("entry.js"),
             "import { value } from '../outside/dep.js'; console.log(value);\n",
         )
         .unwrap();
-        let output = Command::new(esbuild)
-            .current_dir(&shadow)
-            .arg("entry.js")
-            .arg("--bundle")
-            .arg("--format=esm")
-            .arg("--outfile=bundle.mjs")
-            .arg("--metafile=meta.json")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
+        let mut request = BundleRequest::new(
+            &shadow,
+            "entry.js",
+            OutputLayout::file("bundle.mjs"),
+            Platform::Neutral,
         );
+        request.graph = Some("meta.json".into());
+        zfb_bundler::bundle(&request).unwrap();
         let bundle = fs::read_to_string(shadow.join("bundle.mjs")).unwrap();
         let metafile: serde_json::Value =
             serde_json::from_slice(&fs::read(shadow.join("meta.json")).unwrap()).unwrap();
@@ -7370,7 +7321,12 @@ mod esbuild_module_label_tests {
             .keys()
             .find(|key| key.starts_with("../"))
             .expect("outside input key");
-        assert!(bundle.lines().any(|line| line == format!("// {key}")));
+        assert!(
+            bundle
+                .lines()
+                .any(|line| line == format!("//#region {key}")),
+            "{bundle}"
+        );
     }
 }
 
@@ -8762,7 +8718,7 @@ fn unexpanded_macro_form(
 /// The coupling this sub was asked for — make acceptance IMPLY mirror
 /// enrolment — is not reachable in this direction of the pipeline.
 /// "Accepted" is a fact about esbuild's METAFILE, which does not exist until
-/// after `run_esbuild` has already emitted the bundle; every enrolment seam
+/// after `run_native_bundle` has already emitted the bundle; every enrolment seam
 /// ([`SiblingMirrorPlan::compute`], the wholesale mirror, the
 /// `plugin_preprocessing_files` materialise pass) runs before it. Bridging
 /// that gap would mean either predicting pre-esbuild which packages esbuild
@@ -12001,7 +11957,7 @@ struct MaterialiseStaging {
 ///
 /// `copy_mode` forces a real `fs::copy` for the non-transformed fallback
 /// instead of a symlink. When esbuild runs without `--preserve-symlinks`
-/// (branch 4 — see [`esbuild_will_preserve_symlinks`]) a symlinked source
+/// (branch 4 — see [`ssr_preserves_symlinks`]) a symlinked source
 /// file is canonicalised back to the real tree, so any sibling in-shadow
 /// transform (`.module.css` rewrite, expanded glob barrel) it reaches via a
 /// relative import would be read from the *original* untransformed file. A
@@ -12547,7 +12503,7 @@ fn rebase_tsconfig_paths_to_shadow(
     shadow: &Path,
 ) -> BTreeMap<String, Vec<String>> {
     // Sibling tier inert (first_party/work == project/shadow): the baseline
-    // write is overwritten by the plugin-merged rebase in `run_esbuild` for
+    // write is overwritten by the plugin-merged rebase in `run_native_bundle` for
     // real builds; it only matters for the mock-subprocess path.
     rebase_tsconfig_paths_to_shadow_with_exclusions(
         paths,
@@ -15173,9 +15129,9 @@ pub(crate) fn bracket_to_hono(route: &str) -> String {
     out
 }
 
-/// Returns `true` when [`run_esbuild`] will invoke esbuild with
+/// Returns `true` when [`run_native_bundle`] will invoke esbuild with
 /// `--preserve-symlinks`. Encodes the three activation paths described
-/// in `run_esbuild`'s big comment block as a single shared predicate so
+/// in `run_native_bundle`'s big comment block as a single shared predicate so
 /// the flag decision and the `copy_mode` derivation in [`bundle`] cannot
 /// drift apart.
 ///
@@ -15190,7 +15146,7 @@ pub(crate) fn bracket_to_hono(route: &str) -> String {
 /// working). In that one config, [`bundle`] sets `copy_mode = true` so
 /// the in-shadow source copies are real files and the
 /// `import.meta.glob` / CSS-module transforms become visible.
-fn esbuild_will_preserve_symlinks(input: &BundlerInput) -> bool {
+fn ssr_preserves_symlinks(input: &BundlerInput) -> bool {
     (input.node_modules_dir.is_some() && input.node_modules_preserve_symlinks)
         || input.node_modules_dir.is_none()
         || input.tsconfig_paths.is_empty()
@@ -15705,7 +15661,7 @@ mod framework_esbuild_flags_tests {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_esbuild(
+fn run_native_bundle(
     input: &BundlerInput,
     shadow: &Path,
     // Issue #1668: the widened first-party root and the WORK mirror root, so
@@ -15721,110 +15677,42 @@ fn run_esbuild(
     node_modules_isolation_root: Option<&Path>,
     materialized_project_files: &BTreeSet<PathBuf>,
 ) -> Result<()> {
-    let bin = resolve_esbuild_binary(input.esbuild_binary.as_deref())?;
-    let entry = shadow.join(SHADOW_ENTRY_FILENAME);
-    let tsconfig = shadow.join(SHADOW_TSCONFIG_FILENAME);
-
-    let mut cmd = Command::new(&bin);
-    cmd.current_dir(shadow);
-    cmd.arg("--bundle");
-    cmd.arg("--format=esm");
-    cmd.arg("--platform=neutral");
-    cmd.arg("--target=es2022");
-    cmd.arg("--splitting=false");
-    cmd.arg("--tree-shaking=true");
-    cmd.arg("--sourcemap=linked");
-    cmd.arg("--log-level=warning");
-    // esbuild caps its own error/warning output at 10 messages by default and
-    // silently drops the rest. `friendly_esbuild_error`'s note loop below
-    // walks every `Could not resolve` block in stderr to report ALL escaping
-    // imports in one shot (issue #1839) — without uncapping the limit here,
-    // a project with more than 10 offenders would only ever surface the
-    // first batch, forcing a fix-one/rebuild/discover-next loop.
-    cmd.arg("--log-limit=0");
-    // The `.wasm=copy` loader emits these beside the bundle. Pin the basename
-    // format so both production passes produce deterministic deployment asset
-    // paths that can be safely handed to an adapter.
-    cmd.arg("--asset-names=[name]-[hash]");
-    for arg in esbuild_loader_args(input) {
-        cmd.arg(arg);
-    }
-
-    if input.mode.is_prod() && input.minify {
-        cmd.arg("--minify");
-    }
-
-    cmd.arg(format!("--tsconfig={}", tsconfig.display()));
-    cmd.arg(format!("--outfile={}", bundle_path.display()));
-    if let Some(meta) = metafile_path {
-        cmd.arg(format!("--metafile={}", meta.display()));
-    }
-
-    cmd.arg("--keep-names");
-
-    // Main-fields for the `--platform=neutral` page/SSR pass. Under `neutral`
-    // esbuild's main-fields list is EMPTY by default, so a package resolved
-    // purely via `package.json` `main`/`module` (no `exports` map) fails with
-    // `Could not resolve "<pkg>" ... The "main" field here was ignored. Main
-    // fields must be configured explicitly when using the "neutral" platform.`
-    //
-    // An explicit `bundle.mainFields` (input.main_fields) lets a project
-    // resolve packages that publish only `main` / `module` fields. Without
-    // the setting, no `--main-fields` argument is emitted.
-    //
-    // `--main-fields` only affects packages WITHOUT an `exports` map
-    // (`exports` always takes precedence).
     let effective_main_fields = effective_ssr_main_fields(input);
-    if !effective_main_fields.is_empty() {
-        cmd.arg(format!("--main-fields={}", effective_main_fields.join(",")));
-    }
-
-    // User code consults the public SDK via the bare `zfb` namespace
-    // (`zfb/content`, `zfb/config`, `zfb/paginate`, …) — these are the
-    // documented import paths surfaced by `@takazudo/zfb`'s `exports`
-    // map. The npm package itself is published as `@takazudo/zfb`, so
-    // teach esbuild to treat the bare `zfb` prefix as an alias for
-    // `@takazudo/zfb`. esbuild's `--alias:<from>=<to>` works for both
-    // exact specifiers and subpath suffixes, so `zfb/content` →
-    // `@takazudo/zfb/content` resolves through the package's exports
-    // map without any per-subpath wiring.
-    cmd.arg("--alias:zfb=@takazudo/zfb");
 
     // Plugin-registered aliases + virtual modules (#269). Both surface
-    // through the synthetic `compilerOptions.paths` map esbuild reads
-    // via `--tsconfig=<tsconfig.json>` above — a `paths` entry without the
-    // wildcard suffix is a literal exact match, the contract the embedded
-    // V8 host honors too (`zfb-render::BundleModuleLoader::resolve_alias`).
+    // through the synthetic `compilerOptions.paths` map the bundler reads
+    // via the request's tsconfig — a `paths` entry without the wildcard
+    // suffix is a literal exact match, the contract the embedded V8 host
+    // honors too (`zfb-render::BundleModuleLoader::resolve_alias`).
     //
     // The tsconfig is not applied to source files under `node_modules`, so
-    // both ALSO surface as esbuild `--alias` flags appended after the
-    // tsconfig rewrite below: every virtual module (#1263), and each plugin
-    // alias whose target is a single existing file (#3002). `--alias` is
+    // both ALSO surface as resolver aliases appended after the tsconfig
+    // rewrite below: every virtual module (#1263), and each plugin alias
+    // whose target is a single existing file (#3002). An alias is
     // prefix-with-slash, so it is exact-match-safe only for a file target —
     // `@/foo/bar` remaps to `<file>/bar` and fails. `build_resolver_inputs`
     // applies the file / user-wins / collision gates; `zfb` is reserved
-    // because this pass hardcodes `--alias:zfb=@takazudo/zfb` above.
+    // because this pass hardcodes the `zfb` -> `@takazudo/zfb` alias.
     //
     // `zfb_plugin_resolver::build_resolver_inputs` materializes each
     // virtual module to a `.zfb-virtual-*.mjs` temp file inside
-    // `shadow` (so esbuild's upward `node_modules` walk still finds
-    // the right packages) and returns POSIX-normalized
-    // `(specifier, absolute-path)` pairs. The `NamedTempFile` handles
-    // live inside `resolver_inputs._temp_files` and are dropped after
-    // the subprocess returns.
+    // `shadow` (so the upward `node_modules` walk still finds the right
+    // packages) and returns POSIX-normalized `(specifier, absolute-path)`
+    // pairs. The `NamedTempFile` handles live inside
+    // `resolver_inputs._temp_files` and are dropped after bundling.
     // `input.tsconfig_paths` carries the user's own `compilerOptions.paths`
     // (keyed by pattern, pre-rebase — rebasing only rewrites targets). Pass
     // it so a `virtual:*` specifier the user already claims is NOT also
-    // emitted as a plugin `--alias` (which esbuild applies BEFORE tsconfig
-    // `paths`, overriding the user's mapping). User-wins, #1267.
+    // emitted as a plugin alias (which applies BEFORE tsconfig `paths`,
+    // overriding the user's mapping). User-wins, #1267.
     let project_root = normalize_path_lexical(&input.project_root);
     // Remap each plugin alias whose target lives under the project root to its
     // shadow copy.
     //
     // With exclusions active the shadow copy is ALWAYS the target: exclusion =
     // absence from the shadow, so an excluded alias target is simply not staged
-    // and esbuild fails to resolve it, naming the specifier. There is no guard
-    // child and no live-real fallback.
+    // and the bundler fails to resolve it, naming the specifier. There is no
+    // guard child and no live-real fallback.
     //
     // With an empty `bundle.exclude` the historical behaviour is preserved:
     // point at the shadow copy only when a shadow candidate actually exists,
@@ -15956,8 +15844,8 @@ fn run_esbuild(
     .context("bundler: failed materializing plugin resolver inputs")?;
 
     // Rewrite the synthetic tsconfig with the merged path map — THIS is the
-    // tsconfig esbuild actually reads (step 4's earlier write is overwritten
-    // here for every real build).
+    // tsconfig the bundler actually reads (step 4's earlier write is
+    // overwritten here for every real build).
     //
     // ORDER MATTERS: rebase the user's `tsconfig_paths` to shadow-first
     // dual-targets FIRST, then merge the plugin/virtual entries on top.
@@ -15968,14 +15856,14 @@ fn run_esbuild(
     // contract and the user-wins-on-collision merge semantics
     // (`bundler_exact_match_resolution`).
     //
-    // BEHAVIOURAL DEPENDENCY (not recoverable from the code): esbuild treats a
-    // `compilerOptions.paths` value that is an ARRAY as a try-in-order list —
-    // it resolves each candidate, takes the FIRST one that maps to an existing
-    // file, and a candidate that maps to no file is silently skipped (NOT an
+    // BEHAVIOURAL DEPENDENCY (not recoverable from the code): a tsconfig
+    // `compilerOptions.paths` value that is an ARRAY is a try-in-order list —
+    // the resolver takes the FIRST candidate that maps to an existing file,
+    // and a candidate that maps to no file is silently skipped (NOT an
     // error). The shadow-first dual-target relies on exactly this fallthrough:
     // the shadow copy (carrying the in-shadow transform) is tried first, and
     // the real-root target is the graceful fallback when the shadow has no
-    // such file. (TypeScript/esbuild tsconfig paths-array semantics.)
+    // such file. (TypeScript tsconfig paths-array semantics.)
     let mut merged_paths = rebase_tsconfig_paths_to_shadow_with_exclusions(
         &input.tsconfig_paths,
         &input.project_root,
@@ -15993,191 +15881,213 @@ fn run_esbuild(
     write_synthetic_tsconfig(shadow, &merged_paths, jsx_import_source)
         .context("bundler: failed rewriting synthetic tsconfig with plugin entries")?;
 
-    // Virtual-module `--alias:<spec>=<tmp.mjs>` flags (#1263). esbuild does
-    // NOT apply the synthetic tsconfig's `compilerOptions.paths` to a source
-    // file resident under `node_modules` (`tsConfigForDir` returns nil for
-    // `isInsideNodeModules` before consulting the `--tsconfig` override). A
-    // preset route entrypoint installed under `node_modules` and pulled in by
-    // `synthesize_static_overlay_module` therefore cannot resolve its
-    // `virtual:*` imports through the tsconfig alone. `--alias` is not
-    // node_modules-gated; it is exact-match-safe here because each virtual
-    // target is a single `.mjs` file, so `virtual:foo/bar` remaps to
-    // `<tmp>.mjs/bar` and fails (preserving #269). Empty for the
-    // zero-virtual-module path, so the argv is unchanged there.
-    for flag in resolver_inputs.virtual_module_alias_flags() {
-        cmd.arg(flag);
-    }
+    // Virtual-module aliases (#1263). The synthetic tsconfig's
+    // `compilerOptions.paths` does not apply to a source file resident under
+    // `node_modules`. A preset route entrypoint installed under
+    // `node_modules` and pulled in by `synthesize_static_overlay_module`
+    // therefore cannot resolve its `virtual:*` imports through the tsconfig
+    // alone. A resolver alias is not node_modules-gated; it is
+    // exact-match-safe here because each virtual target is a single `.mjs`
+    // file, so `virtual:foo/bar` remaps to `<tmp>.mjs/bar` and fails
+    // (preserving #269).
+    let mut extra_aliases = resolver_inputs.virtual_module_alias_args.clone();
 
-    // Plugin-alias `--alias` flags (#3002), from `effective_plugin_aliases`
+    // Plugin-alias aliases (#3002), from `effective_plugin_aliases`
     // (shadow-remapped) — only for a target inside the stage root `work_root`
     // (which contains `shadow`), the same boundary the #1706 stage-escape
     // audit checks. A target that fell through to the live tree (empty
     // `bundle.exclude` with no shadow copy, or outside the workspace) keeps
-    // today's tsconfig-only behaviour, where the dual-target `[shadow, real]`
-    // fallback still applies, so a flag can never introduce a stage escape.
+    // the tsconfig-only behaviour, where the dual-target `[shadow, real]`
+    // fallback still applies, so an alias can never introduce a stage escape.
     let stage_root = normalize_path_lexical(work_root);
-    for (flag, (_, target)) in resolver_inputs
-        .plugin_alias_flags()
-        .zip(&resolver_inputs.plugin_alias_args)
-    {
-        if normalize_path_lexical(Path::new(target)).starts_with(&stage_root) {
-            cmd.arg(flag);
-        }
-    }
+    extra_aliases.extend(
+        resolver_inputs
+            .plugin_alias_args
+            .iter()
+            .filter(|(_, target)| {
+                normalize_path_lexical(Path::new(target)).starts_with(&stage_root)
+            })
+            .cloned(),
+    );
 
-    // Mode defines are always emitted and deliberately independent of minify.
-    // process.env.NODE_ENV is mode-driven and framework-agnostic.
-    //
-    // Dependencies can read `process.env.NODE_ENV` at module-init time. In
-    // the SSR/main bundle this runs inside V8 with no Node `process` global,
-    // so inline the mode value before any component can render. The islands
-    // client bundle also defines it unconditionally (see
-    // `zfb-islands/src/esbuild.rs::bundle_one_entry`); keep both pipelines
-    // aligned without framework gating.
-    for arg in bundle_mode_define_args(input.mode) {
-        cmd.arg(arg);
-    }
-
-    // PUBLIC_-prefixed env vars only. Anything else is dropped server-
-    // side and never reaches the bundle. Both common spellings are emitted,
-    // except where an exact operator-authored `bundle.define` owns the same
-    // expression. That explicit channel has higher precedence and is shared
-    // by SSR and browser bundlers.
-    for arg in public_env_define_args(&input.public_env_vars, &input.define_vars) {
-        cmd.arg(arg);
-    }
-
-    // Operator-authored `bundle.define` expressions are already validated by
-    // the config layer (including mode-key reservations) and remain raw.
-    for arg in operator_define_args(&input.define_vars) {
-        cmd.arg(arg);
-    }
-
-    for ext in &input.external {
-        cmd.arg(format!("--external:{}", ext));
-    }
-
-    // Mark `node:*` builtins external so esbuild does not attempt to
-    // resolve them when bundling for workerd / Cloudflare Workers. The
-    // Worker runtime does not have filesystem access; any code path that
-    // would call `node:fs` or `node:path` (e.g. the fallback branch in
-    // `zfb/content` that runs outside a Worker context) is dead in
-    // practice because `createPageRouter` installs the content snapshot
-    // before any request is served. Marking them external is correct:
-    // - it prevents the bundler from erroring on unresolvable built-ins,
-    // - it keeps the dead code in the bundle tree-shaken by workerd at
-    //   runtime (no actual fs calls ever execute inside the Worker).
-    //
-    // Pattern `node:*` is the canonical esbuild glob for all Node.js
-    // built-in protocols. The explicit `--external:node:*` is NOT the
-    // same as `--platform=node`; the bundle stays platform-neutral.
-    cmd.arg("--external:node:*");
-
-    // `--preserve-symlinks` has THREE separate activation paths:
-    //
-    // 1. **Vendored mode** (`node_modules_dir.is_some() &&
-    //    node_modules_preserve_symlinks == true`) — `node_modules_dir`
-    //    points at a synthetic tempdir whose contents live outside the
-    //    project. Without `--preserve-symlinks` esbuild canonicalises
-    //    symlinked source files back to their real paths, walks up
-    //    looking for `node_modules`, and finds none (the injected vendor
-    //    tree only exists at the shadow location). `--preserve-symlinks`
-    //    keeps esbuild anchored at the shadow path.
-    //
-    // 2. **CSS Modules without a project node_modules** (fix #553) —
-    //    `rewrite_css_modules_in_shadow` replaces the shadow's
-    //    `.module.css` symlinks with real JS files, but `.tsx`/`.jsx`
-    //    importers of those files remain symlinks. Without
-    //    `--preserve-symlinks`, esbuild canonicalises each symlinked
-    //    importer to its real source path and resolves
-    //    `./x.module.css` from *there* — finding the original raw CSS
-    //    rather than the rewritten JS in the shadow. With
-    //    `--preserve-symlinks`, esbuild stays anchored at the shadow
-    //    and resolves the relative import to the rewritten JS file.
-    //
-    // 3. **CSS Modules with a project node_modules but no tsconfig
-    //    `paths`** (fix #553, corp's actual shape — `pnpm install`'d
-    //    node_modules + plain relative imports of `*.module.css`,
-    //    NO `compilerOptions.paths` in tsconfig). The .tsx
-    //    canonicalisation problem above ALSO applies here; the only
-    //    reason path 2's `is_none()` gate isn't enough is that corp
-    //    has a real project `node_modules`. Adding
-    //    `--preserve-symlinks` here is safe because the regression in
-    //    #443/#450 that the gate originally protected against
-    //    (`tsConfigForDir` returning early for workspace-package
-    //    importers inside `node_modules`, so the project's
-    //    `compilerOptions.paths` aliases stop applying for them)
-    //    requires `paths` to even exist — without `paths` there is no
-    //    alias resolution to break. The
-    //    `bundler_workspace_pkg_alias` regression test exercises the
-    //    `paths`-present branch and continues to pass because this
-    //    `is_empty()` clause does NOT fire when paths exist.
-    //
-    // The three activation paths are encoded in
-    // `esbuild_will_preserve_symlinks`; `bundle()` calls the SAME
-    // predicate to derive `copy_mode` (the in-shadow source files must
-    // be real copies precisely when esbuild will NOT preserve symlinks,
-    // i.e. branch 4) so the two can never drift.
-    if esbuild_will_preserve_symlinks(input) {
-        cmd.arg("--preserve-symlinks");
-    }
-
-    cmd.arg(OsString::from(entry));
-
-    #[cfg(feature = "rolldown-prototype")]
-    if zfb_rolldown_prototype::enabled() {
-        return zfb_rolldown_prototype::run_prepared(&cmd).map_err(|err| {
-            let message = format!("{err:#}");
-            let located: BTreeSet<&Path> = message
-                .lines()
-                .filter_map(esbuild_location_path)
-                .map(Path::new)
-                .collect();
-            crate::jsx_pragma::emit_foreign_pragma_warnings(&input.project_root, located);
-            let friendly = friendly_esbuild_error(
-                &message,
-                shadow,
-                &input.project_root,
-                first_party_root,
-                work_root,
-            );
-            anyhow!("bundler: Rolldown could not bundle: {friendly}")
-        });
-    }
-
-    let output =
-        run_capturing(&mut cmd).with_context(|| format!("failed to spawn {}", bin.display()))?;
-    // Drop `resolver_inputs` now — the subprocess has finished and
-    // esbuild no longer needs the virtual-module `.mjs` temp files.
-    // Explicit drop makes the lifetime intent visible; the
-    // `NamedTempFile`s inside `_temp_files` delete themselves via
-    // their Drop impl.
+    let request = ssr_bundle_request(
+        input,
+        shadow,
+        bundle_path,
+        metafile_path,
+        extra_aliases,
+        inherited_node_path_dirs(),
+    )?;
+    let result = zfb_bundler::bundle(&request);
+    // The virtual-module `.mjs` temp files are no longer needed once the
+    // bundle is generated; their `NamedTempFile`s delete themselves on drop.
     drop(resolver_inputs);
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    result.map(|_| ()).map_err(|err| {
+        let message = format!("{err:#}");
         // A foreign pragma surfaces as an unresolved `<pkg>/jsx-runtime`
         // located in the pragma's own file, so name the pragma first.
-        let located: BTreeSet<&Path> = stderr
+        let located: BTreeSet<&Path> = message
             .lines()
-            .filter_map(esbuild_location_path)
+            .filter_map(diagnostic_location_path)
             .map(Path::new)
             .collect();
         crate::jsx_pragma::emit_foreign_pragma_warnings(&input.project_root, located);
-        let friendly = friendly_esbuild_error(
-            stderr.trim(),
+        let friendly = friendly_bundle_error(
+            &message,
             shadow,
             &input.project_root,
             first_party_root,
             work_root,
         );
-        bail!(
-            "bundler: esbuild exited with status {}: {}",
-            output.status,
-            friendly
-        );
+        anyhow!("bundler: could not bundle: {friendly}")
+    })
+}
+
+/// `NODE_PATH` module directories the bundler searches after
+/// `node_modules`. The package manager's bin shim exports one naming its
+/// hidden-hoist store (`node_modules/.pnpm/node_modules`), which is how a
+/// dependency of a package reached through a symlink outside the project
+/// resolves under preserved symlinks (#4430).
+fn inherited_node_path_dirs() -> Vec<PathBuf> {
+    std::env::var_os("NODE_PATH")
+        .filter(|value| !value.is_empty())
+        .map(|value| std::env::split_paths(&value).collect())
+        .unwrap_or_default()
+}
+
+/// The typed SSR/page bundle job for one shadow: everything [`bundle`]
+/// decides about the bundle, with no filesystem effects. `extra_aliases`
+/// are the plugin and virtual-module aliases [`run_native_bundle`] derived
+/// from the staged shadow; `extra_module_dirs` is the `NODE_PATH` search
+/// list.
+fn ssr_bundle_request(
+    input: &BundlerInput,
+    shadow: &Path,
+    bundle_path: &Path,
+    metafile_path: Option<&Path>,
+    extra_aliases: Vec<(String, String)>,
+    extra_module_dirs: Vec<PathBuf>,
+) -> Result<BundleRequest> {
+    let mut request = BundleRequest::new(
+        shadow,
+        shadow.join(SHADOW_ENTRY_FILENAME),
+        OutputLayout::File {
+            file: bundle_path.to_path_buf(),
+            // The `.wasm=copy` loader emits these beside the bundle. Pin the
+            // basename format so both production passes produce deterministic
+            // deployment asset paths that can be safely handed to an adapter.
+            asset_names: Some("[name]-[hash]".to_string()),
+        },
+        Platform::Neutral,
+    );
+    request.target = Some("es2022".to_string());
+    request.source_map = SourceMap::Linked;
+    request.keep_names = true;
+    request.minify = input.mode.is_prod() && input.minify;
+    request.tsconfig = Some(shadow.join(SHADOW_TSCONFIG_FILENAME));
+    request.graph = metafile_path.map(Path::to_path_buf);
+    request.loaders = ssr_loaders(input)?;
+
+    // Under the neutral platform the main-fields list is EMPTY by default, so
+    // a package resolved purely via `package.json` `main`/`module` (no
+    // `exports` map) fails to resolve. An explicit `bundle.mainFields`
+    // (input.main_fields) lets a project resolve packages that publish only
+    // `main` / `module` fields; `exports` always takes precedence.
+    let main_fields = effective_ssr_main_fields(input);
+    if !main_fields.is_empty() {
+        request.resolve.main_fields = Some(main_fields.iter().map(|s| s.to_string()).collect());
     }
-    Ok(())
+
+    // User code consults the public SDK via the bare `zfb` namespace
+    // (`zfb/content`, `zfb/config`, `zfb/paginate`, …) — the documented
+    // import paths of `@takazudo/zfb`'s `exports` map. The alias covers the
+    // exact specifier and its subpaths, so `zfb/content` resolves through
+    // the package's exports map without per-subpath wiring.
+    request
+        .resolve
+        .aliases
+        .push(("zfb".to_string(), "@takazudo/zfb".to_string()));
+    request.resolve.aliases.extend(extra_aliases);
+
+    // Mode defines are always emitted and deliberately independent of minify.
+    // Dependencies can read `process.env.NODE_ENV` at module-init time; the
+    // SSR bundle runs inside V8 with no Node `process` global, so inline the
+    // mode value before any component can render. The islands client bundle
+    // defines it unconditionally too; keep both pipelines aligned.
+    request.defines.extend(bundle_mode_defines(input.mode));
+    // PUBLIC_-prefixed env vars only. Anything else is dropped server-side
+    // and never reaches the bundle.
+    request.defines.extend(public_env_defines(
+        &input.public_env_vars,
+        &input.define_vars,
+    ));
+    // Operator-authored `bundle.define` expressions are already validated by
+    // the config layer (including mode-key reservations) and remain raw.
+    request.defines.extend(
+        input
+            .define_vars
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+
+    for ext in &input.external {
+        request.externals.push(ssr_external(ext)?);
+    }
+    // `node:*` builtins stay external: the Worker runtime has no filesystem,
+    // and the code paths reaching `node:fs` / `node:path` (e.g. the
+    // `zfb/content` fallback outside a Worker) are dead once
+    // `createPageRouter` installs the content snapshot. This is not the
+    // node platform; the bundle stays platform-neutral.
+    request
+        .externals
+        .push(External::Prefix("node:".to_string()));
+
+    // Preserved symlinks keep resolution anchored at the shadow tree. The
+    // activation paths are documented on [`ssr_preserves_symlinks`], which
+    // `bundle()` also uses to derive `copy_mode`.
+    request.resolve.preserve_symlinks = ssr_preserves_symlinks(input);
+    request.resolve.extra_module_dirs = extra_module_dirs;
+    Ok(request)
+}
+
+/// The SSR pass's loaders: [`SSR_LOADERS`] then the validated
+/// `bundle.loaders` config ([`BundlerInput::extra_loader_args`]), later
+/// entries winning per extension.
+fn ssr_loaders(input: &BundlerInput) -> Result<Vec<(String, Loader)>> {
+    let mut loaders = BTreeMap::new();
+    for (ext, loader) in SSR_LOADERS {
+        loaders.insert(ext.to_string(), *loader);
+    }
+    for arg in &input.extra_loader_args {
+        let (ext, loader) = parse_loader_arg(arg)?;
+        loaders.insert(ext, loader);
+    }
+    Ok(loaders.into_iter().collect())
+}
+
+/// Parses one `--loader:<ext>=<loader>` entry of
+/// [`BundlerInput::extra_loader_args`].
+fn parse_loader_arg(arg: &str) -> Result<(String, Loader)> {
+    let (ext, name) = arg
+        .strip_prefix("--loader:")
+        .and_then(|value| value.split_once('='))
+        .with_context(|| format!("bundler: malformed loader entry {arg:?}"))?;
+    let loader = Loader::parse(name)
+        .with_context(|| format!("bundler: unknown loader {name:?} for {ext}"))?;
+    Ok((ext.to_string(), loader))
+}
+
+/// A `bundle.external` entry: a trailing `*` matches a specifier prefix,
+/// anything else the package and its subpaths.
+fn ssr_external(spec: &str) -> Result<External> {
+    match spec.strip_suffix('*') {
+        Some(prefix) if !prefix.contains('*') => Ok(External::Prefix(prefix.to_string())),
+        _ if spec.contains('*') => {
+            bail!("bundler: externals support only a trailing `*` wildcard: {spec}")
+        }
+        _ => Ok(External::Package(spec.to_string())),
+    }
 }
 
 /// Extracts `<specifier>` from an esbuild `Could not resolve "<specifier>"`
@@ -16198,7 +16108,7 @@ fn could_not_resolve_specifier(line: &str) -> Option<&str> {
 /// from the right by `:` at most twice isolates the path, so any colon
 /// inside it — a Windows drive letter (`C:\...`) included — is kept.
 /// Relative locations use `/` on every platform, Windows included.
-fn esbuild_location_path(line: &str) -> Option<&str> {
+fn diagnostic_location_path(line: &str) -> Option<&str> {
     let trimmed = line.trim();
     let without_trailing_colon = trimmed.strip_suffix(':')?;
     let mut parts = without_trailing_colon.rsplitn(3, ':');
@@ -16211,7 +16121,7 @@ fn esbuild_location_path(line: &str) -> Option<&str> {
     Some(path)
 }
 
-/// Post-processes esbuild's captured stderr from `run_esbuild`'s failure
+/// Post-processes esbuild's captured stderr from `run_native_bundle`'s failure
 /// branch so a build failure is actionable instead of naming the ephemeral
 /// shadow-copy tempdir the user never created (#1385 pt.2 / issue #1388;
 /// extended for the workspace tier by issue #1839).
@@ -16225,7 +16135,7 @@ fn esbuild_location_path(line: &str) -> Option<&str> {
 ///
 /// - `shadow` — the project mirror (`work_root` itself outside a
 ///   workspace, or `work_root/<workspace_rel>` inside one — see
-///   `run_esbuild`'s doc comment) — maps back to the real `project_root`.
+///   `run_native_bundle`'s doc comment) — maps back to the real `project_root`.
 /// - `work_root` — the wholesale-mirrored first-party workspace root a
 ///   claimed sibling package's own source is staged under — maps back to
 ///   the real `first_party_root`.
@@ -16265,7 +16175,7 @@ fn esbuild_location_path(line: &str) -> Option<&str> {
 ///    and pointing at the package-specifier + wildcard-`exports`
 ///    workaround. The join is purely lexical (string arithmetic, no
 ///    filesystem access) — it does not matter whether the target actually
-///    exists. `run_esbuild` passes `--log-limit=0` so esbuild's own default
+///    exists. `run_native_bundle` passes `--log-limit=0` so esbuild's own default
 ///    10-message cap never truncates the input here, meaning every
 ///    offending block in stderr is walked and named, not just the first
 ///    batch.
@@ -16277,7 +16187,7 @@ fn esbuild_location_path(line: &str) -> Option<&str> {
 /// spelled natively — which is how the Rolldown backend's absolute fallback
 /// renders it. Both shapes are unit-tested on `windows-latest`
 /// (`windows-lib-tests.yml`).
-fn friendly_esbuild_error(
+fn friendly_bundle_error(
     stderr: &str,
     shadow: &Path,
     project_root: &Path,
@@ -16309,7 +16219,7 @@ fn friendly_esbuild_error(
         let Some(location_line) = lines[idx + 1..].iter().find(|l| !l.trim().is_empty()) else {
             continue;
         };
-        let Some(importer_rel) = esbuild_location_path(location_line) else {
+        let Some(importer_rel) = diagnostic_location_path(location_line) else {
             continue;
         };
         let importer_abs = normalize_path_lexical(&shadow.join(importer_rel));
@@ -16384,108 +16294,9 @@ fn friendly_esbuild_error(
     out
 }
 
-fn resolve_esbuild_binary(explicit: Option<&Path>) -> Result<PathBuf> {
-    let (_handle, path) = resolve_esbuild_binary_with_env(
-        explicit,
-        |name| std::env::var_os(name),
-        None::<fn() -> Option<(tempfile::TempDir, PathBuf)>>,
-        None,
-    )?;
-    Ok(path)
-}
-
-/// Shared esbuild binary resolver used by both the bundler and the config
-/// loader. Home crate: `zfb-build` (lowest crate that both consumers depend
-/// on; `zfb-types` is excluded because it is a zero-dep leaf).
-///
-/// ## Lookup order (documented superset)
-///
-/// 1. **Explicit path** (`explicit`) — if `Some`, validated and returned
-///    immediately; an absent file is a hard error.
-/// 2. **`ZFB_ESBUILD_BIN` env var** — read via `env_getter("ZFB_ESBUILD_BIN")`.
-///    Injected as a closure so tests can drive this tier without mutating
-///    `std::env` (which is `unsafe` in a multi-threaded test runner under
-///    Rust 2024).
-/// 3. **Embedded extraction** (`embedded_getter`) — optional callback tried
-///    *before* the workspace slot. The config-loader caller (`zfb` crate)
-///    passes `Some(|| crate::render_pipeline::embedded_binary("esbuild"))` so
-///    a `cargo install`-ed binary (which has no workspace) still resolves.
-///    The bundler passes `None` here because it has no access to the
-///    `EMBEDDED_VENDOR` snapshot that lives in the `zfb` crate.
-/// 4. **Workspace slot** — `slot_override.unwrap_or(DEFAULT_ESBUILD_SLOT)`.
-///    `slot_override` is an escape hatch for unit tests that need to point the
-///    slot at a tempdir without chdir-ing.
-///
-/// ## Return value
-///
-/// `(Option<tempfile::TempDir>, PathBuf)` — the `TempDir` is `Some` only when
-/// the embedded extraction tier was taken. The caller **must** hold the handle
-/// alive for the lifetime of any subprocess that references the returned
-/// `PathBuf`; dropping the handle removes the tempdir and the binary.
-pub fn resolve_esbuild_binary_with_env<F, E>(
-    explicit: Option<&Path>,
-    env_getter: F,
-    embedded_getter: Option<E>,
-    slot_override: Option<&Path>,
-) -> Result<(Option<tempfile::TempDir>, PathBuf)>
-where
-    F: Fn(&str) -> Option<std::ffi::OsString>,
-    E: FnOnce() -> Option<(tempfile::TempDir, PathBuf)>,
-{
-    // Tier 1: explicit path override.
-    if let Some(p) = explicit {
-        if !p.exists() {
-            bail!(
-                "bundler: esbuild binary not found at explicit path {}",
-                p.display()
-            );
-        }
-        return Ok((None, p.to_path_buf()));
-    }
-    // Tier 2: ZFB_ESBUILD_BIN env var. An empty value (set but blank) is
-    // treated the same as unset, mirroring the build-time override
-    // contract in `crates/zfb/build.rs` / `BUILDING.md` — otherwise a
-    // blank env var that build.rs treats as "no override" would still
-    // trip this tier and fail to resolve a binary at runtime.
-    if let Some(env) = env_getter("ZFB_ESBUILD_BIN").filter(|v| !v.is_empty()) {
-        let p = PathBuf::from(env);
-        if !p.exists() {
-            bail!(
-                "bundler: esbuild binary not found at ZFB_ESBUILD_BIN={}",
-                p.display()
-            );
-        }
-        return Ok((None, p));
-    }
-    // Tier 3: embedded extraction (config-loader caller only; None for bundler).
-    if let Some(getter) = embedded_getter {
-        if let Some((handle, path)) = getter() {
-            return Ok((Some(handle), path));
-        }
-        // getter returned None → fall through to the workspace slot.
-    }
-    // Tier 4: workspace-relative staging slot.
-    let slot = slot_override
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_ESBUILD_SLOT));
-    if !slot.exists() {
-        return Err(anyhow!(
-            "bundler: esbuild binary not found at default slot {}. \
-             Evaluating a `zfb.config.ts` needs an esbuild CLI binary: set \
-             ZFB_ESBUILD_BIN to one (or, in a workspace checkout, stage the \
-             binary at that slot path). If you are embedding zfb-server as a \
-             library, prefer shipping a `zfb.config.json` instead — the JSON \
-             config path needs no esbuild at all.",
-            slot.display(),
-        ));
-    }
-    Ok((None, slot))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zfb_test_utils::locate_esbuild as locate_real_esbuild;
 
     /// `base` joined with `rel` in one `Path::join`, the way the tsconfig
     /// rebase builds staged targets (Windows keeps `rel`'s `/` spelling).
@@ -16709,7 +16520,7 @@ mod tests {
                 None,
             )
         };
-        assert!(!esbuild_will_preserve_symlinks(&canonical_input));
+        assert!(!ssr_preserves_symlinks(&canonical_input));
         let mut canonical_dirs = BTreeSet::new();
         let mut canonical_alias_dirs = BTreeMap::new();
         let mut canonical_pnpm_staging = false;
@@ -16718,9 +16529,9 @@ mod tests {
             &project,
             canonical_input.node_modules_dir.as_deref(),
             &matcher,
-            !esbuild_will_preserve_symlinks(&canonical_input),
+            !ssr_preserves_symlinks(&canonical_input),
             true,
-            esbuild_will_preserve_symlinks(&canonical_input)
+            ssr_preserves_symlinks(&canonical_input)
                 && !canonical_input.node_modules_preserve_symlinks,
             &BTreeSet::from([project.join("pages/index.tsx")]),
             &BTreeSet::new(),
@@ -16779,9 +16590,8 @@ mod tests {
             "Hono's own version must win over the unrelated root version"
         );
 
-        if let Some(bin) = locate_real_esbuild() {
+        {
             let input = BundlerInput {
-                esbuild_binary: Some(bin),
                 node_modules_dir: Some(project.join("node_modules")),
                 zudo_react_island_names: Some(vec![]),
                 zudo_react_build: None,
@@ -16897,7 +16707,7 @@ mod tests {
         let input = BundlerInput {
             zudo_react_island_names: Some(vec![]),
             zudo_react_build: None,
-            mock_subprocess_output: Some("export default {};\n".to_string()),
+            mock_bundle_output: Some("export default {};\n".to_string()),
             node_modules_dir: Some(project.join("node_modules")),
             ..BundlerInput::for_project(
                 project.to_path_buf(),
@@ -16906,7 +16716,7 @@ mod tests {
                 None,
             )
         };
-        assert!(esbuild_will_preserve_symlinks(&input));
+        assert!(ssr_preserves_symlinks(&input));
         let stats = bundle_with_session(input, Some(&mut session))
             .expect("mock bundle must succeed")
             .node_modules_staging_stats;
@@ -17170,7 +16980,7 @@ mod tests {
                 "@takazudo/zfb/zudo-react".into(),
                 "@takazudo/zfb-runtime".into(),
             ],
-            mock_subprocess_output: Some("export default {};\n".to_string()),
+            mock_bundle_output: Some("export default {};\n".to_string()),
             node_modules_dir: Some(site.join("node_modules")),
             tsconfig_paths: BTreeMap::from([(
                 "@/unused".to_string(),
@@ -18796,7 +18606,7 @@ mod tests {
         assert_eq!(out["@/*"], vec!["/work/*"]);
     }
 
-    // ── friendly_esbuild_error + its parsing helpers (#1388) ────────────────
+    // ── friendly_bundle_error + its parsing helpers (#1388) ────────────────
 
     #[test]
     fn could_not_resolve_specifier_extracts_quoted_specifier() {
@@ -18810,26 +18620,26 @@ mod tests {
     }
 
     #[test]
-    fn esbuild_location_path_extracts_path_before_line_col() {
+    fn diagnostic_location_path_extracts_path_before_line_col() {
         assert_eq!(
-            esbuild_location_path("    pages/foo.tsx:1:19:"),
+            diagnostic_location_path("    pages/foo.tsx:1:19:"),
             Some("pages/foo.tsx")
         );
         // Not a location line: no trailing colon / non-numeric row-col.
-        assert_eq!(esbuild_location_path("1 error"), None);
-        assert_eq!(esbuild_location_path(""), None);
+        assert_eq!(diagnostic_location_path("1 error"), None);
+        assert_eq!(diagnostic_location_path(""), None);
     }
 
     #[test]
-    fn esbuild_location_path_keeps_drive_letter_colon() {
+    fn diagnostic_location_path_keeps_drive_letter_colon() {
         assert_eq!(
-            esbuild_location_path("    C:\\work\\pages\\foo.tsx:3:6:"),
+            diagnostic_location_path("    C:\\work\\pages\\foo.tsx:3:6:"),
             Some("C:\\work\\pages\\foo.tsx")
         );
     }
 
     #[test]
-    fn friendly_esbuild_error_maps_slash_separated_location_onto_host_project_path() {
+    fn friendly_bundle_error_maps_slash_separated_location_onto_host_project_path() {
         // Host-absolute roots (a drive-letter path on Windows) with the
         // `/`-separated relative location esbuild and the Rolldown backend
         // both print on every platform.
@@ -18839,7 +18649,7 @@ mod tests {
         let stderr = "\u{2718} [ERROR] Could not resolve \"../../outside/shared.ts\"\n\n    components/box.tsx:3:6:\n\n1 error";
 
         let friendly =
-            friendly_esbuild_error(stderr, &shadow, &project_root, &project_root, &shadow);
+            friendly_bundle_error(stderr, &shadow, &project_root, &project_root, &shadow);
 
         let expected = project_root.join("components").join("box.tsx");
         assert!(
@@ -18853,7 +18663,7 @@ mod tests {
     }
 
     #[test]
-    fn friendly_esbuild_error_maps_native_absolute_fallback_location() {
+    fn friendly_bundle_error_maps_native_absolute_fallback_location() {
         // The Rolldown backend's absolute fallback (importer outside every
         // job cwd, e.g. a workspace sibling) prints the native spelling.
         let base = std::env::temp_dir();
@@ -18867,7 +18677,7 @@ mod tests {
             importer.display()
         );
 
-        let friendly = friendly_esbuild_error(
+        let friendly = friendly_bundle_error(
             &stderr,
             &shadow,
             &project_root,
@@ -18894,7 +18704,7 @@ mod tests {
     }
 
     #[test]
-    fn friendly_esbuild_error_annotates_escaping_relative_import() {
+    fn friendly_bundle_error_annotates_escaping_relative_import() {
         let shadow = Path::new("/tmp/zfb-bundler-abc123");
         let project_root = Path::new("/Users/dev/my-project");
         // Exact shape captured from a real esbuild 0.27.3 run against a
@@ -18904,9 +18714,9 @@ mod tests {
         let stderr = "\u{2718} [ERROR] Could not resolve \"../../outside/shared.ts\"\n\n    pages/foo.tsx:1:19:\n      1 \u{2502} import Button from \"../../outside/shared.ts\";\n        \u{2575}                    ~~~~~~~~~~~~~~~~~~~~~~~~~\n\n1 error";
 
         // Non-workspace: `first_party_root == project_root`, `work_root ==
-        // shadow` (see `run_esbuild`'s doc comment) — the sibling tier is
+        // shadow` (see `run_native_bundle`'s doc comment) — the sibling tier is
         // inert.
-        let friendly = friendly_esbuild_error(stderr, shadow, project_root, project_root, shadow);
+        let friendly = friendly_bundle_error(stderr, shadow, project_root, project_root, shadow);
 
         // Names the REAL source path, not a tempdir.
         assert!(
@@ -18931,7 +18741,7 @@ mod tests {
     }
 
     #[test]
-    fn friendly_esbuild_error_leaves_non_escaping_resolve_failure_unannotated() {
+    fn friendly_bundle_error_leaves_non_escaping_resolve_failure_unannotated() {
         let shadow = Path::new("/tmp/zfb-bundler-abc123");
         let project_root = Path::new("/Users/dev/my-project");
         // `../sibling/file.ts` from `pages/foo.tsx` resolves to
@@ -18940,7 +18750,7 @@ mod tests {
         // boundary annotation.
         let stderr = "\u{2718} [ERROR] Could not resolve \"../sibling/file.ts\"\n\n    pages/foo.tsx:1:19:\n      1 \u{2502} import Button from \"../sibling/file.ts\";\n\n1 error";
 
-        let friendly = friendly_esbuild_error(stderr, shadow, project_root, project_root, shadow);
+        let friendly = friendly_bundle_error(stderr, shadow, project_root, project_root, shadow);
         assert_eq!(
             friendly, stderr,
             "non-escaping resolve failures should pass through unchanged"
@@ -18948,11 +18758,11 @@ mod tests {
     }
 
     #[test]
-    fn friendly_esbuild_error_replaces_leaked_shadow_root_prefix() {
+    fn friendly_bundle_error_replaces_leaked_shadow_root_prefix() {
         let shadow = Path::new("/tmp/zfb-bundler-abc123");
         let project_root = Path::new("/Users/dev/my-project");
         let stderr = "some diagnostic mentioning /tmp/zfb-bundler-abc123/tsconfig.json directly";
-        let friendly = friendly_esbuild_error(stderr, shadow, project_root, project_root, shadow);
+        let friendly = friendly_bundle_error(stderr, shadow, project_root, project_root, shadow);
         assert_eq!(
             friendly,
             "some diagnostic mentioning /Users/dev/my-project/tsconfig.json directly"
@@ -18960,7 +18770,7 @@ mod tests {
     }
 
     #[test]
-    fn friendly_esbuild_error_maps_work_root_prefixed_sibling_importer_to_first_party_root() {
+    fn friendly_bundle_error_maps_work_root_prefixed_sibling_importer_to_first_party_root() {
         // Workspace shape: `shadow` (the narrower project mirror) is nested
         // under `work_root` (the wholesale-mirrored workspace root). A
         // claimed sibling package's own source is staged only under
@@ -18975,7 +18785,7 @@ mod tests {
         let stderr = "\u{2718} [ERROR] Could not resolve \"../../../outside/escaped.ts\"\n\n    ../../lib/shared/helper.ts:1:19:\n      1 \u{2502} import x from \"../../../outside/escaped.ts\";\n\n1 error";
 
         let friendly =
-            friendly_esbuild_error(stderr, shadow, project_root, first_party_root, work_root);
+            friendly_bundle_error(stderr, shadow, project_root, first_party_root, work_root);
 
         // Names the sibling's REAL live-tree path (mapped through
         // `first_party_root`), not the ephemeral `work_root` tempdir.
@@ -18994,7 +18804,7 @@ mod tests {
     }
 
     #[test]
-    fn friendly_esbuild_error_prefers_shadow_prefix_over_work_root_prefix() {
+    fn friendly_bundle_error_prefers_shadow_prefix_over_work_root_prefix() {
         // `shadow` is nested under `work_root`, so an importer that lives
         // INSIDE shadow also lexically satisfies a `work_root` prefix
         // check. `project_root` is deliberately NOT the lexical
@@ -19015,7 +18825,7 @@ mod tests {
         let stderr = "\u{2718} [ERROR] Could not resolve \"../../outside/shared.ts\"\n\n    pages/foo.tsx:1:19:\n      1 \u{2502} import x from \"../../outside/shared.ts\";\n\n1 error";
 
         let friendly =
-            friendly_esbuild_error(stderr, shadow, project_root, first_party_root, work_root);
+            friendly_bundle_error(stderr, shadow, project_root, first_party_root, work_root);
 
         assert!(
             friendly.contains(&native_path(
@@ -19030,7 +18840,7 @@ mod tests {
     }
 
     #[test]
-    fn friendly_esbuild_error_scopes_project_importer_escape_to_shadow_even_inside_work_root() {
+    fn friendly_bundle_error_scopes_project_importer_escape_to_shadow_even_inside_work_root() {
         // Codex review finding on issue #1839: a PROJECT importer (staged
         // under `shadow`) must be judged against the `shadow` boundary
         // ALONE, never `work_root` — even though the target here happens
@@ -19052,7 +18862,7 @@ mod tests {
         let stderr = "\u{2718} [ERROR] Could not resolve \"../../../lib/shared/other.ts\"\n\n    pages/foo.tsx:1:19:\n      1 \u{2502} import x from \"../../../lib/shared/other.ts\";\n\n1 error";
 
         let friendly =
-            friendly_esbuild_error(stderr, shadow, project_root, first_party_root, work_root);
+            friendly_bundle_error(stderr, shadow, project_root, first_party_root, work_root);
 
         assert!(
             friendly.contains(&native_path(
@@ -19070,15 +18880,15 @@ mod tests {
     }
 
     #[test]
-    fn friendly_esbuild_error_reports_every_offender_in_one_run() {
+    fn friendly_bundle_error_reports_every_offender_in_one_run() {
         // Two independent escaping imports in the SAME stderr blob — proves
-        // the note loop (paired with `run_esbuild`'s `--log-limit=0`) names
+        // the note loop (paired with `run_native_bundle`'s `--log-limit=0`) names
         // every offender in a single run instead of stopping at the first.
         let shadow = Path::new("/tmp/zfb-bundler-abc123");
         let project_root = Path::new("/Users/dev/my-project");
         let stderr = "\u{2718} [ERROR] Could not resolve \"../../outside/one.ts\"\n\n    pages/one.tsx:1:19:\n      1 \u{2502} import a from \"../../outside/one.ts\";\n\n\u{2718} [ERROR] Could not resolve \"../../outside/two.ts\"\n\n    pages/two.tsx:1:19:\n      1 \u{2502} import b from \"../../outside/two.ts\";\n\n2 errors";
 
-        let friendly = friendly_esbuild_error(stderr, shadow, project_root, project_root, shadow);
+        let friendly = friendly_bundle_error(stderr, shadow, project_root, project_root, shadow);
 
         assert!(
             friendly.contains("../../outside/one.ts")
@@ -19279,8 +19089,7 @@ mod tests {
             outdir: root.join("dist"),
             mode: BundleMode::Production,
             minify: false,
-            esbuild_binary: None,
-            mock_subprocess_output: Some("// mock bundle\nexport const routes = {};\n".to_string()),
+            mock_bundle_output: Some("// mock bundle\nexport const routes = {};\n".to_string()),
             content_snapshot_json: None,
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
@@ -20485,11 +20294,11 @@ mod tests {
             spec_no_hash
         );
 
-        // Loader constant must include `.md=jsx` so esbuild can parse the
-        // compiled shadow file (ESBUILD_LOADER_ARGS regression check).
+        // Loader constant must load `.md` as JSX so the bundler can parse
+        // the compiled shadow file (SSR_LOADERS regression check).
         assert!(
-            ESBUILD_LOADER_ARGS.contains(&"--loader:.md=jsx"),
-            "ESBUILD_LOADER_ARGS must include --loader:.md=jsx; got: {ESBUILD_LOADER_ARGS:?}"
+            SSR_LOADERS.contains(&(".md", Loader::Jsx)),
+            "SSR_LOADERS must load .md as jsx; got: {SSR_LOADERS:?}"
         );
     }
 
@@ -21935,29 +21744,17 @@ mod tests {
         assert!(staged.contains(".js?v="), "{staged}");
         assert!(!staged.contains("new URL('./search.worker.ts'"), "{staged}");
 
-        // Level 1 + real compiler seam when the pinned binary is staged: the
-        // rewritten island itself bundles, but the browser-only worker entry
-        // cannot appear because the transform injected no import edge.
-        let Some(esbuild) = locate_real_esbuild() else {
-            eprintln!(
-                "[ssr_worker_island_bundles_without_browser_entry_in_server_graph] no esbuild binary; structural assertions completed"
-            );
-            return;
-        };
+        // Level 1 + real compiler seam: the rewritten island itself
+        // bundles, but the browser-only worker entry cannot appear because
+        // the transform injected no import edge.
         let output = shadow.path().join("ssr-island.mjs");
-        let result = std::process::Command::new(esbuild)
-            .arg(&staged_island)
-            .arg("--bundle")
-            .arg("--platform=neutral")
-            .arg("--format=esm")
-            .arg(format!("--outfile={}", output.display()))
-            .output()
-            .unwrap();
-        assert!(
-            result.status.success(),
-            "SSR-like esbuild pass failed: {}",
-            String::from_utf8_lossy(&result.stderr)
+        let request = BundleRequest::new(
+            shadow.path(),
+            &staged_island,
+            OutputLayout::file(output.clone()),
+            Platform::Neutral,
         );
+        zfb_bundler::bundle(&request).expect("SSR-like native bundle");
         let bundled = fs::read_to_string(output).unwrap();
         assert!(bundled.contains("worker-components-s-search-d-worker-d-ts.js?v="));
         assert!(!bundled.contains("BROWSER_ONLY_SENTINEL"), "{bundled}");
@@ -22834,11 +22631,7 @@ mod tests {
 
     #[test]
     #[tracing_test::traced_test]
-    fn real_esbuild_records_and_warns_non_authored_plain_css_once_in_sorted_order() {
-        let Some(bin) = locate_real_esbuild() else {
-            eprintln!("[plain_css_output] no esbuild binary; skipping");
-            return;
-        };
+    fn real_bundle_records_and_warns_non_authored_plain_css_once_in_sorted_order() {
         let project = tempfile::tempdir().unwrap();
         let root = project.path();
         for dir in ["pages", "content", "components", "layouts"] {
@@ -22853,7 +22646,6 @@ mod tests {
         fs::write(root.join("components/zeta.css"), ".zeta {}\n").unwrap();
 
         let input = BundlerInput {
-            esbuild_binary: Some(bin),
             zudo_react_island_names: Some(vec![]),
             zudo_react_build: None,
             external: vec![
@@ -24518,7 +24310,7 @@ mod tests {
         BundlerInput {
             zudo_react_island_names: Some(vec![]),
             zudo_react_build: None,
-            mock_subprocess_output: Some("export default {};\n".to_string()),
+            mock_bundle_output: Some("export default {};\n".to_string()),
             external: vec![
                 "@takazudo/zfb/zudo-react".into(),
                 "@takazudo/zfb/zudo-react/server".into(),
@@ -25206,14 +24998,10 @@ mod tests {
 
     #[test]
     fn server_secrets_are_not_bundled() {
-        // Real esbuild test (gated). Verifies a SECRET_ env var never
+        // Real bundle test. Verifies a SECRET_ env var never
         // appears in the output, while a PUBLIC_ var does. It also locks the
         // exact-expression precedence seam: an operator `bundle.define`
         // overrides the generated PUBLIC value for both supported spellings.
-        let Some(bin) = locate_real_esbuild() else {
-            eprintln!("[server_secrets_are_not_bundled] no esbuild binary on PATH; skipping");
-            return;
-        };
 
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
@@ -25303,8 +25091,7 @@ mod tests {
             outdir: root.join("dist"),
             mode: BundleMode::Production,
             minify: false,
-            esbuild_binary: Some(bin),
-            mock_subprocess_output: None,
+            mock_bundle_output: None,
             content_snapshot_json: None,
             node_modules_dir: nm_dir,
             node_modules_preserve_symlinks: false,
@@ -25363,10 +25150,6 @@ mod tests {
         //      resolves against the SHADOW tree — i.e. the file was copied
         //      into shadow (not symlinked back to the project root). This is
         //      the "easily-missed materialization step" the issue flags.
-        let Some(bin) = locate_real_esbuild() else {
-            eprintln!("[mdx_components_file_resolves_through_esbuild] no esbuild binary; skipping");
-            return;
-        };
 
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
@@ -25417,7 +25200,6 @@ mod tests {
         };
 
         let input = BundlerInput {
-            esbuild_binary: Some(bin),
             zudo_react_island_names: Some(vec![]),
             zudo_react_build: None,
             external: vec!["@takazudo/zfb/zudo-react".into()],
@@ -25442,48 +25224,6 @@ mod tests {
             body.contains("mdxComponents"),
             "bundled output should install the mdxComponents slot"
         );
-    }
-
-    #[test]
-    fn missing_esbuild_binary_returns_actionable_error() {
-        // When neither an explicit override nor the env var nor the
-        // default slot is present, the bundler must error with a
-        // pointer to every escape hatch: `ZFB_ESBUILD_BIN`, the
-        // release-tarball slot, AND (for out-of-repo embedders) the
-        // `zfb.config.json` path that needs no esbuild (#1040). This
-        // keeps both workspace operators and library embedders unstuck.
-        //
-        // Drive the env path via an injected getter and the slot path
-        // via `slot_override` so the test does not mutate `std::env`
-        // and does not chdir — both are `unsafe` / racy under a
-        // multi-threaded test runner.
-        let tmp = tempfile::tempdir().unwrap();
-        let missing_slot = tmp.path().join("crates/zfb/binaries/esbuild/esbuild");
-
-        let err = resolve_esbuild_binary_with_env(
-            None,
-            |_| None,
-            None::<fn() -> Option<(tempfile::TempDir, PathBuf)>>,
-            Some(&missing_slot),
-        )
-        .unwrap_err();
-        let msg = format!("{err}");
-
-        assert!(msg.contains("ZFB_ESBUILD_BIN"), "msg: {msg}");
-        // This substring comes from the interpolated slot path
-        // (`slot.display()` = the `DEFAULT_ESBUILD_SLOT`-shaped path), not
-        // the error prose — the prose no longer names the workspace slot.
-        assert!(msg.contains("crates/zfb/binaries/esbuild"), "msg: {msg}");
-        assert!(msg.contains("zfb.config.json"), "msg: {msg}");
-    }
-
-    #[test]
-    fn explicit_missing_binary_is_reported() {
-        let err = resolve_esbuild_binary(Some(Path::new(
-            "/nonexistent/zfb-bundler-please-do-not-create",
-        )))
-        .unwrap_err();
-        assert!(format!("{err}").contains("not found at explicit path"));
     }
 
     // -----------------------------------------------------------------------
@@ -25707,76 +25447,217 @@ mod tests {
     }
 
     #[test]
-    fn esbuild_loader_args_neutralise_css_imports() {
+    fn ssr_loaders_neutralise_css_imports() {
         // S5 contract — `.css` imports inside JS modules must be
         // neutralised at the loader level so the Worker bundle does not
         // carry user CSS bytes alongside the externally-shipped
         // `dist/assets/styles-<hash>.css` produced by
-        // `ProductionAssetPipeline`. The wrong fix here (the rejected
-        // `--external:*.css` alternative) would leave runtime `import`
-        // statements that workerd cannot resolve, crashing the Worker
-        // at module load. This test locks in `loader=empty` as the
-        // chosen mechanism.
+        // `ProductionAssetPipeline`. The wrong fix here (marking `.css`
+        // external) would leave runtime `import` statements that workerd
+        // cannot resolve, crashing the Worker at module load. This test
+        // locks in the `empty` loader as the chosen mechanism.
         assert!(
-            ESBUILD_LOADER_ARGS.contains(&"--loader:.css=empty"),
-            "Worker bundle must use `--loader:.css=empty` to drop user CSS \
-             imports at compile time; got: {:?}",
-            ESBUILD_LOADER_ARGS,
+            SSR_LOADERS.contains(&(".css", Loader::Empty)),
+            "Worker bundle must use the empty loader to drop user CSS imports \
+             at compile time; got: {SSR_LOADERS:?}",
+        );
+        assert!(
+            SSR_LOADERS.contains(&(".mdx", Loader::Jsx)),
+            "Worker bundle must keep parsing MDX modules as JSX; got: {SSR_LOADERS:?}",
+        );
+        assert!(
+            SSR_LOADERS.contains(&(".wasm", Loader::Copy)),
+            "Worker bundle must copy Wasm so deployable imports stay relative to \
+             the emitted bundle; got: {SSR_LOADERS:?}",
         );
 
-        // Defensive: nothing in the loader list should ever be
-        // `--external:*.css`. The rejected alternative is documented in
-        // the constant's doc comment; this guard turns the rejection
-        // into a compile-time invariant.
-        assert!(
-            !ESBUILD_LOADER_ARGS
-                .iter()
-                .any(|a| a.contains("external:") && a.contains(".css")),
-            "Worker bundle must NOT mark .css as external — esbuild can \
-             leave runtime `import` statements workerd cannot resolve. \
-             Use `--loader:.css=empty` instead. Got: {:?}",
-            ESBUILD_LOADER_ARGS,
-        );
-
-        // Existing .mdx contract preserved — same list, no regression.
-        assert!(
-            ESBUILD_LOADER_ARGS.contains(&"--loader:.mdx=jsx"),
-            "Worker bundle must keep `--loader:.mdx=jsx` so MDX modules \
-             continue to be parsed as JSX; got: {:?}",
-            ESBUILD_LOADER_ARGS,
-        );
-
-        assert!(
-            ESBUILD_LOADER_ARGS.contains(&"--loader:.wasm=copy"),
-            "Worker bundle must use `--loader:.wasm=copy` so deployable Wasm \
-             imports stay relative to the emitted bundle; got: {:?}",
-            ESBUILD_LOADER_ARGS,
-        );
-        assert!(
-            !ESBUILD_LOADER_ARGS
-                .iter()
-                .any(|arg| arg.contains("external:") && arg.contains(".wasm")),
-            "Worker bundle must NOT mark .wasm external because that leaves a \
-             shadow-relative runtime import. Use `--loader:.wasm=copy`; got: {:?}",
-            ESBUILD_LOADER_ARGS,
+        // Neither `.css` nor `.wasm` may become an external: either would
+        // leave a shadow-relative runtime import.
+        let tmp = tempfile::tempdir().unwrap();
+        let input = make_minimal_input(&tmp);
+        let shadow = tmp.path().join("shadow");
+        let request = ssr_bundle_request(
+            &input,
+            &shadow,
+            &tmp.path().join("dist/bundle.mjs"),
+            None,
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            request.externals,
+            vec![External::Prefix("node:".to_string())],
+            "only Node builtins are external by default"
         );
     }
 
     #[test]
-    fn configured_loader_args_append_after_reserved_loaders_in_order() {
+    fn configured_loaders_override_reserved_loaders_per_extension() {
         let tmp = tempfile::tempdir().unwrap();
         let mut input = make_minimal_input(&tmp);
         input.extra_loader_args = vec![
             "--loader:.bin=binary".to_string(),
             "--loader:.txt=text".to_string(),
+            "--loader:.wasm=file".to_string(),
         ];
 
-        let args: Vec<&str> = esbuild_loader_args(&input).collect();
-        assert_eq!(&args[..ESBUILD_LOADER_ARGS.len()], ESBUILD_LOADER_ARGS);
+        let loaders = ssr_loaders(&input).unwrap();
         assert_eq!(
-            &args[ESBUILD_LOADER_ARGS.len()..],
-            ["--loader:.bin=binary", "--loader:.txt=text"]
+            loaders,
+            vec![
+                (".bin".to_string(), Loader::Binary),
+                (".css".to_string(), Loader::Empty),
+                (".md".to_string(), Loader::Jsx),
+                (".mdx".to_string(), Loader::Jsx),
+                (".module.css".to_string(), Loader::Js),
+                (".txt".to_string(), Loader::Text),
+                (".wasm".to_string(), Loader::File),
+            ]
         );
+
+        input.extra_loader_args = vec!["--loader:.x=nope".to_string()];
+        let error = format!("{:#}", ssr_loaders(&input).unwrap_err());
+        assert!(error.contains("unknown loader \"nope\""), "{error}");
+    }
+
+    #[test]
+    fn ssr_bundle_request_carries_the_page_bundle_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut input = make_minimal_input(&tmp);
+        input.mode = BundleMode::Production;
+        input.minify = true;
+        input.main_fields = vec!["module".to_string(), "main".to_string()];
+        input.external = vec!["@scope/pkg".to_string(), "virtual-prefix:*".to_string()];
+        input.public_env_vars = HashMap::from([("PUBLIC_SITE".to_string(), "zfb".to_string())]);
+        input.define_vars = BTreeMap::from([("__FLAG__".to_string(), "true".to_string())]);
+        let shadow = tmp.path().join("shadow");
+        let bundle_path = tmp.path().join("dist/bundle.mjs");
+        let metafile = shadow.join(".zfb-metafile.json");
+
+        let request = ssr_bundle_request(
+            &input,
+            &shadow,
+            &bundle_path,
+            Some(&metafile),
+            vec![(
+                "virtual:meta".to_string(),
+                shadow
+                    .join(".zfb-virtual-meta.mjs")
+                    .to_string_lossy()
+                    .into_owned(),
+            )],
+            vec![PathBuf::from("/store/node_modules")],
+        )
+        .unwrap();
+
+        assert_eq!(request.cwd, shadow);
+        assert_eq!(request.entry, shadow.join(SHADOW_ENTRY_FILENAME));
+        assert_eq!(
+            request.output,
+            OutputLayout::File {
+                file: bundle_path,
+                asset_names: Some("[name]-[hash]".into()),
+            }
+        );
+        assert_eq!(request.platform, Platform::Neutral);
+        assert_eq!(request.target.as_deref(), Some("es2022"));
+        assert_eq!(request.source_map, SourceMap::Linked);
+        assert!(request.keep_names);
+        assert!(request.minify);
+        assert!(!request.splitting);
+        assert_eq!(
+            request.tsconfig,
+            Some(shadow.join(SHADOW_TSCONFIG_FILENAME))
+        );
+        assert_eq!(request.graph, Some(metafile));
+        assert_eq!(
+            request.resolve.main_fields,
+            Some(vec!["module".to_string(), "main".to_string()])
+        );
+        assert_eq!(
+            request.resolve.aliases,
+            vec![
+                ("zfb".to_string(), "@takazudo/zfb".to_string()),
+                (
+                    "virtual:meta".to_string(),
+                    shadow
+                        .join(".zfb-virtual-meta.mjs")
+                        .to_string_lossy()
+                        .into_owned()
+                ),
+            ],
+            "the reserved zfb alias comes first, then the derived aliases in order"
+        );
+        assert_eq!(
+            request.externals,
+            vec![
+                External::Package("@scope/pkg".to_string()),
+                External::Prefix("virtual-prefix:".to_string()),
+                External::Prefix("node:".to_string()),
+            ]
+        );
+        assert_eq!(
+            request.defines,
+            vec![
+                ("import.meta.env.PROD".to_string(), "true".to_string()),
+                ("import.meta.env.DEV".to_string(), "false".to_string()),
+                (
+                    "process.env.NODE_ENV".to_string(),
+                    "\"production\"".to_string()
+                ),
+                ("process.env.PUBLIC_SITE".to_string(), "\"zfb\"".to_string()),
+                (
+                    "import.meta.env.PUBLIC_SITE".to_string(),
+                    "\"zfb\"".to_string()
+                ),
+                ("__FLAG__".to_string(), "true".to_string()),
+            ]
+        );
+        assert_eq!(
+            request.resolve.extra_module_dirs,
+            vec![PathBuf::from("/store/node_modules")]
+        );
+        assert_eq!(
+            request.resolve.preserve_symlinks,
+            ssr_preserves_symlinks(&input)
+        );
+    }
+
+    #[test]
+    fn ssr_bundle_request_minifies_only_production_and_omits_unset_main_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut input = make_minimal_input(&tmp);
+        input.mode = BundleMode::Development;
+        input.minify = true;
+        let shadow = tmp.path().join("shadow");
+        let request = ssr_bundle_request(
+            &input,
+            &shadow,
+            &tmp.path().join("bundle.mjs"),
+            None,
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(!request.minify, "minify is a production-only option");
+        assert_eq!(request.resolve.main_fields, None);
+        assert_eq!(request.graph, None);
+        assert!(request.resolve.extra_module_dirs.is_empty());
+    }
+
+    #[test]
+    fn ssr_externals_support_only_a_trailing_wildcard() {
+        assert_eq!(
+            ssr_external("pkg").unwrap(),
+            External::Package("pkg".to_string())
+        );
+        assert_eq!(
+            ssr_external("pre:*").unwrap(),
+            External::Prefix("pre:".to_string())
+        );
+        let error = format!("{:#}", ssr_external("a*b").unwrap_err());
+        assert!(error.contains("trailing `*`"), "{error}");
     }
 
     #[test]
@@ -25979,42 +25860,59 @@ mod tests {
     }
 
     #[test]
-    fn bundle_mode_define_args_pin_dev_and_production_values() {
+    fn bundle_mode_defines_pin_dev_and_production_values() {
         assert_eq!(
-            bundle_mode_define_args(BundleMode::Development),
+            bundle_mode_defines(BundleMode::Development),
             [
-                "--define:import.meta.env.PROD=false".to_string(),
-                "--define:import.meta.env.DEV=true".to_string(),
-                "--define:process.env.NODE_ENV=\"development\"".to_string(),
+                ("import.meta.env.PROD".to_string(), "false".to_string()),
+                ("import.meta.env.DEV".to_string(), "true".to_string()),
+                (
+                    "process.env.NODE_ENV".to_string(),
+                    "\"development\"".to_string()
+                ),
             ]
         );
         assert_eq!(
-            bundle_mode_define_args(BundleMode::Production),
+            bundle_mode_defines(BundleMode::Production),
             [
-                "--define:import.meta.env.PROD=true".to_string(),
-                "--define:import.meta.env.DEV=false".to_string(),
-                "--define:process.env.NODE_ENV=\"production\"".to_string(),
+                ("import.meta.env.PROD".to_string(), "true".to_string()),
+                ("import.meta.env.DEV".to_string(), "false".to_string()),
+                (
+                    "process.env.NODE_ENV".to_string(),
+                    "\"production\"".to_string()
+                ),
             ]
         );
     }
 
     #[test]
-    fn operator_define_args_are_sorted_raw_and_separate_from_public_env() {
-        let define_vars = BTreeMap::from([
+    fn operator_defines_are_sorted_raw_and_after_public_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut input = make_minimal_input(&tmp);
+        input.define_vars = BTreeMap::from([
             ("__ZETA__".to_string(), "{ enabled: true }".to_string()),
             ("__ALPHA__".to_string(), "\"raw string\"".to_string()),
         ]);
+        let request = ssr_bundle_request(
+            &input,
+            tmp.path(),
+            &tmp.path().join("bundle.mjs"),
+            None,
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
         assert_eq!(
-            operator_define_args(&define_vars),
-            vec![
-                "--define:__ALPHA__=\"raw string\"".to_string(),
-                "--define:__ZETA__={ enabled: true }".to_string(),
+            request.defines[3..],
+            [
+                ("__ALPHA__".to_string(), "\"raw string\"".to_string()),
+                ("__ZETA__".to_string(), "{ enabled: true }".to_string()),
             ]
         );
     }
 
     #[test]
-    fn public_env_define_args_defer_to_exact_operator_expression() {
+    fn public_env_defines_defer_to_exact_operator_expression() {
         let public_env_vars = HashMap::from([
             ("PUBLIC_ZETA".to_string(), "zeta".to_string()),
             ("PUBLIC_COLLISION".to_string(), "generated".to_string()),
@@ -26026,11 +25924,20 @@ mod tests {
         )]);
 
         assert_eq!(
-            public_env_define_args(&public_env_vars, &operator_define_vars),
+            public_env_defines(&public_env_vars, &operator_define_vars),
             vec![
-                "--define:import.meta.env.PUBLIC_COLLISION=\"generated\"".to_string(),
-                "--define:process.env.PUBLIC_ZETA=\"zeta\"".to_string(),
-                "--define:import.meta.env.PUBLIC_ZETA=\"zeta\"".to_string(),
+                (
+                    "import.meta.env.PUBLIC_COLLISION".to_string(),
+                    "\"generated\"".to_string()
+                ),
+                (
+                    "process.env.PUBLIC_ZETA".to_string(),
+                    "\"zeta\"".to_string()
+                ),
+                (
+                    "import.meta.env.PUBLIC_ZETA".to_string(),
+                    "\"zeta\"".to_string()
+                ),
             ]
         );
     }
@@ -26045,7 +25952,7 @@ mod tests {
     /// registered via `setup()` must resolve in pages / layouts / shared
     /// SSR-only code, not just in island bundles.
     ///
-    /// Uses `mock_subprocess_output` so no real esbuild binary is required.
+    /// Uses `mock_bundle_output` so no real esbuild binary is required.
     /// The test verifies that:
     ///  1. `BundlerInput::plugin_alias_entries` is accepted without error.
     ///  2. `BundlerInput::plugin_virtual_modules` is accepted without error.
@@ -26053,7 +25960,7 @@ mod tests {
     ///     (the mock-mode path exercises the struct-construction code path;
     ///     the real esbuild emission is covered by the end-to-end bundler
     ///     integration tests in `crates/zfb-build/tests/bundler_integration.rs`
-    ///     which run when `ZFB_ESBUILD_BIN` is available).
+    ///     which bundle through native Rolldown).
     #[test]
     fn plugin_alias_and_virtual_module_fields_are_accepted_in_bundler_input() {
         let tmp = tempfile::tempdir().unwrap();
@@ -26085,7 +25992,7 @@ mod tests {
 
         let input = BundlerInput {
             // Plugin alias: `@/foo` → some absolute path (no real file needed
-            // because mock_subprocess_output bypasses esbuild).
+            // because mock_bundle_output bypasses esbuild).
             plugin_alias_entries: vec![(
                 "@/foo".to_string(),
                 root.join("src/foo.tsx").to_string_lossy().into_owned(),
@@ -26098,7 +26005,7 @@ mod tests {
             ..make_minimal_input(&tmp)
         };
 
-        // With mock_subprocess_output the bundler writes the mock string to
+        // With mock_bundle_output the bundler writes the mock string to
         // dist/bundle.mjs without invoking esbuild, so the test succeeds
         // without a real binary and without needing `@/foo` to resolve.
         let out = bundle(input).expect(
@@ -29034,7 +28941,7 @@ mod tests {
     /// `OnBrokenLinks::Error` causes `bundle()` to return `Err` when a
     /// content file contains an unresolvable markdown link.
     ///
-    /// Uses `mock_subprocess_output` so no esbuild binary is required —
+    /// Uses `mock_bundle_output` so no esbuild binary is required —
     /// broken-link detection runs during the MDX pipeline (before esbuild)
     /// and the `bail!` at the fatal-findings gate fires before the mock
     /// write is reached.
@@ -29153,7 +29060,7 @@ mod tests {
     /// (see the retirement note above, near
     /// `decide_content_bridge_import_records_fallback_and_returns_do_not_cache_for_broken_jsx`)
     /// used to prove the FAILURE direction: it drives the real
-    /// [`bundle()`] entry point (`mock_subprocess_output`, no esbuild
+    /// [`bundle()`] entry point (`mock_bundle_output`, no esbuild
     /// binary needed — the content-bridge gate runs during the MDX
     /// pipeline, before esbuild) over a content collection containing
     /// the actual reproducer fixture, and asserts

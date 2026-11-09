@@ -79,7 +79,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
 const OVERALL_DEADLINE: Duration = Duration::from_secs(120);
 const BOOT_DEADLINE: Duration = Duration::from_secs(90);
@@ -198,7 +198,7 @@ fn parse_ready_port(log: &str) -> Option<u16> {
     None
 }
 
-fn spawn_dev_cold(root: PathBuf, esbuild: &Path) -> DevSession {
+fn spawn_dev_cold(root: PathBuf) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
@@ -210,7 +210,6 @@ fn spawn_dev_cold(root: PathBuf, esbuild: &Path) -> DevSession {
         .arg("--port")
         .arg("0")
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         // Request-time lazy render (the default when `ZFB_DEV_EAGER` is
         // unset) is required for boot-lazy to activate at all — see
         // `boot_lazy_decision` in `crates/zfb/src/commands/dev.rs`.
@@ -389,13 +388,6 @@ fn alias_resolved(observation: &AliasObservation) -> bool {
 #[tokio::test(flavor = "multi_thread")]
 async fn cold_redirects_rewrite_target_is_prewarmed_and_resolves() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[cold_rewrite_prewarm_e2e] no esbuild binary available; skipping. Set ZFB_ESBUILD_BIN \
-             or install esbuild on PATH."
-        );
-        return;
-    };
 
     let temp = tempfile::tempdir().expect("create tempdir for cold-rewrite-prewarm fixture");
     let root = temp
@@ -408,7 +400,7 @@ async fn cold_redirects_rewrite_target_is_prewarmed_and_resolves() {
         "fixture must have no persisted dev graph or prior render output before cold boot"
     );
 
-    let mut session = spawn_dev_cold(root, &esbuild);
+    let mut session = spawn_dev_cold(root);
     let pgid = session.guard.pgid;
 
     let body = async {

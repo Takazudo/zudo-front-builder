@@ -41,7 +41,6 @@ use std::fs;
 use std::path::Path;
 
 use zfb_build::{bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_test_utils::locate_esbuild;
 
 fn write(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
@@ -131,11 +130,7 @@ fn link_child_into_node_modules(root: &Path) -> std::path::PathBuf {
 /// `--preserve-symlinks` (`esbuild_will_preserve_symlinks` branch 4), so a
 /// symlink workaround would be canonicalised away — staging is the only
 /// clean spelling source.
-fn base_input(
-    project: &Path,
-    esbuild: std::path::PathBuf,
-    node_modules: std::path::PathBuf,
-) -> BundlerInput {
+fn base_input(project: &Path, node_modules: std::path::PathBuf) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
         BundleMode::Production,
@@ -151,7 +146,6 @@ fn base_input(
         "@/*".to_string(),
         vec![project.join("*").to_string_lossy().into_owned()],
     )]);
-    input.esbuild_binary = Some(esbuild);
     input.node_modules_dir = Some(node_modules);
     input
 }
@@ -174,28 +168,20 @@ fn metafile_input_keys(shadow: &Path) -> Vec<String> {
 /// spelling — never the live-root fallback the audit rejects as case 4.
 #[cfg(unix)]
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_loose_file_alias_esbuild_regression -- --ignored"]
 fn real_esbuild_accepts_root_workspace_loose_file_reached_via_broad_alias() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_root_workspace_loose_file_alias_esbuild_regression] no esbuild binary; skipping."
-        );
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
     write_root_workspace_with_loose_file(root);
     let node_modules = link_child_into_node_modules(root);
 
     let mut session = ShadowSession::new(root).expect("shadow session");
-    let output = bundle_with_session(base_input(root, esbuild, node_modules), Some(&mut session))
-        .expect(
-            "issue #2208: a root-claimed workspace reaching a tracked root loose file through \
+    let output = bundle_with_session(base_input(root, node_modules), Some(&mut session)).expect(
+        "issue #2208: a root-claimed workspace reaching a tracked root loose file through \
              its declared broad alias must build clean under an empty bundle.exclude — before \
              the loose-file staging gate widened, this failed with the exact case-4 \
              \"first-party input resolved outside every stage root, no staged spelling\" \
              rejection",
-        );
+    );
 
     let body = fs::read_to_string(&output.bundle_path).expect("read emitted bundle");
     assert!(
@@ -232,14 +218,7 @@ fn real_esbuild_accepts_root_workspace_loose_file_reached_via_broad_alias() {
 /// no longer appears among the offenders.
 #[cfg(unix)]
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_loose_file_alias_esbuild_regression -- --ignored"]
 fn undeclared_bare_package_name_escape_stays_rejected_beside_loose_file_staging() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_root_workspace_loose_file_alias_esbuild_regression] no esbuild binary; skipping."
-        );
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
     write_root_workspace_with_loose_file(root);
@@ -260,11 +239,10 @@ fn undeclared_bare_package_name_escape_stays_rejected_beside_loose_file_staging(
     );
 
     let mut session = ShadowSession::new(root).expect("shadow session");
-    let error = bundle_with_session(base_input(root, esbuild, node_modules), Some(&mut session))
-        .expect_err(
-            "the undeclared child package's bare-package-name import must stay rejected as a \
+    let error = bundle_with_session(base_input(root, node_modules), Some(&mut session)).expect_err(
+        "the undeclared child package's bare-package-name import must stay rejected as a \
              stage escape — the #2208 loose-file staging fix must not loosen the audit",
-        );
+    );
 
     let message = format!("{error:#}");
     assert!(

@@ -31,7 +31,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 /// `true` when `node` is on PATH (the plugin host needs it).
 fn node_available() -> bool {
@@ -99,11 +99,10 @@ fn copy_dir(src: &Path, dst: &Path) {
 }
 
 /// Run `zfb build` in `root` with the supplied esbuild binary.
-fn run_zfb_build(root: &Path, esbuild: &Path) -> std::process::Output {
+fn run_zfb_build(root: &Path) -> std::process::Output {
     Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn `zfb build`")
 }
@@ -153,8 +152,8 @@ fn page_module(marker: &str) -> String {
 
 /// A skip-or-build helper: returns `Some(dist)` on a successful build, or
 /// `None` (after printing why) when the environment can't run the build.
-fn build_or_skip(root: &Path, esbuild: &Path, test: &str) -> Option<PathBuf> {
-    let output = run_zfb_build(root, esbuild);
+fn build_or_skip(root: &Path, test: &str) -> Option<PathBuf> {
+    let output = run_zfb_build(root);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout}{stderr}");
@@ -179,10 +178,6 @@ fn build_or_skip(root: &Path, esbuild: &Path, test: &str) -> Option<PathBuf> {
 /// own `pages/index.tsx` still renders `dist/index.html` unchanged.
 #[test]
 fn static_package_route_prerenders_alongside_user_pages() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[static_package_route] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[static_package_route] node not on PATH; skipping.");
         return;
@@ -228,7 +223,7 @@ fn static_package_route_prerenders_alongside_user_pages() {
     )
     .unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "static_package_route") else {
+    let Some(dist) = build_or_skip(root, "static_package_route") else {
         return;
     };
 
@@ -264,10 +259,6 @@ fn static_package_route_prerenders_alongside_user_pages() {
 /// that `../components/Box` no longer reaches the real project file.
 #[test]
 fn user_page_relative_import_resolves_with_package_route_present() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[user_rel_import] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[user_rel_import] node not on PATH; skipping.");
         return;
@@ -322,7 +313,7 @@ export default function Page() {
     )
     .unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "user_rel_import") else {
+    let Some(dist) = build_or_skip(root, "user_rel_import") else {
         return;
     };
 
@@ -343,10 +334,6 @@ export default function Page() {
 /// root (#1645 release follow-up).
 #[test]
 fn user_page_bare_import_is_staged_from_package_route_overlay() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[overlay_bare_import] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[overlay_bare_import] node not on PATH; skipping.");
         return;
@@ -393,7 +380,7 @@ export default function Page() {
     )
     .unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "overlay_bare_import") else {
+    let Some(dist) = build_or_skip(root, "overlay_bare_import") else {
         return;
     };
     let home = dist.join("index.html");
@@ -412,10 +399,6 @@ export default function Page() {
 /// absolutely re-exports an in-project host binding, covering issue #1652.
 #[test]
 fn workspace_package_routes_and_virtual_host_signals_share_staged_identity() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[workspace_route_hooks] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[workspace_route_hooks] node not on PATH; skipping.");
         return;
@@ -532,7 +515,7 @@ export default {{
     )
     .unwrap();
 
-    let Some(dist) = build_or_skip(&root, &esbuild, "workspace_route_hooks") else {
+    let Some(dist) = build_or_skip(&root, "workspace_route_hooks") else {
         return;
     };
     let body = fs::read_to_string(dist.join("package-hooks/index.html")).unwrap();
@@ -555,10 +538,6 @@ export default {{
 /// `/` route, which prerenders to `dist/index.html`.
 #[test]
 fn empty_pages_with_root_package_route_builds() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[empty_pages_root] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[empty_pages_root] node not on PATH; skipping.");
         return;
@@ -592,7 +571,7 @@ fn empty_pages_with_root_package_route_builds() {
     .unwrap();
     // NOTE: intentionally NO pages/ dir.
 
-    let Some(dist) = build_or_skip(root, &esbuild, "empty_pages_root") else {
+    let Some(dist) = build_or_skip(root, "empty_pages_root") else {
         return;
     };
 
@@ -613,10 +592,6 @@ fn empty_pages_with_root_package_route_builds() {
 /// selection, so the package root cannot replace the project's home page.
 #[test]
 fn user_index_wins_over_root_package_route_in_build() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[user_index_root_precedence] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[user_index_root_precedence] node not on PATH; skipping.");
         return;
@@ -652,7 +627,7 @@ fn user_index_wins_over_root_package_route_in_build() {
     )
     .unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "user_index_root_precedence") else {
+    let Some(dist) = build_or_skip(root, "user_index_root_precedence") else {
         return;
     };
 
@@ -679,10 +654,6 @@ fn user_index_wins_over_root_package_route_in_build() {
 /// bare-filename import (`./pages/c.tsx`), producing a broken/missing page.
 #[test]
 fn nested_package_route_imports_correct_module() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[nested_package_route] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[nested_package_route] node not on PATH; skipping.");
         return;
@@ -715,7 +686,7 @@ fn nested_package_route_imports_correct_module() {
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::write(root.join("pages/index.tsx"), page_module("HOME")).unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "nested_package_route") else {
+    let Some(dist) = build_or_skip(root, "nested_package_route") else {
         return;
     };
 
@@ -743,10 +714,6 @@ fn nested_package_route_imports_correct_module() {
 /// imports correctly through the overlay.
 #[test]
 fn package_route_with_relative_import_bundles() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[relative_import] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[relative_import] node not on PATH; skipping.");
         return;
@@ -798,7 +765,7 @@ export default function Page() {
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::write(root.join("pages/index.tsx"), page_module("HOME")).unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "relative_import") else {
+    let Some(dist) = build_or_skip(root, "relative_import") else {
         return;
     };
 
@@ -821,10 +788,6 @@ export default function Page() {
 /// silently defaulted to SSG.
 #[test]
 fn output_static_rejects_ssr_shaped_package_route() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[static_rejects_ssr] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[static_rejects_ssr] node not on PATH; skipping.");
         return;
@@ -857,7 +820,7 @@ fn output_static_rejects_ssr_shaped_package_route() {
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::write(root.join("pages/index.tsx"), page_module("HOME")).unwrap();
 
-    let output = run_zfb_build(root, &esbuild);
+    let output = run_zfb_build(root);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout}{stderr}");
@@ -895,10 +858,6 @@ fn output_static_rejects_ssr_shaped_package_route() {
 /// must succeed (no `AmbiguousShape` hard error) and serve the user's page.
 #[test]
 fn user_pages_wins_collision_including_shape_dup() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[user_wins] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[user_wins] node not on PATH; skipping.");
         return;
@@ -964,7 +923,7 @@ export default function Page() {
     )
     .unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "user_wins") else {
+    let Some(dist) = build_or_skip(root, "user_wins") else {
         return;
     };
 
@@ -997,10 +956,6 @@ export default function Page() {
 /// `project_root/pages`.
 #[test]
 fn package_route_with_use_client_emits_island_asset() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[island] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[island] node not on PATH; skipping.");
         return;
@@ -1061,7 +1016,7 @@ export default function Page() {
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::write(root.join("pages/index.tsx"), page_module("HOME")).unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "island") else {
+    let Some(dist) = build_or_skip(root, "island") else {
         return;
     };
 
@@ -1106,10 +1061,6 @@ export default function Page() {
 /// runtime registry keys on).
 #[test]
 fn user_page_island_outside_pages_ships_with_package_route_present() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[user_island] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[user_island] node not on PATH; skipping.");
         return;
@@ -1172,7 +1123,7 @@ export default function Page() {
     )
     .unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "user_island") else {
+    let Some(dist) = build_or_skip(root, "user_island") else {
         return;
     };
 
@@ -1233,10 +1184,6 @@ export default function Page() {
 /// to) is the raw payload appearing, byte-for-byte, in the emitted bundle.
 #[test]
 fn virtual_module_only_import_ships_as_island() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[vmodule_island] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[vmodule_island] node not on PATH; skipping.");
         return;
@@ -1318,7 +1265,7 @@ export default {
     )
     .unwrap();
 
-    let output = run_zfb_build(root, &esbuild);
+    let output = run_zfb_build(root);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let combined = format!("{stdout}{stderr}");
@@ -1435,10 +1382,6 @@ fn walk_all_files(dir: &Path) -> Vec<PathBuf> {
 /// produces the expected dist output.
 #[test]
 fn no_package_routes_build_is_unaffected() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[parity] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[parity] node not on PATH; skipping.");
         return;
@@ -1459,7 +1402,7 @@ fn no_package_routes_build_is_unaffected() {
     fs::write(root.join("pages/index.tsx"), page_module("PARITY_HOME")).unwrap();
     fs::write(root.join("pages/about.tsx"), page_module("PARITY_ABOUT")).unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "parity") else {
+    let Some(dist) = build_or_skip(root, "parity") else {
         return;
     };
 
@@ -1492,10 +1435,6 @@ fn no_package_routes_build_is_unaffected() {
 /// per-`slug` marker proving params reached the render.
 #[test]
 fn dynamic_package_route_literal_paths_enumerates() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dyn_literal] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[dyn_literal] node not on PATH; skipping.");
         return;
@@ -1547,7 +1486,7 @@ export default function Page({ title }) {
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::write(root.join("pages/index.tsx"), page_module("HOME")).unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "dyn_literal") else {
+    let Some(dist) = build_or_skip(root, "dyn_literal") else {
         return;
     };
 
@@ -1579,10 +1518,6 @@ export default function Page({ title }) {
 /// the embedded V8 worker running the bundled module's real `paths()`.
 #[test]
 fn dynamic_package_route_runtime_getcollection_paths_enumerates() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dyn_runtime] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[dyn_runtime] node not on PATH; skipping.");
         return;
@@ -1649,7 +1584,7 @@ export default function Page({ slug }: { slug: string }) {
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::write(root.join("pages/index.tsx"), page_module("HOME")).unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "dyn_runtime") else {
+    let Some(dist) = build_or_skip(root, "dyn_runtime") else {
         return;
     };
 
@@ -1681,10 +1616,6 @@ export default function Page({ slug }: { slug: string }) {
 /// parallel routes-source copy.
 #[test]
 fn compiled_js_package_routes_export_clause_enumerate_literal_and_runtime_paths() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[compiled_js_export_clause] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[compiled_js_export_clause] node not on PATH; skipping.");
         return;
@@ -1775,7 +1706,7 @@ export { CompiledRuntimePage as default, paths };
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::write(root.join("pages/index.tsx"), page_module("HOME")).unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "compiled_js_export_clause") else {
+    let Some(dist) = build_or_skip(root, "compiled_js_export_clause") else {
         return;
     };
 
@@ -1820,10 +1751,6 @@ export { CompiledRuntimePage as default, paths };
 /// join (a catchall template `/docs/[...slug]` survives as the route_key).
 #[test]
 fn catchall_package_route_enumerates_multisegment() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[catchall] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[catchall] node not on PATH; skipping.");
         return;
@@ -1874,7 +1801,7 @@ export default function Page({ label }) {
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::write(root.join("pages/index.tsx"), page_module("HOME")).unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "catchall") else {
+    let Some(dist) = build_or_skip(root, "catchall") else {
         return;
     };
 
@@ -1909,10 +1836,6 @@ export default function Page({ label }) {
 /// fires. (A silent zero-page build would 404 at serve time.)
 #[test]
 fn dynamic_package_route_missing_paths_hard_errors() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dyn_missing] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[dyn_missing] node not on PATH; skipping.");
         return;
@@ -1945,7 +1868,7 @@ fn dynamic_package_route_missing_paths_hard_errors() {
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::write(root.join("pages/index.tsx"), page_module("HOME")).unwrap();
 
-    let output = run_zfb_build(root, &esbuild);
+    let output = run_zfb_build(root);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout}{stderr}");
@@ -1977,10 +1900,6 @@ fn dynamic_package_route_missing_paths_hard_errors() {
 /// Assert the class survives into `dist/assets/styles-*.css`.
 #[test]
 fn package_route_page_wind_class_survives_in_stylesheet() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[pkg_tw_class] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[pkg_tw_class] node not on PATH; skipping.");
         return;
@@ -2033,7 +1952,7 @@ fn package_route_page_wind_class_survives_in_stylesheet() {
     fs::create_dir_all(root.join("styles")).unwrap();
     fs::write(root.join("styles/global.css"), "/* authored CSS */\n").unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "pkg_tw_class") else {
+    let Some(dist) = build_or_skip(root, "pkg_tw_class") else {
         return;
     };
 
@@ -2067,10 +1986,6 @@ fn package_route_page_wind_class_survives_in_stylesheet() {
 /// (not stat-errored) — parity with the no-package-route build.
 #[test]
 fn dangling_symlink_under_pages_does_not_break_build_with_package_route() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[dangling_symlink] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[dangling_symlink] node not on PATH; skipping.");
         return;
@@ -2109,7 +2024,7 @@ fn dangling_symlink_under_pages_does_not_break_build_with_package_route() {
     )
     .unwrap();
 
-    let Some(dist) = build_or_skip(root, &esbuild, "dangling_symlink") else {
+    let Some(dist) = build_or_skip(root, "dangling_symlink") else {
         return;
     };
 
@@ -2137,10 +2052,6 @@ fn dangling_symlink_under_pages_does_not_break_build_with_package_route() {
 /// `pages/widget.client.tsx` must be left untouched.
 #[test]
 fn client_suffixed_package_route_rejected_and_user_client_script_safe() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[client_suffix] no esbuild; skipping.");
-        return;
-    };
     if !node_available() {
         eprintln!("[client_suffix] node not on PATH; skipping.");
         return;
@@ -2177,7 +2088,7 @@ fn client_suffixed_package_route_rejected_and_user_client_script_safe() {
     )
     .unwrap();
 
-    let output = run_zfb_build(root, &esbuild);
+    let output = run_zfb_build(root);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout}{stderr}");
@@ -2208,10 +2119,6 @@ fn client_suffixed_package_route_rejected_and_user_client_script_safe() {
 
 #[test]
 fn nested_workspace_external_story_and_package_route_share_signal_identity() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[ssr_identity_3104] no esbuild; skipping.");
-        return;
-    };
     assert!(
         node_available(),
         "CI needs node for the package-route plugin"
@@ -2306,7 +2213,7 @@ export default function Page() { return <html><body><RouteSignal /><Story /><Ui 
     let preset_src = serde_json::to_string(&preset.join("src/*").to_string_lossy()).unwrap();
     fs::write(site.join("tsconfig.json"), format!(r#"{{"compilerOptions":{{"baseUrl":".","paths":{{"@external/*":[{context}],"@stories/*":[{stories}],"@preset/*":[{preset_src}]}}}}}}"#)).unwrap();
 
-    let output = run_zfb_build(&site, &esbuild);
+    let output = run_zfb_build(&site);
     let log = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -2339,10 +2246,6 @@ export default function Page() { return <html><body><RouteSignal /><Story /><Ui 
 /// Structural signal brands alone cannot make this distinction (contract ZR1).
 #[test]
 fn owned_signal_definition_identity_detects_a_duplicated_runtime_copy() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[owned_signal_identity] no esbuild; skipping.");
-        return;
-    };
     let source = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../packages/zfb/src/zudo-react")
         .canonicalize()
@@ -2363,19 +2266,14 @@ fn owned_signal_definition_identity_detects_a_duplicated_runtime_copy() {
             format!("import {{ signal as first }} from {first};\nimport {{ signal as second }} from {second};\nexport const values = [first('a'), second('b')];\n"),
         )
         .unwrap();
-        let output = Command::new(&esbuild)
-            .arg(&entry)
-            .arg("--bundle")
-            .arg("--platform=browser")
-            .arg("--format=esm")
-            .arg(format!("--outfile={}", out.display()))
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "esbuild failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+        let request = zfb_bundler::BundleRequest::new(
+            temp.path(),
+            &entry,
+            zfb_bundler::OutputLayout::file(&out),
+            zfb_bundler::Platform::Browser,
         );
+        zfb_bundler::bundle(&request)
+            .unwrap_or_else(|error| panic!("native bundle failed: {error:#}"));
         fs::read_to_string(out)
             .unwrap()
             .matches("\"@takazudo/zfb/zudo-react/runtime-definition-v1\": true")

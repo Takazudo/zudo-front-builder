@@ -1,15 +1,9 @@
-//! Bounded ETXTBSY ("Text file busy", raw OS error 26) spawn retries, shared
-//! by this crate's two esbuild spawn sites: [`crate::plugin_bundler`]'s async
-//! plugin-bundle spawn (issue #2378) and `crate::adapter::run_capturing`'s
-//! blocking spawn, which is what the main bundler's `run_esbuild` goes
-//! through (issue #2380).
-//!
-//! [`crate::etxtbsy::spawn_with_etxtbsy_retry_blocking`] is additionally
-//! exported to `zfb-islands`, whose esbuild version gate is a fourth spawn
-//! of the same just-staged binary (issue #2896). Nothing else here is
-//! public: the budget, the classification predicate, the backoff, and the
-//! async form stay crate-internal so external callers cannot fork the
-//! policy.
+//! Bounded ETXTBSY ("Text file busy", raw OS error 26) spawn retries for
+//! `crate::adapter::run_capturing`'s blocking spawn (issues #2378/#2380).
+//! The esbuild spawn sites that once shared it were removed with the
+//! native bundler (#4631/#4633). Nothing else here is public: the budget,
+//! the classification predicate and the backoff stay crate-internal so
+//! external callers cannot fork the policy.
 //!
 //! # The race
 //!
@@ -44,9 +38,7 @@ pub(crate) const ETXTBSY_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// True iff `err` is an ETXTBSY that still has retry budget left.
 ///
-/// The single classification both loops below share — so the async and
-/// blocking paths can never drift on which errors are retryable or on how
-/// many attempts they get.
+/// The classification the retry loop below uses.
 fn is_retryable(err: &std::io::Error, retries_used: u32) -> bool {
     err.kind() == std::io::ErrorKind::ExecutableFileBusy && retries_used < ETXTBSY_MAX_RETRIES
 }
@@ -56,30 +48,11 @@ fn backoff(retry: u32) -> Duration {
     ETXTBSY_RETRY_DELAY * retry
 }
 
-/// Async form: drive `attempt` until it returns anything other than a
-/// retryable ETXTBSY. Used by the tokio-based plugin-bundle spawn.
-pub(crate) async fn spawn_with_etxtbsy_retry<T, F>(mut attempt: F) -> std::io::Result<T>
-where
-    F: FnMut() -> std::io::Result<T>,
-{
-    let mut retries_used = 0u32;
-    loop {
-        match attempt() {
-            Err(err) if is_retryable(&err, retries_used) => {
-                retries_used += 1;
-                tokio::time::sleep(backoff(retries_used)).await;
-            }
-            other => return other,
-        }
-    }
-}
-
-/// Blocking form, for callers that are synchronous end to end.
+/// Blocking retry loop.
 ///
 /// `crate::adapter::run_capturing` already blocks its thread for up to
 /// 300s waiting on the child, so a bounded `thread::sleep` here changes
-/// nothing about its concurrency shape. `zfb-islands`' version gate is
-/// likewise synchronous, and this is the only item it needs.
+/// nothing about its concurrency shape.
 ///
 /// `attempt` must perform exactly one spawn and nothing else: the retry is
 /// side-effect free only because ETXTBSY can originate solely from the
@@ -104,10 +77,9 @@ where
 mod tests {
     use super::*;
 
-    // Both loops are driven through their injectable `attempt` seam: a real
+    // The loop is driven through its injectable `attempt` seam: a real
     // ETXTBSY is a fork-to-exec-sized race no test can induce on demand.
-    // The async tests use virtual time (`start_paused`) so the backoff is
-    // instant; the blocking ones sleep for real, bounded by 150ms.
+    // The blocking tests sleep for real, bounded by 150ms.
 
     fn etxtbsy() -> std::io::Error {
         std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy)
@@ -129,63 +101,6 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn async_retry_absorbs_transient_etxtbsy_and_then_succeeds() {
-        let mut attempts = 0u32;
-        let result = spawn_with_etxtbsy_retry(|| {
-            attempts += 1;
-            if attempts < 3 {
-                Err(etxtbsy())
-            } else {
-                Ok("spawned")
-            }
-        })
-        .await;
-
-        assert_eq!(result.expect("should succeed after retries"), "spawned");
-        assert_eq!(attempts, 3, "expected 2 ETXTBSY attempts plus 1 success");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn async_retry_exhausts_its_budget_and_surfaces_the_original_error() {
-        let mut attempts = 0u32;
-        let result = spawn_with_etxtbsy_retry(|| {
-            attempts += 1;
-            Err::<(), _>(etxtbsy())
-        })
-        .await;
-
-        let err = result.expect_err("a permanently busy binary must still fail");
-        assert_eq!(
-            err.kind(),
-            std::io::ErrorKind::ExecutableFileBusy,
-            "the original error must surface, not a retry-specific one"
-        );
-        assert_eq!(
-            attempts,
-            ETXTBSY_MAX_RETRIES + 1,
-            "expected 1 initial attempt plus {ETXTBSY_MAX_RETRIES} retries"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn async_retry_never_retries_a_non_etxtbsy_failure() {
-        let mut attempts = 0u32;
-        let result = spawn_with_etxtbsy_retry(|| {
-            attempts += 1;
-            Err::<(), _>(std::io::Error::from(std::io::ErrorKind::NotFound))
-        })
-        .await;
-
-        assert_eq!(
-            result.expect_err("a missing binary must fail").kind(),
-            std::io::ErrorKind::NotFound
-        );
-        assert_eq!(attempts, 1, "a non-ETXTBSY failure must not be retried");
-    }
-
-    /// The blocking loop is a second code path, so it carries its own bound
-    /// and classification pins rather than inheriting the async ones.
     #[test]
     fn blocking_retry_exhausts_the_same_budget_and_surfaces_the_original_error() {
         let mut attempts = 0u32;
@@ -203,12 +118,11 @@ mod tests {
         assert_eq!(
             attempts,
             ETXTBSY_MAX_RETRIES + 1,
-            "the blocking loop must share the async loop's bound"
+            "expected 1 initial attempt plus {ETXTBSY_MAX_RETRIES} retries"
         );
     }
 
-    /// Mirrors `async_retry_absorbs_transient_etxtbsy_and_then_succeeds`:
-    /// the blocking loop must also *recover*, not merely bound its failures.
+    /// The loop must also *recover*, not merely bound its failures.
     /// Without this, nothing here would catch a blocking loop that returned
     /// the last error after a run of retries that ended in success.
     #[test]

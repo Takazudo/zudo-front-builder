@@ -4,25 +4,22 @@
 //! Mirrors `crates/zfb-build/tests/bundler_exact_match_resolution.rs`
 //! for the islands path. The contract being pinned:
 //!
-//! 1. `EsbuildSubprocessConfig::alias_entries` with `("@/foo",
+//! 1. `IslandsBundlerConfig::alias_entries` with `("@/foo",
 //!    "/abs/foo.tsx")` resolves `@/foo` exactly — `@/foo/bar` is NOT
 //!    silently rewritten the way `--alias` would have done.
-//! 2. `EsbuildSubprocessConfig::virtual_modules` with
+//! 2. `IslandsBundlerConfig::virtual_modules` with
 //!    `("virtual:foo", "...")` behaves the same way —
 //!    `virtual:foo/bar` is unresolved.
 //!
-//! Esbuild gating follows the precedence used by the zfb-build
-//! integration tests: `ZFB_ESBUILD_BIN` env var → workspace slot →
-//! `which esbuild`. Skips with a printed note when no binary is
-//! present.
+//! Bundling runs in-process through native Rolldown (#4635), so these tests
+//! never skip for a missing bundler binary.
 
 use std::fs;
 use std::path::PathBuf;
 
 use zfb_islands::{
-    BundleConfig, ClientBundler, EsbuildSubprocessBundler, EsbuildSubprocessConfig, Island,
+    BundleConfig, ClientBundler, External, Island, IslandsBundler, IslandsBundlerConfig,
 };
-use zfb_test_utils::locate_esbuild;
 
 const TEST_BUILD_TOKEN: &str = "0123456789abcdef";
 
@@ -57,11 +54,6 @@ fn write_island_fixture(
 /// fail with an unresolved-import error referencing the bare specifier.
 #[test]
 fn alias_does_not_match_prefix_with_slash() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     let island_path = write_island_fixture(
@@ -76,21 +68,20 @@ fn alias_does_not_match_prefix_with_slash() {
         "export default function Foo() { return null; }\n",
     );
 
-    let cfg = EsbuildSubprocessConfig {
-        extra_args: vec![
-            std::ffi::OsString::from("--external:vendor-lib"),
-            std::ffi::OsString::from("--external:vendor-lib/*"),
-            std::ffi::OsString::from("--external:@takazudo/*"),
+    let cfg = IslandsBundlerConfig {
+        externals: vec![
+            External::Package("vendor-lib".to_string()),
+            External::Prefix("vendor-lib/".to_string()),
+            External::Prefix("@takazudo/".to_string()),
         ],
-        ..EsbuildSubprocessConfig::default()
+        ..IslandsBundlerConfig::default()
     }
-    .with_binary_path(esbuild)
     .with_working_dir(&root)
     .with_alias_entries(vec![(
         "@/foo".to_string(),
         root.join("src/foo.tsx").to_string_lossy().into_owned(),
     )]);
-    let bundler = EsbuildSubprocessBundler::new(cfg);
+    let bundler = IslandsBundler::new(cfg);
     let bundle_cfg = BundleConfig::default()
         .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(root.join("dist"));
@@ -115,11 +106,6 @@ fn alias_does_not_match_prefix_with_slash() {
 /// component's identifier must reach the bundle.
 #[test]
 fn alias_matches_exact_specifier() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     let island_path = write_island_fixture(
@@ -130,21 +116,20 @@ fn alias_matches_exact_specifier() {
         "export default function AliasedFooMarker() { return null; }\n",
     );
 
-    let cfg = EsbuildSubprocessConfig {
-        extra_args: vec![
-            std::ffi::OsString::from("--external:vendor-lib"),
-            std::ffi::OsString::from("--external:vendor-lib/*"),
-            std::ffi::OsString::from("--external:@takazudo/*"),
+    let cfg = IslandsBundlerConfig {
+        externals: vec![
+            External::Package("vendor-lib".to_string()),
+            External::Prefix("vendor-lib/".to_string()),
+            External::Prefix("@takazudo/".to_string()),
         ],
-        ..EsbuildSubprocessConfig::default()
+        ..IslandsBundlerConfig::default()
     }
-    .with_binary_path(esbuild)
     .with_working_dir(&root)
     .with_alias_entries(vec![(
         "@/foo".to_string(),
         root.join("src/foo.tsx").to_string_lossy().into_owned(),
     )]);
-    let bundler = EsbuildSubprocessBundler::new(cfg);
+    let bundler = IslandsBundler::new(cfg);
     let bundle_cfg = BundleConfig::default()
         .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(root.join("dist"));
@@ -163,11 +148,6 @@ fn alias_matches_exact_specifier() {
 /// **Exact-match — virtual module prefix-with-slash MUST fail.**
 #[test]
 fn virtual_module_does_not_match_prefix_with_slash() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     let island_path = write_island_fixture(
@@ -178,21 +158,20 @@ fn virtual_module_does_not_match_prefix_with_slash() {
         "",
     );
 
-    let cfg = EsbuildSubprocessConfig {
-        extra_args: vec![
-            std::ffi::OsString::from("--external:vendor-lib"),
-            std::ffi::OsString::from("--external:vendor-lib/*"),
-            std::ffi::OsString::from("--external:@takazudo/*"),
+    let cfg = IslandsBundlerConfig {
+        externals: vec![
+            External::Package("vendor-lib".to_string()),
+            External::Prefix("vendor-lib/".to_string()),
+            External::Prefix("@takazudo/".to_string()),
         ],
-        ..EsbuildSubprocessConfig::default()
+        ..IslandsBundlerConfig::default()
     }
-    .with_binary_path(esbuild)
     .with_working_dir(&root)
     .with_virtual_modules(vec![(
         "virtual:foo".to_string(),
         "export default function Foo() { return null; }\n".to_string(),
     )]);
-    let bundler = EsbuildSubprocessBundler::new(cfg);
+    let bundler = IslandsBundler::new(cfg);
     let bundle_cfg = BundleConfig::default()
         .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(root.join("dist"));
@@ -213,11 +192,6 @@ fn virtual_module_does_not_match_prefix_with_slash() {
 /// **Exact-match — virtual module happy path.**
 #[test]
 fn virtual_module_matches_exact_specifier() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[exact_match_resolution] no esbuild binary available; skipping.");
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     let island_path = write_island_fixture(
@@ -228,21 +202,20 @@ fn virtual_module_matches_exact_specifier() {
         "",
     );
 
-    let cfg = EsbuildSubprocessConfig {
-        extra_args: vec![
-            std::ffi::OsString::from("--external:vendor-lib"),
-            std::ffi::OsString::from("--external:vendor-lib/*"),
-            std::ffi::OsString::from("--external:@takazudo/*"),
+    let cfg = IslandsBundlerConfig {
+        externals: vec![
+            External::Package("vendor-lib".to_string()),
+            External::Prefix("vendor-lib/".to_string()),
+            External::Prefix("@takazudo/".to_string()),
         ],
-        ..EsbuildSubprocessConfig::default()
+        ..IslandsBundlerConfig::default()
     }
-    .with_binary_path(esbuild)
     .with_working_dir(&root)
     .with_virtual_modules(vec![(
         "virtual:foo".to_string(),
         "export default function VirtualFooMarker() { return null; }\n".to_string(),
     )]);
-    let bundler = EsbuildSubprocessBundler::new(cfg);
+    let bundler = IslandsBundler::new(cfg);
     let bundle_cfg = BundleConfig::default()
         .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
         .with_outdir(root.join("dist"));

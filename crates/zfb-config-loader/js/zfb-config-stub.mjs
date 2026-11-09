@@ -10,8 +10,8 @@
 // value, so this stub re-implements those helpers and ignores the type
 // surface.
 //
-// We inject this stub via esbuild's `--alias:zfb/config=<this-file>`
-// so the user's `zfb.config.ts` does NOT need the `zfb` npm package
+// We inject this stub as the bundle alias target of `zfb/config` and
+// `@takazudo/zfb/config`, so the user's `zfb.config.ts` does NOT need the `zfb` npm package
 // installed locally just to be parsed.
 //
 // SYNC REQUIREMENT: keep definePreset here behaviourally identical to

@@ -58,7 +58,7 @@ Pure-Rust SSG (Boa/QuickJS) and no-V8-at-runtime (build-time-only V8) are real f
 
 ## What runs today
 
-At `zfb build` / `zfb dev`, the Rust orchestrator creates an in-process V8 isolate through the direct V8 host in the `zfb-js-host` crate. It loads the workerd-shape bundle that the bundler builds around `createPageRouter` from `@takazudo/zfb-runtime/server` (Rolldown by default; see [Current defaults and experiments](#current-defaults-and-experiments)). Per-route props are passed as JSON; the isolate invokes the bundle's `fetch` entry with a synthetic `Request`, collects the `Response` (HTML), and returns it. The orchestrator writes plain HTML to `dist/`. No subprocess is spawned; no Node.js is required.
+At `zfb build` / `zfb dev`, the Rust orchestrator creates an in-process V8 isolate through the direct V8 host in the `zfb-js-host` crate. It loads the workerd-shape bundle that the bundler builds around `createPageRouter` from `@takazudo/zfb-runtime/server` (the native Rolldown bundler; see [Current defaults and experiments](#current-defaults-and-experiments)). Per-route props are passed as JSON; the isolate invokes the bundle's `fetch` entry with a synthetic `Request`, collects the `Response` (HTML), and returns it. The orchestrator writes plain HTML to `dist/`. No subprocess is spawned; no Node.js is required.
 
 V8 itself is initialized once per process, on the main thread, before the CLI starts Tokio or any host thread (`zfb-js-host::process::initialize`). Only one host may be alive on a thread at a time.
 
@@ -70,7 +70,7 @@ For runtime SSR of `prerender = false` routes, a bundle of the same `export defa
 
 | Responsibility | What it is | Where it happens in zfb |
 | --- | --- | --- |
-| **Transformation** | Parsing TSX/JSX/MDX and bundling it into JavaScript modules. A pure syntax operation; no engine is involved. | The bundler inside the `zfb` CLI (Rolldown by default, embedded esbuild with `ZFB_BUNDLER=esbuild`), using zudo-react's automatic JSX runtime (`@takazudo/zfb/zudo-react/jsx-runtime`). SWC is used for some source analysis. |
+| **Transformation** | Parsing TSX/JSX/MDX and bundling it into JavaScript modules. A pure syntax operation; no engine is involved. | The native Rolldown bundler embedded in the `zfb` CLI, using zudo-react's automatic JSX runtime (`@takazudo/zfb/zudo-react/jsx-runtime`). SWC is used for some source analysis. |
 | **JavaScript engine** | The thing that executes the transformed JavaScript. | V8 everywhere: the CLI's embedded V8 on the build machine, the V8 inside workerd on a Worker, and the browser's engine in the browser. zfb's direct V8 host is a host *around* V8, not a different engine. |
 | **Host APIs** | The globals and built-in modules the host chooses to expose. | The embedded host implements module loading and the Web request/response services the page router needs. Its `node:fs`, `node:fs/promises`, `node:path`, `node:url`, `node:buffer` and `node:async_hooks` modules are stubs that throw `node:* is not available under the SSG runtime` when used (`crates/zfb-js-host/src/shims.rs`). On a Worker, Cloudflare's runtime decides, and the adapter requires `nodejs_compat` for `node:async_hooks`. The browser provides the DOM. |
 | **UI rendering** | Turning components into HTML strings and live DOM. | zudo-react: `renderToString` from `@takazudo/zfb/zudo-react/server` in the page router; `hydrate`/`mount` from `@takazudo/zfb/zudo-react/client` in the browser. |
@@ -107,10 +107,10 @@ The layering this contract allows:
 |-------|-------------|----------------------|
 | **Your source** | Pages, components, content, styles | Build mechanics |
 | **zfb** | The build contract — route table, page props shape, island protocol, client-script pipeline, `dist/` layout | Which bundler, which JS host |
-| **Tools** | The bundler (Rolldown or esbuild), the embedded V8 host (build-time evaluation) | Your code's semantics |
+| **Tools** | The bundler (Rolldown), the embedded V8 host (build-time evaluation) | Your code's semantics |
 
 The bundler and the embedded V8 host are implementation details that can be
-swapped without touching user code: the bundler behind `ZFB_BUNDLER`, the host
+swapped without touching user code: the bundler behind the `zfb-bundler` crate's typed bundle request, the host
 behind the `RenderHost` trait ([The boundary](#the-boundary)).
 
 ## The need
@@ -205,6 +205,6 @@ Known limitations of the direct host:
 
 A label-triggered, non-required CI lane (`direct-v8.yml`) records native rows on Linux x64, Linux arm64 and Windows x64. Darwin rows are run by hand on a Mac. The contributor-side details are in [`prototypes/direct-v8/CLI.md`](https://github.com/Takazudo/zudo-front-builder/blob/main/prototypes/direct-v8/CLI.md).
 
-Rolldown bundles pages and islands by default (the `rolldown-prototype` feature is in the default feature set). Set `ZFB_BUNDLER=esbuild` to use the embedded esbuild for those bundles instead; esbuild also still compiles `zfb.config.ts` and plugins. The `direct-v8-rolldown` lane builds Rolldown together with direct V8.
+The native Rolldown compiler bundles pages, islands, client scripts, plugins and `zfb.config.ts`; zfb no longer ships or runs esbuild. Setting `ZFB_BUNDLER` or `ZFB_ROLLDOWN_PROTOTYPE` to any value is an error.
 
 `zfb preview` does not rebuild: it serves built output, or delegates to Wrangler with the Cloudflare adapter. It does not generally render pages through the embedded V8 host.

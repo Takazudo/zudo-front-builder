@@ -50,7 +50,7 @@ pub(crate) fn resolved_graph_digest(
     source_overrides: &BTreeMap<PathBuf, Vec<u8>>,
 ) -> Result<[u8; 32]> {
     let meta: Metafile = serde_json::from_slice(&std::fs::read(metafile)?)
-        .context("invalid esbuild graph identity metafile")?;
+        .context("invalid bundler graph identity metafile")?;
     let logical_cwd = normalize_path_lexical(cwd);
     // esbuild makes metafile paths relative to the process's physical cwd,
     // including when --preserve-symlinks keeps logical input spellings.
@@ -90,9 +90,9 @@ pub(crate) fn resolved_graph_digest(
             let key = candidates
                 .next()
                 .map(|(key, _)| *key)
-                .context("esbuild graph identity metafile does not contain its entry")?;
+                .context("bundler graph identity metafile does not contain its entry")?;
             if candidates.next().is_some() {
-                bail!("esbuild graph identity has ambiguous entry aliases");
+                bail!("bundler graph identity has ambiguous entry aliases");
             }
             key
         }
@@ -124,7 +124,7 @@ pub(crate) fn resolved_graph_digest(
         let input = meta
             .inputs
             .get(key)
-            .with_context(|| format!("esbuild graph is missing input {key:?}"))?;
+            .with_context(|| format!("bundler graph is missing input {key:?}"))?;
         order.push(key);
         for import in input.imports.iter().rev().filter(|import| !import.external) {
             pending.push(import.path.as_str());
@@ -133,7 +133,7 @@ pub(crate) fn resolved_graph_digest(
     // No graph input may silently disappear from the identity. Real esbuild
     // keeps tree-shaken inputs connected through its import records.
     if order.len() != meta.inputs.len() {
-        bail!("esbuild graph identity contains inputs disconnected from its entry");
+        bail!("bundler graph identity contains inputs disconnected from its entry");
     }
     let node_ids: BTreeMap<&str, usize> = order
         .iter()
@@ -214,7 +214,7 @@ fn lookup_owned<'a, T: PartialEq>(
         if std::fs::canonicalize(candidate).ok().as_ref() == Some(&canonical) {
             if found.is_some_and(|previous| previous != value) {
                 bail!(
-                    "ambiguous esbuild graph source provenance for {}",
+                    "ambiguous bundler graph source provenance for {}",
                     path.display()
                 );
             }
@@ -251,10 +251,10 @@ fn resolved_input_bytes(cwd: &Path, key: &str) -> Result<Vec<u8>> {
             // error 123) instead of reporting it missing (#4413).
             let resource = cwd.join(key.strip_suffix("?url").expect("checked suffix"));
             std::fs::read(&resource)
-                .with_context(|| format!("read esbuild resolved resource {}", resource.display()))
+                .with_context(|| format!("read bundler-resolved resource {}", resource.display()))
         }
         Err(error) => Err(error)
-            .with_context(|| format!("read esbuild resolved graph input {}", path.display())),
+            .with_context(|| format!("read bundler-resolved graph input {}", path.display())),
     }
 }
 
@@ -541,7 +541,7 @@ mod tests {
         );
         let missing = resolved_input_bytes(&cwd, "dist/absent.mjs?url").unwrap_err();
         assert!(
-            format!("{missing:#}").contains("read esbuild resolved resource"),
+            format!("{missing:#}").contains("read bundler-resolved resource"),
             "{missing:#}"
         );
     }

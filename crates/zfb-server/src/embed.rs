@@ -9,6 +9,7 @@
 //!   [`mode`](ServerBuilder::mode), [`bind`](ServerBuilder::bind),
 //!   [`with_request_extension`](ServerBuilder::with_request_extension),
 //!   [`with_ssr_handler`](ServerBuilder::with_ssr_handler),
+//!   [`compiler_worker`](ServerBuilder::compiler_worker),
 //!   [`build`](ServerBuilder::build). The optional
 //!   [`with_page_cache`](ServerBuilder::with_page_cache) escape hatch
 //!   (live-content seam) is budget-excluded — see below.
@@ -23,24 +24,26 @@
 //!
 //! Per the research at `research/346-embed-as-library-api.md` §3.2 the
 //! combined method count on `Server` + `ServerBuilder` must stay
-//! ≤ 10. This module ships 9 counting toward the budget —
+//! ≤ 10. This module ships 10 counting toward the budget —
 //! `Server::builder`, `Server::serve`, `Server::serve_in_thread`, plus
-//! six builder methods (`config_path`, `mode`, `bind`,
-//! `with_request_extension`, `with_ssr_handler`, `build`).
+//! seven builder methods (`config_path`, `mode`, `bind`,
+//! `with_request_extension`, `with_ssr_handler`, `compiler_worker`,
+//! `build`).
 //! `ServerHandle`'s methods are deliberately on a different type and
 //! are excluded from the budget. `with_page_cache` is the live-content
 //! escape hatch and is likewise budget-excluded by design (§3.2:
 //! "optional, not counted toward the ≤ 10 method budget").
 //!
-//! NOTE (issue #1040): a `ServerBuilder::esbuild_binary()` override is
-//! intentionally NOT provided. Evaluating a `.ts` config on a default
-//! (V8) build needs an esbuild binary, but `ZFB_ESBUILD_BIN` already
-//! overrides esbuild discovery (resolution tier 2 in `zfb-build`) and a
-//! `zfb.config.json` embed config needs no esbuild at all. Adding a
-//! builder method would spend the single remaining budget slot
-//! re-exposing an env var that already works. Add one only if a real
-//! out-of-repo embedder must use `.ts` AND genuinely cannot set the
-//! env var.
+//! ## `.ts` configs need a compiler worker (#4632)
+//!
+//! A `zfb.config.ts` is bundled by a supervised native compiler worker
+//! process. Only the embedding host knows whether its executable can serve
+//! that worker mode, so the host supplies the launcher through
+//! [`compiler_worker`](ServerBuilder::compiler_worker): typically
+//! `WorkerLauncher::new(std::env::current_exe()?).arg(zfb_server::COMPILER_WORKER_ARG)`
+//! with a `main` that calls [`crate::run_compiler_worker_if_requested`] first.
+//! A `.ts` config without a launcher fails [`build`](ServerBuilder::build)
+//! with an actionable error; a `zfb.config.json` needs no worker.
 //!
 //! ## Threading: `serve_in_thread`
 //!
@@ -361,6 +364,7 @@ pub struct ServerBuilder {
     request_extensions: Vec<RequestExtensionInjector>,
     handlers: Vec<EmbedHandler>,
     page_cache: Option<PageCache>,
+    compiler_worker: Option<zfb_config_loader::WorkerLauncher>,
 }
 
 impl ServerBuilder {
@@ -372,6 +376,7 @@ impl ServerBuilder {
             request_extensions: Vec::new(),
             handlers: Vec::new(),
             page_cache: None,
+            compiler_worker: None,
         }
     }
 
@@ -381,8 +386,9 @@ impl ServerBuilder {
     /// server's `project_root`.
     ///
     /// Both `.json` and `.ts` are supported. A `.ts` config is evaluated
-    /// the same way the `zfb` CLI does it (issue #1037) — via the
-    /// in-process V8 + esbuild evaluator on default builds, or the `node`
+    /// the same way the `zfb` CLI does it (issue #1037) — bundled by the
+    /// compiler worker set with [`compiler_worker`](Self::compiler_worker),
+    /// then evaluated in-process by V8 on default builds, or by the `node`
     /// subprocess on slim builds — through the shared `zfb-config-loader`
     /// crate. The evaluation is async; [`build`](Self::build) drives it to
     /// completion on a dedicated thread so the synchronous builder API is
@@ -390,6 +396,17 @@ impl ServerBuilder {
     /// runtime).
     pub fn config_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.config_path = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// How to start the compiler worker that bundles a `.ts`
+    /// [`config_path`](Self::config_path): a launcher for an executable
+    /// whose `main` calls [`crate::run_compiler_worker_if_requested`] before
+    /// anything else. The library never derives one from `current_exe()`,
+    /// because only the host knows whether its executable serves that mode.
+    /// Not needed for a `.json` config.
+    pub fn compiler_worker(mut self, launcher: zfb_config_loader::WorkerLauncher) -> Self {
+        self.compiler_worker = Some(launcher);
         self
     }
 
@@ -527,7 +544,7 @@ impl ServerBuilder {
         })?;
 
         let (project_root, dist_root, public_root, base, trailing_slash) =
-            load_embed_config(&config_path)?;
+            load_embed_config(&config_path, self.compiler_worker)?;
 
         let bind = self.bind.unwrap_or(DEFAULT_BIND);
         let pages = self.page_cache.unwrap_or_default();
@@ -642,7 +659,7 @@ impl ServerHandle {
 // Loads just the four fields the embedded server cares about from the
 // project's `zfb.config.{json,ts}`. JSON is read + parsed directly; TS is
 // evaluated via the shared `zfb-config-loader` crate (issue #1037) — the
-// same esbuild + V8 / node evaluator the `zfb` CLI uses — so an embedder can
+// same compiler worker + V8 / node evaluator the `zfb` CLI uses — so an embedder can
 // point the builder at an existing `zfb.config.ts` without maintaining a
 // parallel hand-synced `zfb.config.json`.
 
@@ -682,6 +699,7 @@ fn default_public_dir() -> PathBuf {
 /// config are joined against the config file's parent directory).
 fn load_embed_config(
     config_path: &Path,
+    compiler_worker: Option<zfb_config_loader::WorkerLauncher>,
 ) -> anyhow::Result<(PathBuf, PathBuf, PathBuf, Option<String>, bool)> {
     if !config_path.exists() {
         return Err(anyhow!(
@@ -701,7 +719,7 @@ fn load_embed_config(
             serde_json::from_str(&text)
                 .with_context(|| format!("could not parse {} as JSON", config_path.display()))?
         }
-        "ts" => load_embed_config_from_ts(config_path)?,
+        "ts" => load_embed_config_from_ts(config_path, compiler_worker)?,
         other => {
             return Err(anyhow!(
                 "ServerBuilder::config_path: unsupported extension `{}` on {}. \
@@ -742,7 +760,8 @@ fn load_embed_config(
 /// deserialise its `default` export into the embed-relevant [`EmbedConfig`]
 /// subset (issue #1037).
 ///
-/// The evaluator is async (it spawns esbuild and, on slim builds, `node`),
+/// The evaluator is async (it runs the compiler worker and, on slim builds,
+/// `node`),
 /// but [`ServerBuilder::build`] is synchronous. We run the load on a
 /// dedicated OS thread that owns a `current_thread` tokio runtime — the same
 /// pattern [`Server::serve_in_thread`] uses — so this works whether or not
@@ -751,11 +770,26 @@ fn load_embed_config(
 /// evaluator is the config file's parent directory.
 ///
 /// The config path is canonicalised to an absolute path first. The loader
-/// runs esbuild with `current_dir(project_root)` and passes `ts_path` as the
+/// bundles with `project_root` as the working directory and `ts_path` as the
 /// entry, so a relative `config_path` (e.g. `"site/zfb.config.ts"`, or a bare
-/// `"zfb.config.ts"` whose `parent()` is the empty path) would otherwise make
-/// esbuild `chdir` to the wrong place or double-join the directory segment.
-fn load_embed_config_from_ts(config_path: &Path) -> anyhow::Result<EmbedConfig> {
+/// `"zfb.config.ts"` whose `parent()` is the empty path) would otherwise
+/// anchor at the wrong place or double-join the directory segment.
+fn load_embed_config_from_ts(
+    config_path: &Path,
+    compiler_worker: Option<zfb_config_loader::WorkerLauncher>,
+) -> anyhow::Result<EmbedConfig> {
+    let Some(compiler_worker) = compiler_worker else {
+        return Err(anyhow!(
+            "ServerBuilder::config_path: {} is a `.ts` config, which needs a compiler worker. \
+             Call `ServerBuilder::compiler_worker(WorkerLauncher)` with a launcher for an \
+             executable whose `main` calls `zfb_server::run_compiler_worker_if_requested()` \
+             (zfb_compiler_worker::run_if_requested) first, e.g. \
+             `WorkerLauncher::new(std::env::current_exe()?).arg(zfb_server::COMPILER_WORKER_ARG)`; \
+             or use a `zfb.config.json`",
+            config_path.display()
+        ));
+    };
+    let compiler_worker = Some(compiler_worker);
     let ts_path = config_path
         .canonicalize()
         .with_context(|| format!("could not resolve {}", config_path.display()))?;
@@ -781,6 +815,7 @@ fn load_embed_config_from_ts(config_path: &Path) -> anyhow::Result<EmbedConfig> 
                     // embed deployment) still loads — matching the `.json`
                     // embed path, which ignores plugins entirely (issue #1037).
                     &zfb_config_loader::LoadOptions {
+                        compiler_worker,
                         resolve_plugins: false,
                         ..Default::default()
                     },
@@ -815,38 +850,22 @@ mod tests {
         assert!(msg.contains("file not found"), "got: {msg}");
     }
 
-    /// `.ts` configs are no longer rejected at the extension check (issue
-    /// #1037 hoisted the TS evaluator into `zfb-config-loader`). The
-    /// extension branch now routes to evaluation rather than returning the
-    /// old "not yet loadable from `zfb-server`'s embed API" hard error.
-    ///
-    /// This test does NOT assert a successful load: actually evaluating the
-    /// `.ts` needs esbuild (default builds also need the in-process V8
-    /// isolate), neither of which is staged in this crate's unit-test env —
-    /// `zfb-server` ships no `EMBEDDED_VENDOR` snapshot, by design. The
-    /// successful-evaluation path is covered by `zfb`'s `config.rs` V8 tests
-    /// (run in CI with `direct-v8`). Here we only prove the hard-error branch
-    /// is gone: whatever error surfaces (esbuild-missing in CI, or success on
-    /// a machine with `ZFB_ESBUILD_BIN` set) must NOT be the old milestone
-    /// rejection or the unsupported-extension message.
+    /// A `.ts` config with no compiler worker launcher fails with an error
+    /// that names the config and says how to supply one.
     #[test]
-    fn config_path_ts_no_longer_hard_errors_as_unsupported() {
+    fn config_path_ts_without_compiler_worker_is_an_actionable_error() {
         let tmp = tempfile::tempdir().unwrap();
         let ts_path = tmp.path().join("zfb.config.ts");
         std::fs::write(&ts_path, "export default {}\n").unwrap();
-        let result = ServerBuilder::new().config_path(&ts_path).build();
-        if let Err(err) = result {
-            let msg = format!("{err:#}");
-            assert!(
-                !msg.contains("not yet loadable"),
-                "`.ts` must no longer hard-error as a milestone gap; got: {msg}"
-            );
-            assert!(
-                !msg.contains("unsupported extension"),
-                "`.ts` must be a recognised extension; got: {msg}"
-            );
-        }
-        // Ok(_) (esbuild + evaluator available locally) is also a pass.
+        let err = ServerBuilder::new()
+            .config_path(&ts_path)
+            .build()
+            .err()
+            .expect("a .ts config needs a compiler worker launcher");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("zfb.config.ts"), "got: {msg}");
+        assert!(msg.contains("WorkerLauncher"), "got: {msg}");
+        assert!(msg.contains("run_if_requested"), "got: {msg}");
     }
 
     #[test]
@@ -859,7 +878,7 @@ mod tests {
         )
         .unwrap();
         let (project_root, dist_root, public_root, base, trailing_slash) =
-            load_embed_config(&json_path).unwrap();
+            load_embed_config(&json_path, None).unwrap();
         // Canonicalised project root must point at the config's parent.
         let expected_root = tmp
             .path()

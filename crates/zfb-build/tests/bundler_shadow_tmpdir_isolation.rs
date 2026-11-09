@@ -5,12 +5,10 @@ use std::process::Command;
 
 use zfb_build::bundler::{reap_stale_shadow_sessions, shadow_parent_dir};
 use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec, ShadowSession};
-use zfb_test_utils::locate_esbuild;
 
 const CHILD_KIND: &str = "ZFB_SHADOW_TMPDIR_ISOLATION_CHILD";
 const CHILD_ROOT: &str = "ZFB_SHADOW_TMPDIR_ISOLATION_ROOT";
 const CHILD_CACHE: &str = "ZFB_SHADOW_TMPDIR_ISOLATION_CACHE";
-const CHILD_ESBUILD: &str = "ZFB_SHADOW_TMPDIR_ISOLATION_ESBUILD";
 const COMPLETE_FILE: &str = ".shadow-tmpdir-child-complete";
 const SHADOW_PREFIXES: &[&str] = &[
     "zfb-shadow-session-",
@@ -21,7 +19,6 @@ const SHADOW_PREFIXES: &[&str] = &[
 #[test]
 fn ephemeral_bundler_tmpdir_is_not_project_local_when_tmpdir_is_project_local() {
     if in_child("ephemeral") {
-        let esbuild = child_esbuild();
         let root = child_root();
         scaffold_project(&root);
         fs::create_dir_all(root.join("node_modules/tmpdir-live-dependency")).unwrap();
@@ -59,7 +56,7 @@ fn ephemeral_bundler_tmpdir_is_not_project_local_when_tmpdir_is_project_local() 
         )
         .unwrap();
 
-        let mut input = make_input(&root, &esbuild, "dist-ephemeral");
+        let mut input = make_input(&root, "dist-ephemeral");
         input.node_modules_dir = Some(root.join("node_modules"));
         input.bundle_exclude = vec!["components/Excluded.stories.tsx".to_string()];
         let output = bundle(input).expect("bundle should succeed with project-local TMPDIR");
@@ -74,7 +71,7 @@ fn ephemeral_bundler_tmpdir_is_not_project_local_when_tmpdir_is_project_local() 
         return;
     }
 
-    run_esbuild_child("ephemeral");
+    run_child("ephemeral");
 }
 
 #[test]
@@ -90,7 +87,7 @@ fn shadow_session_tmpdir_is_not_project_local_when_tmpdir_is_project_local() {
         return;
     }
 
-    run_child("session", None);
+    run_child("session");
 }
 
 /// Test expectation 9 (#2257): `ZFB_KEEP_SHADOW_SESSION` must suppress
@@ -147,7 +144,6 @@ fn shadow_session_keep_flag_suppresses_drop_teardown_and_reap() {
 #[test]
 fn exact_node_modules_tmpdir_is_not_project_local_when_tmpdir_is_project_local() {
     if in_child("exact") {
-        let esbuild = child_esbuild();
         let root = child_root();
         scaffold_project(&root);
         let package = root.join("node_modules/tmpdir-exact-dependency");
@@ -169,7 +165,7 @@ fn exact_node_modules_tmpdir_is_not_project_local_when_tmpdir_is_project_local()
         )
         .unwrap();
 
-        let mut input = make_input(&root, &esbuild, "dist-exact");
+        let mut input = make_input(&root, "dist-exact");
         input.node_modules_dir = Some(root.join("node_modules"));
         input.plugin_alias_entries = vec![(
             "plugin:tmpdir-exact".to_string(),
@@ -192,21 +188,10 @@ fn exact_node_modules_tmpdir_is_not_project_local_when_tmpdir_is_project_local()
         return;
     }
 
-    run_esbuild_child("exact");
+    run_child("exact");
 }
 
-fn run_esbuild_child(kind: &str) {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_shadow_tmpdir_isolation] no esbuild binary available; skipping.");
-        return;
-    };
-    run_child(
-        kind,
-        Some(fs::canonicalize(esbuild).expect("canonical esbuild")),
-    );
-}
-
-fn run_child(kind: &str, esbuild: Option<PathBuf>) {
+fn run_child(kind: &str) {
     let project = tempfile::tempdir().expect("project root");
     let project_tmp = project.path().join(".tmp");
     fs::create_dir_all(&project_tmp).expect("project-local tmp");
@@ -224,10 +209,6 @@ fn run_child(kind: &str, esbuild: Option<PathBuf>) {
         .env("TEMP", &project_tmp)
         .env("TMP", &project_tmp)
         .env("XDG_CACHE_HOME", outside_cache.path());
-    if let Some(esbuild) = esbuild {
-        command.env(CHILD_ESBUILD, &esbuild);
-        command.env("ZFB_ESBUILD_BIN", esbuild);
-    }
 
     let output = command.output().expect("spawn isolated TMPDIR child");
     assert!(
@@ -308,19 +289,6 @@ fn in_child(kind: &str) -> bool {
 
 fn child_root() -> PathBuf {
     PathBuf::from(std::env::var_os(CHILD_ROOT).expect("child root"))
-}
-
-fn child_esbuild() -> PathBuf {
-    let Some(esbuild) = locate_esbuild() else {
-        panic!("child process lost the pinned esbuild binary");
-    };
-    let expected = PathBuf::from(std::env::var_os(CHILD_ESBUILD).expect("child esbuild"));
-    assert_eq!(
-        fs::canonicalize(&esbuild).expect("canonical located esbuild"),
-        fs::canonicalize(&expected).expect("canonical expected esbuild"),
-        "child should honor the pinned ZFB_ESBUILD_BIN"
-    );
-    expected
 }
 
 fn mark_child_complete(root: &Path) {
@@ -428,7 +396,7 @@ fn scaffold_project(root: &Path) {
     .unwrap();
 }
 
-fn make_input(root: &Path, esbuild: &Path, outdir_name: &str) -> BundlerInput {
+fn make_input(root: &Path, outdir_name: &str) -> BundlerInput {
     BundlerInput {
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
@@ -452,8 +420,7 @@ fn make_input(root: &Path, esbuild: &Path, outdir_name: &str) -> BundlerInput {
         outdir: root.join(outdir_name),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.to_path_buf()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,

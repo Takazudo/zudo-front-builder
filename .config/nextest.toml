@@ -9,8 +9,8 @@
 # `cargo test --workspace --doc` step; this config governs everything EXCEPT
 # doctests. Do not assume a green nextest run covers doctest examples.
 # 2026-09-28 (#3266): all ten css-only tests now run in normal discovery;
-# the build-parity test also runs normally and self-skips locally only when
-# esbuild is unavailable. Keep css_command in e2e-heavy-unlocked because parity
+# the build-parity test also runs normally (its esbuild self-skip was
+# removed by #4635). Keep css_command in e2e-heavy-unlocked because parity
 # launches a real zfb build.
 # 2026-09-28 (#3282): owned SSR build binary joins e2e-heavy-unlocked.
 # 2026-09-28 (#3269): W-A04's dev binary joins e2e-heavy-locked and the
@@ -24,8 +24,13 @@
 # packed-consumer `zfb build` cases and one `zfb dev` edit take the flock.
 # 2026-10-05 (#3777): `build_warnings_json` joins e2e-heavy-unlocked;
 # its real `zfb build` invocations do not take the cross-binary flock.
+# 2026-11-07 (#4636): `esbuild_free_combined_e2e` joins e2e-heavy-locked;
+# its real `zfb build` and `zfb dev` tests take the cross-binary flock.
 
-# ── Two-lane admission control for process and V8/esbuild e2e tests ──────
+# ── Two-lane admission control for process and V8/bundler e2e tests ──────
+# #4635 removed esbuild: every `locate_esbuild()` self-skip mentioned below is
+# retired and those tests now always run; "esbuild" below means the native
+# Rolldown bundling that replaced it.
 # Of these 52 integration-test binaries (all in package `zfb`), 51 spawn a
 # real `zfb dev` / `zfb build` / `zfb preview` process that embeds a V8 host
 # and/or shells out to esbuild. The remaining preview-signal binary spawns a
@@ -37,15 +42,15 @@
 # at most one flock adopter and one non-adopter concurrently: this preserves
 # serialization within each contention class while allowing genuine two-way
 # progress across the classes.
-# The measured split is 53 = 30 flock-adopting + 23 unlocked.
+# The measured split is 54 = 31 flock-adopting + 23 unlocked.
 # `scripts/__tests__/nextest-heavy-binary-drift.test.mjs` re-derives the exact
-# 53-member union from `crates/zfb/tests/*.rs` and fails the workspace Vitest
+# 54-member union from `crates/zfb/tests/*.rs` and fails the workspace Vitest
 # gate if the two explicit filters collectively drift.
 #
 # `preview_signal_supervision_e2e` spawns zfb preview but no V8/esbuild or
 # flock; the unlocked lane gives it admission control.
 # The two lanes are:
-#   • 30 flock-adopting binaries (client_bundling_cross_pipeline,
+#   • 31 flock-adopting binaries (client_bundling_cross_pipeline,
 #     dev_build_then_dev_default_layout_e2e (issue #4011: build→dev probe evidence),
 #     build_terminates, preview_cross_mode_e2e, the dev_*_e2e set,
 #     wasm_ssr_dev_smoke_e2e, page_extension_full_matrix_e2e,
@@ -58,7 +63,9 @@
 #     in separate scratch dirs), `scanner_boundary_acceptance` (issue #3508:
 #     packed production checks plus invalid dev rebuild/recovery),
 #     `foreign_pragma_acceptance` (issue #3514: packed-consumer foreign
-#     JSX pragma warnings in build and dev), and
+#     JSX pragma warnings in build and dev),
+#     `esbuild_free_combined_e2e` (issue #4636: the esbuild-free combined
+#     build + dev proof over one fixture), and
 #     wind_clean_warm_identity_e2e) — spawn
 #     `zfb dev` and/or `zfb build` and/or `zfb preview`. These ALSO hold
 #     #1339's OS advisory flock (crates/zfb-test-utils/src/cross_binary_lock.rs),
@@ -172,7 +179,7 @@
 # Completeness was re-verified by grepping crates/zfb/tests/*.rs for the real
 # `zfb` binary spawn + a `build`/`dev`/`preview` subcommand (zfb_binary! +
 # .arg("build")/.arg("dev")/.arg("preview")) plus esbuild/V8-host usage. The
-# mechanical guard classifies every integration-test source: 53 heavy binaries,
+# mechanical guard classifies every integration-test source: 54 heavy binaries,
 # six documented exclusions (`check_command`,
 # `collections_outside_root_build_check_snapshot`, `diagnostics_fixtures`,
 # `embedded_node_modules_cache`, `process_guard_support`, and
@@ -188,7 +195,7 @@ max-threads = 1
 [test-groups.e2e-heavy-unlocked]
 max-threads = 1
 
-# The overrides that assign all 53 heavy binaries to the two lanes AND grant
+# The overrides that assign all 54 heavy binaries to the two lanes AND grant
 # them a long per-test timeout live in the `default` profile so BOTH
 # local (default profile) and CI (`ci` profile, which inherits default's
 # overrides) get identical serialization + timeout treatment. Exact binary
@@ -201,14 +208,15 @@ max-threads = 1
 # a real `zfb dev` E2E, `#[ignore]`d `heavy`; written RED in Wave 1 and
 # inverted green in Wave 4), `ssr_reload_self_heal_e2e` (issues
 # #2000/#2002/#2005, same epic — two real `zfb dev` E2E tests, `#[ignore]`d
-# `env-gate: esbuild`; written RED in Wave 1, inverted green in Wave 2, and
+# `env-gate: esbuild`, retagged `heavy` by #4635; written RED in Wave 1, inverted green in Wave 2, and
 # registered here in Wave 6 — it was previously missing from this filter
 # despite spawning `zfb dev`), and `dev_content_reload_2063_e2e` (issue
 # #2098, MDX Reload Fix epic #2092 Wave 5 — six real `zfb dev` E2E tests,
 # covering the healthy baseline, the injected-dynamic-route regression #2097
 # fixed, and an out-of-root control, each in both boot modes; like
 # `wasm_ssr_dev_smoke_e2e`/`embedded_host_request_time_e2e` above, NOT
-# `#[ignore]`d — self-skips via `locate_esbuild()`, and its measured runtime
+# `#[ignore]`d — it once self-skipped via `locate_esbuild()` (retired by #4635)
+# and now always runs; its measured runtime
 # (92.53s/7 cells) is well under this crate's un-ignored e2e budgets, so
 # neither the `env-gate:` nor `heavy:` rule fires per zudo-test-wisdom's
 # classification rules; membership here is for CPU/memory serialization only.
@@ -224,8 +232,8 @@ max-threads = 1
 # (issue #2105, the epic's closing confirm sub), proving a real SIGINT
 # exits 0 and persists `.zfb/graph.bin`. None of the three carry an
 # `#[ignore]` attribute — like `dev_serve_e2e`/`embedded_host_request_time_e2e`
-# above, the binary self-skips via `locate_esbuild()` when esbuild isn't
-# staged, so it runs on T1 whenever esbuild is present rather than being
+# above, the binary once self-skipped via `locate_esbuild()` (retired by
+# #4635); it always runs on T1 rather than being
 # relegated to the weekly quarantine lane. Membership in the locked lane is for
 # CPU/memory serialization only. `plugin_watch_hook_confirm_2170_e2e`
 # (issue #2170, Plugin Watch Hook epic #2166 — the confirm pass over
@@ -236,7 +244,8 @@ max-threads = 1
 # outside every default watch root, proving an edit to that file both
 # broadcasts an SSE `page` event and — the central assertion — reaches the
 # served page's rendered content, not just triggers a re-render. Not
-# `#[ignore]`d — self-skips via `locate_esbuild()` like its siblings.
+# `#[ignore]`d — always runs, like its siblings (its `locate_esbuild()`
+# self-skip was retired by #4635).
 #
 # **Authoritative recount (issue #2105, 2026-07)**: this sub re-measured
 # the whole group from scratch — `cargo nextest show-config test-groups -p
@@ -276,8 +285,8 @@ max-threads = 1
 # real `zfb dev` confirm pass over #2354's wiring) added
 # `ssr_contract_dev_warning_e2e` to the flock-adopting bucket, bringing the
 # total to **37** (24 flock-adopting, 13 build-only). Two real
-# `zfb dev --port 0` E2E tests, neither `#[ignore]`d (self-skips via
-# `locate_esbuild()` like its siblings): the positive fixture proves the
+# `zfb dev --port 0` E2E tests, neither `#[ignore]`d (they always run, like
+# their siblings; the `locate_esbuild()` self-skip was retired by #4635): the positive fixture proves the
 # Strong-tier SSR-contract warning (`render_ssr_request_param_finding`,
 # `crates/zfb/src/render_pipeline.rs`) reaches captured stderr during boot
 # for a `prerender = false` route whose default export is `(request:
@@ -304,9 +313,9 @@ max-threads = 1
 # `.zfb-plugin-bundle-*.mjs` file next to the plugin's `.ts` source and
 # asserts the whole fixture tree carries no such file after a clean build
 # exit — the pre-planted one via #2371's sweep, this run's own via
-# `StagedPluginBundle`'s `Drop` guard. Not `#[ignore]`d — self-skips via
-# `locate_esbuild()` plus a `node`-on-PATH check, like its build-only
-# siblings.
+# `StagedPluginBundle`'s `Drop` guard. Not `#[ignore]`d — self-skips only
+# when `node` is not on PATH (its `locate_esbuild()` gate was retired by
+# #4635).
 #
 # Issue #2427 (2026-08, Render Artifact Export epic #2421, Wave 3 —
 # CONFIRM, the central real-`zfb build` integration pass over Waves 1-2)
@@ -332,7 +341,8 @@ max-threads = 1
 # builds over a sibling-document collection fixture (the WalkDir
 # traversal-order slug-allocation trap, zfb#187) must emit a byte-identical
 # `dist/` tree, `dist/__zfb/render/**` artifacts included. Neither binary is
-# `#[ignore]`d — both self-skip via `locate_esbuild()`, like their
+# `#[ignore]`d — both always run (their `locate_esbuild()` self-skip was
+# retired by #4635), like their
 # build-only siblings.
 #
 # Issue #2600 (2026-08, CSS Entrypoint epic #2594, Wave 3) added the
@@ -367,7 +377,7 @@ max-threads = 1
 #
 # ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the unlocked lane:
 # `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` boots a real
-# esbuild subprocess + embedded V8 isolate (see crates/CLAUDE.md's `#[ignore]`
+# native Rolldown bundle + embedded V8 isolate (see crates/CLAUDE.md's `#[ignore]`
 # manifest, tagged `heavy`) but is NOT its own binary — it lives inside the
 # `zfb` crate's shared lib-test target (`render_pipeline::tests`) alongside
 # hundreds of ordinary, non-heavy unit tests, so `binary(=...)` cannot target
@@ -407,7 +417,7 @@ max-threads = 1
 # (`inner_bundle_specifier_percent_encodes_unsafe_bytes`) is swept in too; it
 # is microseconds long, so serializing it costs nothing.
 [[profile.default.overrides]]
- filter = 'package(zfb) & (binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=cold_rewrite_prewarm_e2e) | binary(=collection_seed_3133_baseline) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_build_then_dev_default_layout_e2e) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_content_reload_2063_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_poll_backend_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=dev_supervision_e2e) | binary(=embedded_host_request_time_e2e) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=plugin_watch_hook_confirm_2170_e2e) | binary(=foreign_pragma_acceptance) | binary(=preview_cross_mode_e2e) | binary(=scanner_boundary_acceptance) | binary(=scratch_dir_concurrent_e2e) | binary(=ssr_contract_dev_warning_e2e) | binary(=ssr_reload_self_heal_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e) | binary(=wind_clean_warm_identity_e2e))'
+ filter = 'package(zfb) & (binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=cold_rewrite_prewarm_e2e) | binary(=collection_seed_3133_baseline) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_build_then_dev_default_layout_e2e) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_content_reload_2063_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_poll_backend_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=dev_supervision_e2e) | binary(=embedded_host_request_time_e2e) | binary(=esbuild_free_combined_e2e) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=plugin_watch_hook_confirm_2170_e2e) | binary(=foreign_pragma_acceptance) | binary(=preview_cross_mode_e2e) | binary(=scanner_boundary_acceptance) | binary(=scratch_dir_concurrent_e2e) | binary(=ssr_contract_dev_warning_e2e) | binary(=ssr_reload_self_heal_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e) | binary(=wind_clean_warm_identity_e2e))'
 test-group = 'e2e-heavy-locked'
 # The true longest in-test watchdog is 300s
 # (dev_content_aggregate_cold_boot_e2e and dev_dep_invalidation_1284_e2e;

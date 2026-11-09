@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 /// Overall wall-clock watchdog covering the build step plus the spawned
 /// dev server plus all scenario assertions. Comfortably under
@@ -309,7 +309,7 @@ impl Drop for BuildGuard {
 /// even if the build subprocess hangs — `Command::output()` alone would
 /// block this `spawn_blocking` thread (and keep the child alive)
 /// indefinitely past the outer async watchdog.
-fn run_build(root: &Path, esbuild: &Path) -> Option<String> {
+fn run_build(root: &Path) -> Option<String> {
     let stdout_path = root.join(".zfb-build-stdout.log");
     let stderr_path = root.join(".zfb-build-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create build stdout log file");
@@ -318,7 +318,6 @@ fn run_build(root: &Path, esbuild: &Path) -> Option<String> {
     let mut cmd = Command::new(zfb_binary!());
     cmd.arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.process_group(0);
@@ -388,10 +387,10 @@ fn assert_build_route(dist: &Path, rel: &str, marker: &str, shape: &str) {
 
 /// Runs the build half of the confirm pass over a fresh fixture copy.
 /// Returns `false` on known-skip (already logged).
-fn run_build_phase(root: &Path, esbuild: &Path) -> bool {
+fn run_build_phase(root: &Path) -> bool {
     write_fixture(root);
 
-    let Some(stderr) = run_build(root, esbuild) else {
+    let Some(stderr) = run_build(root) else {
         return false;
     };
 
@@ -507,7 +506,7 @@ fn parse_ready_port(log: &str) -> Option<u16> {
 /// stdout/stderr redirected to files (never pipes — a piped child that
 /// outgrows the OS pipe buffer blocks on write and masquerades as a
 /// hang, `build_terminates.rs` pattern).
-fn spawn_dev(root: &Path, esbuild: &Path) -> DevSession {
+fn spawn_dev(root: &Path) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log file");
@@ -518,7 +517,6 @@ fn spawn_dev(root: &Path, esbuild: &Path) -> DevSession {
         .arg("--port")
         .arg("0")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
@@ -614,10 +612,10 @@ async fn poll_get_contains(
 }
 
 /// Runs the dev half of the confirm pass over a fresh fixture copy.
-async fn run_dev_phase(root: &Path, esbuild: &Path, client: &reqwest::Client) {
+async fn run_dev_phase(root: &Path, client: &reqwest::Client) {
     write_fixture(root);
 
-    let mut session = spawn_dev(root, esbuild);
+    let mut session = spawn_dev(root);
     let port = boot_and_get_port(&mut session, client).await;
     let base = format!("http://localhost:{port}");
 
@@ -687,15 +685,6 @@ async fn seven_page_shapes_plus_dynamic_ts_build_and_serve_end_to_end() {
     // mutex to layer underneath it.
     let _e2e_lock = CrossBinaryE2eLock::acquire();
 
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[page_extension_full_matrix_e2e] no esbuild binary available; set \
-             ZFB_ESBUILD_BIN, place the binary at crates/zfb/binaries/esbuild/esbuild, or \
-             install esbuild on PATH to enable this test. Skipping."
-        );
-        return;
-    };
-
     let overall = async {
         // ── Build half — its own fresh fixture copy ───────────────
         let build_tmp = tempfile::tempdir().expect("tempdir for build root");
@@ -706,8 +695,7 @@ async fn seven_page_shapes_plus_dynamic_ts_build_and_serve_end_to_end() {
 
         let build_ok = {
             let root = build_root.clone();
-            let esbuild = esbuild.clone();
-            tokio::task::spawn_blocking(move || run_build_phase(&root, &esbuild))
+            tokio::task::spawn_blocking(move || run_build_phase(&root))
                 .await
                 .expect("join zfb build task")
         };
@@ -728,7 +716,7 @@ async fn seven_page_shapes_plus_dynamic_ts_build_and_serve_end_to_end() {
             .build()
             .expect("build reqwest client");
 
-        run_dev_phase(&dev_root, &esbuild, &client).await;
+        run_dev_phase(&dev_root, &client).await;
     };
 
     tokio::time::timeout(OVERALL_DEADLINE, overall)

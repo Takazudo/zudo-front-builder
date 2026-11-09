@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 const DEADLINE: Duration = Duration::from_secs(90);
 const POLL: Duration = Duration::from_millis(300);
@@ -328,8 +328,6 @@ where
 
 async fn run(mode: Mode) {
     let _lock = CrossBinaryE2eLock::acquire();
-    let esbuild =
-        locate_esbuild().expect("#4011 reproduction requires esbuild; set ZFB_ESBUILD_BIN");
     let evidence = std::env::var_os("ZFB_DEFAULT_LAYOUT_EVIDENCE_DIR").map(|dir| {
         let dir = PathBuf::from(dir);
         fs::create_dir_all(&dir).expect("create default-layout evidence directory");
@@ -345,7 +343,6 @@ async fn run(mode: Mode) {
     let build = clean_env(&mut Command::new(zfb_binary!()))
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("run zfb build (V8 must be available)");
     let build_diagnostic = format!(
@@ -381,7 +378,6 @@ async fn run(mode: Mode) {
         .arg("dev")
         .args(["--host", "127.0.0.1", "--port", &port.to_string()])
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .stdout(Stdio::from(fs::File::create(&stdout).expect("stdout log")))
         .stderr(Stdio::from(fs::File::create(&stderr).expect("stderr log")));
     if matches!(mode, Mode::EagerScratch) {

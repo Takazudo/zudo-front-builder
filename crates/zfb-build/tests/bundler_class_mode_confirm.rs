@@ -37,10 +37,8 @@
 //!
 //! ## Esbuild gating
 //!
-//! Same precedence as `bundler_default_plugins.rs`:
-//! `ZFB_ESBUILD_BIN` env var -> `crates/zfb/binaries/esbuild/esbuild`
-//! slot -> `which esbuild` PATH fallback. If no binary is available the
-//! test prints a skip note and returns early.
+//! Bundling runs in-process through native Rolldown (#4635), so these tests
+//! never skip for a missing bundler binary.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -49,7 +47,6 @@ use std::path::PathBuf;
 use zfb_build::{bundle, BundleMode, BundlerInput};
 use zfb_content::{CodeHighlightMode, PipelineSpec};
 use zfb_css::{AuthoredCssEngine, CssPipeline, CssPipelineConfig};
-use zfb_test_utils::locate_esbuild;
 
 /// A minimal project with one MDX page carrying a fenced `rust` block —
 /// enough to exercise the class-mode syntect path end-to-end through the
@@ -80,16 +77,6 @@ fn write_fixture_project(root: &std::path::Path) {
 
 #[test]
 fn bundler_class_mode_project_ties_emission_and_css_injection() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_class_mode_confirm] no esbuild binary available; \
-             set ZFB_ESBUILD_BIN, place the binary at \
-             crates/zfb/binaries/esbuild/esbuild, or install esbuild on PATH \
-             to enable this test. Skipping."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root);
@@ -128,8 +115,7 @@ fn bundler_class_mode_project_ties_emission_and_css_injection() {
         outdir: root.join("dist"),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.to_path_buf()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,

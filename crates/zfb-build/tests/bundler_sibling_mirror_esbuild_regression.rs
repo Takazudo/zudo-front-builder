@@ -3,10 +3,10 @@
 //! `import.meta.glob` fixed-point queue, the workspace-hoisted
 //! `node_modules` link under exclusions, and the sibling `.module.css`
 //! work-mirror rewrite) is wired together correctly END TO END, driven by
-//! the REAL esbuild binary — never `mock_subprocess_output`.
+//! the REAL esbuild binary — never `mock_bundle_output`.
 //!
 //! Every implementation sub-issue's own test suite stops at the
-//! mock/staging-shape level (`bundle_with_session` + `mock_subprocess_output`
+//! mock/staging-shape level (`bundle_with_session` + `mock_bundle_output`
 //! — see e.g. `bundler_sibling_wholesale_mirror.rs` and the
 //! `sibling_bare_import_resolves_via_workspace_node_modules_under_exclude`
 //! unit test in `bundler.rs`, whose own doc comment says "real-esbuild
@@ -50,7 +50,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{bundle, bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_test_utils::locate_esbuild;
 
 /// Standard content-root dirs `bundle()` expects under a project.
 fn scaffold_project_dirs(project: &Path) {
@@ -75,7 +74,7 @@ fn write_workspace(tmp_root: &Path) -> (PathBuf, PathBuf) {
 /// Shared `BundlerInput` defaults for these fixtures: owned-runtime production
 /// build, real esbuild binary, owned runtime bare specifiers marked
 /// external (mirrors `bundler_exclude_glob.rs`'s `make_input`).
-fn base_input(project: &Path, esbuild: PathBuf, bundle_exclude: Vec<String>) -> BundlerInput {
+fn base_input(project: &Path, bundle_exclude: Vec<String>) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
         BundleMode::Production,
@@ -87,7 +86,6 @@ fn base_input(project: &Path, esbuild: PathBuf, bundle_exclude: Vec<String>) -> 
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
-    input.esbuild_binary = Some(esbuild);
     input.bundle_exclude = bundle_exclude;
     input
 }
@@ -119,10 +117,6 @@ fn truncate(s: &str) -> String {
 
 #[test]
 fn a_root_wildcard_alias_reaches_root_json_under_unrelated_exclude() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let project = tmp.path();
     scaffold_project_dirs(project);
@@ -148,7 +142,7 @@ fn a_root_wildcard_alias_reaches_root_json_under_unrelated_exclude() {
         vec![project.join("*").to_string_lossy().into_owned()],
     )]);
 
-    let mut input = base_input(project, esbuild, unrelated_exclude());
+    let mut input = base_input(project, unrelated_exclude());
     input.tsconfig_paths = tsconfig_paths;
 
     let out = bundle(input).expect(
@@ -170,10 +164,6 @@ fn a_root_wildcard_alias_reaches_root_json_under_unrelated_exclude() {
 
 #[test]
 fn b_sibling_import_meta_glob_expands_under_unrelated_exclude() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (ws_root, project) = write_workspace(tmp.path());
 
@@ -223,7 +213,7 @@ fn b_sibling_import_meta_glob_expands_under_unrelated_exclude() {
             .to_string_lossy()
             .into_owned()],
     )]);
-    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    let mut input = base_input(&project, unrelated_exclude());
     input.tsconfig_paths = tsconfig_paths;
     let out = bundle(input).expect(
         "issue #1691/#1695: a sibling file's own import.meta.glob must expand \
@@ -283,10 +273,6 @@ fn b_sibling_import_meta_glob_expands_under_unrelated_exclude() {
 
 #[test]
 fn g_sibling_import_meta_glob_wildcard_alias_expands_under_unrelated_exclude() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (ws_root, project) = write_workspace(tmp.path());
 
@@ -324,7 +310,7 @@ fn g_sibling_import_meta_glob_wildcard_alias_expands_under_unrelated_exclude() {
         "@shared/*".to_string(),
         vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
     )]);
-    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    let mut input = base_input(&project, unrelated_exclude());
     input.tsconfig_paths = tsconfig_paths;
     let out = bundle(input).expect(
         "issue #1724: a sibling file's own import.meta.glob reached via a \
@@ -367,10 +353,6 @@ fn g_sibling_import_meta_glob_wildcard_alias_expands_under_unrelated_exclude() {
 
 #[test]
 fn h_sibling_raw_import_wildcard_alias_already_expands_under_unrelated_exclude() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (ws_root, project) = write_workspace(tmp.path());
 
@@ -403,7 +385,7 @@ fn h_sibling_raw_import_wildcard_alias_already_expands_under_unrelated_exclude()
         "@shared/*".to_string(),
         vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
     )]);
-    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    let mut input = base_input(&project, unrelated_exclude());
     input.tsconfig_paths = tsconfig_paths;
     let out = bundle(input).expect(
         "a sibling file's own terminal ?raw import reached via a WILDCARD \
@@ -428,10 +410,6 @@ fn h_sibling_raw_import_wildcard_alias_already_expands_under_unrelated_exclude()
 
 #[test]
 fn i_sibling_raw_import_concrete_alias_already_expands_under_unrelated_exclude() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (ws_root, project) = write_workspace(tmp.path());
 
@@ -467,7 +445,7 @@ fn i_sibling_raw_import_concrete_alias_already_expands_under_unrelated_exclude()
             .to_string_lossy()
             .into_owned()],
     )]);
-    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    let mut input = base_input(&project, unrelated_exclude());
     input.tsconfig_paths = tsconfig_paths;
     let out = bundle(input).expect(
         "a sibling file's own terminal ?raw import reached via a CONCRETE \
@@ -488,10 +466,6 @@ fn i_sibling_raw_import_concrete_alias_already_expands_under_unrelated_exclude()
 
 #[test]
 fn j_sibling_module_worker_wildcard_alias_expands_under_unrelated_exclude() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (ws_root, project) = write_workspace(tmp.path());
 
@@ -525,7 +499,7 @@ fn j_sibling_module_worker_wildcard_alias_expands_under_unrelated_exclude() {
         "@shared/*".to_string(),
         vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
     )]);
-    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    let mut input = base_input(&project, unrelated_exclude());
     input.tsconfig_paths = tsconfig_paths;
     let out = bundle(input).expect(
         "issue #1724: a sibling file's own module-worker macro reached via a \
@@ -550,10 +524,6 @@ fn j_sibling_module_worker_wildcard_alias_expands_under_unrelated_exclude() {
 
 #[test]
 fn k_sibling_module_worker_concrete_alias_expands_under_unrelated_exclude() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (ws_root, project) = write_workspace(tmp.path());
 
@@ -590,7 +560,7 @@ fn k_sibling_module_worker_concrete_alias_expands_under_unrelated_exclude() {
             .to_string_lossy()
             .into_owned()],
     )]);
-    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    let mut input = base_input(&project, unrelated_exclude());
     input.tsconfig_paths = tsconfig_paths;
     let out = bundle(input).expect(
         "issue #1724: a sibling file's own module-worker macro reached via a \
@@ -619,10 +589,6 @@ fn k_sibling_module_worker_concrete_alias_expands_under_unrelated_exclude() {
 
 #[test]
 fn c_sibling_wildcard_alias_leaf_resolves_under_unrelated_exclude() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (ws_root, project) = write_workspace(tmp.path());
 
@@ -652,7 +618,7 @@ fn c_sibling_wildcard_alias_leaf_resolves_under_unrelated_exclude() {
         vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
     )]);
 
-    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    let mut input = base_input(&project, unrelated_exclude());
     input.tsconfig_paths = tsconfig_paths;
 
     let out = bundle(input).expect(
@@ -674,10 +640,6 @@ fn c_sibling_wildcard_alias_leaf_resolves_under_unrelated_exclude() {
 
 #[test]
 fn d_sibling_bare_dependency_resolves_via_workspace_node_modules_under_unrelated_exclude() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (ws_root, project) = write_workspace(tmp.path());
 
@@ -726,7 +688,7 @@ fn d_sibling_bare_dependency_resolves_via_workspace_node_modules_under_unrelated
         "@shared/*".to_string(),
         vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
     )]);
-    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    let mut input = base_input(&project, unrelated_exclude());
     input.tsconfig_paths = tsconfig_paths;
     let out = bundle(input).expect(
         "issue #1691/#1693: a sibling file's bare dependency must resolve \
@@ -747,10 +709,6 @@ fn d_sibling_bare_dependency_resolves_via_workspace_node_modules_under_unrelated
 
 #[test]
 fn e_sibling_module_css_rewrite_reaches_bundle_under_unrelated_exclude() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (ws_root, project) = write_workspace(tmp.path());
 
@@ -784,7 +742,7 @@ fn e_sibling_module_css_rewrite_reaches_bundle_under_unrelated_exclude() {
         "@shared/*".to_string(),
         vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
     )]);
-    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    let mut input = base_input(&project, unrelated_exclude());
     input.tsconfig_paths = tsconfig_paths;
     // This crate has no CSS discovery/scan layer of its own — that wiring
     // (`discover_css_source_files` / `compute_css_module_class_maps`) is the
@@ -823,10 +781,6 @@ fn e_sibling_module_css_rewrite_reaches_bundle_under_unrelated_exclude() {
 #[cfg(unix)]
 #[test]
 fn f_workspace_package_subpath_exports_resolve_only_from_real_staged_copies() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (ws_root, project) = write_workspace(tmp.path());
     fs::write(
@@ -908,7 +862,7 @@ fn f_workspace_package_subpath_exports_resolve_only_from_real_staged_copies() {
             fs::create_dir_all(project.join("node_modules/@acme")).unwrap();
             std::os::unix::fs::symlink(&ui, project.join("node_modules/@acme/ui")).unwrap();
         }
-        let input = base_input(&project, esbuild.clone(), exclude);
+        let input = base_input(&project, exclude);
         let mut session = ShadowSession::new(&project).unwrap();
         let out = bundle_with_session(input, Some(&mut session)).unwrap_or_else(|error| {
             panic!("{case}: declared workspace package subpath export must stage: {error:#}")
@@ -955,10 +909,6 @@ fn f_workspace_package_subpath_exports_resolve_only_from_real_staged_copies() {
 #[cfg(unix)]
 #[test]
 fn o_workspace_package_exports_into_dist_are_staged() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (ws_root, project) = write_workspace(tmp.path());
     fs::write(
@@ -1030,7 +980,7 @@ fn o_workspace_package_exports_into_dist_are_staged() {
             fs::create_dir_all(project.join("node_modules")).unwrap();
             std::os::unix::fs::symlink(&lib, project.join("node_modules/lib")).unwrap();
         }
-        let input = base_input(&project, esbuild.clone(), exclude);
+        let input = base_input(&project, exclude);
         let mut session = ShadowSession::new(&project).unwrap();
         // A green build is also the stage-escape audit's verdict: it hard-fails
         // the build when esbuild consumed a workspace file with no staged spelling.
@@ -1073,10 +1023,6 @@ fn o_workspace_package_exports_into_dist_are_staged() {
 
 #[test]
 fn l_unreachable_unsupported_worker_form_in_mirror_root_does_not_fail_the_build() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (ws_root, project) = write_workspace(tmp.path());
 
@@ -1130,7 +1076,7 @@ fn l_unreachable_unsupported_worker_form_in_mirror_root_does_not_fail_the_build(
         "@shared/*".to_string(),
         vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
     )]);
-    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    let mut input = base_input(&project, unrelated_exclude());
     input.tsconfig_paths = tsconfig_paths;
     let out = bundle(input).expect(
         "issue #1985: an unreachable file inside a wholesale-claimed sibling \
@@ -1174,17 +1120,13 @@ fn l_unreachable_unsupported_worker_form_in_mirror_root_does_not_fail_the_build(
 // The desired post-fix behavior (delivered by #2085's provenance threading)
 // is: this build stays GREEN — the broken match warns and is skipped, same
 // as case (l)'s own tolerance. Tagged `pending-feature` per epic #2078's
-// corrected flip protocol: this binary self-skips via `locate_esbuild()` and
-// is NOT env-gate-`#[ignore]`d, so the flipping sub DELETES this attribute
+// corrected flip protocol: this binary (which then self-skipped via the
+// retired `locate_esbuild()`) is NOT env-gate-`#[ignore]`d, so the flipping sub DELETES this attribute
 // entirely rather than swapping it for an `env-gate:` tag.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn m_transitive_glob_match_from_unreachable_mirrored_host_is_best_effort() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let (ws_root, project) = write_workspace(tmp.path());
 
@@ -1234,7 +1176,7 @@ fn m_transitive_glob_match_from_unreachable_mirrored_host_is_best_effort() {
         "@shared/*".to_string(),
         vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
     )]);
-    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    let mut input = base_input(&project, unrelated_exclude());
     input.tsconfig_paths = tsconfig_paths;
 
     // Desired POST-FIX form (issue #2045): a glob match queued by an
@@ -1267,10 +1209,6 @@ fn m_transitive_glob_match_from_unreachable_mirrored_host_is_best_effort() {
 
 #[test]
 fn m_control_transitive_glob_match_from_reached_host_stays_fatal() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let project = tmp.path();
     scaffold_project_dirs(project);
@@ -1303,7 +1241,7 @@ fn m_control_transitive_glob_match_from_reached_host_stays_fatal() {
     )
     .unwrap();
 
-    let input = base_input(project, esbuild, unrelated_exclude());
+    let input = base_input(project, unrelated_exclude());
     let error = bundle(input).expect_err(
         "a glob match enqueued by a genuinely REACHED file must still hard-fail \
          the build on broken/unsupported worker text — the fatal path must stay \
@@ -1394,10 +1332,6 @@ fn write_bare_package_consumer(root: &Path, cta_body: &str) -> (PathBuf, PathBuf
 #[cfg(unix)]
 #[test]
 fn n_bare_package_accepted_sibling_with_unexpanded_macro_fails_loudly() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     let (project, node_modules) = write_bare_package_consumer(
@@ -1406,7 +1340,7 @@ fn n_bare_package_accepted_sibling_with_unexpanded_macro_fails_loudly() {
          export const ctaButton = 'CTA_' + Object.keys(mods).length;\n",
     );
 
-    let mut input = base_input(&project, esbuild, Vec::new());
+    let mut input = base_input(&project, Vec::new());
     input.node_modules_dir = Some(node_modules);
     let error = bundle_with_session(
         input,
@@ -1447,16 +1381,12 @@ fn n_bare_package_accepted_sibling_with_unexpanded_macro_fails_loudly() {
 #[cfg(unix)]
 #[test]
 fn n_control_bare_package_accepted_sibling_without_macros_still_builds_clean() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
-        return;
-    };
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     let (project, node_modules) =
         write_bare_package_consumer(root, "export const ctaButton = 'CTA_SOURCE_MARKER';\n");
 
-    let mut input = base_input(&project, esbuild, Vec::new());
+    let mut input = base_input(&project, Vec::new());
     input.node_modules_dir = Some(node_modules);
     let output = bundle_with_session(
         input,

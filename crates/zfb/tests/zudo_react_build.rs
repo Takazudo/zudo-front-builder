@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 fn copy_dir(source: &Path, destination: &Path) {
     fs::create_dir_all(destination).unwrap();
@@ -22,10 +22,6 @@ fn copy_dir(source: &Path, destination: &Path) {
 
 #[test]
 fn ssr_basic_builds_through_owned_runtime() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[zudo_react_build] no esbuild binary available; skipping");
-        return;
-    };
     let temp = tempfile::tempdir().unwrap();
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/zudo-react-build/ssr-basic");
@@ -33,7 +29,6 @@ fn ssr_basic_builds_through_owned_runtime() {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(temp.path())
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn zfb build");
     assert!(
@@ -60,7 +55,6 @@ fn ssr_basic_builds_through_owned_runtime() {
 
 #[test]
 fn markdown_page_and_mdx_collection_render_through_owned_runtime() {
-    let esbuild = locate_esbuild().expect("real MD/MDX build requires esbuild");
     let temp = tempfile::tempdir().unwrap();
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/zudo-react-build/md-mdx");
@@ -68,7 +62,6 @@ fn markdown_page_and_mdx_collection_render_through_owned_runtime() {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(temp.path())
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn zfb build");
     assert!(
@@ -117,7 +110,6 @@ fn markdown_page_and_mdx_collection_render_through_owned_runtime() {
 
 #[test]
 fn owned_island_build_emits_matching_wrappers_and_bundle() {
-    let esbuild = locate_esbuild().expect("owned island build requires esbuild");
     let temp = tempfile::tempdir().unwrap();
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/zudo-react-build/island");
@@ -125,7 +117,6 @@ fn owned_island_build_emits_matching_wrappers_and_bundle() {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(temp.path())
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn zfb build");
     assert!(
@@ -202,7 +193,6 @@ fn owned_island_build_emits_matching_wrappers_and_bundle() {
 
 #[test]
 fn owned_island_build_rejects_conflicting_display_name() {
-    let esbuild = locate_esbuild().expect("owned island build requires esbuild");
     let temp = tempfile::tempdir().unwrap();
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/zudo-react-build/island");
@@ -213,7 +203,6 @@ fn owned_island_build_rejects_conflicting_display_name() {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(temp.path())
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn zfb build");
     assert!(
@@ -234,7 +223,6 @@ fn owned_island_build_rejects_conflicting_display_name() {
 /// Build-only (no preceding `zfb check`) run of the `diagnostics` fixture after
 /// `edit` rewrites it. Returns the CLI's combined output of the failed build.
 fn failed_diagnostics_build(edit: impl FnOnce(&Path)) -> String {
-    let esbuild = locate_esbuild().expect("render diagnostic build requires esbuild");
     let temp = tempfile::tempdir().unwrap();
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/zudo-react-build/diagnostics");
@@ -243,7 +231,6 @@ fn failed_diagnostics_build(edit: impl FnOnce(&Path)) -> String {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(temp.path())
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn zfb build");
     let text = format!(

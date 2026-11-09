@@ -108,7 +108,6 @@ use std::fs;
 use std::path::Path;
 
 use zfb_build::{bundle_with_session, BundleMode, BundlerInput, ShadowSession};
-use zfb_test_utils::locate_esbuild;
 
 fn write(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
@@ -205,11 +204,7 @@ fn write_consumer_entry(root: &Path) {
     );
 }
 
-fn base_input(
-    project: &Path,
-    esbuild: std::path::PathBuf,
-    node_modules: std::path::PathBuf,
-) -> BundlerInput {
+fn base_input(project: &Path, node_modules: std::path::PathBuf) -> BundlerInput {
     let mut input = BundlerInput::for_project(
         project.to_path_buf(),
         BundleMode::Production,
@@ -221,7 +216,6 @@ fn base_input(
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
-    input.esbuild_binary = Some(esbuild);
     input.node_modules_dir = Some(node_modules);
     input
 }
@@ -252,21 +246,14 @@ fn base_input(
 /// below; this test only records that the build no longer succeeds, without
 /// inspecting the diagnostic.
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored"]
 fn real_copy_staging_under_active_bundle_exclude_stages_a_real_copy_and_arms_eligibility() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_root_workspace_stage_escape_audit_disarm_pin] no esbuild binary; skipping."
-        );
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
     write_root_workspace(root);
     let node_modules = write_undeclared_child_package(root);
     write_consumer_entry(root);
 
-    let mut input = base_input(root, esbuild, node_modules);
+    let mut input = base_input(root, node_modules);
     // Non-empty but non-matching: only the "exclusions active" branch matters
     // here, not what it excludes.
     input.bundle_exclude = vec!["**/*.neverMatchesAnything".to_string()];
@@ -337,26 +324,17 @@ fn node_modules_child_dir(node_modules: &Path) -> std::path::PathBuf {
 /// surfaced the separate classification gap #2127 (see this file's header
 /// for both halves). Retagged to `#2127`, then flipped by #2127's
 /// `metafile_deps.rs` fix and — per epic #2078's corrected flip protocol —
-/// tagged with the ordinary `env-gate: esbuild` reason rather than having its
-/// `#[ignore]` deleted: this binary needs a staged esbuild, so deleting the
-/// attribute would drop it out of the `-- --ignored` lanes that run it
-/// entirely. `health.yml`'s matching `--skip` was removed in the same commit.
+/// tagged with the ordinary `env-gate: esbuild` reason. #4635 removed esbuild,
+/// so the test now runs un-ignored in the ordinary nextest lane.
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored"]
 fn real_copy_staging_under_active_bundle_exclude_rejects_the_undeclared_escape() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_root_workspace_stage_escape_audit_disarm_pin] no esbuild binary; skipping."
-        );
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
     write_root_workspace(root);
     let node_modules = write_undeclared_child_package(root);
     write_consumer_entry(root);
 
-    let mut input = base_input(root, esbuild, node_modules);
+    let mut input = base_input(root, node_modules);
     input.bundle_exclude = vec!["**/*.neverMatchesAnything".to_string()];
 
     let mut session = ShadowSession::new(root).expect("shadow session");
@@ -396,21 +374,14 @@ fn real_copy_staging_under_active_bundle_exclude_rejects_the_undeclared_escape()
 /// `metafile_deps.rs`'s
 /// `stage_escape_allows_consume_from_source_sibling_staged_as_a_real_copy`.
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored"]
 fn real_copy_staging_under_active_bundle_exclude_accepts_the_declared_sibling() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_root_workspace_stage_escape_audit_disarm_pin] no esbuild binary; skipping."
-        );
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
     write_root_workspace(root);
     let node_modules = write_declared_child_package(root);
     write_consumer_entry(root);
 
-    let mut input = base_input(root, esbuild, node_modules);
+    let mut input = base_input(root, node_modules);
     input.bundle_exclude = vec!["**/*.neverMatchesAnything".to_string()];
 
     let mut session = ShadowSession::new(root).expect("shadow session");
@@ -450,22 +421,15 @@ fn real_copy_staging_under_active_bundle_exclude_accepts_the_declared_sibling() 
 /// become true at a root-claimed workspace (see header). Not a bug pin, no
 /// RED twin: there is nothing for #2087 to fix here.
 #[test]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored"]
 fn empty_exclude_workspace_package_exact_staging_does_not_disarm_the_audit_at_root_claimed_workspace(
 ) {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_root_workspace_stage_escape_audit_disarm_pin] no esbuild binary; skipping."
-        );
-        return;
-    };
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
     write_root_workspace(root);
     let node_modules = write_undeclared_child_package(root);
     write_consumer_entry(root);
 
-    let mut input = base_input(root, esbuild, node_modules.clone());
+    let mut input = base_input(root, node_modules.clone());
     // Empty `bundle.exclude` (the default) — the whole point of this
     // negative control. Force the workspace package into
     // `exact_target_staging_dirs` via an unconditional plugin alias, the one

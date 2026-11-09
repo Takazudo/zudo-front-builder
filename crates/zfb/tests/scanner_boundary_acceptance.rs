@@ -31,7 +31,7 @@ mod e2e_platform;
 use e2e_platform::npm_program;
 use process_guard::ProcessTreeGuard;
 use serde_json::json;
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 const EXPECTED_MARKERS: &[&str] = &[
     "AliasCounter",
@@ -193,11 +193,10 @@ fn install_packed_widgets(root: &Path) -> PathBuf {
     archive
 }
 
-fn run_build(root: &Path, esbuild: &Path) -> Output {
+fn run_build(root: &Path) -> Output {
     Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn production zfb build")
 }
@@ -207,11 +206,10 @@ const DIAG: &str = "[#4499-diag]";
 
 /// `run_build` with the off-by-default `ZFB_DEBUG_ISLANDS_METAFILE_DIR` knob,
 /// which keeps each shared islands metafile so module ids can be printed.
-fn run_build_keeping_islands_metafile(root: &Path, esbuild: &Path, metafiles: &Path) -> Output {
+fn run_build_keeping_islands_metafile(root: &Path, metafiles: &Path) -> Output {
     Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .env("ZFB_DEBUG_ISLANDS_METAFILE_DIR", metafiles)
         .output()
         .expect("spawn production zfb build")
@@ -527,13 +525,12 @@ impl DevSession {
     }
 }
 
-fn spawn_dev_with_timing(root: &Path, esbuild: &Path, timing: bool) -> DevSession {
-    spawn_dev_with_forced_created(root, esbuild, timing, None, false)
+fn spawn_dev_with_timing(root: &Path, timing: bool) -> DevSession {
+    spawn_dev_with_forced_created(root, timing, None, false)
 }
 
 fn spawn_dev_with_forced_created(
     root: &Path,
-    esbuild: &Path,
     timing: bool,
     force_created_page: Option<&Path>,
     deferred: bool,
@@ -548,7 +545,6 @@ fn spawn_dev_with_forced_created(
         .arg("--port")
         .arg("0")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         // Keep this integration assertion focused on the scanner tick: lazy
         // rendering intentionally defers route work until another request,
         // while this test needs each edit to complete (or fail) before it
@@ -836,9 +832,6 @@ async fn wait_for_dev_page_marker_at(
 #[test]
 fn production_and_packed_consumers_validate_exact_boundary_registry() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let esbuild = locate_esbuild().expect(
-        "scanner boundary acceptance requires the pinned esbuild binary; stage it in the test environment",
-    );
     assert!(
         node_available("node"),
         "scanner boundary acceptance requires Node.js"
@@ -860,7 +853,7 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
     materialize_embedded_node_modules(&positive);
     write_factory_override_control_page(&positive);
     let diag_metafiles = scratch.path().join("diag-islands-metafiles");
-    let built = run_build_keeping_islands_metafile(&positive, &esbuild, &diag_metafiles);
+    let built = run_build_keeping_islands_metafile(&positive, &diag_metafiles);
     assert!(
         built.status.success(),
         "positive packed-consumer production build failed\n{}",
@@ -1085,7 +1078,7 @@ export default function Home() {
         "pages/keep.client.ts",
         "console.log(\"ZERO_BOUNDARY_CLIENT_SCRIPT\");\n",
     );
-    let built = run_build(&helper_only, &esbuild);
+    let built = run_build(&helper_only);
     assert!(
         built.status.success(),
         "reachable helper-only client module must be accepted without island targets\n{}",
@@ -1154,7 +1147,7 @@ export default function Home() {
 }
 "#,
     );
-    let rejected = run_build(&local_collision, &esbuild);
+    let rejected = run_build(&local_collision);
     assert!(
         !rejected.status.success(),
         "two local same-name targets must fail the production build\n{}",
@@ -1193,7 +1186,7 @@ export default function Home() {
 }
 "#,
     );
-    let rejected = run_build(&package_collision, &esbuild);
+    let rejected = run_build(&package_collision);
     assert!(
         !rejected.status.success(),
         "same-package same-name targets must fail despite tarball ownership\n{}",
@@ -1239,7 +1232,7 @@ export default function Home() {
 }
 "#,
     );
-    let rejected = run_build(&ambiguous_star, &esbuild);
+    let rejected = run_build(&ambiguous_star);
     assert!(
         !rejected.status.success(),
         "demanded ambiguous star export must fail production build\n{}",
@@ -1278,7 +1271,7 @@ export default function Home() {
 }
 "#,
     );
-    let rejected = run_build(&source_dist, &esbuild);
+    let rejected = run_build(&source_dist);
     assert!(
         !rejected.status.success(),
         "independent source and compiled copies must not deduplicate by bytes\n{}",
@@ -1322,7 +1315,7 @@ export default function Home() {
 }
 "#,
     );
-    let rejected = run_build(&conflicting_display_name, &esbuild);
+    let rejected = run_build(&conflicting_display_name);
     assert!(
         !rejected.status.success(),
         "a conflicting displayName must fail the real production build\n{}",
@@ -1381,7 +1374,7 @@ export default function Home() {
 }
 "#,
     );
-    let rejected = run_build(&opaque_map_wrapper, &esbuild);
+    let rejected = run_build(&opaque_map_wrapper);
     assert!(
         !rejected.status.success(),
         "a direct Island-returning wrapper in a components object must remain rejected\n{}",
@@ -1425,7 +1418,7 @@ export default function Home() {
 }
 "#,
     );
-    let rejected = run_build(&dynamic, &esbuild);
+    let rejected = run_build(&dynamic);
     assert!(
         !rejected.status.success(),
         "dynamic child selection must fail the production build\n{}",
@@ -1525,7 +1518,7 @@ export default function Home() {{
 "#
             ),
         );
-        let rejected = run_build(&rejected_root, &esbuild);
+        let rejected = run_build(&rejected_root);
         assert!(
             !rejected.status.success(),
             "{name} must fail the production build\n{}",
@@ -1587,7 +1580,7 @@ export default function Home() {{ return <html><body><p>map</p></body></html>; }
 "#
             ),
         );
-        let rejected = run_build(&rejected_root, &esbuild);
+        let rejected = run_build(&rejected_root);
         assert!(!rejected.status.success(), "{name} must fail");
         assert!(
             combined_output(&rejected).contains(reason),
@@ -1612,7 +1605,7 @@ import { FactoryCounter, PropsReceiver } from "../components/client";
 export default function Home() { return <html><body><Island><PropsReceiver component={FactoryCounter} /></Island></body></html>; }
 "#,
     );
-    let rejected = run_build(&json_function, &esbuild);
+    let rejected = run_build(&json_function);
     assert!(
         !rejected.status.success(),
         "function-valued JSON prop must fail SSR"
@@ -1707,9 +1700,6 @@ fn assert_recovery_failures_read_invalid_source(recovery_stderr: &str, root: &Pa
 
 async fn invalid_registration_recovery(timing: bool) {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let esbuild = locate_esbuild().expect(
-        "scanner dev acceptance requires the pinned esbuild binary; stage it in the test environment",
-    );
     let project = tempfile::tempdir().expect("dev acceptance fixture");
     let root = project
         .path()
@@ -1748,7 +1738,7 @@ export default function Home() {
 "#,
     );
 
-    let mut session = spawn_dev_with_timing(&root, &esbuild, timing);
+    let mut session = spawn_dev_with_timing(&root, timing);
     let port = wait_for_dev_ready(&mut session).await;
     let initial_html = wait_for_dev_page_marker(&mut session, port, "StableCounter").await;
     assert!(
@@ -2005,7 +1995,6 @@ async fn dev_dynamic_page_forced_created_reexpands_and_prunes_routes() {
 
 async fn dynamic_page_route_rebuild(force_created: bool) {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let esbuild = locate_esbuild().expect("scanner dev acceptance requires pinned esbuild");
     let project = tempfile::tempdir().unwrap();
     let root = project.path().canonicalize().unwrap();
     make_minimal_project(&root);
@@ -2027,7 +2016,6 @@ async fn dynamic_page_route_rebuild(force_created: bool) {
     let forced_path = root.join(dynamic);
     let mut session = spawn_dev_with_forced_created(
         &root,
-        &esbuild,
         true,
         force_created.then_some(forced_path.as_path()),
         false,
@@ -2184,13 +2172,12 @@ async fn dynamic_page_route_rebuild(force_created: bool) {
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_deferred_boot_publishes_known_page_before_forced_created_tick() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
-    let esbuild = locate_esbuild().expect("scanner dev acceptance requires pinned esbuild");
     let project = tempfile::tempdir().unwrap();
     let root = project.path().canonicalize().unwrap();
     make_minimal_project(&root);
     let page = root.join("pages/index.tsx");
     write(&root, "pages/index.tsx", "export default function Home() { return <html><body>deferred boot initial</body></html>; }\n");
-    let mut session = spawn_dev_with_forced_created(&root, &esbuild, true, Some(&page), true);
+    let mut session = spawn_dev_with_forced_created(&root, true, Some(&page), true);
     let port = wait_for_dev_ready(&mut session).await;
     wait_for_dev_page_marker(&mut session, port, "deferred boot initial").await;
     assert!(

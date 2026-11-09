@@ -21,7 +21,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 /// Wall-clock deadline for the `zfb build` subprocess. Generous enough for
 /// a cold V8 + esbuild boot, far under the nextest `e2e-heavy` group's 600s
@@ -138,16 +138,6 @@ export default function Page() {
 /// warning fires for any of the three newly accepted extensions.
 #[test]
 fn widened_script_page_extensions_render_end_to_end_via_real_build() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[page_extension_route_table_build] no esbuild binary available; \
-             set ZFB_ESBUILD_BIN, place the binary at \
-             crates/zfb/binaries/esbuild/esbuild, or install esbuild on PATH \
-             to enable this test. Skipping."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir for project root");
     let root = tmp.path();
     write_project(root);
@@ -163,7 +153,6 @@ fn widened_script_page_extensions_render_end_to_end_via_real_build() {
     let mut cmd = Command::new(zfb_binary!());
     cmd.arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     #[cfg(unix)]

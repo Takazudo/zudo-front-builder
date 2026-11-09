@@ -17,15 +17,11 @@
 //!
 //! 1. The build script embeds the owned `@takazudo/zfb` source and Hono.
 //! 2. The runtime extraction lays them out as `node_modules/<pkg>/` entries
-//!    that esbuild can resolve.
-//! 3. esbuild can bundle the owned runtime and Hono with nothing marked
+//!    that the bundler can resolve.
+//! 3. The bundler can bundle the owned runtime and Hono with nothing marked
 //!    external and no consumer `node_modules/` on disk.
 //!
-//! ## Skipping
-//!
-//! The test gates on the same esbuild discovery path as the rest of the
-//! bundler tests. When no esbuild binary is available it prints a skip note
-//! and returns early.
+//! The native bundler is built in, so these tests always run.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -34,7 +30,7 @@ use std::process::Command;
 
 use zfb::render_pipeline::embedded_node_modules;
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::zfb_binary;
 
 #[path = "../src/embedded_node_modules_cache.rs"]
 #[allow(dead_code)]
@@ -46,13 +42,8 @@ const WORKER_RESULT_ENV: &str = "ZFB_FRAMEWORK_CACHE_WORKER_RESULT";
 const WORKER_PROJECT_PARENT_ENV: &str = "ZFB_FRAMEWORK_CACHE_WORKER_PROJECT_PARENT";
 
 #[test]
-fn owned_subpaths_resolve_from_embedded_tree_in_both_esbuild_modes() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[framework_packages_no_pnpm] no esbuild binary available; skipping owned subpaths"
-        );
-        return;
-    };
+fn owned_subpaths_resolve_from_embedded_tree_in_both_bundle_modes() {
+    use zfb_bundler::{BundleRequest, Jsx, JsxRuntime, OutputLayout, Platform};
     let project = tempfile::tempdir().unwrap();
     let (lease, embedded) = embedded_node_modules().expect("extract embedded packages");
     let source = r#"
@@ -65,47 +56,32 @@ fn owned_subpaths_resolve_from_embedded_tree_in_both_esbuild_modes() {
       export const transformed = <div>owned JSX</div>;
     "#;
     fs::write(project.path().join("entry.tsx"), source).unwrap();
-    for (mode, flags) in [
-        ("ssr", "--platform=neutral"),
-        ("islands", "--platform=browser"),
-    ] {
-        let output = Command::new(&esbuild)
-            .current_dir(project.path())
-            .env("NODE_PATH", &embedded)
-            .arg("entry.tsx")
-            .arg("--bundle")
-            .arg(flags)
-            .arg("--format=esm")
-            .arg("--jsx=automatic")
-            .arg("--jsx-import-source=@takazudo/zfb/zudo-react")
-            .arg("--outfile=out.js")
-            .output()
-            .expect("run esbuild");
-        assert!(
-            output.status.success(),
-            "{mode} embedded resolution failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+    for (mode, platform) in [("ssr", Platform::Neutral), ("islands", Platform::Browser)] {
+        let out = format!("{mode}.js");
+        let mut request = BundleRequest::new(
+            project.path(),
+            "entry.tsx",
+            OutputLayout::file(&out),
+            platform,
         );
-        assert!(project.path().join("out.js").exists());
+        request.jsx = Jsx {
+            runtime: Some(JsxRuntime::Automatic),
+            import_source: Some("@takazudo/zfb/zudo-react".into()),
+        };
+        request.resolve.extra_module_dirs.push(embedded.clone());
+        if let Err(error) = zfb_bundler::bundle(&request) {
+            panic!("{mode} embedded resolution failed: {error:#}");
+        }
+        assert!(project.path().join(&out).exists());
     }
     drop(lease);
 }
 
 #[test]
 fn embedded_extraction_resolves_owned_runtime_and_hono_with_no_consumer_node_modules() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[framework_packages_no_pnpm] no esbuild binary available; \
-             set ZFB_ESBUILD_BIN, place the binary at \
-             crates/zfb/binaries/esbuild/esbuild, or install esbuild on PATH \
-             to enable this test. Skipping."
-        );
-        return;
-    };
-
     // Step 1 — synthesize a minimal consumer project on disk with NO
     // node_modules/ tree at all. The page imports the owned runtime and Hono
-    // directly so esbuild MUST resolve them from the embedded extraction.
+    // directly so the bundler MUST resolve them from the embedded extraction.
     let project = match std::env::var_os(WORKER_PROJECT_PARENT_ENV) {
         Some(parent) => tempfile::Builder::new()
             .prefix("project-")
@@ -126,7 +102,7 @@ fn embedded_extraction_resolves_owned_runtime_and_hono_with_no_consumer_node_mod
     fs::write(
         root.join("pages/index.tsx"),
         // Import the owned JSX runtime and SSR entry plus Hono. This makes
-        // esbuild resolve both embedded package roots directly.
+        // the bundler resolve both embedded package roots directly.
         r#"
             import { jsx } from "@takazudo/zfb/zudo-react/jsx-runtime";
             import { renderToString } from "@takazudo/zfb/zudo-react/server";
@@ -187,12 +163,11 @@ fn embedded_extraction_resolves_owned_runtime_and_hono_with_no_consumer_node_mod
         outdir: root.join("dist"),
         mode: BundleMode::Production,
         minify: false,
-        esbuild_binary: Some(esbuild.clone()),
-        mock_subprocess_output: None,
+        mock_bundle_output: None,
         content_snapshot_json: None,
         node_modules_dir: Some(nm_path.clone()),
         // Vendored mode: the simulated project has NO node_modules — the
-        // bundler injected the embedded @takazudo extraction. esbuild
+        // bundler injected the embedded @takazudo extraction. The bundler
         // must stay anchored at `<shadow>/node_modules/<pkg>` so it
         // finds the injected vendor tree (and not walk up to a
         // node_modules-less project root). Mirrors the production
@@ -225,7 +200,7 @@ fn embedded_extraction_resolves_owned_runtime_and_hono_with_no_consumer_node_mod
     );
 
     // The bundle file must exist and must contain at least a hint of every
-    // imported package's runtime code, proving that esbuild really did
+    // imported package's runtime code, proving that the bundler really did
     // pull each module in from the embedded extraction (rather than, say,
     // tree-shaking everything away). We check for a couple of distinctive
     // identifiers from each module instead of insisting on exact strings —
@@ -286,10 +261,6 @@ fn embedded_extraction_resolves_owned_runtime_and_hono_with_no_consumer_node_mod
 
 #[test]
 fn cache_flag_preserves_build_bytes_and_default_stderr_across_processes() {
-    if locate_esbuild().is_none() {
-        eprintln!("[framework_packages_no_pnpm] no esbuild binary available; skipping");
-        return;
-    }
     let owner = tempfile::tempdir().expect("cache wiring test root");
     let cache_parent = owner.path().join("cache-parent");
     let project_parent = owner.path().join("projects");

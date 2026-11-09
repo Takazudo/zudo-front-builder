@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{zfb_binary, CrossBinaryE2eLock};
 
 const WARNING_PREFIX: &str = "zfb warn: ZB005 components/search-box.tsx:";
 const ADVICE: &str =
@@ -181,27 +181,23 @@ fn combined(output: &Output) -> String {
     )
 }
 
-fn build(root: &Path, esbuild: &Path) -> Output {
+fn build(root: &Path) -> Output {
     Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn zfb build")
 }
 
-fn tools() -> Option<PathBuf> {
+fn tools() -> bool {
     let npm = Command::new("npm")
         .arg("--version")
         .output()
         .is_ok_and(|output| output.status.success());
-    match (locate_esbuild(), npm) {
-        (Some(esbuild), true) => Some(esbuild),
-        _ => {
-            eprintln!("[foreign_pragma_acceptance] esbuild or npm unavailable; skipping");
-            None
-        }
+    if !npm {
+        eprintln!("[foreign_pragma_acceptance] npm unavailable; skipping");
     }
+    npm
 }
 
 /// The pragma sits on line 3, indented, so a reported position proves the
@@ -250,10 +246,12 @@ fn check_skip_tsc_reports_authored_components_without_failing() {
 #[test]
 fn case_a_missing_preact_warns_before_the_unresolved_runtime() {
     let _lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = tools() else { return };
+    if !tools() {
+        return;
+    }
     let (_temp, root) = consumer(false);
     add_preact_pragma(&root);
-    let output = build(&root, &esbuild);
+    let output = build(&root);
     let text = combined(&output);
     assert!(!output.status.success(), "{text}");
     let warning = text
@@ -273,10 +271,12 @@ fn case_a_missing_preact_warns_before_the_unresolved_runtime() {
 #[test]
 fn case_b_installed_preact_warns_before_the_render_failure() {
     let _lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = tools() else { return };
+    if !tools() {
+        return;
+    }
     let (_temp, root) = consumer(true);
     add_preact_pragma(&root);
-    let output = build(&root, &esbuild);
+    let output = build(&root);
     let text = combined(&output);
     assert!(!output.status.success(), "{text}");
     let warning = text
@@ -291,7 +291,9 @@ fn case_b_installed_preact_warns_before_the_render_failure() {
 #[test]
 fn case_c_owned_pragma_renders_without_a_warning() {
     let _lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = tools() else { return };
+    if !tools() {
+        return;
+    }
     let (_temp, root) = consumer(true);
     replace_in(
         &root,
@@ -299,7 +301,7 @@ fn case_c_owned_pragma_renders_without_a_warning() {
         "export function SearchBox",
         "/** @jsxImportSource @takazudo/zfb/zudo-react */\nexport function SearchBox",
     );
-    let output = build(&root, &esbuild);
+    let output = build(&root);
     let text = combined(&output);
     assert!(output.status.success(), "{text}");
     assert!(!text.contains("@jsxImportSource"), "{text}");
@@ -310,7 +312,9 @@ fn case_c_owned_pragma_renders_without_a_warning() {
 #[test]
 fn case_d_lazy_preact_widget_behind_a_dom_host_builds_without_a_warning() {
     let _lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = tools() else { return };
+    if !tools() {
+        return;
+    }
     let (_temp, root) = consumer(true);
     fs::write(
         root.join("pages/index.tsx"),
@@ -336,7 +340,7 @@ export default function Home() {
 "#,
     )
     .unwrap();
-    let output = build(&root, &esbuild);
+    let output = build(&root);
     let text = combined(&output);
     assert!(output.status.success(), "{text}");
     assert!(!text.contains("@jsxImportSource"), "{text}");
@@ -417,7 +421,9 @@ impl Drop for DevServer {
 #[test]
 fn dev_reports_a_pragma_introduced_by_an_edit() {
     let _lock = CrossBinaryE2eLock::acquire();
-    let Some(esbuild) = tools() else { return };
+    if !tools() {
+        return;
+    }
     let (_temp, root) = consumer(false);
     let stdout = root.join(".zfb-dev-stdout.log");
     let stderr = root.join(".zfb-dev-stderr.log");
@@ -425,7 +431,6 @@ fn dev_reports_a_pragma_introduced_by_an_edit() {
     command
         .args(["dev", "--port", "0"])
         .current_dir(&root)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
         .env("ZFB_DEV_EAGER", "1")
         .env("ZFB_DEV_BOOT_LAZY", "0")
         .stdout(Stdio::from(fs::File::create(&stdout).unwrap()))

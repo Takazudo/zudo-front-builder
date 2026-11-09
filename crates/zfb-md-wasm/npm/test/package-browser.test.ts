@@ -16,6 +16,7 @@ import { afterAll, describe, expect, it } from "vite-plus/test";
 import { resolvePackageTsc } from "../../../../scripts/package-tsc.mjs";
 import { assertPackedArchive } from "../scripts/assert-packed.mjs";
 import { createWasmApi } from "../src/runtime.js";
+import { bundle, fileResourcePlugin } from "./support/rolldown-harness.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = mkdtempSync(join(tmpdir(), "zfb-md-wasm-package-"));
@@ -70,8 +71,17 @@ function copyPackedConsumerFixtures(fixtureRoot: string): void {
   }
 }
 
-function esbuildBin(): string {
-  return resolve(packageRoot, "node_modules", ".bin", "esbuild");
+// zfb's islands resource contract: glue and wasm become flat, hashed asset files.
+async function bundleBrowserEntry(input: string, outDir: string, cwd: string): Promise<string[]> {
+  const { inputs } = await bundle({
+    input,
+    outDir,
+    cwd,
+    platform: "browser",
+    assetFileNames: "islands-resource-[name]-[hash][extname]",
+    plugins: [fileResourcePlugin([".zfb-resource.mjs", ".wasm"])],
+  });
+  return inputs.map((path: string) => path.replaceAll("\\", "/"));
 }
 
 function packedPackage(): string {
@@ -196,84 +206,69 @@ describe("packed browser conditional entry", () => {
       exportSource:
         "export { init, parseToAst, toMdastRoot, version } from '@takazudo/zfb-md-wasm/parse';",
     },
-  ])("selects only the $entry browser entry and its own resource pair in esbuild", (fixture) => {
-    const fixtureRoot = unpackForConsumer(packedPackage());
-    const entryPath = join(fixtureRoot, `${fixture.resourceDir}-entry.mjs`);
-    const outDir = join(fixtureRoot, `${fixture.resourceDir}-out`);
-    const metafilePath = join(outDir, "meta.json");
-    writeFileSync(entryPath, fixture.exportSource);
+  ])(
+    "selects only the $entry browser entry and its own resource pair in Rolldown",
+    async (fixture) => {
+      const fixtureRoot = unpackForConsumer(packedPackage());
+      const entryPath = join(fixtureRoot, `${fixture.resourceDir}-entry.mjs`);
+      const outDir = join(fixtureRoot, `${fixture.resourceDir}-out`);
+      writeFileSync(entryPath, fixture.exportSource);
 
-    execFileSync(
-      esbuildBin(),
-      [
-        entryPath,
-        "--bundle",
-        "--format=esm",
-        "--platform=browser",
-        "--outdir=" + outDir,
-        "--metafile=" + metafilePath,
-        "--loader:.zfb-resource.mjs=file",
-        "--loader:.wasm=file",
-        "--asset-names=islands-resource-[name]-[hash]",
-      ],
-      { cwd: fixtureRoot, stdio: "pipe" },
-    );
-
-    const metafile = JSON.parse(readFileSync(metafilePath, "utf8")) as {
-      inputs: Record<string, unknown>;
-    };
-    const inputNames = Object.keys(metafile.inputs);
-    const normalizedInputNames = inputNames.map(withoutImportQuery);
-    expect(normalizedInputNames.some((path) => path.endsWith(`/dist/${fixture.browserFile}`))).toBe(
-      true,
-    );
-    expect(
-      normalizedInputNames.some((path) =>
-        path.endsWith(
-          `/dist/${fixture.entry === "." ? "index.js" : fixture.entry.slice(2) + ".js"}`,
+      const inputNames = await bundleBrowserEntry(entryPath, outDir, fixtureRoot);
+      const normalizedInputNames = inputNames.map(withoutImportQuery);
+      expect(
+        normalizedInputNames.some((path) => path.endsWith(`/dist/${fixture.browserFile}`)),
+      ).toBe(true);
+      expect(
+        normalizedInputNames.some((path) =>
+          path.endsWith(
+            `/dist/${fixture.entry === "." ? "index.js" : fixture.entry.slice(2) + ".js"}`,
+          ),
         ),
-      ),
-    ).toBe(false);
+      ).toBe(false);
 
-    const resourceInputs = normalizedInputNames.filter(
-      (path) =>
-        path.includes(`/dist/${fixture.resourceDir}/`) &&
-        path.endsWith(fixture.resourceStem + "_bg.wasm"),
-    );
-    const glueInputs = normalizedInputNames.filter(
-      (path) =>
-        path.includes(`/dist/${fixture.resourceDir}/`) &&
-        path.endsWith(fixture.resourceStem + "_glue.zfb-resource.mjs"),
-    );
-    expect(resourceInputs).toHaveLength(1);
-    expect(glueInputs).toHaveLength(1);
-    expect(
-      new Set(
-        resourceInputs.map((path) => path.slice(path.indexOf(`/dist/${fixture.resourceDir}/`))),
-      ),
-    ).toEqual(new Set([`/dist/${fixture.resourceDir}/${fixture.resourceStem}_bg.wasm`]));
-    expect(
-      new Set(glueInputs.map((path) => path.slice(path.indexOf(`/dist/${fixture.resourceDir}/`)))),
-    ).toEqual(
-      new Set([`/dist/${fixture.resourceDir}/${fixture.resourceStem}_glue.zfb-resource.mjs`]),
-    );
-    expect(
-      normalizedInputNames.filter(
+      const resourceInputs = normalizedInputNames.filter(
         (path) =>
-          /dist\/wasm(?:-[^/]+)?\/zfb_md_wasm.*\.(?:mjs|wasm)$/.test(path) &&
-          !path.includes(`/dist/${fixture.resourceDir}/`),
-      ),
-    ).toHaveLength(0);
+          path.includes(`/dist/${fixture.resourceDir}/`) &&
+          path.endsWith(fixture.resourceStem + "_bg.wasm"),
+      );
+      const glueInputs = normalizedInputNames.filter(
+        (path) =>
+          path.includes(`/dist/${fixture.resourceDir}/`) &&
+          path.endsWith(fixture.resourceStem + "_glue.zfb-resource.mjs"),
+      );
+      expect(resourceInputs).toHaveLength(1);
+      expect(glueInputs).toHaveLength(1);
+      expect(
+        new Set(
+          resourceInputs.map((path) => path.slice(path.indexOf(`/dist/${fixture.resourceDir}/`))),
+        ),
+      ).toEqual(new Set([`/dist/${fixture.resourceDir}/${fixture.resourceStem}_bg.wasm`]));
+      expect(
+        new Set(
+          glueInputs.map((path) => path.slice(path.indexOf(`/dist/${fixture.resourceDir}/`))),
+        ),
+      ).toEqual(
+        new Set([`/dist/${fixture.resourceDir}/${fixture.resourceStem}_glue.zfb-resource.mjs`]),
+      );
+      expect(
+        normalizedInputNames.filter(
+          (path) =>
+            /dist\/wasm(?:-[^/]+)?\/zfb_md_wasm.*\.(?:mjs|wasm)$/.test(path) &&
+            !path.includes(`/dist/${fixture.resourceDir}/`),
+        ),
+      ).toHaveLength(0);
 
-    const outputFiles = readdirSync(outDir);
-    const resources = outputFiles.filter((name) => name.startsWith("islands-resource-"));
-    expect(resources).toHaveLength(2);
-    expect(resources.filter((name) => name.endsWith(".mjs"))).toHaveLength(1);
-    expect(resources.filter((name) => name.endsWith(".wasm"))).toHaveLength(1);
-    expect(resources.every((name) => name.includes(fixture.resourceStem))).toBe(true);
-  });
+      const outputFiles = readdirSync(outDir);
+      const resources = outputFiles.filter((name) => name.startsWith("islands-resource-"));
+      expect(resources).toHaveLength(2);
+      expect(resources.filter((name) => name.endsWith(".mjs"))).toHaveLength(1);
+      expect(resources.filter((name) => name.endsWith(".wasm"))).toHaveLength(1);
+      expect(resources.every((name) => name.includes(fixture.resourceStem))).toBe(true);
+    },
+  );
 
-  it("selects browser.js and keeps relative glue/wasm resources through generic esbuild", async () => {
+  it("selects browser.js and keeps relative glue/wasm resources through a generic Rolldown bundle", async () => {
     const archive = packedPackage();
     const fixtureRoot = unpackForConsumer(archive);
     const nodeConsumerPath = join(fixtureRoot, "node-consumer.mjs");
@@ -294,7 +289,6 @@ describe("packed browser conditional entry", () => {
 
     const entryPath = join(fixtureRoot, "entry.mjs");
     const outDir = join(fixtureRoot, "out");
-    const metafilePath = join(outDir, "meta.json");
     writeFileSync(
       entryPath,
       [
@@ -302,26 +296,7 @@ describe("packed browser conditional entry", () => {
       ].join("\n"),
     );
 
-    execFileSync(
-      esbuildBin(),
-      [
-        entryPath,
-        "--bundle",
-        "--format=esm",
-        "--platform=browser",
-        "--outdir=" + outDir,
-        "--metafile=" + metafilePath,
-        "--loader:.zfb-resource.mjs=file",
-        "--loader:.wasm=file",
-        "--asset-names=islands-resource-[name]-[hash]",
-      ],
-      { cwd: fixtureRoot, stdio: "pipe" },
-    );
-
-    const metafile = JSON.parse(readFileSync(metafilePath, "utf8")) as {
-      inputs: Record<string, unknown>;
-    };
-    const inputNames = Object.keys(metafile.inputs);
+    const inputNames = await bundleBrowserEntry(entryPath, outDir, fixtureRoot);
     expect(inputNames.some((path) => path.endsWith("/dist/browser.js"))).toBe(true);
     expect(inputNames.some((path) => path.endsWith("/dist/index.js"))).toBe(false);
 
@@ -398,7 +373,7 @@ describe("packed browser conditional entry", () => {
       expect(highlighted.diagnostics).toEqual([]);
 
       // parseToAst (zfb#1857) through the SAME bundled browser entry --
-      // proves the raw-mdast export survives the esbuild `file`-loader
+      // proves the raw-mdast export survives the bundler file-resource
       // resource graph and glue wiring exercised above, not just the
       // already-covered highlightCode path.
       const parsed = await bundled.parseToAst(":::note[Hi]\nBody :mark[here].\n:::\n", {

@@ -28,7 +28,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use zfb_build::{bundle, BundleMode, BundlerInput};
-use zfb_test_utils::locate_esbuild;
 
 /// Mirror the behaviour of `zfb/src/commands/build.rs::read_tsconfig_paths`:
 /// resolve each `compilerOptions.paths` target to an absolute path against
@@ -54,16 +53,6 @@ fn read_tsconfig_paths_absolute(
 
 #[test]
 fn workspace_package_resolves_at_alias_via_synthetic_tsconfig() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_workspace_pkg_alias] no esbuild binary available; \
-             set ZFB_ESBUILD_BIN, place the binary at \
-             crates/zfb/binaries/esbuild/esbuild, or install esbuild on PATH \
-             to enable this test. Skipping."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
 
@@ -154,7 +143,6 @@ fn workspace_package_resolves_at_alias_via_synthetic_tsconfig() {
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
-    input.esbuild_binary = Some(esbuild);
     // Mirror production wiring: `commands/build.rs::run` sets
     // `node_modules_dir = Some(<project_root>/node_modules)` whenever
     // the project has a node_modules directory. This is the toggle
@@ -206,14 +194,6 @@ fn workspace_package_resolves_at_alias_via_synthetic_tsconfig() {
 ///    raw `.module.css`, so the scoped class would be absent.
 #[test]
 fn workspace_pkg_alias_target_is_css_module_resolves_and_transforms() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_workspace_pkg_alias] no esbuild binary available; \
-             set ZFB_ESBUILD_BIN. Skipping."
-        );
-        return;
-    };
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
 
@@ -282,7 +262,6 @@ fn workspace_pkg_alias_target_is_css_module_resolves_and_transforms() {
         "@takazudo/zfb/zudo-react".into(),
         "@takazudo/zfb-runtime".into(),
     ];
-    input.esbuild_binary = Some(esbuild);
     input.node_modules_dir = Some(root.join("node_modules"));
 
     // The class map the CSS pipeline would produce, keyed on the ABSOLUTE
