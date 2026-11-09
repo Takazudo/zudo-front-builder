@@ -55,6 +55,16 @@ class Checks(unittest.TestCase):
             with self.assertRaises(m.Refusal):
                 m.junit_counts(f, 1, time.time_ns() + 1000000000)
 
+    def test_all_skipped_or_wrong_test_is_not_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / 'junit.xml'
+            f.write_text('<testsuites><testsuite><testcase name="wanted"><skipped/></testcase></testsuite></testsuites>')
+            with self.assertRaises(m.Refusal):
+                m.junit_counts(f, 1, 0)
+            f.write_text('<testsuites><testsuite><testcase name="other"/></testsuite></testsuites>')
+            with self.assertRaises(m.Refusal):
+                m.junit_counts(f, 1, 0, 'wanted')
+
     def test_wrong_architecture(self):
         with patch.object(m, 'output', return_value='Mach-O 64-bit executable arm64'):
             with self.assertRaises(m.Refusal):
@@ -64,8 +74,8 @@ class Checks(unittest.TestCase):
     def test_native_refusal_retains_receipt_and_existing_output_untouched(self):
         with tempfile.TemporaryDirectory() as d:
             out = Path(d) / 'evidence'
-            argv = ['runner', '--source-sha', 'a' * 40, '--output', str(out), '--expected-tests', '1', '--filter', 'all()']
-            with patch.object(sys, 'argv', argv), patch.object(m, 'output', return_value='/source'), patch.object(m.platform, 'system', return_value='Linux'), patch.dict(m.os.environ, {'HEAVY_GUARD_HELD': '1'}):
+            argv = ['runner', '--source-sha', 'a' * 40, '--output', str(out), '--expected-tests', '1', '--expected-test-name', 'the_test', '--qualification-root', d, '--filter', 'all()']
+            with patch.object(sys, 'argv', argv), patch.object(m, 'output', return_value='/source'), patch.object(m.platform, 'system', return_value='Linux'), patch.dict(m.os.environ, {'HEAVY_GUARD_HELD': '1', 'CARGO_TARGET_DIR': str(Path(d).resolve() / 'target')}):
                 self.assertEqual(m.main(), 2)
                 self.assertIn('Darwin required', (out / 'receipt.json').read_text())
                 before = (out / 'receipt.json').read_bytes()

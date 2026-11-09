@@ -70,19 +70,24 @@ def host_from_metadata(data, cargo):
 
 def warm(host, before, timeout=30):
     require(identity(host) == before, "host changed before warm")
+    started = time.time_ns()
     result = subprocess.run([str(host)], stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
     require(result.returncode == 64 and result.stdout == b"" and result.stderr ==
             b"compiler-worker-test-host: started without the private worker argument\n",
             f"unexpected warm result: exit {result.returncode}, {result.stderr!r}")
     require(identity(host) == before, "host changed during warm")
+    return {"exit": result.returncode, "stdout": result.stdout.decode(), "stderr": result.stderr.decode(), "started_ns": started, "elapsed_ns": time.time_ns() - started}
 
 
-def junit_counts(path, expected, since):
+def junit_counts(path, expected, since, expected_name=None):
     require(path.is_file() and not path.is_symlink(), "JUnit missing")
     require(path.stat().st_mtime_ns >= since, "stale JUnit")
     root = ET.parse(path).getroot()
     cases = list(root.iter("testcase"))
-    require(len(cases) == expected, f"expected {expected} cases, received {len(cases)}")
+    executed = [c for c in cases if c.find("skipped") is None]
+    require(len(executed) == expected, f"expected {expected} executed cases, received {len(executed)}")
+    require(expected_name is None or any(c.get("name") == expected_name for c in executed), "required test absent")
+    require(len(cases) >= expected, f"expected {expected} cases, received {len(cases)}")
     require(not any(list(c.iter("rerunFailure")) or list(c.iter("flakyFailure")) for c in cases), "retry evidence")
     return {"cases": len(cases), "failures": len(list(root.iter("failure"))),
             "errors": len(list(root.iter("error"))), "skipped": len(list(root.iter("skipped")))}
@@ -94,6 +99,8 @@ def main():
     p.add_argument("--source-sha", required=True)
     p.add_argument("--expected-tests", type=int, required=True)
     p.add_argument("--filter", required=True, help="nextest filter expression; always includes lifecycle in discovery")
+    p.add_argument("--qualification-root", type=Path, required=True, help="owned root containing the exclusive CARGO_TARGET_DIR")
+    p.add_argument("--expected-test-name", help="exact required JUnit testcase name (required for a one-test run)")
     p.add_argument("--workspace", action="store_true", help="discover full workspace instead of worker crate")
     a = p.parse_args()
     receipt = {"schemaVersion": 1, "execution": "not_started", "commands": [], "source": a.source_sha}
@@ -103,6 +110,11 @@ def main():
         root = Path(output(["git", "rev-parse", "--show-toplevel"])).resolve()
         require(not out.exists() and not out.resolve().is_relative_to(root), "output must be new and outside checkout")
         require(a.expected_tests > 0, "expected-tests must be positive")
+        require(a.expected_tests != 1 or a.expected_test_name, "one-test run requires expected-test-name")
+        target = Path(os.environ.get("CARGO_TARGET_DIR", ""))
+        require(target.is_absolute() and a.qualification_root.is_absolute(), "explicit absolute CARGO_TARGET_DIR and qualification-root required")
+        require(target.resolve().is_relative_to(a.qualification_root.resolve()) and target.resolve() != a.qualification_root.resolve(), "target must be inside owned qualification-root")
+        require(target.absolute() == target.resolve(), "symlink target path refused")
         out.mkdir(parents=True)
         created = True
         require(os.environ.get("HEAVY_GUARD_HELD") == "1", "run through heavy guard")
@@ -146,10 +158,12 @@ def main():
         report = out / "junit.xml"
         config.write_text('[profile.default.junit]\npath = ' + json.dumps(str(report)) + '\nstore-success-output = true\nstore-failure-output = true\n')
         receipt["commands"].append([str(host)])
-        warm(host, before)
+        receipt["warm"] = warm(host, before)
         receipt["before_run"] = identity(host)
         require(receipt["before_run"] == before, "host replaced after warm")
         argv = ["cargo", "nextest", "run", "--cargo-metadata", str(cargo_file), "--binaries-metadata", str(binaries_file), "--profile", "default", "--retries", "0", "--no-fail-fast", "--tool-config-file", "rosetta:" + str(config), "-E", a.filter]
+        require({str(f): identity(f) for f in test_paths} == test_identities, "test binaries changed before run")
+        argv = ["/usr/bin/arch", "-x86_64", "/bin/sh", "-c", 'translated=$(sysctl -n sysctl.proc_translated); printf "rosetta_launcher_proc_translated=%s\n" "$translated" >&2; test "$translated" = 1 || exit 125; exec "$@"', "rosetta-nextest", *argv]
         receipt["commands"].append(argv)
         receipt["execution"] = "started"
         since = time.time_ns()
@@ -159,7 +173,7 @@ def main():
         require({str(f): identity(f) for f in test_paths} == test_identities, "test binaries changed during run")
         receipt["after_run"] = identity(host)
         require(receipt["after_run"] == before, "host changed during run")
-        receipt["junit"] = junit_counts(report, a.expected_tests, since)
+        receipt["junit"] = junit_counts(report, a.expected_tests, since, a.expected_test_name)
         receipt["junit_sha256"] = sha(report)
         require(output(["git", "rev-parse", "HEAD"]) == a.source_sha and not output(["git", "status", "--porcelain=v1", "-uall"]), "source changed")
         receipt["execution"] = "captured"
@@ -168,7 +182,7 @@ def main():
     except (Refusal, OSError, KeyError, TypeError, ValueError, subprocess.SubprocessError, ET.ParseError) as e:
         receipt["error"] = str(e)
         print(str(e))
-        return 2
+        return receipt.get("child_exit") or 2
     finally:
         if created:
             (out / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")

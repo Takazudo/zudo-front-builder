@@ -170,7 +170,8 @@ folder. Use an exclusive `CARGO_TARGET_DIR` and command-scoped build parallelism
 ```sh
 bash "$HOME/.codex/scripts/heavy-guard.sh" -- python3 scripts/run-rosetta-nextest.py \
   --source-sha "$(git rev-parse HEAD)" --output /absolute/new/evidence-directory \
-  --expected-tests 1 \
+  --qualification-root /absolute/owned/qualification-root \
+  --expected-tests 1 --expected-test-name unconfirmed_shutdown_retains_the_private_dir \
   --filter 'package(zfb-compiler-worker) & binary(=lifecycle) & test(=unconfirmed_shutdown_retains_the_private_dir)'
 ```
 
