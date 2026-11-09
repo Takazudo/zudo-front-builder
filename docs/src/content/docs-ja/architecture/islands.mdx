@@ -164,11 +164,11 @@ export default function Header() {
 
 ### 共有バンドルの実測ベースライン
 
-共有バンドルのサイズは測定されており、CI で回帰を防いでいます。記録された調査（zfb 3.0.0）では、イベントのみの島を 1 つ持つページが約 50 KB（gzip で約 17 KB）の島の JavaScript を配信していました。現在の契約では、同じページの上限は raw 64,535 / gzip 22,195 バイトです。測定の詳細、ツールチェーンの固定、契約を変更する手順は、メンテナー向けに以下にまとめています。
+共有バンドルのサイズは測定されており、CI で回帰を防いでいます。記録された調査（zfb 3.0.0）では、イベントのみの島を 1 つ持つページが約 50 KB（gzip で約 17 KB）の島の JavaScript を配信していました。現在の契約では、同じページの上限は workspace・packed の両モードとも raw 66,691 / ビルド識別子を正規化した gzip 21,252 バイトです。測定の詳細、ツールチェーンの固定、契約を変更する手順は、メンテナー向けに以下にまとめています。
 
 <Details title="測定の詳細とサイズ契約">
 
-制御された v3 フィクスチャ調査では **JavaScript の削減は行われていません**。現在のバンドルを回帰検出用のベースラインとして記録しています。Darwin arm64 と Linux x64 で、ワークスペース解決と packed パッケージ解決の両方を使い、島なし、イベントのみ、scalar signal、Show/For、modelValue、ブログメニューとテーマ切り替え、JSON API、2 つの島を含むページの 8 ケースを実際のコンシューマーで測定しました。各プラットフォームの契約では raw と gzip の許容増加量を 0 にしています。
+制御された v3 フィクスチャ調査では **JavaScript の削減は行われていません**。当時のバンドルを回帰検出用のベースラインとして記録しています。Darwin arm64 と Linux x64 で、ワークスペース解決と packed パッケージ解決の両方を使い、島なし、イベントのみ、scalar signal、Show/For、modelValue、ブログメニューとテーマ切り替え、JSON API、2 つの島を含むページの 8 ケースを実際のコンシューマーで測定しました。以下は調査時の実際の raw / gzip 合計です。後述する現在の契約はビルド識別子を正規化した gzip を使い、raw と正規化 gzip の許容増加量を 0 にしています。
 
 | フィクスチャ | Darwin workspace raw / gzip | Darwin packed raw / gzip | Linux workspace raw / gzip | Linux packed raw / gzip |
 | --- | ---: | ---: | ---: | ---: |
@@ -185,9 +185,16 @@ export default function Header() {
 
 調査時は @takazudo/zfb 3.0.0、Node v24.14.0、zlib 1.3.1-e00f703、esbuild 0.25.12、lockfile の Hono 4.12.25 を固定しています。Darwin のベースラインソースは 897f288c013e24ff4fde01483a55d8a1945fc964 です。Linux x64 のプローブは GitHub Actions health run 36831966429 の PR merge ref afa523768b3de897859521e1bf940179191f50ab（PR head 99726c74a48df1a0658cd6d9f5c494d06d4f2d40）で行われ、Darwin の歴史的コミットでの再実行ではありません。Linux の raw 合計は Darwin と一致しましたが gzip 合計は異なり、実際に生成した islands JavaScript の全ファイルで SHA-256 が異なります。これはプラットフォームごとのサイズベースラインであり、プラットフォーム間のバイト一致や意味的同等性を示すものではありません。Linux の結果は固定ツールチェーンを使った x64 GitHub Actions の 1 回の実行に基づきます。他の Linux アーキテクチャや将来のツールチェーンについては確認していません。
 
-現在の契約は調査時から更新されています。どちらも調査時と同じ Node・zlib・Hono のバージョンを使います。Darwin arm64 の契約 `research/v3-island-size/decision.json` は @takazudo/zfb 5.2.0 を固定し、esbuild を使わない生成系に向けた再固定がまだ行われていないため、esbuild 0.25.12 を記録したままです。Linux x64 の契約 `decision-linux-x64.json` は 5.2.2 を固定し、esbuild の代わりに組み込みバンドラー `rolldown-24bc2d0` を記録しています。正確な上限値はこれらのファイルにあります。たとえば島 1 つのイベントのみのページは、両プラットフォームともワークスペースモードで raw 66,691 / 正規化 gzip 21,252 バイトが上限です。許容増加量は引き続き 0 です。
+現在の契約は調査時から更新されています。どちらも schema version 4 で、esbuild の代わりに組み込みバンドラー `rolldown-24bc2d0` を記録し、調査時と同じ Node・zlib・Hono のバージョンを使います。メトリックは `gzip-identity-normalized` version 2 です。予算を比較するときにビルド識別子の差を正規化し、実際の gzip 合計は上限ではなく証跡として残します。正確な上限値は契約ファイルにあります。イベントのみのページは、両プラットフォームの両モードとも raw 66,691 / 正規化 gzip 21,252 バイトが上限で、許容増加量は 0 です。
 
-契約はレビュー済みの遷移を通してのみ変わります。契約が承認していない形で `Cargo.lock` が変わると、`health.yml` の island-size チェックは失敗し続けます。新しいネイティブ証拠を集め、影響する契約を再固定（`--stage` のあと `--apply`）するまで解消しません。Linux x64 の証拠は GitHub Actions のアーティファクトから取ります。Darwin arm64 の証拠はネイティブの `island-size-darwin.yml` ワークフローから取るか、オーナーが手元の Mac で実行して証明したものを使います。後者は `scripts/island-size-local-evidence.mjs` が、内部の Cargo 再配線と rustls セキュリティのロック遷移という 2 つのレビュー済みの理由に限って受け付けます。どちらの経路も、それだけで上限値や許容量を変えることはありません。
+| 契約 | パッケージバージョン | ネイティブ実行の証跡 |
+| --- | --- | --- |
+| Darwin arm64: `research/v3-island-size/decision.json` | 5.2.2 | 所有者が証明したローカルのネイティブ実行。ソースは `933acb8c129218ef036341db0e2a6d1a19e5e8c5`。レビュー済みの `bundler-backend` 遷移で schema 3 から 4 へ更新 |
+| Linux x64: `decision-linux-x64.json` | 6.0.0 | GitHub Actions health run `42582498638`、job `129052323579`。PR merge source は `31a5085d37dbc400c55ce7f3071863c9585c116b`（probe head は `4273be5674b9bb9a7a36794bf02b937ab7f6dea3`）。`release-bump` による再固定 |
+
+各ネイティブ実行では、8 ケースの workspace・packed マトリクスをそれぞれ 2 回ビルドし、各モード内で dist 全体のファイル一覧とバイトが一致しました。これらの遷移で raw と正規化 gzip の合計は変わらず、実際の gzip 合計の一部は変わりました。合計が等しくても生成コードのバイト一致は証明できません。Darwin のサイズ契約が対象とするのは、記録された 5.2.2 の生成系であり、Darwin 上の 6.0.0 のサイズ確認を証明するものではありません。Linux の 6.0.0 の証跡や保存済みバイトの再生は、対応する Darwin のネイティブ実行の代わりにはなりません。他のプラットフォーム、ツールチェーン、ソースリビジョンはこれらの証跡の対象外です。
+
+契約はレビュー済みの遷移を通してのみ変わります。契約が承認していない形で `Cargo.lock` が変わると、`health.yml` の island-size チェックは失敗し続けます。新しいネイティブ証拠を集め、影響する契約を再固定（`--stage` のあと `--apply`）するまで解消しません。Linux x64 の証拠は GitHub Actions のアーティファクトから取ります。Darwin arm64 では対応するネイティブ実行が必要です。ワークフローは引き続き利用でき、通常は[ローカルのネイティブ証跡ポリシー](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/LOCAL-NATIVE-EVIDENCE.md)に従って所有者の Mac で収集します。ローカルアダプターが受け付けるのは、`bundler-backend` や `release-bump` を含む、同ポリシーのレビュー済み遷移プロファイルだけであり、対応する証明書と保存済みバンドルが必要です。ステージ済み契約の適用には、所有者による別途の許可が必要です。どちらの証跡経路も、それだけで上限値や許容量を変えることはありません。
 
 2 つの実測マトリクスを再現するコマンドは、リポジトリの[測定と再実行の README](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/README.md)を参照してください。ガードは Darwin arm64 では `decision.json`、Linux x64 では `decision-linux-x64.json` を選び、未対応ホストや異なるプラットフォームの測定結果を拒否します。両方の実行後、保存したファイルを選択された契約と照合します。
 
