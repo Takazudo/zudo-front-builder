@@ -163,6 +163,9 @@ For #4654, `scripts/run-rosetta-nextest.py` discovers binaries once, runs the ex
 `compiler-worker-test-host` without arguments (expected usage exit 64), then runs
 nextest using saved Cargo/binary metadata. Nextest 0.9.140 has no `--no-build`;
 metadata reuse prevents Cargo from copying the warmed host to a new inode.
+The helper resolves the thin x86_64 `cargo-nextest` from `PATH` and invokes its
+absolute path directly for version, discovery and execution. `cargo nextest` can
+prefer a different binary in `CARGO_HOME/bin`, even when `PATH` selects x86_64.
 The helper requires Apple Silicon with Rosetta, x86_64 Rust on `PATH`, nextest
 0.9.140, Python 3.11+, a clean exact source SHA, and a fresh external evidence
 folder. Use an exclusive `CARGO_TARGET_DIR` and command-scoped build parallelism.
