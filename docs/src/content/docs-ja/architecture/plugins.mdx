@@ -177,6 +177,8 @@ islands scanner も境界ターゲットの検出時に、この完全一致の 
 
 **衝突検出。** 2 つのプラグインが同じ `from` を異なる `to` で登録すると `AliasConflict` が発生し、両方の問題プラグインを名指ししてビルドを中断します。冪等な再登録（同じプラグイン、同じ `to`）は許可されます。
 
+**`node_modules` 内からのインポート。** `to` が単一の既存ファイルに解決される場合、ネイティブバンドラーの resolver alias を通して `node_modules` 内からのインポートにも適用できます。ディレクトリを指す `to` や存在しない `to` は tsconfig の `paths` だけに適用され、`node_modules` 内からのインポートには効きません。そこから使うパッケージは、ファイルごとに alias を登録するか `addVirtualModule` を使ってください。ユーザーの tsconfig マッピングが優先されます。別の登録済み alias、virtual module の specifier、`zfb` などの予約名とスラッシュ境界で名前が重なる alias は、完全一致を保つため tsconfig だけに適用されます。ページ／SSR バンドルでは、対象ファイルがビルド用にステージされたツリー内にあることも必要です。ステージされていないソースファイルへのフォールバックは tsconfig だけに適用されます。
+
 ### `addVirtualModule(specifier, loader, options?)` — 合成モジュールソース
 
 ソーステキストが `loader` によってオンデマンドで生成される bare specifier を登録します。推奨されるプレフィックスは `virtual:` ですが強制ではありません。実モジュールの specifier と衝突しないものなら何でも使えます。
