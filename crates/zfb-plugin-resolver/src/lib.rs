@@ -1,51 +1,27 @@
 //! # zfb-plugin-resolver
 //!
-//! Shared exact-match resolver inputs for the two esbuild call sites in
-//! the workspace:
+//! Shared exact-match resolver inputs for the page/SSR bundler in
+//! `zfb-build::bundler` and the browser jobs in `zfb-islands::bundle_job`
+//! (islands, client scripts, and module workers).
 //!
-//! - the main page/layout bundler in `zfb-build::bundler`
-//! - the islands bundler in `zfb-islands::esbuild`
+//! Plugin aliases become literal `compilerOptions.paths` entries in a
+//! synthetic tsconfig. Virtual modules and eligible single-file aliases also
+//! supply direct resolver pairs. Current callers pass these pairs to the
+//! native `zfb-bundler` through `BundleRequest.resolve.aliases`; this crate
+//! does not launch a compiler subprocess.
 //!
-//! Both crates used to forward plugin-registered aliases as
-//! `--alias:<from>=<to>` CLI flags. esbuild's `--alias` is
-//! **prefix-with-slash** — registering `@/foo` would silently match
-//! `@/foo/bar` as well, which contradicts the documented exact-match
-//! contract honored by the embedded V8 host
-//! (`zfb-render::BundleModuleLoader::resolve_alias`).
+//! The user-wins and single-file/collision gates retain the exact-match
+//! policy introduced for the former esbuild backend. The legacy CLI flag
+//! formatters remain public, but are not how current workspace callers
+//! submit native bundle jobs.
 //!
-//! This helper produces the inputs needed to express the same aliases
-//! as **exact-match** entries in esbuild's `--tsconfig` path-mapping
-//! pipeline: a `compilerOptions.paths` entry without the wildcard
-//! suffix is a literal exact-match in TypeScript / esbuild.
+//! Virtual modules are materialized under the working directory (or the
+//! system temp directory when it is missing). Keep [`ResolverInputs`] alive
+//! until bundling completes: its [`VirtualModuleFile`] handles pin the
+//! content-addressed files, and the last holder removes each file on drop.
 //!
-//! ## What it does
-//!
-//! Given a list of plugin aliases and a list of plugin virtual modules,
-//! plus a working dir for temp-file allocation, the helper:
-//!
-//! 1. Writes each virtual module's source to a temp `.mjs` file under
-//!    the working dir (held alive in `ResolverInputs::_temp_files`).
-//! 2. Builds a `Vec<(String, String)>` of `(specifier, absolute path)`
-//!    pairs, with paths normalized to POSIX forward-slash form so the
-//!    same JSON is emitted on Windows / WSL / Linux.
-//! 3. Provides a `merge_into_tsconfig_paths` helper that folds those
-//!    pairs into the caller's existing `tsconfig_paths` map without
-//!    overwriting user-supplied entries.
-//!
-//! Callers then write the merged map into their synthetic tsconfig and
-//! pass `--tsconfig=<that path>` to esbuild. The only plugin entries that
-//! ALSO get `--alias` flags are those whose target is a single file
-//! (virtual modules, and gated single-file aliases — see
-//! `ResolverInputs::plugin_alias_args`), where prefix-with-slash cannot
-//! widen the match.
-//!
-//! ## Why one shared crate
-//!
-//! `zfb-build` depends on `zfb-render` and `zfb-content`; `zfb-islands`
-//! does not depend on `zfb-build` (and `zfb-build` re-uses
-//! `zfb-islands` through the orchestrator's bundling fan-out). Placing
-//! this helper in either crate would create a cycle or pull in the
-//! whole orchestrator graph. A tiny leaf crate sidesteps both.
+//! This leaf crate shares the policy without introducing a dependency from
+//! `zfb-islands` on the build orchestrator.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -104,87 +80,33 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
 
 /// Output of [`build_resolver_inputs`].
 ///
-/// `paths_entries` is the list of `(specifier, absolute-target-path)`
-/// pairs the caller will merge into its synthetic
-/// `compilerOptions.paths` map. The target path is already in POSIX
-/// forward-slash form.
-///
-/// `_temp_files` holds the on-disk lifetime of any virtual-module
-/// `.mjs` files the helper wrote. The caller MUST keep this value
-/// alive (e.g. by binding it to a local) until esbuild has finished
-/// reading the files; their `Drop` impl deletes them from disk.
+/// Merge `paths_entries` into the synthetic tsconfig and pass the direct
+/// alias pairs to the native bundler. Keep this value alive until every
+/// consuming bundle job has finished reading the virtual-module files.
+/// The last [`VirtualModuleFile`] holder removes its file on drop.
 pub struct ResolverInputs {
     /// `(specifier, absolute-path)` pairs to merge into
     /// `compilerOptions.paths`. Paths are POSIX forward-slash.
     pub paths_entries: Vec<(String, String)>,
 
-    /// `(specifier, absolute-POSIX-path)` pairs for **plugin virtual
-    /// modules only**, to ALSO be emitted as esbuild
-    /// `--alias:<specifier>=<path>` CLI flags via
-    /// [`Self::virtual_module_alias_flags`] — a strict subset of
-    /// `paths_entries`: plugin aliases like `@/foo` are NOT included, and
-    /// neither is any virtual specifier the user's own
-    /// `compilerOptions.paths` already claims (user-wins, #1267 — see
-    /// `build_resolver_inputs`).
-    ///
-    /// ## Why a second mechanism on top of `compilerOptions.paths` (#1263)
-    ///
-    /// esbuild does **not** apply a tsconfig's `compilerOptions.paths` to
-    /// any source file whose (real) directory is inside `node_modules`.
-    /// In esbuild 0.25.x's resolver, `tsConfigForDir` returns `nil` the
-    /// moment `dirInfo.isInsideNodeModules` is true — *before* it ever
-    /// consults the `--tsconfig` / `--tsconfig-raw` override. So a preset
-    /// route entrypoint installed under `node_modules`
-    /// (e.g. `node_modules/@takazudo/zudo-doc/dist/routes/_chrome.js`)
-    /// that does `import x from "virtual:foo"` fails to resolve through
-    /// the synthetic tsconfig alone, with `Could not resolve "virtual:foo"`.
-    /// This is NOT fixable by switching `--tsconfig=<file>` to
-    /// `--tsconfig-raw`: both set the same gated override.
-    ///
-    /// esbuild's `--alias` (`PackageAliases`) is applied earlier in
-    /// resolution and is **not** `node_modules`-gated, so it reaches the
-    /// node_modules entrypoint. It is only safe for a target that is a
-    /// single *file*:
-    ///
-    /// - A virtual module's target is always a single materialized
-    ///   `.mjs` *file*. esbuild's alias is prefix-with-slash, so
-    ///   `virtual:foo/bar` remaps to `<tmp>.mjs/bar`, which cannot
-    ///   resolve (a file has no children) → it fails, *preserving the
-    ///   exact-match contract* (#269). esbuild even reports the failure
-    ///   as `Could not resolve "<tmp>.mjs/bar" (originally
-    ///   "virtual:foo/bar")`, keeping the original specifier visible.
-    /// - A plugin alias like `@/foo` may point at a *directory*, where
-    ///   prefix-with-slash WOULD silently resolve `@/foo/bar` to a real
-    ///   file — exactly the regression #269 moved aliases off `--alias`
-    ///   to avoid. Those stay `compilerOptions.paths`-only; single-file
-    ///   plugin aliases ride `--alias` too, via
-    ///   [`Self::plugin_alias_args`].
+    /// Direct `(specifier, absolute-POSIX-path)` aliases for plugin virtual
+    /// modules only. A subset of `paths_entries`: a virtual specifier claimed
+    /// by the user's exact or wildcard tsconfig paths is omitted from both.
+    /// Current callers pass these pairs to `BundleRequest.resolve.aliases`.
+    /// [`Self::virtual_module_alias_flags`] retains the legacy CLI spelling.
     pub virtual_module_alias_args: Vec<(String, String)>,
 
-    /// `(from, absolute-POSIX-path)` pairs for **plugin aliases** that
-    /// ALSO become esbuild `--alias` flags via
-    /// [`Self::plugin_alias_flags`] (#3002) — a subset of the alias
-    /// entries in `paths_entries`, which is itself unaffected. Without the
-    /// flag, `ctx.addAlias` silently does not apply to an importer whose
-    /// realpath is under `node_modules` (same gate as #1263 above).
+    /// Direct `(from, absolute-POSIX-path)` aliases for eligible plugin aliases.
+    /// Current callers consume the pairs through the native bundle request;
+    /// [`Self::plugin_alias_flags`] retains the legacy CLI spelling.
     ///
-    /// An alias qualifies only when all three gates pass:
-    ///
-    /// 1. **The target `is_file()`.** A file has no children, so
-    ///    esbuild's prefix-with-slash `--alias` cannot resolve `from/x`
-    ///    through it (#269 exact-match contract). A plain check with no
-    ///    extension or `index.*` probing: an extensionless target esbuild
-    ///    would resolve via probing stays tsconfig-only rather than
-    ///    re-deriving esbuild's resolver in Rust.
-    /// 2. **The user does not claim `from`** in their own
-    ///    `compilerOptions.paths` (exact or wildcard, user-wins #1267):
-    ///    `--alias` is applied before tsconfig `paths`, so a flag would
-    ///    override the user's mapping.
-    /// 3. **No slash-prefix collision** with another alias `from`, a
-    ///    virtual-module specifier, or a caller-reserved specifier
-    ///    (`a` collides with `a` and `a/b`, not `ab`). esbuild's `--alias`
-    ///    matches `from` and `from/…`, so a flag for `@/foo` would capture
-    ///    an import of `@/foo/bar` meant for a separate registration.
+    /// A registration qualifies when its target is an existing file, its
+    /// name passes the retained esbuild-compatible alias-key validation,
+    /// the user's exact/wildcard paths do not claim it, and it has no equal
+    /// or slash-prefix collision with another alias, virtual module, or
+    /// caller-reserved specifier (`a` overlaps `a/b`, but not `ab`). These
+    /// gates preserve the exact-match policy from #269/#1267/#3002.
+    /// The page/SSR caller further restricts these targets to its stage root.
     pub plugin_alias_args: Vec<(String, String)>,
 
     /// Held-alive temp-file handles for plugin virtual modules.
@@ -196,20 +118,9 @@ pub struct ResolverInputs {
 }
 
 impl ResolverInputs {
-    /// esbuild `--alias:<specifier>=<absolute-path>` CLI flags for every
-    /// plugin virtual module (see [`Self::virtual_module_alias_args`]).
-    ///
-    /// Both esbuild call sites (`zfb-islands` and `zfb-build`) emit these
-    /// IN ADDITION to the synthetic `--tsconfig` so a `virtual:*` import
-    /// resolves even from a route entrypoint whose realpath is under
-    /// `node_modules` (#1263). Returned as `Vec<String>` so the islands
-    /// path can wrap each in `OsString` and the build path can pass it
-    /// straight to `Command::arg`.
-    ///
-    /// esbuild's CLI splits `--alias:<k>=<v>` on the FIRST `=`
-    /// (`strings.IndexByte`), so a specifier containing a colon
-    /// (`virtual:foo`) is preserved intact as the key. Temp-file targets
-    /// never contain `=`.
+    /// Legacy `--alias:<specifier>=<absolute-path>` strings for the virtual
+    /// modules in [`Self::virtual_module_alias_args`]. Current workspace
+    /// callers use the pairs directly in native bundle requests instead.
     pub fn virtual_module_alias_flags(&self) -> Vec<String> {
         self.virtual_module_alias_args
             .iter()
@@ -217,10 +128,9 @@ impl ResolverInputs {
             .collect()
     }
 
-    /// esbuild `--alias:<from>=<absolute-path>` CLI flags for every
-    /// single-file plugin alias (see [`Self::plugin_alias_args`]), in the
-    /// same format as [`Self::virtual_module_alias_flags`]. Empty when no
-    /// plugin alias qualifies, so a zero-plugin argv stays byte-identical.
+    /// Legacy `--alias:<from>=<absolute-path>` strings for the eligible
+    /// single-file aliases in [`Self::plugin_alias_args`]. The method remains
+    /// available alongside [`Self::virtual_module_alias_flags`].
     pub fn plugin_alias_flags(&self) -> impl Iterator<Item = String> + '_ {
         self.plugin_alias_args
             .iter()
@@ -256,37 +166,23 @@ fn esbuild_accepts_alias_name(name: &str) -> bool {
             .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
-/// Build the per-call resolver inputs from plugin-registered aliases
-/// and virtual modules.
+/// Build native-bundler resolver inputs from plugin registrations.
 ///
-/// - `aliases`: `(from, to)` pairs where `to` is an absolute filesystem
-///   path the alias resolves to.
-/// - `virtual_modules`: `(specifier, source)` pairs where `source` is
-///   the ESM source text to materialize to disk.
-/// - `working_dir`: where to allocate virtual-module temp files. Falls
-///   back to the system temp dir when the path is not a directory
-///   (matches the islands path's pre-existing fallback for the
-///   unit-test environment).
-/// - `user_tsconfig_paths`: the user's own `compilerOptions.paths` map
-///   (keyed by pattern). Drives the user-wins collision policy (#1267):
-///   a virtual specifier the user already claims (exact key, or a
-///   wildcard it falls under) is dropped from BOTH the `--alias` arg set
-///   AND `paths_entries`, so the user's own mapping governs. Dropping
-///   only the `--alias` is insufficient for a wildcard collision: a
-///   plugin EXACT key (`virtual:foo/bar`) out-specifics a user
-///   `virtual:foo/*` pattern in TS/esbuild path matching, so the plugin
-///   `paths_entry` must be suppressed too.
-/// - `reserved_specifiers`: specifiers the caller already emits its own
-///   hardcoded `--alias` for (the SSR bundler's `zfb`). A plugin alias
-///   colliding with one gets no `--alias` flag of its own.
+/// - `aliases`: `(from, to)` pairs with absolute filesystem targets.
+/// - `virtual_modules`: `(specifier, ESM source)` pairs to materialize.
+/// - `working_dir`: existing directory for content-addressed `.mjs` files;
+///   a missing directory falls back to the system temp directory.
+/// - `user_tsconfig_paths`: the consumer's own paths map. An exact or
+///   wildcard claim suppresses a virtual specifier from `paths_entries`
+///   and `virtual_module_alias_args`; its file is still materialized.
+/// - `reserved_specifiers`: caller-owned direct aliases (current callers
+///   reserve `zfb`). An overlapping plugin alias stays paths-only.
 ///
-/// On success the returned `ResolverInputs::paths_entries` contains one
-/// entry per alias plus one entry per virtual module the user does NOT
-/// own, all keyed on the bare specifier, all targeting a single absolute
-/// POSIX path. `virtual_module_alias_args` carries the same
-/// user-unclaimed virtual-module entries; `plugin_alias_args` carries the
-/// aliases passing the three gates documented on
-/// [`ResolverInputs::plugin_alias_args`].
+/// `paths_entries` contains every alias plus every user-unclaimed virtual
+/// module, with POSIX targets. `virtual_module_alias_args` contains those
+/// virtual modules; `plugin_alias_args` contains only registrations passing
+/// its documented eligibility gates. Keep the returned handles alive until
+/// all consuming bundle jobs complete.
 pub fn build_resolver_inputs(
     aliases: &[(String, String)],
     virtual_modules: &[(String, String)],
@@ -463,9 +359,8 @@ fn strip_verbatim_disk_prefix(spelling: &str) -> Option<&str> {
 /// True when the user's `compilerOptions.paths` already claims
 /// `specifier` — either as an exact key, or via a wildcard pattern whose
 /// fixed prefix/suffix `specifier` falls under. This is the user-wins
-/// gate for plugin `virtual:*` `--alias` flags (#1267): a specifier the
-/// user owns must NOT get a plugin `--alias` (esbuild applies `--alias`
-/// before tsconfig `paths`, so it would override the user's mapping).
+/// gate for plugin virtual-module and single-file direct aliases (#1267):
+/// a user-owned specifier must not receive a competing plugin direct alias.
 pub fn user_claims_specifier(
     user_tsconfig_paths: &BTreeMap<String, Vec<String>>,
     specifier: &str,
@@ -495,7 +390,7 @@ fn tsconfig_pattern_matches(pattern: &str, specifier: &str) -> bool {
 
 /// Merge `entries` (typically `ResolverInputs::paths_entries`) into a
 /// caller-owned `paths` map shaped like `BTreeMap<String, Vec<String>>`
-/// — the shape TypeScript / esbuild expect under
+/// — the TypeScript-compatible shape consumed under
 /// `compilerOptions.paths`.
 ///
 /// **Collision policy: user wins.** If the map already contains an
@@ -593,8 +488,7 @@ pub struct TsPathAlias {
 ///
 /// `tsconfig.json` files conventionally allow `//` line comments,
 /// `/* … */` block comments, and trailing commas — TypeScript itself
-/// accepts them, as does esbuild's built-in tsconfig reader.  This
-/// function strips those artefacts before handing the text to
+/// accepts them. This function strips those artefacts before handing the text to
 /// `serde_json` so annotated tsconfigs work without a full JSONC
 /// parser.
 ///
@@ -609,7 +503,7 @@ pub struct TsPathAlias {
 ///
 /// Extends-array parents merge left-to-right and the leaf merges last. The
 /// winning effective `baseUrl` anchors the winning `paths` table even when
-/// those fields came from different configs; this matches pinned esbuild.
+/// those fields came from different configs (the retained compatibility policy).
 /// Without an effective `baseUrl`, paths anchor at the config that declared
 /// the winning table.
 pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
@@ -741,9 +635,9 @@ pub fn read_tsconfig_paths_file(config_file: &Path) -> Option<TsConfigPaths> {
 
 /// Read `<project_root>/tsconfig.json` and return its
 /// `compilerOptions.paths` as an **absolutised** `BTreeMap` suitable for
-/// forwarding directly into esbuild's synthetic tsconfig writer.
+/// forwarding into the native bundle caller's synthetic tsconfig writer.
 ///
-/// This is the `build.rs` call-site adapter: it calls [`read_tsconfig_paths`]
+/// This is the command-layer call-site adapter: it calls [`read_tsconfig_paths`]
 /// and then resolves every relative target against the resolved `base_dir`
 /// using [`resolve_tsconfig_path_target`].  Already-absolute targets are
 /// returned unchanged.  Missing file / parse errors / absent paths all
@@ -937,7 +831,7 @@ pub struct TsConfigDependencyInput {
 /// strings, arrays, relative/absolute files, and package specifiers. Unlike
 /// the paths-only reader, this helper is intentionally strict. A worker cache
 /// key must not look valid after omitting an unreadable, malformed, cyclic, or
-/// unresolved parent that esbuild itself will consume (or reject) later.
+/// unresolved parent that the native compiler will consume (or reject) later.
 /// Paths remain lexical rather than canonical so callers retain their stable
 /// shadow-materialisation and invalidation identities.
 pub fn collect_tsconfig_dependency_inputs(
@@ -1084,7 +978,7 @@ pub fn collect_tsconfig_dependency_chain(config_file: &Path) -> Result<Vec<PathB
 /// `base_dir` (the resolved `compilerOptions.baseUrl`, or the directory of
 /// the tsconfig that declared `paths` when no `baseUrl` is set).
 ///
-/// Preserves any trailing `/*` glob suffix that esbuild reads as a wildcard.
+/// Preserves any trailing `/*` glob suffix for wildcard path matching.
 /// Already-absolute targets are returned unchanged.
 pub fn resolve_tsconfig_path_target(base_dir: &Path, target: &str) -> String {
     // Already-absolute targets bypass baseUrl in TypeScript and esbuild.

@@ -1,11 +1,9 @@
-//! Parse esbuild's `--metafile` JSON into per-route transitive module-dep
-//! edge sets (#1284/#1287).
+//! Parse the native bundler's compatible metafile JSON into per-route
+//! transitive module-dependency edge sets (#1284/#1287).
 //!
-//! esbuild already runs once per dev bundle; passing `--metafile=<path>` makes
-//! it emit a JSON describing every input file it resolved and that input's own
-//! imports. `metafile.inputs[file].imports[*].path` is the canonical
-//! *transitive* import graph esbuild itself resolved — no second Rust resolver
-//! pass to drift from the real bundle.
+//! The native bundle request emits the graph metadata alongside the bundle.
+//! `metafile.inputs[file].imports[*].path` records the import graph the
+//! compiler resolved, avoiding a second resolution pass in this module.
 //!
 //! This module is pure: it takes the metafile bytes plus the
 //! shadow-root / project-root / per-route entry mapping and returns, for each
@@ -613,16 +611,9 @@ fn declared_first_party_package_identity_from_canonical(
 /// saving is specific to the call site that genuinely needs both projections
 /// from the SAME metafile.
 ///
-/// The one call site this does NOT cover is the islands/client per-job path
-/// (`crates/zfb-islands/src/esbuild.rs`): it still runs
-/// N+1 independent subprocess audits (one per island entry plus the runtime
-/// bundle), each building its own roster, because that call site reaches this
-/// module only through the public, single-purpose
-/// `audit_metafile_stage_escape_at_path` across a crate boundary — sharing a
-/// roster there would need new cross-crate session/cache plumbing that
-/// conflicts with epic #2140's narrowing goal for a later wave. That is a
-/// deliberate, documented exception, not an oversight this doc is hiding.
-///
+/// Browser jobs have their own stage-escape audits in
+/// `crates/zfb-islands/src/bundle_job.rs`. Each native job audits its emitted
+/// graph metadata independently; it does not share this SSR classifier.
 /// [`_at_path`]: audit_and_enrol_metafile_stage_escape_at_path
 struct ClaimedMemberRoster {
     workspace_root: PathBuf,

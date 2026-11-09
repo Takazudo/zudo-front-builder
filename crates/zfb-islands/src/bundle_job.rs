@@ -2448,8 +2448,8 @@ pub(crate) fn build_bundle_request(
 /// The shared bundle's contract is "every island module's source code
 /// is present in the islands JS asset so the runtime's DOM walk can
 /// find each `data-zfb-island="…"` element's component bundled into the
-/// page". Producing one synthetic entry sidesteps esbuild's
-/// multi-input-with-`--outfile` restriction (issue #138).
+/// page". Producing one synthetic entry also preserves the single-entry shape
+/// introduced for the former esbuild backend (issue #138).
 ///
 /// # Why we call `mountIslands` from the entry
 ///
@@ -2480,8 +2480,7 @@ pub(crate) fn build_bundle_request(
 /// # Why namespace imports
 ///
 /// A naive `import "<path>";` shape (the original #138 fix) is a
-/// **side-effect-only import**. esbuild runs with
-/// `--bundle --tree-shaking=true`, which only retains code that
+/// **side-effect-only import**. Bundling with tree-shaking retains code that
 /// produces a top-level side effect or that the entry references by
 /// name. Islands authored as a bare
 /// `export default function ComponentName(...) {}` with no top-level
@@ -2489,7 +2488,7 @@ pub(crate) fn build_bundle_request(
 /// zudolab/zudo-doc#1355 Wave 5). Namespace imports keep every export
 /// reachable by name, AND each namespace is referenced from the
 /// `__zfb_register(...)` calls — which are themselves top-level side
-/// effects esbuild MUST preserve. So tree-shaking remains defanged in
+/// effects the native bundler MUST preserve. So tree-shaking remains defanged in
 /// the new shape too.
 ///
 /// Sequential numeric identifiers avoid collision pitfalls when two
@@ -2504,7 +2503,7 @@ pub(crate) fn build_bundle_request(
 ///
 /// Deterministic source-shape helper for tests and tooling. This uses a fixed
 /// synthetic build identity; shipping callers must use [`ClientBundler::bundle`],
-/// which validates the real owned identity before invoking esbuild.
+/// which validates the real owned identity before invoking the native bundler.
 pub fn render_shared_bundle_entry_source(islands: &[Island], client_router: bool) -> String {
     render_shared_bundle_entry_source_with_build(
         islands,
