@@ -5,6 +5,9 @@ import time
 import unittest
 from unittest.mock import patch
 import subprocess
+import sys
+
+sys.dont_write_bytecode = True
 
 spec = importlib.util.spec_from_file_location("runner", Path(__file__).resolve().parents[2] / "scripts/run-rosetta-nextest.py")
 m = importlib.util.module_from_spec(spec)
@@ -57,5 +60,22 @@ class Checks(unittest.TestCase):
             with self.assertRaises(m.Refusal):
                 m.x64(Path('/host'))
 
+
+    def test_native_refusal_retains_receipt_and_existing_output_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / 'evidence'
+            argv = ['runner', '--source-sha', 'a' * 40, '--output', str(out), '--expected-tests', '1', '--filter', 'all()']
+            with patch.object(sys, 'argv', argv), patch.object(m, 'output', return_value='/source'), patch.object(m.platform, 'system', return_value='Linux'), patch.dict(m.os.environ, {'HEAVY_GUARD_HELD': '1'}):
+                self.assertEqual(m.main(), 2)
+                self.assertIn('Darwin required', (out / 'receipt.json').read_text())
+                before = (out / 'receipt.json').read_bytes()
+                self.assertEqual(m.main(), 2)
+                self.assertEqual((out / 'receipt.json').read_bytes(), before)
+
+    def test_missing_binary_and_corrupt_metadata_refused(self):
+        with self.assertRaises(m.Refusal):
+            m.identity(Path('/does-not-exist-rosetta-test'))
+        with self.assertRaises(m.Refusal):
+            m.host_from_metadata({'unexpected': {}}, {})
 
 unittest.main()

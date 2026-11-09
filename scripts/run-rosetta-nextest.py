@@ -165,7 +165,7 @@ def main():
         receipt["execution"] = "captured"
         require(rc == 0 and receipt["junit"]["failures"] == 0 and receipt["junit"]["errors"] == 0, "tests failed; first result retained")
         return 0
-    except (Refusal, OSError, KeyError, ValueError, subprocess.SubprocessError, ET.ParseError) as e:
+    except (Refusal, OSError, KeyError, TypeError, ValueError, subprocess.SubprocessError, ET.ParseError) as e:
         receipt["error"] = str(e)
         print(str(e))
         return 2
