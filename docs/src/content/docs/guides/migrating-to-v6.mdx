@@ -6,15 +6,15 @@ sidebar_position: 0.4
 
 ## Before you start
 
-zfb 6 bundles everything with the native Rolldown bundler compiled into the `zfb` executable: pages and SSR, islands, client scripts, module workers, `zfb.config.ts`, and TypeScript-family plugins. zfb 5 already used Rolldown by default for pages, islands and client scripts, but still shipped an esbuild binary for configs, plugins and the `ZFB_BUNDLER=esbuild` fallback. zfb 6 removes that binary and every option that selected or configured it. There is no compatibility mode.
+zfb 6 bundles everything with the native Rolldown bundler compiled into zfb: pages and SSR, islands, client scripts and their module workers, `zfb.config.ts`, and TypeScript-family plugins. In zfb 5, the `zfb` CLI and the npm-installed binary already used Rolldown by default for pages, islands, client scripts and their module workers, but still shipped an esbuild binary for configs, plugins and the `ZFB_BUNDLER=esbuild` fallback. Rust hosts that embedded zfb crates without the `rolldown-prototype` feature, such as through `zfb-server`, bundled every path with esbuild. zfb 6 removes esbuild and every option that selected or configured it. There is no compatibility mode.
 
 Most projects that run the `zfb` CLI with default settings need no source change. Check your scripts and CI for the environment variables below. Hosts that embed zfb's Rust crates have more to change; see [Rust embedding hosts](#rust-embedding-hosts).
 
-This covers what zfb owns. No published zfb package depends on esbuild, but third-party development tools such as wrangler, Vitest and tsx still install it in your dependency graph, and that is unaffected.
+This covers what zfb owns. No published zfb package depends on esbuild. If your project uses tools such as wrangler, Vitest or tsx, they may still install esbuild, and that is unaffected.
 
 ## Environment variables
 
-Unset `ZFB_BUNDLER` and `ZFB_ROLLDOWN_PROTOTYPE` in shell profiles, CI workflows, `.env` files and package scripts. Setting either one, to any value including `rolldown`, now fails every command before it runs:
+Unset `ZFB_BUNDLER` and `ZFB_ROLLDOWN_PROTOTYPE` in shell profiles, CI workflows, `.env` files and package scripts. Setting either one, to any value including `rolldown`, now fails every `zfb` subcommand before it runs (`zfb --version` and `zfb --help` still print):
 
 ```text
 ZFB_BUNDLER=esbuild: the esbuild bundler backend and its ZFB_BUNDLER selector were removed; zfb always bundles natively. Unset ZFB_BUNDLER.
@@ -36,13 +36,14 @@ The module-worker cache and the islands build token are now keyed on the bundler
 
 ## Rust embedding hosts
 
-These changes apply only to programs that depend on zfb's Rust crates.
+These changes apply only to programs that depend on zfb's Rust crates. The `ZFB_BUNDLER` and `ZFB_ROLLDOWN_PROTOTYPE` check above belongs to the `zfb` CLI; the crates ignore those variables, and `ZFB_ESBUILD_BIN` too.
 
-- **Compiler worker launcher.** A library that bundles a `.ts` config or a TypeScript-family plugin needs an explicit launcher; it never derives one from `current_exe()`. Call `zfb_server::run_compiler_worker_if_requested()` first in `main`, then pass `ServerBuilder::compiler_worker(WorkerLauncher::new(std::env::current_exe()?).arg(COMPILER_WORKER_ARG))`. Lower-level hosts set `zfb_config_loader::LoadOptions::compiler_worker` or pass a launcher to the plugin host. Without one, a `.ts` config fails with an error naming the missing launcher. A `zfb.config.json` config and JavaScript plugins need no launcher. See [Embed as library](./embed-as-library.mdx).
+- **Rolldown on every path.** In 5.x a host that did not enable the `rolldown-prototype` feature bundled pages and SSR, islands, client scripts and module workers with esbuild, and the 5.x embedding guide said to set `ZFB_ESBUILD_BIN` for a `.ts` config. In 6.0.0 every path uses Rolldown. Rebuild the site through the host and compare the output with a 5.x build before you ship.
+- **Compiler worker launcher.** A library that bundles a `.ts` config or a TypeScript-family plugin needs an explicit launcher; it never derives one from `current_exe()`. Call `zfb_server::run_compiler_worker_if_requested()` first in `main`, then pass `ServerBuilder::compiler_worker(WorkerLauncher::new(std::env::current_exe()?).arg(COMPILER_WORKER_ARG))`. Lower-level hosts set `zfb_config_loader::LoadOptions::compiler_worker`, or pass the launcher to `PluginHost::spawn_with_timeout` or `PluginHost::spawn_with_timeout_and_diagnostic_sink`, whose fourth parameter is now `Option<WorkerLauncher>` instead of `Option<EmbeddedEsbuildGetter>`. Without one, a `.ts` config fails with an error naming the missing launcher. A `zfb.config.json` config and JavaScript plugins need no launcher. See [Embed as library](./embed-as-library.mdx).
 - **Crate rename.** `zfb-rolldown-prototype` is now `zfb-bundler` (`zfb_bundler`). Remove the `rolldown-prototype` Cargo feature from `zfb`, `zfb-build` and `zfb-islands` dependencies.
-- **No esbuild argv.** `run_prepared(&Command)`, `Request::decode` and `decode_argv` are removed. Build a typed `BundleRequest` and call `zfb_bundler::bundle`, or `generate` followed by `publish`.
-- **Islands bundler.** `EsbuildSubprocessBundler` and `EsbuildSubprocessConfig` are `IslandsBundler` and `IslandsBundlerConfig`, with no deprecated aliases. Replace `extra_args` and `with_extra_env` with the typed `externals`, `conditions` and `node_path` fields. Arbitrary esbuild arguments have no replacement. Drop `binary_path` and `with_binary_path`.
-- **Removed esbuild items.** `EmbeddedEsbuildGetter`, `resolve_esbuild_binary_with_handle`, `resolve_esbuild_binary_with_env`, `DEFAULT_ESBUILD_SLOT`, `BundlerInput::esbuild_binary`, `render_pipeline::embedded_binary`, the esbuild pin in `zfb-toolchain-pins`, the `zfb-binfetch` crate and `zfb-test-utils`' `locate_esbuild` are gone. Delete the calls; no bundling path takes a binary.
+- **No esbuild argv or selector.** `run_prepared(&Command)` and `enabled()` are removed. Build a typed `BundleRequest` and call `zfb_bundler::bundle`, or `zfb_bundler::generate` followed by `Generated::publish`.
+- **Islands bundler.** `EsbuildSubprocessBundler` and `EsbuildSubprocessConfig` are `IslandsBundler` and `IslandsBundlerConfig`, with no deprecated aliases. Replace the `extra_args` and `env_vars` fields and `with_extra_env` with the typed `externals` and `conditions` fields and the `node_path` field (or `with_node_path`). Arbitrary esbuild arguments have no replacement. Rename `mock_subprocess` to `mock_bundle`, and drop `binary_path` and `with_binary_path`. `zfb-islands` no longer re-exports `EXPECTED_ESBUILD_VERSION` or `EXPECTED_ESBUILD_SHA256`.
+- **Removed esbuild items.** `EmbeddedEsbuildGetter`, `resolve_esbuild_binary_with_handle`, `resolve_esbuild_binary_with_env`, `DEFAULT_ESBUILD_SLOT`, `BundlerInput::esbuild_binary`, `render_pipeline::embedded_binary`, the esbuild pin in `zfb-toolchain-pins`, the `zfb-binfetch` crate and `zfb-test-utils`' `locate_esbuild` are gone. Delete the calls; no bundling path takes a binary. `ModuleWorkerBuildContext::from_esbuild_loader_args` in `zfb-build` is renamed `from_loader_args`.
 - **Source builds.** Building `zfb` from source no longer downloads or stages esbuild, and the build-time `ZFB_ESBUILD_BIN` override is gone.
 
 ## Checklist
@@ -50,4 +51,4 @@ These changes apply only to programs that depend on zfb's Rust crates.
 1. Install matching 6.0.0 packages and binary; run `zfb --version` and confirm the `embedded bundler` line.
 2. Remove `ZFB_BUNDLER`, `ZFB_ROLLDOWN_PROTOTYPE` and `ZFB_ESBUILD_BIN` from every environment that runs zfb.
 3. Run `zfb build` and compare key pages, islands and client scripts in a browser.
-4. Embedding hosts: add the compiler worker launcher, rename `zfb-rolldown-prototype` to `zfb-bundler`, and replace removed esbuild APIs; then build the host.
+4. Embedding hosts: add the compiler worker launcher, rename `zfb-rolldown-prototype` to `zfb-bundler`, and replace removed esbuild APIs; then build the host, rebuild the site through it and compare the output with a 5.x build.
