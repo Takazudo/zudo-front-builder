@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import time
@@ -17,7 +18,7 @@ spec.loader.exec_module(m)
 class Checks(unittest.TestCase):
     def test_metadata_requires_exact_host_and_lifecycle(self):
         cargo = {"target_directory": "/target", "packages": [{"id": "worker", "name": "zfb-compiler-worker"}]}
-        data = {"rust-build-meta": {"target-directory": "/target", "build-directory": "/target", "non-test-binaries": {"worker": [{"name": "compiler-worker-test-host", "kind": "bin", "path": "debug/compiler-worker-test-host"}]}}, "rust-binaries": {"life": {"binary-name": "lifecycle", "package-id": "worker", "binary-path": "/target/debug/lifecycle"}}}
+        data = {"rust-build-meta": {"target-directory": "/target", "build-directory": "/target", "non-test-binaries": {"worker": [{"name": "compiler-worker-test-host", "kind": "bin-exe", "path": "debug/compiler-worker-test-host"}]}}, "rust-binaries": {"life": {"binary-name": "lifecycle", "package-id": "worker", "binary-path": "/target/debug/lifecycle"}}}
         self.assertEqual(m.host_from_metadata(data, cargo), Path('/target/debug/compiler-worker-test-host'))
         data['rust-build-meta']['build-directory'] = '/shared'
         with self.assertRaises(m.Refusal):
@@ -33,6 +34,15 @@ class Checks(unittest.TestCase):
         data['rust-build-meta']['non-test-binaries']['worker'] = []
         with self.assertRaises(m.Refusal):
             m.host_from_metadata(data, cargo)
+
+    def test_real_nextest_0140_metadata(self):
+        fixture = json.loads((Path(__file__).parent / 'fixtures/rosetta-nextest-0140.json').read_text())
+        self.assertEqual(m.host_from_metadata(fixture['binaries'], fixture['cargo']),
+                         Path('/qualification/target/debug/compiler-worker-test-host'))
+        package = fixture['cargo']['packages'][0]['id']
+        fixture['binaries']['rust-build-meta']['non-test-binaries'][package][0]['kind'] = 'bin'
+        with self.assertRaises(m.Refusal):
+            m.host_from_metadata(fixture['binaries'], fixture['cargo'])
 
     def test_warm_rejects_wrong_result_and_replacement(self):
         good = subprocess.CompletedProcess([], 64, b'', b'compiler-worker-test-host: started without the private worker argument\n')
