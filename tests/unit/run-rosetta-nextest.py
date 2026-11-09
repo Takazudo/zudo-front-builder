@@ -17,8 +17,16 @@ spec.loader.exec_module(m)
 class Checks(unittest.TestCase):
     def test_metadata_requires_exact_host_and_lifecycle(self):
         cargo = {"target_directory": "/target", "packages": [{"id": "worker", "name": "zfb-compiler-worker"}]}
-        data = {"rust-build-meta": {"target-directory": "/target", "non-test-binaries": {"worker": [{"name": "compiler-worker-test-host", "kind": "bin", "path": "debug/compiler-worker-test-host"}]}}, "rust-binaries": {"life": {"binary-name": "lifecycle", "package-id": "worker"}}}
+        data = {"rust-build-meta": {"target-directory": "/target", "build-directory": "/target", "non-test-binaries": {"worker": [{"name": "compiler-worker-test-host", "kind": "bin", "path": "debug/compiler-worker-test-host"}]}}, "rust-binaries": {"life": {"binary-name": "lifecycle", "package-id": "worker", "binary-path": "/target/debug/lifecycle"}}}
         self.assertEqual(m.host_from_metadata(data, cargo), Path('/target/debug/compiler-worker-test-host'))
+        data['rust-build-meta']['build-directory'] = '/shared'
+        with self.assertRaises(m.Refusal):
+            m.host_from_metadata(data, cargo)
+        data['rust-build-meta']['build-directory'] = '/target'
+        data['rust-binaries']['life']['binary-path'] = '/shared/lifecycle'
+        with self.assertRaises(m.Refusal):
+            m.host_from_metadata(data, cargo)
+        data['rust-binaries']['life']['binary-path'] = '/target/debug/lifecycle'
         data['rust-build-meta']['non-test-binaries']['worker'][0]['path'] = '../escape'
         with self.assertRaises(m.Refusal):
             m.host_from_metadata(data, cargo)
@@ -42,6 +50,25 @@ class Checks(unittest.TestCase):
         with patch.object(m, 'identity', return_value={'inode': 1}), patch.object(m.subprocess, 'run', side_effect=subprocess.TimeoutExpired(['/host'], 30)):
             with self.assertRaises(subprocess.TimeoutExpired):
                 m.warm(Path('/host'), {'inode': 1})
+
+    def test_failed_warm_retains_raw_evidence(self):
+        evidence = {}
+        bad = subprocess.CompletedProcess([], 7, b'first output\xff', b'first error')
+        with patch.object(m, 'identity', return_value={'inode': 1}), patch.object(m.subprocess, 'run', return_value=bad):
+            with self.assertRaises(m.Refusal):
+                m.warm(Path('/host'), {'inode': 1}, evidence=evidence)
+        self.assertEqual(evidence['exit'], 7)
+        self.assertEqual(m.base64.b64decode(evidence['stdout_base64']), bad.stdout)
+        self.assertGreaterEqual(evidence['ended_ns'], evidence['started_ns'])
+        evidence = {}
+        timeout = subprocess.TimeoutExpired(['/host'], 30, output=b'partial', stderr=b'error')
+        with patch.object(m, 'identity', return_value={'inode': 1}), patch.object(m.subprocess, 'run', side_effect=timeout):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                m.warm(Path('/host'), {'inode': 1}, evidence=evidence)
+        self.assertEqual(evidence['execution'], 'timeout')
+        self.assertEqual(evidence['stdout'], 'partial')
+        self.assertEqual(evidence['stderr'], 'error')
+        self.assertGreaterEqual(evidence['ended_ns'], evidence['started_ns'])
 
     def test_junit_missing_stale_counts_and_failure(self):
         with tempfile.TemporaryDirectory() as d:
