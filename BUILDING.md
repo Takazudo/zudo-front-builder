@@ -156,3 +156,32 @@ run commands serially with zero retries, and record the toolchain, commands and 
 results. Use [`scripts/capture-nextest-evidence.py`](./scripts/capture-nextest-evidence.py)
 (nextest 0.9.140, Python 3.11+) to keep each command's original JUnit report. The current
 native status and pending Mac prompts are in [research/development-queue.md](./research/development-queue.md).
+
+### Rosetta worker-host qualification
+
+For #4654, `scripts/run-rosetta-nextest.py` discovers binaries once, runs the exact
+`compiler-worker-test-host` without arguments (expected usage exit 64), then runs
+nextest using saved Cargo/binary metadata. Nextest 0.9.140 has no `--no-build`;
+metadata reuse prevents Cargo from copying the warmed host to a new inode.
+The helper requires Apple Silicon with Rosetta, x86_64 Rust on `PATH`, nextest
+0.9.140, Python 3.11+, a clean exact source SHA, and a fresh external evidence
+folder. Use an exclusive `CARGO_TARGET_DIR` and command-scoped build parallelism.
+
+```sh
+bash "$HOME/.codex/scripts/heavy-guard.sh" -- python3 scripts/run-rosetta-nextest.py \
+  --source-sha "$(git rev-parse HEAD)" --output /absolute/new/evidence-directory \
+  --qualification-root /absolute/owned/qualification-root \
+  --expected-tests 1 --expected-test-name unconfirmed_shutdown_retains_the_private_dir \
+  --filter 'package(zfb-compiler-worker) & binary(=lifecycle) & test(=unconfirmed_shutdown_retains_the_private_dir)'
+```
+
+The helper checks the host inode/hash before and after warming and execution,
+retains first build/test outputs and JUnit, and refuses missing or wrong test
+counts. For a full lifecycle or workspace run, supply the corresponding filter
+and independently determined expected JUnit count (`--workspace` discovers the
+whole workspace). These are separate qualification runs, each with fresh evidence.
+A successful isolated test does not establish workspace acceptance. Native arm64
+checks keep their normal procedure; this helper refuses non-Rosetta hosts.
+It does not change test deadlines, retries, assertions, or the general capture
+helper's rejection of build-reuse options. Records are local evidence, not owner
+attestations or proof of native Intel timing/performance.
