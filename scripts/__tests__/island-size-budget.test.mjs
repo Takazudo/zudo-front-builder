@@ -1301,7 +1301,7 @@ describe("island shipped-size budget", () => {
       readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
-    expect(linuxContract.toolchain.packageVersion).toBe("5.2.2");
+    expect(linuxContract.toolchain.packageVersion).toBe("6.0.0");
     // A schemaVersion-4 contract tracks the dependency fingerprint, the same
     // drift guard as the Darwin contract above; its whole-file pnpmLockSha256
     // is baseline provenance, pinned by the live bundler-backend test below.
@@ -2032,26 +2032,28 @@ describe("island shipped-size budget", () => {
 
 // Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
-// Exact immediate predecessors of the live contracts: the schemaVersion-3 v5.2.2
-// release-bump contracts of both platforms, each moved by its bundler-backend
-// transition (#4635 Linux from Actions evidence, #4645 Darwin from
-// owner-attested local evidence).
+// Exact immediate predecessors of the live contracts: for Linux, the
+// schemaVersion-4 v5.2.2 bundler-backend contract (#4635, Actions evidence)
+// that the v6.0.0 release bump moved; for Darwin, the schemaVersion-3 v5.2.2
+// release-bump contract that its #4645 bundler-backend transition moved
+// (owner-attested local evidence).
 // Each must equal a frozen verbatim fixture, so the metadata check also holds in
 // shallow CI; full checkouts also compare git bytes and that no intermediate
 // contract was skipped. A local-native predecessor has no Actions run, so its
 // flat record carries no baselineRunId.
 const repinnedFromContracts = [
   {
-    // The #4635 bundler-backend transition cites the frozen schemaVersion-3
-    // v5.2.2 Linux contract.
+    // The v6.0.0 release bump cites the frozen schemaVersion-4 v5.2.2 Linux
+    // contract of the #4635 bundler-backend transition.
     file: "decision-linux-x64.json",
-    commit: "7ea8f771da08fa8ac8a05ab7f1dc376d574c6bde",
-    sha256: "e71f2360a96d97cbe8708464fcd3cb7a8b62481999de9b85d55e0b2ede16a2bb",
-    fixture: "fixtures/island-size-linux-x64-v5.2.2-release.json",
-    outcome: "release-version-stamp",
+    commit: "5cabbe51ce171c4555998200b9d5f2cb6b5150f0",
+    sha256: "30010b8b2cfe78a40e17cf64319da71a56ec86eeb16e33ce052b9ded1cea7a5d",
+    fixture: "fixtures/island-size-linux-x64-v5.2.2-bundler-backend.json",
+    schemaVersion: 4,
+    outcome: "bundler-backend-transition",
     packageVersion: "5.2.2",
-    baselineSourceSha: "e87950975fbe400114842eac4a3e54606c40f0eb",
-    baselineRunId: 42167975789,
+    baselineSourceSha: "d7ec3fa1793c4fc6b7fa550f2b69166b161a59f5",
+    baselineRunId: 42405070022,
   },
   {
     // The Darwin #4645 bundler-backend transition cites the frozen
@@ -2063,6 +2065,7 @@ const repinnedFromContracts = [
     outcome: "release-version-stamp",
     packageVersion: "5.2.2",
     baselineSourceSha: "0e6f9ca36c31b3961b69cd31837431e4dad3768b",
+    schemaVersion: 3,
     baselineRunId: undefined,
   },
 ];
@@ -2233,6 +2236,7 @@ describe("live contracts preserve released evidence and authentic predecessors",
     commit,
     sha256,
     fixture,
+    schemaVersion,
     outcome,
     packageVersion,
     baselineSourceSha,
@@ -2263,7 +2267,7 @@ describe("live contracts preserve released evidence and authentic predecessors",
         "contract",
       ]);
       expect(repinnedFrom).toMatchObject({
-        schemaVersion: 3,
+        schemaVersion,
         outcome,
         packageVersion,
         baselineSourceSha,
@@ -3883,9 +3887,17 @@ describe("live contracts preserve released evidence and authentic predecessors",
 
   // The owner-approved #4635 artifact (health run 42405070022) re-pinned the
   // Linux contract to the esbuild-free producer at an unchanged v5.2.2.
+  // Verbatim bytes of decision-linux-x64.json at 5cabbe51 (main), the #4635
+  // bundler-backend state the v6.0.0 release bump moved.
+  const linuxV522BundlerBackend = () =>
+    frozenDenoExit(
+      "fixtures/island-size-linux-x64-v5.2.2-bundler-backend.json",
+      "30010b8b2cfe78a40e17cf64319da71a56ec86eeb16e33ce052b9ded1cea7a5d",
+    );
+
   it("moves the frozen v5.2.2 schema-3 Linux contract only by the bundler-backend transition", () => {
     const predecessor = linuxV522Esbuild();
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    const live = linuxV522BundlerBackend();
     expect(live.outcome).toBe("bundler-backend-transition");
     expect(live.schemaVersion).toBe(4);
     expect(live.toolchain).not.toHaveProperty("esbuildVersion");
@@ -3904,6 +3916,11 @@ describe("live contracts preserve released evidence and authentic predecessors",
     for (const key of ["fingerprintTransition", "cargoRewire", "cargoRemoval"]) {
       expect(live.baselineEvidence).not.toHaveProperty(key);
     }
+    expect(live.baselineEvidence.repinnedFrom.contract).toEqual({
+      sha256: "e71f2360a96d97cbe8708464fcd3cb7a8b62481999de9b85d55e0b2ede16a2bb",
+      commit: "7ea8f771da08fa8ac8a05ab7f1dc376d574c6bde",
+      path: "research/v3-island-size/decision-linux-x64.json",
+    });
     expect(live.baselineEvidence.bundlerBackend).toEqual({
       schemaVersion: { from: 3, to: 4 },
       from: { esbuildVersion: predecessor.toolchain.esbuildVersion },
@@ -3963,6 +3980,37 @@ describe("live contracts preserve released evidence and authentic predecessors",
         " The producer version",
     );
     expect(readme).not.toContain("`Cargo.lock` moved under");
+  });
+
+  // The v6.0.0 release probe (#4656, health run 42582498638) re-pinned the
+  // esbuild-free Linux contract to 6.0.0 with every total unchanged.
+  it("moves the frozen v5.2.2 bundler-backend Linux contract only by the v6.0.0 release bump", () => {
+    const predecessor = linuxV522BundlerBackend();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.schemaVersion).toBe(4);
+    expect(live.toolchain.bundlerIdentity).toBe("rolldown-24bc2d0");
+    expect(live.outcome).toBe("release-version-stamp");
+    expect(live.toolchain.packageVersion).toBe("6.0.0");
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "cc8dbea0a21cf07c316c9421d425647b2a44f892e1191f0871d61fc1cb850d06",
+    );
+    expect(live.baselineSourceSha).toBe("4273be5674b9bb9a7a36794bf02b937ab7f6dea3");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "ci",
+      runId: 42582498638,
+      jobId: 129052323579,
+      sourceSha: "31a5085d37dbc400c55ce7f3071863c9585c116b",
+    });
+    for (const key of [
+      "bundlerBackend",
+      "cargoTransition",
+      "cargoRewire",
+      "cargoRemoval",
+      "fingerprintTransition",
+    ]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    expectReleaseBumpOnly(predecessor, live);
   });
 
   // Verbatim bytes of decision.json at 54054042 (main), the zudo-doc 9.1.1

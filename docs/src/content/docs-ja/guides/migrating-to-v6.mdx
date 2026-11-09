@@ -1,0 +1,54 @@
+---
+title: v6 への移行
+description: zfb 5.x のプロジェクトや組み込みホストを、esbuild を使わないネイティブバンドラーへ移行します。
+sidebar_position: 0.4
+---
+
+## はじめる前に
+
+zfb 6 は、zfb に組み込まれたネイティブの Rolldown バンドラーですべてをバンドルします。対象はページと SSR、islands、クライアントスクリプトとその module worker、`zfb.config.ts`、TypeScript 系のプラグインです。zfb 5 でも `zfb` CLI と npm でインストールしたバイナリは、ページ、islands、クライアントスクリプトとその module worker を既定で Rolldown でバンドルしていましたが、設定ファイル、プラグイン、`ZFB_BUNDLER=esbuild` のフォールバックのために esbuild のバイナリを同梱していました。`rolldown-prototype` フィーチャーを有効にせずに zfb のクレートを組み込んでいた Rust のホスト（`zfb-server` 経由など）は、すべての経路を esbuild でバンドルしていました。zfb 6 は esbuild と、それを選択・設定するすべてのオプションを削除します。互換モードはありません。
+
+既定の設定で `zfb` CLI を実行しているプロジェクトの多くは、ソースを変更する必要はありません。スクリプトと CI に下記の環境変数が残っていないか確認してください。zfb の Rust クレートを組み込むホストは変更点が多くなります。[Rust の組み込みホスト](#rust-の組み込みホスト)を参照してください。
+
+これは zfb が所有する範囲の話です。公開されている zfb のパッケージはどれも esbuild に依存していません。プロジェクトで wrangler、Vitest、tsx などのツールを使っている場合、それらが esbuild をインストールすることがありますが、こちらは影響を受けません。
+
+## 環境変数
+
+シェルのプロファイル、CI のワークフロー、`.env` ファイル、パッケージのスクリプトから `ZFB_BUNDLER` と `ZFB_ROLLDOWN_PROTOTYPE` を削除してください。どちらかを設定すると、`rolldown` を含むどの値でも、`zfb` のすべてのサブコマンドが実行前に失敗します（`zfb --version` と `zfb --help` は出力されます）。
+
+```text
+ZFB_BUNDLER=esbuild: the esbuild bundler backend and its ZFB_BUNDLER selector were removed; zfb always bundles natively. Unset ZFB_BUNDLER.
+```
+
+`ZFB_ESBUILD_BIN` も削除してください。zfb はもう読み取らないため、ビルド時にも実行時にも効果はありません。
+
+Rolldown でのビルド失敗を回避するために `ZFB_BUNDLER=esbuild` や `ZFB_ROLLDOWN_PROTOTYPE=0` を設定していたサイトでは、そのフォールバックはもう使えません。ネイティブバンドラーが拒否する入力とその対処は[トラブルシューティング](./troubleshooting.mdx)を参照し、それ以外のビルド失敗はバンドラーの問題として報告してください。
+
+## バージョン出力とキャッシュ
+
+`zfb --version` は、5.x の `embedded esbuild: <version>` の代わりに `embedded bundler: rolldown-24bc2d0` を出力します。この 2 行目を解析しているスクリプトは更新してください。`zfb -V` の出力は変わりません。
+
+module worker のキャッシュと islands のビルドトークンは、バンドラーの識別子をキーにするようになりました。アップグレード後の最初のビルドでこれらは作り直されます。手動でキャッシュを削除する必要はありません。5.x と 6.0.0 でビルドしたページは、異なる islands のビルドトークンを持ちます。
+
+## 設定ファイルとプラグイン
+
+`zfb.config.ts` と `.ts`/`.tsx`/`.mts`/`.cts` のプラグインエントリは、`zfb` 実行ファイルの子プロセスである監視付きのコンパイラーワーカーがコンパイルします。契約は変わりません。設定ファイルは引き続き Node の組み込みモジュールを import できず、プラグインは引き続き外部パッケージを残したまま Node 22 向けの ESM にコンパイルされます。CLI がワーカーを自分で起動するので、CLI の利用者は何も変更する必要がありません。
+
+## Rust の組み込みホスト
+
+ここに挙げる変更は、zfb の Rust クレートに依存するプログラムにだけ当てはまります。前述の `ZFB_BUNDLER` と `ZFB_ROLLDOWN_PROTOTYPE` のチェックは `zfb` CLI のものです。クレートはこれらの変数を無視し、`ZFB_ESBUILD_BIN` も無視します。
+
+- **すべての経路で Rolldown。** 5.x では、`rolldown-prototype` フィーチャーを有効にしていないホストはページと SSR、islands、クライアントスクリプト、module worker を esbuild でバンドルしていました。また 5.x の組み込みガイドは、`.ts` の設定ファイルには `ZFB_ESBUILD_BIN` を設定するよう案内していました。6.0.0 ではすべての経路が Rolldown を使います。リリース前に、ホスト経由でサイトをビルドし直し、5.x でのビルド結果と比較してください。
+- **コンパイラーワーカーのランチャー。** `.ts` の設定ファイルや TypeScript 系のプラグインをバンドルするライブラリには、明示的なランチャーが必要です。ライブラリが `current_exe()` から導出することはありません。`main` の最初で `zfb_server::run_compiler_worker_if_requested()` を呼び、`ServerBuilder::compiler_worker(WorkerLauncher::new(std::env::current_exe()?).arg(COMPILER_WORKER_ARG))` を渡してください。より低レベルのホストは `zfb_config_loader::LoadOptions::compiler_worker` を設定するか、`PluginHost::spawn_with_timeout` または `PluginHost::spawn_with_timeout_and_diagnostic_sink` にランチャーを渡します。これらの 4 番目の引数は `Option<EmbeddedEsbuildGetter>` から `Option<WorkerLauncher>` に変わりました。ランチャーがないと、`.ts` の設定ファイルは不足しているランチャーを名指しするエラーで失敗します。`zfb.config.json` と JavaScript のプラグインにはランチャーは不要です。[ライブラリとして組み込む](./embed-as-library.mdx)を参照してください。
+- **クレート名の変更。** `zfb-rolldown-prototype` は `zfb-bundler`（`zfb_bundler`）になりました。`zfb`、`zfb-build`、`zfb-islands` の依存から `rolldown-prototype` の Cargo フィーチャーを削除してください。
+- **esbuild の argv とセレクタの廃止。** `run_prepared(&Command)` と `enabled()` は削除されました。型付きの `BundleRequest` を組み立てて `zfb_bundler::bundle` を呼ぶか、`zfb_bundler::generate` のあとに `Generated::publish` を呼んでください。
+- **islands のバンドラー。** `EsbuildSubprocessBundler` と `EsbuildSubprocessConfig` は `IslandsBundler` と `IslandsBundlerConfig` になり、非推奨の別名はありません。`extra_args` と `env_vars` フィールド、`with_extra_env` は、型付きの `externals` と `conditions` フィールド、`node_path` フィールド（または `with_node_path`）に置き換えてください。任意の esbuild 引数に代わるものはありません。`mock_subprocess` は `mock_bundle` に名前を変え、`binary_path` と `with_binary_path` は削除してください。`zfb-islands` は `EXPECTED_ESBUILD_VERSION` と `EXPECTED_ESBUILD_SHA256` を再エクスポートしなくなりました。
+- **削除された esbuild の項目。** `EmbeddedEsbuildGetter`、`resolve_esbuild_binary_with_handle`、`resolve_esbuild_binary_with_env`、`DEFAULT_ESBUILD_SLOT`、`BundlerInput::esbuild_binary`、`render_pipeline::embedded_binary`、`zfb-toolchain-pins` の esbuild ピン、`zfb-binfetch` クレート、`zfb-test-utils` の `locate_esbuild` はなくなりました。呼び出しを削除してください。バイナリを受け取るバンドル経路はもうありません。`zfb-build` の `ModuleWorkerBuildContext::from_esbuild_loader_args` は `from_loader_args` に名前が変わりました。
+- **ソースからのビルド。** `zfb` をソースからビルドしても esbuild をダウンロードしたり配置したりしなくなり、ビルド時の `ZFB_ESBUILD_BIN` による上書きもなくなりました。
+
+## チェックリスト
+
+1. 6.0.0 のパッケージとバイナリを揃えてインストールし、`zfb --version` で `embedded bundler` の行を確認します。
+2. zfb を実行するすべての環境から `ZFB_BUNDLER`、`ZFB_ROLLDOWN_PROTOTYPE`、`ZFB_ESBUILD_BIN` を削除します。
+3. `zfb build` を実行し、主要なページ、islands、クライアントスクリプトをブラウザーで確認します。
+4. 組み込みホストでは、コンパイラーワーカーのランチャーを追加し、`zfb-rolldown-prototype` を `zfb-bundler` に置き換え、削除された esbuild の API を置き換えてから、ホストをビルドし、ホスト経由でサイトをビルドし直して 5.x でのビルド結果と比較します。
