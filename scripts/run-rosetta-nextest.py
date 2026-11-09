@@ -65,7 +65,7 @@ def host_from_metadata(data, cargo):
     packages = [p["id"] for p in cargo["packages"] if p["name"] == "zfb-compiler-worker"]
     require(len(packages) == 1, "worker package missing or ambiguous")
     matches = [v for v in meta["non-test-binaries"].get(packages[0], [])
-               if v["name"] == "compiler-worker-test-host" and v["kind"] == "bin"]
+               if v["name"] == "compiler-worker-test-host" and v["kind"] == "bin-exe"]
     require(len(matches) == 1, "worker host missing or ambiguous in metadata")
     relative = Path(matches[0]["path"])
     require(not relative.is_absolute() and ".." not in relative.parts, "unsafe host path")
