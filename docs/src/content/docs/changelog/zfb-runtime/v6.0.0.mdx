@@ -1,0 +1,17 @@
+---
+title: v6.0.0
+sidebar_position: 55
+---
+
+# v6.0.0
+
+Released: 2026-11-09
+
+## Bug Fixes
+
+- Leave a form submission to the browser when the form was disconnected during the `submit` or `formdata` event, as native submission abandons it. Before, the router fetched and pushed history for it (c1e6efc94).
+- Leave a submission to the browser when a `submit` listener removed, reassociated or retyped the submitter before `FormData` was built. Before, `new FormData(form, submitter)` threw. A plain `Event('submit')` without a submitter still routes (9bf41ed21, b03ece66b).
+- Leave a submission to the browser when a listener moved the form into another document, such as a parent frame. Forms adopted into the router's document keep routing (ea99e8e4f).
+- Encode a routed POST with the encoding selected when the submission started, as Chromium and WebKit do. A `formdata` listener that changed `enctype`/`formenctype` no longer swaps URL-encoded and multipart bodies, and the encoding survives a `zfb:before-preparation` listener that replaces `formData`. An imperative `navigate()` with `formData` still derives the encoding at load time (5cb6a0dfa).
+- End a sent form request whose response is not HTML, fails, or redirects to another origin with `zfb:navigation-aborted` and a console warning, and keep the page. Before, the router fell back to a GET of the action URL after the POST (ac7c04f88, c89b52438).
+- Keep a POST native on a page that is no longer router-eligible (for example a `fallback="none"` page without native view transitions reached by a soft navigation). Before, the router prevented the submit and then loaded the action URL without the body. `navigate(url, { formData })` on such a page keeps the routed path (3cf9c1d88).
