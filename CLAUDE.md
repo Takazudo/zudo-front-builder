@@ -188,11 +188,12 @@ second scheduler; use existing workflows/scripts and preserve original receipts.
   **Rosetta-translated**, never "native Intel". The gate covers functional behavior only:
   performance, timing budgets and CPU-feature-specific code paths are not proven. A bug
   reported from real Intel hardware still reopens the row. Rosetta's general availability
-  ends after macOS 27, so revisit this gate when the Mac moves past macOS 27. Each freshly
-  linked x86_64 binary pays a one-time translation on its first exec (3.0 s measured for a
-  100 MB test host, then 10 ms; #4653), so a test with a shorter deadline on its first spawn
-  fails for that reason only. Classify such a failure by re-running against the warmed binary
-  and record both results. Install the toolchain's JS platform packages for x64 as well
+  ends after macOS 27, so revisit this gate when the Mac moves past macOS 27. An x86_64
+  binary pays a translation on its first exec (3.0 s measured for a 100 MB test host, then
+  10 ms; #4653). Every cargo/nextest invocation re-copies `target/<profile>/` binaries under a
+  new inode, so the first spawn in each run pays it again: a cargo re-run never tests a warm
+  binary. A test whose deadline covers that first spawn fails for that reason only (#4654).
+  Record the first result and its classification. Install the toolchain's JS platform packages for x64 as well
   (`pnpm install --cpu=x64`), because pnpm and Playwright detect Rosetta and pick arm64.
 
 ### Codex Cloud disk capacity and broad Rust verification
