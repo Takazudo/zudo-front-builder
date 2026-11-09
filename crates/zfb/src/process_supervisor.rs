@@ -483,7 +483,9 @@ mod unix {
             let ack = info.with_extension("ack");
             let exit_marker = info.with_extension("exit");
             let mut unrelated = Unrelated::new();
-            let grace = Duration::from_secs(3);
+            // The helper gets a 3 s window between the exit marker and the deadline: measured
+            // marker-to-exit latency reached 860 ms translated under load (#4653).
+            let grace = Duration::from_secs(6);
             let mut cmd = helper_command(&info, "near_deadline");
             cmd.env("ZFB_SUPERVISOR_IGNORE_TERM", "1");
             let (tx, rx) = mpsc::unbounded_channel();
@@ -501,18 +503,18 @@ mod unix {
                 started.elapsed() < Duration::from_millis(1500),
                 "TERM acknowledgement was delayed"
             );
-            time::sleep_until(started + Duration::from_millis(2400)).await;
+            time::sleep_until(started + Duration::from_secs(3)).await;
             fs::write(exit_marker, "exit").unwrap();
-            let result = time::timeout(Duration::from_secs(3), task)
+            let result = time::timeout(Duration::from_secs(6), task)
                 .await
                 .unwrap()
                 .unwrap()
                 .unwrap();
             assert_eq!(result.exit, ExitKind::Exited(0));
             assert_eq!(result.forwarded, Some(libc::SIGTERM));
-            // The old behavior spent another full three seconds in the sweep.
+            // The old behavior spent another full grace window in the sweep (ending at 9 s or later).
             assert!(
-                started.elapsed() < Duration::from_millis(4200),
+                started.elapsed() < Duration::from_millis(7500),
                 "grace window restarted after child exit"
             );
             until(|| process_gone(pid)).await;
