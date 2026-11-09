@@ -1226,23 +1226,23 @@ describe("island shipped-size budget", () => {
   it("records the reviewed Darwin arm64 ceilings with zero allowance", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
-    expect(darwinContract.toolchain.packageVersion).toBe("5.2.2");
+    expect(darwinContract.toolchain.packageVersion).toBe("6.0.0");
     expect(darwinContract.schemaVersion).toBe(4);
     expect(darwinContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("933acb8c129218ef036341db0e2a6d1a19e5e8c5");
+    expect(darwinContract.baselineSourceSha).toBe("d9d64630c9336d68bab2b8374305b93e563cd1af");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "local-native",
-      localReceipt: { sha256: "a06dc9127cb5b94de35fb916b2a4f1bcda22af0991aeba187e41797c61e23eec" },
+      localReceipt: { sha256: "be15702d1c5d654d18f9a2062ecc2a420a41391a75e920441dc6ad9ac188b733" },
     });
     // pnpmLockSha256 and cargoLockSha256 follow the #4645 Darwin bundler-backend
     // transition at 933acb8 (owner-attested local evidence; Cargo.lock under the
     // reviewed esbuild-removal-4635 decision); the ceilings below follow the
     // Rolldown default islands bundler under identity normalizer v2 (#4408, #4417).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
-      "0b5c30279d7d2d98f7b2c238d36c0f9671ec446b4c31708fe1f12064d1a698ea",
+      "cc8dbea0a21cf07c316c9421d425647b2a44f892e1191f0871d61fc1cb850d06",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
       "b4e8f2413e0c8df9df8cd47fb8e555189560ad01bae65d3e9d637d6a51810634",
