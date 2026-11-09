@@ -707,7 +707,7 @@ impl DependencyGraph {
     /// Content/Style/Data/Other edges (built up over previous sessions) into the
     /// live graph without clobbering the `DepKind::Module` edges that
     /// `seed_boot_module_edges` / `refresh_bundle_and_routes` already populated
-    /// from the current session's esbuild metafile.
+    /// from the current session's native compiler graph metadata.
     ///
     /// Rules:
     ///

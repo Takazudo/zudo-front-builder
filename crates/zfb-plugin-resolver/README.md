@@ -22,7 +22,7 @@ still return the legacy `--alias:<specifier>=<path>` spelling. They remain
 available, but the workspace's native bundlers do not build CLI argv from them.
 
 A small shared crate lets `zfb-build` and `zfb-islands` use the same policy
-without making the browser bundler depend on the build orchestrator.
+while keeping the resolver implementation independent of the orchestrator.
 
 ## Public API
 

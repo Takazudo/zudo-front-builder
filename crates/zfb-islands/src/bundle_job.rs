@@ -986,12 +986,12 @@ fn build_job_resolver_inputs(
     })
 }
 
-/// Allocate a scratch `--metafile` location for one real-subprocess job, or
+/// Allocate a scratch graph-metadata location for one native bundle job, or
 /// `None` when no stage-audit policy is configured.
 ///
-/// **Must NOT live inside the subprocess's `--outdir` (`out_dir`)**: the
+/// **Must NOT live inside the job's output directory (`out_dir`)**: the
 /// strict output read-back (`read_back_outdir_with_resource_oracle`,
-/// `read_back_client_script_outdir`) treats `out_dir` as esbuild's exact
+/// `read_back_client_script_outdir`) treats `out_dir` as the native job's exact
 /// promised output set and only special-cases the resource-contract pass's
 /// own `meta.json` — any other stray file left inside `out_dir` (this one
 /// included) is rejected as an unrecognised output. A dedicated system-temp
@@ -1042,7 +1042,7 @@ fn keep_debug_islands_metafile(metafile: &Path) {
 
 /// Run the guard (b) stage-escape audit against a just-emitted metafile and
 /// attach the owning job's identity to any failure. Called immediately after
-/// each real esbuild subprocess succeeds (never for mock subprocesses, and
+/// each native bundle job succeeds (never for mock bundles, and
 /// only when [`IslandsBundlerConfig::stage_audit`] is `Some`).
 fn run_stage_escape_audit(
     policy: &StageAuditPolicy,
@@ -1585,20 +1585,19 @@ impl OneEntryOutput {
 /// `$TMPDIR`). Leading dot so the project's own tooling treats it as hidden.
 const IN_PROJECT_ENTRY_PREFIX: &str = ".zfb-esbuild-entry-";
 
-/// Suffix of the synthesized entry temp file. `.tsx` so esbuild's loader
+/// Suffix of the synthesized entry temp file. `.tsx` so the native loader
 /// inference picks up JSX automatically.
 const IN_PROJECT_ENTRY_SUFFIX: &str = ".tsx";
 
 /// How long an in-project entry file must have been untouched before the
 /// sweep is willing to treat it as abandoned.
 ///
-/// The entry is written once and then only read (by the esbuild subprocess),
-/// so a *live* entry's mtime is at most the duration of one
-/// `bundle_one_entry` call — seconds for a normal islands set, and still well
-/// under a minute for the largest real projects (esbuild itself is the fast
-/// part of a build). Thirty minutes is therefore a ~100x margin against
-/// deleting an entry that a **concurrent** zfb process in the same project
-/// root is still feeding to esbuild — the case that matters, because running
+/// The entry is written once and then only read by the native bundle job, so
+/// a live entry's mtime covers one `bundle_one_entry` call. The original
+/// esbuild-era measurement was seconds for a normal islands set and under a
+/// minute for the largest real projects, giving the thirty-minute age gate
+/// roughly 100x margin. Locks independently protect a file still used by a
+/// concurrent native job, including one suspended beyond that age — running
 /// `zfb dev` and `zfb build` against one project at the same time is normal.
 /// Erring long is nearly free: an orphan lingers for one extra build cycle
 /// instead of forever.
@@ -1630,7 +1629,7 @@ const TSCONFIG_TEMP_SUFFIX: &str = ".json";
 /// by its producer, so the age+lock contract documented on
 /// [`sweep_orphaned_in_project_temp_files`] applies uniformly to all four:
 ///
-/// - the synthesized esbuild entry ([`allocate_locked_entry_tmp`])
+/// - the synthesized native bundle entry ([`allocate_locked_entry_tmp`])
 /// - the islands-entry synthetic tsconfig ([`build_plugin_tsconfig`])
 /// - the worker/client-script synthetic tsconfig ([`build_job_resolver_inputs`])
 /// - the virtual-module materialization (`zfb_plugin_resolver::build_resolver_inputs`,
@@ -1653,8 +1652,10 @@ const IN_PROJECT_TEMP_CLASSES: &[(&str, &str)] = &[
 /// original entry-only class; generalized to the other three classes by
 /// issue #2109).
 ///
-/// **Why this is needed at all.** Every class here is a `tempfile::NamedTempFile`
-/// whose `Drop` removes it, and every producer is synchronous with a
+/// **Why this is needed at all.** Each class has a lifetime handle:
+/// `tempfile::NamedTempFile` for entries/configs or `VirtualModuleFile` for
+/// shared virtual modules. Dropping the last holder removes the file, and
+/// every producer is synchronous with a
 /// locally-owned handle, so the success path *and* every `?` error path
 /// already clean up (proved by `working_dir_is_clean_after_multi_entry_bundle`
 /// in `tests/integration.rs`). What `Drop` cannot cover is termination that
@@ -1670,33 +1671,33 @@ const IN_PROJECT_TEMP_CLASSES: &[(&str, &str)] = &[
 ///
 /// 1. Its mtime must be older than [`ORPHANED_ENTRY_GRACE`]. Every class here
 ///    is written once and then only read, so a live file's mtime is at most
-///    the duration of one esbuild invocation.
+///    the duration of its native bundle job.
 /// 2. An **exclusive** lock on it must be available. Every producer holds a
 ///    *shared* lock on its own file until it returns, so a candidate we can
 ///    lock exclusively is provably unowned. This covers what age cannot: a
-///    bundling process suspended or stuck inside a single esbuild invocation
+///    bundling process suspended or stuck inside a single native bundle job
 ///    for longer than the grace period still holds its lock and is left
 ///    alone.
 ///
 /// The lock is shared rather than exclusive on the owner's side because
-/// esbuild has to read the file, and on Windows an exclusive lock would deny
+/// the native compiler has to read the file, and on Windows an exclusive lock would deny
 /// it that read. Locks also survive nothing: the OS releases them when the
 /// owning process dies, which is precisely the case this sweep handles.
 ///
 /// Best-effort throughout: this is opportunistic hygiene, never a correctness
 /// step, so every I/O failure — including a filesystem with no lock support —
 /// simply leaves the candidate alone.
-/// Allocate the esbuild entry temp file for one
+/// Allocate the native bundle entry temp file for one
 /// [`IslandsBundler::bundle_one_entry`] call, write `entry_source`
 /// into it, and claim it with a **shared** lock.
 ///
 /// Split out of `bundle_one_entry` so the ownership claim — the production
 /// half of the sweep's safety contract — is reachable from a unit test
-/// without spawning esbuild (see
+/// without running the native compiler (see
 /// `allocated_entry_is_locked_so_a_concurrent_sweep_spares_it`).
 ///
 /// The entry is allocated inside `working_dir` whenever that exists, so
-/// esbuild's upward `node_modules` walk starts beside the project (see the
+/// the native resolver's upward `node_modules` walk starts beside the project (see the
 /// long note at the call site); otherwise it falls back to the system
 /// tempdir, which only the `zfb-islands` unit tests take.
 ///
@@ -1708,7 +1709,7 @@ const IN_PROJECT_TEMP_CLASSES: &[(&str, &str)] = &[
 /// The lock lets a concurrent process's sweep prove the entry is still live
 /// rather than inferring it from age alone (see
 /// [`sweep_orphaned_in_project_temp_files`]). It is *shared*, not exclusive:
-/// esbuild only reads the entry, and on Windows an exclusive lock would deny
+/// The native compiler only reads the entry, and on Windows an exclusive lock would deny
 /// it that read. It is released when the returned handle drops — including
 /// when the OS closes the handle for a process that never unwinds, which is
 /// exactly the case the sweep exists for. Best-effort: on a filesystem
@@ -1747,7 +1748,7 @@ fn matches_in_project_temp_class(name: &str) -> bool {
 }
 
 /// Does `path` name one of zfb-islands' own in-project temp files
-/// ([`IN_PROJECT_TEMP_CLASSES`]) — the synthesized esbuild entry, either
+/// ([`IN_PROJECT_TEMP_CLASSES`]) — the synthesized native bundle entry, either
 /// synthetic tsconfig class, or the virtual-module materialization?
 ///
 /// The dev watcher's intake suppression consumes this (issue #3215): every
@@ -2093,10 +2094,10 @@ fn metafile_input_matches_resource(input_path: &str, expected_source_suffix: &st
             .is_some_and(|path| path.ends_with(expected_source_suffix))
 }
 
-/// Metafile paths are relative to esbuild's configured working directory by
+/// Metafile paths are relative to the native compiler's configured working directory by
 /// default. Resolve and canonicalize each key before comparing it with the
 /// regular staging output we just read, so the comparison stays exact without
-/// relying on a non-contract `--abs-paths=metafile` flag.
+/// relying on any alternate graph-output path spelling.
 pub(crate) fn metafile_output_path(output_path: &str, working_dir: &Path) -> Result<PathBuf> {
     let path = Path::new(output_path);
     let resolved = if path.is_absolute() {
@@ -2680,17 +2681,17 @@ impl IslandsBundler {
     ///
     /// Unlike the shared-islands path (which synthesises a virtual entry that
     /// imports all islands), a client-script file IS the entry — no synthetic
-    /// wrapper is generated. The file is bundled with `--splitting=false` so any
+    /// wrapper is generated. The native request disables code splitting so any
     /// dynamic `import()` calls are inlined into the single output file (identical
-    /// rationale: a single emitted client-script file must contain its imports.
+    /// rationale: a single emitted client-script file must contain its imports).
     ///
     /// `entry_name` is the logical name for this bundle — typically the file stem
     /// minus the `.client` suffix (e.g. `"search-widget"` for
-    /// `search-widget.client.ts`). It is used as `--entry-names=<entry_name>` so
+    /// `search-widget.client.ts`). It sets the request's entry-name template so
     /// the read-back function can find the output file by name.
     ///
     /// `entry_path` is the absolute path to the `.client.{ts,tsx,js,jsx}` source
-    /// file. Because the file already exists on disk, esbuild's upward
+    /// file. Because the file already exists on disk, the native compiler's upward
     /// `node_modules` resolution walk starts from its directory — no temp entry
     /// file is needed. This means bare imports in the file resolve against
     /// `node_modules/` in the same directory or any ancestor, including the

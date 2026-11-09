@@ -20,8 +20,8 @@
 //! until bundling completes: its [`VirtualModuleFile`] handles pin the
 //! content-addressed files, and the last holder removes each file on drop.
 //!
-//! This leaf crate shares the policy without introducing a dependency from
-//! `zfb-islands` on the build orchestrator.
+//! This leaf crate shares the policy between the server and browser callers
+//! while keeping the resolver implementation independent of the orchestrator.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

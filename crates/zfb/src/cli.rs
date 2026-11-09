@@ -354,11 +354,11 @@ pub struct ScratchDirArg {
     pub scratch_dir: Option<PathBuf>,
 }
 
-/// Per-invocation `--define KEY=EXPR` esbuild substitutions for `dev`,
+/// Per-invocation `--define KEY=EXPR` bundler substitutions for `dev`,
 /// `build`, and `check` (not `preview`, which bundles nothing).
 #[derive(Debug, Default, Args)]
 pub struct DefineArgs {
-    /// Add an esbuild define substitution, overriding `bundle.define` in the
+    /// Add a bundler define substitution, overriding `bundle.define` in the
     /// config per key. Repeatable; the last occurrence of a key wins.
     #[arg(
         long = "define",
@@ -467,7 +467,7 @@ pub struct BuildArgs {
     )]
     no_strict_content_bridge: bool,
 
-    /// Fail the build when esbuild resolves a plain `.css` import from a
+    /// Fail the build when the bundler resolves a plain `.css` import from a
     /// JavaScript/TypeScript module, because those bytes are not emitted.
     #[arg(
         long = "strict-plain-css-imports",
