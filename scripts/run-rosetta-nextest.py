@@ -48,6 +48,26 @@ def x64(path):
     return desc
 
 
+def failure_exit(child_exit):
+    if child_exit is None or child_exit == 0:
+        return 2
+    return 128 - child_exit if child_exit < 0 else child_exit
+
+
+def nextest_command(executable, *arguments):
+    # Cargo searches CARGO_HOME/bin before PATH for external subcommands.
+    # Invoke the inspected runner directly so that search cannot swap architectures.
+    return [str(executable), "nextest", *arguments]
+
+
+def resolve_nextest():
+    executable = shutil.which("cargo-nextest")
+    require(executable is not None, "cargo-nextest missing from PATH")
+    path = Path(executable).resolve()
+    x64(path)
+    return path
+
+
 def host_from_metadata(data, cargo):
     # Names and relative-path semantics are pinned to nextest 0.9.140.
     require(set(data) == {"rust-build-meta", "rust-binaries"}, "unsupported binary metadata envelope")
@@ -151,12 +171,13 @@ def main():
         require(output(["arch", "-x86_64", "sysctl", "-n", "sysctl.proc_translated"]) == "1", "Rosetta required")
         require(output(["git", "rev-parse", "HEAD"]) == a.source_sha, "source SHA mismatch")
         require(not output(["git", "status", "--porcelain=v1", "-uall"]), "checkout must be clean")
-        require(output(["cargo", "nextest", "--version"]).startswith("cargo-nextest 0.9.140 "), "nextest 0.9.140 required")
+        nextest = resolve_nextest()
+        require(output(nextest_command(nextest, "--version")).startswith("cargo-nextest 0.9.140 "), "nextest 0.9.140 required")
         rust = output(["rustc", "-vV"])
         require("host: x86_64-apple-darwin" in rust, "x64 Rust toolchain required")
         receipt["tools"] = {}
         for tool in ("cargo", "rustc", "cargo-nextest"):
-            executable = Path(shutil.which(tool) or "missing").resolve()
+            executable = nextest if tool == "cargo-nextest" else Path(shutil.which(tool) or "missing").resolve()
             receipt["tools"][tool] = {"path": str(executable), "architecture": x64(executable), **identity(executable)}
         receipt["rustc"] = rust
         receipt["config_sha256"] = {str(f.relative_to(root)): sha(f) for f in
@@ -170,7 +191,7 @@ def main():
             return out / (name + ".stdout")
         cargo_file = run(["cargo", "metadata", "--locked", "--format-version", "1"], "cargo-metadata")
         scope = ["--workspace"] if a.workspace else ["-p", "zfb-compiler-worker"]
-        binaries_file = run(["cargo", "nextest", "list", "--locked", *scope, "--list-type", "binaries-only", "--message-format", "json"], "binaries-metadata")
+        binaries_file = run(nextest_command(nextest, "list", "--locked", *scope, "--list-type", "binaries-only", "--message-format", "json"), "binaries-metadata")
         binary_data = json.loads(binaries_file.read_text())
         require(Path(binary_data["rust-build-meta"]["target-directory"]).resolve() == target.resolve(), "metadata does not use exclusive target")
         host = host_from_metadata(binary_data, json.loads(cargo_file.read_text()))
@@ -191,10 +212,11 @@ def main():
         warm(host, before, evidence=receipt["warm"])
         receipt["before_run"] = identity(host)
         require(receipt["before_run"] == before, "host replaced after warm")
-        argv = ["cargo", "nextest", "run", "--cargo-metadata", str(cargo_file), "--binaries-metadata", str(binaries_file), "--profile", "default", "--retries", "0", "--no-fail-fast", "--tool-config-file", "rosetta:" + str(config), "-E", a.filter]
+        argv = nextest_command(nextest, "run", "--cargo-metadata", str(cargo_file), "--binaries-metadata", str(binaries_file), "--profile", "default", "--retries", "0", "--no-fail-fast", "--tool-config-file", "rosetta:" + str(config), "-E", a.filter)
         require({str(f): identity(f) for f in test_paths} == test_identities, "test binaries changed before run")
         argv = ["/usr/bin/arch", "-x86_64", "/bin/sh", "-c", 'translated=$(sysctl -n sysctl.proc_translated); printf "rosetta_launcher_proc_translated=%s\n" "$translated" >&2; test "$translated" = 1 || exit 125; exec "$@"', "rosetta-nextest", *argv]
         receipt["commands"].append(argv)
+        require(identity(nextest) == {k: receipt["tools"]["cargo-nextest"][k] for k in ("device", "inode", "size", "sha256")}, "nextest runner changed before run")
         receipt["execution"] = "started"
         since = time.time_ns()
         with (out / "run.stdout").open("wb") as stdout, (out / "run.stderr").open("wb") as stderr:
@@ -212,7 +234,7 @@ def main():
     except (Refusal, OSError, KeyError, TypeError, ValueError, subprocess.SubprocessError, ET.ParseError) as e:
         receipt["error"] = str(e)
         print(str(e))
-        return receipt.get("child_exit") or 2
+        return failure_exit(receipt.get("child_exit"))
     finally:
         if created:
             (out / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")

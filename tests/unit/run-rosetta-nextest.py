@@ -16,6 +16,30 @@ spec.loader.exec_module(m)
 
 
 class Checks(unittest.TestCase):
+    def test_signal_exit_mapping(self):
+        self.assertEqual(m.failure_exit(-15), 143)
+        self.assertEqual(m.failure_exit(100), 100)
+        self.assertEqual(m.failure_exit(None), 2)
+        self.assertEqual(m.failure_exit(0), 2)
+
+    def test_direct_runner_ignores_competing_cargo_home_binary(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve()
+            intended = root / 'selected'
+            competitor = root / 'cargo-home/bin'
+            intended.mkdir()
+            competitor.mkdir(parents=True)
+            for directory, marker in [(intended, 'selected'), (competitor, 'wrong-architecture')]:
+                script = directory / 'cargo-nextest'
+                script.write_text('#!/bin/sh\nprintf "%s\\n" "' + marker + ':$*"\n')
+                script.chmod(0o755)
+            with patch.dict(m.os.environ, {'PATH': str(intended), 'CARGO_HOME': str(root / 'cargo-home')}), patch.object(m, 'x64'):
+                runner = m.resolve_nextest()
+                self.assertEqual(runner, intended / 'cargo-nextest')
+                for operation in ('--version', 'list', 'run'):
+                    command = m.nextest_command(runner, operation)
+                    self.assertEqual(subprocess.check_output(command, text=True).strip(), 'selected:nextest ' + operation)
+
     def test_metadata_requires_exact_host_and_lifecycle(self):
         cargo = {"target_directory": "/target", "packages": [{"id": "worker", "name": "zfb-compiler-worker"}]}
         data = {"rust-build-meta": {"target-directory": "/target", "build-directory": "/target", "non-test-binaries": {"worker": [{"name": "compiler-worker-test-host", "kind": "bin-exe", "path": "debug/compiler-worker-test-host"}]}}, "rust-binaries": {"life": {"binary-name": "lifecycle", "package-id": "worker", "binary-path": "/target/debug/lifecycle"}}}
