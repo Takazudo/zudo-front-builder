@@ -5,6 +5,7 @@ Local qualification only. Run under the heavy guard with an x64 toolchain PATH.
 Metadata schema: nextest-metadata/src/test_list.rs at cargo-nextest-0.9.140.
 """
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -54,6 +55,13 @@ def host_from_metadata(data, cargo):
     target = Path(meta["target-directory"])
     require(target.is_absolute() and target.resolve() == Path(cargo["target_directory"]).resolve(),
             "target-directory mismatch")
+    build = Path(meta["build-directory"])
+    require(build.is_absolute() and build.resolve().is_relative_to(target.resolve()), "build-directory escapes exclusive target")
+    require(build.absolute() == build.resolve(), "symlink build-directory refused")
+    for binary in data["rust-binaries"].values():
+        path = Path(binary["binary-path"])
+        require(path.is_absolute() and path.resolve().is_relative_to(target.resolve()), "test binary escapes exclusive target")
+        require(path.absolute() == path.resolve(), "symlink test binary path refused")
     packages = [p["id"] for p in cargo["packages"] if p["name"] == "zfb-compiler-worker"]
     require(len(packages) == 1, "worker package missing or ambiguous")
     matches = [v for v in meta["non-test-binaries"].get(packages[0], [])
@@ -68,15 +76,35 @@ def host_from_metadata(data, cargo):
     return host
 
 
-def warm(host, before, timeout=30):
+def warm(host, before, timeout=30, evidence=None):
+    evidence = evidence if evidence is not None else {}
+    evidence.update({"command": [str(host)], "execution": "not_started"})
     require(identity(host) == before, "host changed before warm")
-    started = time.time_ns()
-    result = subprocess.run([str(host)], stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
+    evidence.update({"started_ns": time.time_ns(), "execution": "started", "timeout_seconds": timeout})
+    try:
+        result = subprocess.run([str(host)], stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
+        stdout, stderr = result.stdout, result.stderr
+        evidence.update({"exit": result.returncode, "execution": "completed"})
+    except subprocess.TimeoutExpired as error:
+        stdout, stderr = error.stdout or b"", error.stderr or b""
+        evidence.update({"exit": None, "execution": "timeout"})
+        raise
+    except OSError as error:
+        evidence.update({"exit": None, "execution": "launch_failed", "error": str(error)})
+        raise
+    finally:
+        evidence["ended_ns"] = time.time_ns()
+        evidence["elapsed_ns"] = evidence["ended_ns"] - evidence["started_ns"]
+        if "stdout" in locals():
+            evidence.update({"stdout_base64": base64.b64encode(stdout).decode(),
+                             "stderr_base64": base64.b64encode(stderr).decode(),
+                             "stdout": stdout.decode(errors="replace"),
+                             "stderr": stderr.decode(errors="replace")})
     require(result.returncode == 64 and result.stdout == b"" and result.stderr ==
             b"compiler-worker-test-host: started without the private worker argument\n",
             f"unexpected warm result: exit {result.returncode}, {result.stderr!r}")
     require(identity(host) == before, "host changed during warm")
-    return {"exit": result.returncode, "stdout": result.stdout.decode(), "stderr": result.stderr.decode(), "started_ns": started, "elapsed_ns": time.time_ns() - started}
+    return evidence
 
 
 def junit_counts(path, expected, since, expected_name=None):
@@ -159,7 +187,8 @@ def main():
         report = out / "junit.xml"
         config.write_text('[profile.default.junit]\npath = ' + json.dumps(str(report)) + '\nstore-success-output = true\nstore-failure-output = true\n')
         receipt["commands"].append([str(host)])
-        receipt["warm"] = warm(host, before)
+        receipt["warm"] = {}
+        warm(host, before, evidence=receipt["warm"])
         receipt["before_run"] = identity(host)
         require(receipt["before_run"] == before, "host replaced after warm")
         argv = ["cargo", "nextest", "run", "--cargo-metadata", str(cargo_file), "--binaries-metadata", str(binaries_file), "--profile", "default", "--retries", "0", "--no-fail-fast", "--tool-config-file", "rosetta:" + str(config), "-E", a.filter]
