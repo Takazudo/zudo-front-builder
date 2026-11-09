@@ -358,7 +358,7 @@ pub(crate) fn assemble_bundler_input(
     // - WarnAndEmpty (dev): log a warning and continue with an empty map so
     //   the dev server still boots even when CSS is temporarily broken.
     // Virtual-module claim sources a+c (issue #1775): build the same
-    // `ModuleWorkerBuildContext` shape esbuild will see for this project's
+    // `ModuleWorkerBuildContext` used by native browser jobs for this project's
     // plugin registrations and discover the file set behind any registered
     // virtual module, so a sibling `.module.css` reached ONLY through a
     // virtual module (no direct alias) still lands in the class map. Folded
