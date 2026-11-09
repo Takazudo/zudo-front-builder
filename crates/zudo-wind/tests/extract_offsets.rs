@@ -430,6 +430,33 @@ fn script_template_expression_markup_does_not_break_outer_attribute() {
 }
 
 #[test]
+fn script_template_attribute_expression_does_not_consume_static_class() {
+    let source = r#"<script>const html = `<div ${on ? 'class="' : ''} class="flex ${x} block"></div>`;</script>"#;
+    let result = extract_candidates(source.as_bytes(), SourceKind::Html);
+    assert_positions(source, &result);
+    for class in ["flex", "block"] {
+        let occurrence = class_occurrence(&result, class);
+        assert_eq!(occurrence.byte_offset, source.find(class).unwrap());
+        assert_eq!(occurrence.byte_length, class.len());
+        assert!(!occurrence.adjacent_interpolation);
+    }
+}
+
+#[test]
+fn script_template_interpolation_after_escaped_backslash_keeps_its_boundary() {
+    let source =
+        r#"<script>const html = `<div class="flex \\${on ? '"' : ''} block"></div>`;</script>"#;
+    let result = extract_candidates(source.as_bytes(), SourceKind::Html);
+    assert_positions(source, &result);
+    for class in ["flex", "block"] {
+        let occurrence = class_occurrence(&result, class);
+        assert_eq!(occurrence.byte_offset, source.find(class).unwrap());
+        assert_eq!(occurrence.byte_length, class.len());
+        assert!(!occurrence.adjacent_interpolation);
+    }
+}
+
+#[test]
 fn script_template_escaped_interpolation_stays_literal_after_decoding() {
     let source =
         r#"<script>const html = `<div class="flex \${name} grid ${on} block"></div>`;</script>"#;

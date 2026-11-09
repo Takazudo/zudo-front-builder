@@ -41,7 +41,8 @@ impl Interpolations<'_> {
             Self::Template { spans, offset } => spans
                 .binary_search_by_key(&(offset + at), |&(start, _)| start)
                 .ok()
-                .map(|index| spans[index].1 - offset),
+                .and_then(|index| spans[index].1.checked_sub(offset))
+                .filter(|&close| close <= text.len()),
         }
     }
 
@@ -156,7 +157,13 @@ fn attributes(
     let mut class_attribute = false;
     while i < bytes.len() {
         while i < bytes.len() && !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
-            i += 1;
+            // Attribute-position expressions can themselves contain text
+            // such as `class="`. It is not a static attribute of this tag.
+            if let Some(close) = interpolations.at(tag, i) {
+                i = close;
+            } else {
+                i += 1;
+            }
         }
         let start = i;
         while i < bytes.len()
@@ -200,7 +207,9 @@ fn attributes(
                 i = close;
                 continue;
             }
-            if bytes[i] == b'\\' {
+            // A real JS interpolation can follow a decoded backslash
+            // (an even raw backslash run). Its known span stays authoritative.
+            if bytes[i] == b'\\' && interpolations.at(tag, i + 1).is_none() {
                 i += 1;
             }
             i += 1;
