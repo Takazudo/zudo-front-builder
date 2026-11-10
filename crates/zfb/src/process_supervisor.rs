@@ -378,7 +378,9 @@ mod unix {
                     r#""$1" --exact process_supervisor::unix::tests::grandchild_helper & while [ ! -s "$ZFB_SUPERVISOR_HELPER_INFO" ]; do sleep .01; done; exit 0"#
                 }
                 "near_deadline" => {
-                    r#"trap 'printf ready > "$ZFB_SUPERVISOR_TERM_ACK"' TERM; "$1" --exact process_supervisor::unix::tests::grandchild_helper & while [ ! -s "$ZFB_SUPERVISOR_HELPER_INFO" ]; do sleep .01; done; while [ ! -e "$ZFB_SUPERVISOR_EXIT_MARKER" ]; do sleep .01; done; exit 0"#
+                    // The parent owns the grandchild-readiness barrier. Builtin read avoids
+                    // fork/exec polling during the grace window and retries after TERM.
+                    r#"trap 'printf ready > "$ZFB_SUPERVISOR_TERM_ACK"' TERM; "$1" --exact process_supervisor::unix::tests::grandchild_helper & while :; do if IFS= read -r request && [ "$request" = exit ]; then exit 0; fi; done"#
                 }
                 _ => unreachable!(),
             };
@@ -386,11 +388,21 @@ mod unix {
                 .arg(exe)
                 .env("ZFB_SUPERVISOR_HELPER_INFO", info)
                 .env("ZFB_SUPERVISOR_TERM_ACK", info.with_extension("ack"))
-                .env("ZFB_SUPERVISOR_EXIT_MARKER", info.with_extension("exit"))
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
             cmd
+        }
+
+        fn controlled_helper_command(info: &Path) -> (Command, std::os::unix::net::UnixStream) {
+            let (reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
+            let mut cmd = helper_command(info, "near_deadline");
+            let reader: std::os::fd::OwnedFd = reader.into();
+            cmd.stdin(Stdio::from(reader));
+            cmd.env("ZFB_SUPERVISOR_IGNORE_TERM", "1");
+            // Keep the writer alive through the supervisor outcome: EOF is not an exit
+            // command, and the shell deliberately retries failed/interrupted reads.
+            (cmd, writer)
         }
 
         async fn tree_case(
@@ -411,11 +423,14 @@ mod unix {
             } else {
                 Duration::from_millis(200)
             };
-            let task = tokio::spawn(supervise_with(
-                helper_command(&info, mode),
-                SuperviseOptions { grace },
-                rx,
-            ));
+            let (cmd, _exit_control) = if mode == "near_deadline" {
+                let (cmd, mut writer) = controlled_helper_command(&info);
+                std::io::Write::write_all(&mut writer, b"\nnot-exit\n").unwrap();
+                (cmd, Some(writer))
+            } else {
+                (helper_command(&info, mode), None)
+            };
+            let task = tokio::spawn(supervise_with(cmd, SuperviseOptions { grace }, rx));
             until(|| info.exists()).await;
             let data = fs::read_to_string(&info).unwrap();
             let mut fields = data.split_whitespace();
@@ -477,28 +492,30 @@ mod unix {
             assert!(start.elapsed() < Duration::from_secs(5));
         }
         #[tokio::test]
+        async fn controlled_helper_requires_an_explicit_exit_command() {
+            let result = tree_case(Some(libc::SIGTERM), "near_deadline", false, false).await;
+            assert_eq!(result.exit, ExitKind::Signaled(libc::SIGKILL));
+            assert_eq!(result.forwarded, Some(libc::SIGTERM));
+        }
+        #[tokio::test]
         async fn descendant_sweep_uses_remaining_signal_grace() {
-            // #4653: the helper's `sleep .01` poll loop took up to 860 ms to notice the exit
-            // marker (Rosetta x86_64 under 10-core load), so the marker lands EXIT_WINDOW before
-            // the deadline. Every bound below is derived from these constants.
+            // #4653: use an explicit exit command instead of filesystem/sleep polling in
+            // the timed phase. Preserve the reviewed grace and exit window unchanged.
             const GRACE: Duration = Duration::from_secs(6);
             const EXIT_WINDOW: Duration = Duration::from_secs(3);
             const ACK_BOUND: Duration = Duration::from_millis(1500);
-            let marker_at = GRACE - EXIT_WINDOW;
-            // `supervise_with` arms the shared deadline synchronously after forwarding the
-            // signal, before the helper's trap can write the ack, so a correct sweep ends by
-            // ACK_BOUND + GRACE. A restarted window starts when the child exits, after the
-            // marker, so it ends at marker_at + GRACE or later. Assert at the midpoint.
+            let release_at = GRACE - EXIT_WINDOW;
+            // Budget ACK_BOUND for forwarding/acknowledgement, then one shared GRACE.
+            // A restarted window starts when the child exits, after the exit command,
+            // so it ends at release_at + GRACE or later. Assert at the midpoint.
             let correct_by = ACK_BOUND + GRACE;
-            let restarted_from = marker_at + GRACE;
+            let restarted_from = release_at + GRACE;
             let restart_bound = (correct_by + restarted_from) / 2;
             let dir = tempfile::tempdir().unwrap();
             let info = dir.path().join("helper.info");
             let ack = info.with_extension("ack");
-            let exit_marker = info.with_extension("exit");
             let mut unrelated = Unrelated::new();
-            let mut cmd = helper_command(&info, "near_deadline");
-            cmd.env("ZFB_SUPERVISOR_IGNORE_TERM", "1");
+            let (cmd, mut exit_writer) = controlled_helper_command(&info);
             let (tx, rx) = mpsc::unbounded_channel();
             let task = tokio::spawn(supervise_with(cmd, SuperviseOptions { grace: GRACE }, rx));
             until(|| info.exists()).await;
@@ -514,9 +531,9 @@ mod unix {
                 started.elapsed() < ACK_BOUND,
                 "TERM acknowledgement was delayed"
             );
-            time::sleep_until(started + marker_at).await;
-            fs::write(exit_marker, "exit").unwrap();
-            // Measured from the marker write: the child exits by the deadline, at most
+            time::sleep_until(started + release_at).await;
+            std::io::Write::write_all(&mut exit_writer, b"exit\n").unwrap();
+            // Measured from the exit command: the child exits by the deadline, at most
             // EXIT_WINDOW + ACK_BOUND later, and a restarted window then runs a full GRACE. The
             // timeout outlasts that so the regression reaches the restart assertion below (#4653).
             let result = time::timeout(
