@@ -423,9 +423,8 @@ mod unix {
             } else {
                 Duration::from_millis(200)
             };
-            let (cmd, _exit_control) = if mode == "near_deadline" {
-                let (cmd, mut writer) = controlled_helper_command(&info);
-                std::io::Write::write_all(&mut writer, b"\nnot-exit\n").unwrap();
+            let (cmd, mut exit_control) = if mode == "near_deadline" {
+                let (cmd, writer) = controlled_helper_command(&info);
                 (cmd, Some(writer))
             } else {
                 (helper_command(&info, mode), None)
@@ -436,6 +435,11 @@ mod unix {
             let mut fields = data.split_whitespace();
             let pid: i32 = fields.next().unwrap().parse().unwrap();
             let port: u16 = fields.next().unwrap().parse().unwrap();
+            if let Some(writer) = &mut exit_control {
+                // Send only after readiness so an incorrectly accepted line fails the
+                // exit-status assertion, rather than racing grandchild startup.
+                std::io::Write::write_all(writer, b"\nnot-exit\n").unwrap();
+            }
             if let Some(sig) = sig {
                 if !queued {
                     tx.send(sig).unwrap();
@@ -499,7 +503,7 @@ mod unix {
         }
         #[tokio::test]
         async fn descendant_sweep_uses_remaining_signal_grace() {
-            // #4653: use an explicit exit command instead of filesystem/sleep polling in
+            // #4653: use an explicit exit command instead of exit-marker filesystem polling in
             // the timed phase. Preserve the reviewed grace and exit window unchanged.
             const GRACE: Duration = Duration::from_secs(6);
             const EXIT_WINDOW: Duration = Duration::from_secs(3);
