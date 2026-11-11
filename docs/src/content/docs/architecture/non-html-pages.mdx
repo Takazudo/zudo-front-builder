@@ -151,17 +151,15 @@ in-engine `contentType` is purely a dev-server convenience.
 
 ## Stale-output cleanup across builds
 
-The output extension can change between builds. Today's
-`pages/raw.tsx` builds `/raw.html`; tomorrow you add
-`export const extension = "txt"` and it builds `/raw.txt`. The
-engine deletes the previous-build output for that route when the
-extension changes, so `dist/` doesn't accumulate stale files
-(`/raw.html` left behind beside the new `/raw.txt`).
+A normal `pages/raw.tsx` without an extension override writes
+`dist/raw/index.html`, served at `/raw`. Adding `export const extension = "txt"`
+changes the output to `dist/raw.txt`, served at `/raw.txt`.
 
-The cleanup runs as part of the build orchestrator's atomic write
-phase — see [Build Pipeline](./build-pipeline.mdx) — and is
-keyed on the route's stable identity (the source path), not its
-output filename, so renames don't leak old files either.
+Each `zfb build` clears `outDir` before `preBuild` and generates the current
+site afresh. That clean-output build removes old extension outputs and renamed
+routes; there is no separate atomic per-source cleanup phase that swaps an
+old file for the new one. A failed build can leave an incomplete tree. See
+[Build Pipeline](./build-pipeline.mdx).
 
 ## Example: an XML sitemap from a content collection
 

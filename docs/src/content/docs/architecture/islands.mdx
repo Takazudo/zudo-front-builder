@@ -58,7 +58,7 @@ The heading and `<main>` stay static HTML. Only `Counter` ships JavaScript. The 
 ### What happens from build to browser
 
 1. **Render.** zfb renders the page to HTML (at build time for a static page, or per request for an SSR route), including the counter's initial output (`Count: 0`), and wraps that output in a `<div data-zfb-island="Counter" …>` element that carries the island's identity and props.
-2. **Bundle.** Every registered island target goes into one shared browser bundle, `islands-<hash>.js`, and a single module `<script>` that loads it is added to `<head>`. See [What the bundler produces for N islands](#what-the-bundler-produces-for-n-islands).
+2. **Bundle.** Every registered island target goes into one shared browser bundle, `islands-<hash>.js`, and a single module `<script>` that loads it is added to `<head>` of every prerendered HTML page in a build with islands, including pages without island roots. A no-island build emits no islands script. This build-time injection does not promise that arbitrary request-time SSR responses include the script. See [What the bundler produces for N islands](#what-the-bundler-produces-for-n-islands).
 3. **Load.** In the browser, the bundle calls `mountIslands()`. For each wrapper, the runtime waits for the wrapper's `data-when` timing (`load` by default), checks its identity and JSON props, and hydrates the existing child DOM; the button gets its `on:click` listener without being rendered again. See [How islands are loaded](#how-islands-are-loaded).
 4. **Mounted.** The wrapper receives `data-zfb-island-mounted` after the client root mounts. See [Observing mount state](#how-islands-are-loaded-observing-mount-state).
 
@@ -917,7 +917,7 @@ Standard script attributes such as `defer`, `async`, and `nonce` are supported d
 
 **Client scripts or custom build steps** — zfb automatically bundles [`*.client.*` entries](../guides/client-scripts.mdx) as a second browser-entry pipeline. For any other TypeScript module, add a separate esbuild, Rolldown or Rollup step and reference its output from a `<script src>`. Modules that are not reachable from a `"use client"` graph or a `.client.*` entry remain server-only.
 
-What you **cannot** do: import a regular (non-`"use client"`) `.ts` or `.tsx` module from a page and expect its browser-side code to reach the client. Modules without the directive are server-only — SWC compiles and evaluates them at build time, and none of their bytes are included in the output.
+What you **cannot** do: import a regular (non-`"use client"`) `.ts` or `.tsx` module from a page and expect its browser-side code to reach the client. A server-side page import alone does not establish a browser entry. Native Rolldown bundles it into the page application, which embedded V8 executes and zudo-react renders. A module without the directive can still enter the browser graph through an island or client-script import/re-export; `"use client"` establishes eligibility for an explicit Island target, not an absolute server-only/client-only split.
 
 ## When not to use islands
 

@@ -7,7 +7,7 @@ category: Concepts
 
 <Info title="What this page covers">
 
-How `.mdx` content collection entries become renderable JSX components, what arrives by default through `getCollection()`, how to override individual HTML elements with your own components, how the global `mdx-components.tsx` convention works, and the complete props contract each override receives.
+How `.mdx` content collection entries become renderable JSX components, what arrives by default through `getCollection()`, how to override individual HTML elements with your own components, how the global `mdx-components.tsx` convention works, and the baseline props and additional attributes each override can receive.
 
 </Info>
 
@@ -26,7 +26,7 @@ export default function MDXContent({ components }: { components?: Record<string,
 }
 ```
 
-When MDX encounters `<p>some text</p>` (which is what a markdown paragraph compiles to), it looks up `p` in the `components` map. If you supply one, your component renders. If you don't, the raw HTML element renders. The same lookup applies to your custom JSX — `<Note>...</Note>` in the post body is resolved against `components.Note` at evaluation time.
+When MDX encounters `<p>some text</p>` (which is what a markdown paragraph compiles to), it looks up `p` in the `components` map. If you supply one, your component renders. If you don't, the raw HTML element renders. The same lookup applies to your custom JSX — `<Note>...</Note>` in the post body is resolved against `components.Note` at evaluation time. Register source TSX components in the root `mdx-components.tsx` map or pass them in the per-call map. The current emitter drops original MDX ESM (`import`/`export`) statements; importing a TSX component inside the `.mdx` source does not establish a usable binding.
 
 ## What `getCollection()` already gives you
 
@@ -77,7 +77,7 @@ The current `defaultComponents` set covers:
 
 Each is also exported individually (`import { ContentLink } from "@takazudo/zfb"`) for cases where you want a single override without dragging in the whole map.
 
-`h1` is intentionally absent: page titles render `<h1>` from frontmatter, per the zudo-doc convention. Adding `h1` to your overrides would silently double-render the title.
+`h1` is intentionally absent: page titles render `<h1>` from frontmatter, per the zudo-doc convention. Keep that page title separate from content-body headings. An authored Markdown `h1` remains intentionally unslugged even though the component map can override its rendering.
 
 ## The global `mdx-components.tsx` convention
 
@@ -114,11 +114,13 @@ A common pattern is to wrap headings in a styled container:
 
 ```tsx
 // mdx-components.tsx (project root)
-type Props = { id?: string; children?: unknown };
+import type { HTMLAttributes } from "@takazudo/zfb/zudo-react";
 
-function MyH2({ id, children }: Props) {
+type Props = HTMLAttributes<HTMLHeadingElement>;
+
+function MyH2({ children, ...attrs }: Props) {
   return (
-    <h2 id={id}>
+    <h2 {...attrs}>
       <span>{children}</span>
     </h2>
   );
@@ -145,7 +147,7 @@ The `defaultComponents` map pre-wires 11 of these (h2–h4, p, a, strong, blockq
 
 ## Props contract
 
-Each override component receives only the attributes that the markdown pipeline actually produces for that element. There is no universal `{...props}` spread of arbitrary HTML attributes — only the fields listed below are passed:
+Each override receives the attributes emitted for that element by the Markdown/MDX pipeline. The table below lists common baseline props, **not an exhaustive whitelist**. Feature-generated and authored attributes can also be forwarded, including table alignment `style`, checkbox `type`/`checked`/`disabled`, and footnote `data-*`, `aria-*` and `id` attributes.
 
 | Element(s)    | Props received                                        |
 | ------------- | ----------------------------------------------------- |
@@ -158,7 +160,7 @@ Each override component receives only the attributes that the markdown pipeline 
 | `ol`          | `start` (only when non-1), `children`                |
 | all others    | `children` only                                       |
 
-If you add `{...rest}` to an override and spread it onto the HTML element, no unknown attributes will arrive — the emitter does not forward arbitrary attributes from the markdown source.
+Preserve received attributes when wrapping an element: destructure the props you handle and spread the remaining attributes onto the corresponding HTML element. Dropping them can break alignment, task-list semantics, footnote navigation, accessibility or feature hooks. Ordinary Markdown `h1` remains intentionally unslugged; this does not prevent an authored JSX element from supplying its own attributes.
 
 ## Lowercase vs. PascalCase asymmetry
 
@@ -173,7 +175,7 @@ There is a deliberate behavioural difference between lowercase HTML tags and Pas
   if (!Note) throw new Error("MDX requires `Note` to be passed via the `components` prop");
   ```
 
-  A PascalCase component referenced in an `.mdx` file that is not present in the `components` map at render time throws at runtime — not at build time. This is intentional: the compiled module stays portable; the caller is responsible for passing all required components.
+  A PascalCase component referenced in an `.mdx` file but absent from the merged `components` map throws during evaluation/rendering. This can fail static build prerendering as well as request-time rendering. The compiled module stays portable; the caller must supply every required component.
 
 ## Islands constraint
 
@@ -323,9 +325,9 @@ The locked `factory-map-default`, `factory-map-host-override`, and
 `factory-map-settings-disabled` rows are listed with the full matrix in
 [Islands](./islands.mdx#boundary-discovery-and-migration-composition-seam-for-customisable-package-islands).
 
-## Deferred open item — `wrapper`
+## Whole-document wrapping
 
-MDX supports a special `wrapper` key in the `components` map: a component that wraps the entire rendered output. zfb's emitter does not recognise `wrapper` — the body is wrapped in `<_Fragment>` directly, and no lookup against a `wrapper` key is performed. Support for `wrapper` is a tracked open item and is not implemented in the current release.
+Some MDX implementations treat `components.wrapper` as a special whole-document wrapper. zfb does not: its emitter wraps the body in `<_Fragment>` without looking up that key. Wrap `<entry.Content />` explicitly in your page or layout when you need a whole-document container.
 
 ## Authoring `.mdx` with custom components
 

@@ -21,13 +21,13 @@ For the "why this shape" answer — narrow scope, recipes-over-plugins, no middl
 
 - **Embedded V8 rendering** — at build time, pages render inside the V8 JavaScript engine embedded in the `zfb` binary. No separate Node process is required.
 - **Atomic writes** — generated files are written atomically per file, so readers never observe a half-written HTML file. `zfb build` wipes the output directory before it starts writing, so a failed build does not guarantee the previous `dist/` remains intact.
-- **Per-page incremental rebuild** — changing a shared layout touches only the pages that import it, not the whole site. Dev-loop latency stays in the tens of milliseconds even on large sites.
+- **Per-page incremental rebuild** — changing a shared layout touches only the pages that import it, not the whole site. Rebuild cost depends on the bundle, content snapshot and affected pages; see [Incremental rebuild](../architecture/incremental-rebuild.mdx).
 - **Opt-in islands** — a `"use client"` module makes exports eligible as targets; a reachable `<Island>` boundary activates an island. Pages without islands can still load [independent client scripts](../guides/client-scripts.mdx).
-- **Frontmatter and content collections** — Markdown, MDX, and TypeScript data files in a named directory become a typed collection, queryable from pages via `getCollection()`.
+- **Frontmatter and content collections** — Markdown, MDX, and TSX entries in a named directory are queryable from pages via `getCollection()`. Optional schemas are checked by `zfb check`, not automatically by every build.
 - **Dynamic routes** — `pages/blog/[slug].tsx` exports a `paths()` function; zfb evaluates it at build time to expand the route into one HTML file per slug.
-- **MDX components** — import any TSX component into `.mdx` content and use it as JSX.
+- **MDX components** — register TSX components in root `mdx-components.tsx` or pass a per-call `components` map, then use their JSX names in `.mdx`. Original MDX ESM imports are dropped by the current emitter; they do not create usable source-component bindings. See [MDX Components](../architecture/mdx-components.mdx).
 - **Non-HTML pages** — a page file can export a `contentType` to produce JSON, XML, RSS, or any other text format instead of HTML.
-- **Content-query bridge** — `getCollection()` is available inside MDX files and inside `paths()`, not only in page components.
+- **Content-query bridge** — `getCollection()` is available in TSX page/component modules and `paths()`. Query there and supply MDX components through the supported maps; do not depend on original MDX ESM imports.
 - **Single-binary engine** — the engine is one native binary: install it standalone without Node, or through `@takazudo/zfb`, which delivers the same binary through a platform-specific package. There is no plugin registry to audit.
 
 ## Familiar from Astro

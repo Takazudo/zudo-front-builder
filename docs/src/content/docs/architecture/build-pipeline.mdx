@@ -13,11 +13,11 @@ zfb is built as a set of small Rust crates that each own one job. This page is a
 2. **Router** — `crates/zfb-router`. Scans `pages/` and produces the route table. See [Routing](./routing.mdx).
 3. **Watcher** — `crates/zfb-watcher`. Dev mode only. Observes `pages/`, `content/`, `components/`, `layouts/`, `styles/`, `data/`, `src/`, and the config files by default, plus each configured collection's path when it falls outside the default roots and any absolute `extraWatchPaths`. `public/` is deliberately **not** watched — static assets are served live from disk on request, so they need no rebuild and feed neither the watcher nor boot (see [Static Assets](./static-assets.mdx#dev-prod-parity)). Emits a stream of change events.
 4. **Dependency graph** — `crates/zfb-graph`. Tracks page-to-source dependencies. When the watcher reports a change, the graph answers a single question: which pages need to be rebuilt?
-5. **Build orchestrator** — `crates/zfb-build`. Coordinates the per-page work and writes outputs atomically via `atomic_write_string`, so a partial write can never leave `dist/` in a half-broken state.
-6. **Renderer** — `crates/zfb-render`. Compiles TSX to JS with SWC, evaluates the resulting ES module via the JS runtime host, and calls the page's `default()` export to produce an HTML string. Content collection entries (`.md` / `.mdx`) are compiled through the same pipeline as JSX modules — the renderer resolves `mdx://<collection>/<slug>` specifiers and surfaces them to user pages as `entry.Content` (see [MDX Components](./mdx-components.mdx)).
+5. **Build orchestrator** — `crates/zfb-build`. Coordinates per-page work and uses `atomic_write_string` for individual generated text files. This is not a transactional replacement of the whole output tree.
+6. **Bundling and rendering** — `crates/zfb-build` stages pages and compiled MDX, then uses native Rolldown (`crates/zfb-bundler`) for TSX/JSX transformation and bundling. The generated `createPageRouter` application exposes `default { fetch }`; the embedded V8 host executes it and zudo-react renders page components to HTML. Collection modules are exposed as `entry.Content` through the content bridge (see [MDX Components](./mdx-components.mdx)). `crates/zfb-render` still provides host interfaces and an SWC transform API for library consumers; SWC also performs source analysis, but `RenderHost::call_default` is not the universal CLI build path.
 7. **CSS pipeline** — `crates/zfb-css`. Compiles zudo-wind utilities and processes authored CSS with lightningcss as needed. See [Styling](./styling.mdx).
 8. **Islands pipeline** — `crates/zfb-islands`. Scans for `"use client"` components and bundles them all into a single shared ESM module via the native Rolldown bundler, plus any code-split chunks for dynamic `import()` calls. See [Islands](./islands.mdx). The same crate discovers `.client.*` client-script entries and bundles each one independently (`discover_client_scripts` and `build_production_client_scripts` in `crates/zfb-islands/src/client_scripts.rs`); see [Client Scripts](../guides/client-scripts.mdx).
-9. **Server** — `crates/zfb-server`. Dev mode only. An axum-based HTTP server that serves the page cache as static files, plus an SSE channel at `/__zfb/reload` for browser reload events (see [Dev mode lifecycle](./dev-mode-lifecycle.mdx) for the full event-type breakdown).
+9. **Server** — `crates/zfb-server`. Dev mode only. An axum-based HTTP server that serves the page cache as static files, plus a WebSocket at `/__zfb/reload/ws` for browser reload events (SSE `/__zfb/reload` remains for tooling) (see [Dev mode lifecycle](./dev-mode-lifecycle.mdx) for the full event-type breakdown).
 
 ## Production: `zfb build`
 
@@ -25,7 +25,7 @@ zfb is built as a set of small Rust crates that each own one job. This page is a
 
 CLI → Router → Graph → Build orchestrator → Renderer → CSS pipeline → Islands pipeline.
 
-The watcher and dev server are not involved. Every prerendered page is rendered, every CSS bundle is produced, every island is bundled, and the result lands in `dist/` (or wherever `outDir` points). Atomic writes mean an interrupted build leaves the previous `dist/` intact rather than a partially overwritten mess. For `prerender = false` routes, zfb runs a second bundle pass limited to those routes and the adapter wraps that bundle as Worker modules instead of static HTML — see [SSR on a Worker (adapter mode)](./ssr-on-a-worker.mdx) for how that output is structured.
+The watcher and dev server are not involved. Every prerendered page is rendered, every CSS bundle is produced, every island is bundled, and the result lands in `dist/` (or wherever `outDir` points). The command clears the output directory before `preBuild`, then writes the new output. An interrupted or failed build can leave incomplete output; individual atomic writes do not preserve the previous complete `dist/`. Publish only a successfully completed build using your host’s deployment mechanism. For `prerender = false` routes, zfb runs a second bundle pass limited to those routes and the adapter wraps that bundle as Worker modules instead of static HTML — see [SSR on a Worker (adapter mode)](./ssr-on-a-worker.mdx) for how that output is structured.
 
 ## Development: `zfb dev`
 
@@ -33,7 +33,7 @@ The watcher and dev server are not involved. Every prerendered page is rendered,
 
 CLI → Router → Watcher → Build orchestrator → Renderer → CSS pipeline → Islands pipeline → Server.
 
-When the watcher reports a change, the dependency graph picks the affected pages, the orchestrator rebuilds only those, and the server broadcasts a reload event over the SSE channel. The browser reconnects automatically and reloads.
+When the watcher reports a change, the dependency graph picks the affected pages, the orchestrator rebuilds only those, and the server broadcasts a reload event over the WebSocket channel. The browser reconnects automatically and reloads.
 
 ## Preview: `zfb preview`
 
