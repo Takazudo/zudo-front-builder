@@ -3,6 +3,18 @@
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
 
+## npm OIDC and local-Darwin release cutover (#4687) — 2026-11-12 UTC
+
+- Development head: `base/npm-oidc-release` (A #4688 and B #4689 integrated at
+  `537b90cd4`; C #4690 workflow/helpers and canonical [`RELEASING.md`](../RELEASING.md) in
+  progress). **No qualification SHA is selected and no release is authorized**: nothing here is
+  release-ready, and no live OIDC publish, dist-tag write or Darwin admission of a real release has
+  been observed.
+- Holds: operational child **D #4691** (owner-only trusted-publisher setup, live proof at the next
+  authorized release, the Darwin provenance-downgrade decision and credential retirement per
+  [`npm-oidc-cutover.md`](npm-oidc-cutover.md)) gates calling the cutover verified. Hosted macOS
+  release legs are removed by design; Darwin inputs come only from the owner's Mac.
+
 ## Linux CI browser provisioning — 2026-11-07 UTC
 
 - Checkpoint: main `6e93de58c89c204a6643024f159a61430d022901` (PR #4605 merged;
