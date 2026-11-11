@@ -3,7 +3,7 @@
 // version, bound to the release SOURCE commit (#4690).
 //
 //   node scripts/release/npm-package-state.mjs --version V --source-commit SHA
-//        [--admission verdict.json] [--package NAME ...] [--json | --tsv]
+//        [--admission verdict.json] [--package NAME ...] [--tarball-integrity SRI] [--json | --tsv]
 //        [--require-all-verified] [--expectations-out FILE] [--registry URL]
 //
 // States:
@@ -20,11 +20,13 @@
 //   1. SLSA provenance: the attestation bundle's DSSE payload subject digest
 //      equals dist.integrity and its resolvedDependencies gitCommit equals SHA.
 //      An attestation naming another commit is present-unverified.
-//   2. otherwise `gitHead` equals SHA (npm records it for platform carriers).
-//   3. otherwise, for a Darwin carrier with --admission, the packed `zfb` and
+//   2. otherwise, with --tarball-integrity, the registry dist.integrity equals
+//      the locally packed tarball's (an exact byte match);
+//   3. otherwise `gitHead` equals SHA (npm records it for platform carriers).
+//   4. otherwise, for a Darwin carrier with --admission, the packed `zfb` and
 //      `zfb-css.node` equal the admitted binary/addon digests.
 //   With --admission, a Darwin carrier must ALSO match the admitted digests even
-//   when (1) or (2) matched: its bytes come only from the owner-Mac admission.
+//   when (1)-(3) matched: its bytes come only from the owner-Mac admission.
 //
 // This proves binding, not authenticity: the attestation signature is checked
 // by scripts/verify-release-delivery.mjs, not here.
@@ -185,6 +187,9 @@ export async function packageState(name, ctx) {
   }
 
   let method = null;
+  const integrityMatch =
+    Boolean(ctx.tarballIntegrity) && record.dist?.integrity === ctx.tarballIntegrity;
+  base.observedProvenance = "none";
   const attestations = record.dist?.attestations;
   if (attestations?.url && attestations.provenance?.predicateType === SLSA_PROVENANCE_V1) {
     let body;
@@ -219,6 +224,12 @@ export async function packageState(name, ctx) {
       };
     }
     method = "attestation";
+    base.observedProvenance = "attested";
+    if (integrityMatch) method = "attestation+integrity";
+  } else if (integrityMatch) {
+    // The registry holds exactly the tarball the pack job built from the
+    // source commit: the strongest binding available.
+    method = "integrity";
   } else if (record.gitHead) {
     if (record.gitHead !== sourceCommit) {
       return {
@@ -268,16 +279,19 @@ export async function packageState(name, ctx) {
 }
 
 /**
- * Expected provenance per package for an already-published release, by the
- * only two coherent shapes release.yml produces: normal (Darwin carriers
- * none, every other package attested) and recovery (every package none).
+ * Expected provenance per already-published package: attested exactly when
+ * its attestation names the source commit, none otherwise; Darwin carriers are
+ * always none (owner-Mac bytes are never attested).
  */
 export function expectationShape(results) {
-  const anyAttested = results.some((result) => result.attested);
   return results.map((result) => ({
     name: result.name,
-    expected: anyAttested && !DARWIN_CARRIERS[result.name] ? "attested" : "none",
-    shape: anyAttested ? "normal" : "recovery",
+    // Per package, from what the registry observably carries for the source
+    // commit: a partial normal publish resumed by recovery is mixed (#4690).
+    expected:
+      !DARWIN_CARRIERS[result.name] && result.observedProvenance === "attested"
+        ? "attested"
+        : "none",
   }));
 }
 
@@ -290,8 +304,18 @@ export async function collectStates({
   request = defaultRequest,
   absentReads = 3,
   delayMs = 2000,
+  tarballIntegrity = null,
 }) {
-  const ctx = { version, sourceCommit, verdict, registry, request, absentReads, delayMs };
+  const ctx = {
+    version,
+    sourceCommit,
+    verdict,
+    registry,
+    request,
+    absentReads,
+    delayMs,
+    tarballIntegrity,
+  };
   const results = [];
   for (const name of packages) results.push(await packageState(name, ctx));
   const byState = Object.fromEntries(STATES.map((state) => [state, []]));
@@ -317,7 +341,14 @@ export function parseArgs(argv) {
     else if (arg === "--tsv") opts.format = "tsv";
     else if (arg === "--require-all-verified") opts.requireAllVerified = true;
     else if (
-      ["--version", "--source-commit", "--admission", "--package", "--registry"].includes(arg) ||
+      [
+        "--version",
+        "--source-commit",
+        "--admission",
+        "--package",
+        "--registry",
+        "--tarball-integrity",
+      ].includes(arg) ||
       arg === "--expectations-out"
     ) {
       const value = argv[++i];
@@ -328,6 +359,8 @@ export function parseArgs(argv) {
   }
   if (!opts.version || !opts.sourceCommit || !SHA_RE.test(opts.sourceCommit)) return null;
   for (const name of opts.packages) if (!PUBLISHED_PACKAGES.includes(name)) return null;
+  // One local tarball describes one package.
+  if (opts.tarballIntegrity && opts.packages.length !== 1) return null;
   return opts;
 }
 
@@ -335,7 +368,7 @@ export async function main(argv, { env = process.env, out = process.stdout, requ
   const opts = parseArgs(argv);
   if (!opts) {
     process.stderr.write(
-      "usage: npm-package-state.mjs --version V --source-commit <40-hex> [--admission FILE] [--package NAME ...] [--json|--tsv] [--require-all-verified] [--expectations-out FILE] [--registry URL]\n",
+      "usage: npm-package-state.mjs --version V --source-commit <40-hex> [--admission FILE] [--package NAME ...] [--tarball-integrity sha512-… (one --package)] [--json|--tsv] [--require-all-verified] [--expectations-out FILE] [--registry URL]\n",
     );
     return 2;
   }
@@ -357,6 +390,7 @@ export async function main(argv, { env = process.env, out = process.stdout, requ
     request: request ?? defaultRequest,
     absentReads: Number(env.ZFB_NPM_STATE_ABSENT_READS ?? 3),
     delayMs: Number(env.ZFB_NPM_STATE_DELAY_MS ?? 2000),
+    tarballIntegrity: opts.tarballIntegrity ?? null,
   });
   if (opts.expectationsOut) {
     const lines = expectationShape(report.packages).map(
@@ -368,7 +402,9 @@ export async function main(argv, { env = process.env, out = process.stdout, requ
   else if (opts.format === "tsv") {
     for (const result of report.packages) {
       const detail = (result.error ?? result.detail ?? result.method ?? "").replace(/\s+/g, " ");
-      out.write(`${result.name}\t${result.state}\t${detail}\n`);
+      out.write(
+        `${result.name}\t${result.state}\t${detail}\t${result.observedProvenance ?? "none"}\n`,
+      );
     }
   } else {
     for (const result of report.packages) {

@@ -11,7 +11,8 @@
 # scripts/npm-oidc-preflight.mjs refuses to run otherwise.
 #
 # Read-compare-write per package: read the current `latest`, refuse to move it
-# to a LOWER version (semver precedence), skip when it already points at
+# to a LOWER version (semver precedence) or from a stable version to a
+# prerelease, skip when it already points at
 # <semver>, and re-read after the write to confirm it landed. npm has no
 # compare-and-swap for dist-tags, so a write racing another writer between the
 # read and the add cannot be prevented — the post-write re-read detects it.
@@ -77,6 +78,12 @@ _tag_with_retry() {
         fi
         if [[ "$cmp" -lt 0 ]]; then
           echo "::error::${pkg}: current latest=${current} is newer than ${ver} — refusing to move 'latest' backwards."
+          return 1
+        fi
+        # The dual-tag phase ends at the first stable `latest`; a prerelease
+        # must never replace it, even a numerically higher one (#4690).
+        if [[ "$current" != *-* && "$ver" == *-* ]]; then
+          echo "::error::${pkg}: current latest=${current} is a stable release — refusing to move 'latest' to the prerelease ${ver}."
           return 1
         fi
       fi
