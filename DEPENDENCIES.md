@@ -3165,9 +3165,9 @@ on any other row.
   showcase/deploy workflows use the root tool, while docs commands use the docs
   importer. `docs/scripts/check-wrangler-pin.mjs` checks both manifests and
   both lockfile importers, so the two pins cannot drift silently.
-* **`html-validate`.** The root pins `10.17.0` exactly for root/showcase HTML
-  validation, while docs declares `^10.0.0` for its `check:html` script. The
-  current lock resolves the docs declaration to `10.17.0`, but the ranges
+* **`html-validate`.** The root pins `11.21.0` exactly for root/showcase HTML
+  validation, while docs declares `^11.21.0` for its `check:html` script. The
+  current lock resolves the docs declaration to `11.21.0`, but the ranges
   express different ownership boundaries. Recommendation: yes, add an
   equivalent pin-guard in a follow-up issue for reproducible root/docs
   validation; do not implement that guard in this documentation issue.
