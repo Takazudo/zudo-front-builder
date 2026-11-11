@@ -19,7 +19,7 @@ zfb は、それぞれが 1 つの役割を担う小さな Rust クレート群�
 6. **バンドルとレンダリング** — `crates/zfb-build` がページとコンパイル済み MDX をステージし、ネイティブ Rolldown（`crates/zfb-bundler`）で TSX/JSX の変換とバンドルを行います。生成された `createPageRouter` アプリケーションは `default { fetch }` を公開し、組み込み V8 ホストがそれを実行して zudo-react がページを HTML にレンダリングします。コレクションモジュールはコンテンツブリッジ経由で `entry.Content` として公開されます（[MDX コンポーネント](./mdx-components.mdx)を参照）。`crates/zfb-render` には引き続きホストのインターフェースとライブラリ向けの SWC 変換 API があり、SWC はソース解析にも使われますが、`RenderHost::call_default` が CLI ビルド共通の実行経路というわけではありません。
 7. **CSS pipeline** — `crates/zfb-css`。zudo-wind のユーティリティをコンパイルし、必要に応じて lightningcss で手書き CSS を処理します。[スタイリング](./styling.mdx)を参照してください。
 8. **Islands pipeline** — `crates/zfb-islands`。`"use client"` コンポーネントをスキャンし、それらすべてをネイティブの Rolldown バンドラー経由で単一の共有 ESM モジュールにバンドルします。加えて、動的 `import()` 呼び出しのためのコード分割チャンクも生成します。[Islands](./islands.mdx) を参照してください。同じクレートが `.client.*` のクライアントスクリプトのエントリを検出し、それぞれを独立にバンドルします（`crates/zfb-islands/src/client_scripts.rs` の `discover_client_scripts` と `build_production_client_scripts`）。[クライアントスクリプト](../guides/client-scripts.mdx) を参照してください。
-9. **Server** — `crates/zfb-server`。dev モード専用。ページキャッシュを静的ファイルとして配信する axum ベースの HTTP サーバーに加え、ブラウザリロードイベント用に `/__zfb/reload/ws` で WebSocket を提供します（ツール向け SSE `/__zfb/reload` も残っています）（イベント種別の完全な内訳は [dev モードのライフサイクル](./dev-mode-lifecycle.mdx) を参照）。
+9. **Server** — `crates/zfb-server`。CLI の開発用サーバーを提供します。axum ベースの HTTP サーバーがページキャッシュと静的ファイルを配信し、ブラウザーのリロードイベントには WebSocket `/__zfb/reload/ws` を使います（ツール向け SSE `/__zfb/reload` も残っています）。イベント種別は [dev モードのライフサイクル](./dev-mode-lifecycle.mdx)を参照してください。Rust ホストは別途[埋め込み API](../guides/embed-as-library.mdx)を使えますが、最小のビルダーは CLI のコンパイラ、監視、プラグイン、JS SSR パイプラインを起動しません。
 
 ## 本番: `zfb build`
 

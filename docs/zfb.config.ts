@@ -46,7 +46,7 @@ Start with [your first site](/docs/getting-started/your-first-site/), [Build wit
         label: "JA",
         dir: "src/content/docs-ja",
         description:
-          "Request/Response モデルのコンテンツエンジン。TSX と MDX を一度書けば、静的 HTML、Workers、ローカルアプリで使えます。",
+          "日々のフロントエンド開発のほとんどを 1 つの CLI で。ページ、コンテンツ、インタラクティブな機能、スタイル、本番ビルドまで。",
         introMarkdown: `日々のフロントエンド開発のほとんどを 1 つの CLI で。zfb でサイトを作成し、開発、コンテンツと型のチェック、ビルド、プレビューまで進めます。TSX、MDX、Markdown、HTML でページを書き、必要に応じて zudo-react と zudo-wind を組み合わせます。
 
 基盤は小さく組み合わせやすい API です。スタンドアロンと npm は同じ CLI の配布方法です。完全な TypeScript チェックと Cloudflare のツールには Node.js が必要です。

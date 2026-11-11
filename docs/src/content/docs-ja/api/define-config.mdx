@@ -137,6 +137,7 @@ declare module "zfb/zudo-react/testing" {
 
   全体の挙動については[リンクの解決](../markdown-features/resolve-links.mdx)と [Markdown Features](../markdown-features/index.mdx) の機能マップを参照してください。
 - `emitRoutesManifest?: boolean` — `zfb build` がビルド後のルートマニフェストを `<outDir>/__zfb/routes.json` に書き出すかどうか。デフォルト: `true`（書き出す）。`false` を設定すると抑制します。
+- `emitRenderArtifacts?: boolean` — トップレベルのコンテンツ領域がちょうど 1 つある Markdown/MDX 由来の各 HTML ルートについて、`zfb build` が JSON レンダーアーティファクトを `<outDir>/__zfb/render/` の下に出力するかどうか。配信されるコンテンツ領域の HTML、コンパイラーが割り当てた見出し、契約バージョン、生ソースのダイジェストを含みます。デフォルトは `false`（無効。デフォルトで有効な `emitRoutesManifest` とは異なります）。`zfb build --emit-render-artifacts` / `--no-emit-render-artifacts` で 1 回のビルドに限り設定を上書きできます。優先順位は CLI、設定、デフォルトの順です。ビルド専用で、`zfb dev` は出力しません。JSON の契約全体は[レンダーアーティファクト](../architecture/render-artifacts.mdx)を参照してください。
 - `extraWatchPaths?: string[]` — プロジェクト内のソースルートに加えて、dev ウォッチャーが追跡する追加の絶対ファイルシステムパス。[プロジェクトルート外のパスを監視する](#プロジェクトルート外のパスを監視する) を参照してください。
 - `watchPollFallback?: boolean` — `zfb dev` のファイル監視を、OS ネイティブの変更通知（macOS の FSEvents、Linux の inotify など）ではなくポーリングで行います。デフォルト: `false`（ネイティブ）。ネイティブバックエンドがイベントを届けないホスト — ネットワークマウント上のプロジェクトディレクトリ、一部の CI / サンドボックスコンテナ、停止した `fseventsd` など — で有効にします。[ポーリングによるファイル監視](#ポーリングによるファイル監視)を参照してください。
 - `watchPollIntervalMs?: number` — ポーリングバックエンドの再スキャン間隔（ミリ秒）。デフォルト: `500`。`50` 以上 `10000` 以下である必要があり、範囲外は設定ロード時のエラーになります。`100` 未満の値は警告つきで受理されます。効果があるのは `watchPollFallback` が `true` のときだけで、単体で設定した場合はエラーではなく警告つきで受理され、休眠状態になります。[ポーリングによるファイル監視](#ポーリングによるファイル監視)を参照してください。

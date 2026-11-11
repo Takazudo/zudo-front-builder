@@ -169,11 +169,11 @@ it has not mounted before, then writes its own marker after mounting.
 
 ## Consequences of the shared-bundle model
 
-Because all islands are bundled together into a single file:
+All island targets are statically imported into one shared browser entry. Dynamic `import()` calls can add separately loaded chunks:
 
-- **Every page loads all islands' code.** The single `islands-<hash>.js` bundle contains every island component in the project. A page that only uses `ThemeToggle` still downloads the code for `Counter` and `SearchBox`. This trades per-page load granularity for a simpler build pipeline and better cache efficiency across pages.
+- **Every prerendered page loads the shared entry.** Its static graph includes every registered island target and its static dependencies, so a page that only uses `ThemeToggle` still downloads `Counter` and `SearchBox`. Code behind a dynamic `import()` can load later in a separate chunk. This trades per-page load granularity for shared caching across pages.
 - **On a build with islands, pages without islands load the bundle too.** The islands `<script>` is injected into the `<head>` of every prerendered page, including a page with no island markers. The bundle then finds no wrapper to mount on that page. A build with no islands at all emits no islands bundle and no tag. This applies to the HTML that `zfb build` writes; request-time SSR responses are not post-processed this way (see [SSR on a Worker](./ssr-on-a-worker.mdx)). Other client-script mechanisms, if used, can still add JavaScript.
-- **Any island change rehashes the single bundle.** Adding or modifying any island component produces a new content hash, which invalidates the browser's cached bundle for all pages. The tradeoff is that one cache entry covers all islands — once the bundle is cached, every page in the project benefits from the same cache hit.
+- **Cache invalidation follows emitted bytes.** Changed entry bytes produce a new `islands-<hash>.js` URL shared by all pages. Additional chunks have their own content hashes and cache entries; they are not folded into a guaranteed single-file output.
 
 ### Measured shared-bundle baseline
 
