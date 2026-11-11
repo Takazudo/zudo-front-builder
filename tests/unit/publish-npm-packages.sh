@@ -271,6 +271,11 @@ MOCK_VERIFY
 chmod +x "$MOCK_BIN/verify-noop"
 ZFB_MD_WASM_VERIFY_NODE="$MOCK_BIN/verify-noop"
 export ZFB_MD_WASM_VERIFY_NODE
+# The tarball-content re-verification (verify-release-tarballs.mjs) needs real
+# tarballs; the harness's fake ones are text. A dedicated case below runs the
+# real verifier against a real, tampered tarball set.
+ZFB_TARBALL_VERIFY_NODE="$MOCK_BIN/verify-noop"
+export ZFB_TARBALL_VERIFY_NODE
 
 # Mock for scripts/release/npm-package-state.mjs (invoked as
 # "$ZFB_NPM_PACKAGE_STATE_NODE <script> --version V --source-commit S --package N --tsv").
@@ -1183,6 +1188,51 @@ else
   fail "state: lost-ACK unverified rc=$LA_RC out=$(tail -6 "$LA_OUT" | tr '\n' ' ')"
 fi
 rm -f "$LA_OUT" "$PUBLISH_TARGET/la-marker"
+
+# ── Publish re-inspects tarball content (#4690 NEW-m1) ───────────────────────
+# A tampered Darwin binary inside a self-consistent pack manifest (integrity
+# recomputed, as a compromised pack job could) is refused by the publish helper
+# itself, before any npm call, using only the admission verdict.
+TV_BASE=$(mktemp -d)
+TV_OUT=$(mktemp)
+TV_LOG=$(mktemp)
+TV_CALLS=$(mktemp)
+TV_BASE="$TV_BASE" FIXTURE="$REPO_ROOT/scripts/__tests__/helpers/release-tarballs-fixture.mjs" \
+  "$NODE_EXE" --input-type=module <<'TV_FIXTURE'
+const { makeTarballSet, replaceTarball, V } = await import(process.env.FIXTURE);
+makeTarballSet({ base: process.env.TV_BASE });
+replaceTarball(`${process.env.TV_BASE}/tarballs`, "@takazudo/zfb-darwin-x64", [
+  { name: "package/package.json", data: Buffer.from(JSON.stringify({ name: "@takazudo/zfb-darwin-x64", version: V })), mode: 0o644 },
+  { name: "package/zfb", data: Buffer.from("evil binary"), mode: 0o755 },
+  { name: "package/zfb-css.node", data: Buffer.from("css @takazudo/zfb-darwin-x64"), mode: 0o644 },
+]);
+TV_FIXTURE
+TV_RC=0
+PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG="$TV_LOG" MOCK_CALLS_LOG="$TV_CALLS" MOCK_EXISTING="" \
+  ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 ZFB_LOCAL_BUILT_PACKAGES="packages/zfb-darwin-arm64 packages/zfb-darwin-x64" \
+  ZFB_PUBLISH_TARBALLS_DIR="$TV_BASE/tarballs" ZFB_RELEASE_VERSION=6.1.0 \
+  ZFB_DARWIN_ADMISSION_VERDICT="$TV_BASE/verdict.json" ZFB_MD_WASM_BUILD_MANIFEST="$TV_BASE/build-shipped-artifacts.json" \
+  ZFB_TARBALL_VERIFY_NODE="$NODE_EXE" \
+  bash "$SCRIPT" mac-local >"$TV_OUT" 2>&1 || TV_RC=$?
+if [ "$TV_RC" -ne 0 ] && [ ! -s "$TV_LOG" ] && ! grep -q '^npm publish' "$TV_CALLS" \
+   && grep -Eq '@takazudo/zfb-darwin-x64: package/zfb sha256 [0-9a-f]+ != admitted' "$TV_OUT" \
+   && grep -Fq 'tarball content re-verification failed; nothing was published' "$TV_OUT"; then
+  pass "publish: a tampered Darwin binary in a self-consistent manifest is refused before any npm publish"
+else
+  fail "publish: tampered Darwin tarball rc=$TV_RC publishes=$(tr '\n' ' ' <"$TV_LOG") out=$(tail -4 "$TV_OUT" | tr '\n' ' ')"
+fi
+# The same set fails on a release-version mismatch before the verifier runs.
+TV2_RC=0
+PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG="$TV_LOG" MOCK_EXISTING="" \
+  ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 ZFB_LOCAL_BUILT_PACKAGES="packages/zfb-darwin-arm64 packages/zfb-darwin-x64" \
+  ZFB_PUBLISH_TARBALLS_DIR="$TV_BASE/tarballs" ZFB_RELEASE_VERSION=6.1.1 \
+  bash "$SCRIPT" mac-local >"$TV_OUT" 2>&1 || TV2_RC=$?
+if [ "$TV2_RC" -ne 0 ] && [ ! -s "$TV_LOG" ] && grep -Fq 'is not the release version 6.1.1' "$TV_OUT"; then
+  pass "publish: a tarball set for another version is refused before any npm publish"
+else
+  fail "publish: version mismatch rc=$TV2_RC out=$(tail -3 "$TV_OUT" | tr '\n' ' ')"
+fi
+rm -rf "$TV_BASE" "$TV_OUT" "$TV_LOG" "$TV_CALLS"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 

@@ -88,7 +88,15 @@
 # Optional env:
 #   ZFB_DARWIN_ADMISSION_VERDICT
 #                     admission verdict JSON (scripts/admit-darwin-artifacts.mjs);
-#                     a present Darwin carrier must then match its digests.
+#                     the packed and any present Darwin carrier must match it.
+#   ZFB_RELEASE_VERSION
+#                     when set, every tarball must be exactly this version.
+#   ZFB_MD_WASM_BUILD_MANIFEST
+#                     build-wasm-md's shipped-artifacts.json; the packed MD/WASM
+#                     manifest must equal it (required outside recovery unless
+#                     ZFB_MD_WASM_ALLOW_MISSING_BUILD_MANIFEST=1).
+#   ZFB_TARBALL_VERIFY_NODE
+#                     node binary for verify-release-tarballs.mjs (tests: a stub).
 #   ZFB_NPM_PACKAGE_STATE_NODE
 #                     node binary for npm-package-state.mjs (tests: a stub).
 #   ALSO_LATEST       "1" → after publishing, also advance the `latest` dist-tag
@@ -251,6 +259,35 @@ validate_tarball_set() {
       return 1
     fi
   done
+}
+
+# Independent re-inspection of every tarball's CONTENT before any publish
+# (#4690): this job does not trust the pack job's own checks.
+# scripts/release/verify-release-tarballs.mjs (Node builtins only) re-checks
+# packed name/version against the manifest and the release version, 0755
+# carriers, CSS addons, no `workspace:` specifier, the Darwin binaries/addons
+# against the admission verdict, and MD/WASM against build-wasm-md's manifest.
+verify_tarball_contents() {
+  local mode="$1" version
+  version="$(row_field "${TARBALL_ROWS[0]}" 2)"
+  if [[ -n "${ZFB_RELEASE_VERSION:-}" && "$version" != "$ZFB_RELEASE_VERSION" ]]; then
+    echo "::error::tarball manifest version ${version} is not the release version ${ZFB_RELEASE_VERSION}. Refusing to publish."
+    return 1
+  fi
+  local -a args=(--dir "$(tarballs_dir)" --version "${ZFB_RELEASE_VERSION:-$version}")
+  if [[ -n "${ZFB_DARWIN_ADMISSION_VERDICT:-}" ]]; then
+    args+=(--admission "$ZFB_DARWIN_ADMISSION_VERDICT")
+  fi
+  if [[ -n "${ZFB_MD_WASM_BUILD_MANIFEST:-}" ]]; then
+    args+=(--md-wasm-manifest "$ZFB_MD_WASM_BUILD_MANIFEST")
+  elif [[ "$mode" == "recovery-no-provenance" || "${ZFB_MD_WASM_ALLOW_MISSING_BUILD_MANIFEST:-}" == "1" ]]; then
+    # Recovery of a tag that predates shipped-artifacts.json has no build manifest.
+    args+=(--allow-missing-md-wasm-manifest)
+  fi
+  if ! "${ZFB_TARBALL_VERIFY_NODE:-node}" "${PUBLISH_SCRIPT_DIR}/release/verify-release-tarballs.mjs" "${args[@]}"; then
+    echo "::error::tarball content re-verification failed; nothing was published."
+    return 1
+  fi
 }
 
 # True when the npm error text is specifically "this exact version already
@@ -655,6 +692,7 @@ main() {
   load_tarball_manifest "$mode" || return 1
   validate_tarball_set "$mode" || return 1
   validate_provenance_decisions "$mode" || return 1
+  verify_tarball_contents "$mode" || return 1
   # OIDC-only auth (fail closed) before the first registry call of any kind.
   if ! assert_npm_oidc_only; then
     echo "::error::npm OIDC preflight refused; nothing was published."

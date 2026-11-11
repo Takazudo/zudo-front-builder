@@ -111,8 +111,9 @@ limits):
 - **Durable:** an owner-authored, committed `release/provenance-policy.json`
   (`zfb-provenance-policy/v1`), one decision per Darwin package with `unattested_from_version`,
   `reason`, `decided_by` and `issue`. It applies only in `mac-local` mode, only to the run's
-  locally built Darwin carriers, only from that version upward, and is read from the control
-  checkout. It is absent by default; agents never create or edit it.
+  locally built Darwin carriers, only from that version upward, and is read only from `main`'s
+  committed tree (`origin/main`), never from a working tree or the release commit. It is absent
+  by default; agents never create or edit it.
 
 The decision is the owner's alone (option 3 under "Owner options and follow-ups"). Options:
 acknowledge per release or once by policy (and add release-note and troubleshooting guidance for affected consumers), or hold the

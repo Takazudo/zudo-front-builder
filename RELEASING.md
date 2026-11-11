@@ -365,8 +365,10 @@ node scripts/release/verify-source-ci.mjs --sha "$SOURCE_SHA" [--json]
 ```
 
 It checks the `main` ruleset's required contexts (the list in `scripts/apply-main-ruleset.sh`) on
-exactly that SHA. Only GitHub Actions check runs count; a commit status with the same context name
-is ignored. Exit 0 pass; 1 not passed — pending, cancelled, **skipped**, failed and missing are all
+exactly that SHA. Only GitHub Actions check runs count, and each only when its check suite's
+workflow run is the context's own workflow file (for example `health` from
+`.github/workflows/health.yml`); a same-named job in another workflow and a commit status with the
+same context name are ignored. Exit 0 pass; 1 not passed — pending, cancelled, **skipped**, failed and missing are all
 "not passed"; 2 usage or read error. `pnpm audit (prod)` and `Docs gate` run only on pull requests, so on a direct `main` push
 they are reported `not-applicable-pr-only`: that is neither a pass nor a failure, and the release
 report names it. `--require-pr-only` makes them required (for a source that went through a PR).
@@ -511,7 +513,10 @@ Publication is split across two jobs so the npm credential never meets package c
   the workspace packages (so `workspace:` specifiers are rewritten). It uploads the tarballs and a
   manifest with each tarball's sha512.
 - **`publish`** (`contents: read` + `id-token: write`) checks out only the control scripts —
-  no install, no build, no package code — verifies every tarball's sha512 against the manifest and
+  no install, no build, no package code — verifies every tarball's sha512 against the manifest,
+  re-inspects every tarball's content itself (`scripts/release/verify-release-tarballs.mjs`: packed
+  name/version, 0755 carriers, CSS addons, no `workspace:`, Darwin bytes against the admission
+  verdict, MD/WASM against build-wasm-md's manifest) without trusting the pack job, and
   runs `npm publish <tgz>` with an explicit `--provenance` or `--provenance=false` per package, using
   the pinned npm 12.2.1. pnpm never publishes.
 
@@ -552,8 +557,10 @@ owner acknowledges it by one of two routes:
    Every field is required; a malformed file fails the preflight closed. A decision covers only
    `mac-local` mode, only a package that is one of the run's locally built Darwin carriers, and only
    versions `>=` its `unattested_from_version`. CI-built packages, unlisted packages and
-   `recovery-no-provenance` are never covered. It is read from the **control** checkout (the
-   workflow's own commit), never from the release source tree. The file is absent by default.
+   `recovery-no-provenance` are never covered. It is read only from `main`'s committed tree
+   (`git show origin/main:release/provenance-policy.json` after fetching `refs/heads/main`), never
+   from a working tree, the control checkout or the release source commit. The file is absent by
+   default.
 
 **Only the owner does any of these.** No agent, skill or script adds the marker, sets the input, or
 creates or edits `release/provenance-policy.json`, even with general release authorization. On a detected downgrade an agent stops,
