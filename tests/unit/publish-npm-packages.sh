@@ -77,27 +77,59 @@ assert_exit 'is_publish_conflict: generic network error → NO match' 1 \
 assert_exit 'is_publish_conflict: empty → NO match' 1 \
   'is_publish_conflict ""'
 
-# ── should_skip_publish — skip iff already on the registry ─────────────────────
+# ── should_skip_publish — skip ONLY for present-verified (#4690) ──────────────
+# package_state is the seam to scripts/release/npm-package-state.mjs; the node
+# helper itself is covered by scripts/__tests__/npm-package-state.test.mjs.
 
-assert_exit 'should_skip_publish: version present → skip (0)' 0 \
-  'npm() { echo "1.2.3"; }; should_skip_publish foo 1.2.3'
+assert_exit 'should_skip_publish: present-verified → skip (0)' 0 \
+  'package_state() { echo present-verified; }; should_skip_publish foo 1.2.3'
 
-assert_exit 'should_skip_publish: version absent → do not skip (1)' 1 \
-  'npm() { return 1; }; should_skip_publish foo 1.2.3'
+assert_exit 'should_skip_publish: absent → publish (1)' 1 \
+  'package_state() { echo absent; }; should_skip_publish foo 1.2.3'
+
+assert_exit 'should_skip_publish: present-unverified → refuse (3)' 3 \
+  'package_state() { echo present-unverified; }; should_skip_publish foo 1.2.3'
+
+assert_exit 'should_skip_publish: uncertain → refuse (3)' 3 \
+  'package_state() { echo uncertain; }; should_skip_publish foo 1.2.3'
+
+assert_exit 'package_state: helper failure → uncertain' 0 \
+  'ZFB_NPM_PACKAGE_STATE_NODE=false; [ "$(package_state foo 1.2.3 2>/dev/null)" = uncertain ]'
+
+assert_exit 'package_state: unparseable helper output → uncertain' 0 \
+  'ZFB_NPM_PACKAGE_STATE_NODE=echo; [ "$(package_state foo 1.2.3 2>/dev/null)" = uncertain ]'
 
 # ── classify_publish_result ───────────────────────────────────────────────────
 
 assert_exit 'classify: exit 0 → success (0)' 0 \
   'classify_publish_result foo 1.2.3 0 /dev/null'
 
-assert_exit 'classify: conflict text → tolerate (0)' 0 \
-  'f=$(mktemp); printf "%s" "remote: You cannot publish over the previously published versions: 1.2.3" >"$f"; classify_publish_result foo 1.2.3 1 "$f"; r=$?; rm -f "$f"; exit $r'
+assert_exit 'classify: conflict text + present-verified → tolerate (0)' 0 \
+  'f=$(mktemp); printf "%s" "remote: You cannot publish over the previously published versions: 1.2.3" >"$f"; package_state() { echo present-verified; }; PUBLISH_RECHECK_DELAY=0 classify_publish_result foo 1.2.3 1 "$f"; r=$?; rm -f "$f"; exit $r'
 
-assert_exit 'classify: non-conflict error BUT version landed (lost-ACK) → tolerate (0)' 0 \
-  'f=$(mktemp); printf "%s" "socket hang up ECONNRESET" >"$f"; npm() { echo "1.2.3"; }; PUBLISH_RECHECK_DELAY=0 classify_publish_result foo 1.2.3 1 "$f"; r=$?; rm -f "$f"; exit $r'
+assert_exit 'classify: conflict text but present-unverified → fail (1)' 1 \
+  'f=$(mktemp); printf "%s" "EPUBLISHCONFLICT" >"$f"; package_state() { echo present-unverified; }; PUBLISH_RECHECK_DELAY=0 classify_publish_result foo 1.2.3 1 "$f"; r=$?; rm -f "$f"; exit $r'
 
-assert_exit 'classify: real error AND version NOT on registry → fail (1)' 1 \
-  'f=$(mktemp); printf "%s" "403 You do not have permission to publish" >"$f"; npm() { return 1; }; PUBLISH_RECHECK_DELAY=0 PUBLISH_RECHECK_ATTEMPTS=2 classify_publish_result foo 1.2.3 1 "$f"; r=$?; rm -f "$f"; exit $r'
+assert_exit 'classify: conflict text but version absent after recheck → fail (1)' 1 \
+  'f=$(mktemp); printf "%s" "EPUBLISHCONFLICT" >"$f"; package_state() { echo absent; }; PUBLISH_RECHECK_DELAY=0 PUBLISH_RECHECK_ATTEMPTS=2 classify_publish_result foo 1.2.3 1 "$f"; r=$?; rm -f "$f"; exit $r'
+
+assert_exit 'classify: conflict text but registry uncertain → fail (1)' 1 \
+  'f=$(mktemp); printf "%s" "EPUBLISHCONFLICT" >"$f"; package_state() { echo uncertain; }; PUBLISH_RECHECK_DELAY=0 PUBLISH_RECHECK_ATTEMPTS=2 classify_publish_result foo 1.2.3 1 "$f"; r=$?; rm -f "$f"; exit $r'
+
+assert_exit 'classify: non-conflict error BUT version landed verified (lost-ACK) → tolerate (0)' 0 \
+  'f=$(mktemp); printf "%s" "socket hang up ECONNRESET" >"$f"; package_state() { echo present-verified; }; PUBLISH_RECHECK_DELAY=0 classify_publish_result foo 1.2.3 1 "$f"; r=$?; rm -f "$f"; exit $r'
+
+assert_exit 'classify: real error AND version absent → fail (1)' 1 \
+  'f=$(mktemp); printf "%s" "403 You do not have permission to publish" >"$f"; package_state() { echo absent; }; PUBLISH_RECHECK_DELAY=0 PUBLISH_RECHECK_ATTEMPTS=2 classify_publish_result foo 1.2.3 1 "$f"; r=$?; rm -f "$f"; exit $r'
+
+if OUT=$(bash -c ". \"$SCRIPT\"; set +e; f=\$(mktemp); printf '%s\n' 'npm error code E503 upstream registry exploded' >\"\$f\"; package_state() { echo uncertain; }; PUBLISH_RECHECK_DELAY=0 PUBLISH_RECHECK_ATTEMPTS=1 classify_publish_result foo 1.2.3 7 \"\$f\"" 2>&1); then
+  fail "classify: uncertain recheck should fail"
+elif printf '%s' "$OUT" | grep -Fq 'registry state after recheck: uncertain' \
+  && printf '%s' "$OUT" | grep -Fq 'npm error code E503 upstream registry exploded'; then
+  pass "classify: failure repeats the original publish error text and the recheck state"
+else
+  fail "classify: failure output lost the original error: $OUT"
+fi
 
 # ── Integration: whole-script runs with mock npm/pnpm on PATH ─────────────────
 
@@ -210,7 +242,8 @@ if [ "$is_publish" -eq 1 ]; then
   printf '%s %s NPM_CONFIG_PROVENANCE=%s\n' "$filter" "$original_args" "${NPM_CONFIG_PROVENANCE:-unset}" >>"${MOCK_PROV_LOG:-/dev/null}"
   if [ "$filter" = "@takazudo/zfb-md-wasm" ]; then
     case "${MOCK_MD_RESULT:-success}" in
-      conflict) echo 'EPUBLISHCONFLICT' >&2; exit 1 ;;
+      # A real double-PUT conflict means the version IS on the registry.
+      conflict) touch "$MOCK_PUBLISHED_MARKER"; echo 'EPUBLISHCONFLICT' >&2; exit 1 ;;
       lost) touch "$MOCK_PUBLISHED_MARKER"; echo 'ETIMEDOUT' >&2; exit 1 ;;
     esac
   fi
@@ -223,6 +256,8 @@ chmod +x "$MOCK_BIN/npm" "$MOCK_BIN/pnpm"
 cat >"$MOCK_BIN/gh" <<'MOCK_GH'
 #!/bin/sh
 printf '%s\n' "$*" >>"$MOCK_GH_LOG"
+# The digest asset is reconciled, never clobbered: report an asset-less Release.
+if [ "$1" = release ] && [ "$2" = view ]; then printf '{"assets":[]}\n'; fi
 MOCK_GH
 chmod +x "$MOCK_BIN/gh"
 
@@ -235,6 +270,40 @@ MOCK_VERIFY
 chmod +x "$MOCK_BIN/verify-noop"
 ZFB_MD_WASM_VERIFY_NODE="$MOCK_BIN/verify-noop"
 export ZFB_MD_WASM_VERIFY_NODE
+
+# Mock for scripts/release/npm-package-state.mjs (invoked as
+# "$ZFB_NPM_PACKAGE_STATE_NODE <script> --version V --source-commit S --package N --tsv").
+# Presence comes from the mock npm's `view` (MOCK_EXISTING, the md-wasm lost-ACK
+# marker); MOCK_STATE_UNVERIFIED / MOCK_STATE_UNCERTAIN name packages whose
+# present version cannot be tied to the source commit / whose read fails.
+cat >"$MOCK_BIN/state-node" <<'MOCK_STATE'
+#!/bin/sh
+shift
+version="" name=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --version) version="$2"; shift ;;
+    --package) name="$2"; shift ;;
+  esac
+  shift
+done
+printf 'state %s@%s\n' "$name" "$version" >>"${MOCK_STATE_LOG:-/dev/null}"
+for u in ${MOCK_STATE_UNCERTAIN:-}; do
+  if [ "$u" = "$name" ]; then printf '%s\tuncertain\tGET failed: HTTP 503\n' "$name"; exit 0; fi
+done
+if npm view "$name@$version" version >/dev/null 2>&1; then
+  for u in ${MOCK_STATE_UNVERIFIED:-}; do
+    if [ "$u" = "$name" ]; then printf '%s\tpresent-unverified\tgitHead deadbeef is not source\n' "$name"; exit 0; fi
+  done
+  printf '%s\tpresent-verified\tgitHead\n' "$name"
+else
+  printf '%s\tabsent\tE404 on 3 read(s)\n' "$name"
+fi
+MOCK_STATE
+chmod +x "$MOCK_BIN/state-node"
+ZFB_NPM_PACKAGE_STATE_NODE="$MOCK_BIN/state-node"
+ZFB_RELEASE_SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567
+export ZFB_NPM_PACKAGE_STATE_NODE ZFB_RELEASE_SOURCE_COMMIT
 
 # Whole-script cases use an isolated target tree. The real control script and
 # companion verifiers remain under REPO_ROOT, just as recovery separates them
@@ -868,13 +937,13 @@ assert_digest_case() {
   fi
   case "$DC_WANT" in
     upload)
-      if [ "$DC_RC" -eq 0 ] && grep -q "^release upload v$V .* --clobber$" "$DC_GH_LOG"; then
+      if [ "$DC_RC" -eq 0 ] && grep -q "^release upload v$V --repo .*/zfb-md-wasm-$V-shipped-artifacts.json$" "$DC_GH_LOG" && ! grep -q -- '--clobber' "$DC_GH_LOG"; then
         pass "$DC_DESC"
       else
         fail "$DC_DESC (exit=$DC_RC, gh=$(cat "$DC_GH_LOG"), output=$(tail -4 "$DC_OUTPUT" | tr '\n' ' '))"
       fi ;;
     mismatch)
-      if [ "$DC_PUBLISH_RC" -ne 0 ] && [ "$DC_UPLOAD_RC" -ne 0 ] && [ ! -s "$DC_GH_LOG" ] && grep -q 'published bytes differ' "$DC_OUTPUT"; then
+      if [ "$DC_PUBLISH_RC" -ne 0 ] && [ "$DC_UPLOAD_RC" -ne 0 ] && ! grep -q '^release upload' "$DC_GH_LOG" && grep -q 'published bytes differ' "$DC_OUTPUT"; then
         pass "$DC_DESC"
       else
         fail "$DC_DESC (exit=$DC_RC, gh=$(cat "$DC_GH_LOG"), output=$(tail -4 "$DC_OUTPUT" | tr '\n' ' '))"
@@ -930,6 +999,87 @@ assert_visibility_case() {
 
 assert_visibility_case 'digest: ETARGET right after publish is retried, then verified' 3 5 verified
 assert_visibility_case 'digest: version never visible fails as registry lag, not mismatch' 9 3 invisible
+
+# ── Per-package registry state: partial publish + resume (#4690) ─────────────
+# A resumed release skips only present-verified versions, publishes absent
+# ones, and stops before any further publish on present-unverified/uncertain.
+
+# assert_state_run <desc> <want: ok|fail> <existing-specs> <unverified> <uncertain> <must-publish> <must-not-publish> [output-grep]
+assert_state_run() {
+  SR_DESC="$1" SR_WANT="$2" SR_EXISTING="$3" SR_UNVERIFIED="$4" SR_UNCERTAIN="$5" SR_MUST="$6" SR_MUST_NOT="$7" SR_GREP="${8:-}"
+  SR_LOG=$(mktemp)
+  SR_OUT=$(mktemp)
+  SR_RC=0
+  PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG="$SR_LOG" MOCK_EXISTING="$SR_EXISTING" \
+    MOCK_STATE_UNVERIFIED="$SR_UNVERIFIED" MOCK_STATE_UNCERTAIN="$SR_UNCERTAIN" \
+    ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 \
+    ZFB_LOCAL_BUILT_PACKAGES="packages/zfb-darwin-arm64 packages/zfb-darwin-x64" \
+    bash "$SCRIPT" mac-local >"$SR_OUT" 2>&1 || SR_RC=$?
+  SR_OK=1
+  if [ "$SR_WANT" = ok ] && [ "$SR_RC" -ne 0 ]; then SR_OK=0; fi
+  if [ "$SR_WANT" = fail ] && [ "$SR_RC" -eq 0 ]; then SR_OK=0; fi
+  PUB_LOG="$SR_LOG"
+  for n in $SR_MUST; do log_has "$n" || SR_OK=0; done
+  for n in $SR_MUST_NOT; do ! log_has "$n" || SR_OK=0; done
+  if [ -n "$SR_GREP" ] && ! grep -Fq "$SR_GREP" "$SR_OUT"; then SR_OK=0; fi
+  if [ "$SR_OK" -eq 1 ]; then
+    pass "$SR_DESC"
+  else
+    fail "$SR_DESC (rc=$SR_RC, published: $(tr '\n' ' ' <"$SR_LOG"), out: $(tail -5 "$SR_OUT" | tr '\n' ' '))"
+  fi
+  rm -f "$SR_LOG" "$SR_OUT"
+}
+
+PRESENT_EXCEPT_RUNTIME="@takazudo/zfb-darwin-arm64@$V @takazudo/zfb-darwin-x64@$V @takazudo/zfb-linux-arm64-gnu@$V @takazudo/zfb-linux-x64-gnu@$V @takazudo/zfb-win32-x64-msvc@$V @takazudo/zfb-slugify@$V @takazudo/zfb@$V @takazudo/zfb-adapter-cloudflare@$V create-zfb@$V @takazudo/zfb-md-wasm@$V"
+
+assert_state_run "state: resume skips present-verified and publishes only the absent package" ok \
+  "$PRESENT_EXCEPT_RUNTIME" "" "" "@takazudo/zfb-runtime" "@takazudo/zfb @takazudo/zfb-darwin-x64 create-zfb"
+
+assert_state_run "state: one present-unverified package stops the run before later publishes" fail \
+  "$PRESENT_EXCEPT_RUNTIME" "@takazudo/zfb" "" "" "@takazudo/zfb-runtime create-zfb" \
+  "@takazudo/zfb@$V registry state is present-unverified"
+
+assert_state_run "state: an unverified Darwin carrier blocks the whole publish" fail \
+  "@takazudo/zfb-darwin-x64@$V" "@takazudo/zfb-darwin-x64" "" "@takazudo/zfb-darwin-arm64" \
+  "@takazudo/zfb-darwin-x64 @takazudo/zfb-linux-x64-gnu @takazudo/zfb" "registry state is present-unverified"
+
+assert_state_run "state: registry uncertainty fails closed with nothing skipped or published past it" fail \
+  "" "" "@takazudo/zfb-darwin-arm64" "" "@takazudo/zfb-darwin-arm64 @takazudo/zfb-darwin-x64 @takazudo/zfb" \
+  "registry state is uncertain"
+
+assert_state_run "state: fresh mac-local publish of all 11 with both Darwin carriers" ok \
+  "" "" "" "@takazudo/zfb-darwin-arm64 @takazudo/zfb-darwin-x64 @takazudo/zfb create-zfb @takazudo/zfb-md-wasm" ""
+
+# A missing or malformed source commit is refused before any registry call.
+for SC_VALUE in "" "abc123" "0123456789ABCDEF0123456789ABCDEF01234567"; do
+  SC_CALLS=$(mktemp)
+  SC_RC=0
+  PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG=/dev/null MOCK_EXISTING="" \
+    MOCK_CALLS_LOG="$SC_CALLS" ZFB_RELEASE_SOURCE_COMMIT="$SC_VALUE" \
+    bash "$SCRIPT" all-provenance >/dev/null 2>&1 || SC_RC=$?
+  if [ "$SC_RC" -eq 2 ] && ! grep -q publish "$SC_CALLS"; then
+    pass "state: source commit '$SC_VALUE' refused (exit 2) before any publish"
+  else
+    fail "state: source commit '$SC_VALUE' rc=$SC_RC calls=$(tr '\n' ' ' <"$SC_CALLS")"
+  fi
+  rm -f "$SC_CALLS"
+done
+
+# A lost ACK on the first publish followed by an unverified recheck fails and
+# keeps npm's original error text.
+LA_OUT=$(mktemp)
+LA_RC=0
+PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG=/dev/null MOCK_EXISTING="" \
+  MOCK_MD_RESULT=lost MOCK_PUBLISHED_MARKER="$PUBLISH_TARGET/la-marker" MOCK_VERSION="$V" \
+  MOCK_STATE_UNVERIFIED="@takazudo/zfb-md-wasm" PUBLISH_RECHECK_DELAY=0 \
+  bash "$SCRIPT" all-provenance >"$LA_OUT" 2>&1 || LA_RC=$?
+if [ "$LA_RC" -ne 0 ] && grep -Fq 'registry state after recheck: present-unverified' "$LA_OUT" \
+   && grep -Fq '| ETIMEDOUT' "$LA_OUT"; then
+  pass "state: lost ACK with an unverified registry version fails with the original error"
+else
+  fail "state: lost-ACK unverified rc=$LA_RC out=$(tail -6 "$LA_OUT" | tr '\n' ' ')"
+fi
+rm -f "$LA_OUT" "$PUBLISH_TARGET/la-marker"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 

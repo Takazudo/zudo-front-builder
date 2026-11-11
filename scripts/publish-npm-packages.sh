@@ -44,7 +44,11 @@
 #   scripts/publish-npm-packages.sh <all-provenance|mac-local|recovery-no-provenance>
 #     all-provenance — every package (incl. both darwin carriers) was built in CI,
 #                      so all carry OIDC-attested provenance (`--provenance`).
-#     mac-local      — the platform packages named by ZFB_LOCAL_BUILT_PACKAGES
+#                      UNUSED by release.yml since #4690: no Darwin carrier is
+#                      built in CI any more. Kept only for hand-run/test use.
+#     mac-local      — release.yml's normal mode: the platform packages named by
+#                      ZFB_LOCAL_BUILT_PACKAGES (release.yml passes both Darwin
+#                      carriers, admitted from owner-Mac Release assets)
 #                      were built locally (outside this GHA job). Their bytes are
 #                      not described by this job's OIDC identity, so they are
 #                      published with provenance explicitly suppressed
@@ -76,10 +80,18 @@
 #
 # Required env:
 #   DIST_TAG          npm dist-tag to publish under (next | latest).
+#   ZFB_RELEASE_SOURCE_COMMIT
+#                     40-hex release source commit; every skip decision must
+#                     tie the registry version to it (#4690).
 #   ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN
 #                     provided by GitHub Actions when the job has
 #                     `permissions: id-token: write`.
 # Optional env:
+#   ZFB_DARWIN_ADMISSION_VERDICT
+#                     admission verdict JSON (scripts/admit-darwin-artifacts.mjs);
+#                     a present Darwin carrier must then match its digests.
+#   ZFB_NPM_PACKAGE_STATE_NODE
+#                     node binary for npm-package-state.mjs (tests: a stub).
 #   ALSO_LATEST       "1" → after publishing, also advance the `latest` dist-tag
 #                     (prerelease dual-tag policy, see #481). Delegated to
 #                     scripts/advance-latest-dist-tag.sh, which has its own retry.
@@ -185,38 +197,73 @@ is_publish_conflict() {
   printf '%s' "$1" | grep -qiE 'cannot publish over the previously published versions|EPUBLISHCONFLICT'
 }
 
-# Single-shot registry lookup: echoes the version if <name>@<version> is on the
-# registry, nothing otherwise. `|| true` so a not-found (npm view exits non-zero)
-# does not trip `set -e`.
-registry_version() {
-  npm view "$1@$2" version 2>/dev/null || true
+# Registry state of <name>@<version>, bound to the release source commit, from
+# scripts/release/npm-package-state.mjs (#4690). Echoes exactly one of
+#   absent | present-verified | present-unverified | uncertain
+# A skip is allowed ONLY for present-verified. `absent` needs definitive 404s on
+# bounded re-reads; network/5xx/auth failures are `uncertain`; a version that
+# exists but is not tied to ZFB_RELEASE_SOURCE_COMMIT (attestation gitCommit,
+# gitHead, or the admitted Darwin digests) is `present-unverified`. The helper's
+# one-line detail goes to stderr so the job log keeps the reason.
+package_state() {
+  local name="$1" version="$2" line state detail
+  local -a args=(--version "$version" --source-commit "${ZFB_RELEASE_SOURCE_COMMIT:-}" --package "$name" --tsv)
+  if [[ -n "${ZFB_DARWIN_ADMISSION_VERDICT:-}" ]]; then
+    args+=(--admission "$ZFB_DARWIN_ADMISSION_VERDICT")
+  fi
+  if ! line="$("${ZFB_NPM_PACKAGE_STATE_NODE:-node}" "${PUBLISH_SCRIPT_DIR}/release/npm-package-state.mjs" "${args[@]}")"; then
+    echo "  state of ${name}@${version}: helper failed — treating as uncertain" >&2
+    echo uncertain
+    return 0
+  fi
+  state="$(printf '%s\n' "$line" | awk -F '\t' -v n="$name" '$1 == n { print $2; exit }')"
+  detail="$(printf '%s\n' "$line" | awk -F '\t' -v n="$name" '$1 == n { print $3; exit }')"
+  case "$state" in
+    absent | present-verified | present-unverified | uncertain) ;;
+    *)
+      echo "  state of ${name}@${version}: unparseable helper output '${line}' — treating as uncertain" >&2
+      state=uncertain
+      ;;
+  esac
+  echo "  state of ${name}@${version}: ${state}${detail:+ (${detail})}" >&2
+  echo "$state"
 }
 
-# Post-failure recovery probe (with brief backoff for registry propagation lag):
-# returns 0 if <name>@<version> is on the registry within the recheck budget.
-registry_has_version() {
-  local name="$1" version="$2" attempt delay
+# Post-failure recheck (with brief backoff for registry propagation lag): echoes
+# the final state. Stops early on present-verified (tolerate) and on
+# present-unverified (a definitive identity mismatch — retrying cannot fix it).
+recheck_state() {
+  local name="$1" version="$2" _attempt delay state=uncertain
   delay="${PUBLISH_RECHECK_DELAY:-2}"
-  for attempt in $(seq 1 "${PUBLISH_RECHECK_ATTEMPTS:-3}"); do
-    if [[ "$(registry_version "$name" "$version")" == "$version" ]]; then
-      return 0
+  for _attempt in $(seq 1 "${PUBLISH_RECHECK_ATTEMPTS:-3}"); do
+    state="$(package_state "$name" "$version")"
+    if [[ "$state" == present-verified || "$state" == present-unverified ]]; then
+      break
     fi
     if [[ "$delay" -gt 0 ]]; then
       sleep "$delay"
     fi
   done
-  return 1
+  echo "$state"
 }
 
-# True (and logs) when <name>@<version> is already on the registry — the caller
-# then skips the publish entirely (idempotent re-run path).
+# Pre-publish decision. Returns 0 → skip (present-verified), 1 → publish
+# (absent), 3 → refuse (present-unverified or uncertain: fail closed, nothing is
+# published over or around an unidentified version).
 should_skip_publish() {
-  local name="$1" version="$2"
-  if [[ -n "$(registry_version "$name" "$version")" ]]; then
-    echo "✓ ${name}@${version} already on the registry — skipping publish."
-    return 0
-  fi
-  return 1
+  local name="$1" version="$2" state
+  state="$(package_state "$name" "$version")"
+  case "$state" in
+    present-verified)
+      echo "✓ ${name}@${version} already on the registry and verified against the source commit — skipping publish."
+      return 0
+      ;;
+    absent) return 1 ;;
+    *)
+      echo "::error::${name}@${version} registry state is ${state}; refusing to skip or publish it (fail closed)."
+      return 3
+      ;;
+  esac
 }
 
 # ── Explicit per-package provenance ─────────────────────────────────────────
@@ -297,25 +344,30 @@ assert_npm_oidc_only() {
 
 # Decide what a publish exit status means.
 #   status 0                    → success.
-#   conflict error text         → already published (double-PUT race) → tolerate.
-#   non-conflict error, but the version IS now on the registry
-#                               → lost-ACK race (server committed, client died) → tolerate.
-#   any other error             → real failure → return the status (fail the job).
+#   conflict error text, or any other error
+#                               → recheck the registry state: tolerate as a skip
+#                                 ONLY when it is present-verified (double-PUT
+#                                 race / lost ACK of our own publish).
+#   anything else               → real failure → return the status (fail the
+#                                 job), repeating the original error text.
 classify_publish_result() {
-  local name="$1" version="$2" status="$3" outfile="$4"
+  local name="$1" version="$2" status="$3" outfile="$4" state kind
   if [[ "$status" -eq 0 ]]; then
     echo "✓ published ${name}@${version}."
     return 0
   fi
   if is_publish_conflict "$(cat "$outfile")"; then
-    echo "✓ ${name}@${version} already published (publish-conflict / double-PUT race) — tolerating as skip."
+    kind="publish-conflict / double-PUT race"
+  else
+    kind="lost-ACK race"
+  fi
+  state="$(recheck_state "$name" "$version")"
+  if [[ "$state" == present-verified ]]; then
+    echo "✓ ${name}@${version}: publish exited ${status} but the version is on the registry and verified against the source commit (${kind}) — tolerating as skip."
     return 0
   fi
-  if registry_has_version "$name" "$version"; then
-    echo "⚠ publish of ${name}@${version} exited ${status} without a conflict message, but the version IS now on the registry (lost-ACK race) — tolerating as skip."
-    return 0
-  fi
-  echo "::error::publish failed for ${name}@${version} (exit ${status}); not a publish-conflict and the version is not on the registry — failing the release."
+  echo "::error::publish failed for ${name}@${version} (exit ${status}); registry state after recheck: ${state} — failing the release. Original publish output (tail):"
+  tail -n 20 "$outfile" | sed 's/^/  | /'
   return "$status"
 }
 
@@ -375,14 +427,18 @@ preflight_css_artifacts() {
 }
 
 publish_platform_packages() {
-  local mode="$1" dir name version expected
+  local mode="$1" dir name version expected skip_rc
   for dir in "${PLATFORM_DIRS[@]}"; do
     name="$(manifest_field "$dir" name)"
     version="$(manifest_field "$dir" version)"
     expected="$(expected_provenance "$dir" "$mode")"
-    if should_skip_publish "$name" "$version"; then
+    skip_rc=0
+    should_skip_publish "$name" "$version" || skip_rc=$?
+    if [[ "$skip_rc" -eq 0 ]]; then
       record_expectation "$name" "$version" "$expected" already-present
       continue
+    elif [[ "$skip_rc" -ne 1 ]]; then
+      return 1
     fi
     if [[ "$expected" == "none" ]]; then
       if [[ "$mode" == "recovery-no-provenance" ]]; then
@@ -397,17 +453,21 @@ publish_platform_packages() {
 }
 
 publish_nonplatform_packages() {
-  local mode="$1" dir name version extra_flags expected
+  local mode="$1" dir name version extra_flags expected skip_rc
   for dir in "${NONPLATFORM_DIRS[@]}"; do
     name="$(manifest_field "$dir" name)"
     version="$(manifest_field "$dir" version)"
     expected="$(expected_provenance "$dir" "$mode")"
-    if should_skip_publish "$name" "$version"; then
+    skip_rc=0
+    should_skip_publish "$name" "$version" || skip_rc=$?
+    if [[ "$skip_rc" -eq 0 ]]; then
       record_expectation "$name" "$version" "$expected" already-present
       if [[ "$dir" == "crates/zfb-md-wasm/npm" ]]; then
         verify_published_md_wasm "$version" "$mode"
       fi
       continue
+    elif [[ "$skip_rc" -ne 1 ]]; then
+      return 1
     fi
     extra_flags=()
     if [[ "$expected" == "none" ]]; then
@@ -564,6 +624,12 @@ main() {
   esac
 
   if ! prepare_local_built_packages "$mode"; then
+    return 2
+  fi
+  # Every skip decision binds the registry state to the release source commit
+  # (#4690); without it nothing could ever be present-verified, so refuse early.
+  if [[ ! "${ZFB_RELEASE_SOURCE_COMMIT:-}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "::error::ZFB_RELEASE_SOURCE_COMMIT must be the 40-hex release source commit (got '${ZFB_RELEASE_SOURCE_COMMIT:-}'). Refusing to publish."
     return 2
   fi
   preflight_css_artifacts
