@@ -14,7 +14,7 @@
  *   --expected-source SHA      Also require the tag to resolve to this commit
  *   --expect-github-latest     Require GitHub "Latest" to be this release
  *   --expect-npm-latest        Require the `latest` dist-tag of all eleven packages to be this version
- *   --expect-homebrew          Require the stable Homebrew formula to carry this version and its archive hashes
+ *   --expect-homebrew          Require each stable Homebrew OS/CPU row to download this version's archive for that target with its verified digest
  *   --timeout-ms N             Per-request timeout (default 60000)
  *   --retries N                Retries for network/5xx/rate-limit answers (default 3)
  *   --concurrency N            Parallel downloads (default 2, max 4)
@@ -1047,6 +1047,7 @@ async function verifyArchives(ctx) {
       archive: {
         id: archive.id,
         name,
+        url: archive.browser_download_url,
         size: archive.size,
         state: archive.state,
         apiDigest: archive.digest,
@@ -1733,6 +1734,181 @@ async function verifyConsumption(ctx) {
   return section;
 }
 
+// ── Homebrew formula binding ────────────────────────────────────────────────
+
+// The four delivery rows written by scripts/update-homebrew-formula.sh. Each
+// on_<os>/on_<cpu> block must download exactly that target's tar.gz.
+export const HOMEBREW_ROWS = Object.freeze([
+  { os: "on_macos", cpu: "on_arm", target: "aarch64-apple-darwin" },
+  { os: "on_macos", cpu: "on_intel", target: "x86_64-apple-darwin" },
+  { os: "on_linux", cpu: "on_arm", target: "aarch64-unknown-linux-gnu" },
+  { os: "on_linux", cpu: "on_intel", target: "x86_64-unknown-linux-gnu" },
+]);
+
+const FORMULA_BLOCK_START = /^(?:class|module|def|if|unless|case|begin|while|until|for)\b/;
+const FORMULA_DO_BLOCK = /\bdo(?:\s*\|[^|]*\|)?$/;
+const FORMULA_HEREDOC = /<<[~-]?(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/;
+const FORMULA_STRING_DECL = /^(url|sha256|version)\s+"([^"\\#]*)"$/;
+const FORMULA_DELIVERY_KEYWORD = /^(?:url|sha256|mirror|version)\b/;
+
+function stripFormulaComment(line) {
+  // Generated code lines never contain `#` inside a string; a `#` that starts
+  // the line or follows whitespace begins a comment.
+  const index = line.search(/(?:^|\s)#/);
+  return (index === -1 ? line : line.slice(0, index)).trim();
+}
+
+/**
+ * Bounded recognizer for the literal formula format the generator writes. It
+ * tracks block nesting by keyword/`do`/`end` lines, skips heredoc bodies, and
+ * reads only whole-line `url "…"`, `sha256 "…"` and `version "…"`
+ * declarations. Anything else that declares delivery is reported, never
+ * guessed at; other content (desc, install, test) is ignored.
+ */
+export function parseHomebrewFormula(text) {
+  const problems = [];
+  const stack = [];
+  const rows = new Map(HOMEBREW_ROWS.map((row) => [row.target, { urls: [], sha256s: [] }]));
+  const versions = [];
+  let heredoc = null;
+  const lines = String(text).split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const lineNo = index + 1;
+    if (heredoc) {
+      if (lines[index].trim() === heredoc) heredoc = null;
+      continue;
+    }
+    const code = stripFormulaComment(lines[index]);
+    if (!code) continue;
+    const heredocStart = FORMULA_HEREDOC.exec(code);
+    if (heredocStart) heredoc = heredocStart[2];
+    if (code === "end") {
+      if (stack.length === 0) problems.push(`line ${lineNo}: unbalanced end`);
+      else stack.pop();
+      continue;
+    }
+    const firstWord = /^[A-Za-z_][A-Za-z0-9_]*/.exec(code)?.[0] ?? "";
+    if (FORMULA_DO_BLOCK.test(code)) {
+      stack.push(firstWord);
+      continue;
+    }
+    if (FORMULA_BLOCK_START.test(code)) {
+      stack.push(firstWord === "class" ? "class" : firstWord);
+      continue;
+    }
+    if (!FORMULA_DELIVERY_KEYWORD.test(code)) continue;
+    const decl = FORMULA_STRING_DECL.exec(code);
+    const where = stack.join(" > ") || "top level";
+    if (!decl) {
+      problems.push(`line ${lineNo}: unsupported delivery declaration in ${where}: ${code}`);
+      continue;
+    }
+    const [, keyword, value] = decl;
+    if (keyword === "version") {
+      if (stack.length === 1 && stack[0] === "class") versions.push(value);
+      else problems.push(`line ${lineNo}: misplaced version declaration in ${where}`);
+      continue;
+    }
+    const row =
+      stack.length === 3 && stack[0] === "class"
+        ? HOMEBREW_ROWS.find((r) => r.os === stack[1] && r.cpu === stack[2])
+        : undefined;
+    if (!row) {
+      problems.push(`line ${lineNo}: misplaced ${keyword} declaration in ${where}`);
+      continue;
+    }
+    rows.get(row.target)[keyword === "url" ? "urls" : "sha256s"].push(value);
+  }
+  if (heredoc) problems.push(`unterminated heredoc ${heredoc}`);
+  if (stack.length) problems.push(`unclosed block(s): ${stack.join(" > ")}`);
+  if (versions.length !== 1) {
+    problems.push(`expected one class-level version declaration, found ${versions.length}`);
+  }
+  for (const { os, cpu, target } of HOMEBREW_ROWS) {
+    const { urls, sha256s } = rows.get(target);
+    if (urls.length !== 1) problems.push(`${os}/${cpu}: expected one url, found ${urls.length}`);
+    if (sha256s.length !== 1) {
+      problems.push(`${os}/${cpu}: expected one sha256, found ${sha256s.length}`);
+    }
+  }
+  return {
+    version: versions.length === 1 ? versions[0] : null,
+    rows: HOMEBREW_ROWS.map(({ os, cpu, target }) => ({
+      os,
+      cpu,
+      target,
+      url: rows.get(target).urls.length === 1 ? rows.get(target).urls[0] : null,
+      sha256: rows.get(target).sha256s.length === 1 ? rows.get(target).sha256s[0] : null,
+    })),
+    problems,
+  };
+}
+
+/** Per-target identity of the release archives the archives section checked. */
+export function archiveIdentityByTarget(archivesSection) {
+  const identity = new Map();
+  for (const check of archivesSection.checks) {
+    if (!check.id.startsWith("archive:")) continue;
+    identity.set(check.id.slice("archive:".length), {
+      status: check.status,
+      name: check.evidence?.archive?.name ?? null,
+      url: check.evidence?.archive?.url ?? null,
+      sha256: check.evidence?.archive?.computedSha256 ?? null,
+    });
+  }
+  return identity;
+}
+
+/**
+ * Bind each Homebrew delivery row to its own OS/CPU target: the requested
+ * version, the expected release-asset URL, and the digest verified for that
+ * same target's archive. Structural or binding mismatches fail; a row whose
+ * archive evidence is missing or not verified is incomplete, never verified.
+ */
+export function checkHomebrewFormula(formula, { version, repo, tag, archives }) {
+  const parsed = parseHomebrewFormula(formula);
+  const problems = [...parsed.problems];
+  if (parsed.version !== null && parsed.version !== version) {
+    problems.push(`formula version is ${parsed.version}, expected ${version}`);
+  }
+  const missingEvidence = [];
+  const rows = parsed.rows.map(({ os, cpu, target, url, sha256 }) => {
+    const name = `zfb-${version}-${target}.tar.gz`;
+    const expectedUrl = `https://github.com/${repo}/releases/download/${tag}/${name}`;
+    const archive = archives.get(target);
+    const archiveStatus = archive?.status ?? "missing";
+    const expectedSha256 = archiveStatus === STATUS.VERIFIED ? archive.sha256 : null;
+    const row = {
+      os,
+      cpu,
+      target,
+      expected: { url: expectedUrl, sha256: expectedSha256, archiveStatus },
+      observed: { url, sha256 },
+    };
+    if (url !== null && url !== expectedUrl) {
+      problems.push(`${os}/${cpu}: url ${url}, expected ${expectedUrl}`);
+    }
+    if (archiveStatus !== STATUS.VERIFIED) {
+      missingEvidence.push(`${os}/${cpu}: ${target} archive evidence is ${archiveStatus}`);
+    } else if (sha256 !== null && sha256 !== expectedSha256) {
+      problems.push(`${os}/${cpu}: sha256 ${sha256} is not the verified ${target} digest`);
+    }
+    row.matches = url === expectedUrl && expectedSha256 !== null && sha256 === expectedSha256;
+    return row;
+  });
+  const status = problems.length
+    ? STATUS.FAILED
+    : missingEvidence.length
+      ? STATUS.INCOMPLETE
+      : STATUS.VERIFIED;
+  return {
+    status,
+    version: parsed.version,
+    rows,
+    problems: [...problems, ...missingEvidence],
+  };
+}
+
 async function observeChannels(ctx) {
   const section = new Section("channels");
   const { http, repo, version, tag, expect } = ctx;
@@ -1799,19 +1975,24 @@ async function observeChannels(ctx) {
   }
   try {
     const formula = await http.getText(HOMEBREW_FORMULA_URL);
-    const formulaVersion = /^\s*version "([^"]+)"/m.exec(formula)?.[1];
-    const sha256s = [...formula.matchAll(/sha256 "([0-9a-f]{64})"/g)].map((match) => match[1]);
-    const archiveHashes = (ctx.archiveHashes ?? []).filter(Boolean);
-    const hashesMatch =
-      formulaVersion === version &&
-      sha256s.length === 4 &&
-      sha256s.every((hash) => archiveHashes.includes(hash));
-    record("homebrew", expect.homebrew, formulaVersion, hashesMatch, {
-      url: HOMEBREW_FORMULA_URL,
-      version: formulaVersion ?? null,
-      sha256s,
-      matchesThisReleaseArchives: hashesMatch,
+    const result = checkHomebrewFormula(formula, {
+      version,
+      repo,
+      tag,
+      archives: ctx.archiveIdentity ?? new Map(),
     });
+    const evidence = {
+      url: HOMEBREW_FORMULA_URL,
+      version: result.version,
+      rows: result.rows,
+      matchesThisReleaseArchives: result.status === STATUS.VERIFIED,
+      ...(result.problems.length ? { problems: result.problems } : {}),
+    };
+    if (!expect.homebrew) section.add("homebrew", STATUS.OBSERVED, evidence);
+    else if (result.status === STATUS.VERIFIED) section.verified("homebrew", evidence);
+    else if (result.status === STATUS.INCOMPLETE) {
+      section.incomplete("homebrew", result.problems.join("; "), evidence);
+    } else section.failed("homebrew", result.problems.join("; "), evidence);
   } catch (error) {
     record("homebrew", expect.homebrew, undefined, false, { url: HOMEBREW_FORMULA_URL }, error);
   }
@@ -1863,9 +2044,7 @@ export async function verifyReleaseDelivery(options, deps = {}) {
     const identity = await verifyIdentity(ctx);
     const workflow = await verifyReleaseWorkflow(ctx);
     const archives = await verifyArchives(ctx);
-    ctx.archiveHashes = archives.checks
-      .filter((check) => check.id.startsWith("archive:") && check.status === STATUS.VERIFIED)
-      .map((check) => check.evidence.archive.computedSha256);
+    ctx.archiveIdentity = archiveIdentityByTarget(archives);
     const npm = await verifyNpm(ctx);
     const wasm = await verifyWasm(ctx);
     const consumption = await verifyConsumption(ctx);
