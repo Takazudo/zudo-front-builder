@@ -15,9 +15,10 @@ admission rules) is [`scripts/darwin-artifact-contract.md`](../../../scripts/dar
 1. Require `uname -s` = `Darwin` and `sysctl -n hw.optional.arm64` = `1`; otherwise stop — a non-Mac
    host can only consume uploaded inputs.
 2. Resolve the source: `gh release view <tag> --json isDraft,targetCommitish`. The Release must be a
-   **draft**; its `targetCommitish` is the source SHA unless one was given (they must agree).
-3. Check out that SHA detached in a clean checkout, create the **local** tag `<tag>` at it (never
-   push it), and run, through the heavy guard when present:
+   **draft** whose `targetCommitish` is a full commit id (a branch name is refused); that is the
+   source SHA, and a given SHA must equal it.
+3. Check out that SHA detached in a clean checkout and run, through the heavy guard when present.
+   Do not create a tag: with no tag ref the script binds to the draft Release.
 
    ```sh
    ZFB_X64_NODE=/absolute/path/to/x64/node CARGO_BUILD_JOBS=1 \
@@ -28,7 +29,8 @@ admission rules) is [`scripts/darwin-artifact-contract.md`](../../../scripts/dar
    on a "DIFFERENT bytes" refusal, stop and report — the owner decides.
 4. Report the uploaded asset names, each receipt's `host.arch_label` (`native-arm64`,
    `rosetta-translated` — never call x86_64 "native Intel"), `qualification.status`, every check's
-   first result, and `node scripts/release/release-status.mjs --tag <tag>`'s recommendation.
+   first result, and the script's final admission line. (`release-status.mjs` reports
+   `blocked:tag-missing` until the draft is published; that is expected here.)
 
 Do not publish the Release and do not add the provenance-downgrade marker unless the owner
 explicitly does so; publishing continues from `RELEASING.md` A11 in any environment.

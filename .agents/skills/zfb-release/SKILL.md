@@ -27,7 +27,7 @@ adds Codex-specific notes; where they disagree, `RELEASING.md` wins.
 ## Cloud rules
 
 - **Never create Mac evidence.** Phase M runs only on the owner's Mac. When
-  `release-status.mjs` recommends `prepare-darwin`, or Darwin admission rejects or misses any of
+  `release-status.mjs` recommends `prepare-darwin`, or Darwin admission (A11) rejects or misses any of
   the ten inputs, print the paste-ready Mac prompt from `RELEASING.md` and stop. Do not build
   Darwin binaries, emulate them, write receipts, or add a hosted macOS runner.
 - **Stop on the provenance-downgrade blocker.** Never add
