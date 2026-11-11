@@ -6,6 +6,7 @@ import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "no
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { assetNames } from "../darwin-artifact-contract.mjs";
+import { installFakeGh } from "./helpers/fake-gh.mjs";
 import {
   ARM,
   VERSION,
@@ -16,9 +17,9 @@ import {
   tmp,
 } from "./helpers/darwin-fixture.mjs";
 
-function runAsync(command, args) {
+function runAsync(command, args, env) {
   return new Promise((resolve) => {
-    execFile(command, args, { encoding: "utf8" }, (error, stdout, stderr) => {
+    execFile(command, args, { encoding: "utf8", env }, (error, stdout, stderr) => {
       resolve({
         status: error ? (typeof error.code === "number" ? error.code : -1) : 0,
         stdout,
@@ -106,8 +107,8 @@ describe("build-darwin-local.sh refusals (--check-only, no build)", () => {
       out: join(tmp("zfb-build-out-"), "assets"),
     };
   }
-  const run = (repo, args) =>
-    runAsync("bash", [join(repo, "scripts", "build-darwin-local.sh"), ...args]);
+  const run = (repo, args, env) =>
+    runAsync("bash", [join(repo, "scripts", "build-darwin-local.sh"), ...args], env);
 
   it("accepts a clean tree at --source and its tag", async () => {
     const { repo, head, out } = await sandbox();
@@ -167,6 +168,103 @@ describe("build-darwin-local.sh refusals (--check-only, no build)", () => {
         ])
       ).stderr,
     ).toMatch(/peels to [0-9a-f]{40}, not/);
+  });
+
+  describe("without a local tag ref: binds to the DRAFT Release (#4690)", () => {
+    let fakeBin;
+    beforeAll(() => {
+      fakeBin = installFakeGh();
+    });
+    afterAll(() => rmSync(fakeBin, { recursive: true, force: true }));
+    const withRelease = (release) => ({
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH}`,
+      FAKE_GH_RELEASE_JSON: JSON.stringify({ tagName: `v${VERSION}`, ...release }),
+    });
+    const untagged = async () => {
+      const box = await sandbox();
+      await box.git("tag", "-d", `v${VERSION}`);
+      return box;
+    };
+    const args = (head, out, flag) => [
+      "--source",
+      head,
+      flag,
+      `v${VERSION}`,
+      "--out-dir",
+      out,
+      "--check-only",
+    ];
+
+    it.each(["--tag", "--upload"])(
+      "accepts %s with a draft targeting exactly --source",
+      async (flag) => {
+        const { repo, head, out } = await untagged();
+        const result = await run(
+          repo,
+          args(head, out, flag),
+          withRelease({ isDraft: true, targetCommitish: head }),
+        );
+        expect(result.stderr).toBe("");
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain(`bound to draft Release v${VERSION} targeting ${head}`);
+      },
+    );
+
+    it("refuses a draft targeting another commit", async () => {
+      const { repo, head, out } = await untagged();
+      const result = await run(
+        repo,
+        args(head, out, "--upload"),
+        withRelease({ isDraft: true, targetCommitish: "a".repeat(40) }),
+      );
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(new RegExp(`targets a{40}, not ${head}`));
+    });
+
+    it("refuses a draft whose target is a branch name", async () => {
+      const { repo, head, out } = await untagged();
+      const result = await run(
+        repo,
+        args(head, out, "--upload"),
+        withRelease({ isDraft: true, targetCommitish: "main" }),
+      );
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/targets 'main', not a full commit id/);
+    });
+
+    it("refuses a published (non-draft) Release when the tag ref is absent", async () => {
+      const { repo, head, out } = await untagged();
+      const result = await run(
+        repo,
+        args(head, out, "--tag"),
+        withRelease({ isDraft: false, targetCommitish: head }),
+      );
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/is not a draft/);
+    });
+
+    it("refuses when neither a tag ref nor a Release exists", async () => {
+      const { repo, head, out } = await untagged();
+      const result = await run(repo, args(head, out, "--tag"), {
+        ...withRelease({}),
+        FAKE_GH_RELEASE_MISSING: "1",
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/not found locally and no GitHub Release/);
+    });
+
+    it("still requires an existing tag ref to peel to --source, ignoring any draft", async () => {
+      const { repo, git, head, out } = await sandbox();
+      const other = await git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "other");
+      await git("tag", "-f", `v${VERSION}`, other);
+      const result = await run(
+        repo,
+        args(head, out, "--tag"),
+        withRelease({ isDraft: true, targetCommitish: head }),
+      );
+      expect(result.stderr).toMatch(/peels to [0-9a-f]{40}, not/);
+    });
   });
 
   it("refuses a dirty tree and an out dir inside the checkout", async () => {

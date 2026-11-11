@@ -49,7 +49,9 @@ ZFB_X64_NODE=/path/to/x64/node \
 
 - Refuses a dirty tree (tracked changes or untracked non-ignored files), a
   `--source` that is not `HEAD`, a `--tag` that is not `v<version>` or does not
-  peel to `--source`, an out dir inside the checkout or not empty, a non-Darwin
+  peel to `--source` (without a local tag ref, a DRAFT Release for the tag whose
+  `targetCommitish` is exactly `--source`; a branch-name target or a published
+  Release is refused), an out dir inside the checkout or not empty, a non-Darwin
   host, a host without `hw.optional.arm64=1`, missing Rosetta 2 and a missing x64
   Node. `--check-only` stops after the argument and source-binding refusals.
 - Builds serially, one target and one command at a time:

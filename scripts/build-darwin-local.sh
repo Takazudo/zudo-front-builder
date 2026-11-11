@@ -13,7 +13,9 @@
 #                                 [--upload v<version>] [--check-only]
 #
 #   --source SHA   required; must equal HEAD (full object id)
-#   --tag TAG      optional; must be v<packages/zfb version> and peel to SHA
+#   --tag TAG      optional; must be v<packages/zfb version> and peel to SHA.
+#                  Without a local tag ref, the DRAFT Release TAG must target
+#                  exactly SHA (gh release view; branch targets are refused)
 #   --out-dir DIR  assets + receipts; must lie outside the checkout
 #                  (default: ${TMPDIR:-/tmp}/zfb-darwin-<version>-<sha12>)
 #   --upload TAG   upload to the existing DRAFT Release TAG (implies --tag TAG)
@@ -81,8 +83,27 @@ head="$(git rev-parse --verify HEAD)"
 version="$(node -p "require('./packages/zfb/package.json').version")"
 if [[ -n "$tag" ]]; then
   [[ "$tag" == "v$version" ]] || die "--tag $tag != v$version (packages/zfb/package.json)"
-  tag_commit="$(git rev-parse --verify --quiet "refs/tags/$tag^{commit}")" || die "tag $tag not found locally (git fetch --tags)"
-  [[ "$tag_commit" == "$source_sha" ]] || die "tag $tag peels to $tag_commit, not $source_sha"
+  if tag_commit="$(git rev-parse --verify --quiet "refs/tags/$tag^{commit}")"; then
+    [[ "$tag_commit" == "$source_sha" ]] || die "tag $tag peels to $tag_commit, not $source_sha"
+  else
+    # A never-published draft Release has no tag ref yet (#4690). Bind to the
+    # DRAFT instead: it must exist, be a draft, and target exactly --source as a
+    # full commit id (the procedure creates it with `--target <SOURCE_SHA>`).
+    # release.yml re-checks the published tag's commit before admitting.
+    release_json="$(gh release view "$tag" --json isDraft,targetCommitish,tagName)" \
+      || die "tag $tag not found locally and no GitHub Release $tag to bind to (git fetch --tags, or create the draft with --target $source_sha)"
+    binding="$(RELEASE_JSON="$release_json" node -e '
+      const r = JSON.parse(process.env.RELEASE_JSON);
+      process.stdout.write([r.tagName, String(r.isDraft), r.targetCommitish ?? ""].join("\t"));
+    ')" || die "cannot parse gh release view output for $tag"
+    IFS=$'\t' read -r release_tag release_draft release_target <<<"$binding"
+    [[ "$release_tag" == "$tag" ]] || die "Release $tag reports tag name $release_tag"
+    [[ "$release_draft" == "true" ]] || die "tag $tag not found locally and Release $tag is not a draft; fetch the tag (git fetch --tags)"
+    [[ "$release_target" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+      || die "draft Release $tag targets '$release_target', not a full commit id; recreate the draft with --target $source_sha"
+    [[ "$release_target" == "$source_sha" ]] || die "draft Release $tag targets $release_target, not $source_sha"
+    echo "==> no local tag $tag; bound to draft Release $tag targeting $source_sha"
+  fi
 fi
 tree="$(git rev-parse --verify "$source_sha^{tree}")"
 
