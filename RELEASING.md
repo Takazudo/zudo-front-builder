@@ -203,11 +203,20 @@ git log <base>..HEAD --oneline
   `git rev-parse <base> HEAD`. A promotion with no new commits since the prerelease is legitimate
   because its base is the last stable.
 - Categorize by prefix: Breaking Changes, Features (`feat:`), Bug Fixes (`fix:`), Other Changes.
-- Assign every package-facing change to its lane(s) per the
-  [five-lane contract](CLAUDE.md#five-lane-release-changelog-contract): `zfb` (engine/CLI,
-  `@takazudo/zfb`, `@takazudo/zfb-slugify`, native carriers), `zfb-runtime`,
-  `zfb-adapter-cloudflare`, `create-zfb`, `zfb-md-wasm`. Duplicate cross-package changes into
-  every affected lane; omit repo-only docs/tests/CI/maintenance.
+
+Then classify every user-facing commit and diff into package lanes by ownership:
+
+- **zfb**: the Rust engine/CLI, `@takazudo/zfb`, `@takazudo/zfb-slugify`, and all native carrier packaging.
+- **zfb-runtime**: browser/runtime package behavior and API.
+- **zfb-adapter-cloudflare**: Cloudflare adapter behavior and API.
+- **create-zfb**: generator CLI and generated-project behavior.
+- **zfb-md-wasm**: the MD/WASM package, entries, API, artifacts, and package behavior.
+
+A change that affects multiple packages MUST appear in every affected lane. Do not put repo-only
+docs, tests, CI, or maintenance changes with no package-facing effect in any lane. Every lane still
+gets a page for the lockstep version; when a lane has no package-specific change, preserve its date
+and use exactly `- No package-specific changes.` Never copy another package's narrative into an
+unchanged lane. This is the [five-lane contract](CLAUDE.md#five-lane-release-changelog-contract).
 
 Print the proposal (current → new, categorized commits) for visibility.
 
@@ -275,7 +284,8 @@ further diff):
 
 ### A6. Changelog MDX (five lanes)
 
-Create exactly these English pages (no Japanese mirrors):
+Create exactly these five English pages (there are no Japanese mirrors because the changelog is
+default-locale-only):
 
 ```text
 docs/src/content/docs/changelog/zfb/v<version>.mdx
@@ -285,11 +295,13 @@ docs/src/content/docs/changelog/create-zfb/v<version>.mdx
 docs/src/content/docs/changelog/zfb-md-wasm/v<version>.mdx
 ```
 
+Use this shape for each page:
+
 ```mdx
 ---
 title: 'v<version>'
 sidebar_position: <computed>
-# only on a lane's first-ever page:
+# Include only for a lane's first-ever release page:
 pagination_next: null
 ---
 
@@ -300,18 +312,66 @@ Released: <YYYY-MM-DD>
 ## Breaking Changes
 
 - description (hash)
+
+## Features
+
+- description (hash)
+
+## Bug Fixes
+
+- description (hash)
+
+## Other Changes
+
+- description (hash)
 ```
 
-- Sections only when they have entries; an unchanged lane's body after `Released:` is exactly a
-  blank line and `- No package-specific changes.`; never borrow another lane's narrative.
-- `sidebar_position` per lane, computed as if the page were absent — one call per target:
-  `node scripts/next-changelog-sidebar-position.mjs docs/src/content/docs/changelog/<lane>/v<version>.mdx`.
-  Never use the retired root changelog path, a global maximum or the old mega-number formula. An
-  empty lane starts at 1 with `pagination_next: null`.
-- A `zfb-md-wasm` note never says artifacts are "unchanged" without saying what that covers: every
-  release moves all four `.wasm` SHA-256 digests (#2885). Point to the Release asset
-  `zfb-md-wasm-<version>-shipped-artifacts.json` and the export
-  `@takazudo/zfb-md-wasm/shipped-artifacts.json`; no digest tables.
+Rules:
+
+- Only include sections that have entries for that package. If there are none, the entire body
+  after `Released:` is exactly a blank line followed by `- No package-specific changes.`
+- Use today's date for `Released`.
+- Each entry: commit subject followed by the short hash in parentheses.
+- Duplicate cross-package changes into every affected page.
+- Omit repo-only docs/tests/CI/maintenance changes with no package-facing effect.
+- **Never call shipped artifacts "unchanged" without saying what that covers.** The four
+  `zfb-md-wasm` `.wasm` artifacts embed `ZFB_RELEASE_VERSION`, so **every** release moves all four
+  SHA-256 digests — including a documentation-only patch whose compiled code is identical and whose
+  byte sizes do not move at all. A note saying only "artifacts and their sizes are unchanged" reads
+  to a digest-pinning consumer as "nothing to re-verify"; that wording in v2.15.1 nearly caused a
+  skipped re-pin (#2885). Say *sizes* when you mean sizes, and say that digests still move.
+  Point readers to the versioned GitHub Release asset
+  `zfb-md-wasm-<version>-shipped-artifacts.json` and the package export
+  `@takazudo/zfb-md-wasm/shipped-artifacts.json` for the four SHA-256 digests.
+  Do not write a digest table or refer to a transient CI run as the source.
+- Compute `sidebar_position` independently in each package directory as if the target page were
+  absent. For each target, call the executable helper with that target path; it scans only that
+  lane's non-index `v*.mdx` pages, validates their positions, takes the maximum, and adds one.
+  Run all five calls — never derive one lane's position from another or scan the retired changelog
+  root:
+
+  ```bash
+  ZFB_POSITION=$(node scripts/next-changelog-sidebar-position.mjs docs/src/content/docs/changelog/zfb/v<version>.mdx)
+  ZFB_RUNTIME_POSITION=$(node scripts/next-changelog-sidebar-position.mjs docs/src/content/docs/changelog/zfb-runtime/v<version>.mdx)
+  ZFB_ADAPTER_CLOUDFLARE_POSITION=$(node scripts/next-changelog-sidebar-position.mjs docs/src/content/docs/changelog/zfb-adapter-cloudflare/v<version>.mdx)
+  CREATE_ZFB_POSITION=$(node scripts/next-changelog-sidebar-position.mjs docs/src/content/docs/changelog/create-zfb/v<version>.mdx)
+  ZFB_MD_WASM_POSITION=$(node scripts/next-changelog-sidebar-position.mjs docs/src/content/docs/changelog/zfb-md-wasm/v<version>.mdx)
+  ```
+
+  The migrated `zfb` lane continues after its historical maximum. A lane with no existing version
+  pages gets position 1; include `pagination_next: null` in that first page's frontmatter so its
+  previous/next traversal cannot cross into another package lane. Omit that key on later pages.
+  `index.mdx` is excluded by each `v*.mdx` scan.
+
+  - This replaces the retired encoded-semver mega-number formula
+    (`MAJOR*10000000 + MINOR*100000 + PATCH*1000 + …`, values like `20700999`). All 110 pre-existing
+    pages were renumbered to plain 1..N in semver order on 2026-08-18 (zudo-doc's own changelog uses
+    the same plain-increment style). Do NOT resurrect the mega-number formula: a mega-number page
+    sorts above every incremental page and would pin itself to the top of the sidebar forever.
+  - Edge case — releasing on an older line (e.g. a `2.6.x` patch after `2.7.0` exists): plain
+    max+1 would place it above `2.7.0` in the sidebar. This has never happened in this repo
+    (releases are strictly forward); if it ever does, renumber the affected tail by hand so
+    position order matches semver order, and say so in the release report.
 
 ### A7. Focused checks
 
@@ -351,7 +411,11 @@ git add packages/*/package.json crates/zfb-md-wasm/npm/package.json pnpm-lock.ya
   docs/src/content/docs-ja/guides/syntax-highlighting.mdx \
   research/v3-island-size/decision-linux-x64.json research/v3-island-size/README.md \
   scripts/__tests__/island-size-budget.test.mjs docs/public/wind-examples/manifest.json \
-  docs/src/content/docs/changelog/*/v<version>.mdx
+  docs/src/content/docs/changelog/zfb/v<version>.mdx \
+  docs/src/content/docs/changelog/zfb-runtime/v<version>.mdx \
+  docs/src/content/docs/changelog/zfb-adapter-cloudflare/v<version>.mdx \
+  docs/src/content/docs/changelog/create-zfb/v<version>.mdx \
+  docs/src/content/docs/changelog/zfb-md-wasm/v<version>.mdx
 git status --porcelain   # nothing release-related left unstaged
 git commit -m "chore(release): bump to v<version>"
 git push origin main
@@ -395,20 +459,25 @@ Also verify the five changelog pages exist at `$SOURCE_SHA` with matching filena
 Create the draft (one Release per version; notes from five independent extractions):
 
 ```sh
-for lane in zfb zfb-runtime zfb-adapter-cloudflare create-zfb zfb-md-wasm; do
-  sed -n '/^Released:/,$ p' "docs/src/content/docs/changelog/$lane/v<version>.mdx" > "$TMPDIR/notes-$lane.md"
-done
-{
-  printf '## @takazudo/zfb\n\n';                   cat "$TMPDIR/notes-zfb.md";                    printf '\n'
-  printf '## @takazudo/zfb-runtime\n\n';           cat "$TMPDIR/notes-zfb-runtime.md";            printf '\n'
-  printf '## @takazudo/zfb-adapter-cloudflare\n\n'; cat "$TMPDIR/notes-zfb-adapter-cloudflare.md"; printf '\n'
-  printf '## create-zfb\n\n';                      cat "$TMPDIR/notes-create-zfb.md";             printf '\n'
-  printf '## @takazudo/zfb-md-wasm\n\n';           cat "$TMPDIR/notes-zfb-md-wasm.md"
-} > "$TMPDIR/release-notes.md"
+ZFB_NOTES=$(sed -n '/^Released:/,$ p' docs/src/content/docs/changelog/zfb/v<version>.mdx)
+ZFB_RUNTIME_NOTES=$(sed -n '/^Released:/,$ p' docs/src/content/docs/changelog/zfb-runtime/v<version>.mdx)
+ZFB_ADAPTER_CLOUDFLARE_NOTES=$(sed -n '/^Released:/,$ p' docs/src/content/docs/changelog/zfb-adapter-cloudflare/v<version>.mdx)
+CREATE_ZFB_NOTES=$(sed -n '/^Released:/,$ p' docs/src/content/docs/changelog/create-zfb/v<version>.mdx)
+ZFB_MD_WASM_NOTES=$(sed -n '/^Released:/,$ p' docs/src/content/docs/changelog/zfb-md-wasm/v<version>.mdx)
+RELEASE_NOTES=$(printf '%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s' \
+  '## @takazudo/zfb' "$ZFB_NOTES" \
+  '## @takazudo/zfb-runtime' "$ZFB_RUNTIME_NOTES" \
+  '## @takazudo/zfb-adapter-cloudflare' "$ZFB_ADAPTER_CLOUDFLARE_NOTES" \
+  '## create-zfb' "$CREATE_ZFB_NOTES" \
+  '## @takazudo/zfb-md-wasm' "$ZFB_MD_WASM_NOTES")
 PRERELEASE_FLAG=$([[ "<version>" =~ -next\.|-beta\.|-rc\. ]] && echo --prerelease || true)
 gh release create v<version> --draft --target "$SOURCE_SHA" --title "v<version>" \
-  --notes-file "$TMPDIR/release-notes.md" $PRERELEASE_FLAG
+  --notes "$RELEASE_NOTES" $PRERELEASE_FLAG
 ```
+
+Keep these five extractions independent: never reuse one lane's variable as another package's body.
+This remains one GitHub Release with the existing tag, binary assets, npm publication order, and
+Homebrew flow; only its notes are assembled from the five package sources.
 
 The body never contains the provenance-downgrade marker when an agent creates it. A draft fires no
 workflow; GitHub creates the tag ref only when the draft is published.
