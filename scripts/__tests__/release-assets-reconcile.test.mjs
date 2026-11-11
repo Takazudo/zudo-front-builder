@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { finalizeDecision } from "../release/finalize-gate.mjs";
 import { plan, reconcile } from "../release/reconcile-release-assets.mjs";
 import { assetInventory, expectedReleaseAssets } from "../release/release-assets-contract.mjs";
-import { distTagsSettled, recommendNextAction } from "../release/release-status.mjs";
+import { distTagsSettled, recommendNextAction, resolveSource } from "../release/release-status.mjs";
 
 const sha256 = (data) => createHash("sha256").update(Buffer.from(data)).digest("hex");
 const dirs = [];
@@ -189,6 +189,7 @@ describe("recommendNextAction", () => {
   const green = { passed: true, results: [] };
   const state = (overrides = {}) => ({
     tag: { commit: "c".repeat(40) },
+    source: { kind: "tag", commit: "c".repeat(40) },
     release: { isDraft: false, targetMismatch: false },
     runs: [],
     assets: assetInventory(V, allAssets()),
@@ -206,7 +207,45 @@ describe("recommendNextAction", () => {
 
   it.each([
     ["complete", {}, "complete"],
-    ["tag missing", { tag: {} }, "blocked:tag-missing"],
+    [
+      "published Release without a tag ref",
+      { tag: {}, source: { kind: null, problem: "tag-missing" } },
+      "blocked:tag-missing",
+    ],
+    [
+      "no Release and no tag",
+      { tag: {}, source: { kind: null, problem: "release-missing" }, release: null },
+      "blocked:release-missing",
+    ],
+    [
+      "draft with a branch-name target and no tag",
+      {
+        tag: {},
+        source: { kind: null, problem: "release-target-not-sha" },
+        release: { isDraft: true },
+      },
+      "blocked:release-target-not-sha",
+    ],
+    [
+      "draft without a tag ref, Darwin inputs missing",
+      {
+        tag: {},
+        source: { kind: "draft-target", commit: "d".repeat(40) },
+        release: { isDraft: true },
+        assets: without((n) => n.includes("apple-darwin")),
+        admission: null,
+      },
+      "prepare-darwin",
+    ],
+    [
+      "draft without a tag ref, admitted",
+      {
+        tag: {},
+        source: { kind: "draft-target", commit: "d".repeat(40) },
+        release: { isDraft: true },
+      },
+      "publish-draft",
+    ],
     ["Release missing", { release: null }, "blocked:release-missing"],
     ["run in progress", { runs: [{ status: "in_progress" }] }, "blocked:release-run-in-progress"],
     [
@@ -282,5 +321,44 @@ describe("distTagsSettled", () => {
     expect(distTagsSettled("1.0.0-next.2", tags("1.0.0-next.1", "1.0.0-next.2")).settled).toBe(
       false,
     );
+  });
+});
+
+describe("resolveSource", () => {
+  const SHA = "e".repeat(40);
+  it.each([
+    [
+      "tag ref present",
+      { commit: SHA, tree: "t" },
+      { isDraft: false },
+      { kind: "tag", commit: SHA },
+    ],
+    [
+      "tag ref wins over a draft target",
+      { commit: SHA },
+      { isDraft: true, targetCommitish: "f".repeat(40) },
+      { kind: "tag", commit: SHA },
+    ],
+    [
+      "draft with a 40-hex target",
+      {},
+      { isDraft: true, targetCommitish: SHA },
+      { kind: "draft-target", commit: SHA },
+    ],
+    [
+      "draft with a branch target",
+      {},
+      { isDraft: true, targetCommitish: "main" },
+      { kind: null, problem: "release-target-not-sha" },
+    ],
+    [
+      "published Release without a tag ref",
+      {},
+      { isDraft: false, targetCommitish: SHA },
+      { kind: null, problem: "tag-missing" },
+    ],
+    ["no Release and no tag", {}, null, { kind: null, problem: "release-missing" }],
+  ])("%s", (_label, tagInfo, release, want) => {
+    expect(resolveSource({ tagInfo, release })).toMatchObject(want);
   });
 });

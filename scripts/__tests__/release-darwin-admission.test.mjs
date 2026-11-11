@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { assetNames } from "../darwin-artifact-contract.mjs";
 import { place, preparePlacement } from "../release/place-darwin-carriers.mjs";
+import { GhError } from "../release/gh.mjs";
 import { collectStatus, render } from "../release/release-status.mjs";
 import { REQUIRED_CONTEXTS } from "../release/verify-source-ci.mjs";
 import { installFakeGh } from "./helpers/fake-gh.mjs";
@@ -259,12 +260,13 @@ describe("place-darwin-carriers", () => {
 });
 
 describe("release-status (read-only, injected gh/registry)", () => {
-  function world(assetsDir, { isDraft = true } = {}) {
+  function world(assetsDir, { isDraft = true, tagRef = true, target = "main" } = {}) {
     const calls = [];
     const gh = (args) => {
       calls.push(args);
       const joined = args.join(" ");
       if (joined.includes(`git/ref/tags/${TAG}`)) {
+        if (!tagRef) throw new GhError(args, { stderr: "gh: Not Found (HTTP 404)" });
         return JSON.stringify({ object: { type: "commit", sha: source.commit } });
       }
       if (joined.includes(`git/commits/${source.commit}`)) {
@@ -286,7 +288,7 @@ describe("release-status (read-only, injected gh/registry)", () => {
         return JSON.stringify({ statuses: [] });
       if (args[0] === "release" && args[1] === "view") {
         const assets = readdirSync(assetsDir).map((name) => ({ name, state: "uploaded" }));
-        return JSON.stringify({ tagName: TAG, isDraft, targetCommitish: "main", url: "u", assets });
+        return JSON.stringify({ tagName: TAG, isDraft, targetCommitish: target, url: "u", assets });
       }
       if (args[0] === "release" && args[1] === "download") {
         const out = args[args.indexOf("--dir") + 1];
@@ -338,6 +340,59 @@ describe("release-status (read-only, injected gh/registry)", () => {
     });
     expect(status.admission).toBeNull();
     expect(status.recommendedAction).toBe("prepare-darwin");
+  });
+
+  it("fresh draft without a tag ref binds to its 40-hex target → publish-draft", async () => {
+    const { gh, request } = world(fixture(source), { tagRef: false, target: source.commit });
+    const status = await collectStatus({
+      tag: TAG,
+      repo: "o/r",
+      gh,
+      request,
+      repoRoot: source.repo,
+      absentReads: 1,
+      delayMs: 0,
+    });
+    expect(status.source).toEqual({
+      kind: "draft-target",
+      commit: source.commit,
+      tree: source.tree,
+    });
+    expect(status.sourceCi.passed).toBe(true);
+    expect(status.admission.admitted).toBe(true);
+    expect(status.recommendedAction).toBe("publish-draft");
+    expect(render(status)).toContain(`source draft-target commit ${source.commit}`);
+  });
+
+  it("fresh draft without a tag ref and without Darwin inputs → prepare-darwin", async () => {
+    const dir = fixture(source);
+    unlinkSync(join(dir, assetNames(VERSION, X64).receipt));
+    const { gh, request } = world(dir, { tagRef: false, target: source.commit });
+    const status = await collectStatus({
+      tag: TAG,
+      repo: "o/r",
+      gh,
+      request,
+      repoRoot: source.repo,
+      absentReads: 1,
+      delayMs: 0,
+    });
+    expect(status.recommendedAction).toBe("prepare-darwin");
+  });
+
+  it("fresh draft without a tag ref targeting a branch → blocked:release-target-not-sha", async () => {
+    const { gh, request } = world(fixture(source), { tagRef: false, target: "main" });
+    const status = await collectStatus({
+      tag: TAG,
+      repo: "o/r",
+      gh,
+      request,
+      repoRoot: source.repo,
+      absentReads: 1,
+      delayMs: 0,
+    });
+    expect(status.recommendedAction).toBe("blocked:release-target-not-sha");
+    expect(status.npm).toBeNull();
   });
 
   it("published, admitted, nothing on npm → dispatch-recovery", async () => {

@@ -5,7 +5,8 @@
 //   node scripts/release/release-status.mjs --tag vX.Y.Z [--json]
 //        [--probe-capabilities] [--repo owner/name] [--repo-root DIR]
 //
-// Reports: tag → commit/tree; the Release (exists/draft/published,
+// Reports: the source (tag → commit/tree, or for a fresh draft without a tag
+// ref, its 40-hex targetCommitish; `source.kind` says which); the Release (exists/draft/published,
 // targetCommitish); expected Release assets (3 CI archive pairs, the 10 Darwin
 // inputs, the MD/WASM digest manifest) as present/missing/conflicting; the
 // source commit's required CI (verify-source-ci); Darwin admission (the real
@@ -78,9 +79,26 @@ export function distTagsSettled(version, tags) {
   return { settled: problems.length === 0, problems };
 }
 
+/**
+ * Pure: the commit this release builds from. A published Release always has a
+ * tag ref; a fresh DRAFT has none until it is published, so its 40-hex
+ * targetCommitish stands in (the procedure creates drafts with
+ * `--target <SOURCE_SHA>`; release.yml re-checks the tag at publish time).
+ * Returns { kind: "tag" | "draft-target", commit } or { kind: null, problem }.
+ */
+export function resolveSource({ tagInfo, release }) {
+  if (tagInfo?.commit) return { kind: "tag", commit: tagInfo.commit, tree: tagInfo.tree ?? null };
+  if (!release) return { kind: null, problem: "release-missing" };
+  if (!release.isDraft) return { kind: null, problem: "tag-missing" };
+  if (/^[0-9a-f]{40}$/.test(release.targetCommitish ?? "")) {
+    return { kind: "draft-target", commit: release.targetCommitish, tree: null };
+  }
+  return { kind: null, problem: "release-target-not-sha" };
+}
+
 /** Pure: the single recommended next action. */
 export function recommendNextAction(s) {
-  if (!s.tag?.commit) return "blocked:tag-missing";
+  if (!s.source?.commit) return `blocked:${s.source?.problem ?? "tag-missing"}`;
   if (!s.release) return "blocked:release-missing";
   if (s.release.targetMismatch) return "blocked:release-target-mismatch";
   if (s.runs?.some((run) => run.status !== "completed")) return "blocked:release-run-in-progress";
@@ -246,6 +264,13 @@ export async function collectStatus({
   const status = { schema: "zfb-release-status/v1", tag, version, repo };
   status.tag = { name: tag, ...(resolveTag({ tag, repo, gh }) ?? {}) };
   const release = readRelease({ tag, repo, gh });
+  status.source = resolveSource({ tagInfo: status.tag, release });
+  if (status.source.kind === "draft-target") {
+    status.source.tree =
+      JSON.parse(gh(["api", `repos/${repo}/git/commits/${status.source.commit}`])).tree?.sha ??
+      null;
+  }
+  const sourceCommit = status.source.commit ?? null;
   status.release = release
     ? {
         exists: true,
@@ -255,17 +280,17 @@ export async function collectStatus({
         targetCommitish: release.targetCommitish,
         url: release.url,
         targetMismatch:
+          status.source.kind === "tag" &&
           /^[0-9a-f]{40}$/.test(release.targetCommitish ?? "") &&
-          Boolean(status.tag.commit) &&
           release.targetCommitish !== status.tag.commit,
       }
     : null;
   status.assets = assetInventory(version, release?.assets ?? []);
-  if (status.tag.commit) {
+  if (sourceCommit) {
     try {
       status.sourceCi = evaluateSourceCi({
-        sha: status.tag.commit,
-        ...readSourceCi({ sha: status.tag.commit, repo, gh }),
+        sha: sourceCommit,
+        ...readSourceCi({ sha: sourceCommit, repo, gh }),
       });
     } catch (error) {
       status.sourceCi = null;
@@ -273,21 +298,21 @@ export async function collectStatus({
     }
   }
   status.admission = null;
-  if (release && status.tag.commit && status.assets.darwin.missing.length === 0) {
+  if (release && sourceCommit && status.source.tree && status.assets.darwin.missing.length === 0) {
     status.admission = admitFromRelease({
       tag,
       version,
       repo,
       gh,
-      tagInfo: status.tag,
+      tagInfo: status.source,
       repoRoot,
       darwinNames: expectedReleaseAssets(version).darwin,
     });
   }
-  status.npm = status.tag.commit
+  status.npm = sourceCommit
     ? await collectStates({
         version,
-        sourceCommit: status.tag.commit,
+        sourceCommit,
         verdict: status.admission?.admitted ? status.admission : null,
         registry,
         request,
@@ -311,7 +336,7 @@ export async function collectStatus({
 export function render(status) {
   const out = [];
   out.push(
-    `release ${status.tag.name}: commit ${status.tag.commit ?? "∅"} tree ${status.tag.tree ?? "∅"}`,
+    `release ${status.tag.name}: source ${status.source.kind ?? `none (${status.source.problem})`} commit ${status.source.commit ?? "∅"} tree ${status.source.tree ?? "∅"}`,
   );
   out.push(
     status.release
