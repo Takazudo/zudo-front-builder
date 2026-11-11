@@ -71,7 +71,10 @@ export function makeTarGz(entries) {
 
 // A source repository holding the three digest inputs. Callers create one per
 // suite (git work is the only slow part) and remove source.repo themselves.
-export function createSource() {
+// `label` goes into the commit message: two sources with the same files,
+// author and commit second would otherwise be the SAME commit (git hashes
+// content, message, identity and timestamp), which a fast CI runner hits.
+export function createSource({ label = "source" } = {}) {
   const repo = mkdtempSync(join(tmpdir(), "zfb-admit-src-"));
   writeFileSync(join(repo, "Cargo.lock"), "# lock\n");
   writeFileSync(join(repo, "rust-toolchain.toml"), '[toolchain]\nchannel = "stable"\n');
@@ -86,7 +89,7 @@ export function createSource() {
     ).trim();
   git("init", "-q");
   git("add", ".");
-  git("commit", "-q", "-m", "source");
+  git("commit", "-q", "-m", label);
   const commit = git("rev-parse", "HEAD");
   const tree = git("rev-parse", "HEAD^{tree}");
   return { repo, commit, tree, inputs: sourceInputs(repo, commit, tree).inputs };

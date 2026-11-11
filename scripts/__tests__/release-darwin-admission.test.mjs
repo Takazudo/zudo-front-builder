@@ -53,7 +53,7 @@ let otherSource;
 let fakeBin;
 beforeAll(() => {
   source = createSource();
-  otherSource = createSource();
+  otherSource = createSource({ label: "a different release source" });
   fakeBin = installFakeGh();
 });
 afterAll(() => {
@@ -131,6 +131,8 @@ describe("admit-release-darwin.sh", () => {
 
   it("rejects inputs whose receipts name another source commit", async () => {
     // Receipts were produced for `source`; the release source is `otherSource`.
+    // Guard the premise: identical fixture commits would make this test vacuous.
+    expect(otherSource.commit).not.toBe(source.commit);
     const result = await admit(releaseWith(fixture(source)), {
       commit: otherSource.commit,
       tree: otherSource.tree,
