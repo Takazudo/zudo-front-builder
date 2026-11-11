@@ -25,6 +25,7 @@ REPO_ROOT=$(CDPATH= cd -- "$SELF_DIR/../.." && pwd)
 cd "$REPO_ROOT"
 
 SCRIPT="$REPO_ROOT/scripts/publish-npm-packages.sh"
+REAL_SCRIPT="$SCRIPT"
 NODE_EXE=$(node -p 'process.execPath')
 
 PASS=0
@@ -94,10 +95,10 @@ assert_exit 'should_skip_publish: uncertain → refuse (3)' 3 \
   'package_state() { echo uncertain; }; should_skip_publish foo 1.2.3'
 
 assert_exit 'package_state: helper failure → uncertain' 0 \
-  'ZFB_NPM_PACKAGE_STATE_NODE=false; [ "$(package_state foo 1.2.3 2>/dev/null)" = uncertain ]'
+  'ZFB_NPM_PACKAGE_STATE_NODE=false; [ "$(package_state foo 1.2.3 2>/dev/null)" = "uncertain none" ]'
 
 assert_exit 'package_state: unparseable helper output → uncertain' 0 \
-  'ZFB_NPM_PACKAGE_STATE_NODE=echo; [ "$(package_state foo 1.2.3 2>/dev/null)" = uncertain ]'
+  'ZFB_NPM_PACKAGE_STATE_NODE=echo; [ "$(package_state foo 1.2.3 2>/dev/null)" = "uncertain none" ]'
 
 # ── classify_publish_result ───────────────────────────────────────────────────
 
@@ -203,11 +204,18 @@ case "$1" in
     printf 'published.tgz\n'
     ;;
   publish)
-    name=$(node -p "require('./package.json').name")
-    version=$(node -p "require('./package.json').version")
+    # `npm publish <tarball>`: the harness's fake tarballs hold "name<TAB>version".
+    IFS="$(printf '\t')" read -r name version <"$2"
     printf '%s@%s\n' "$name" "$version" >>"$MOCK_PUBLISH_LOG"
     printf 'npm %s\n' "$*" >>"${MOCK_ARGS_LOG:-/dev/null}"
     printf '%s %s NPM_CONFIG_PROVENANCE=%s\n' "$name" "$*" "${NPM_CONFIG_PROVENANCE:-unset}" >>"${MOCK_PROV_LOG:-/dev/null}"
+    if [ "$name" = "@takazudo/zfb-md-wasm" ]; then
+      case "${MOCK_MD_RESULT:-success}" in
+        # A real double-PUT conflict means the version IS on the registry.
+        conflict) touch "$MOCK_PUBLISHED_MARKER"; echo 'EPUBLISHCONFLICT' >&2; exit 1 ;;
+        lost) touch "$MOCK_PUBLISHED_MARKER"; echo 'ETIMEDOUT' >&2; exit 1 ;;
+      esac
+    fi
     exit 0
     ;;
   dist-tag)
@@ -240,13 +248,6 @@ if [ "$is_publish" -eq 1 ]; then
   printf '%s\n' "$filter" >>"$MOCK_PUBLISH_LOG"
   printf 'pnpm %s\n' "$original_args" >>"${MOCK_ARGS_LOG:-/dev/null}"
   printf '%s %s NPM_CONFIG_PROVENANCE=%s\n' "$filter" "$original_args" "${NPM_CONFIG_PROVENANCE:-unset}" >>"${MOCK_PROV_LOG:-/dev/null}"
-  if [ "$filter" = "@takazudo/zfb-md-wasm" ]; then
-    case "${MOCK_MD_RESULT:-success}" in
-      # A real double-PUT conflict means the version IS on the registry.
-      conflict) touch "$MOCK_PUBLISHED_MARKER"; echo 'EPUBLISHCONFLICT' >&2; exit 1 ;;
-      lost) touch "$MOCK_PUBLISHED_MARKER"; echo 'ETIMEDOUT' >&2; exit 1 ;;
-    esac
-  fi
 fi
 exit 0
 MOCK_PNPM
@@ -295,7 +296,9 @@ if npm view "$name@$version" version >/dev/null 2>&1; then
   for u in ${MOCK_STATE_UNVERIFIED:-}; do
     if [ "$u" = "$name" ]; then printf '%s\tpresent-unverified\tgitHead deadbeef is not source\n' "$name"; exit 0; fi
   done
-  printf '%s\tpresent-verified\tgitHead\n' "$name"
+  observed=none
+  for a in ${MOCK_STATE_ATTESTED:-}; do [ "$a" = "$name" ] && observed=attested; done
+  printf '%s\tpresent-verified\tgitHead\t%s\n' "$name" "$observed"
 else
   printf '%s\tabsent\tE404 on 3 read(s)\n' "$name"
 fi
@@ -304,6 +307,51 @@ chmod +x "$MOCK_BIN/state-node"
 ZFB_NPM_PACKAGE_STATE_NODE="$MOCK_BIN/state-node"
 ZFB_RELEASE_SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567
 export ZFB_NPM_PACKAGE_STATE_NODE ZFB_RELEASE_SOURCE_COMMIT
+
+# The publish helper only publishes the pack job's tarballs (#4690). Every
+# whole-script case runs through this wrapper, which plays the pack job for the
+# current package tree: one fake tarball per package (content "name<TAB>version",
+# so the mock npm can identify it) plus manifest.json with the mode's
+# provenance decisions. Sourcing the wrapper sources the real script.
+cat >"$MOCK_BIN/gen-manifest.mjs" <<'GEN_MANIFEST'
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const [out, mode, localRaw] = process.argv.slice(2);
+const platform = ["packages/zfb-darwin-arm64", "packages/zfb-darwin-x64", "packages/zfb-linux-arm64-gnu", "packages/zfb-linux-x64-gnu", "packages/zfb-win32-x64-msvc"];
+const dirs = [...platform, "packages/zfb-slugify", "packages/zfb", "packages/zfb-runtime", "packages/zfb-adapter-cloudflare", "packages/create-zfb", "crates/zfb-md-wasm/npm"];
+let local = String(localRaw ?? "").split(/[\s,]+/).map((d) => d.replace(/\/$/, "")).filter(Boolean);
+if (mode === "mac-local" && local.length === 0) local = ["packages/zfb-darwin-x64"];
+const packages = [];
+for (const dir of dirs) {
+  if (!existsSync(join(dir, "package.json"))) continue;
+  const { name, version } = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  const file = `${name.replace(/^@/, "").replace("/", "-")}-${version}.tgz`;
+  const bytes = Buffer.from(`${name}\t${version}\n`);
+  writeFileSync(join(out, file), bytes);
+  const provenance = mode === "recovery-no-provenance" || (mode === "mac-local" && local.includes(dir)) ? "none" : "attested";
+  packages.push({ name, version, dir, file, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}`, provenance });
+}
+writeFileSync(join(out, "manifest.json"), JSON.stringify({ schema: "zfb-npm-tarballs/v1", mode, version: packages[0]?.version, packages }, null, 2));
+GEN_MANIFEST
+SCRIPT="$MOCK_BIN/publish-wrapper.sh"
+cat >"$SCRIPT" <<WRAPPER
+#!/usr/bin/env bash
+if [[ "\${BASH_SOURCE[0]}" != "\$0" ]]; then
+  . "$REAL_SCRIPT"
+  return 0
+fi
+if [[ -z "\${ZFB_PUBLISH_TARBALLS_DIR:-}" ]]; then
+  gen_dir="\$(mktemp -d)"
+  "$NODE_EXE" "$MOCK_BIN/gen-manifest.mjs" "\$gen_dir" "\${1:-}" "\${ZFB_LOCAL_BUILT_PACKAGES-}" || exit 98
+  export ZFB_PUBLISH_TARBALLS_DIR="\$gen_dir"
+fi
+rc=0
+bash "$REAL_SCRIPT" "\$@" || rc=\$?
+rm -rf "\${gen_dir:-/nonexistent-zfb-gen}"
+exit "\$rc"
+WRAPPER
+chmod +x "$SCRIPT"
 
 # Whole-script cases use an isolated target tree. The real control script and
 # companion verifiers remain under REPO_ROOT, just as recovery separates them
@@ -336,31 +384,9 @@ log_has() {
   grep -Eq "^$1(@|$)" "$PUB_LOG"
 }
 
-# CSS preflight must examine every carrier before any npm/pnpm call, even when
-# the missing addon belongs to the last carrier or all versions already exist.
-# Keep provenance authorization enabled here so that only the CSS gate can win.
-for CSS_MODE in all-provenance mac-local recovery-no-provenance; do
-  for CSS_DIR in $PLATFORM_PACKAGE_DIRS; do
-    CSS_OUTPUT="$PUBLISH_TARGET/css-preflight-output"
-    CSS_CALLS="$PUBLISH_TARGET/css-preflight-calls"
-    CSS_PUBLISHES="$PUBLISH_TARGET/css-preflight-publishes"
-    : >"$CSS_CALLS"
-    : >"$CSS_PUBLISHES"
-    mv "$CSS_DIR/zfb-css.node" "$CSS_DIR/zfb-css.node.fixture"
-    CSS_RC=0
-    PATH="$MOCK_BIN:$PATH" DIST_TAG=latest ALSO_LATEST=1 \
-      MOCK_EXISTING="$ALL_SPECS" MOCK_CALLS_LOG="$CSS_CALLS" \
-      MOCK_PUBLISH_LOG="$CSS_PUBLISHES" ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 \
-      bash "$SCRIPT" "$CSS_MODE" >"$CSS_OUTPUT" 2>&1 || CSS_RC=$?
-    mv "$CSS_DIR/zfb-css.node.fixture" "$CSS_DIR/zfb-css.node"
-    if [ "$CSS_RC" -ne 0 ] && [ ! -s "$CSS_CALLS" ] && [ ! -s "$CSS_PUBLISHES" ] \
-       && grep -Fq "Missing native CSS artifact: $CSS_DIR/zfb-css.node" "$CSS_OUTPUT"; then
-      pass "CSS preflight: $CSS_MODE refuses missing $CSS_DIR addon before npm/pnpm"
-    else
-      fail "CSS preflight: $CSS_MODE missing $CSS_DIR exit=$CSS_RC, calls=$(cat "$CSS_CALLS"), output=$(tail -4 "$CSS_OUTPUT" | tr '\n' ' ')"
-    fi
-  done
-done
+# The CSS-addon and carrier-binary preflight moved to the pack job with the
+# rest of package assembly (scripts/release/pack-release-tarballs.mjs, #4690);
+# scripts/__tests__/pack-release-tarballs.test.mjs covers it.
 
 # Case 1 — idempotent re-run: 9 packages already published (incl.
 # @takazudo/zfb-slugify and @takazudo/zfb-md-wasm), only @takazudo/zfb-runtime
@@ -542,7 +568,7 @@ assert_missing_slugify_refused() {
   ) >"$LEGACY_OUTPUT" 2>&1 || LEGACY_RC=$?
 
   if [ "$LEGACY_RC" -ne 0 ] && [ ! -s "$LEGACY_PUB_LOG" ] \
-     && grep -Fq 'publish target is missing expected package manifest: packages/zfb-slugify/package.json' "$LEGACY_OUTPUT"; then
+     && grep -Fq 'publish target is missing expected package' "$LEGACY_OUTPUT"; then
     pass "integration: $LEGACY_MODE refuses a missing slugify manifest before any publish"
   else
     fail "integration: $LEGACY_MODE missing-slugify refusal exit=$LEGACY_RC, publishes=$(cat "$LEGACY_PUB_LOG" | tr '\n' ' '), output=$(tail -4 "$LEGACY_OUTPUT" | tr '\n' ' ')"
@@ -742,12 +768,82 @@ assert_prov_mode "provenance: mac-local with two darwin carriers suppresses exac
 # Already-present packages are still recorded in the expectation map.
 EXPECT_FILE=$(mktemp)
 PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG=/dev/null MOCK_EXISTING="$ALL_SPECS" \
+  MOCK_STATE_ATTESTED="$ALL_NAMES" \
   ZFB_PROVENANCE_EXPECTATIONS_FILE="$EXPECT_FILE" bash "$SCRIPT" all-provenance >/dev/null 2>&1 || true
 if [ "$(grep -c "	attested	already-present$" "$EXPECT_FILE")" -eq 11 ]; then
   pass "provenance: already-present skips are recorded as expectations"
 else
   fail "provenance: already-present expectation map: $(tr '\n' '|' <"$EXPECT_FILE")"
 fi
+
+# Mixed state (#4690 M2): a normal publish attested five packages and then
+# failed; a recovery run (all --provenance=false) resumes it. The already-present
+# five must keep their OBSERVED expectation (attested), the rest are none.
+MIXED_PRESENT="@takazudo/zfb-linux-arm64-gnu @takazudo/zfb-linux-x64-gnu @takazudo/zfb-win32-x64-msvc @takazudo/zfb-slugify @takazudo/zfb"
+MIXED_SPECS=""
+for n in $MIXED_PRESENT; do MIXED_SPECS="$MIXED_SPECS $n@$V"; done
+EXPECT_FILE=$(mktemp)
+MX_RC=0
+PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG=/dev/null MOCK_EXISTING="$MIXED_SPECS" \
+  MOCK_STATE_ATTESTED="$MIXED_PRESENT" ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 \
+  ZFB_PROVENANCE_EXPECTATIONS_FILE="$EXPECT_FILE" bash "$SCRIPT" recovery-no-provenance >/dev/null 2>&1 || MX_RC=$?
+MX_BAD=""
+for n in $ALL_NAMES; do
+  want="none	publish-attempted"
+  for p in $MIXED_PRESENT; do [ "$p" = "$n" ] && want="attested	already-present"; done
+  got=$(awk -F '\t' -v n="$n" '$1 == n { print $3 "\t" $4 }' "$EXPECT_FILE")
+  [ "$got" = "$want" ] || MX_BAD="$MX_BAD $n($got)"
+done
+if [ "$MX_RC" -eq 0 ] && [ -z "$MX_BAD" ]; then
+  pass "provenance: partial normal publish resumed by recovery records observed attested + new none"
+else
+  fail "provenance: mixed partial+recovery rc=$MX_RC mismatches:$MX_BAD"
+fi
+
+# The pack manifest's provenance decision must match this mode's derivation.
+PD_DIR=$(mktemp -d)
+"$NODE_EXE" "$MOCK_BIN/gen-manifest.mjs" "$PD_DIR" all-provenance ""
+PD_LOG=$(mktemp)
+PD_OUT=$(mktemp)
+PD_RC=0
+PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG="$PD_LOG" MOCK_EXISTING="" \
+  ZFB_PUBLISH_TARBALLS_DIR="$PD_DIR" bash "$SCRIPT" all-provenance >/dev/null 2>&1 || PD_RC=$?
+# Tamper: claim the manifest is mac-local with x64 unattested, publish as all-provenance.
+sed -i.bak 's/"mode": "all-provenance"/"mode": "mac-local"/' "$PD_DIR/manifest.json"
+PD2_RC=0
+PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG="$PD_LOG" MOCK_EXISTING="" \
+  ZFB_PUBLISH_TARBALLS_DIR="$PD_DIR" bash "$SCRIPT" all-provenance >"$PD_OUT" 2>&1 || PD2_RC=$?
+if [ "$PD_RC" -eq 0 ] && [ "$PD2_RC" -ne 0 ] && grep -Fq 'was packed for mode mac-local' "$PD_OUT"; then
+  pass "manifest: a manifest packed for another mode is refused"
+else
+  fail "manifest: mode mismatch rc=$PD_RC/$PD2_RC out=$(tail -2 "$PD_OUT" | tr '\n' ' ')"
+fi
+PD3_DIR=$(mktemp -d)
+"$NODE_EXE" "$MOCK_BIN/gen-manifest.mjs" "$PD3_DIR" mac-local "packages/zfb-darwin-x64"
+: >"$PD_LOG"
+PD3_RC=0
+PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG="$PD_LOG" MOCK_EXISTING="" \
+  ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 ZFB_LOCAL_BUILT_PACKAGES="packages/zfb-darwin-arm64 packages/zfb-darwin-x64" \
+  ZFB_PUBLISH_TARBALLS_DIR="$PD3_DIR" bash "$SCRIPT" mac-local >"$PD_OUT" 2>&1 || PD3_RC=$?
+if [ "$PD3_RC" -ne 0 ] && [ ! -s "$PD_LOG" ] && grep -Fq "@takazudo/zfb-darwin-arm64: the pack manifest decided provenance 'attested'" "$PD_OUT"; then
+  pass "manifest: a provenance decision that disagrees with the mode is refused before any publish"
+else
+  fail "manifest: decision mismatch rc=$PD3_RC publishes=$(tr '\n' ' ' <"$PD_LOG") out=$(tail -3 "$PD_OUT" | tr '\n' ' ')"
+fi
+# A tarball whose bytes changed after packing is refused before any publish.
+PD4_DIR=$(mktemp -d)
+"$NODE_EXE" "$MOCK_BIN/gen-manifest.mjs" "$PD4_DIR" all-provenance ""
+printf 'tampered\n' >>"$PD4_DIR/takazudo-zfb-$V.tgz"
+: >"$PD_LOG"
+PD4_RC=0
+PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG="$PD_LOG" MOCK_EXISTING="" \
+  ZFB_PUBLISH_TARBALLS_DIR="$PD4_DIR" bash "$SCRIPT" all-provenance >"$PD_OUT" 2>&1 || PD4_RC=$?
+if [ "$PD4_RC" -ne 0 ] && [ ! -s "$PD_LOG" ] && grep -Fq 'differs from the manifest' "$PD_OUT"; then
+  pass "manifest: a tarball whose sha512 differs from the manifest is refused before any publish"
+else
+  fail "manifest: integrity tamper rc=$PD4_RC publishes=$(tr '\n' ' ' <"$PD_LOG")"
+fi
+rm -rf "$PD_DIR" "$PD3_DIR" "$PD4_DIR" "$PD_LOG" "$PD_OUT"
 
 # assert_local_built_refused <desc> <mode> <value>
 assert_local_built_refused() {
@@ -824,6 +920,13 @@ if [ "$ADV_RC" -ne 0 ] && [ ! -s "$ADV_LOG" ] && grep -q 'refusing to move .late
   pass "advance-latest: refuses to move latest to a lower version (next.3 < next.10), no write"
 else
   fail "advance-latest: regression guard (exit=$ADV_RC, writes=$(tr '\n' ' ' <"$ADV_LOG"))"
+fi
+
+run_advance 1.2.0-next.3 1.1.0
+if [ "$ADV_RC" -ne 0 ] && [ ! -s "$ADV_LOG" ] && grep -q 'is a stable release — refusing to move .latest. to the prerelease' "$ADV_OUT"; then
+  pass "advance-latest: never moves a stable latest (1.1.0) to a higher prerelease (1.2.0-next.3), no write"
+else
+  fail "advance-latest: stable→prerelease guard (exit=$ADV_RC, writes=$(tr '\n' ' ' <"$ADV_LOG"))"
 fi
 
 run_advance 1.2.0-next.3 1.2.0-next.3

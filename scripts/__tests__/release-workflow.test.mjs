@@ -25,8 +25,11 @@ const EXPECTED_PERMISSIONS = {
   build: { contents: "read" },
   "build-wasm-md": { contents: "read" },
   "release-assets": { contents: "write" },
-  publish: { contents: "write", "id-token": "write" },
-  finalize: { contents: "write", "id-token": "write" },
+  pack: { contents: "read" },
+  publish: { contents: "read", "id-token": "write" },
+  "md-wasm-asset": { contents: "write" },
+  finalize: { contents: "read", "id-token": "write" },
+  "finalize-assets": { contents: "write" },
   "smoke-clean-room": { contents: "read" },
   notify: { contents: "read" },
 };
@@ -42,7 +45,9 @@ const MUTATING = [
   /--upload\b/,
   /reconcile-release-assets\.mjs(?![^\n]*\\\n[^\n]*--verify-only)(?![^\n]*--verify-only)/,
 ];
-const isDryRunGuarded = (step) => /inputs\.dry_run != true/.test(String(step.if ?? ""));
+const isDryRunGuarded = ({ job, step }) =>
+  /inputs\.dry_run != true/.test(String(step.if ?? "")) ||
+  /inputs\.dry_run != true/.test(String(jobs[job].if ?? ""));
 
 describe("release.yml structure", () => {
   it("uses no hosted macOS runner and no fast-Mac / matrix-detection leftovers", () => {
@@ -86,7 +91,7 @@ describe("release.yml structure", () => {
       MUTATING.some((re) => re.test(String(step.run ?? ""))),
     );
     expect(writers.length).toBeGreaterThanOrEqual(8);
-    const unguarded = writers.filter(({ step }) => !isDryRunGuarded(step)).map(label);
+    const unguarded = writers.filter((entry) => !isDryRunGuarded(entry)).map(label);
     expect(unguarded).toEqual([]);
   });
 
@@ -94,9 +99,11 @@ describe("release.yml structure", () => {
     for (const { step } of steps) expect(String(step.run ?? "")).not.toMatch(/--clobber/);
   });
 
-  it("publishes normally in mac-local mode with both owner-Mac carriers", () => {
+  it("publishes pre-packed tarballs by mode, with both owner-Mac carriers unattested", () => {
     const normal = jobs.publish.steps.find((s) => s.name === "Publish to npm");
     expect(normal.run).toBe("bash scripts/publish-npm-packages.sh mac-local");
+    expect(normal.if).toContain("publish_mode == 'mac-local'");
+    expect(normal.env.ZFB_PUBLISH_TARBALLS_DIR).toContain("npm-tarballs");
     expect(normal.env.ZFB_LOCAL_BUILT_PACKAGES).toBe(
       "packages/zfb-darwin-arm64 packages/zfb-darwin-x64",
     );
@@ -107,10 +114,76 @@ describe("release.yml structure", () => {
     const recovery = jobs.publish.steps.find(
       (s) => s.name === "Publish to npm (recovery — no provenance)",
     );
-    expect(recovery.run).toContain(
-      ".release-control/scripts/publish-npm-packages.sh recovery-no-provenance",
-    );
+    expect(recovery.if).toContain("publish_mode == 'recovery-no-provenance'");
     expect(recovery.env.ZFB_LOCAL_BUILT_PACKAGES).toBeUndefined();
+  });
+
+  it("keeps id-token away from install/build/package code (#4690)", () => {
+    for (const [name, job] of Object.entries(jobs)) {
+      if (job.permissions?.["id-token"] !== "write") continue;
+      const runs = (job.steps ?? []).map((s) => String(s.run ?? "")).join("\n");
+      expect([name, runs]).not.toEqual([
+        name,
+        expect.stringMatching(
+          /pnpm|npm (ci|install)(?! -g npm@)|npm pack|cargo|cross build|prepublishOnly/,
+        ),
+      ]);
+      expect([
+        name,
+        (job.steps ?? []).some((s) => String(s.uses ?? "").startsWith("pnpm/action-setup")),
+      ]).toEqual([name, false]);
+      // Only the control commit is checked out, without persisted credentials.
+      for (const step of (job.steps ?? []).filter((s) =>
+        String(s.uses ?? "").startsWith("actions/checkout"),
+      )) {
+        expect([name, step.with.ref, step.with["persist-credentials"]]).toEqual([
+          name,
+          "${{ github.sha }}",
+          false,
+        ]);
+      }
+      expect([name, job.permissions.contents]).toEqual([name, "read"]);
+    }
+    const pack = jobs.pack.steps.find((s) => s.name === "Pack npm tarballs");
+    expect(pack.run).toContain("pack-release-tarballs.mjs");
+    expect(jobs.publish.needs).toEqual(expect.arrayContaining(["pack", "release-assets"]));
+  });
+
+  it("sets persist-credentials: false on every checkout", () => {
+    for (const { job, step } of steps.filter(({ step }) =>
+      String(step.uses ?? "").startsWith("actions/checkout"),
+    )) {
+      expect([job, step.with?.["persist-credentials"]]).toEqual([job, false]);
+    }
+  });
+
+  it("keys concurrency on the normalized tag and isolates dry runs", () => {
+    expect(workflow.concurrency.group).toBe(
+      "release-${{ inputs.dry_run && 'dry-run-' || '' }}${{ inputs.release_tag || github.event.release.tag_name || github.ref_name }}",
+    );
+    expect(workflow.concurrency["cancel-in-progress"]).toBe(false);
+  });
+
+  it("uses honest provenance for a recovery whose control commit is the source", () => {
+    const run = jobs["release-context"].steps.find((s) => s.id === "mode").run;
+    expect(run).toContain(
+      'if [[ "$IS_RECOVERY" == "true" && "$SOURCE_COMMIT" != "$CONTROL_SHA" ]]',
+    );
+    expect(jobs["release-context"].outputs.publish_mode).toBe(
+      "${{ steps.mode.outputs.publish_mode }}",
+    );
+  });
+
+  it("decides the prerelease dual-tag with the fail-closed helper", () => {
+    for (const job of ["publish", "finalize"]) {
+      const runs = jobs[job].steps.map((s) => String(s.run ?? "")).join("\n");
+      expect(runs).toContain("resolve-also-latest.mjs");
+      expect(runs).not.toMatch(/dist-tags\.latest 2>\/dev\/null \|\| echo/);
+    }
+  });
+
+  it("orders release-assets after source CI", () => {
+    expect(jobs["release-assets"].needs).toContain("source-ci");
   });
 
   it("runs the provenance preflight before any build, never setting the acknowledgement", () => {
@@ -127,19 +200,17 @@ describe("release.yml structure", () => {
     expect(ack.env.DISPATCH_ALLOW).toBe("${{ inputs.allow_provenance_downgrade }}");
   });
 
-  it("places Darwin bytes only from the admitted artifact", () => {
+  it("places Darwin bytes only from the admitted artifact, in the pack job", () => {
     const placing = steps.filter(({ step }) =>
       /packages\/zfb-darwin-/.test(String(step.run ?? "")),
     );
-    expect(placing.map(label)).toEqual([
-      "publish: Verify binary mode in platform package tarballs",
-    ]);
-    const place = jobs.publish.steps.find(
+    expect(placing.map(label)).toEqual(["pack: Pack npm tarballs"]);
+    const place = jobs.pack.steps.find(
       (s) => s.name === "Place admitted Darwin binaries in platform packages",
     );
     expect(place.run).toContain("place-darwin-carriers.mjs");
     expect(place.run).toContain("darwin-admission/verdict.json");
-    expect(jobs.publish.needs).toContain("admit-darwin");
+    expect(jobs.pack.needs).toContain("admit-darwin");
   });
 
   it("gates publication and finalization on the source commit's CI", () => {
@@ -152,10 +223,17 @@ describe("release.yml structure", () => {
   });
 
   it("separates finalize-only from build/publish", () => {
-    for (const job of ["build", "build-wasm-md", "release-assets", "publish"]) {
-      expect([job, jobs[job].if]).toEqual([
+    for (const job of [
+      "build",
+      "build-wasm-md",
+      "release-assets",
+      "pack",
+      "publish",
+      "md-wasm-asset",
+    ]) {
+      expect([job, String(jobs[job].if)]).toEqual([
         job,
-        "${{ needs.release-context.outputs.is_finalize != 'true' }}",
+        expect.stringContaining("needs.release-context.outputs.is_finalize != 'true'"),
       ]);
     }
     expect(jobs.finalize.if).toBe("${{ needs.release-context.outputs.is_finalize == 'true' }}");
