@@ -304,8 +304,22 @@ describe("livereload.js css reload URLs", () => {
   let src: FakeSourceInstance;
   const T1 = 1_700_000_000_000;
   const T2 = 1_700_000_000_500;
+  type HappyDomSettings = {
+    disableCSSFileLoading: boolean;
+    handleDisabledFileLoadingAsSuccess: boolean;
+  };
+  const happySettings = (window as unknown as { happyDOM: { settings: HappyDomSettings } }).happyDOM
+    .settings;
+  let savedSettings: HappyDomSettings;
 
   beforeEach(() => {
+    savedSettings = {
+      disableCSSFileLoading: happySettings.disableCSSFileLoading,
+      handleDisabledFileLoadingAsSuccess: happySettings.handleDisabledFileLoadingAsSuccess,
+    };
+    // The rewritten hrefs point at unresolvable hosts; keep happy-dom from fetching them.
+    happySettings.disableCSSFileLoading = true;
+    happySettings.handleDisabledFileLoadingAsSuccess = true;
     document.head.innerHTML = "";
     harness = setupLivereloadScript();
     src = harness.instances[0];
@@ -317,6 +331,7 @@ describe("livereload.js css reload URLs", () => {
     window.dispatchEvent(pageTransitionEvent("pagehide", false));
     harness.cleanup();
     document.head.innerHTML = "";
+    Object.assign(happySettings, savedSettings);
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
