@@ -110,7 +110,9 @@ Record these in the release report (and keep JSON evidence outside the checkout)
 node scripts/release/release-status.mjs --tag v<version> [--json]
 ```
 
-Read-only. It reports the tag → commit/tree, the Release (absent/draft/published,
+Read-only. It reports the release **source** as `{commit, tree, kind}` (`kind` is `tag` when the
+tag ref exists, otherwise `draft-target`, taken from a draft Release's 40-hex `targetCommitish`;
+source CI and Darwin admission run against that source), the Release (absent/draft/published,
 `targetCommitish`), the expected Release assets (including the ten Darwin inputs) as present,
 missing or conflicting, the source commit's required CI state, a Darwin admission of the
 downloaded assets, per-package npm state, dist-tags, the latest `release.yml` runs for the tag
@@ -125,13 +127,14 @@ downloaded assets, per-package npm state, dist-tags, the latest `release.yml` ru
 | `blocked:<reason>` | stop and report the reason |
 | `complete` | [A14](#a14-verify-delivery) onward if not yet done, else report |
 
-`release-status.mjs` resolves the tag through the remote tag ref. Before the draft is published
-there is no tag ref, so it reports `blocked:tag-missing`. When that is the only blocker and the
-draft targets the full source SHA (A10), it is the expected pre-publish state, not a stop. Work
-through the draft phase with the direct checks instead: Phase M's own source binding,
-`admit-darwin-artifacts.mjs` and the preflight in [A11](#a11-admission-and-provenance-preflight),
-and `verify-source-ci.mjs` in [A9](#a9-required-ci-on-the-source-sha). Every other `blocked:`
-reason is a stop.
+Before publication the source is `kind: draft-target`; after it, `kind: tag`. Every `blocked:`
+reason is a stop. Source-resolution reasons:
+
+| Reason | Meaning |
+| --- | --- |
+| `blocked:release-missing` | no tag ref and no Release for the version (before A10, expected) |
+| `blocked:release-target-not-sha` | the draft's `targetCommitish` is a branch name, not a full SHA; delete it and recreate it with `--target "$SOURCE_SHA"` (A10) |
+| `blocked:tag-missing` | a **published** Release without a tag ref; investigate, never retag |
 
 Before a version exists (nothing bumped yet), start at [A1](#a1-preconditions). Resuming is always
 idempotent: re-run Step 0, act on its single recommendation, re-run Step 0. Never reconstruct state
@@ -460,7 +463,8 @@ and the script's final admission line.
 
 Download the draft's Darwin assets into an empty temporary directory
 (`gh release download v<version> --pattern '*apple-darwin*' --dir <downloaded>`) and run the same
-admission as CI (once the tag exists, Step 0 runs it for you):
+admission as CI. Step 0 runs it against the `draft-target` source too; this direct run is the
+cross-check and produces the `admission.json` evidence:
 
 ```sh
 node scripts/admit-darwin-artifacts.mjs --dir <downloaded> --version <version> \
@@ -516,10 +520,11 @@ After the owner acknowledges, re-run the preflight and continue.
 
 ### A12. Publish the draft
 
-Only when the pre-publish gates hold: `verify-source-ci.mjs` exit 0 on the source SHA (A9), the
-draft targets that full SHA (A10), `admit-darwin-artifacts.mjs` exit 0 on the draft's ten Darwin
-inputs and the preflight clear or owner-acknowledged (A11). Step 0 shows `blocked:tag-missing` at
-this point; no other `blocked:` reason may be present.
+**Only when Step 0 recommends `publish-draft`** — the single gate. Confirm its source is
+`kind: draft-target` at `$SOURCE_SHA`. The direct checks — `verify-source-ci.mjs` exit 0 (A9),
+`admit-darwin-artifacts.mjs` exit 0 and a clear or owner-acknowledged preflight (A11) — are a
+cross-check: if any disagrees with Step 0, stop and report; they never substitute for
+`publish-draft`.
 
 - **Stable:** publish without GitHub Latest in **one** REST update (`make_latest` is a string). A
   bare `gh release edit --draft=false`, or the web UI with "Set as the latest release" checked,

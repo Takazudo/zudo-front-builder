@@ -149,15 +149,15 @@ all of RELEASING.md first, then follow RELEASING.md exactly.
 2. Exact source: prepare the release from a fresh checkout per A1-A10 (version judgment, CI-measured
    version stamps, bump, five changelog pages, focused checks, push, verify-source-ci.mjs on the
    bump SHA, draft Release targeting it). Record source SHA/tree and your tested checkout/tree.
-3. Darwin inputs: run Step 0 and the A11 admission on the draft's assets (before publication
-   Step 0 shows blocked:tag-missing; that alone is expected). If it recommends prepare-darwin, or
+3. Darwin inputs: run Step 0 (source kind draft-target before publication) and the A11
+   admission cross-check on the draft's assets. If Step 0 recommends prepare-darwin, or
    admission rejects or misses any of
    the ten Darwin inputs, print RELEASING.md's paste-ready Mac prompt and STOP. Missing local
    native receipts are a blocker. Never build, emulate or write Darwin evidence, and never use a
    hosted macOS runner.
 4. Provenance: run the mac-local preflight. On a downgrade, STOP and report; never add the
    acknowledgement marker or dispatch with allow_provenance_downgrade=true.
-5. Publication: only when RELEASING.md A12's pre-publish gates hold, publish per A12 (stable without Latest
+5. Publication: only when Step 0 recommends publish-draft, publish per A12 (stable without Latest
    in one update), watch release.yml and the installer smoke, and record run/attempt/job IDs with
    first results and retries.
 6. Completion: run verify-release-delivery.mjs, npm-package-state.mjs and the provenance

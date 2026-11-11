@@ -29,8 +29,9 @@ admission rules) is [`scripts/darwin-artifact-contract.md`](../../../scripts/dar
    on a "DIFFERENT bytes" refusal, stop and report — the owner decides.
 4. Report the uploaded asset names, each receipt's `host.arch_label` (`native-arm64`,
    `rosetta-translated` — never call x86_64 "native Intel"), `qualification.status`, every check's
-   first result, and the script's final admission line. (`release-status.mjs` reports
-   `blocked:tag-missing` until the draft is published; that is expected here.)
+   first result, the script's final admission line, and
+   `node scripts/release/release-status.mjs --tag <tag>`'s recommendation (its source is
+   `kind: draft-target` before publication).
 
 Do not publish the Release and do not add the provenance-downgrade marker unless the owner
 explicitly does so; publishing continues from `RELEASING.md` A11 in any environment.
