@@ -13,7 +13,8 @@
 //    This is the "synthetic Request + env stub" check the task brief
 //    asks for in lieu of a real wrangler dev run.
 
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -154,7 +155,7 @@ describe("CLI / emitWorker", () => {
     expect(innerBody).toContain("hello");
     // Byte-exact: excludes the wrapper and inner bundle from the asset
     // upload so only the Worker's module graph can reach them.
-    expect(assetsIgnoreBody).toBe("_worker.js\n_zfb_inner.mjs\n");
+    expect(assetsIgnoreBody).toBe("/_worker.js\n/_zfb_inner.mjs\n");
   });
 
   it("never leaves a sourceMappingURL reference to a map that is not emitted", async () => {
@@ -211,7 +212,7 @@ describe("CLI / emitWorker", () => {
     expect(await readFile(join(outdir, "alpha-a1b2c3d4.wasm"), "utf8")).toBe("alpha-wasm");
     expect(await readFile(join(outdir, "beta-e5f6a7b8.wasm"), "utf8")).toBe("beta-wasm");
     expect(await readFile(out.assetsIgnorePath, "utf8")).toBe(
-      "custom-public-entry\n_worker.js\n_zfb_inner.mjs\nalpha-a1b2c3d4.wasm\nbeta-e5f6a7b8.wasm\n",
+      "custom-public-entry\n/_worker.js\n/_zfb_inner.mjs\n/alpha-a1b2c3d4.wasm\n/beta-e5f6a7b8.wasm\n",
     );
   });
 
@@ -1010,9 +1011,226 @@ export default {
 
     const assetsIgnoreBody = await readFile(join(outdir, ".assetsignore"), "utf8");
     expect(assetsIgnoreBody).toBe(
-      "_worker.js\n_zfb_inner.mjs\nalpha-a1b2c3d4.wasm\nbeta-e5f6a7b8.wasm\n",
+      "/_worker.js\n/_zfb_inner.mjs\n/alpha-a1b2c3d4.wasm\n/beta-e5f6a7b8.wasm\n",
     );
     expect(await readFile(join(outdir, "alpha-a1b2c3d4.wasm"), "utf8")).toBe("alpha-wasm");
     expect(await readFile(join(outdir, "beta-e5f6a7b8.wasm"), "utf8")).toBe("beta-wasm");
+  });
+});
+
+// Semantic checks of the emitted `.assetsignore`. Wrangler matches it with
+// node-ignore; these tests use `git check-ignore` on a temporary repository as
+// the reference matcher, limited to the rule subset (root-anchored literals
+// with `\`, `*`, `[`, `]`, `\ ` and `[<tab>]`, plus plain user globs and
+// negations) whose node-ignore 5.3.2 behavior was cross-checked against Git.
+function gitIgnoredPaths(policy: string, paths: readonly string[]): string[] {
+  const repo = mkdtempSync(join(tmpdir(), "zfb-assetsignore-git-"));
+  scratchDirs.push(repo);
+  const init = spawnSync("git", ["init", "-q", repo], { encoding: "utf8" });
+  expect(init.status).toBe(0);
+  writeFileSync(join(repo, ".gitignore"), policy);
+  const result = spawnSync("git", ["-C", repo, "check-ignore", "-z", "--no-index", "--stdin"], {
+    input: paths.join("\0") + "\0",
+    encoding: "utf8",
+  });
+  // check-ignore exits 1 when no path is ignored.
+  expect([0, 1]).toContain(result.status);
+  return result.stdout.split("\0").filter((entry) => entry.length > 0);
+}
+
+describe.skipIf(process.platform === "win32")("emitWorker .assetsignore policy semantics", () => {
+  async function bundleWithAssets(dir: string, assetNames: readonly string[]): Promise<string> {
+    const bundleDir = join(dir, "runtime");
+    await mkdir(bundleDir, { recursive: true });
+    const inputPath = join(bundleDir, "bundle-runtime.mjs");
+    await writeFile(inputPath, "export default {};\n", "utf8");
+    for (const name of assetNames) {
+      await writeFile(join(bundleDir, name), "wasm:" + name, "utf8");
+    }
+    return inputPath;
+  }
+
+  it("later user negations cannot re-include the generated Worker, inner bundle, or copied Wasm", async () => {
+    const dir = await scratch();
+    const inputPath = await bundleWithAssets(dir, ["engine.wasm"]);
+    const outdir = join(dir, "dist");
+    await mkdir(outdir, { recursive: true });
+    const userPolicy = "_worker.js\n!_worker.js\n!_zfb_inner.mjs\n!engine.wasm\n";
+    await writeFile(join(outdir, ".assetsignore"), userPolicy, "utf8");
+
+    const out = await emitWorker({ inputBundlePath: inputPath, outdir, assets: ["engine.wasm"] });
+    const policy = await readFile(out.assetsIgnorePath, "utf8");
+
+    expect(policy).toBe(userPolicy + "/_worker.js\n/_zfb_inner.mjs\n/engine.wasm\n");
+    expect(
+      gitIgnoredPaths(policy, ["_worker.js", "_zfb_inner.mjs", "engine.wasm", "index.html"]),
+    ).toEqual(["_worker.js", "_zfb_inner.mjs", "engine.wasm"]);
+  });
+
+  it("excludes literal special-character basenames without excluding distinct neighbors", async () => {
+    const generated = [
+      "engine[1].wasm",
+      "#engine.wasm",
+      "!engine.wasm",
+      "a*b.wasm",
+      "back\\slash.wasm",
+      "space name.wasm",
+      "inner\ttab.wasm",
+      "trailing.wasm ",
+      "trailing-tab.wasm\t",
+    ];
+    const dir = await scratch();
+    const inputPath = await bundleWithAssets(dir, generated);
+    const out = await emitWorker({
+      inputBundlePath: inputPath,
+      outdir: join(dir, "dist"),
+      assets: generated,
+    });
+    const policy = await readFile(out.assetsIgnorePath, "utf8");
+
+    expect(policy).toBe(
+      "/_worker.js\n/_zfb_inner.mjs\n/engine\\[1\\].wasm\n/#engine.wasm\n/!engine.wasm\n" +
+        "/a\\*b.wasm\n/back\\\\slash.wasm\n/space name.wasm\n/inner\ttab.wasm\n" +
+        "/trailing.wasm\\ \n/trailing-tab.wasm[\t]\n",
+    );
+    const neighbors = [
+      "engine1.wasm",
+      "engine.wasm",
+      "engine[1].wasm.map",
+      "axb.wasm",
+      "ab.wasm",
+      "backslash.wasm",
+      "trailing.wasm",
+      "trailing-tab.wasm",
+      "trailing-tab.wasm ",
+      "space.wasm",
+      "nested/_worker.js",
+      "nested/engine[1].wasm",
+      "nested/#engine.wasm",
+    ];
+    expect(gitIgnoredPaths(policy, [...generated, ...neighbors])).toEqual(generated);
+  });
+
+  it("keeps user-authored broad rules and their negations unchanged", async () => {
+    const dir = await scratch();
+    const inputPath = await bundleWithAssets(dir, []);
+    const outdir = join(dir, "dist");
+    await mkdir(outdir, { recursive: true });
+    const userPolicy = "# user rules\n*.secret\n!keep.secret\n_worker.js";
+    await writeFile(join(outdir, ".assetsignore"), userPolicy, "utf8");
+
+    const out = await emitWorker({ inputBundlePath: inputPath, outdir });
+    const policy = await readFile(out.assetsIgnorePath, "utf8");
+
+    expect(policy).toBe(userPolicy + "\n/_worker.js\n/_zfb_inner.mjs\n");
+    expect(
+      gitIgnoredPaths(policy, [
+        "a.secret",
+        "keep.secret",
+        "nested/b.secret",
+        "nested/_worker.js",
+        "_worker.js",
+      ]),
+    ).toEqual(["a.secret", "nested/b.secret", "nested/_worker.js", "_worker.js"]);
+  });
+
+  it("keeps non-UTF-8 bytes of the existing policy unchanged", async () => {
+    const dir = await scratch();
+    const inputPath = await bundleWithAssets(dir, ["caf\u00e9.wasm"]);
+    const outdir = join(dir, "dist");
+    await mkdir(outdir, { recursive: true });
+    const userPolicy = Buffer.from([
+      0x23, 0x20, 0xff, 0xfe, 0x0a, 0x70, 0xe9, 0x2e, 0x74, 0x78, 0x74,
+    ]);
+    await writeFile(join(outdir, ".assetsignore"), userPolicy);
+
+    const out = await emitWorker({
+      inputBundlePath: inputPath,
+      outdir,
+      assets: ["caf\u00e9.wasm"],
+    });
+
+    expect(await readFile(out.assetsIgnorePath)).toEqual(
+      Buffer.concat([
+        userPolicy,
+        Buffer.from("\n/_worker.js\n/_zfb_inner.mjs\n/caf\u00e9.wasm\n", "utf8"),
+      ]),
+    );
+  });
+
+  it("does not grow an identical terminal block on repeated emission", async () => {
+    const dir = await scratch();
+    const inputPath = await bundleWithAssets(dir, []);
+    const outdir = join(dir, "dist");
+    await mkdir(outdir, { recursive: true });
+    await writeFile(join(outdir, ".assetsignore"), "private.txt\n", "utf8");
+
+    await emitWorker({ inputBundlePath: inputPath, outdir });
+    const first = await readFile(join(outdir, ".assetsignore"), "utf8");
+    await emitWorker({ inputBundlePath: inputPath, outdir });
+    const second = await readFile(join(outdir, ".assetsignore"), "utf8");
+
+    expect(first).toBe("private.txt\n/_worker.js\n/_zfb_inner.mjs\n");
+    expect(second).toBe(first);
+  });
+
+  it("appends the block when only a longer user line ends with the same text", async () => {
+    const dir = await scratch();
+    const inputPath = await bundleWithAssets(dir, []);
+    const outdir = join(dir, "dist");
+    await mkdir(outdir, { recursive: true });
+    // Ends with the generated block's text, but not on a line boundary.
+    const userPolicy = "nested/_worker.js\n/_zfb_inner.mjs\n";
+    await writeFile(join(outdir, ".assetsignore"), userPolicy, "utf8");
+
+    const out = await emitWorker({ inputBundlePath: inputPath, outdir });
+    const policy = await readFile(out.assetsIgnorePath, "utf8");
+
+    expect(policy).toBe(userPolicy + "/_worker.js\n/_zfb_inner.mjs\n");
+    expect(gitIgnoredPaths(policy, ["_worker.js"])).toEqual(["_worker.js"]);
+  });
+
+  it("keeps an earlier emission's generated block for assets still in the output", async () => {
+    const dir = await scratch();
+    const inputPath = await bundleWithAssets(dir, ["alpha.wasm"]);
+    const outdir = join(dir, "dist");
+
+    await emitWorker({ inputBundlePath: inputPath, outdir, assets: ["alpha.wasm"] });
+    await writeFile(
+      join(outdir, ".assetsignore"),
+      (await readFile(join(outdir, ".assetsignore"), "utf8")) + "!alpha.wasm\n",
+      "utf8",
+    );
+    await emitWorker({ inputBundlePath: inputPath, outdir });
+    const policy = await readFile(join(outdir, ".assetsignore"), "utf8");
+
+    expect(policy).toBe(
+      "/_worker.js\n/_zfb_inner.mjs\n/alpha.wasm\n!alpha.wasm\n/_worker.js\n/_zfb_inner.mjs\n",
+    );
+    expect(gitIgnoredPaths(policy, ["_worker.js", "_zfb_inner.mjs"])).toEqual([
+      "_worker.js",
+      "_zfb_inner.mjs",
+    ]);
+  });
+
+  it.each([
+    ["carriage return", "bad\rname.wasm"],
+    ["line feed", "bad\nname.wasm"],
+    ["question mark", "bad?name.wasm"],
+  ])("rejects a %s in a copied basename before writing any output", async (_label, assetName) => {
+    const dir = await scratch();
+    const inputPath = await bundleWithAssets(dir, [assetName]);
+    const outdir = join(dir, "dist");
+    await mkdir(outdir, { recursive: true });
+    const userPolicy = "private.txt\n!keep.txt";
+    await writeFile(join(outdir, ".assetsignore"), userPolicy, "utf8");
+
+    await expect(
+      emitWorker({ inputBundlePath: inputPath, outdir, assets: [assetName] }),
+    ).rejects.toThrow(/asset basename cannot be excluded literally in \.assetsignore/);
+    expect(await readFile(join(outdir, ".assetsignore"), "utf8")).toBe(userPolicy);
+    await expect(readFile(join(outdir, "_worker.js"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(outdir, "_zfb_inner.mjs"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(outdir, assetName), "utf8")).rejects.toThrow();
   });
 });

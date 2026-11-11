@@ -8475,6 +8475,13 @@ fn maybe_probe_content_snapshot(project_root: &Path, config: &Config) {
 ///
 /// Files inside `public/` are placed at `<outdir>/<base-segment>/<rel>`,
 /// matching the URL space that `withBase()` produces in the rendered HTML.
+///
+/// Exception: a top-level regular file `public/.assetsignore` is deployment
+/// configuration, not a served asset. Wrangler reads the policy only from the
+/// root of the static-assets directory, so it is copied byte-for-byte to
+/// `<outdir>/.assetsignore` regardless of `base`, and its patterns stay
+/// relative to that upload root (no base-prefix rebasing). A nested
+/// `.assetsignore` is an ordinary file.
 fn copy_public_dir(
     project_root: &Path,
     outdir: &Path,
@@ -8539,7 +8546,11 @@ fn copy_public_dir(
         if rel == std::path::Path::new("_redirects") {
             continue;
         }
-        let dest = dest_root.join(rel);
+        let dest = if entry.file_type().is_file() && rel == std::path::Path::new(".assetsignore") {
+            outdir.join(rel)
+        } else {
+            dest_root.join(rel)
+        };
         if entry.file_type().is_dir() {
             std::fs::create_dir_all(&dest)
                 .with_context(|| format!("public dir copy: create dir {}", dest.display()))?;
@@ -10739,8 +10750,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn run_build_dispatches_adapter_after_public_assetsignore_copy() {
+    // The top-level public `.assetsignore` is deployment config that Wrangler
+    // reads only from the output root, so the adapter must see it there
+    // before dispatch for every base / copyPublicWithBase combination.
+    fn run_build_dispatches_adapter_after_public_assetsignore_copy(
+        base: Option<&str>,
+        copy_public_with_base: bool,
+        expected_public_root: &str,
+    ) {
+        const POLICY: &str = "custom-public-entry\r\n/sub/private.txt\n!keep.txt";
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
         let outdir = project_root.join("dist");
@@ -10757,11 +10775,8 @@ mod tests {
             "export const frontmatter = { title: \"Foo\" };\nexport const prerender = false;\nexport default function() { return null; }\n",
         )
         .unwrap();
-        std::fs::write(
-            project_root.join("public/.assetsignore"),
-            "custom-public-entry\n",
-        )
-        .unwrap();
+        std::fs::write(project_root.join("public/.assetsignore"), POLICY).unwrap();
+        std::fs::write(project_root.join("public/robots.txt"), "robots\n").unwrap();
 
         let routes = vec![
             static_route(vec![], "pages/index.tsx"),
@@ -10777,6 +10792,8 @@ mod tests {
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config {
             adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            base: base.map(str::to_owned),
+            copy_public_with_base,
             ..Config::default()
         };
         let adapter_runner = PublicCopyObservingAdapterRunner::new();
@@ -10803,9 +10820,33 @@ mod tests {
                 .assets_ignore_before_dispatch
                 .borrow()
                 .as_deref(),
-            Some("custom-public-entry\n"),
-            "adapter dispatch must see the public copy and merge its entries"
+            Some(POLICY),
+            "adapter dispatch must see the byte-identical public policy at the output root"
         );
+        assert!(
+            !outdir.join("sub/.assetsignore").exists(),
+            "the top-level policy must not also be relocated beneath the base segment"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outdir.join(expected_public_root).join("robots.txt")).unwrap(),
+            "robots\n",
+            "ordinary public files keep following the base/flat configuration"
+        );
+    }
+
+    #[test]
+    fn run_build_dispatches_adapter_after_public_assetsignore_copy_default_base() {
+        run_build_dispatches_adapter_after_public_assetsignore_copy(None, true, "");
+    }
+
+    #[test]
+    fn run_build_dispatches_adapter_after_public_assetsignore_copy_subpath_base() {
+        run_build_dispatches_adapter_after_public_assetsignore_copy(Some("/sub/"), true, "sub");
+    }
+
+    #[test]
+    fn run_build_dispatches_adapter_after_public_assetsignore_copy_subpath_flat_public() {
+        run_build_dispatches_adapter_after_public_assetsignore_copy(Some("/sub/"), false, "");
     }
 
     #[test]
@@ -18094,6 +18135,88 @@ mod tests {
             logo_content,
             "file content must be preserved",
         );
+    }
+
+    /// The top-level `.assetsignore` is root deployment config: it lands at
+    /// the output root byte-for-byte, with no relocated copy under the base,
+    /// for a custom public dir and a custom output dir too.
+    #[test]
+    fn copy_public_dir_assetsignore_stays_at_custom_output_root_under_base() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("build/out");
+        let policy: &[u8] = b"private.txt\r\n/sub/secret.txt\n# trailing \xff bytes\n!keep.txt";
+        std::fs::create_dir_all(project_root.join("static/nested")).unwrap();
+        std::fs::write(project_root.join("static/.assetsignore"), policy).unwrap();
+        std::fs::write(project_root.join("static/private.txt"), "private").unwrap();
+        std::fs::write(
+            project_root.join("static/nested/.assetsignore"),
+            "nested-rule\n",
+        )
+        .unwrap();
+
+        copy_public_dir(
+            project_root,
+            &outdir,
+            std::path::Path::new("static"),
+            Some("/sub/"),
+        )
+        .expect("copy must succeed");
+
+        assert_eq!(std::fs::read(outdir.join(".assetsignore")).unwrap(), policy);
+        assert!(
+            !outdir.join("sub/.assetsignore").exists(),
+            "the top-level assetsignore must not be duplicated beneath the base"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outdir.join("sub/private.txt")).unwrap(),
+            "private",
+            "ordinary public files still follow the base segment"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outdir.join("sub/nested/.assetsignore")).unwrap(),
+            "nested-rule\n",
+            "a nested .assetsignore is an ordinary public file"
+        );
+        assert!(!outdir.join("nested/.assetsignore").exists());
+    }
+
+    /// Default base: the top-level `.assetsignore` keeps landing at the root.
+    #[test]
+    fn copy_public_dir_assetsignore_at_root_without_base() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        std::fs::create_dir_all(project_root.join("public")).unwrap();
+        std::fs::write(project_root.join("public/.assetsignore"), "private.txt\n").unwrap();
+
+        copy_public_dir(project_root, &outdir, std::path::Path::new("public"), None)
+            .expect("copy must succeed");
+
+        assert_eq!(
+            std::fs::read_to_string(outdir.join(".assetsignore")).unwrap(),
+            "private.txt\n"
+        );
+    }
+
+    /// An absolute public dir with a base still places the policy at the root.
+    #[test]
+    fn copy_public_dir_assetsignore_absolute_public_dir_under_base() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path().join("site");
+        let public_abs = tmp.path().join("shared-public");
+        let outdir = project_root.join("dist");
+        std::fs::create_dir_all(&public_abs).unwrap();
+        std::fs::write(public_abs.join(".assetsignore"), "/sub/private.txt\n").unwrap();
+
+        copy_public_dir(&project_root, &outdir, &public_abs, Some("/sub/"))
+            .expect("copy must succeed");
+
+        assert_eq!(
+            std::fs::read_to_string(outdir.join(".assetsignore")).unwrap(),
+            "/sub/private.txt\n"
+        );
+        assert!(!outdir.join("sub/.assetsignore").exists());
     }
 
     /// Base with no trailing slash is normalised identically.

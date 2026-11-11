@@ -695,3 +695,96 @@ describe("fetch HTTP recovery", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("explicit per-link strategy precedence in load/viewport scans", () => {
+  const ATTRS = [undefined, "", "hover", "tap", "viewport", "load", "false"] as const;
+  type Attr = (typeof ATTRS)[number];
+
+  function label(attr: Attr): string {
+    return attr === undefined ? "absent" : attr === "" ? "empty" : attr;
+  }
+
+  function admitted(
+    trigger: "load" | "viewport",
+    attr: Attr,
+    prefetchAll: boolean,
+    defaultStrategy: "load" | "viewport",
+  ): boolean {
+    if (attr === undefined || attr === "") return prefetchAll && defaultStrategy === trigger;
+    return attr === trigger;
+  }
+
+  function createMatrixLinks(prefix: string): Map<Attr, HTMLAnchorElement> {
+    const links = new Map<Attr, HTMLAnchorElement>();
+    for (const attr of ATTRS) {
+      links.set(attr, createLink(sameOriginUrl(`/${prefix}-${label(attr)}`), attr));
+    }
+    return links;
+  }
+
+  function assertScans(
+    links: Map<Attr, HTMLAnchorElement>,
+    prefetchAll: boolean,
+    defaultStrategy: "load" | "viewport",
+  ): void {
+    const fetched = new Set(fetchMock.mock.calls.map((call) => call[0] as string));
+    for (const [attr, link] of links) {
+      expect(
+        fetched.has(link.href),
+        `load scan for ${label(attr)} (prefetchAll=${prefetchAll}, default=${defaultStrategy})`,
+      ).toBe(admitted("load", attr, prefetchAll, defaultStrategy));
+      expect(
+        (lastIo as StubIntersectionObserver).hasObserved(link),
+        `viewport scan for ${label(attr)} (prefetchAll=${prefetchAll}, default=${defaultStrategy})`,
+      ).toBe(admitted("viewport", attr, prefetchAll, defaultStrategy));
+    }
+  }
+
+  for (const defaultStrategy of ["load", "viewport"] as const) {
+    for (const prefetchAll of [true, false]) {
+      it(`default=${defaultStrategy}, prefetchAll=${prefetchAll}: initial scan and after zfb:after-swap`, async () => {
+        const initial = createMatrixLinks("initial");
+        init({ prefetchAll, defaultStrategy });
+        await Promise.resolve();
+        assertScans(initial, prefetchAll, defaultStrategy);
+
+        resetDocument();
+        fetchMock.mockClear();
+        const swapped = createMatrixLinks("swapped");
+        document.dispatchEvent(new Event("zfb:after-swap"));
+        await Promise.resolve();
+        assertScans(swapped, prefetchAll, defaultStrategy);
+      });
+    }
+  }
+
+  it("explicit hover/tap/viewport links still prefetch on their own trigger under a load default", async () => {
+    const hover = createLink(sameOriginUrl("/own-hover"), "hover");
+    const tap = createLink(sameOriginUrl("/own-tap"), "tap");
+    const viewport = createLink(sameOriginUrl("/own-viewport"), "viewport");
+    init({ prefetchAll: true, defaultStrategy: "load" });
+    await Promise.resolve();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    hover.dispatchEvent(new Event("pointerenter", { bubbles: true }));
+    tap.dispatchEvent(new Event("mousedown", { bubbles: true }));
+    lastIo!.fire(viewport, true);
+    await Promise.resolve();
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      hover.href,
+      tap.href,
+      viewport.href,
+    ]);
+  });
+
+  it("an explicit load link still prefetches under a viewport default", async () => {
+    const load = createLink(sameOriginUrl("/own-load"), "load");
+    const hover = createLink(sameOriginUrl("/own-hover-2"), "hover");
+    init({ prefetchAll: true, defaultStrategy: "viewport" });
+    await Promise.resolve();
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([load.href]);
+    expect((lastIo as StubIntersectionObserver).hasObserved(hover)).toBe(false);
+  });
+});

@@ -329,14 +329,18 @@ function initViewportObserver(): IntersectionObserver {
   return viewportObserver;
 }
 
+// Without prefetchAll only links carrying an explicit strategy can qualify.
+function scanSelector(): string {
+  return prefetchAll ? "a[href]" : "a[href][data-zfb-prefetch]";
+}
+
 function observeViewportLinks(): void {
   const observer = initViewportObserver();
-  const selector =
-    prefetchAll && defaultStrategy === "viewport"
-      ? "a[href]:not([data-zfb-prefetch='false'])"
-      : "a[data-zfb-prefetch='viewport']";
 
-  document.querySelectorAll<HTMLAnchorElement>(selector).forEach((link) => {
+  // Every candidate goes through shouldPrefetchLink so an explicit per-link
+  // strategy (hover/tap/load) overrides a prefetchAll viewport default.
+  document.querySelectorAll<HTMLAnchorElement>(scanSelector()).forEach((link) => {
+    if (!shouldPrefetchLink(link, "viewport")) return;
     const href = resolveHref(link.href);
     if (href && !prefetched.has(href)) {
       observer.observe(link);
@@ -349,12 +353,10 @@ function observeViewportLinks(): void {
 // ---------------------------------------------------------------------------
 
 function prefetchLoadLinks(): void {
-  const selector =
-    prefetchAll && defaultStrategy === "load"
-      ? "a[href]:not([data-zfb-prefetch='false'])"
-      : "a[data-zfb-prefetch='load']";
-
-  document.querySelectorAll<HTMLAnchorElement>(selector).forEach((link) => {
+  // Same admission rule as the viewport scan: an explicit hover/tap/viewport
+  // link must not fetch during a prefetchAll load scan.
+  document.querySelectorAll<HTMLAnchorElement>(scanSelector()).forEach((link) => {
+    if (!shouldPrefetchLink(link, "load")) return;
     const href = resolveHref(link.href);
     if (!href || prefetched.has(href)) return;
 
