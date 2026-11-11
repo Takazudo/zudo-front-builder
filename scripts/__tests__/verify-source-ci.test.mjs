@@ -17,12 +17,18 @@ const SHA = "b".repeat(40);
 const repoRoot = join(scriptsDir, "..");
 
 let nextId = 1;
+const WORKFLOWS = [...new Set(REQUIRED_CONTEXTS.map((c) => c.workflow))];
+const suiteOf = (workflow) => 1000 + WORKFLOWS.indexOf(workflow);
+const workflowOf = (name) => REQUIRED_CONTEXTS.find((c) => c.context === name)?.workflow;
+// A check run as readSourceCi returns it: suite resolved to its workflow file.
 const run = (name, status = "completed", conclusion = "success", id = nextId++) => ({
   id,
   name,
   status,
   conclusion: status === "completed" ? conclusion : null,
   app: "github-actions",
+  suite: suiteOf(workflowOf(name)),
+  workflowPath: `.github/workflows/${workflowOf(name)}`,
 });
 const pushContexts = REQUIRED_CONTEXTS.filter((c) => !c.prOnly).map((c) => c.context);
 const allGreen = () => pushContexts.map((name) => run(name));
@@ -123,10 +129,17 @@ describe("evaluate", () => {
 
 describe("CLI", () => {
   const gh =
-    (runs, statuses = []) =>
+    (runs, statuses = [], { pathFor = (wf) => `.github/workflows/${wf}`, headSha = SHA } = {}) =>
     (args) => {
-      if (args.includes("--paginate")) return runs.map((r) => JSON.stringify(r)).join("\n");
+      if (args.includes("--paginate")) {
+        return runs.map(({ workflowPath, ...raw }) => JSON.stringify(raw)).join("\n");
+      }
       if (args[1].endsWith("/status")) return JSON.stringify({ statuses });
+      const suite = /check_suite_id=(\d+)/.exec(args[1]);
+      if (suite) {
+        const workflow = WORKFLOWS[Number(suite[1]) - 1000];
+        return JSON.stringify({ workflow_runs: [{ path: pathFor(workflow), head_sha: headSha }] });
+      }
       throw new Error(`unexpected gh ${args.join(" ")}`);
     };
   const capture = () => {
@@ -145,6 +158,43 @@ describe("CLI", () => {
     expect(main(["--sha", SHA], { gh: failing, out: capture().out })).toBe(2);
   });
 
+  it("resolves each check suite to its workflow file and requires the context's own", () => {
+    const seen = [];
+    const base = gh(allGreen());
+    const counting = (args) => {
+      seen.push(args.join(" "));
+      return base(args);
+    };
+    expect(main(["--sha", SHA, "--repo", "o/r"], { gh: counting, out: capture().out })).toBe(0);
+    const suiteCalls = seen.filter((c) => c.includes("check_suite_id="));
+    expect(suiteCalls).toHaveLength(new Set(allGreen().map((r) => r.suite)).size);
+    expect(suiteCalls[0]).toContain("repos/o/r/actions/runs?check_suite_id=");
+  });
+
+  it("rejects a same-named job from another workflow file", () => {
+    const sink = capture();
+    const code = main(["--sha", SHA, "--json"], {
+      gh: gh(allGreen(), [], {
+        pathFor: (wf) =>
+          wf === "health.yml" ? ".github/workflows/impostor.yml" : `.github/workflows/${wf}`,
+      }),
+      out: sink.out,
+    });
+    expect(code).toBe(1);
+    const health = JSON.parse(sink.text()).results.find((r) => r.context === "health");
+    expect(health.state).toBe("missing");
+    expect(health.ignoredCheckRuns[0].workflowPath).toBe(".github/workflows/impostor.yml");
+  });
+
+  it("rejects a check suite whose workflow run is for another commit", () => {
+    expect(
+      main(["--sha", SHA], {
+        gh: gh(allGreen(), [], { headSha: "c".repeat(40) }),
+        out: capture().out,
+      }),
+    ).toBe(1);
+  });
+
   it("rejects a non-40-hex SHA and unknown flags", () => {
     expect(parseArgs(["--sha", "abc"])).toBeNull();
     expect(parseArgs(["--sha", SHA, "--bogus"])).toBeNull();
@@ -161,7 +211,7 @@ describe("CLI", () => {
       out: capture().out,
     });
     expect(seen[0]).toContain(`repos/o/r/commits/${SHA}/check-runs`);
-    expect(seen[1]).toContain(`repos/o/r/commits/${SHA}/status`);
+    expect(seen.at(-1)).toContain(`repos/o/r/commits/${SHA}/status`);
   });
 });
 
