@@ -27,6 +27,22 @@
  *   - **Never fails a release.** A leftover `next` tag is cosmetic next to a
  *     published artifact; the CLI always exits 0 and reports failures as GitHub
  *     `::warning::` annotations. The invariant self-heals on the next release.
+ *     The one exception in *severity* (not exit code) is an authentication
+ *     failure: under OIDC-only auth an ENEEDAUTH/E401/E403/EOTP means the
+ *     trusted publisher is misconfigured (or "Allow npm dist-tag" is off), which
+ *     will equally break the NEXT release's dist-tag writes, so it is reported
+ *     as an `::error::` annotation plus a job-summary section. It still exits 0:
+ *     the packages are already published, and turning a published release red
+ *     would invite a re-run that cannot fix registry-side configuration.
+ *   - **OIDC only.** Writes go through npm >= 12.2.0's GitHub OIDC exchange;
+ *     scripts/npm-oidc-preflight.mjs refuses (no write attempted) when OIDC is
+ *     unavailable or any stored npm credential is visible.
+ *   - **Read-compare-write.** The dist-tags are re-read immediately before each
+ *     `rm` attempt and the decision is re-made on that fresh state, so a
+ *     concurrent publish that moved `next` ahead is left alone; after `rm` they
+ *     are re-read once more to confirm `next` is gone. npm offers no
+ *     compare-and-swap, so a write racing between that last read and the rm
+ *     cannot be excluded — the post-write re-read reports it.
  *   - **Semver-aware, not "always remove".** A genuine soak (latest=2.7.2 stable
  *     while next=3.0.0-next.1 is being tested) must survive a stable patch
  *     release, so a `next` that is still ahead of `latest` is left alone.
@@ -36,8 +52,11 @@
  */
 
 import { execFile } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+
+import { npmOidcPreflight } from "./npm-oidc-preflight.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -147,12 +166,11 @@ export function decideNextTagAction(distTags) {
 }
 
 /**
- * True for npm failures that a retry cannot possibly fix. EOTP (the account
- * requires a one-time password per write) is the motivating case: an interactive
- * `npm login` session authenticates but still demands an OTP for each dist-tag
- * write, so the backoff loop below burned 75s per package to produce ten
- * identical failures. Auth/permission errors are equally terminal — only
- * network blips and registry 5xx deserve a retry.
+ * True for npm failures that a retry cannot possibly fix: authentication and
+ * permission errors (EOTP was the first one observed — the backoff loop below
+ * once burned 75s per package producing identical failures). Under OIDC an
+ * ENEEDAUTH means the token exchange did not yield a credential. Only network
+ * blips and registry 5xx deserve a retry.
  */
 export function isTerminalNpmError(message) {
   return /\bE(OTP|NEEDAUTH|401|403)\b/.test(String(message ?? ""));
@@ -164,15 +182,40 @@ async function runNpm(args) {
 }
 
 async function readDistTags(pkg, npm) {
-  const stdout = await npm(["view", pkg, "dist-tags", "--json"]);
+  const stdout = await npm(["view", pkg, "dist-tags", "--json", "--prefer-online"]);
   const trimmed = stdout.trim();
   return trimmed === "" ? {} : JSON.parse(trimmed);
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function writeAuthFailureSummary(summaryPath, results) {
+  if (!summaryPath) return;
+  const failedPkgs = results.filter((r) => r.terminal).map((r) => `\`${r.pkg}\``);
+  try {
+    appendFileSync(
+      summaryPath,
+      [
+        "### :x: npm dist-tag auth failure ('next' retirement)",
+        "",
+        failedPkgs.length > 0
+          ? `npm refused \`dist-tag rm\` for ${failedPkgs.join(", ")} with an authentication error, and the sweep stopped.`
+          : "The npm OIDC preflight refused (no GitHub OIDC, a stored npm credential, or an npm older than 12.2.0); no dist-tag was touched.",
+        "The packages are published; this step still exits 0 by policy, but the next release's dist-tag",
+        "writes will fail the same way until the npm trusted publisher is fixed (repository, workflow",
+        "`release.yml`, and the **Allow npm dist-tag** option).",
+        "",
+      ].join("\n"),
+    );
+  } catch {
+    // A summary write must never fail the step.
+  }
+}
+
 /**
  * Retire the `next` dist-tag wherever it is no longer ahead of `latest`.
+ * Callers that write (not dry-run) must have passed the OIDC preflight; the CLI
+ * below enforces that before calling this.
  *
  * @param {object} [options]
  * @param {boolean} [options.dryRun]  Decide and report, but never mutate the registry.
@@ -190,11 +233,12 @@ export async function retireNextDistTag(options = {}) {
     wait = sleep,
     log = console.log,
     maxAttempts = 5,
-    otp,
+    summaryPath = process.env.GITHUB_STEP_SUMMARY,
   } = options;
 
   const results = [];
   let failed = 0;
+  let authFailed = false;
 
   for (const pkg of packages) {
     let distTags;
@@ -221,71 +265,110 @@ export async function retireNextDistTag(options = {}) {
     }
 
     const rmArgs = ["dist-tag", "rm", pkg, "next"];
-    if (otp) rmArgs.push("--otp", otp);
 
-    let removed = false;
+    let outcome = null; // "retired" | "changed" once settled
     let terminal = false;
     let lastError = "";
     let delay = 5000;
+    let currentReason = decision.reason;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
+        // Re-read immediately before the write and re-decide on fresh state:
+        // a concurrent publish may have moved `next` ahead (or removed it).
+        const fresh = decideNextTagAction(await readDistTags(pkg, npm));
+        if (fresh.action !== "retire") {
+          outcome = "changed";
+          currentReason = fresh.reason;
+          break;
+        }
+        currentReason = fresh.reason;
         await npm(rmArgs);
-        log(`  ${pkg}: removed 'next' (${decision.reason}) — OK (attempt ${attempt})`);
-        removed = true;
-        break;
+        const after = await readDistTags(pkg, npm);
+        if (!after?.next) {
+          log(
+            `  ${pkg}: removed 'next' (${currentReason}) — OK, confirmed by re-read (attempt ${attempt})`,
+          );
+          outcome = "retired";
+          break;
+        }
+        lastError = `re-read after rm still shows next=${after.next}`;
       } catch (error) {
         lastError = error.message;
         if (isTerminalNpmError(lastError)) {
           terminal = true;
           break;
         }
-        if (attempt < maxAttempts) {
-          log(
-            `  ${pkg}: dist-tag rm failed (attempt ${attempt}/${maxAttempts}) — retrying in ${delay / 1000}s...`,
-          );
-          await wait(delay);
-          delay *= 2;
-        }
+      }
+      if (attempt < maxAttempts) {
+        log(
+          `  ${pkg}: dist-tag rm not confirmed (attempt ${attempt}/${maxAttempts}: ${lastError}) — retrying in ${delay / 1000}s...`,
+        );
+        await wait(delay);
+        delay *= 2;
       }
     }
 
-    if (removed) {
-      results.push({ pkg, action: "retired", reason: decision.reason });
-    } else {
-      failed += 1;
-      const attempts = terminal ? "an auth error (not retried)" : `${maxAttempts} attempts`;
+    if (outcome === "changed") {
       log(
-        `::warning::${pkg}: could not remove the stale 'next' dist-tag after ${attempts} (${lastError}). Manual remediation: npm dist-tag rm ${pkg} next`,
+        `  ${pkg}: left 'next' in place — dist-tags changed before the write (${currentReason}).`,
       );
-      results.push({ pkg, action: "error", terminal, reason: lastError });
-
+      results.push({ pkg, action: "changed", reason: currentReason });
+    } else if (outcome === "retired") {
+      results.push({ pkg, action: "retired", reason: currentReason });
+    } else if (terminal) {
+      failed += 1;
+      authFailed = true;
+      log(
+        `::error title=npm dist-tag auth failure::${pkg}: 'npm dist-tag rm' was refused with an authentication error (${lastError}). The release workflow authenticates only through GitHub OIDC trusted publishing: check the package's trusted publisher (repository, workflow release.yml) and that its "Allow npm dist-tag" option is enabled. Not retried.`,
+      );
+      results.push({ pkg, action: "error", terminal: true, reason: lastError });
       // One terminal auth failure means every remaining package will fail the
       // same way. Stop rather than replaying the same error ten times.
-      if (terminal) {
-        log(
-          `::warning::Aborting the sweep: this npm account needs re-auth or a per-write OTP. Re-run with --otp=<code>, or use an Automation token (which bypasses 2FA) as release.yml does.`,
-        );
-        break;
-      }
+      log(
+        `::error title=npm dist-tag auth failure::Aborting the 'next' sweep after an auth failure; remaining packages were not attempted.`,
+      );
+      break;
+    } else {
+      failed += 1;
+      log(
+        `::warning::${pkg}: could not remove the stale 'next' dist-tag after ${maxAttempts} attempts (${lastError}). Manual remediation (maintainer's own interactive npm session): npm dist-tag rm ${pkg} next`,
+      );
+      results.push({ pkg, action: "error", terminal: false, reason: lastError });
     }
   }
 
-  return { results, failed };
+  if (authFailed) writeAuthFailureSummary(summaryPath, results);
+  return { results, failed, authFailed };
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+/** Annotation lines for a preflight refusal (exported for tests). */
+export function preflightRefusalLines(problems) {
+  return [
+    ...problems.map((p) => `::error title=npm dist-tag auth failure::${p}`),
+    "::error title=npm dist-tag auth failure::npm OIDC preflight refused; no 'next' dist-tag was touched.",
+  ];
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const dryRun = process.argv.includes("--dry-run");
-  const otpArg = process.argv.find((a) => a.startsWith("--otp="));
-  const otp = otpArg ? otpArg.slice("--otp=".length) : undefined;
   console.log(
     `Retiring stale 'next' dist-tags${dryRun ? " (DRY RUN — no registry writes)" : ""}...`,
   );
-  const { results, failed } = await retireNextDistTag({ dryRun, otp });
+  if (!dryRun) {
+    const problems = npmOidcPreflight();
+    if (problems.length > 0) {
+      for (const line of preflightRefusalLines(problems)) console.log(line);
+      writeAuthFailureSummary(process.env.GITHUB_STEP_SUMMARY, []);
+      // Always 0 (see the header): the refusal is surfaced as ::error::.
+      process.exit(0);
+    }
+  }
+  const { results, failed } = await retireNextDistTag({ dryRun });
   const retired = results.filter((r) => r.action === "retired" || r.dryRun).length;
   console.log(
     `'next' dist-tag sweep complete: ${retired} retired, ${results.length - retired - failed} left in place, ${failed} failed.`,
   );
   // Always 0: a leftover dist-tag must never redden an otherwise good release.
-  // Failures are surfaced as ::warning:: annotations above and retried next release.
+  // Failures are surfaced as ::warning:: (auth: ::error::) annotations above.
   process.exit(0);
 }

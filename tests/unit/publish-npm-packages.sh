@@ -103,15 +103,47 @@ assert_exit 'classify: real error AND version NOT on registry → fail (1)' 1 \
 
 # Build a throwaway PATH dir holding mock `npm` and `pnpm` executables.
 MOCK_BIN=$(mktemp -d)
-trap 'rm -rf "$MOCK_BIN" "${PUB_LOG:-}" "${DISTTAG_LOG:-}" "${ARGS_LOG:-}" "${DIGEST_FIXTURE:-}" "${DC_GH_LOG:-}" "${DC_PUB_LOG:-}" "${DC_OUTPUT:-}" "${DC_MARKER:-}" "${LEGACY_TARGET:-}" "${LEGACY_OUTPUT:-}" "${LEGACY_PUB_LOG:-}" "${PUBLISH_TARGET:-}"' EXIT HUP INT TERM
+trap 'rm -rf "$MOCK_BIN" "${TEST_HOME:-}" "${PROV_LOG:-}" "${EXPECT_FILE:-}" "${PUB_LOG:-}" "${DISTTAG_LOG:-}" "${ARGS_LOG:-}" "${DIGEST_FIXTURE:-}" "${DC_GH_LOG:-}" "${DC_PUB_LOG:-}" "${DC_OUTPUT:-}" "${DC_MARKER:-}" "${LEGACY_TARGET:-}" "${LEGACY_OUTPUT:-}" "${LEGACY_PUB_LOG:-}" "${PUBLISH_TARGET:-}"' EXIT HUP INT TERM
+
+# The OIDC preflight (scripts/npm-oidc-preflight.mjs) runs for real against
+# these mocks: dummy GitHub ID-token request variables, an empty HOME so the
+# developer's own ~/.npmrc never leaks into a case, and every stored-credential
+# variable removed. Individual cases re-add one to prove the refusal.
+ACTIONS_ID_TOKEN_REQUEST_URL='https://oidc.invalid/token?api-version=2.0'
+ACTIONS_ID_TOKEN_REQUEST_TOKEN='dummy-request-token'
+TEST_HOME=$(mktemp -d)
+HOME=$TEST_HOME
+export ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN HOME
+# Absolute node: a version-manager shim (nodenv) would put the real npm ahead of
+# the mock on the preflight's PATH.
+ZFB_NPM_OIDC_PREFLIGHT_NODE=$NODE_EXE
+ADVANCE_LATEST_RETRY_DELAY=0
+export ZFB_NPM_OIDC_PREFLIGHT_NODE ADVANCE_LATEST_RETRY_DELAY
+unset NODE_AUTH_TOKEN NPM_TOKEN NPM_CONFIG_USERCONFIG npm_config_userconfig XDG_CONFIG_HOME \
+  ZFB_LOCAL_BUILT_PACKAGES ZFB_PROVENANCE_EXPECTATIONS_FILE ZFB_ALLOW_PROVENANCE_DOWNGRADE 2>/dev/null || true
 
 cat >"$MOCK_BIN/npm" <<'MOCK_NPM'
 #!/bin/sh
-# Mock npm: `view <name@version> version`, `publish` (cwd package), `dist-tag add`.
+# Mock npm: `view <name@version> version`, `publish` (cwd package), `dist-tag add`,
+# plus the preflight's `--version` and `config list`.
 printf 'npm %s\n' "$*" >>"${MOCK_CALLS_LOG:-/dev/null}"
 case "$1" in
+  --version)
+    printf '%s\n' "${MOCK_NPM_VERSION:-12.2.1}"
+    exit 0
+    ;;
+  config)
+    printf '%s\n' "${MOCK_NPM_CONFIG_LIST:-; \"user\" config from \$HOME/.npmrc}"
+    exit 0
+    ;;
   view)
     spec="$2"
+    if [ "${3:-}" = "dist-tags.latest" ]; then
+      # Mock dist-tag state: one file per package under MOCK_DISTTAG_DIR.
+      f="${MOCK_DISTTAG_DIR:-/nonexistent}/$(printf '%s' "$spec" | tr '/@' '__')"
+      [ -f "$f" ] && cat "$f"
+      exit 0
+    fi
     if [ "$spec" = "@takazudo/zfb-md-wasm@${MOCK_VERSION:-}" ] && [ -f "${MOCK_PUBLISHED_MARKER:-/dev/null}" ]; then
       printf '%s\n' "$MOCK_VERSION"
       exit 0
@@ -143,10 +175,15 @@ case "$1" in
     version=$(node -p "require('./package.json').version")
     printf '%s@%s\n' "$name" "$version" >>"$MOCK_PUBLISH_LOG"
     printf 'npm %s\n' "$*" >>"${MOCK_ARGS_LOG:-/dev/null}"
+    printf '%s %s NPM_CONFIG_PROVENANCE=%s\n' "$name" "$*" "${NPM_CONFIG_PROVENANCE:-unset}" >>"${MOCK_PROV_LOG:-/dev/null}"
     exit 0
     ;;
   dist-tag)
     printf 'dist-tag %s\n' "$*" >>"${MOCK_DISTTAG_LOG:-/dev/null}"
+    if [ "$2" = add ] && [ -n "${MOCK_DISTTAG_DIR:-}" ]; then
+      spec="$3"; pkg="${spec%@*}"; ver="${spec##*@}"
+      printf '%s\n' "$ver" >"$MOCK_DISTTAG_DIR/$(printf '%s' "$pkg" | tr '/@' '__')"
+    fi
     exit 0
     ;;
   *) exit 0 ;;
@@ -170,6 +207,7 @@ done
 if [ "$is_publish" -eq 1 ]; then
   printf '%s\n' "$filter" >>"$MOCK_PUBLISH_LOG"
   printf 'pnpm %s\n' "$original_args" >>"${MOCK_ARGS_LOG:-/dev/null}"
+  printf '%s %s NPM_CONFIG_PROVENANCE=%s\n' "$filter" "$original_args" "${NPM_CONFIG_PROVENANCE:-unset}" >>"${MOCK_PROV_LOG:-/dev/null}"
   if [ "$filter" = "@takazudo/zfb-md-wasm" ]; then
     case "${MOCK_MD_RESULT:-success}" in
       conflict) echo 'EPUBLISHCONFLICT' >&2; exit 1 ;;
@@ -306,11 +344,13 @@ fi
 # and a non-empty dist-tag log.
 PUB_LOG=$(mktemp)
 DISTTAG_LOG=$(mktemp)
+DISTTAG_DIR=$(mktemp -d)
 : >"$PUB_LOG"
 : >"$DISTTAG_LOG"
 if PATH="$MOCK_BIN:$PATH" \
    DIST_TAG=next \
    ALSO_LATEST=1 \
+   MOCK_DISTTAG_DIR="$DISTTAG_DIR" \
    MOCK_PUBLISH_LOG="$PUB_LOG" \
    MOCK_DISTTAG_LOG="$DISTTAG_LOG" \
    MOCK_EXISTING="$ALL_SPECS" \
@@ -351,10 +391,11 @@ if PATH="$MOCK_BIN:$PATH" \
    ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 \
    bash "$SCRIPT" recovery-no-provenance >/dev/null 2>&1; then
   COUNT=$(grep -c . "$PUB_LOG" || true)
-  if [ "$COUNT" -eq 11 ] && ! grep -q -- '--provenance' "$ARGS_LOG"; then
-    pass "integration: recovery publishes all 11 packages without --provenance"
+  SUPPRESSED=$(grep -c -- '--provenance=false' "$ARGS_LOG" || true)
+  if [ "$COUNT" -eq 11 ] && [ "$SUPPRESSED" -eq 11 ] && ! grep -Eq -- '--provenance( |$)' "$ARGS_LOG"; then
+    pass "integration: recovery publishes all 11 packages with explicit --provenance=false"
   else
-    fail "integration: recovery count=$COUNT (want 11) or found --provenance: $(tr '\n' ' ' <"$ARGS_LOG")"
+    fail "integration: recovery count=$COUNT (want 11), suppressed=$SUPPRESSED (want 11): $(tr '\n' ' ' <"$ARGS_LOG")"
   fi
 else
   fail "integration: recovery-no-provenance run exited non-zero"
@@ -540,6 +581,222 @@ assert_downgrade_gate "gate: recovery-no-provenance WITH ZFB_ALLOW_PROVENANCE_DO
   recovery-no-provenance "ZFB_ALLOW_PROVENANCE_DOWNGRADE=1" allowed
 assert_downgrade_gate "gate: all-provenance is unaffected (no env var needed)" \
   all-provenance "" allowed
+
+# ── OIDC-only auth preflight ─────────────────────────────────────────────────
+# Every refusal must happen before any publish. `env -u`/assignment via `env`
+# keeps each case's credential local to that one run.
+# assert_oidc_refusal <desc> <env-args...>
+assert_oidc_refusal() {
+  OR_DESC="$1"; shift
+  OR_PUB_LOG=$(mktemp)
+  OR_OUT=$(mktemp)
+  : >"$OR_PUB_LOG"
+  OR_RC=0
+  env "$@" PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG="$OR_PUB_LOG" MOCK_EXISTING="" \
+    bash "$SCRIPT" all-provenance >"$OR_OUT" 2>&1 || OR_RC=$?
+  if [ "$OR_RC" -ne 0 ] && [ ! -s "$OR_PUB_LOG" ] && grep -q 'npm OIDC preflight' "$OR_OUT"; then
+    pass "$OR_DESC"
+  else
+    fail "$OR_DESC (exit=$OR_RC, publishes=$(tr '\n' ' ' <"$OR_PUB_LOG"), output=$(tail -3 "$OR_OUT" | tr '\n' ' '))"
+  fi
+  rm -f "$OR_PUB_LOG" "$OR_OUT"
+}
+
+assert_oidc_refusal "oidc: NODE_AUTH_TOKEN present → refused before any publish" NODE_AUTH_TOKEN=npm_dummy
+assert_oidc_refusal "oidc: empty NODE_AUTH_TOKEN (setup-node slot) → refused" NODE_AUTH_TOKEN=
+assert_oidc_refusal "oidc: NPM_TOKEN present → refused" NPM_TOKEN=npm_dummy
+assert_oidc_refusal "oidc: npm_config_//registry.npmjs.org/:_authToken present → refused" 'npm_config_//registry.npmjs.org/:_authToken=npm_dummy'
+assert_oidc_refusal "oidc: missing ACTIONS_ID_TOKEN_REQUEST_URL → refused" -u ACTIONS_ID_TOKEN_REQUEST_URL
+assert_oidc_refusal "oidc: missing ACTIONS_ID_TOKEN_REQUEST_TOKEN → refused" -u ACTIONS_ID_TOKEN_REQUEST_TOKEN
+assert_oidc_refusal "oidc: npm config list reports an _authToken → refused" \
+  'MOCK_NPM_CONFIG_LIST=//registry.npmjs.org/:_authToken = (protected)'
+assert_oidc_refusal "oidc: npm older than 12.2.0 → refused" MOCK_NPM_VERSION=11.20.0
+printf '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n' >"$PUBLISH_TARGET/.npmrc"
+assert_oidc_refusal "oidc: project .npmrc with an _authToken line → refused"
+rm -f "$PUBLISH_TARGET/.npmrc"
+
+# ── Explicit provenance per package, per mode ────────────────────────────────
+# prov_of <name> → attested | none | missing | ambiguous, from the mock's
+# per-publish line "<name> <args...> NPM_CONFIG_PROVENANCE=<value>".
+prov_of() {
+  PO_LINE=$(grep -E "^$1 " "$PROV_LOG" || true)
+  if [ -z "$PO_LINE" ]; then echo missing; return; fi
+  if printf '%s\n' "$PO_LINE" | grep -Eq -- ' --provenance( |$)' \
+     && ! printf '%s\n' "$PO_LINE" | grep -q -- '--provenance=false' \
+     && printf '%s\n' "$PO_LINE" | grep -q 'NPM_CONFIG_PROVENANCE=unset$'; then
+    echo attested
+  elif printf '%s\n' "$PO_LINE" | grep -q -- ' --provenance=false' \
+     && ! printf '%s\n' "$PO_LINE" | grep -Eq -- ' --provenance( |$)' \
+     && printf '%s\n' "$PO_LINE" | grep -q 'NPM_CONFIG_PROVENANCE=false$'; then
+    echo none
+  else
+    echo ambiguous
+  fi
+}
+
+ALL_NAMES="@takazudo/zfb-darwin-arm64 @takazudo/zfb-darwin-x64 @takazudo/zfb-linux-arm64-gnu @takazudo/zfb-linux-x64-gnu @takazudo/zfb-win32-x64-msvc @takazudo/zfb-slugify @takazudo/zfb @takazudo/zfb-runtime @takazudo/zfb-adapter-cloudflare create-zfb @takazudo/zfb-md-wasm"
+
+# assert_prov_mode <desc> <mode> <local-built-or-empty> <space-separated names expected none>
+assert_prov_mode() {
+  PM_DESC="$1"; PM_MODE="$2"; PM_LOCAL="$3"; PM_NONE="$4"
+  PROV_LOG=$(mktemp)
+  EXPECT_FILE=$(mktemp)
+  : >"$PROV_LOG"
+  PM_RC=0
+  PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG=/dev/null MOCK_EXISTING="" \
+    MOCK_PROV_LOG="$PROV_LOG" ZFB_PROVENANCE_EXPECTATIONS_FILE="$EXPECT_FILE" \
+    ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 ZFB_LOCAL_BUILT_PACKAGES="$PM_LOCAL" \
+    bash "$SCRIPT" "$PM_MODE" >/dev/null 2>&1 || PM_RC=$?
+  PM_BAD=""
+  for n in $ALL_NAMES; do
+    want=attested
+    for x in $PM_NONE; do [ "$x" = "$n" ] && want=none; done
+    got=$(prov_of "$n")
+    exp=$(awk -F '\t' -v n="$n" '$1 == n { print $3 }' "$EXPECT_FILE")
+    if [ "$got" != "$want" ] || [ "$exp" != "$want" ]; then
+      PM_BAD="$PM_BAD $n(flag=$got,map=$exp,want=$want)"
+    fi
+  done
+  if [ "$PM_RC" -eq 0 ] && [ -z "$PM_BAD" ] && [ "$(grep -c . "$EXPECT_FILE")" -eq 11 ]; then
+    pass "$PM_DESC"
+  else
+    fail "$PM_DESC (exit=$PM_RC, mismatches:$PM_BAD)"
+  fi
+}
+
+assert_prov_mode "provenance: all-provenance passes --provenance for all 11" all-provenance "" ""
+assert_prov_mode "provenance: recovery passes --provenance=false (+env) for all 11" recovery-no-provenance "" "$ALL_NAMES"
+assert_prov_mode "provenance: mac-local default suppresses only zfb-darwin-x64" mac-local "" "@takazudo/zfb-darwin-x64"
+assert_prov_mode "provenance: mac-local with two darwin carriers suppresses exactly both" mac-local \
+  "packages/zfb-darwin-arm64,packages/zfb-darwin-x64" "@takazudo/zfb-darwin-arm64 @takazudo/zfb-darwin-x64"
+
+# Already-present packages are still recorded in the expectation map.
+EXPECT_FILE=$(mktemp)
+PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG=/dev/null MOCK_EXISTING="$ALL_SPECS" \
+  ZFB_PROVENANCE_EXPECTATIONS_FILE="$EXPECT_FILE" bash "$SCRIPT" all-provenance >/dev/null 2>&1 || true
+if [ "$(grep -c "	attested	already-present$" "$EXPECT_FILE")" -eq 11 ]; then
+  pass "provenance: already-present skips are recorded as expectations"
+else
+  fail "provenance: already-present expectation map: $(tr '\n' '|' <"$EXPECT_FILE")"
+fi
+
+# assert_local_built_refused <desc> <mode> <value>
+assert_local_built_refused() {
+  LB_PUB_LOG=$(mktemp)
+  : >"$LB_PUB_LOG"
+  LB_RC=0
+  PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG="$LB_PUB_LOG" MOCK_EXISTING="" \
+    ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 ZFB_LOCAL_BUILT_PACKAGES="$3" \
+    bash "$SCRIPT" "$2" >/dev/null 2>&1 || LB_RC=$?
+  if [ "$LB_RC" -ne 0 ] && [ ! -s "$LB_PUB_LOG" ]; then
+    pass "$1"
+  else
+    fail "$1 (exit=$LB_RC, publishes=$(tr '\n' ' ' <"$LB_PUB_LOG"))"
+  fi
+  rm -f "$LB_PUB_LOG"
+}
+assert_local_built_refused "local-built: unknown package dir is refused" mac-local "packages/zfb-darwin-x64 packages/zfb"
+assert_local_built_refused "local-built: set under all-provenance is refused" all-provenance "packages/zfb-darwin-x64"
+assert_local_built_refused "local-built: set under recovery is refused" recovery-no-provenance "packages/zfb-darwin-arm64"
+
+# Two-darwin mac-local still needs the downgrade acknowledgement.
+DG2_LOG=$(mktemp)
+: >"$DG2_LOG"
+DG2_RC=0
+PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG="$DG2_LOG" MOCK_EXISTING="" \
+  ZFB_LOCAL_BUILT_PACKAGES="packages/zfb-darwin-arm64 packages/zfb-darwin-x64" \
+  bash "$SCRIPT" mac-local >/dev/null 2>&1 || DG2_RC=$?
+if [ "$DG2_RC" -ne 0 ] && [ ! -s "$DG2_LOG" ]; then
+  pass "gate: two-darwin mac-local without ZFB_ALLOW_PROVENANCE_DOWNGRADE is blocked"
+else
+  fail "gate: two-darwin mac-local without the env var (exit=$DG2_RC)"
+fi
+rm -f "$DG2_LOG"
+
+# The advisory names every locally-built carrier.
+ADV2_OUT=$(mktemp)
+PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG=/dev/null MOCK_EXISTING="$ALL_SPECS" \
+  ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 ZFB_LOCAL_BUILT_PACKAGES="packages/zfb-darwin-arm64 packages/zfb-darwin-x64" \
+  bash "$SCRIPT" mac-local >"$ADV2_OUT" 2>&1 || true
+if grep '::warning title=npm provenance trust downgrade::' "$ADV2_OUT" | grep -q '@takazudo/zfb-darwin-arm64, @takazudo/zfb-darwin-x64'; then
+  pass "advisory: two-darwin mac-local names both carriers"
+else
+  fail "advisory: two-darwin mac-local scope: $(grep '::warning' "$ADV2_OUT" | cut -c1-200)"
+fi
+rm -f "$ADV2_OUT"
+
+# ── advance-latest-dist-tag.sh read-compare-write ───────────────────────────
+ADV_SCRIPT="$REPO_ROOT/scripts/advance-latest-dist-tag.sh"
+
+# run_advance <target> <seed-latest-or-empty> → sets ADV_RC, ADV_OUT, ADV_DIR, ADV_LOG
+run_advance() {
+  ADV_DIR=$(mktemp -d)
+  ADV_LOG=$(mktemp)
+  ADV_OUT=$(mktemp)
+  : >"$ADV_LOG"
+  if [ -n "$2" ]; then
+    for n in $ALL_NAMES; do printf '%s\n' "$2" >"$ADV_DIR/$(printf '%s' "$n" | tr '/@' '__')"; done
+  fi
+  ADV_RC=0
+  PATH="${ADV_PATH:-$MOCK_BIN}:$PATH" MOCK_DISTTAG_DIR="$ADV_DIR" MOCK_DISTTAG_LOG="$ADV_LOG" \
+    bash "$ADV_SCRIPT" "$1" >"$ADV_OUT" 2>&1 || ADV_RC=$?
+}
+
+run_advance 1.2.0-next.3 1.2.0-next.2
+if [ "$ADV_RC" -eq 0 ] && [ "$(grep -c 'dist-tag add' "$ADV_LOG")" -eq 11 ] \
+   && [ "$(cat "$ADV_DIR/_takazudo_zfb")" = 1.2.0-next.3 ]; then
+  pass "advance-latest: moves latest forward for all 11 and confirms by re-read"
+else
+  fail "advance-latest: forward move (exit=$ADV_RC, adds=$(grep -c 'dist-tag add' "$ADV_LOG"))"
+fi
+
+run_advance 1.2.0-next.3 1.2.0-next.10
+if [ "$ADV_RC" -ne 0 ] && [ ! -s "$ADV_LOG" ] && grep -q 'refusing to move .latest. backwards' "$ADV_OUT"; then
+  pass "advance-latest: refuses to move latest to a lower version (next.3 < next.10), no write"
+else
+  fail "advance-latest: regression guard (exit=$ADV_RC, writes=$(tr '\n' ' ' <"$ADV_LOG"))"
+fi
+
+run_advance 1.2.0-next.3 1.2.0-next.3
+if [ "$ADV_RC" -eq 0 ] && [ ! -s "$ADV_LOG" ]; then
+  pass "advance-latest: latest already at target → no write"
+else
+  fail "advance-latest: idempotent (exit=$ADV_RC, writes=$(tr '\n' ' ' <"$ADV_LOG"))"
+fi
+
+RACY_BIN=$(mktemp -d)
+cp "$MOCK_BIN/npm" "$RACY_BIN/npm-real"
+cat >"$RACY_BIN/npm" <<'RACY'
+#!/bin/sh
+"$(dirname "$0")/npm-real" "$@"
+rc=$?
+if [ "$1" = dist-tag ] && [ "$2" = add ] && [ -n "${MOCK_RACE_VERSION:-}" ]; then
+  printf '%s\n' "$MOCK_RACE_VERSION" >"$MOCK_DISTTAG_DIR/_takazudo_zfb"
+fi
+exit $rc
+RACY
+chmod +x "$RACY_BIN/npm" "$RACY_BIN/npm-real"
+ADV_PATH="$RACY_BIN:$MOCK_BIN" MOCK_RACE_VERSION=1.2.0-next.9
+export MOCK_RACE_VERSION
+run_advance 1.2.0-next.3 1.2.0-next.2
+unset MOCK_RACE_VERSION ADV_PATH
+if [ "$ADV_RC" -ne 0 ] && [ "$(cat "$ADV_DIR/_takazudo_zfb")" = 1.2.0-next.9 ] \
+   && grep -q 'refusing to move .latest. backwards' "$ADV_OUT"; then
+  pass "advance-latest: a concurrent newer latest seen on re-read is detected and never overwritten"
+else
+  fail "advance-latest: concurrent change (exit=$ADV_RC, zfb latest=$(cat "$ADV_DIR/_takazudo_zfb"), out=$(grep -i 'zfb:' "$ADV_OUT" | head -3 | tr '\n' ' '))"
+fi
+rm -rf "$RACY_BIN"
+
+ADV_RC=0
+PATH="$MOCK_BIN:$PATH" NODE_AUTH_TOKEN=npm_dummy MOCK_DISTTAG_LOG="$ADV_LOG" \
+  bash "$ADV_SCRIPT" 1.2.3 >"$ADV_OUT" 2>&1 || ADV_RC=$?
+: >"$ADV_LOG"
+if [ "$ADV_RC" -ne 0 ] && grep -q 'npm OIDC preflight' "$ADV_OUT"; then
+  pass "advance-latest: refuses to run with a stored token in the environment"
+else
+  fail "advance-latest: token refusal (exit=$ADV_RC)"
+fi
 
 # ── Published MD/WASM decision seam and actual upload gate ──────────────────
 
