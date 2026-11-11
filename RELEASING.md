@@ -31,6 +31,7 @@ An agent following this file **stops and reports** (never works around) when:
 - the provenance preflight reports a trust downgrade that the owner has not acknowledged (see
   [Provenance contract](#provenance-contract-and-the-downgrade-blocker));
 - a recovery dispatch would need `allow_provenance_downgrade=true`;
+- a step would create or edit `release/provenance-policy.json` (owner-authored only);
 - a no-argument version judgment lands on a **major** (version-strategy question);
 - GitHub capability is missing for the next step (push, Release write, workflow dispatch);
 - `scripts/release/release-status.mjs` recommends `blocked:<reason>`.
@@ -116,7 +117,8 @@ source CI and Darwin admission run against that source), the Release (absent/dra
 `targetCommitish`), the expected Release assets (including the ten Darwin inputs) as present,
 missing or conflicting, the source commit's required CI state, a Darwin admission of the
 downloaded assets, per-package npm state, dist-tags, the latest `release.yml` runs for the tag
-(run/attempt IDs and conclusions), and **one** recommended next action:
+(run/attempt IDs and conclusions; runs are matched by their exact name
+`Release <tag>[ (finalize only)][ (dry run)]`, so a main-based dispatch is found too), and **one** recommended next action:
 
 | Recommendation | Go to |
 | --- | --- |
@@ -363,10 +365,12 @@ node scripts/release/verify-source-ci.mjs --sha "$SOURCE_SHA" [--json]
 ```
 
 It checks the `main` ruleset's required contexts (the list in `scripts/apply-main-ruleset.sh`) on
-exactly that SHA. Exit 0 pass, 1 not passed (pending, cancelled or failed are all "not passed"),
-2 error. `pnpm audit (prod)` and `Docs gate` run only on pull requests, so on a direct `main` push
+exactly that SHA. Only GitHub Actions check runs count; a commit status with the same context name
+is ignored. Exit 0 pass; 1 not passed — pending, cancelled, **skipped**, failed and missing are all
+"not passed"; 2 usage or read error. `pnpm audit (prod)` and `Docs gate` run only on pull requests, so on a direct `main` push
 they are reported `not-applicable-pr-only`: that is neither a pass nor a failure, and the release
-report names it. `--require-pr-only` makes them required (for a source that went through a PR). Wait and re-run while checks are pending; on a failure, fix on `main`, which produces a
+report names it. `--require-pr-only` makes them required (for a source that went through a PR).
+Wait and re-run while checks are pending; on a failure, fix on `main`, which produces a
 **new** source SHA — repeat [A4](#a4-version-stamped-measurements-in-ci-before-the-bump-reaches-main)
 when the fix moves version-stamped inputs, then A8–A9. No draft Release before exit 0.
 
@@ -486,7 +490,9 @@ node scripts/check-provenance-preflight.mjs --version <version> --mode mac-local
 
 It checks both `@takazudo/zfb-darwin-arm64` and `@takazudo/zfb-darwin-x64` by default (the optional,
 repeatable `--package <name>` narrows it; `release.yml` passes both explicitly).
-Exit 0: no downgrade. Exit 1: a downgrade (see below) — stop unless the owner has acknowledged it.
+Exit 0: no downgrade, or every downgrade is covered by the owner's committed policy (it prints an
+`ACKNOWLEDGED ... by release/provenance-policy.json` line per package; record them). Exit 1: an
+unacknowledged downgrade (see below) — stop unless the owner acknowledges it per run.
 Exit 2: registry error, fail closed — retry later; never treat it as acknowledged.
 
 ### Provenance contract and the downgrade blocker
@@ -497,23 +503,60 @@ any stored npm credential. The trusted publisher is `Takazudo` / `zudo-front-bui
 `release.yml`, no environment, with **Allow npm dist-tag** enabled on each of the eleven packages
 ([owner runbook](research/npm-oidc-cutover.md)).
 
+Publication is split across two jobs so the npm credential never meets package code:
+
+- **`pack`** (`Pack npm tarballs`, no `id-token`) installs, builds, places the admitted Darwin and
+  CI-built binaries in their platform packages, runs the CSS/binary carrier preflight and
+  `prepublishOnly`, and packs every package: `npm pack` for the platform packages, `pnpm pack` for
+  the workspace packages (so `workspace:` specifiers are rewritten). It uploads the tarballs and a
+  manifest with each tarball's sha512.
+- **`publish`** (`contents: read` + `id-token: write`) checks out only the control scripts —
+  no install, no build, no package code — verifies every tarball's sha512 against the manifest and
+  runs `npm publish <tgz>` with an explicit `--provenance` or `--provenance=false` per package, using
+  the pinned npm 12.2.1. pnpm never publishes.
+
 The normal publish mode is `mac-local` with
 `ZFB_LOCAL_BUILT_PACKAGES="packages/zfb-darwin-arm64 packages/zfb-darwin-x64"`: both Darwin carrier
 packages publish with `--provenance=false` (an Actions attestation would falsely claim an Actions
-build of bytes built on the Mac) and the nine others with `--provenance`. After publishing,
-`scripts/verify-npm-provenance-expectations.mjs` checks every version carries exactly the intended
-attestation state.
+build of bytes built on the Mac) and the nine others with `--provenance`. A package that is already
+present keeps its observed provenance as its expectation, so a partial publish followed by a
+recovery still verifies. `scripts/verify-npm-provenance-expectations.mjs` then checks each package
+version carries exactly its recorded attestation state.
 
-Earlier versions (through 6.0.1) published attested Darwin packages, so the **first** local-Darwin
-release is a permanent npm trust downgrade for those two packages: consumers with pnpm
-`trustPolicy: no-downgrade` cannot install that version. The preflight in `release.yml` is
-default-deny and blocks it until the owner acknowledges, by one of:
+Earlier Darwin versions stay attested forever (`@takazudo/zfb-darwin-arm64` since 1.0.0,
+`@takazudo/zfb-darwin-x64` since 2.13.0). npm compares against any earlier attested version, so
+**every** local-Darwin release is a permanent trust downgrade for those two packages, not only the
+first: consumers with pnpm `trustPolicy: no-downgrade` can never install a new Darwin carrier
+version. The preflight in `release.yml` is default-deny and blocks each such release until the
+owner acknowledges it by one of two routes:
 
-- adding the line `<!-- zfb-release: allow-provenance-downgrade -->` to the draft Release body, or
-- the `allow_provenance_downgrade=true` input on a dispatch.
+1. **Per run:** the line `<!-- zfb-release: allow-provenance-downgrade -->` in the draft Release
+   body, or the `allow_provenance_downgrade=true` input on a dispatch.
+2. **Durable policy:** an owner-authored, committed `release/provenance-policy.json`:
 
-**Only the owner does either.** No agent, skill or script adds the marker or sets the input on the
-owner's behalf, even with general release authorization. On a detected downgrade an agent stops,
+   ```json
+   {
+     "schema": "zfb-provenance-policy/v1",
+     "decisions": [
+       {
+         "package": "@takazudo/zfb-darwin-arm64",
+         "unattested_from_version": "6.1.0",
+         "reason": "Darwin carriers are built on the owner's Mac (#4687)",
+         "decided_by": "<owner>",
+         "issue": "https://github.com/Takazudo/zudo-front-builder/issues/<n>"
+       }
+     ]
+   }
+   ```
+
+   Every field is required; a malformed file fails the preflight closed. A decision covers only
+   `mac-local` mode, only a package that is one of the run's locally built Darwin carriers, and only
+   versions `>=` its `unattested_from_version`. CI-built packages, unlisted packages and
+   `recovery-no-provenance` are never covered. It is read from the **control** checkout (the
+   workflow's own commit), never from the release source tree. The file is absent by default.
+
+**Only the owner does any of these.** No agent, skill or script adds the marker, sets the input, or
+creates or edits `release/provenance-policy.json`, even with general release authorization. On a detected downgrade an agent stops,
 reports the preflight output (package, version, earlier attested version) and points to
 [`research/npm-oidc-cutover.md`](research/npm-oidc-cutover.md#c-darwin-provenance-downgrade-decision).
 After the owner acknowledges, re-run the preflight and continue.
@@ -555,8 +598,11 @@ run naming the asset.
      --jq '.[] | select(.headBranch == "v<version>")'
    ```
 
-2. Poll it to completion in the background (`gh run view <id> --json status,conclusion`). It admits
-   the Darwin inputs, builds Linux and Windows, uploads assets and publishes the eleven packages.
+2. Poll it to completion in the background (`gh run view <id> --json status,conclusion`). Its run
+   name is exactly `Release v<version>`. Jobs: `release-context`, `source-ci`,
+   `provenance-preflight`, `admit-darwin`, `build` (Linux, Windows), `build-wasm-md`,
+   `release-assets`, `pack` (`Pack npm tarballs`), `publish`, `md-wasm-asset`
+   (`Upload MD/WASM digest asset`), `smoke-clean-room`, `notify`.
 3. **Stable:** a successful Release run triggers `node-free-smoke.yml` by `workflow_run`; record the
    run whose `Smoke released (install.sh)` job installed the exact tag (after a rerun, the run the
    final attempt triggered).
@@ -577,7 +623,9 @@ node scripts/verify-release-delivery.mjs --version <version> \
   --expected-source "$SOURCE_SHA" --json <evidence-dir>/release-delivery-<version>.json
 ```
 
-GET-only (prefix `NODE_USE_ENV_PROXY=1` behind an `HTTPS_PROXY`). Exit 0 verified; 1 definite
+GET-only (prefix `NODE_USE_ENV_PROXY=1` behind an `HTTPS_PROXY`). It requires the release run's
+`Pack npm tarballs` and `Upload MD/WASM digest asset` jobs to have succeeded, alongside the build,
+asset and publish jobs. Exit 0 verified; 1 definite
 failure; 2 incomplete evidence (never a pass; re-run once if transient); 3 usage error. Also
 recompute the four `.wasm` SHA-256 digests from the published `@takazudo/zfb-md-wasm@<version>`
 tarball and compare with its `dist/shipped-artifacts.json` and the Release asset
@@ -641,11 +689,19 @@ workflow), always pass `dry_run` explicitly (**its default is false**), and reco
 
 When Step 0 recommends `dispatch-recovery` (Release published, packages or build assets missing).
 If the cause is in `release.yml`, fix it on `main` first through the normal review and CI.
-Recovery checks out the tag's verified commit but runs `main`'s workflow, so GitHub OIDC identifies
-the `main` commit: it publishes in `recovery-no-provenance` mode (no package attested), which is a
-trust downgrade for every package an earlier version attested. It therefore requires
-`allow_provenance_downgrade=true` — an **owner-only** input. An agent prints the command and stops;
-the owner runs it:
+Recovery checks out the tag's verified commit but runs `main`'s workflow. The publish mode depends
+on the control commit:
+
+- **Control commit = source commit** (`main`'s head is still the release commit): GitHub OIDC
+  identifies the source truthfully, so recovery uses the normal `mac-local` mode with honest
+  provenance and the normal acknowledgement routes for the Darwin downgrade.
+- **Control commit ≠ source commit**: OIDC would identify the wrong commit, so it uses
+  `recovery-no-provenance` (packages not yet present publish unattested). That is a trust downgrade
+  for every package an earlier version attested; the committed policy never covers it, so it always
+  needs `allow_provenance_downgrade=true` — an **owner-only** input.
+
+Packages already present keep their observed provenance, so a mixed partial-then-recovery release
+still verifies its expectations. An agent prints the command and stops; the owner runs it:
 
 ```sh
 gh workflow run release.yml --ref main \
@@ -653,7 +709,8 @@ gh workflow run release.yml --ref main \
 ```
 
 Watch it like [A13](#a13-watch-the-runs). A recovered stable is not accepted by the delivery
-verifier as a normal run, so its Latest promotion is an owner decision. Afterwards ship the next
+verifier as a normal run (its name is `Release v<version>` from a `workflow_dispatch`), so its
+Latest promotion is an owner decision. Afterwards ship the next
 patch through the normal path to restore provenance (#2623), and point affected consumers at the
 `ERR_PNPM_TRUST_DOWNGRADE` troubleshooting entry.
 
@@ -669,16 +726,24 @@ gh workflow run release.yml --ref main -f dry_run=false -f release_tag=v<version
 `finalize_only` needs `release_tag` and a dispatch from `main`. With `dry_run=true` it runs only the
 read-only gate (all eleven packages `present-verified`, the six hosted assets and ten Darwin inputs
 on the Release, provenance expectations) and skips the dist-tag changes, digest upload and smoke —
-useful as a check, never as finalization. With `dry_run=false`, no build, no publish: it reconciles dist-tags (advance `latest` when the `ALSO_LATEST` condition
-applies; retire `next` where it is no longer ahead), uploads the md-wasm digest asset if missing,
-verifies provenance expectations, runs the smoke and notifies. It is idempotent. If build assets are
+useful as a check, never as finalization. With `dry_run=false`, no build, no publish: the
+`finalize` job (`id-token: write`) reconciles dist-tags (advance `latest` when
+`scripts/release/resolve-also-latest.mjs` says so; retire `next` where it is no longer ahead) and
+verifies the per-package provenance expectations (observed state of each present package); the
+separate `finalize-assets` job (`contents: write`, no `id-token`) uploads the md-wasm digest asset if
+missing; then the smoke and notify run. The run is named `Release v<version> (finalize only)`. It is
+idempotent. If build assets are
 missing it stops `blocked`; use recovery instead.
 
 ### Dry run
 
 `gh workflow run release.yml --ref <base/... or feature/... branch> -f dry_run=true` exercises the
-build, packaging and checksum steps without uploading Release assets or publishing to npm. It still
-uploads Actions artifacts and may send the CI failure alert. It validates the workflow at that
+build, packaging and checksum steps without uploading Release assets, changing dist-tags or
+publishing to npm. With a `release_tag` the `pack` job also packs the npm tarballs (an Actions
+artifact upload). The `publish`, `md-wasm-asset` and `finalize-assets` jobs are skipped. Dry runs
+queue in their own concurrency group (`release-dry-run-<tag>`), so they never wait behind or block a
+real run; the run name ends in ` (dry run)`. It still uploads Actions artifacts and may send the CI
+failure alert. It validates the workflow at that
 source only — never the version-stamped measurements or a later version's gates. Skipped steps in a
 dry run are not passes, and a dry run never proves OIDC publication or dist-tag writes.
 

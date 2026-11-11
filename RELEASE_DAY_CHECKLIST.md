@@ -19,6 +19,13 @@ starts `release.yml` from the tag. There is never a second Release for a version
 Recovery and finalize runs are explicit `workflow_dispatch` runs from `main`
 ([RELEASING.md](RELEASING.md#workflow-dispatches-recovery-finalize-dry-run)).
 
+npm publication is split: the unprivileged `pack` job (`Pack npm tarballs`)
+installs, builds, runs the CSS/binary carrier preflight (moved there from the
+publish step) and packs every tarball; the `publish` job holds the OIDC
+`id-token`, installs and builds nothing, and runs `npm publish <tgz>` per
+package with explicit provenance. pnpm never publishes
+([RELEASING.md](RELEASING.md#provenance-contract-and-the-downgrade-blocker)).
+
 ### Tagging and channel policy
 
 - Tags matching `*-next.*`, `*-beta.*`, or `*-rc.*` → GitHub Release is created
@@ -46,13 +53,15 @@ During the prerelease phase, each `*-next.*` publish advances **both** `next`
 and `latest` — so `npm install @takazudo/zfb` (no tag) and `npm create zfb`
 track the latest prerelease and are never left pointing at a stale release.
 
-**Self-disabling condition**: the `publish` job probes `npm view @takazudo/zfb
-dist-tags.latest` before each `*-next.*` publish. If `latest` is empty (first
-ever publish) or is itself a prerelease (version string contains `"-"`), the
-workflow advances `latest` alongside `next` for all 11 workspace packages. Once
-a real stable version holds `latest` the condition is false and prereleases no
-longer touch it — a prerelease can never clobber a real stable `latest` after
-launch.
+**Self-disabling condition**: `scripts/release/resolve-also-latest.mjs`
+decides, in the `publish` and `finalize` jobs, before each `*-next.*` dist-tag
+step. It advances `latest` alongside `next` for all 11 packages only when
+`@takazudo/zfb` has no `latest` — proven by a definitive 404 (first publish) —
+or its `latest` is itself a prerelease. Any other registry failure (5xx, auth,
+network, malformed body) fails closed (exit 2) and is never read as "first
+publish". `scripts/advance-latest-dist-tag.sh` additionally refuses to move a
+stable `latest` to a prerelease. Once a real stable holds `latest`,
+prereleases no longer touch it.
 
 `release.yml` authenticates every npm write (publish, `dist-tag add`,
 `dist-tag rm`) through GitHub OIDC trusted publishing only; there is no npm
@@ -118,13 +127,19 @@ and never proves OIDC publication or dist-tag writes.
 
 npm publishes through GitHub OIDC trusted publishing only; there is no npm token
 secret. Both Darwin carrier packages are built on the owner's Mac, so they publish
-with `--provenance=false`; every other package publishes with `--provenance`. The
-first such release follows attested Darwin versions and is a trust downgrade that
-only the owner can acknowledge — see
+with `--provenance=false`; every other package publishes with `--provenance`.
+Earlier Darwin versions stay attested (arm64 since 1.0.0, x64 since 2.13.0), so
+**every** such release is a trust downgrade that only the owner can acknowledge —
+per run (Release-body marker or dispatch input) or by an owner-committed
+`release/provenance-policy.json` — see
 [RELEASING.md](RELEASING.md#provenance-contract-and-the-downgrade-blocker) and
 [research/npm-oidc-cutover.md](research/npm-oidc-cutover.md).
 
 ### Recovery creates a trust downgrade — plan the follow-up release (issue #2623)
+
+> Since #4690 this applies to a `recovery-no-provenance` run (control commit ≠
+> source commit). A recovery dispatched while `main`'s head is still the release
+> commit uses the normal `mac-local` mode with honest provenance.
 
 **A recovery run is not consequence-free for consumers.** npm records provenance
 per published version and versions are immutable, so publishing a version without

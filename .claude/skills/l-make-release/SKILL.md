@@ -35,7 +35,13 @@ the first mutation. Where this skill and `RELEASING.md` disagree, `RELEASING.md`
   `scripts/build-darwin-local.sh` as written there. On any other host, print the paste-ready Mac
   prompt from `RELEASING.md` and stop. Never fabricate or copy Darwin receipts.
 - On a provenance-downgrade preflight result, stop and report; never edit the Release body to add
-  `<!-- zfb-release: allow-provenance-downgrade -->` yourself.
+  `<!-- zfb-release: allow-provenance-downgrade -->`, and never create or edit
+  `release/provenance-policy.json` — both are owner-only. Every local-Darwin release is a
+  downgrade unless the owner's committed policy covers it.
+- Publishing is `pack` (unprivileged: install, build, `npm pack`/`pnpm pack`) then `publish`
+  (`id-token` only: `npm publish <tgz>` with explicit provenance; no install, no pnpm). Find
+  `release.yml` runs by their exact name `Release v<version>[ (finalize only)][ (dry run)]`; the
+  delivery verifier requires the `Pack npm tarballs` and `Upload MD/WASM digest asset` jobs.
 - Keep JSON evidence outside the checkout (the session scratchpad or the repo-scoped cclogs dir)
   and name the paths in the final report.
 - The report uses verdict headings (see `RELEASING.md` "Release report").
