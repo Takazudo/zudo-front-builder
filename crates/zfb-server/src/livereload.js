@@ -40,6 +40,34 @@
   var retryDelay = 1000;
   var suspended = false;
 
+  // Replace every `v` pair of a "?a=1&v=old" search string with one
+  // `v=<ts>` at the first one's position (appended when absent), leaving all
+  // other pairs byte-for-byte.
+  function withCacheBuster(search, ts) {
+    var pairs = search.replace(/^\?/, "").split("&");
+    var out = [];
+    var placed = false;
+    for (var i = 0; i < pairs.length; i++) {
+      var pair = pairs[i];
+      if (pair === "") continue;
+      var key = pair.split("=")[0];
+      var decoded;
+      try {
+        decoded = decodeURIComponent(key.replace(/\+/g, " "));
+      } catch (e) {
+        decoded = key;
+      }
+      if (decoded === "v") {
+        if (!placed) out.push("v=" + ts);
+        placed = true;
+      } else {
+        out.push(pair);
+      }
+    }
+    if (!placed) out.push("v=" + ts);
+    return "?" + out.join("&");
+  }
+
   var handlers = {
     page: function () {
       window.location.reload();
@@ -52,12 +80,12 @@
         var href = link.getAttribute("href");
         if (!href) continue;
         // Resolve against document.baseURI (honors <base>) and replace only
-        // the `v` cache-buster: other query parameters (e.g. a font
-        // family/display or a theme switch) and the fragment are kept, and
-        // `v` lands in the request query rather than inside a fragment.
+        // the `v` cache-buster: every other query pair keeps its exact bytes
+        // (a valueless flag, `%20` vs `+`, font family/display), the fragment
+        // is kept, and `v` lands in the request query, never in a fragment.
         try {
           var url = new URL(href, document.baseURI);
-          url.searchParams.set("v", ts);
+          url.search = withCacheBuster(url.search, ts);
           link.setAttribute("href", url.href);
         } catch (e) {
           if (typeof console !== "undefined" && console.warn) {

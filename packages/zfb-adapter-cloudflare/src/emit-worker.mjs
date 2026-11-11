@@ -9,6 +9,7 @@
 //
 // invariant: no runtime npm deps — see SECURITY-DEPS.md
 
+import { Buffer } from "node:buffer";
 import { copyFile, lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -110,9 +111,11 @@ async function pathExists(path) {
   }
 }
 
+// The policy is handled as latin1 text so every byte of the user's file is
+// kept as-is (it may not be UTF-8); generated rules are UTF-8 encoded first.
 async function readExistingAssetsIgnore(path) {
   try {
-    return await readFile(path, "utf8");
+    return await readFile(path, "latin1");
   } catch (error) {
     if (error && typeof error === "object" && error.code === "ENOENT") {
       return "";
@@ -162,7 +165,10 @@ function literalAssetsIgnoreRule(name) {
 // only when the identical complete block already ends the file on a line
 // boundary, so repeated emission does not grow the file.
 function mergeAssetsIgnore(existing, requiredNames) {
-  const block = requiredNames.map((name) => literalAssetsIgnoreRule(name) + "\n").join("");
+  const block = Buffer.from(
+    requiredNames.map((name) => literalAssetsIgnoreRule(name) + "\n").join(""),
+    "utf8",
+  ).toString("latin1");
   if (existing === block || existing.endsWith("\n" + block)) {
     return existing;
   }
@@ -219,7 +225,7 @@ export async function emitWorker({ inputBundlePath, outdir, assets = [], workerW
     ...ASSETS_IGNORE_BASE_ENTRIES,
     ...resolvedAssets.map((asset) => asset.outputName),
   ]);
-  await writeFile(assetsIgnorePath, assetsIgnore, "utf8");
+  await writeFile(assetsIgnorePath, assetsIgnore, "latin1");
 
   return { workerPath, innerBundlePath, assetsIgnorePath };
 }

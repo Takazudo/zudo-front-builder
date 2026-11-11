@@ -1134,6 +1134,30 @@ describe.skipIf(process.platform === "win32")("emitWorker .assetsignore policy s
     ).toEqual(["a.secret", "nested/b.secret", "nested/_worker.js", "_worker.js"]);
   });
 
+  it("keeps non-UTF-8 bytes of the existing policy unchanged", async () => {
+    const dir = await scratch();
+    const inputPath = await bundleWithAssets(dir, ["caf\u00e9.wasm"]);
+    const outdir = join(dir, "dist");
+    await mkdir(outdir, { recursive: true });
+    const userPolicy = Buffer.from([
+      0x23, 0x20, 0xff, 0xfe, 0x0a, 0x70, 0xe9, 0x2e, 0x74, 0x78, 0x74,
+    ]);
+    await writeFile(join(outdir, ".assetsignore"), userPolicy);
+
+    const out = await emitWorker({
+      inputBundlePath: inputPath,
+      outdir,
+      assets: ["caf\u00e9.wasm"],
+    });
+
+    expect(await readFile(out.assetsIgnorePath)).toEqual(
+      Buffer.concat([
+        userPolicy,
+        Buffer.from("\n/_worker.js\n/_zfb_inner.mjs\n/caf\u00e9.wasm\n", "utf8"),
+      ]),
+    );
+  });
+
   it("does not grow an identical terminal block on repeated emission", async () => {
     const dir = await scratch();
     const inputPath = await bundleWithAssets(dir, []);

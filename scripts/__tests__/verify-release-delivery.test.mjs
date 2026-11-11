@@ -1602,6 +1602,17 @@ describe("Homebrew formula binding (--expect-homebrew)", () => {
     expect(brew(report).status).toBe(STATUS.VERIFIED);
   });
 
+  it("ends a plain <<ID heredoc only at a column-0 terminator", async () => {
+    const decoy = urlOf("x86_64-pc-windows-msvc");
+    const { report } = await runBrew((w) => {
+      w.formula = generatorFormula(w).replace(
+        '    system bin/"zfb", "--version"\n',
+        `    system bin/"zfb", "--version"\n    note = <<EOS\n      EOS\n      url "${decoy}"\nEOS\n`,
+      );
+    });
+    expect(brew(report).status).toBe(STATUS.VERIFIED);
+  });
+
   it("accepts CRLF line endings, tab indentation and extra blank lines", async () => {
     const { report } = await runBrew((w) => {
       w.formula = generatorFormula(w)

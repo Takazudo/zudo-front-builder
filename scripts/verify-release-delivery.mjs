@@ -1747,7 +1747,7 @@ export const HOMEBREW_ROWS = Object.freeze([
 
 const FORMULA_BLOCK_START = /^(?:class|module|def|if|unless|case|begin|while|until|for)\b/;
 const FORMULA_DO_BLOCK = /\bdo(?:\s*\|[^|]*\|)?$/;
-const FORMULA_HEREDOC = /<<[~-]?(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/;
+const FORMULA_HEREDOC = /<<([~-]?)(['"]?)([A-Z_][A-Za-z0-9_]*)\2/;
 const FORMULA_STRING_DECL = /^(url|sha256|version)\s+"([^"\\#]*)"$/;
 const FORMULA_DELIVERY_KEYWORD = /^(?:url|sha256|mirror|version)\b/;
 
@@ -1775,13 +1775,15 @@ export function parseHomebrewFormula(text) {
   for (let index = 0; index < lines.length; index += 1) {
     const lineNo = index + 1;
     if (heredoc) {
-      if (lines[index].trim() === heredoc) heredoc = null;
+      // `<<ID` ends only at a column-0 ID; `<<~ID` / `<<-ID` allow indentation.
+      const terminator = heredoc.indented ? lines[index].trim() : lines[index];
+      if (terminator === heredoc.id) heredoc = null;
       continue;
     }
     const code = stripFormulaComment(lines[index]);
     if (!code) continue;
     const heredocStart = FORMULA_HEREDOC.exec(code);
-    if (heredocStart) heredoc = heredocStart[2];
+    if (heredocStart) heredoc = { id: heredocStart[3], indented: heredocStart[1] !== "" };
     if (code === "end") {
       if (stack.length === 0) problems.push(`line ${lineNo}: unbalanced end`);
       else stack.pop();
@@ -1819,7 +1821,7 @@ export function parseHomebrewFormula(text) {
     }
     rows.get(row.target)[keyword === "url" ? "urls" : "sha256s"].push(value);
   }
-  if (heredoc) problems.push(`unterminated heredoc ${heredoc}`);
+  if (heredoc) problems.push(`unterminated heredoc ${heredoc.id}`);
   if (stack.length) problems.push(`unclosed block(s): ${stack.join(" > ")}`);
   if (versions.length !== 1) {
     problems.push(`expected one class-level version declaration, found ${versions.length}`);
@@ -1874,8 +1876,13 @@ export function checkHomebrewFormula(formula, { version, repo, tag, archives }) 
   const missingEvidence = [];
   const rows = parsed.rows.map(({ os, cpu, target, url, sha256 }) => {
     const name = `zfb-${version}-${target}.tar.gz`;
-    const expectedUrl = `https://github.com/${repo}/releases/download/${tag}/${name}`;
     const archive = archives.get(target);
+    // Prefer the download URL of the asset whose digest was verified; the
+    // template covers rows whose archive evidence is missing.
+    const expectedUrl =
+      archive?.name === name && archive.url
+        ? archive.url
+        : `https://github.com/${repo}/releases/download/${tag}/${name}`;
     const archiveStatus = archive?.status ?? "missing";
     const expectedSha256 = archiveStatus === STATUS.VERIFIED ? archive.sha256 : null;
     const row = {

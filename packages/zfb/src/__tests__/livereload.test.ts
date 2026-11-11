@@ -350,10 +350,15 @@ describe("livereload.js css reload URLs", () => {
     ],
     [
       "protocol-relative font stylesheet",
-      "//fonts.example.test/css2?family=Inter:wght@400&display=swap",
-      `https://fonts.example.test/css2?family=Inter%3Awght%40400&display=swap&v=${T1}`,
+      "//fonts.example.test/css2?family=Inter:wght@400;700&display=swap",
+      `https://fonts.example.test/css2?family=Inter:wght@400;700&display=swap&v=${T1}`,
     ],
     ["plain root-relative", "/style.css", `https://site.test/style.css?v=${T1}`],
+    [
+      "valueless flag and percent-encoded space",
+      "/flags.css?flag&x=a%20b&y=c+d",
+      `https://site.test/flags.css?flag&x=a%20b&y=c+d&v=${T1}`,
+    ],
     [
       "document-relative under <base>",
       "theme.css?x=1",
