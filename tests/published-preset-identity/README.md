@@ -58,6 +58,7 @@ import.
 | Package routes | zudo-doc's injected `/docs/[[...slug]]` renders all docs pages, including the probe; zudo-sg's `/components/[slug]` must emit `/components/counter` |
 | Virtual modules | the server bundle must contain this site's `virtual:zudo-doc-route-context` and zudo-sg `sgContext` output; `chromeBindingsModule` reaches the package route through `virtual:zudo-doc-chrome-bindings` |
 | One supported Island | `src/components/preset-probe.tsx` renders the package `ThemeToggle` (package-owned signals and activation) and the package `Details` with a host `computed` as its title, beside a host `<output>` showing the same value. Nested Island boundaries are rejected by the serializer, so the package components sit inside the one host Island. |
+| Configured theme first paint | The host omits `themePack`, so the probe, component index, counter, and tokens pages each server-render exactly one `data-theme-pack=graphite`. |
 
 ## Oracles
 

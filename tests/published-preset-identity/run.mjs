@@ -605,6 +605,27 @@ async function browserOracle(installRoot, browser) {
 // Cases
 // ---------------------------------------------------------------------------
 
+const GRAPHITE_FIRST_PAINT = [
+  "docs/guide/probe/index.html",
+  "components/index.html",
+  "components/counter/index.html",
+  "tokens/index.html",
+];
+
+async function assertGraphiteFirstPaint(installRoot) {
+  const observed = {};
+  for (const rel of GRAPHITE_FIRST_PAINT) {
+    const html = await readFile(join(installRoot, "dist", rel), "utf8");
+    const packs = [...html.matchAll(/data-theme-pack=([^\s>]+)/g)].map((match) => match[1]);
+    observed[rel] = packs;
+    assert(
+      packs.length === 1 && packs[0] === "graphite",
+      `${rel} first paint must be exactly one data-theme-pack=graphite, got ${JSON.stringify(packs)}`,
+    );
+  }
+  return observed;
+}
+
 async function buildCase(installRoot, label) {
   await rm(join(installRoot, "dist"), { recursive: true, force: true });
   await rm(join(installRoot, ".zfb-build"), { recursive: true, force: true });
@@ -648,6 +669,9 @@ async function runPositive(installRoot, browser) {
     existsSync(join(installRoot, "dist/components/counter/index.html")),
     "zudo-sg package route did not emit /components/counter",
   );
+  // zudo-sg 0.9.1 server-renders the configured pack. This host omits themePack,
+  // so the configured pack is Graphite. The preview document is a separate shell.
+  result.firstPaint = await assertGraphiteFirstPaint(installRoot);
   result.identity = await identityOracle(installRoot);
   result.browser = await browserOracle(installRoot, browser);
   const failures = [...result.identity.failures, ...result.browser.failures];

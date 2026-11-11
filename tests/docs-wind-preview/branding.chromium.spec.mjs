@@ -331,6 +331,29 @@ for (const { name, width, scale = 1, enlarged = false } of LAYOUTS)
       }
     });
 
+test("a saved theme-pack value of default uses Graphite", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("zudo-doc-theme-pack", "default");
+  });
+  await page.goto(`${prefix}docs/architecture/client-side-routing/`);
+  await expect(page.locator("html")).toHaveAttribute("data-theme-pack", "graphite");
+  await expect(page.locator("link[data-zd-theme-pack-css]")).toHaveAttribute(
+    "href",
+    expect.stringContaining(`${prefix}theme-packs/graphite/pack.css`),
+  );
+  expect(await page.evaluate(() => localStorage.getItem("zudo-doc-theme-pack"))).toBe("default");
+});
+
+test("a saved classic theme pack stays classic", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("zudo-doc-theme-pack", "classic");
+  });
+  await page.goto(`${prefix}docs/architecture/client-side-routing/`);
+  await expect(page.locator("html")).toHaveAttribute("data-theme-pack", "classic");
+  await expect(page.locator("link[data-zd-theme-pack-css]")).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem("zudo-doc-theme-pack"))).toBe("classic");
+});
+
 test("the brand link is keyboard-focusable", async ({ page }) => {
   await page.goto(prefix);
   await themeButton(page.locator("header[data-header]"));

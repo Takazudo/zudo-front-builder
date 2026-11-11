@@ -2,17 +2,19 @@
 
 Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) — a zfb-based documentation framework with MDX, zudo-wind utility CSS, and zudo-react islands.
 
-The host runs on the released owned-engine stack: exact published `@takazudo/zfb*` 5.2.2 and
-`@takazudo/zudo-doc` / `zudo-doc-history-server` 9.1.2 (#3329, #4576, #4580). Verify
+The host runs on the released owned-engine stack: exact published `@takazudo/zfb*` 6.0.1 and
+`@takazudo/zudo-doc` / `zudo-doc-history-server` 10.0.2 (#3329, #4576, #4580, #4667). Verify
 versions from the docs command context (`pnpm --dir docs exec zfb --version`,
 `pnpm --dir docs why <pkg>`), not from hoisted root copies.
 
-The host deliberately sets no `themePack`, so it inherits zudo-doc 9's default **Graphite** pack
-(#4576); a reader's saved Light/Dark/System choice is untouched. Do not add `themePack: "default"`
-(Classic) or host CSS to recreate the older look, and re-check the site when a later zudo-doc
-changes its default pack.
+The host deliberately sets no `themePack`, so it inherits zudo-doc 10's configured default
+**Graphite** pack (#4576, #4667). In doc 10 the config value `"default"` is an alias of Graphite
+and Classic's canonical slug is `"classic"`. A saved `zudo-doc-theme-pack` value of `"default"`
+is not an enabled pack key; the package bootstrap ignores it and uses the configured Graphite
+slug. Do not add `themePack`, a Classic configuration, or a host storage shim. A reader's saved
+Light/Dark/System choice is a separate preference and stays untouched.
 
-The docs member requires Node 24 (`engines.node` is `>=24 <25`; zudo-doc 9 requires `>=24`), and the repo develops on Node 24.
+The docs member requires Node 24 (`engines.node` is `>=24 <25`; zudo-doc 10 requires `>=24`), and the repo develops on Node 24.
 
 ## Tech Stack
 
@@ -40,7 +42,7 @@ This register is a keep-list, not a request to add dependencies. Re-check the in
 The copy was introduced because 6.1.1 set
 `baseUrl: "."`, which TypeScript 7 rejects (TS5102) even when inherited through `extends`.
 Upstream 6.2.0 removed `baseUrl`; the compiler options now match except for the host
-`types: ["node"]` addition (TypeScript 6+ no longer auto-loads `@types/*`). The 7.1.0, 8.1.1, 9.0.0, 9.1.0 and 9.1.1 bases are byte-identical to 6.2.0, so no option changed in those bumps.
+`types: ["node"]` addition (TypeScript 6+ no longer auto-loads `@types/*`). The 7.1.0, 8.1.1, 9.0.0, 9.1.0, 9.1.1, 9.1.2 and 10.0.2 bases are byte-identical to 6.2.0, so no option changed in those bumps.
 It keeps the base's `jsxImportSource: "@takazudo/zfb/zudo-react"` and has no
 `paths`: the old `react` → `preact/compat` aliases are gone, and nothing imports `@/`. When zudo-doc
 is bumped, diff its new `tsconfig.base.json` against this file and carry over any change, then
@@ -60,6 +62,25 @@ tags resolve to `4b5b54e3e0f383cfbf1e7b6038c6b65ee7c5f9d2`. zudo-doc 9.1.2 raise
 its ZFB peer floor to 5.2.0, adopting the native link/form intent and history-race
 fixes without changing host configuration. Existing native acceptance receipts
 for older tuples remain historical; they do not qualify this new tuple.
+
+The 2026-11-11 comparison used the published 10.0.2 tarballs. `tsconfig.base.json`
+is byte-identical to 9.1.2 (SHA-256
+`2f71d96614fd68f9b16caf307b4b1267ebf1988880e4fd0a08f1cd8a93ddeea6`); the host
+inlining, `types: ["node"]`, include entries and relocated declaration paths stay.
+The create-zudo-doc i18n route template is byte-identical to 9.1.2 (SHA-256
+`432e5ddc82af477a189a2facee9fc94bebc6c2efbd18444fd447ba0ad226e2bd`). The base
+route template differs only in its doc-history import comment (`doc-history` →
+`doc-history-area`; SHA-256
+`1312f6d4d3169356656b5f2d6ba8bdf2c36d5687b86d35e770b91f122ed032fc`). The host
+stubs already import `DocHistoryBoundary` from `doc-history-area` and keep their
+scanner seed and locale fallback. Automatic `docHistoryMeta` wires metadata; it
+does not replace that `DocHistory` binding. Package tags `zudo-doc-v10.0.2` and
+`zudo-doc-history-server-10.0.2` resolve to
+`76e44dbc058f4876ca9ffd09b5151deb95d3bfbe`. The `v10.0.2` tag is
+`4062ac5c581df130656e2a6bfabe6d680077a594`, two commits later, and those commits
+update generator changelog/ZDTP pin text rather than the compared tarball bytes.
+The registry packages publish no `gitHead`. Upstream main has moved past both
+commits and is not the pin.
 
 ## Setup
 
