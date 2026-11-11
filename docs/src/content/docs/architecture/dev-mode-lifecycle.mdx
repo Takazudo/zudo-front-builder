@@ -1,6 +1,6 @@
 ---
 title: Dev mode lifecycle
-description: What happens between hitting save on a .tsx file and seeing the change in the browser — watcher, rebundle, SSR refresh, and the three SSE event types.
+description: What happens between hitting save on a .tsx file and seeing the change in the browser — watcher, rebundle, SSR refresh, and the three reload event types.
 sidebar_position: 28
 category: Concepts
 ---
@@ -8,7 +8,7 @@ category: Concepts
 <Info title="What this page covers">
 
 The save-to-pixel loop for `zfb dev`: how the watcher detects your change, how the
-orchestrator decides what to rebuild, and how three SSE event types let the browser
+orchestrator decides what to rebuild, and how three reload event types let the browser
 react without an unnecessary full page reload. For the overall build step order read
 [Build pipeline](./build-pipeline.mdx); for how the dependency graph limits
 rebuilds to affected pages read [Incremental rebuild](./incremental-rebuild.mdx).
@@ -16,7 +16,7 @@ rebuilds to affected pages read [Incremental rebuild](./incremental-rebuild.mdx)
 For `prerender = false` SSR routes: each EDIT tick re-bundles and swaps a fresh V8
 host into the shared renderer mutex (see step 1 below), so SSR requests serve the
 updated code immediately after the tick completes — no restart needed. One
-limitation remains: an SSR-only edit produces no SSG HTML writes, so no `Page` SSE
+limitation remains: an SSR-only edit produces no SSG HTML writes, so no `Page` reload
 event is emitted and the open browser tab does not auto-refresh. Manually reload the
 tab to see the updated SSR output. For context on the dev-side SSR path, see
 [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx#dev-prod-parity-for-prerender-false).
@@ -80,25 +80,32 @@ is inside an islands root (e.g. `components/`), the plan's `rerun_islands` flag 
 set. If a CSS source changed, `rerun_css` is set. Then the
 `DevAssetPipeline::apply()` method runs, in this order:
 
-<Note title="Lazy dev rendering (the default)">
+<Note title="Lazy dev rendering and boot defaults">
 
-By default, the "pages re-rendered" step below is **lazy**: a tick eagerly
-re-renders only the edited content entry's own routes and marks every other
-affected route **stale**. A stale route re-renders through the live V8 host on
-its **first request** (GET or HEAD) — the request blocks until the fresh bytes
-are written, so the response is never stale. The initial render at `zfb dev`
-boot always stays eager, so every route exists on disk from the start.
+By default a tick eagerly renders the edited content entry's own routes and
+marks other affected routes stale. Once the renderer is published, a stale
+route's first GET/HEAD renders through the live V8 host before returning fresh
+bytes. Startup has a separate boot-lazy decision; it is **cold-lazy by default**,
+so not every route has HTML on disk when the listener starts.
 
-Two environment switches control this:
+These switches are resolved once at boot:
 
-- `ZFB_DEV_EAGER=1` — escape hatch: restore fully eager rendering (every
-  affected route re-renders on every tick, the pre-lazy behaviour).
-- `ZFB_LAZY_DEV_RENDER=0|1` — precise override (`1`/`true` forces lazy,
-  `0`/`false` forces eager). Takes precedence over `ZFB_DEV_EAGER` when both
-  are set.
+- `ZFB_LAZY_DEV_RENDER=1|true` forces lazy rendering, `0|false` forces eager.
+  A recognized value takes priority over `ZFB_DEV_EAGER`.
+- Otherwise `ZFB_DEV_EAGER=1|true` disables lazy rendering; otherwise lazy is on.
+  Disabling lazy rendering also forces boot-lazy **Off**.
+- With lazy rendering on, unset `ZFB_DEV_BOOT_LAZY` or `cold` selects **Cold**,
+  which does not require a built `dist/` seed. `1|true` selects **Auto**, which
+  skips eager boot rendering only with a servable seed. `0|false` and
+  unrecognized values select **Off** (eager boot).
+- `ZFB_DEV_DEFER_BUNDLE` defaults on; only explicit `0|false` disables deferral.
+  Deferral requires active boot-lazy and, for Auto only, a servable seed.
+  Disabling deferral builds the renderer before bind but does not by itself
+  disable boot-lazy page rendering.
 
-Both are read once at boot; changing them requires a dev-server restart. They
-are also documented in `zfb dev --help`.
+Values are trimmed and recognized words are case-insensitive. Restart the dev
+server after changing them. See [Boot is bind-first](#boot-is-bind-first) for
+what a request can see before publication.
 
 </Note>
 
@@ -126,20 +133,29 @@ are also documented in `zfb dev --help`.
    filename; see [Why filenames stay stable in dev](#why-filenames-stay-stable-in-dev).
 4. **Build outcome broadcast.** The pipeline returns a `BuildOutcome` struct.
    `outcome_to_events()` in `crates/zfb-server/src/livereload.rs` inspects the
-   outcome and maps it to `ReloadEvent` values that are broadcast over the SSE
-   channel at `/__zfb/reload`. Every browser tab that has your site open is
+   outcome and maps it to `ReloadEvent` values that are broadcast over the WebSocket
+   channel at `/__zfb/reload/ws`. Tooling can still use SSE at `/__zfb/reload`. Every browser tab that has your site open is
    subscribed to that channel and reacts immediately.
 
-## The three SSE event types
+<a id="the-three-sse-event-types"></a>
+
+## The three reload event types
 
 | Outcome trigger | Event | Browser behaviour |
 |---|---|---|
-| `pages_written`, `pages_stale`, or `pages_pruned` non-empty **or** `client_scripts_changed` | `Page` | Full `location.reload()` |
+| `pages_written`, `pages_stale`, or `pages_pruned` non-empty **or** `client_scripts_changed`, `ssr_routes_published`, or `dynamic_injected_restaled` | `Page` | Full `location.reload()` |
 | `css_changed` | `Css` | Hot-swap every `<link rel="stylesheet">` — appends `?v=<timestamp>` to bust the browser cache without reloading the document |
 | `islands_bundle.is_some()` | `Islands { component, bundle_url }` | Dynamic `import()` of the new bundle URL (with a cache-busting `?v=<timestamp>`). The newly-imported module runs its hydration, which by default re-mounts **every** `[data-zfb-island]` element on the current page — no document reload |
 
+`ssr_routes_published` signals SSR route publication after a healthy deferred
+boot or cold-bootstrap recovery, so a tab opened during the unavailable window
+can retry. It is not a blanket flag for ordinary SSR source edits.
+`dynamic_injected_restaled` signals a full renderer refresh that re-stales
+already-rendered dynamic plugin-injected routes; their lazy marks do not enter
+the usual `pages_stale` list. Both feed the same deduplicated `Page` gate.
+
 When multiple events fire in the same tick, the server emits every applicable event,
-and **every connected tab is subscribed to the same SSE channel and receives all of
+and **every connected tab is subscribed to the same WebSocket channel and receives all of
 them.** The browser processes events in arrival order. On receiving a `Page` event,
 each tab calls `location.reload()`, which discards the current document — this
 makes any `Css` or `Islands` events emitted in the same tick moot for that tab. The
@@ -174,7 +190,7 @@ the bundle changes.
 Dev mode deliberately skips the content hash. The output lands at
 `.zfb-build/dev-assets/assets/islands.js`, served at `/assets/islands.js` — the same
 URL every tick. This is the URL-contract
-guarantee that makes SSE-driven hot-swap work: when the browser receives an
+guarantee that makes WebSocket-driven hot-swap work: when the browser receives an
 `Islands` event, it knows the new bundle is always reachable at the same base URL.
 Changing the URL on every rebuild would force a full page reload because the browser
 would have no cached reference to swap from.
@@ -202,7 +218,7 @@ byte-identical (e.g. you only changed client-side state logic that never reaches
 the server render), only an `Islands` event fires — the new bundle is
 dynamic-imported and its hydration runs, re-mounting every island on the page. To
 preserve scroll position or per-component state across that swap, install a
-`window.__zfbIslandsReload` hook (see [The three SSE event types](#the-three-sse-event-types)).
+`window.__zfbIslandsReload` hook (see [The three reload event types](#the-three-reload-event-types)).
 
 **Edit a page file that consumes an island.** The page is dirty, but a page-only edit
 does not by itself mark islands dirty or re-bundle them. The orchestrator re-renders
@@ -216,37 +232,30 @@ preserved.
 
 ## Boot is bind-first
 
-Everything above describes the steady-state edit loop. Boot itself is ordered to
-get the server reachable as fast as possible: `zfb dev` **binds the TCP listener
-before** it does any project-wide work. The manifest-digest walk, the persisted
-dependency-graph load, the graph seed, and the initial render all run on a
-background task that is spawned only **after** the bind succeeds. (See the
-bind-first restructure around `TcpListener::bind` in
-`crates/zfb/src/commands/dev.rs`.)
+Everything above describes the steady-state edit loop. With the default
+cold-lazy mode and bundle deferral, `zfb dev` binds the TCP listener before
+building/publishing the renderer. Manifest-digest work, graph loading and watcher
+setup then run in the background. Eager or non-deferred configurations can do
+renderer work before bind, so bind-first does not mean all project work is
+always postponed.
 
-The cost this removes is `compute_manifest_digest`'s `WalkDir` + `metadata()`
-walk over the watched tree. Running it before the bind made the port's
-reachability scale with the **size of the watched tree** — a project with a large
-static-asset directory or a symlinked tree could hang for a noticeable beat
-before the server accepted its first connection. Binding first, then walking on a
-background task, makes the server start accepting connections in constant time
-regardless of how big that tree is.
+A bound/listening socket is **not full readiness**. `/__zfb/ready` reports
+framework-owned asset publication readiness; it does not certify that every page
+has been prerendered or that every later lazy import is available. With boot-lazy,
+pages can remain stale until requested after publication.
 
-<Note title="What this win is — and isn't">
+Before publication, an ordinary session can fall back to existing `dist/` files,
+which may reflect an older build. Cold does not require or certify such a seed.
+With `--scratch-dir` / `ZFB_SCRATCH_DIR`, session scratch mode does not serve or
+probe the project's `dist/` seed. Without a matching fallback, requests during
+the deferred window can receive the controlled dev 404 with livereload, then
+recover after publication. Once a live renderer and stale route are available,
+the request-time render hook blocks for fresh output. Neither "every startup
+request blocks" nor "startup can never serve old files" is a universal rule.
 
-The boot improvement is independence from **static-asset / watched-tree size**.
-It removed a pre-bind walk; it did not make the actual build cheaper. Initial
-page rendering, CSS bundling, and the islands bundle still scale with the number
-of pages, islands, and source files in your project — that work still happens,
-just on the background task after the listener is up. A request that arrives for
-a route the boot render has not reached yet still blocks until that route is
-rendered; what you gain is that the **listen socket** is up immediately, not that
-the first render is free.
-
-</Note>
-
-This change pairs with `public/` no longer being a watch root (above): together
-they mean a large `public/` tree neither slows startup nor feeds the watcher.
+A large `public/` tree is neither copied during dev boot nor watched. Renderer,
+CSS and islands work still depends on the project; binding first does not make
+that work free.
 
 ### The post-ready watcher arming window
 

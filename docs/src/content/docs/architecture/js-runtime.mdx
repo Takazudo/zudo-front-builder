@@ -111,11 +111,11 @@ The layering this contract allows:
 
 The bundler and the embedded V8 host are implementation details that can be
 swapped without touching user code: the bundler behind the `zfb-bundler` crate's typed bundle request, the host
-behind the `RenderHost` trait ([The boundary](#the-boundary)).
+behind the build renderer’s dispatch interface and the lower-level `RenderHost` library API ([The boundary](#the-boundary)).
 
 ## The need
 
-zfb's renderer compiles a page's TSX through SWC, hands the resulting ESM to a JS host, calls the module's `default` export, and writes the returned HTML to disk. The host must:
+The CLI's native Rolldown pass transforms and bundles page modules into a generated `createPageRouter` / `fetch` application. The embedded V8 host executes it, zudo-react renders components, and Rust writes the returned HTML. SWC still handles source analysis and the library transform API in `zfb-render`. The host must:
 
 - support ESM (`import` / `export`) so pages can import shared components naturally,
 - support top-level `await` so a page can `await fetch(...)` or `await loadCollection(...)` at module scope,
@@ -166,7 +166,7 @@ Two project-level invariants shape the choice.
 
 ## The boundary
 
-Everything above the host is written against the `RenderHost` trait in `crates/zfb-render/src/render_host.rs`:
+The lower-level module-evaluation library API is the `RenderHost` trait in `crates/zfb-render/src/render_host.rs`:
 
 ```rust
 #[async_trait(?Send)]
@@ -177,7 +177,7 @@ pub trait RenderHost {
 }
 ```
 
-That is the entire surface the renderer uses. `zfb-render`, `zfb-build`, and the framework adapters never name the concrete runtime. The implementation can be swapped without touching call sites — add a new host, re-run the bench, and run the adapter integration tests to confirm byte-identical HTML.
+This trait describes direct module evaluation, not the whole shipped build pipeline. The CLI uses the `EmbeddedV8Host` interface in `zfb-build/renderer.rs` to dispatch the bundled application's `fetch`. Replacing a host must preserve that request/response contract as well as the library API, and requires integration verification.
 
 `zfb-render` exports the direct V8 host, `zfb_js_host::native::NativeHost`, under the name `EmbeddedV8RenderHost`, so `zfb-build`, the dev server and the CLI's thread adapter use that name and never refer to the host crate directly.
 

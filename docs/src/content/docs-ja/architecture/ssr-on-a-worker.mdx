@@ -188,7 +188,9 @@ compatibility_flags = ["nodejs_compat"]
 
 2 つのカテゴリの出力が、`dist/_worker.js` と `dist/_zfb_inner.mjs` から意図的に欠けています。
 
-**島のブラウザ用コード** — `"use client"` でマークされたコンポーネントは、別のバンドラーステップによって **単一の結合された** ブラウザ配信バンドルへとコンパイルされます。dev ではこのバンドルは `dist/assets/islands.js`（安定したファイル名、ハッシュなし）に出力され、プロダクションでは `ProductionAssetPipeline` がそれを `dist/assets/islands-<hash>.js` として書き出し、レンダリングされた HTML 内のすべての参照をハッシュ付き URL に書き換えます。このバンドルは `dist/_worker.js` の一部でも `dist/_zfb_inner.mjs` の一部でもありません。サーバーで実行される Worker コードではなく、ブラウザ配信の JavaScript です。島の初期 HTML はサーバー側から来ます。プリレンダリングされるページではビルド時に静的ファイルへ書き込まれ、`prerender = false` のページではリクエストごとに Worker がレンダリングします。そのあとブラウザがページの参照する islands バンドルをダウンロードし、そのトップレベルのハイドレーションコードがページ上のすべての `[data-zfb-island]` 要素を走査します。完全な仕組みは [Islands](./islands.mdx) を参照してください。
+**島のブラウザ用コード** — 別のネイティブ Rolldown 処理が共有のブラウザエントリと必要に応じた lazy チャンクを出力します。dev のデフォルトは `.zfb-build/dev-assets/assets/islands.js` で、`/assets/islands.js` から配信します。scratch 設定でディスク上のディレクトリを変更できます。本番では `dist/assets/islands-<hash>.js` と追加チャンクを書き出します。
+
+島のある本番ビルドは、島のルート要素を持たないページも含む**すべてのプリレンダリング済み HTML ページ**に共有エントリを注入します。島のないビルドは出力しません。この後処理の規則は、任意のリクエスト時 SSR レスポンスには及びません。SSR 側は対応する構成で必要なブラウザアセットを提供する必要があります。ブラウザエントリは `_worker.js` や `_zfb_inner.mjs` の一部ではなく、そのハイドレーションコードが `[data-zfb-island]` 要素を走査します。[Islands](./islands.mdx)を参照してください。
 
 この分離が当てはまるのは *ブラウザ用* のバンドルだけです。島のコンポーネントにはサーバーレンダリング用のコードもあります。SSR ルートが `<Island>` をレンダリングする場合、Worker がその初期 HTML を描画するため、そのコンポーネントと import 先はサーバー側のグラフに含まれます。そのコードが `_zfb_inner.mjs` に存在しないとは考えないでください。
 

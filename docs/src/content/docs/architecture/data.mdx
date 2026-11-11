@@ -9,7 +9,7 @@ zfb gives you three different routes for getting structured data into a page, an
 
 ## 1. Content collections
 
-When the data is **prose** — blog posts, docs articles, recipes — use a content collection. Each entry is a Markdown file with frontmatter, the frontmatter is validated against a schema, and the body is rendered to HTML for you. See [Content Collections](./content-collections.mdx) for the full story.
+When the data is **prose** — blog posts, docs articles, recipes — use a content collection. Each entry is a Markdown file with frontmatter, a supplied frontmatter schema is validated by `zfb check` (not automatically by every build), and the body is rendered to HTML for you. See [Content Collections](./content-collections.mdx) for the full story.
 
 This is the right choice whenever the body of each entry is meant to be read.
 
@@ -47,7 +47,7 @@ export default {
 };
 ```
 
-Load entries the same way as content entries — `entry.data` holds the validated frontmatter; `entry.Content` renders the (empty) body and can be ignored:
+Load entries the same way as content entries — `entry.data` holds the parsed frontmatter; run `zfb check` to validate it against the supplied schema. Generic type arguments alone do not validate data at runtime; `entry.Content` renders the (empty) body and can be ignored:
 
 ```tsx
 import { getCollection } from "zfb/content";

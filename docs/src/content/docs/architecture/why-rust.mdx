@@ -8,11 +8,19 @@ zfb is a static-site framework whose users write TypeScript and JSX. The framewo
 
 ## Performance
 
-The headline is per-page rebuild time measured in milliseconds. Parsing, type checking, content processing, and atomic file writes are all native Rust — not "fast enough", just genuinely fast. A 2,000-page site rebuilds the affected pages in well under a second when a shared header changes, because the work is a tight Rust loop over a known dependency graph.
+Rust owns route scanning, dependency bookkeeping, content processing and file
+I/O. Native Rolldown transforms and bundles the JavaScript module graph; embedded
+V8 executes user pages and zudo-react renders them. Full TypeScript checking is
+separate: `zfb check` invokes **`tsc --noEmit`** as a subprocess, alongside native
+route/schema checks. It is not all implemented as a Rust type checker.
 
-The dev loop is the same shape. A save produces an FS event; the watcher debounces; the orchestrator queries the graph; affected pages re-render; the dev server broadcasts a reload. End-to-end latency lives in the tens of milliseconds for a typical edit. The browser refresh is the slow part.
-
-This is not magic. It is what you get when the framework does not JIT-warm an interpreter every save and does not keep a multi-gigabyte module graph in memory.
+During dev, a save reaches the watcher, the graph selects affected pages, and
+lazy rendering can postpone their work until requested. Browser reload events
+travel over WebSocket `/__zfb/reload/ws`; SSE `/__zfb/reload` remains for tooling.
+A renderer-relevant edit can still rebuild the bundle and start a fresh V8 host.
+These boundaries explain the design, not a universal latency or memory budget.
+Measure the actual project and machine rather than relying on an unqualified
+millisecond or 2,000-page timing claim.
 
 ## Memory safety and structured errors
 
@@ -22,21 +30,30 @@ The visible win is error quality. zfb uses `anyhow` end-to-end, so every error r
 
 ## Concurrency that fits
 
-The build orchestrator can do Rust-side bookkeeping, file I/O, and dev-server work without blocking the HTTP listener. Request handling, file serving, and the SSE broadcast live on tokio; heavier render dispatch is isolated from that async edge.
+The build orchestrator can do Rust-side bookkeeping, file I/O, and dev-server work without blocking the HTTP listener. Request handling, file serving, and the WebSocket/SSE broadcast live on tokio; heavier render dispatch is isolated from that async edge.
 
 Page rendering itself is not Rayon-parallel today. User TSX runs through a single embedded V8 isolate thread, both for build-time SSG and dev-side `prerender = false` dispatch. The concurrency win is the clean boundary around that isolate and the rest of the Rust pipeline, not parallel execution of multiple page renders in one build.
 
 ## Distribution
 
-zfb is a single binary distributed via npm. `@takazudo/zfb` pulls a prebuilt platform binary via npm optional-deps — that executable is the framework. No `node_modules` for zfb itself, no transitive tree to audit. Your project still brings its own `pnpm` for the dependencies you import (TypeScript, npm packages, lockfiles), but the framework is not in that tree. (Contributors who need to build from source can follow the steps in [From source](../getting-started/installation.mdx#from-source-contributors).)
+The CLI engine is a native executable. npm's `@takazudo/zfb` distribution also
+contains the TypeScript SDK and declares its slug helper dependency and optional
+platform carrier packages that deliver the matching executable. It has a real
+`node_modules` dependency tree to install and audit; the single-binary engine
+does not remove those SDK dependencies. Standalone binary installation is a
+separate option. See [Installation](../getting-started/installation.mdx).
 
-A single binary pins cleanly. CI installs the version it needs; production deploys ship the same binary that ran in dev. The version your team is on is one number, not a constellation of `package.json` ranges.
+Pin the package versions and lockfile for reproducible tooling. A static deploy
+ships HTML/CSS/browser assets, and the Cloudflare adapter adds Worker modules
+for request-time SSR. Neither deploy shape ships the CLI executable as its
+runtime. A desktop/local-server integration can instead choose to distribute
+that executable explicitly.
 
 ## Honest counterpoint: build cost
 
-The first `cargo build` of zfb's workspace is slow. The V8 source bundle (the `v8` crate, pulled in by `zfb-render` through `zfb-js-host`) compiles for 15 to 30 minutes on a typical contributor machine. Incremental builds are fast; the first one hurts. This cost is accepted because Tauri distribution requires a single binary with no Node dependency on end-user machines — embedding V8 in the binary is the only way to meet that constraint. See [JS runtime](./js-runtime.mdx) for the full rationale.
+A cold `cargo build` of zfb's workspace includes the native/V8 dependency setup (the `v8` crate is pulled in through `zfb-js-host`). The historically quoted 15–30 minute whole-workspace figure is not a current direct-host benchmark or a guaranteed duration; toolchain, platform and cached artifacts matter. Incremental builds can reuse that work. This cost is accepted because Tauri distribution requires a single binary with no Node dependency on end-user machines — embedding V8 in the binary is the only way to meet that constraint. See [JS runtime](./js-runtime.mdx) for the full rationale.
 
-zfb gates the V8 build behind the default-on `direct-v8` cargo feature on `zfb-render`, which selects the direct V8 host in `zfb-js-host` (see [JS runtime](./js-runtime.mdx#current-defaults-and-experiments)). `--no-default-features` builds without V8. Crates that do not need JavaScript rendering never pull in V8. A contributor running `cargo test -p zfb-content` compiles in seconds. End users do not pay this cost — they install the prebuilt binary.
+zfb gates the V8 build behind the default-on `direct-v8` cargo feature on `zfb-render`, which selects the direct V8 host in `zfb-js-host` (see [JS runtime](./js-runtime.mdx#current-defaults-and-experiments)). `--no-default-features` builds without V8. Crates that do not need JavaScript rendering never pull in V8. A contributor can build/test a crate such as `zfb-content` without compiling the V8 host; elapsed time depends on the toolchain and cache. End users do not pay this cost — they install the prebuilt binary.
 
 The gate is not a free lunch on the linked `zfb` binary itself: V8 dominates the artifact. Measured while the `deno_core` host was still in use, the bundled `v8` rlib was ~169 MiB on its own and the rest of the `deno_*` tree added another ~13 MiB, so a V8-off `zfb` was roughly 82 MiB smaller stripped than the V8-on shipping binary. The `deno_*` crates are gone since #4395; these figures have not been re-measured for the direct V8 host. Today that lighter binary is only useful for V8-less consumers of the `zfb-render` library — there is no V8-less `zfb` build step yet, because SSG rendering needs V8 to run user pages. The feature is wired so a future shipping path (Tauri sidecar, standalone SSR server, `cargo install`-as-deploy) can opt into the smaller artifact without re-architecting the workspace.
 
@@ -44,7 +61,7 @@ The gate is not a free lunch on the linked `zfb` binary itself: V8 dominates the
 
 Vite, Next, Astro, SvelteKit — all great tools. zfb's bet is different, not better in every direction: **what if the framework was Rust and only the user code was JS / TS?**
 
-That tilts the trade-offs. Build speed gets cheaper because there is no bundler walking a JS module graph at framework cost. Distribution gets simpler — no framework `node_modules`. Memory and concurrency get language-level guarantees. Error quality gets a uniform shape through `anyhow`.
+That changes where the work happens. Native Rolldown still walks a JavaScript module graph, and the npm SDK still has dependencies. Rust provides a native orchestration layer and language-level guarantees for its own memory and concurrency, while JavaScript execution remains the V8 host’s responsibility. Errors gain a consistent context chain through `anyhow`.
 
 The cost is a smaller plugin ecosystem in the framework's native language and a longer first build for contributors. zfb pays both on purpose, because the design point is users who want their build out of their way.
 
