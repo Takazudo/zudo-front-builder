@@ -102,12 +102,15 @@ matrix between a spawned server and the in-process
 ### Light interactive islands
 
 This is a property shared by all three shapes, not a fourth one. zfb suits
-pages that are mostly static documents with a small number of interactive
-components — a search box, a counter, a modal trigger. The islands model
-(`"use client"`) ships a single shared islands bundle for the project and
-injects it only on pages that contain island markers. A page with one island may
-download code for the project's other islands too; pages with no islands skip
-the islands script, though other client-script paths can still ship JavaScript.
+mostly static documents with a few interactive components. A reachable explicit
+`<Island>` selects a target made eligible by `"use client"`.
+
+The project has a **shared islands entry**, plus possible lazy chunks, rather
+than an independent bundle per page. In a production build containing islands,
+zfb injects the shared script into **every prerendered HTML page**, including
+pages with no island roots. A build with no islands emits no islands script;
+independent client scripts can still ship JavaScript. This build-time injection
+rule does not promise script injection into arbitrary request-time SSR responses.
 
 ## Where zfb sits
 

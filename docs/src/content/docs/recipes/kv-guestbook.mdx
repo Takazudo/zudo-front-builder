@@ -30,6 +30,15 @@ deliberately open too, so a visitor can exercise the whole post-and-delete loop.
 
 </Warning>
 
+**[Manifest checked on 2026-11-11](https://github.com/Takazudo/zfb-example-kv-guestbook/blob/f03272320cf27875962d7c7bf7fe3e11ac0419b6/package.json)** (`f03272320cf27875962d7c7bf7fe3e11ac0419b6`)
+
+| Prerequisite / tool | Declared value |
+| --- | --- |
+| Node.js | `>=24.0.0` |
+| Package manager | `pnpm@10.34.1` |
+| Wrangler (devDependency) | `4.127.0` |
+| TypeScript (devDependency) | `^5.9.0` |
+
 ## What it demonstrates
 
 - A `prerender = false` homepage that both **renders** and **handles a `POST`** — one
@@ -51,8 +60,8 @@ deliberately open too, so a visitor can exercise the whole post-and-delete loop.
 
 | Aspect | What the repo uses |
 | --- | --- |
-| Framework | zfb **3.1.0** with its zudo-react JSX runtime; no Preact or React dependency |
-| zfb packages | `@takazudo/zfb`, `@takazudo/zfb-runtime`, and `@takazudo/zfb-adapter-cloudflare` are all pinned to **3.1.0** |
+| Framework | zfb **6.0.1** with its zudo-react JSX runtime; no Preact or React dependency |
+| zfb packages | `@takazudo/zfb`, `@takazudo/zfb-runtime`, and `@takazudo/zfb-adapter-cloudflare` are all pinned to **6.0.1** |
 | Adapter | `@takazudo/zfb-adapter-cloudflare` — present and required |
 | Styling | Authored critical CSS is inlined by `layouts/default.tsx`. `zudo-wind` supplies the `owned-v1` reset for the prerendered `404.html`; the pages use authored class names, not generated utilities |
 | Rendering | Not a static site: `pages/index.tsx`, `pages/api/entries.tsx`, and `pages/api/entries/[key].tsx` all export `prerender = false`. Only `pages/404.tsx` is prerendered |

@@ -40,7 +40,7 @@ Alongside the source graph, each page also carries an `AssetDeps` record:
 - `islands` — the stable component identifiers of every `"use client"` island the page hydrates.
 - `css_modules` — the CSS-Modules source paths the page imports.
 
-This second layer answers a different question: not "which pages re-render?" but "which asset bundles re-emit?" A change to a `"use client"` component tells the graph which page-scoped islands bundles to invalidate without re-rendering every page that ships JS.
+This second layer answers a different question: not "which pages re-render?" but "which asset bundles re-emit?" The graph records which pages consume island targets, but current browser output uses a shared project entry plus possible lazy chunks, not page-scoped islands bundles. A build with islands injects that shared entry into every prerendered HTML page, including pages without island roots; a no-island build emits none. This does not describe arbitrary request-time SSR injection. In dev the default entry is `.zfb-build/dev-assets/assets/islands.js`, served at `/assets/islands.js`; scratch settings can relocate the disk path.
 
 The graph updates both layers after every successful render, so the next query always has a current picture.
 
@@ -72,7 +72,7 @@ The orchestrator (`crates/zfb-build`) receives the `DirtySet` and feeds it into 
 3. **Re-bundle islands only when consuming pages changed.** The islands sub-pipeline runs only when the plan's `rerun_islands` flag is set — which the orchestrator sets only when a changed file is inside an islands root (e.g. `components/`). A content-only change does not trigger an islands re-bundle.
 4. **Keep filenames stable.** Dev-mode output files use stable names (no content hashes). The browser cache contract does not change between watcher ticks. Content hashing is the production pipeline's job.
 
-The combined effect: a content edit that touches two pages produces two HTML writes, one live-reload event, and no island bundling. A header component edit produces writes for every page that imports the header, but still only those pages. For the full breakdown of SSE event types (`Page`, `Css`, `Islands`) and how the browser reacts to each, see [Dev mode lifecycle](./dev-mode-lifecycle.mdx).
+The combined effect: a content edit that touches two pages produces two HTML writes, one live-reload event, and no island bundling. A header component edit produces writes for every page that imports the header, but still only those pages. For the full breakdown of reload event types (browser WebSocket, tooling SSE) (`Page`, `Css`, `Islands`) and how the browser reacts to each, see [Dev mode lifecycle](./dev-mode-lifecycle.mdx).
 
 For a deeper look at the orchestrator design, see [Build engine](../architecture/build-engine.mdx).
 

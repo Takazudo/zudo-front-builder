@@ -14,6 +14,13 @@ import {
   NOTE_DIRECTIVE_SAMPLE,
   noteDirectiveFeatures,
 } from "./admonition-sample";
+import {
+  localizedSamples,
+  playgroundApiHref,
+  playgroundCopy,
+  type PlaygroundProps,
+  type PlaygroundCopy,
+} from "./host-copy";
 import DiagnosticsList from "./diagnostics-list";
 import OptionRow from "./option-row";
 import PlaygroundShell from "./playground-shell";
@@ -62,11 +69,11 @@ function isValidFilename(filename: string): boolean {
   return /\.mdx?$/.test(filename);
 }
 
-function filenameDiagnostic(): PlaygroundDiagnostic {
+function filenameDiagnostic(copy: PlaygroundCopy): PlaygroundDiagnostic {
   return {
     severity: "error",
     source: "options",
-    message: "filename must end in .md or .mdx.",
+    message: copy.filenameError,
     line: null,
     column: null,
   };
@@ -84,6 +91,7 @@ function formatRejectedError(error: unknown): string {
 const loadCompileModule = createModuleLoader(() => import("@takazudo/zfb-md-wasm"));
 
 function CompileOptionsPanel({
+  locale,
   development,
   gfm,
   filename,
@@ -93,6 +101,7 @@ function CompileOptionsPanel({
   activeSampleId,
   onPickSample,
 }: {
+  locale: PlaygroundProps["locale"];
   development: Signal<boolean>;
   gfm: GfmSignals;
   filename: Signal<string>;
@@ -102,13 +111,15 @@ function CompileOptionsPanel({
   activeSampleId: ReadonlySignal<string | undefined>;
   onPickSample: (sample: PlaygroundSample) => void;
 }) {
+  const copy = playgroundCopy(locale);
   const filenameIsInvalid = computed(() => !isValidFilename(filename.value));
 
   return (
     <div class="flex flex-col gap-vsp-sm">
       <SamplePicker
-        samples={COMPILE_SAMPLES}
+        samples={localizedSamples(COMPILE_SAMPLES, locale)}
         activeSampleId={activeSampleId}
+        label={copy.samples}
         onPick={onPickSample}
       />
 
@@ -122,9 +133,7 @@ function CompileOptionsPanel({
             aria-invalid={filenameIsInvalid}
           />
           <Show when={filenameIsInvalid}>
-            {() => (
-              <span class="text-caption font-normal text-danger">Use a .md or .mdx filename.</span>
-            )}
+            {() => <span class="text-caption font-normal text-danger">{copy.filenameHelp}</span>}
           </Show>
         </label>
       </div>
@@ -150,14 +159,21 @@ function CompileOptionsPanel({
   );
 }
 
-function CompileOutput({ result }: { result: ReadonlySignal<CompileResult | null> }) {
+function CompileOutput({
+  result,
+  locale,
+}: {
+  result: ReadonlySignal<CompileResult | null>;
+  locale: PlaygroundProps["locale"];
+}) {
+  const copy = playgroundCopy(locale);
   const hasResult = computed(() => result.value !== null);
   const hasCode = computed(() => result.value?.code != null);
 
   return (
     <Show
       when={hasResult}
-      fallback={() => <p class="m-0 text-small text-muted">Press Run to emit an ES module.</p>}
+      fallback={() => <p class="m-0 text-small text-muted">{copy.compilePrompt}</p>}
     >
       {() => (
         <div class="flex min-w-0 flex-col gap-vsp-md">
@@ -165,9 +181,7 @@ function CompileOutput({ result }: { result: ReadonlySignal<CompileResult | null
             <h3 class="m-0 text-small font-semibold text-fg">code</h3>
             <Show
               when={hasCode}
-              fallback={() => (
-                <p class="m-0 text-small text-muted">No module source was emitted.</p>
-              )}
+              fallback={() => <p class="m-0 text-small text-muted">{copy.noModule}</p>}
             >
               {() => (
                 <pre class="m-0 max-w-full overflow-auto whitespace-pre font-mono text-caption text-code-fg">
@@ -189,7 +203,8 @@ function CompileOutput({ result }: { result: ReadonlySignal<CompileResult | null
   );
 }
 
-export default function CompilePlayground() {
+export default function CompilePlayground({ locale = "en", basePath = "" }: PlaygroundProps = {}) {
+  const copy = playgroundCopy(locale);
   const scope = getScope();
   const source = signal(COMPILE_SAMPLE.value);
   const activeSampleId = signal<string | undefined>(COMPILE_SAMPLE.id);
@@ -209,7 +224,7 @@ export default function CompilePlayground() {
 
   function handleRun(): void {
     if (!isValidFilename(filename.value)) {
-      validationDiagnostics.value = [filenameDiagnostic()];
+      validationDiagnostics.value = [filenameDiagnostic(copy)];
       return;
     }
 
@@ -242,15 +257,19 @@ export default function CompilePlayground() {
     return current.status === "ready" ? current.result.diagnostics : [];
   });
   const emptyMessage = computed(() =>
-    state.value.status === "ready" ? "No diagnostics." : undefined,
+    state.value.status === "ready" ? copy.noDiagnostics : undefined,
   );
   const rejectedError = computed(() => {
     const current = state.value;
-    return current.status === "error" ? formatRejectedError(current.error) : "";
+    return current.status === "error"
+      ? `${copy.runError}: ${formatRejectedError(current.error)}`
+      : "";
   });
 
   return (
     <PlaygroundShell
+      labels={copy}
+      apiReferenceHref={playgroundApiHref(locale, basePath)}
       value={source}
       onInput={() => {
         activeSampleId.value = undefined;
@@ -262,6 +281,7 @@ export default function CompilePlayground() {
       )}
       options={
         <CompileOptionsPanel
+          locale={locale}
           development={development}
           gfm={gfm}
           filename={filename}
@@ -276,16 +296,17 @@ export default function CompilePlayground() {
           }}
         />
       }
-      output={<CompileOutput result={result} />}
+      output={<CompileOutput result={result} locale={locale} />}
       diagnostics={
         <DiagnosticsList
           diagnostics={diagnostics}
-          label="Diagnostics"
+          locale={locale}
+          label={copy.diagnostics}
           emptyMessage={emptyMessage}
         />
       }
       trapError={rejectedError}
-      textareaLabel="MDX source"
+      textareaLabel={copy.mdxSource}
     />
   );
 }

@@ -5,7 +5,7 @@ sidebar_position: 13
 category: Concepts
 ---
 
-A **content collection** is a directory of `.md`, `.mdx`, or `.tsx` entries declared in your project config. zfb scans the directory at build time, parses each entry's frontmatter against a schema you supply, and exposes the entries through `getCollection()` and `getEntry()` helpers your pages can call.
+A **content collection** is a directory of `.md`, `.mdx`, or `.tsx` entries declared in your project config. zfb scans the directory at build time, parses each entry's frontmatter, and exposes the entries through `getCollection()` and `getEntry()` helpers your pages can call.
 
 ## Declaring a collection
 
@@ -111,7 +111,7 @@ with the `zfb` package.
 
 Each entry has three things you can rely on:
 
-- `data` — the parsed, validated frontmatter (typed against your schema).
+- `data` — the parsed frontmatter. A supplied collection schema is validated by `zfb check`, not automatically by every build; generic type hints do not perform runtime validation.
 - `Content` — a renderable zudo-react component compiled from the body. Render it as `<post.Content components={...} />` and pass element-level overrides through the `components` prop. This is the same contract Astro's `@astrojs/mdx` exposes; see [MDX Components](./mdx-components.mdx) for details and `defaultComponents` recipes.
 - `slug` — derived from the file name (`my-first-post.md` → `my-first-post`). Nested directories become slash-separated slugs.
 
@@ -144,6 +144,6 @@ Keep these in mind before enabling the flag:
 
 ## How parsing works
 
-Under the hood, the `zfb-content` crate handles three jobs: it walks the configured directory, parses each file's frontmatter, and compiles the entry to JSX source that is then handed to the existing SWC TSX -> JS pipeline. Markdown/MDX entries use the MDX emitter and get an `mdx://<collection>/<slug>#<hash>` specifier; TSX entries use their source module directly (no separate compile step) and get a `tsx://<collection>/<slug>#<hash>` specifier. In both cases the trailing hash is derived from the compiled JSX source. The page renderer evaluates that module on demand and surfaces it to your page as `entry.Content`.
+Under the hood, the `zfb-content` crate handles three jobs: it walks the configured directory, parses each file's frontmatter, and compiles the entry to JSX source for the native Rolldown transform/bundle pass. Markdown/MDX entries use the MDX emitter and get an `mdx://<collection>/<slug>#<hash>` specifier; TSX entries use their source module directly (no separate compile step) and get a `tsx://<collection>/<slug>#<hash>` specifier. In both cases the trailing hash is derived from the compiled JSX source. The generated application installs the compiled modules in the content bridge. Embedded V8 executes its `fetch` entry, and zudo-react renders `entry.Content` when the page uses it.
 
 The compilation and surface contract are stable. See [MDX Components](./mdx-components.mdx) for the rendering side.

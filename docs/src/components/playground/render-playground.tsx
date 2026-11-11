@@ -8,6 +8,12 @@ import {
   noteDirectiveFeatures,
   type NoteDirectiveFeatures,
 } from "./admonition-sample";
+import {
+  localizedSamples,
+  playgroundApiHref,
+  playgroundCopy,
+  type PlaygroundProps,
+} from "./host-copy";
 import DiagnosticsList from "./diagnostics-list";
 import OptionRow from "./option-row";
 import PlaygroundShell from "./playground-shell";
@@ -95,7 +101,8 @@ const loadRenderModule = createModuleLoader<RenderModule>(async () => {
 const inputClass =
   "rounded border border-muted bg-surface px-hsp-md py-vsp-xs text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2";
 
-export default function RenderPlayground() {
+export default function RenderPlayground({ locale = "en", basePath = "" }: PlaygroundProps = {}) {
+  const copy = playgroundCopy(locale);
   const scope = getScope();
   const source = signal(SAMPLE.value);
   const activeSampleId = signal<string | undefined>(SAMPLE.id);
@@ -130,11 +137,11 @@ export default function RenderPlayground() {
   const html = computed(() => displayedResult.value?.html ?? "");
   const diagnostics = computed(() => displayedResult.value?.diagnostics ?? []);
   const emptyMessage = computed(() =>
-    state.value.status === "ready" ? "No diagnostics." : undefined,
+    state.value.status === "ready" ? copy.noDiagnostics : undefined,
   );
   const trapError = computed(() => {
     const current = state.value;
-    return current.status === "error" ? errorMessage(current.error) : null;
+    return current.status === "error" ? `${copy.runError}: ${errorMessage(current.error)}` : null;
   });
   const hasTrapError = computed(() => trapError.value !== null);
 
@@ -183,22 +190,16 @@ export default function RenderPlayground() {
       onRun={runRender}
       pending={pending}
       hasRun={hasRun}
-      labels={{
-        input: "Markdown / MDX",
-        output: "HTML output",
-        run: "Run",
-        pending: "Running…",
-        firstRunNotice: "The first Run downloads a WebAssembly module.",
-        apiReference: "API reference",
-      }}
-      apiReferenceHref="/docs/api/md-wasm/"
+      labels={{ ...copy, input: "Markdown / MDX", output: copy.htmlOutput }}
+      apiReferenceHref={playgroundApiHref(locale, basePath)}
+      textareaLabel={copy.markdownSource}
       options={
         <div class="flex flex-col gap-vsp-sm">
           <SamplePicker
-            samples={SAMPLES}
+            samples={localizedSamples(SAMPLES, locale)}
             activeSampleId={activeSampleId}
             onPick={pickSample}
-            label="Samples"
+            label={copy.samples}
           />
 
           <div class="grid grid-cols-1 gap-vsp-sm md:grid-cols-2">
@@ -214,11 +215,7 @@ export default function RenderPlayground() {
               <span class="font-mono">filename</span>
               <input class={inputClass} modelValue={filename} aria-invalid={invalidFilename} />
               <Show when={invalidFilename}>
-                {() => (
-                  <span class="text-caption text-danger">
-                    Use a filename ending in .md or .mdx.
-                  </span>
-                )}
+                {() => <span class="text-caption text-danger">{copy.filenameHelp}</span>}
               </Show>
             </label>
           </div>
@@ -247,7 +244,7 @@ export default function RenderPlayground() {
             <input
               class={`${inputClass} disabled:opacity-50`}
               modelValue={theme}
-              placeholder="built-in default"
+              placeholder={copy.builtInDefault}
               disabled={classMode}
             />
           </label>
@@ -274,14 +271,14 @@ export default function RenderPlayground() {
       }
       output={
         <div class="flex flex-col gap-vsp-sm">
-          <section aria-label="HTML source">
-            <h3 class="mb-vsp-2xs text-small font-semibold">HTML source</h3>
+          <section aria-label={copy.htmlSource}>
+            <h3 class="mb-vsp-2xs text-small font-semibold">{copy.htmlSource}</h3>
             <pre class="m-0 overflow-auto whitespace-pre-wrap break-words">{html}</pre>
           </section>
-          <section aria-label="HTML preview">
-            <h3 class="mb-vsp-2xs text-small font-semibold">Preview</h3>
+          <section aria-label={copy.htmlPreview}>
+            <h3 class="mb-vsp-2xs text-small font-semibold">{copy.preview}</h3>
             <iframe
-              title="Rendered HTML preview"
+              title={copy.renderedHtmlPreview}
               srcdoc={html}
               // Keep one harmless, non-empty token so the iframe stays sandboxed
               // even if a renderer drops an empty attribute; this list
@@ -300,7 +297,8 @@ export default function RenderPlayground() {
       diagnostics={
         <DiagnosticsList
           diagnostics={diagnostics}
-          label="Render diagnostics"
+          locale={locale}
+          label={copy.renderDiagnostics}
           emptyMessage={emptyMessage}
         />
       }

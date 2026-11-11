@@ -1,3 +1,4 @@
+import { playgroundCopy, type PlaygroundLocale } from "./host-copy";
 import { computed, For, Show, type ReadonlySignal } from "@takazudo/zfb/zudo-react";
 
 export interface PlaygroundDiagnostic {
@@ -11,6 +12,7 @@ export interface PlaygroundDiagnostic {
 export interface DiagnosticsListProps {
   diagnostics: ReadonlySignal<readonly PlaygroundDiagnostic[]>;
   label?: string;
+  locale?: PlaygroundLocale;
   emptyMessage?: ReadonlySignal<string | undefined>;
 }
 
@@ -19,16 +21,32 @@ interface IndexedDiagnostic {
   diagnostic: PlaygroundDiagnostic;
 }
 
-function formatLocation({ line, column }: PlaygroundDiagnostic): string | null {
+function formatLocation(
+  { line, column }: PlaygroundDiagnostic,
+  locale: PlaygroundLocale,
+): string | null {
+  if (locale === "ja") {
+    if (line !== null && column !== null) return `${line} 行、${column} 列`;
+    if (line !== null) return `${line} 行`;
+    if (column !== null) return `${column} 列`;
+    return null;
+  }
   if (line !== null && column !== null) return `line ${line}, column ${column}`;
   if (line !== null) return `line ${line}`;
   if (column !== null) return `column ${column}`;
   return null;
 }
 
-function DiagnosticItem({ item }: { item: ReadonlySignal<IndexedDiagnostic> }) {
+function DiagnosticItem({
+  item,
+  locale,
+}: {
+  item: ReadonlySignal<IndexedDiagnostic>;
+  locale: PlaygroundLocale;
+}) {
+  const copy = playgroundCopy(locale);
   const diagnostic = computed(() => item.value.diagnostic);
-  const location = computed(() => formatLocation(diagnostic.value) ?? "");
+  const location = computed(() => formatLocation(diagnostic.value, locale) ?? "");
   const hasLocation = computed(() => location.value !== "");
   const severityClassName = computed(() =>
     diagnostic.value.severity === "warning" ? "text-warning" : "text-danger",
@@ -37,7 +55,11 @@ function DiagnosticItem({ item }: { item: ReadonlySignal<IndexedDiagnostic> }) {
   return (
     <li class="border-l-2 border-muted pl-hsp-md text-small">
       <p class="m-0 flex flex-wrap gap-hsp-sm text-caption">
-        <strong class={severityClassName}>{computed(() => diagnostic.value.severity)}</strong>
+        <strong class={severityClassName}>
+          {computed(() =>
+            diagnostic.value.severity === "warning" ? copy.diagnosticWarning : copy.error,
+          )}
+        </strong>
         <span class="font-mono text-muted">{computed(() => diagnostic.value.source)}</span>
         <Show when={hasLocation}>{() => <span class="text-muted">{location}</span>}</Show>
       </p>
@@ -50,7 +72,8 @@ function DiagnosticItem({ item }: { item: ReadonlySignal<IndexedDiagnostic> }) {
 
 export default function DiagnosticsList({
   diagnostics,
-  label = "Diagnostics",
+  locale = "en",
+  label = playgroundCopy(locale).diagnostics,
   emptyMessage,
 }: DiagnosticsListProps) {
   const visible = computed(() => diagnostics.value.length > 0 || !!emptyMessage?.value);
@@ -72,7 +95,7 @@ export default function DiagnosticsList({
             fallback={() => (
               <ul class="m-0 flex list-none flex-col gap-vsp-xs p-0">
                 <For each={items} by={(item) => item.index}>
-                  {(item) => <DiagnosticItem item={item} />}
+                  {(item) => <DiagnosticItem item={item} locale={locale} />}
                 </For>
               </ul>
             )}

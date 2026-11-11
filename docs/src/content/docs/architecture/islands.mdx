@@ -58,7 +58,7 @@ The heading and `<main>` stay static HTML. Only `Counter` ships JavaScript. The 
 ### What happens from build to browser
 
 1. **Render.** zfb renders the page to HTML (at build time for a static page, or per request for an SSR route), including the counter's initial output (`Count: 0`), and wraps that output in a `<div data-zfb-island="Counter" …>` element that carries the island's identity and props.
-2. **Bundle.** Every registered island target goes into one shared browser bundle, `islands-<hash>.js`, and a single module `<script>` that loads it is added to `<head>`. See [What the bundler produces for N islands](#what-the-bundler-produces-for-n-islands).
+2. **Bundle.** Every registered island target goes into one shared browser bundle, `islands-<hash>.js`, and a single module `<script>` that loads it is added to `<head>` of every prerendered HTML page in a build with islands, including pages without island roots. A no-island build emits no islands script. This build-time injection does not promise that arbitrary request-time SSR responses include the script. See [What the bundler produces for N islands](#what-the-bundler-produces-for-n-islands).
 3. **Load.** In the browser, the bundle calls `mountIslands()`. For each wrapper, the runtime waits for the wrapper's `data-when` timing (`load` by default), checks its identity and JSON props, and hydrates the existing child DOM; the button gets its `on:click` listener without being rendered again. See [How islands are loaded](#how-islands-are-loaded).
 4. **Mounted.** The wrapper receives `data-zfb-island-mounted` after the client root mounts. See [Observing mount state](#how-islands-are-loaded-observing-mount-state).
 
@@ -169,11 +169,11 @@ it has not mounted before, then writes its own marker after mounting.
 
 ## Consequences of the shared-bundle model
 
-Because all islands are bundled together into a single file:
+All island targets are statically imported into one shared browser entry. Dynamic `import()` calls can add separately loaded chunks:
 
-- **Every page loads all islands' code.** The single `islands-<hash>.js` bundle contains every island component in the project. A page that only uses `ThemeToggle` still downloads the code for `Counter` and `SearchBox`. This trades per-page load granularity for a simpler build pipeline and better cache efficiency across pages.
+- **Every prerendered page loads the shared entry.** Its static graph includes every registered island target and its static dependencies, so a page that only uses `ThemeToggle` still downloads `Counter` and `SearchBox`. Code behind a dynamic `import()` can load later in a separate chunk. This trades per-page load granularity for shared caching across pages.
 - **On a build with islands, pages without islands load the bundle too.** The islands `<script>` is injected into the `<head>` of every prerendered page, including a page with no island markers. The bundle then finds no wrapper to mount on that page. A build with no islands at all emits no islands bundle and no tag. This applies to the HTML that `zfb build` writes; request-time SSR responses are not post-processed this way (see [SSR on a Worker](./ssr-on-a-worker.mdx)). Other client-script mechanisms, if used, can still add JavaScript.
-- **Any island change rehashes the single bundle.** Adding or modifying any island component produces a new content hash, which invalidates the browser's cached bundle for all pages. The tradeoff is that one cache entry covers all islands — once the bundle is cached, every page in the project benefits from the same cache hit.
+- **Cache invalidation follows emitted bytes.** Changed entry bytes produce a new `islands-<hash>.js` URL shared by all pages. Additional chunks have their own content hashes and cache entries; they are not folded into a guaranteed single-file output.
 
 ### Measured shared-bundle baseline
 
@@ -202,10 +202,10 @@ The live contracts have moved on since the study. Both use schema version 4, rec
 
 | Contract | Package version | Native evidence |
 | --- | --- | --- |
-| Darwin arm64: `research/v3-island-size/decision.json` | 5.2.2 | Owner-attested local native run at `933acb8c129218ef036341db0e2a6d1a19e5e8c5`; reviewed `bundler-backend` transition from schema 3 to 4 |
-| Linux x64: `decision-linux-x64.json` | 6.0.0 | GitHub Actions health run `42582498638`, job `129052323579`, at PR merge source `31a5085d37dbc400c55ce7f3071863c9585c116b` (probe head `4273be5674b9bb9a7a36794bf02b937ab7f6dea3`); `release-bump` re-pin |
+| Darwin arm64: `research/v3-island-size/decision.json` | 6.0.0 | Local native evidence at `d9d64630c9336d68bab2b8374305b93e563cd1af`; `release-bump` re-pin from 5.2.2; receipt marks owner approval of live adoption pending |
+| Linux x64: `decision-linux-x64.json` | 6.0.1 | GitHub Actions health run `42700776335`, job `129444651875`, at PR merge source `b21dba5d8d0c905b33d0baeb4c046b58ab4b913a` (probe head `5c5acb10c9c4e812fe7e95fed8ef49f954229eb2`); `release-bump` re-pin from 6.0.0 |
 
-Each recorded native run built the eight-fixture workspace and packed matrices twice with byte-identical full-dist inventories within each mode. Raw and normalized-gzip totals stayed unchanged through these transitions, while some actual gzip totals changed. Equal totals do not prove byte-identical product code. The Darwin size contract covers the recorded 5.2.2 producer; it does not establish Darwin size qualification for 6.0.0. Linux 6.0.0 evidence and replay of saved bytes cannot substitute for a matching Darwin native run. Other platforms, toolchains and source revisions remain outside these receipts.
+Each recorded native run built the eight-fixture workspace and packed matrices twice with byte-identical full-dist inventories within each mode. Raw and normalized-gzip totals stayed unchanged through these transitions, while some actual gzip totals changed. Equal totals do not prove byte-identical product code. The Darwin size contract records a native 6.0.0 producer, with owner approval of live adoption still pending in its receipt; it does not qualify Darwin 6.0.1 or the current head. Linux 6.0.1 evidence and replay of saved bytes cannot substitute for a matching Darwin native run. The earlier Darwin 5.2.2 and Linux 6.0.0 receipts remain in the contract history. Other platforms, toolchains and source revisions remain outside these receipts.
 
 A contract changes only through a reviewed transition. When `Cargo.lock` changes in a way the contracts have not admitted, the island-size check in `health.yml` fails until fresh native evidence is collected and the affected contracts are re-pinned (`--stage`, then `--apply`). Linux x64 evidence comes from a GitHub Actions artifact. Darwin arm64 evidence comes from a matching native run: the workflow remains available, and the owner's local Mac is the normal collection route under the [local native evidence policy](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/LOCAL-NATIVE-EVIDENCE.md). The local adapter accepts only that policy's reviewed transition profiles, including `bundler-backend` and `release-bump`, with the matching receipt and retained bundle. Applying a staged contract requires separate owner authorization. Neither evidence route changes a ceiling or the allowance by itself.
 
@@ -917,7 +917,7 @@ Standard script attributes such as `defer`, `async`, and `nonce` are supported d
 
 **Client scripts or custom build steps** — zfb automatically bundles [`*.client.*` entries](../guides/client-scripts.mdx) as a second browser-entry pipeline. For any other TypeScript module, add a separate esbuild, Rolldown or Rollup step and reference its output from a `<script src>`. Modules that are not reachable from a `"use client"` graph or a `.client.*` entry remain server-only.
 
-What you **cannot** do: import a regular (non-`"use client"`) `.ts` or `.tsx` module from a page and expect its browser-side code to reach the client. Modules without the directive are server-only — SWC compiles and evaluates them at build time, and none of their bytes are included in the output.
+What you **cannot** do: import a regular (non-`"use client"`) `.ts` or `.tsx` module from a page and expect its browser-side code to reach the client. A server-side page import alone does not establish a browser entry. Native Rolldown bundles it into the page application, which embedded V8 executes and zudo-react renders. A module without the directive can still enter the browser graph through an island or client-script import/re-export; `"use client"` establishes eligibility for an explicit Island target, not an absolute server-only/client-only split.
 
 ## When not to use islands
 

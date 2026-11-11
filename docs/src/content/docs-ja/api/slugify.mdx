@@ -1,0 +1,56 @@
+---
+title: slugify
+description: 見出しアンカー用の slugify() と SlugAllocator。@takazudo/zfb-slugify と互換サブパス @takazudo/zfb/slugify から公開されています。
+sidebar_position: 9
+---
+
+## シグネチャ
+
+```ts
+function slugify(input: string): string
+```
+
+軽量な `@takazudo/zfb-slugify` パッケージを直接使うか、サポート対象の互換サブパス `@takazudo/zfb/slugify`（SDK ルートからも再エクスポート）を使います。zfb が `<h2>`–`<h6>` の見出し要素に割り当てる `id` 属性値を生成します。`input` を Unicode コードポイント単位で処理し、空白、固定の ASCII 句読点集合（`` ! " # $ % & ' ( ) * + , . / : ; < = > ? @ [ \ ] ^ ` { | } ~ ``）、Unicode 制御文字を 1 個の `-` 区切りにまとめます。先頭・末尾の区切りや重複する区切りは付けません。それ以外の文字は小文字化して保持します。`slugify("Hello, World!")` は `"hello-world"` を返します。
+
+<Note title="github-slugger 互換ではない">
+
+`slugify` は意図的に npm の `github-slugger` とそのまま交換できる実装にはしていません。取り除く句読点は `-` にまとめられます（`slugify("a,b")` は `"a-b"`、github-slugger は `"ab"`）。もともとあるハイフンやアンダースコアはそのまま通します。zfb 自身の Rust の `slugify`（`crates/zfb-content/src/plugins/heading_links.rs`）をバイト単位で一致するよう TypeScript に移植したものです。Rust の統合テストとヘルパーパッケージの一致検証スイートが共有フィクスチャ `crates/zfb-content/tests/fixtures/slugify-parity.json` を使って一致を保証し、SDK は互換エクスポートを検証します。
+
+</Note>
+
+生成するのは**見出しアンカー**用の slug です。コレクションエントリの URL 用 slug（`CollectionEntry.slug`）とは異なります。後者は見出しテキストではなくファイルパスを基に、別の内部ヘルパーで生成します。
+
+## `SlugAllocator`
+
+```ts
+class SlugAllocator {
+  constructor(strategy?: "flat" | "hierarchical");
+  allocate(depth: number, base: string): string;
+  reset(): void;
+}
+```
+
+`slugify()` の出力に文書単位の重複解消を重ねるアロケーターで、Rust の `SlugAllocator` と対応します。文書ごとにインスタンスを作るか、文書間で `reset()` を呼んで状態を消し、文書中の順序に従って見出しごとに `allocate(depth, base)` を 1 回呼びます。
+
+- `depth` — 見出しの深さ `2`–`6`。`h1` には割り当てません。Markdown 本文ではなくページレイアウトが所有するためです。
+- `base` — 見出しテキストを `slugify()` した値。
+
+[見出しリンクの設定](../markdown-features/heading-links.mdx#設定)の `strategy` に対応する 2 つの方式があります。
+
+- **`"flat"`**（デフォルト）— 文書全体で 1 つの重複カウンターを使います。`"intro"` になる最初の見出しは `intro`、2 番目は `intro-1`、3 番目は `intro-2` となります。
+- **`"hierarchical"`** — 現在以上の深さの祖先をまず取り除き、各 slug に祖先の見出し列を前置して、候補パス全体の重複を解消します。たとえば `Foo` > `Moo` > `Mew` という入れ子は `foo`、`foo-moo`、`foo-moo-mew` になります。
+
+```ts
+import { SlugAllocator } from "@takazudo/zfb-slugify";
+
+const allocator = new SlugAllocator("flat");
+allocator.allocate(2, "getting-started"); // "getting-started"
+allocator.allocate(2, "getting-started"); // "getting-started-1"（重複）
+allocator.reset(); // 次の文書の前にカウンターを消す
+```
+
+`base` が空（slug 化した結果が空になる見出し）の場合、`allocate` と単独の `slugify` はどちらも `""` を返し、アロケーターの状態は変更しません。
+
+## 関連ページ
+
+- [見出しリンク](../markdown-features/heading-links.mdx) — このアロケーターを呼んで各見出しの `id` 属性とアンカーリンクを生成する、常時有効な Markdown プラグイン。

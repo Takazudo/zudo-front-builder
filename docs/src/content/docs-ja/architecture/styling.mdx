@@ -117,7 +117,7 @@ export default function Card() {
 仕組み:
 
 - `import styles from "./x.module.css"` には **デフォルトインポート** が必要です。`styles` は元のクラス名をスコープ付きクラス名へ対応させるプレーンなオブジェクトです。
-- `styles.card` または `styles["card"]` でクラスを参照できます。動的なキーによるアクセスは、書き換えがビルド時に行われるため動作しません。
+- CSS Modules は既知のクラス名と生成名を対応付ける通常のオブジェクトを default export します。`styles.card`、`styles["card"]`、`styles[key]` はいずれも、キーが出力済みクラスを指せば使えます。マップにないキーは `undefined` になり、計算されたアクセスが新しい CSS を検出・生成するわけではありません。
 - JavaScript / TypeScript モジュールからのプレーンな `.css` import は出力されません。バンドラーが解決すると zfb は警告します。デフォルトは `false` で、`strictPlainCssImports: true` にするとビルドエラーになります。`zfb build --strict-plain-css-imports` / `--no-strict-plain-css-imports` でそのビルドのみ設定を上書きできます。両フラグを同時に渡すとエラーになります。このゲートが影響するのは `zfb build` だけで、`zfb dev` は警告のみです。グローバル CSS は `styles/global.css` とその `@import` に置き、コンポーネント用にはデフォルトインポートした `.module.css` を使ってください。ほかのビルドフラグは [CLI リファレンス](../api/cli.mdx)を参照してください。
 - `.module.css` ファイルは、`pages/`、`components/`、`layouts/`、`content/` 配下の `.tsx`/`.ts`/`.jsx`/`.js` ファイルからインポートされたときに発見されます。
 

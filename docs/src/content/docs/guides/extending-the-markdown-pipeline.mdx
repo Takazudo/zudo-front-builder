@@ -34,7 +34,7 @@ for that path.
 |---|---|---|
 | Add `:::name` / `::name` / `:name` syntax that compiles to a JSX component | Register a directive | `Pipeline::with_defaults` + `DirectiveRegistry` ([Custom Directives](../architecture/custom-directives.mdx)) |
 | Rewrite existing AST nodes (slugify headings, wrap code blocks, swap `<img>` for a JSX marker, normalise links) | Write a visitor | New file under `crates/zfb-content/src/plugins/` |
-| Surface a Markdown construct that markdown-rs parses but zfb currently drops (tables, footnotes, math, definitions, reference-style links) | Extend the AST converter | `mdast_to_hast` in `crates/zfb-content/src/pipeline.rs` |
+| Surface a Markdown construct that markdown-rs parses but zfb currently drops (definitions and reference-style links/images) | Extend the AST converter | `mdast_to_hast` in `crates/zfb-content/src/pipeline.rs` |
 | Add brand-new Markdown syntax that markdown-rs cannot parse | Out of scope | Upstream change against the `markdown` crate, then a converter arm in zfb |
 
 Most contributions land in the second row — a fresh visitor.
@@ -281,14 +281,22 @@ in `crates/zfb-content/src/pipeline.rs`:
 
 ```rust
 // Unhandled: degrade to empty Raw so we never crash on
-// unsupported input. Tables, footnotes, definitions, math,
+// unsupported input. Reference-style link/image definitions,
 // reference links/images, ESM, frontmatter, etc. fall here.
 _ => HastNode::Raw(String::new()),
 ```
 
-If you want zfb to surface tables, footnotes, definitions, math,
-reference-style links, or anything else that lives in the catch-all,
-two changes are needed:
+Tables, footnotes, `Math`, and `InlineMath` already have converters. Tables
+emit table/head/body structure with column alignment; footnotes use a collected
+model for references, definitions, and backreferences. Math nodes emit escaped
+source in `code.language-math` (inside `pre` for display math), not typeset
+mathematics. These converters do not enable parser constructs by themselves;
+footnotes and math still depend on parser options. A math typesetter is a
+separate integration, not an implemented part of this converter.
+
+Reference-style link/image definitions and their references still fall through
+the catch-all. To implement one of those remaining constructs, two changes
+are needed:
 
 1. **Add a match arm** to `mdast_to_hast` that turns the mdast
    variant into the right `HastNode::Element` (or `Raw` for

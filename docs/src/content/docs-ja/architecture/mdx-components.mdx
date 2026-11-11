@@ -1,5 +1,5 @@
 ---
-title: MDX Components
+title: MDX コンポーネント
 description: MDX エントリがレンダリング可能な zudo-react コンポーネントとしてページに届く仕組みと、components prop で個々の要素をオーバーライドする方法。
 sidebar_position: 17
 category: Concepts
@@ -7,7 +7,7 @@ category: Concepts
 
 <Info title="このページの内容">
 
-`.mdx` コンテンツコレクションのエントリがどのようにレンダリング可能な JSX コンポーネントになるのか、`getCollection()` を通じてデフォルトで何が届くのか、個々の HTML 要素を自前のコンポーネントでオーバーライドする方法、グローバルな `mdx-components.tsx` 規約の仕組み、そして各オーバーライドが受け取る完全な props の契約を解説します。
+`.mdx` コンテンツコレクションのエントリがどのようにレンダリング可能な JSX コンポーネントになるのか、`getCollection()` を通じてデフォルトで何が届くのか、個々の HTML 要素を自前のコンポーネントでオーバーライドする方法、グローバルな `mdx-components.tsx` 規約の仕組み、そして各オーバーライドが受け取る基本 props と追加属性を解説します。
 
 </Info>
 
@@ -20,13 +20,13 @@ category: Concepts
 その形は次のとおりです。
 
 ```tsx
-// Conceptually, your `hello-zfb.mdx` becomes:
+// 概念的には `hello-zfb.mdx` は次の形になる:
 export default function MDXContent({ components }: { components?: Record<string, unknown> }) {
-  // ...renders the post body, looking up <p>, <a>, <Note>, etc. in `components`
+  // ...`components` で <p>、<a>、<Note> などを探して記事本文を描画する
 }
 ```
 
-MDX が `<p>some text</p>`（Markdown の段落がコンパイルされた結果）に出会うと、`components` マップから `p` を探します。自前のコンポーネントを渡していればそれがレンダリングされ、渡していなければ素の HTML 要素がレンダリングされます。同じルックアップはカスタム JSX にも適用されます。投稿本文中の `<Note>...</Note>` は、評価時に `components.Note` に対して解決されます。
+MDX が `<p>some text</p>`（Markdown の段落がコンパイルされた結果）に出会うと、`components` マップから `p` を探します。自前のコンポーネントを渡していればそれがレンダリングされ、渡していなければ素の HTML 要素がレンダリングされます。同じルックアップはカスタム JSX にも適用されます。投稿本文中の `<Note>...</Note>` は、評価時に `components.Note` に対して解決されます。ソース TSX コンポーネントはルートの `mdx-components.tsx` または呼び出しごとのマップに登録してください。現在のエミッターは元の MDX ESM（`import`／`export`）文を削除するため、`.mdx` 内で TSX コンポーネントを import しても利用可能な binding は作られません。
 
 ## `getCollection()` がすでに与えてくれるもの
 
@@ -61,7 +61,7 @@ import { Note } from "../../components/callout";
 
 現在の `defaultComponents` セットがカバーするのは次のとおりです。
 
-| Key          | Component           | Wraps                                       |
+| キー         | コンポーネント      | 囲む要素                                       |
 | ------------ | ------------------- | ------------------------------------------- |
 | `h2`         | `ContentH2`         | `<h2>`                                      |
 | `h3`         | `ContentH3`         | `<h3>`                                      |
@@ -73,18 +73,18 @@ import { Note } from "../../components/callout";
 | `ul`         | `ContentUl`         | `<ul>`                                      |
 | `ol`         | `ContentOl`         | `<ol>`                                      |
 | `table`      | `ContentTable`      | `<table>`                                   |
-| `code`       | `ContentCode`       | `<code>` (inline; block code is unaffected) |
+| `code`       | `ContentCode`       | `<code>`（インライン。コードブロックには影響しない） |
 
 それぞれ個別にもエクスポートされており（`import { ContentLink } from "@takazudo/zfb"`）、マップ全体を引き込まずに単一のオーバーライドだけを使いたい場合に利用できます。
 
-`h1` は意図的に含まれていません。ページタイトルは zudo-doc の規約に従ってフロントマターから `<h1>` をレンダリングします。`h1` をオーバーライドに加えると、タイトルが気付かないうちに二重レンダリングされてしまいます。
+`h1` は意図的に含まれていません。ページタイトルは zudo-doc の規約に従ってフロントマターから `<h1>` をレンダリングします。ページタイトルはコンテンツ本文の見出しと区別してください。本文に書いた Markdown の `h1` は、コンポーネントマップで描画を変更できても、意図的に slug が付与されません。
 
 ## グローバルな `mdx-components.tsx` 規約
 
 すべての `<entry.Content />` 呼び出しに対して、呼び出しごとのスプレッドなしで適用したいプロジェクト全体の要素オーバーライドには、プロジェクトルート（`zfb.config.ts` の隣）に `mdx-components.tsx` ファイルを置き、フラットな `{ tag: Component }` マップを**デフォルトエクスポート**します。
 
 ```tsx
-// mdx-components.tsx (project root)
+// mdx-components.tsx（プロジェクトルート）
 import MyH2 from "./components/my-h2";
 
 export default {
@@ -113,12 +113,14 @@ export default {
 よくあるパターンは、見出しをスタイル付きのコンテナでラップすることです。
 
 ```tsx
-// mdx-components.tsx (project root)
-type Props = { id?: string; children?: unknown };
+// mdx-components.tsx（プロジェクトルート）
+import type { HTMLAttributes } from "@takazudo/zfb/zudo-react";
 
-function MyH2({ id, children }: Props) {
+type Props = HTMLAttributes<HTMLHeadingElement>;
+
+function MyH2({ children, ...attrs }: Props) {
   return (
-    <h2 id={id}>
+    <h2 {...attrs}>
       <span>{children}</span>
     </h2>
   );
@@ -145,9 +147,9 @@ export default { h2: MyH2 };
 
 ## Props の契約
 
-各オーバーライドコンポーネントが受け取るのは、その要素に対して Markdown パイプラインが実際に生成する属性だけです。任意の HTML 属性を `{...props}` で網羅的にスプレッドして渡すような仕組みはありません。渡されるのは下表に挙げたフィールドだけです。
+各オーバーライドは Markdown/MDX パイプラインがその要素に出力した属性を受け取ります。下表はよく使う基本 props であり、**網羅的な許可リストではありません**。機能が生成した属性や執筆時に指定された属性も渡されます。たとえば表の配置指定 `style`、チェックボックスの `type`／`checked`／`disabled`、脚注の `data-*`／`aria-*`／`id` などです。
 
-| Element(s)    | Props received                                        |
+| 要素          | 受け取る props                                        |
 | ------------- | ----------------------------------------------------- |
 | `a`           | `href`、`title`（任意）、`children`                  |
 | `img`         | `src`、`alt`、`title`（任意） — void、children なし  |
@@ -158,7 +160,7 @@ export default { h2: MyH2 };
 | `ol`          | `start`（1 以外のときのみ）、`children`              |
 | その他すべて  | `children` のみ                                       |
 
-オーバーライドに `{...rest}` を加えて HTML 要素にスプレッドしても、未知の属性は届きません。エミッターは Markdown ソースから任意の属性を転送しないからです。
+要素をラップするときは、処理する props を取り出し、残りの属性を対応する HTML 要素にスプレッドして保持してください。落とすと、表の配置、タスクリストの意味、脚注の移動、アクセシビリティ、機能フックが壊れることがあります。通常の Markdown の `h1` に slug を付けない仕様は変わりません。これは、執筆した JSX 要素が自身の属性を指定することを禁止するものではありません。
 
 ## 小文字と PascalCase の非対称性
 
@@ -168,12 +170,12 @@ export default { h2: MyH2 };
 - **PascalCase の名前**（`Note`、`Callout` など）は、呼び出し側の `components` prop からルックアップされ、見つからなければ即座に throw します。
 
   ```js
-  // Inside compiled MDX output:
+  // コンパイル済み MDX 出力内:
   const Note = _components.Note ?? components.Note;
   if (!Note) throw new Error("MDX requires `Note` to be passed via the `components` prop");
   ```
 
-  A PascalCase component referenced in an `.mdx` file that is not present in the `components` map at render time throws at runtime — not at build time. This is intentional: the compiled module stays portable; the caller is responsible for passing all required components.
+  `.mdx` で参照する PascalCase コンポーネントがマージ後の `components` マップにない場合、評価／レンダリング中に例外が発生します。リクエスト時だけでなく、静的ビルドのプリレンダリングも失敗する可能性があります。コンパイル済みモジュールは移植可能なままで、必要なコンポーネントは呼び出し側がすべて渡します。
 
 ## Islands の制約
 
@@ -232,7 +234,7 @@ Island を囲む Fragment です。Fragment は DOM 要素を追加せず、
 具体的な境界をスキャナーから見える状態にします。
 
 ```tsx
-// mdx-components.tsx (project root)
+// mdx-components.tsx（プロジェクトルート）
 import { Island } from "zfb";
 import Counter from "./components/counter";
 
@@ -325,13 +327,13 @@ locked `factory-map-default`、`factory-map-host-override`、
 `factory-map-settings-disabled` の行を含む全 matrix は
 [Islands](./islands.mdx#境界ターゲットの検出と移行-カスタマイズ可能なパッケージ島の合成境界)にあります。
 
-## Deferred open item — `wrapper`
+## ドキュメント全体のラップ
 
-MDX supports a special `wrapper` key in the `components` map: a component that wraps the entire rendered output. zfb's emitter does not recognise `wrapper` — the body is wrapped in `<_Fragment>` directly, and no lookup against a `wrapper` key is performed. Support for `wrapper` is a tracked open item and is not implemented in the current release.
+一部の MDX 実装は `components.wrapper` をドキュメント全体の特別なラッパーとして扱いますが、zfb はそうしません。エミッターはそのキーを参照せず、本文を直接 `<_Fragment>` で包みます。全体のコンテナーが必要なら、ページやレイアウトで `<entry.Content />` を明示的にラップしてください。
 
-## Authoring `.mdx` with custom components
+## カスタムコンポーネントを使って `.mdx` を書く
 
-The bundled `basic-blog` template demonstrates the end-to-end shape. Its `hello-zfb.mdx` post writes a `<Tip>` admonition as JSX directly in the body:
+同梱の `basic-blog` テンプレートは、一連の構成を示す例です。`hello-zfb.mdx` の記事では、本文に `<Tip>` の注意書きを JSX として直接書いています。
 
 ```mdx
 ---
@@ -351,7 +353,7 @@ validate every post's frontmatter against the collection schema.
 </Tip>
 ```
 
-Nothing in the per-post route wires `<Tip>` up. The route passes `defaultComponents` and nothing else:
+記事ごとのルートは `<Tip>` を登録していません。ルートが渡すのは `defaultComponents` だけです。
 
 ```tsx
 // pages/blog/[slug].tsx
@@ -367,18 +369,18 @@ export default function BlogPostPage({ post }: Props) {
 }
 ```
 
-The admonitions arrive through the project-root `mdx-components.tsx`, which zfb merges into every entry:
+注意書きのコンポーネントは、プロジェクトルートの `mdx-components.tsx` から届きます。zfb がこのマップをすべてのエントリにマージします。
 
 ```tsx
-// mdx-components.tsx (project root)
+// mdx-components.tsx（プロジェクトルート）
 import { Note, Tip, Important, Warning, Caution } from "~/components/callout";
 
 export default { Note, Tip, Important, Warning, Caution };
 ```
 
-Putting the five names there rather than in each route is what makes them work in **plain `.md`** posts too. The template enables `markdown.features.githubAlerts` in its `zfb.config.ts`, so a `> [!NOTE]` blockquote is rewritten into a `<Note>` element before rendering — and a PascalCase name missing from the map throws at render time. Wiring them per route would mean every route that renders a post has to remember all five.
+5 つの名前を各ルートではなくここに置くことで、**通常の `.md`** 記事でも使えます。テンプレートは `zfb.config.ts` で `markdown.features.githubAlerts` を有効にしているため、`> [!NOTE]` の引用は描画前に `<Note>` 要素へ書き換えられます。マップに PascalCase の名前がなければ描画時に例外になります。ルートごとに登録する方法では、記事を描画するすべてのルートで 5 つとも忘れずに指定する必要があります。
 
-The components themselves are ordinary synchronous zudo-react components. `components/callout.tsx` exports one base component plus five named wrappers, each taking only `children`:
+コンポーネント自体は通常の同期 zudo-react コンポーネントです。`components/callout.tsx` は共通のコンポーネント 1 つと、`children` だけを受け取る 5 つの名前付きラッパーをエクスポートします。
 
 ```tsx
 // components/callout.tsx

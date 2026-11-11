@@ -14,6 +14,15 @@ category: Recipes
 - **ライブデモ** — [zfb-example-json-api.takazudomodular.com](https://zfb-example-json-api.takazudomodular.com/)
 - **リポジトリ** — [github.com/Takazudo/zfb-example-json-api](https://github.com/Takazudo/zfb-example-json-api)
 
+**[2026-11-11 に確認したマニフェスト](https://github.com/Takazudo/zfb-example-json-api/blob/68d23bdfdf649a30c2aef45349fc75693861ca18/package.json)** (`68d23bdfdf649a30c2aef45349fc75693861ca18`)
+
+| 前提条件・ツール | 宣言値 |
+| --- | --- |
+| Node.js | `>=24.0.0` |
+| パッケージマネージャー | `pnpm@10.34.1` |
+| Wrangler (devDependency) | `4.127.0` |
+| TypeScript (devDependency) | `^5.9.0` |
+
 ## 何を示すか
 
 - **ほぼ静的なサイトに置かれた 2 本の SSR ルート**。`pages/index.tsx` と `pages/404.tsx` は HTML にプリレンダリングされ、`pages/api/items.tsx` と `pages/api/search.tsx` は `export const prerender = false` でそこから抜けて、リクエストごとに Worker 上で動きます。
@@ -31,8 +40,8 @@ category: Recipes
 | 項目 | リポジトリでの内容 |
 |---|---|
 | フレームワーク | zfb 組み込みの zudo-react JSX ランタイム |
-| zfb のバージョン | `@takazudo/zfb` **3.1.0**、`@takazudo/zfb-runtime` **3.1.0** |
-| アダプター | `@takazudo/zfb-adapter-cloudflare` **3.1.0** — 導入済みで、Worker ルートに必要 |
+| zfb のバージョン | `@takazudo/zfb` **6.0.1**、`@takazudo/zfb-runtime` **6.0.1** |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` **6.0.1** — 導入済みで、Worker ルートに必要 |
 | スタイリング | `reset: "owned-v1"` の zudo-wind。`styles/global.css` に手書きのセマンティッククラスを定義し、`item-card__meta` と `text-link` は `authoredClasses` に登録 |
 | レンダリング | 混在。`/` と `/404` はプリレンダリング、`/api/items` と `/api/search` は `prerender = false` |
 | Cloudflare 側の形態 | Workers Static Assets。`main = "./dist/_worker.js"`、`[assets]` に `binding = "ASSETS"`、`not_found_handling = "404-page"`、`run_worker_first = false` |

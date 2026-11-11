@@ -70,8 +70,9 @@ literal, zfb can enumerate it directly. When `paths()` depends on imports,
 collections, async work, or other nonliteral code, zfb evaluates the runtime
 export during route enumeration. A package can therefore inject its built
 `dist/` route directly; it does not need a parallel source `.tsx` entrypoint.
-This does not change file-system discovery: a `.js` file placed under `pages/`
-is not scanned as a user page.
+File-system discovery also accepts `.js` pages: the supported extensions are
+`.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, `.md`, and `.html`, subject to the
+private-path, client-script, declaration and test exclusions in [Routing](./routing.mdx).
 
 ### `injectRoute` patterns must not have a `_`-prefixed segment
 

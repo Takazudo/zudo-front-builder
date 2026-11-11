@@ -29,7 +29,18 @@ sidebar_position: 7
 
 <Note>
 
-**想定される失敗は決してスローしません。** Markdown のパースエラー、不正なオプション JSON、未知の syntect テーマ名などの問題は、すべて解決された結果の `diagnostics` エントリとして返されます — スローされるエラーや reject された Promise になることはありません。reject するのは本物の wasm トラップのときだけで、`ZfbMdWasmTrapError` または `ZfbMdWasmTrapRecoveryLimitError` になります（[エラークラス](#エラークラス) を参照）。
+**パーサー・オプションの診断と Promise の reject は別の経路です。**
+Markdown のパースエラー、不正なオプション JSON、未知のテーマは、解決された結果の
+構造化 `diagnostics` として返ります。一方、ネットワークやファイルの読み込み、glue の
+import、初期化、不正な JavaScript 値（JSON にシリアライズできないオプション値など）
+によって呼び出しが reject することもあります。これらは通常の例外であり、必ずしも
+WASM トラップではありません。`await` 後は `diagnostics` を確認し、reject は `catch`、
+リソースの解放や UI の処理中状態の解除は `finally` で扱ってください。
+
+本物の WASM トラップは `ZfbMdWasmTrapError` / `ZfbMdWasmTrapRecoveryLimitError` と、
+[エラークラス](#エラークラス)に記載した回数制限付きの回復契約に従います。
+通常の読み込み・初期化失敗はこの回復回数に含まれません。失敗した初期化はクリアされ、
+後続の呼び出しで再試行できます。
 
 </Note>
 

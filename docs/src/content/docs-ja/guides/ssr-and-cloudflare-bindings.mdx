@@ -96,7 +96,7 @@ export default async function Products() {
 
 dev 側の SSR パスについて、実用上の注意が 1 つあります:
 
-**SSR のソース編集は自動で反映されますが、ブラウザは自動更新されません。** 編集の tick ごとに `zfb dev` は再バンドルし、新しい V8 ホストを起動して実行中のサーバーに差し替え、古いホストをシャットダウンします。そのため `prerender = false` ルートへの次のリクエストは更新後のコードでレンダリングされます。ただし、SSR のみの編集では静的 HTML の書き込みが発生しないため、SSE の `Page` イベントが発火せず、開いているブラウザタブは自動的にはリロードされません。SSR ページを編集した後は、新しい出力を確認するために**ブラウザタブを手動でリロードしてください**。
+**SSR のソース編集は自動で反映されますが、ブラウザは自動更新されません。** 編集の tick ごとに `zfb dev` は再バンドルし、新しい V8 ホストを起動して実行中のサーバーに差し替え、古いホストをシャットダウンします。そのため `prerender = false` ルートへの次のリクエストは更新後のコードでレンダリングされます。ただし、SSR のみの編集では静的 HTML の書き込みが発生しないため、リロードの `Page` イベントが発火せず、開いているブラウザタブは自動的にはリロードされません。SSR ページを編集した後は、新しい出力を確認するために**ブラウザタブを手動でリロードしてください**。
 
 <Warning title="prerender = false はリテラルなエクスポートでなければならない">
 
@@ -200,7 +200,9 @@ binding = "ASSETS"
 run_worker_first = true
 ```
 
-コスト: これまでエッジから無料で直接配信されていたリクエストも含め、すべてのリクエストが Worker の起動コストを払うことになります — 「静的ヒットは Worker に一切触れない」という高速経路はもうありません。これは、あるルートが本当に静的配信より先に実行される必要があるときだけ使ってください。典型的なケースは**パスワード／セッションゲート**です。SSR ルートがすべてのリクエスト（プリレンダリング済みページへのものも含む）でクッキーを確認し、アセット層が保護対象のコンテンツを配信する前にログインページへリダイレクトします（これを実際に行っている [`password-gate` の例](./examples.mdx) を参照してください）。
+静的ファイルへのヒットも含め、すべてのリクエストで Worker の呼び出しコストが発生します。ただし、この設定だけでは**内側の SSR ルートを認証ゲートにはできません**。生成されたアダプターのラッパーは GET/HEAD で `env.ASSETS` を先に呼び、404 以外なら内側のルートアプリケーションを呼ぶ前に返します。そのため、既存の静的ページは SSR のクッキーチェックを通らずに配信されます。
+
+静的コンテンツを保護するには、Wrangler の `main` を**外側のカスタム Worker**に向け、アセットや生成された zfb Worker へ委譲する前にセッションを検証します。プラットフォームが先にそのゲートへ到達するよう `run_worker_first = true` を使い、ログインページや公開パスの例外はゲートで明示します。この構成は [password-gate レシピ](../recipes/password-gate.mdx)を参照してください。SSR ハンドラーは自身の動的ルートを認証できますが、ラッパーが先に返した静的レスポンスは保護できません。
 
 <Warning title="compatibility_flags = ['nodejs_compat'] は必須">
 
@@ -484,7 +486,13 @@ id = "<namespace-id>" # printed by `wrangler kv namespace create`
 2. **読み書きする** — 上記のように `env.MY_KV.get(...)` / `.put(...)` を使います。
 3. **デプロイする** — `zfb build` を実行し、`wrangler deploy` します。
 
-他のあらゆるバインディング — R2 バケット、Workers AI、Cache API、Durable Objects、service binding — も、SSR ルートからまったく同じ方法で読めます。`wrangler.toml` で宣言し、`Env` インターフェースにその型を追加し、`getCloudflareContext()` の中で `env` から読み取るだけです。単独の KV・Workers AI・リバースプロキシのレシピは [サンプル](./examples.mdx) の一覧を参照してください。
+R2 バケット、Workers AI、Durable Objects、service binding など、宣言するバインディングも同じ方法で扱います。`wrangler.toml` で宣言し、`Env` に型を追加し、`getCloudflareContext().env` から読み取ります。
+
+**Cache API はランタイムのグローバル**であり、Wrangler で宣言する `Env` バインディングではありません。
+Worker 内で、デフォルトのキャッシュには `caches.default`、名前付きのキャッシュには
+`await caches.open("name")` を使います。Cloudflare の [Cache API リファレンス](https://developers.cloudflare.com/workers/runtime-apis/cache/)
+と [Workers Cache レシピ](../recipes/workers-cache.mdx)を参照してください。
+[サンプル](./examples.mdx)には KV・Workers AI・リバースプロキシのレシピもあります。
 
 ## ローカル開発
 

@@ -76,7 +76,4 @@ supplementary highlighting, and post-build custom grammar patterns, see
 
 ## Ordering note
 
-`SyntectPlugin` runs **last** in the hast phase, after `CodeTitlePlugin`,
-`MermaidPlugin`, and all other code-block visitors. It replaces each
-`<pre><code>` element with a raw HTML fragment; any plugin that needs to
-read the structured `<pre>` must run before it.
+Visitors such as `CodeTitlePlugin` and `MermaidPlugin` that need the original structured `<pre><code>` run before `SyntectPlugin`. Syntect then emits the highlighted structure; when enabled, `codeEnrichment` runs afterward on its per-line structure to add diff markers, line numbers, highlights, and related enrichment. The order is pre-highlight visitors → Syntect → post-highlight code enrichment. Syntect is not last after every visitor.

@@ -125,10 +125,29 @@ A few Astro features have direct zfb equivalents under a different name:
 - **Islands / client directives** — replaced by the `"use client"` file
   directive and an explicit `<Island>` boundary; see [Islands](../architecture/islands.mdx).
 
-Some features have no current equivalent: an integrations marketplace, Astro
-DB, and server endpoints. If your site relies on these, evaluate whether
-the zfb plugin system or an adapter covers your use case before committing
-to a port.
+SSR routes can return a `Response`, including non-HTML and non-GET endpoints.
+The convention is a default page export with `export const prerender = false`,
+not Astro's named `GET` / `POST` endpoint exports. Default page exports receive
+**props**, not a `Request`. With the Cloudflare adapter, read the current
+`request`, bindings, and execution context from `getCloudflareContext()`:
+
+```ts title="pages/api/method.ts"
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+export const prerender = false;
+
+export default function MethodEndpoint() {
+  const { request } = getCloudflareContext();
+  return new Response(JSON.stringify({ method: request.method }), {
+    headers: { "Content-Type": "application/json" },
+  });
+}
+```
+
+Handle method dispatch, request bodies, and response headers explicitly inside
+the default export. See [SSR and Cloudflare bindings](./ssr-and-cloudflare-bindings.mdx)
+for deployment and request-scope rules. An integrations marketplace and Astro DB
+have no direct equivalent; evaluate plugins or adapters for those needs.
 
 ### Engine additions since v0
 

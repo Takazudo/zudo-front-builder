@@ -266,7 +266,7 @@ screen-reader-visibility uses exact supported Wind utility classes.
 
 ## Custom and named values
 
-All entries in this family are fixed keywords with no named token scale or arbitrary value form. Vertical alignment affects inline-level content relative to a line, not flex or grid alignment. box-border includes padding and border in the declared width; box-content measures the content box. object-fit controls how replaced content fits the element’s box. sr-only clips content visually but leaves it in the accessibility tree; do not use it to hide information that sighted users need.
+All entries in this family are fixed keywords with no named token scale or arbitrary value form. Vertical alignment affects inline-level content relative to a line, not flex or grid alignment. box-border includes padding and border in the declared width; box-content measures the content box. object-fit controls how replaced content fits the element’s box. sr-only clips content visually but leaves it in the accessibility tree; do not use it to hide information that sighted users need. Exact not-sr-only reverses the clipping declarations to static positioning, auto width/height, zero padding/margin, visible overflow, auto clip, no clip-path, and normal white-space. It sorts after sr-only in the same variant bucket and supports existing variants, but does not restore every prior authored style.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
 

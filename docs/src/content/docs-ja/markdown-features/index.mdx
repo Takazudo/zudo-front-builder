@@ -81,7 +81,7 @@ Boolean shorthand は**普遍ではありません**。値の形に `boolean` �
 | [ルビ注釈](./ruby.mdx) | Opt-in | `markdown.features.ruby` | `boolean \| {}` | 省略または `false` で off。 |
 | [TOC エクスポート](./toc-export.mdx) | Opt-in | `markdown.features.tocExport` | `{ maxDepth?: number }` | 省略時は off。デフォルト `maxDepth` は `3`。 |
 | [画像サイズ](./image-dimensions.mdx) | Opt-in | `markdown.features.imageDimensions` | `{ skipRemote?: boolean }` | 省略時は off。`skipRemote` のデフォルトは `true`。 |
-| [リンク検証](./link-validation.mdx) | Opt-in | `markdown.features.linkValidation` | `{ failOnBroken?: boolean }` | 省略時は off。デフォルトは警告、`failOnBroken: true` でエラー。 |
+| [リンク検証](./link-validation.mdx) | Opt-in | `markdown.features.linkValidation` | `{ failOnBroken?: boolean; anchorComponents?: Record<string, string> }` | 省略時は off。デフォルトは警告、`failOnBroken: true` でエラー。 |
 | [トランスクルージョン](./transclude.mdx) | Opt-in | `markdown.features.transclude` | `{ maxDepth?: number }` | 省略時は off。デフォルト `maxDepth` は `5`。 |
 
 ## 関連項目

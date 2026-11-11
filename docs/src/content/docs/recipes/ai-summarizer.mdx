@@ -18,6 +18,15 @@ endpoint still answers, with no Cloudflare account at all.
 - **Live demo:** [zfb-example-ai-summarizer.takazudomodular.com](https://zfb-example-ai-summarizer.takazudomodular.com/)
 - **Repository:** [Takazudo/zfb-example-ai-summarizer](https://github.com/Takazudo/zfb-example-ai-summarizer)
 
+**[Manifest checked on 2026-11-11](https://github.com/Takazudo/zfb-example-ai-summarizer/blob/6ce8f7935cabedb73c12ee090e5ca8147b8c363f/package.json)** (`6ce8f7935cabedb73c12ee090e5ca8147b8c363f`)
+
+| Prerequisite / tool | Declared value |
+| --- | --- |
+| Node.js | `>=24.0.0` |
+| Package manager | `pnpm@10.34.1` |
+| Wrangler (devDependency) | `4.127.0` |
+| TypeScript (devDependency) | `^5.9.0` |
+
 ## What it demonstrates
 
 - **A zudo-react island as the entire UI.** `pages/index.tsx` is static HTML that wraps one
@@ -39,8 +48,8 @@ endpoint still answers, with no Cloudflare account at all.
 
 | Piece | What the repo uses |
 | --- | --- |
-| Engine and UI | `@takazudo/zfb` **3.1.0** with the built-in zudo-react runtime; `@takazudo/zfb-runtime` **3.1.0** |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.1.0**, set as `adapter` in `zfb.config.ts` |
+| Engine and UI | `@takazudo/zfb` **6.0.1** with the built-in zudo-react runtime; `@takazudo/zfb-runtime` **6.0.1** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **6.0.1**, set as `adapter` in `zfb.config.ts` |
 | Styling | zudo-wind with `reset: "owned-v1"`; component classes and styles are authored in `styles/global.css`, with no utility classes |
 | Rendering mode | SSG for `pages/index.tsx` and `pages/404.tsx`; only `pages/api/summarize.tsx` exports `prerender = false` |
 | Cloudflare surface | Workers Static Assets — `main = "./dist/_worker.js"`, `[assets]` on `./dist` with the `ASSETS` binding, `not_found_handling = "404-page"`, `run_worker_first = false` |

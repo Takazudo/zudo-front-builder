@@ -19,6 +19,12 @@ import type {
 } from "@takazudo/zfb-md-wasm/parse";
 
 import { isNoteDirectiveSample, NOTE_DIRECTIVE_SAMPLE } from "./admonition-sample";
+import {
+  localizedSamples,
+  playgroundApiHref,
+  playgroundCopy,
+  type PlaygroundProps,
+} from "./host-copy";
 import DiagnosticsList, { type PlaygroundDiagnostic } from "./diagnostics-list";
 import { createGfmSignals, snapshotGfm, type GfmKey, type GfmSignals } from "./gfm-signals";
 import OptionRow from "./option-row";
@@ -101,7 +107,14 @@ const loadParseModule = createModuleLoader<ParseModule>(
   () => import("@takazudo/zfb-md-wasm/parse"),
 );
 
-function ParseOutput({ state }: { state: ReadonlySignal<WasmModuleState<ParseRunResult>> }) {
+function ParseOutput({
+  state,
+  locale,
+}: {
+  state: ReadonlySignal<WasmModuleState<ParseRunResult>>;
+  locale: PlaygroundProps["locale"];
+}) {
+  const copy = playgroundCopy(locale);
   const ready = computed(() => state.value.status === "ready");
   const summary = computed(() => {
     const current = state.value;
@@ -115,16 +128,14 @@ function ParseOutput({ state }: { state: ReadonlySignal<WasmModuleState<ParseRun
       when={ready}
       fallback={() => (
         <pre class="m-0 whitespace-pre-wrap">
-          {computed(() =>
-            state.value.status === "idle" ? "Run to inspect the raw mdast tree." : "",
-          )}
+          {computed(() => (state.value.status === "idle" ? copy.parsePrompt : ""))}
         </pre>
       )}
     >
       {() => (
         <div class="flex min-w-0 flex-col gap-vsp-sm">
           <p class="m-0 text-caption">
-            node count: {computed(() => summary.value.nodeCount)} · max depth:{" "}
+            {copy.nodeCount}: {computed(() => summary.value.nodeCount)} · {copy.maxDepth}:{" "}
             {computed(() => summary.value.maxDepth)}
           </p>
           <pre class="m-0 whitespace-pre">
@@ -139,7 +150,7 @@ function ParseOutput({ state }: { state: ReadonlySignal<WasmModuleState<ParseRun
   );
 }
 
-function parseModule(scope: Scope) {
+function parseModule(scope: Scope, locale: PlaygroundProps["locale"]) {
   return wasmModule<
     ParseModule,
     [source: string, options: ParseToAstOptions, adaptToMdast: boolean],
@@ -162,7 +173,10 @@ function parseModule(scope: Scope) {
           diagnostics.push({
             severity: "error",
             source: "toMdastRoot",
-            message: `toMdastRoot failed at path ${error.path} for nodeType ${error.nodeType ?? "null"}: ${error.message}`,
+            message:
+              locale === "ja"
+                ? `toMdastRoot が path ${error.path}、nodeType ${error.nodeType ?? "null"} で失敗しました: ${error.message}`
+                : `toMdastRoot failed at path ${error.path} for nodeType ${error.nodeType ?? "null"}: ${error.message}`,
             line: null,
             column: null,
           });
@@ -243,7 +257,8 @@ function ParseOptions({
   );
 }
 
-export default function ParsePlayground() {
+export default function ParsePlayground({ locale = "en", basePath = "" }: PlaygroundProps = {}) {
+  const copy = playgroundCopy(locale);
   const scope = getScope();
   const source = signal(PARSE_SAMPLE.value);
   const activeSampleId = signal<string | undefined>(PARSE_SAMPLE.id);
@@ -254,7 +269,7 @@ export default function ParsePlayground() {
   const gfm = createGfmSignals();
   const adaptToMdast = signal(false);
   const hasRun = signal(false);
-  const { state, run } = parseModule(scope);
+  const { state, run } = parseModule(scope, locale);
 
   function handleRun(): void {
     const options: ParseToAstOptions = {
@@ -282,11 +297,13 @@ export default function ParsePlayground() {
   });
   const trapError = computed(() => {
     const current = state.value;
-    return current.status === "error" ? formatTrap(current.error) : "";
+    return current.status === "error" ? `${copy.runError}: ${formatTrap(current.error)}` : "";
   });
 
   return (
     <PlaygroundShell
+      labels={copy}
+      apiReferenceHref={playgroundApiHref(locale, basePath)}
       value={source}
       onInput={() => {
         activeSampleId.value = undefined;
@@ -297,7 +314,8 @@ export default function ParsePlayground() {
       options={
         <div class="flex flex-col gap-vsp-sm">
           <SamplePicker
-            samples={PARSE_SAMPLES}
+            samples={localizedSamples(PARSE_SAMPLES, locale)}
+            label={copy.samples}
             activeSampleId={activeSampleId}
             onPick={pickSample}
           />
@@ -311,10 +329,19 @@ export default function ParsePlayground() {
           />
         </div>
       }
-      output={<ParseOutput state={state} />}
-      diagnostics={<DiagnosticsList diagnostics={diagnostics} label="Parse diagnostics" />}
+      output={<ParseOutput state={state} locale={locale} />}
+      diagnostics={
+        <DiagnosticsList
+          diagnostics={diagnostics}
+          locale={locale}
+          label={copy.parseDiagnostics}
+          emptyMessage={computed(() =>
+            state.value.status === "ready" ? copy.noDiagnostics : undefined,
+          )}
+        />
+      }
       trapError={trapError}
-      textareaLabel="Markdown or MDX source"
+      textareaLabel={copy.markdownSource}
     />
   );
 }

@@ -97,6 +97,23 @@ export function For<T>(props: ForProps<T>): Description;
 
 For は読み取り専用の item と index の signal を伴う、所有スコープ付きのキー付き項目領域を作ります。[条件分岐とリスト](./conditionals-and-lists.mdx)を参照してください。
 
+### ErrorBoundary
+
+~~~ts
+export interface ErrorBoundaryProps {
+  children: () => Child;
+  fallback: (error: unknown, reset: () => void) => Child;
+  resetKey?: ReadonlySignal<unknown>;
+}
+export function ErrorBoundary(props: ErrorBoundaryProps): Description;
+~~~
+
+ErrorBoundary は置き換え可能な部分ツリーを所有します。children ファクトリは試行ごとに実行します。子孫の同期セットアップや描画が失敗すると、最も近い境界がフォールバックを描画します。フォールバックは元の throw された値と、境界が所有する reset コールバックを受け取ります。フォールバック自体の失敗は外側の境界へ伝わり、自分自身では捕捉できません。
+
+reset を呼ぶと新しい試行をキューに入れます。resetKey から読み取れる値の変更も、現在の試行が正常な場合を含め、新しい試行をキューに入れます。値は Object.is で比較し、同じ値なら再試行しません。同時に保留された要求は 1 回の試行にまとめます。破棄後の reset は何もしません。サーバーレンダリングでは再試行せず、reset コールバックも何もしません。
+
+完全な例、捕捉する段階、ライフサイクルの保証は[ローカルな部分ツリーの回復](./scopes-and-lifecycle.mdx#ローカルな部分ツリーの回復)を、意図的に内側を再マウントする方針は[境界のハイドレーション](./hydration.mdx#境界のハイドレーション)を参照してください。
+
 ### Key
 
 ~~~ts
@@ -204,10 +221,21 @@ Ref は有効化前に値が入る可変オブジェクトで、コールバッ�
 ### Style
 
 ~~~ts
-export type Style = string | Readonly<Record<string, string | number | null | undefined>>;
+export type Style = string | CSSProperties;
 ~~~
 
-Style は CSS 文字列か CSS 表記のキーを持つ平坦なオブジェクトを受け付けます。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+Style は CSS 文字列か、`CSSProperties` に従う平坦なプレーンオブジェクトです。オブジェクトのキーはチェックイン済みの対応プロパティ一覧にある CSS 表記（`background-color` など）、対応する vendor 接頭辞付き名、または `--` に英数字・`_`・`-` を続けたカスタムプロパティ名です。camelCase、未知の名前、配列、クラスインスタンス、null-prototype オブジェクトは拒否します。値は文字列、許可された数値、`null`、`undefined` で、後ろの二つは出力しません。有限の数値の 0 はすべての対応プロパティで使えます。0 以外の数値は `opacity`、`line-height`、`flex-grow` などの明示的な unitless 一覧とカスタムプロパティだけが受け付け、長さには `"12px"` のような単位付き文字列が必要です。数値に自動で px は付きません。CSS 文字列はプロパティや値の検証をせずそのまま使います。[コンポーネントと JSX](./components-and-jsx.mdx)を参照してください。
+
+### CSSProperties と組み込み要素の props 型
+
+~~~ts
+export type {
+  CSSProperties, CssProperty, ElementForTag, HTMLAttributes,
+  InputProps, SelectProps, SVGAttributes, TextareaProps,
+} from "./jsx-types.js";
+~~~
+
+`CSSProperties` は省略可能なプロパティの readonly マップで、上記のキーと数値の規則を型にも反映します。`CssProperty` は対応 CSS 名の union（型上のカスタム名は `--${string}`）です。`ElementForTag` と各属性／コントロール型は、組み込み HTML・SVG 要素の props とイベントの型付けに使います。ランタイムはさらにカスタム名の文字と有限数を検証します。
 
 ### Listener
 
@@ -369,10 +397,12 @@ export interface IslandOptions {
   media?: string | undefined;
   skipSsr?: boolean | undefined;
   fallback?: Child;
+  persist?: string | undefined;
+  persistProps?: boolean | undefined;
 }
 ~~~
 
-IslandOptions はラッパーの識別子、スケジュールモード、省略可能な media クエリー、skip-SSR の fallback を定義します。[サーバーレンダリング](./server-rendering.mdx)を参照してください。
+IslandOptions はラッパーの識別子、スケジュールモード、media クエリー、skip-SSR の fallback、ナビゲーション間で保持する `persist` キーと、受信 props が変わっても現在の props／状態を保つ `persistProps`（既定 `false`、`persist` が必要）を定義します。[サーバーレンダリング](./server-rendering.mdx)と[永続化](../architecture/client-side-routing.mdx)を参照してください。
 
 ### renderToString
 

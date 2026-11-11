@@ -7,7 +7,7 @@ category: Recipes
 
 <Info title="What this page covers">
 
-How to replace the removed `imageEnlarge` built-in feature by wiring a userland `EnlargeableImg` component through the [MDX override API](../architecture/mdx-components.mdx). Both a fully server-side variant (no JavaScript shipped per page) and an islands variant (client-side interactivity via `<Island>`) are shown.
+How to replace the removed `imageEnlarge` built-in feature by wiring a userland `EnlargeableImg` component through the [MDX override API](../architecture/mdx-components.mdx). Both a server-rendered variant (shared layout JavaScript, no island runtime or per-image bundle) and an islands variant (client-side interactivity via `<Island>`) are shown.
 
 </Info>
 
@@ -53,7 +53,7 @@ if (props.title === "no-enlarge") {
 
 ## Variant A — server-side only (no islands)
 
-This is the simpler variant. `EnlargeableImg` is a server component: it renders a `<figure>` with a disclosure-style zoom button and delegates all interactivity to a small global click script in the layout. No JavaScript is shipped per page; the click script is a one-time layout-level inline `<script>`.
+This is the simpler variant. `EnlargeableImg` is a server component: it renders a `<figure>` with a disclosure-style zoom button and delegates all interactivity to a small global click script in the layout. It needs JavaScript: the shared layout includes the click script once per document. There is no island runtime or separate per-image bundle for this variant.
 
 ### Component
 
@@ -176,7 +176,7 @@ export default {
 };
 ```
 
-When `mdx-components.tsx` exists at the project root, zfb automatically installs it on `globalThis.__zfb.mdxComponents` at build time. Every `entry.Content` render merges it under `defaultComponents` and above the per-call `components` prop, so you do not need to pass `img: EnlargeableImg` on every route.
+When `mdx-components.tsx` exists at the project root, zfb automatically installs it on `globalThis.__zfb.mdxComponents` at build time. Every `entry.Content` render merges `defaultComponents` first, then the root global map, then the per-call `components` prop (later maps win), so you do not need to pass `img: EnlargeableImg` on every route.
 
 ## Variant B — interactive island
 

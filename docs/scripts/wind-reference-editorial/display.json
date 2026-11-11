@@ -112,7 +112,7 @@
     "en": {
       "purpose": "Choose display to control whether an element joins the text flow, starts a block, or arranges its children as flex or grid items. Use inline-block when an inline element also needs a box size; use hidden when the box should leave layout.",
       "setup": "Every preview explicitly starts from spec 1, reset \"none\", strict mode, spacingUnit \"0.25rem\", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.",
-      "customValues": "This family has eight exact class names and no value suffixes or custom values. inline, block, inline-block, flex, inline-flex, grid, inline-grid, and hidden map directly to display modes. hidden is display:none; invisible is a separate visibility utility that preserves the box.",
+      "customValues": "This family has 21 exact class names and no value suffixes or custom values: the eight inline, block, inline-block, flex, inline-flex, grid, inline-grid, and hidden modes, plus contents, flow-root, list-item, table, inline-table, table-caption, table-cell, table-column, table-column-group, table-footer-group, table-header-group, table-row, and table-row-group. hidden is display:none; invisible is a separate visibility utility that preserves the box.",
       "examples": [
         {
           "id": "display-flow",
@@ -139,7 +139,7 @@
     "ja": {
       "purpose": "display で、文章の流れに入るか、ブロックとして改行するか、子要素を flex または grid で並べるかを選びます。インラインのまま幅も指定したい場合は inline-block、レイアウトから箱ごと取り除く場合は hidden を使います。",
       "setup": "すべてのプレビューは spec 1、reset \"none\"、strict モード、spacingUnit \"0.25rem\"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。",
-      "customValues": "このファミリーは値の接尾辞や任意値を持たない、8 個の固定クラスです。inline、block、inline-block、flex、inline-flex、grid、inline-grid、hidden は display の種類に対応します。hidden は display:none です。invisible は箱の場所を残す別の visibility ユーティリティです。",
+      "customValues": "このファミリーは値の接尾辞や任意値を持たない 21 個の固定クラスです。従来の inline、block、inline-block、flex、inline-flex、grid、inline-grid、hidden に、contents、flow-root、list-item、table、inline-table、table-caption、table-cell、table-column、table-column-group、table-footer-group、table-header-group、table-row、table-row-group が加わります。hidden は display:none です。invisible は箱の場所を残す別の visibility ユーティリティです。",
       "examples": [
         {
           "id": "display-flow",

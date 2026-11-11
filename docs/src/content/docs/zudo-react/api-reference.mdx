@@ -229,10 +229,21 @@ Ref is a mutable object populated before activation, with no callback form; see 
 ### Style
 
 ~~~ts
-export type Style = string | Readonly<Record<string, string | number | null | undefined>>;
+export type Style = string | CSSProperties;
 ~~~
 
-Style accepts a CSS string or a flat CSS-spelled object; see [Components and JSX](./components-and-jsx.mdx).
+Style accepts a CSS string or a flat plain object typed by `CSSProperties`. Object keys use CSS spelling from the checked-in supported property list (for example `background-color`), its supported vendor-prefixed names, or a custom property name beginning with `--` followed by letters, digits, `_`, or `-`. CamelCase, unknown names, arrays, class instances, and null-prototype objects are rejected. Values are strings, allowed numbers, `null`, or `undefined`; the last two are omitted. Finite numeric zero is accepted for every supported property. Nonzero numbers are accepted only for the explicit unitless list (such as `opacity`, `line-height`, and `flex-grow`) and custom properties; lengths need strings such as `"12px"`. Numbers never gain automatic px units. A CSS string bypasses property/value validation. See [Components and JSX](./components-and-jsx.mdx).
+
+### CSSProperties and intrinsic prop types
+
+~~~ts
+export type {
+  CSSProperties, CssProperty, ElementForTag, HTMLAttributes,
+  InputProps, SelectProps, SVGAttributes, TextareaProps,
+} from "./jsx-types.js";
+~~~
+
+`CSSProperties` is a readonly map of optional properties reflecting the key and numeric rules above. `CssProperty` is the supported CSS-name union (custom names are typed as `--${string}`). `ElementForTag` and the attribute/control types describe intrinsic HTML/SVG props and their typed events. Runtime validation additionally checks custom-name characters and finite numbers.
 
 ### Listener
 
@@ -394,10 +405,12 @@ export interface IslandOptions {
   media?: string | undefined;
   skipSsr?: boolean | undefined;
   fallback?: Child;
+  persist?: string | undefined;
+  persistProps?: boolean | undefined;
 }
 ~~~
 
-IslandOptions defines the wrapper identity, scheduling mode, optional media query, and skip-SSR fallback; see [Server rendering](./server-rendering.mdx).
+IslandOptions defines the wrapper identity, scheduling mode, media query, skip-SSR fallback, the `persist` key for retention across navigation, and `persistProps` to retain current props/state despite incoming prop changes (default `false`, requires `persist`). See [Server rendering](./server-rendering.mdx) and [Island persistence](../architecture/client-side-routing.mdx).
 
 ### renderToString
 

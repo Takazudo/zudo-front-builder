@@ -90,7 +90,7 @@ time.
 | [Ruby annotation](./ruby.mdx) | Opt-in | `markdown.features.ruby` | `boolean \| {}` | Off when absent or `false`. |
 | [TOC export](./toc-export.mdx) | Opt-in | `markdown.features.tocExport` | `{ maxDepth?: number }` | Off when absent; default `maxDepth` is `3`. |
 | [Image dimensions](./image-dimensions.mdx) | Opt-in | `markdown.features.imageDimensions` | `{ skipRemote?: boolean }` | Off when absent; `skipRemote` defaults to `true`. |
-| [Link validation](./link-validation.mdx) | Opt-in | `markdown.features.linkValidation` | `{ failOnBroken?: boolean }` | Off when absent; warns by default, errors with `failOnBroken: true`. |
+| [Link validation](./link-validation.mdx) | Opt-in | `markdown.features.linkValidation` | `{ failOnBroken?: boolean; anchorComponents?: Record<string, string> }` | Off when absent; warns by default, errors with `failOnBroken: true`. |
 | [Transclusion](./transclude.mdx) | Opt-in | `markdown.features.transclude` | `{ maxDepth?: number }` | Off when absent; default `maxDepth` is `5`. |
 
 ## See also

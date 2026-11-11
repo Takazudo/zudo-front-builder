@@ -5,7 +5,7 @@ sidebar_position: 13
 category: Concepts
 ---
 
-**コンテンツコレクション**とは、プロジェクト設定で宣言した `.md`、`.mdx`、または `.tsx` エントリのディレクトリです。zfb はビルド時にそのディレクトリをスキャンし、各エントリの frontmatter をあなたが指定したスキーマに照らしてパースし、ページから呼び出せる `getCollection()` と `getEntry()` ヘルパーを通じてエントリを公開します。
+**コンテンツコレクション**とは、プロジェクト設定で宣言した `.md`、`.mdx`、または `.tsx` エントリのディレクトリです。zfb はビルド時にそのディレクトリをスキャンし、各エントリの frontmatter をパースし、ページから呼び出せる `getCollection()` と `getEntry()` ヘルパーを通じてエントリを公開します。
 
 ## コレクションを宣言する
 
@@ -114,7 +114,7 @@ export default function FeaturedPost() {
 
 各エントリには、信頼して利用できる 3 つの要素があります。
 
-- `data` — パース済みで検証済みのフロントマター（スキーマに照らして型付けされています）。
+- `data` — パース済みのフロントマター。指定したコレクションスキーマは `zfb check` で検証され、すべてのビルドで自動検証されるわけではありません。ジェネリック型の指定も実行時検証にはなりません。
 - `Content` — 本文からコンパイルされたレンダリング可能な zudo-react コンポーネント。`<post.Content components={...} />` のようにレンダリングし、`components` prop を通じて要素レベルのオーバーライドを渡します。これは Astro の `@astrojs/mdx` が公開しているものと同じ契約です。詳細と `defaultComponents` のレシピについては [MDX Components](./mdx-components.mdx) を参照してください。
 - `slug` — ファイル名から導出されます（`my-first-post.md` → `my-first-post`）。ネストしたディレクトリはスラッシュ区切りの slug になります。
 
@@ -147,6 +147,6 @@ export default {
 
 ## パースの仕組み
 
-内部では `zfb-content` クレートが 3 つの仕事をこなします。設定されたディレクトリを走査し、各ファイルの frontmatter をパースし、エントリを JSX ソースへコンパイルして既存の SWC TSX -> JS パイプラインへ渡します。Markdown / MDX エントリは MDX エミッターを使い、`mdx://<collection>/<slug>#<hash>` specifier を持ちます。TSX エントリはソースモジュールを直接使い（別途のコンパイルステップはありません）、`tsx://<collection>/<slug>#<hash>` specifier を持ちます。どちらの場合も末尾のハッシュはコンパイル済み JSX ソースから導出されます。ページレンダラーはそのモジュールを必要に応じて評価し、ページに対して `entry.Content` として公開します。
+内部では `zfb-content` クレートが 3 つの仕事をこなします。設定されたディレクトリを走査し、各ファイルの frontmatter をパースし、エントリを JSX ソースへコンパイルして、ネイティブ Rolldown の変換・バンドル処理へ渡します。Markdown / MDX エントリは MDX エミッターを使い、`mdx://<collection>/<slug>#<hash>` specifier を持ちます。TSX エントリはソースモジュールを直接使い（別途のコンパイルステップはありません）、`tsx://<collection>/<slug>#<hash>` specifier を持ちます。どちらの場合も末尾のハッシュはコンパイル済み JSX ソースから導出されます。生成されたアプリケーションがコンパイル済みモジュールをコンテンツブリッジへ登録します。組み込み V8 がその `fetch` を実行し、ページが `entry.Content` を使うと zudo-react がレンダリングします。
 
 コンパイルとサーフェスの契約は安定しています。レンダリング側については [MDX Components](./mdx-components.mdx) を参照してください。
