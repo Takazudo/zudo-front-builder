@@ -160,7 +160,7 @@ export default defineConfig({
 });
 ```
 
-この短い例は、スターターの明示的な wind 設定と `blog` コレクション、markdown のオプトインを示します。`outDir` と `publicDir` はデフォルトを使い、パレットとスケールの残りは実際の設定ファイルで宣言します。colors と sizes は標準の項目の後に design のマップを展開するため、衝突時は design のキーが優先されます。spacing は design のマップを直接使います。fontSizes、fontFamilies、fontWeights、radii、breakpoints は design の後にスターターの明示的な項目を置くため、後者が衝突時に優先されます。通常のオブジェクトのマージであり、自動的な深いマージではありません。GFM のタスクリストとフットノート、[GitHub アラート](../markdown-features/github-alerts.mdx)、[コードブロックのエンリッチメント](../markdown-features/code-enrichment.mdx)、[見出しマーカー TOC](../markdown-features/heading-marker-toc.mdx) が有効です。全機能は [Markdown 機能](../markdown-features/index.mdx)を参照してください。
+この短い例は、スターターの明示的な wind 設定と `blog` コレクション、markdown のオプトインを示します。`outDir` と `publicDir` はデフォルトを使い、パレットとスケールの残りは実際の設定ファイルで宣言します。colors と sizes は標準の項目の後に design のマップを展開するため、衝突時は design のキーが優先されます。spacing は design のマップを直接使います。fontSizes、fontFamilies、fontWeights、radii、breakpoints は design の後にスターターの明示的な項目を置くため、後者が衝突時に優先されます。通常のオブジェクトのマージであり、自動的な深いマージではありません。常時有効なテーブルと打ち消し線に加えて、GFM のタスクリストとフットノート、[GitHub アラート](../markdown-features/github-alerts.mdx)、[コードブロックのエンリッチメント](../markdown-features/code-enrichment.mdx)、[見出しマーカー TOC](../markdown-features/heading-marker-toc.mdx) が有効です。全機能は [Markdown 機能](../markdown-features/index.mdx)を参照してください。
 
 設定ファイルは camelCase スキーマを使います。主なキーは `outDir`（デフォルト `"dist"`）、`publicDir`（デフォルト `"public"`）、`host`（デフォルト `"localhost"`）、`port`（`zfb dev` は `3000`、`zfb preview` は `4321` にフォールバック）、`wind`、`collections`、`plugins` です。完全なスキーマは [defineConfig](../api/define-config.mdx) を参照してください。
 
