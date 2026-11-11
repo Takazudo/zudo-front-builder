@@ -400,6 +400,12 @@ function ConnectionStatus() {
 
 getScope は同期的なセットアップ中に有効で、現在の所有者を返します。明示的に渡すとリソースの所有関係が分かりやすくなります。セットアップ中にヘルパーを直接呼んでも同じ所有者を共有し、独自のスコープは作りません。ヘルパーは computed 値、クロージャーなど通常の値を返せます。[スコープとライフサイクル](./scopes-and-lifecycle.mdx)と[リアクティビティ](./reactivity.mdx)を参照してください。
 
+## ローカルなエラー回復
+
+`ErrorBoundary` は子孫の同期的な setup／レンダリング、レンダラーが実行する `Show`／`For` の更新、リアクティブなバインディングの失敗に対して、そのサブツリーを fallback に置き換えます。reset コールバックや `resetKey` の変更で新しい試行を開始できます。イベントハンドラー、effect、activation、cleanup、非同期の rejection は捕捉せず、集約されたフォーム検証や島の整合性検証も隠しません。想定されるアプリケーションの失敗は明示的な状態で扱ってください。
+
+ハイドレーションでは、正常な場合も境界の内部をクライアントで作り直します。周囲の兄弟要素は引き継ぎますが、境界内の DOM の同一性や入力済みのフォーム状態は保持しません。[API リファレンス](./api-reference.mdx)と[スコープとライフサイクル](./scopes-and-lifecycle.mdx)で回復の範囲を確認してください。
+
 ## 対応しない機能
 
 | Preact または React の機能 | 代わりに使う方法 |
@@ -409,7 +415,6 @@ getScope は同期的なセットアップ中に有効で、現在の所有者�
 | forwardRef | 子が要素を公開する必要がある場合、Ref オブジェクトを通常の型付き prop として渡します。 |
 | Suspense と遅延コンポーネント | 入れ子の Promise はレンダリングを中断しません。イベントハンドラーやブラウザの有効化コールバックから動的 import を開始し、処理中とエラーの状態を明示的に追跡します。その状態を通常のバインディングや条件領域でレンダリングします。 |
 | クラスコンポーネント | 記述を作る同期的な関数コンポーネントを使います。そのセットアップが signal と登録した処理を所有します。 |
-| エラー境界 | 想定されるアプリケーションの失敗は明示的な状態で扱います。ランタイム診断は失敗した島を分離しますが、任意の子孫のレンダリングエラーを捕捉するコンポーネント境界は提供しません。 |
 | 合成イベント | on:event リスナー、ネイティブイベントオブジェクト、ネイティブの currentTarget を使います。 |
 
 これらは設計上の境界であり、hook の別名が欠けているわけではありません。ランタイムは React や Preact との互換性、互換ラッパー、両ランタイム間の所有関係の混在を保証しません。プロジェクト全体の更新手順は [v3 への移行](../guides/migrating-to-v3.mdx)を参照してください。
@@ -636,4 +641,6 @@ export function Profile({ initialName }: ProfileProps) {
 
 ## クライアントバンドルのサイズ
 
-zudo-react のクライアントランタイムについて、Preact と同じバンドルサイズになる保証はなく、固定のバイト数予算もまだ決まっていません。別のフォローアップで、本番用アイランドの出力を測定し、安全に測定できる最適化を評価したうえで、その結果から回帰予算を決めます。この作業は v3 への移行を妨げません。このガイドではプロジェクトやアイランドのサイズを保証しません。
+zudo-react は Preact と同じバンドルサイズを保証しません。現在は、8 種類の固定 fixture を実際の `zfb build` で workspace／packed の両モードで測定する回帰ゲートがあります。各モードを 2 回ビルドして dist 全体の一致を確認し、entry／shared／lazy の全 JS を重複なく集計します。契約は raw と `gzip-identity-normalized` v2 の上限を追加許容 0 で固定し、実際の gzip は別の転送サイズの証拠として保持します。
+
+Linux x64 の契約は 6.0.1 の CI 測定に基づき、`health.yml` が検証します。Darwin arm64 の契約は別のネイティブ測定に基づく 6.0.0 の記録で、記録されたローカル証拠の live adoption には所有者の承認が未完了です。どちらも特定のソース、入力、ツールチェーンとプラットフォームに限られ、古い SHA の成功は現在の head の成功を証明しません。ほかのプラットフォームや任意のプロジェクトのサイズ保証ではありません。[測定手順と履歴](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/README.md)、[Darwin 契約](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/decision.json)、[Linux 契約](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/decision-linux-x64.json)、[検証コード](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/check-budget.mjs)を参照してください。

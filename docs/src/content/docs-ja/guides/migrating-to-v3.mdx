@@ -53,7 +53,7 @@ export default defineConfig({
 
 スタイルシートに `--color-accent` を宣言し、使うユーティリティに必要なトークンを追加します。`site-header` のようにクラス位置の名前がどのユーティリティ基部にも一致しなければ、通常のクラステキストとして残ります。カタログの基部から始まる名前は最長一致する基部で検証されるため、色またはフォントサイズのトークンがなければ `text-link` は ZW006 になります。CSS が候補全体を所有する場合は `wind.authoredClasses: { "text-link": true }` に予約します。完全一致するとユーティリティの検証、診断、CSS 生成が抑止されます。それ以外の場合はユーティリティの綴りを直すか不足トークンを宣言します。ユーティリティ言語とリセットは Tailwind と異なります。ディレクティブ、バリアント、トークン、未対応の構文は [Tailwind からの移行表](../zudo-wind/coming-from-tailwind.mdx)を参照してください。
 
-BEM の `card__title` や snake_case の `card_title` のようにアンダースコアを使う手書きの名前は、`card-title` と同じく通常のクラステキストです。`line-clamp-2`、`contents`、`container` など zudo-wind が実装しない Tailwind ユーティリティは ZW014 の警告になり、代わりに CSS で書くべき宣言を示します。これでビルドを失敗させるには `wind.strict: true` を設定します。`const` や条件分岐に置いたクラス文字列も、`class` 属性に届けば直接書いたクラスと同じく検査されるため、そこにある未対応のユーティリティもビルドを失敗させます。[診断とツール](../zudo-wind/diagnostics-and-tools.mdx)を参照してください。
+BEM の `card__title` や snake_case の `card_title` のようにアンダースコアを使う手書きの名前は、`card-title` と同じく通常のクラステキストです。`line-clamp-2`、`basis-[20px]`、`container` など zudo-wind が実装しない Tailwind ユーティリティは ZW014 の警告になり、代わりに CSS で書くべき宣言を示します。これでビルドを失敗させるには `wind.strict: true` を設定します。`const` や条件分岐に置いたクラス文字列も、`class` 属性に届けば直接書いたクラスと同じく検査されるため、そこにある未対応のユーティリティもビルドを失敗させます。[診断とツール](../zudo-wind/diagnostics-and-tools.mdx)を参照してください。
 
 ## コンポーネントと島
 
@@ -119,7 +119,9 @@ serializeProps({
 
 詳細は[サーバーレンダリング](../zudo-react/server-rendering.mdx)を参照してください。
 
-zudo-react のクライアントランタイムについて、Preact と同じバンドルサイズになる保証はなく、固定のバイト数予算もまだ決まっていません。別のフォローアップで、本番用アイランドの出力を測定し、安全に測定できる最適化を評価したうえで、その結果から回帰予算を決めます。この作業は v3 への移行を妨げません。このガイドではプロジェクト固有のサイズを保証しません。
+zudo-react は Preact と同じバンドルサイズを保証しません。現在は、8 種類の固定 fixture を実際の `zfb build` で workspace／packed の両モードで測定する回帰ゲートがあります。各モードを 2 回ビルドして dist 全体の一致を確認し、entry／shared／lazy の全 JS を重複なく集計します。契約は raw と `gzip-identity-normalized` v2 の上限を追加許容 0 で固定し、実際の gzip は別の転送サイズの証拠として保持します。
+
+Linux x64 の契約は 6.0.1 の CI 測定に基づき、`health.yml` が検証します。Darwin arm64 の契約は別のネイティブ測定に基づく 6.0.0 の記録で、記録されたローカル証拠の live adoption には所有者の承認が未完了です。どちらも特定のソース、入力、ツールチェーンとプラットフォームに限られ、古い SHA の成功は現在の head の成功を証明しません。ほかのプラットフォームや任意のプロジェクトのサイズ保証ではありません。[測定手順と履歴](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/README.md)、[Darwin 契約](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/decision.json)、[Linux 契約](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/decision-linux-x64.json)、[検証コード](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/check-budget.mjs)を参照してください。
 
 ## パッケージ内で重複する島の定義
 

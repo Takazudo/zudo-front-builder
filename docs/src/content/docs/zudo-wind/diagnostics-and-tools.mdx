@@ -217,13 +217,13 @@ For an undeclared color with a valid `/0`–`/100` modifier, `text-<name>`, `bor
 
 A declared color used as bare `shadow-<name>` or valid `shadow-<name>/<opacity>` (`/0`–`/100`) reports ZW004/R20 with a targeted hint because v1 does not compose colors into shadow values. The shadow root accepts complete values: `none`, arbitrary `box-shadow` values, or `shadows` tokens. Fold the tint into a `shadows` token, or author the complete `box-shadow` in CSS and reserve the class with `wind.authoredClasses`. A bare same-name `shadows` token still resolves; slash modifiers remain unsupported.
 
-Well-formed `has-[…]:`, `not-[…]:`, `nth-[…]:`, `nth-last-[…]:`, and `supports-[…]:` report ZW004/R09. `min-[…]:` and `max-[…]:` report ZW004/R24 and require configured `wind.breakpoints`; `group-aria-[…]:`, `group-data-[…]:`, `peer-aria-[…]:`, and `peer-data-[…]:` report ZW004/R08. Empty, trailing, sequential, malformed, unbalanced, and unknown bracketed heads remain ZW001. A rejected functional variant wrapping a ZW014 utility can report both diagnostics for the same complete candidate and source span in explain and audit, without emitting CSS; for example `min-[56rem]:table-cell` or `has-[:focus-visible]:filter-[blur(2px)]`. Explain remains invalid. Strict mode raises a source class ZW014 warning to error; lower-confidence literals stay audit information and exact authored classes suppress both diagnostics.
+Well-formed `has-[…]:`, `not-[…]:`, `nth-[…]:`, `nth-last-[…]:`, and `supports-[…]:` report ZW004/R09. `min-[…]:` and `max-[…]:` report ZW004/R24 and require configured `wind.breakpoints`; `group-aria-[…]:`, `group-data-[…]:`, `peer-aria-[…]:`, and `peer-data-[…]:` report ZW004/R08. Empty, trailing, sequential, malformed, unbalanced, and unknown bracketed heads remain ZW001. A rejected functional variant wrapping a ZW014 utility can report both diagnostics for the same complete candidate and source span in explain and audit, without emitting CSS; for example `min-[56rem]:table-auto` or `has-[:focus-visible]:filter-[blur(2px)]`. Explain remains invalid. Strict mode raises a source class ZW014 warning to error; lower-confidence literals stay audit information and exact authored classes suppress both diagnostics.
 
 `wind explain --json` optionally adds `tokenResolutions[*].hostOverride` with `presetIndex`, `previousValue`, and `finalValue` only for changed preset bindings. `wind audit --json` emits ZW015 as a standard diagnostic with `severity: "auditInfo"`, category/name candidate, config key-path origin, and old/new values in the message. Both CLI envelopes retain `schemaVersion: 1`.
 
 ## Migration warnings and strict mode
 
-zudo-wind does not implement every Tailwind utility. A bounded, versioned migration vocabulary names the common Tailwind utilities it deliberately leaves out: `table` and the other table display values, `contents`, `flow-root`, `list-item`, `container`, `not-sr-only`, `line-clamp-*`, `order-*`, `basis-*`, `fill-*`, `stroke-*`, `backdrop-blur-*`, `appearance-*`, `will-change-*`, and `content-*`. Such a name is reported as ZW014, an unsupported foreign utility, rather than silently passing as ordinary class text. The diagnostic names the declaration to author instead; no guessed CSS is ever emitted. A name that only resembles a foreign utility, such as `table-wrapper` or `order-summary`, stays ordinary.
+zudo-wind does not implement every Tailwind utility. A bounded, versioned migration vocabulary reports retained gaps such as `container`, `line-clamp-*`, `table-auto`/`table-fixed`, arbitrary `order-*`, unsupported `basis-*` values, arbitrary `fill-*`/`stroke-*` and numeric stroke widths, `backdrop-blur-*`, `will-change-*`, and `content-*` as ZW014. The diagnostic names the declaration to author instead; no guessed CSS is emitted. The current catalog implements 21 exact display classes, `appearance-auto`/`appearance-none`, `not-sr-only`, and bounded order/basis/SVG forms; see [Utility grammar](./utility-grammar.mdx) for their limits. Names that only resemble foreign utilities, such as `table-wrapper` or `order-summary`, remain ordinary classes.
 
 Migration vocabulary v4 also recognizes logical `ms-*`/`me-*`, `ps-*`/`pe-*`, `start-*`/`end-*`, and `border-s`/`border-e` (including valid arbitrary suffixes), plus isolation, float/clear, break/word-break, transform origin, filter/backdrop-filter, and text-shadow. Author the corresponding logical margin, padding, inset, and border declarations or other CSS yourself; no composed CSS is generated. A supported configured token still resolves first. `border-s-[3px]` and `border-e-[red]` report ZW014, while unknown extra suffixes such as `ml-zzz-[3px]` report ZW005.
 
@@ -233,7 +233,7 @@ ZW014 is a warning by default, so a migrating project still builds while it list
 
 `zfb wind explain` reports such a name with the outcome `unsupported foreign utility`.
 
-The public Rust migration classifier is `foreign_family(candidate, tokens)`: it needs validated tokens to let a configured utility resolve before ZW014. The Rust catalog metadata also exposes `DefaultOverride` and `CatalogEntry.default_overrides` for the ZW013 implicit-default exceptions. The catalog and language remain at spec revision 12; serialized CLI schema versions remain 1. CSS output is unchanged by this metadata addition.
+The public Rust migration classifier is `foreign_family(candidate, tokens)`: it needs validated tokens to let a configured utility resolve before ZW014. The Rust catalog metadata also exposes `DefaultOverride` and `CatalogEntry.default_overrides` for the ZW013 implicit-default exceptions. The current language is spec 1 revision 14 with 219 catalog entries; serialized CLI schema versions remain 1, distinct from the language revision and npm package version.
 
 ## Explain and audit
 
@@ -259,7 +259,7 @@ The standalone `zfb css` command remains the wind compiler. When generation is e
 
 ## Generated identity
 
-Every generated reset, token, registration, and utility rule uses the virtual source `zudo-wind://spec/1`. The source record identifies language version 1 and revision 12. V1 creates no generated source map and promises no line mapping. Candidate-to-source locations are retained in rule metadata and diagnostics instead.
+Every generated reset, token, registration, and utility rule uses the virtual source `zudo-wind://spec/1`. The source record identifies language version 1 and revision 14. V1 creates no generated source map and promises no line mapping. Candidate-to-source locations are retained in rule metadata and diagnostics instead.
 
 ## See also
 

@@ -41,7 +41,7 @@ graph TD;
 <div class="mermaid" data-mermaid="">graph TD; ...</div>
 ```
 
-`data-mermaid` 属性と `mermaid` クラスは、クライアントサイドの Mermaid レンダラーにこのブロックを処理するよう知らせます。生のダイアグラムソースはそのまま埋め込まれる（山括弧などの文字は HTML エスケープされません）ため、レンダラーは無変更の Mermaid DSL を受け取ります。
+`data-mermaid` 属性と `mermaid` クラスは、クライアント側の Mermaid レンダラーに処理対象を伝えます。ソースは HAST のテキストノードとして保持され、HTML へのシリアライズ時に `&`、`<`、`>` を `&amp;`、`&lt;`、`&gt;` にエスケープします。ブラウザーが HTML を解析すると元の DOM テキストに戻るため、Mermaid レンダラーは変更されていない DSL を受け取ります。生の未エスケープ HTML を挿入する仕組みではありません。
 
 ## ビジターの順序
 

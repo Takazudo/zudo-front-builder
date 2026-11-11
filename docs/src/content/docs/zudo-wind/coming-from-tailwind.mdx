@@ -29,7 +29,7 @@ Where authored CSS formerly referenced `var(--color-neutral-900)`, update it to 
 
 ## Migrate in a short pass
 
-The docs site hosting this guide still uses Tailwind for its own chrome. This checklist and its compiled samples describe zudo-wind v1 in your project.
+This docs host also uses the released zudo-doc zudo-wind styles and authored host CSS, without Tailwind imports or directives. This checklist and its isolated compiled samples describe migrating your project. The Tailwind comparison measurements below remain historical evidence for their recorded fixtures and tools.
 
 1. Remove Tailwind imports and engine directives from the entry stylesheet and its imports. Keep ordinary authored CSS and <code>@layer</code>. Search for affected default-theme references with:
 
@@ -512,7 +512,7 @@ Choose one of these per rule:
 
 Not every class-shaped string is meant to create a utility rule. A project name such as `site-header` has no matching utility root, so it remains ordinary class text in markup and wind emits no rule for it. A name such as `text-link` does match the `text` root and is validated as a utility; if its required token is missing, it receives ZW006. This strict classification preserves typo detection instead of treating every unresolved name as ordinary. A standalone `group` or `peer` marker also emits no rule, while still supplying relation metadata to matching candidates.
 
-A Tailwind utility zudo-wind does not implement, such as `line-clamp-2`, `order-1`, `basis-1/2`, or `container`, is not treated as ordinary text. It is reported as ZW014 with the declaration to author instead, as a warning by default and an error under `wind.strict: true`. Names with underscores, such as `card__title`, remain ordinary.
+A Tailwind utility zudo-wind does not implement, such as `line-clamp-2`, `order-[2]`, `basis-[20px]`, or `container`, is not treated as ordinary text. It is reported as ZW014 with the declaration to author instead, as a warning by default and an error under `wind.strict: true`. Names with underscores, such as `card__title`, remain ordinary.
 
 | Candidate outcome | What happens |
 | --- | --- |
@@ -598,6 +598,10 @@ Merge the theme properties into the existing authored base layer, retaining its 
 ~~~
 
 Keep the existing base and component layers; wind's prelude establishes their order. The authored `.prose` class remains in the stylesheet and is entered exactly in `authoredClasses`. As described in [Default theme variables](#default-theme-variables), update the old authored `var(--color-neutral-900)` reference to the emitted `var(--zw-color-neutral-900)` token variable when the color token is configured. The configured `accent` token points back to the authored `--color-accent` property, so the theme toggle can continue changing that value. The scaffold reset is `owned-v1`; other projects still default to `none`. These are language and stylesheet changes only; the full ordered project upgrade is in [Migrating to v3](../guides/migrating-to-v3.mdx).
+
+The current language is spec 1, revision 14, with 219 catalog entries. The language version/revision, serialized schema version, migration vocabulary revision, and npm package version are separate identifiers. Revision 13 added 13 exact display classes (contents, flow-root, list-item, table, inline-table, and the table caption/cell/column/column-group/footer-group/header-group/row/row-group forms), bringing display to 21, plus appearance-auto and appearance-none. These statics accept no suffix, arbitrary value, token, negative, or slash form.
+
+Revision 14 added order-first/last/none and ASCII integers 0–2147483647, with negative numeric forms such as -order-2; arbitrary order remains unsupported. Basis accepts only auto/full/px/0/min/max/fit/content and positive integer fractions whose numerator and denominator are each 1–1,000,000. Scale, token, arbitrary, and negative basis values remain unsupported. SVG paint accepts only fill-current/none and stroke-current/none; arbitrary colors, token colors, numeric stroke widths, negatives, and opacity suffixes are not added. Exact not-sr-only reverses sr-only's clipping declarations and sorts after it; it is not a universal restoration of earlier authored styles. These additions use the existing variants and deterministic catalog order, not class-list order. Order numeric magnitude does not determine the cascade winner; raw-candidate UTF-8 bytes break ties.
 
 ## What is not supported, and what to do instead
 

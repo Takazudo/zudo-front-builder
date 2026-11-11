@@ -46,9 +46,7 @@ block with:
 ```
 
 The `data-mermaid` attribute and `mermaid` class signal a client-side Mermaid
-renderer to process the block. The raw diagram source is embedded verbatim
-(angle brackets and other characters are NOT HTML-escaped) so the renderer
-receives the unmodified Mermaid DSL.
+renderer to process the block. The source is preserved as a HAST text node. HTML serialization escapes `&`, `<`, and `>` as `&amp;`, `&lt;`, and `&gt;`. Parsing that HTML restores the original DOM text, so the Mermaid renderer receives the unmodified DSL; this is not raw, unescaped HTML insertion.
 
 ## Visitor ordering
 

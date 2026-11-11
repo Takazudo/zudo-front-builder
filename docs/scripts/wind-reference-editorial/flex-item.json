@@ -77,7 +77,7 @@
     "en": {
       "purpose": "Set a flex item's sizing behavior when the container has extra or insufficient room. The flex presets choose combinations of basis, growth and shrink; grow and shrink set those factors independently.",
       "setup": "Every preview explicitly starts from spec 1, reset \"none\", strict mode, spacingUnit \"0.25rem\", and no breakpoints. Numeric spacing values multiply that unit; no Tailwind theme is inherited. wind-demo classes are authored presentation scaffolding, with their CSS shown beside the exact HTML source.",
-      "customValues": "flex-1 is 1 1 0%, flex-auto is 1 1 auto, flex-initial is 0 1 auto, and flex-none is none. grow and shrink default to 1; the -0 forms use zero, and arbitrary numeric values such as grow-[2] are supported. Give the container display:flex to see the factors take effect.",
+      "customValues": "flex-1 is 1 1 0%, flex-auto is 1 1 auto, flex-initial is 0 1 auto, and flex-none is none. grow and shrink default to 1; the -0 forms use zero, and arbitrary numeric values such as grow-[2] are supported. Give the container display:flex to see the factors take effect. Basis accepts only auto/full/px/0/min/max/fit/content and positive integer fractions with each part from 1 through 1,000,000; scale, token, arbitrary, and negative values are unsupported. Order accepts first/last/none and ASCII integers 0–2147483647, including negative numeric forms; arbitrary order is unsupported. Numeric magnitude does not set cascade precedence: raw candidate bytes break ties.",
       "examples": [
         {
           "id": "flex-values",
@@ -104,7 +104,7 @@
     "ja": {
       "purpose": "コンテナに余りや不足があるときの flex item のサイズ挙動を指定します。flex のプリセットは basis、grow、shrink の組み合わせを選び、grow と shrink はそれぞれの比率を個別に指定します。",
       "setup": "すべてのプレビューは spec 1、reset \"none\"、strict モード、spacingUnit \"0.25rem\"、ブレークポイントなしを明示した設定から始まります。数値の spacing はこの単位を掛けて解決し、Tailwind のテーマは継承しません。wind-demo クラスはデモ用の自作スタイルで、HTML と一緒に CSS を確認できます。",
-      "customValues": "flex-1 は 1 1 0%、flex-auto は 1 1 auto、flex-initial は 0 1 auto、flex-none は none です。grow と shrink の既定値は1で、-0 形は0です。grow-[2] のような任意の数値も使えます。比率の効果を見るには親に display:flex を設定します。",
+      "customValues": "flex-1 は 1 1 0%、flex-auto は 1 1 auto、flex-initial は 0 1 auto、flex-none は none です。grow と shrink の既定値は1で、-0 形は0です。grow-[2] のような任意の数値も使えます。比率の効果を見るには親に display:flex を設定します。 basis は auto／full／px／0／min／max／fit／content と、分子・分母が各 1～1,000,000 の正の整数分数だけを受け付けます。スケール、トークン、任意値、負数は未対応です。order は first／last／none と ASCII 整数 0～2147483647、その負の数値形式を受け付け、任意値は未対応です。数値の大小はカスケードの優先度を決めず、同順位なら候補のバイト列で決まります。",
       "examples": [
         {
           "id": "flex-values",
