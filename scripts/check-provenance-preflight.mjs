@@ -43,8 +43,12 @@ import { pathToFileURL } from "node:url";
 import { fetchPackument, hasAttestation, isPrerelease } from "./check-provenance-drift.mjs";
 import { PUBLISHED_PACKAGES } from "./retire-next-dist-tag.mjs";
 
-/** The one darwin-x64 package `--fast-mac` publishes (the 2.20.3 incident). */
-const MAC_LOCAL_PACKAGES = ["@takazudo/zfb-darwin-x64"];
+/**
+ * The carriers release.yml publishes from owner-Mac bytes with
+ * --provenance=false (#4690: both Darwin targets, always). The 2.20.3 incident
+ * was the x64 one alone; `--package` narrows or replaces this list.
+ */
+export const MAC_LOCAL_PACKAGES = ["@takazudo/zfb-darwin-arm64", "@takazudo/zfb-darwin-x64"];
 
 const MODES = {
   "mac-local": MAC_LOCAL_PACKAGES,
@@ -174,23 +178,32 @@ export function report(results, { log = console.log } = {}) {
   return 0;
 }
 
-/** Parse `--version <v> --mode <m>`. Returns null (not throws) on bad args. */
+/**
+ * Parse `--version <v> --mode <m> [--package <name> ...]`. Returns null (not
+ * throws) on bad args. `--package` (mac-local only) lists the locally-built
+ * packages explicitly; each must be a published package.
+ */
 export function parseArgs(argv) {
   let version;
   let mode;
+  const packages = [];
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--version") version = argv[(i += 1)];
     else if (argv[i] === "--mode") mode = argv[(i += 1)];
+    else if (argv[i] === "--package") packages.push(argv[(i += 1)]);
+    else return null;
   }
   if (!version || !mode) return null;
-  return { version, mode };
+  if (packages.some((name) => !name || !PUBLISHED_PACKAGES.includes(name))) return null;
+  if (packages.length > 0 && mode !== "mac-local") return null;
+  return packages.length > 0 ? { version, mode, packages } : { version, mode };
 }
 
 async function main(argv) {
   const args = parseArgs(argv);
   if (!args) {
     console.error(
-      "usage: node scripts/check-provenance-preflight.mjs --version <v> --mode mac-local|recovery-no-provenance",
+      "usage: node scripts/check-provenance-preflight.mjs --version <v> --mode mac-local|recovery-no-provenance [--package <name> ...]",
     );
     return 2;
   }
@@ -201,7 +214,10 @@ async function main(argv) {
     return 2;
   }
 
-  const results = await checkMode(args.mode, { version: args.version });
+  const results = await checkMode(args.mode, {
+    version: args.version,
+    ...(args.packages ? { packages: args.packages } : {}),
+  });
   return report(results);
 }
 

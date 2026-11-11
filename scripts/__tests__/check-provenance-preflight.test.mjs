@@ -180,7 +180,7 @@ describe("checkPackage", () => {
 });
 
 describe("checkMode", () => {
-  it("maps mac-local to just @takazudo/zfb-darwin-x64", async () => {
+  it("maps mac-local to both owner-Mac Darwin carriers (#4690)", async () => {
     const seen = [];
     const results = await checkMode("mac-local", {
       version: "1.0.0",
@@ -189,8 +189,37 @@ describe("checkMode", () => {
         return packument({});
       },
     });
+    expect(seen.sort()).toEqual(["@takazudo/zfb-darwin-arm64", "@takazudo/zfb-darwin-x64"]);
+    expect(results.every((r) => r.status === "ok")).toBe(true);
+  });
+
+  it("flags both Darwin carriers as a downgrade after an all-attested release like 6.0.1", async () => {
+    // 6.0.1 was CI-built with provenance for every package; the first release
+    // whose Darwin carriers come from the owner's Mac (--provenance=false) is
+    // a downgrade for both, which the default-deny gate must block.
+    const results = await checkMode("mac-local", {
+      version: "6.0.2",
+      fetchOne: async () =>
+        packument({ "6.0.1": { attested: true, time: "2026-11-09T00:00:00.000Z" } }),
+    });
+    expect(results.map((r) => [r.name, r.status]).sort()).toEqual([
+      ["@takazudo/zfb-darwin-arm64", "downgrade"],
+      ["@takazudo/zfb-darwin-x64", "downgrade"],
+    ]);
+    expect(report(results, { log: () => {} })).toBe(1);
+  });
+
+  it("honors an explicit --package list for mac-local", async () => {
+    const seen = [];
+    await checkMode("mac-local", {
+      version: "1.0.0",
+      packages: ["@takazudo/zfb-darwin-x64"],
+      fetchOne: async (name) => {
+        seen.push(name);
+        return packument({});
+      },
+    });
     expect(seen).toEqual(["@takazudo/zfb-darwin-x64"]);
-    expect(results).toEqual([{ name: "@takazudo/zfb-darwin-x64", status: "ok" }]);
   });
 
   it("maps recovery-no-provenance to all 11 published packages", async () => {
@@ -290,6 +319,39 @@ describe("parseArgs", () => {
       version: "2.20.3",
       mode: "recovery-no-provenance",
     });
+  });
+
+  it("collects --package for mac-local only, and only published names", () => {
+    expect(
+      parseArgs([
+        "--version",
+        "6.0.2",
+        "--mode",
+        "mac-local",
+        "--package",
+        "@takazudo/zfb-darwin-arm64",
+        "--package",
+        "@takazudo/zfb-darwin-x64",
+      ]),
+    ).toEqual({
+      version: "6.0.2",
+      mode: "mac-local",
+      packages: ["@takazudo/zfb-darwin-arm64", "@takazudo/zfb-darwin-x64"],
+    });
+    expect(
+      parseArgs(["--version", "6.0.2", "--mode", "mac-local", "--package", "left-pad"]),
+    ).toBeNull();
+    expect(
+      parseArgs([
+        "--version",
+        "6.0.2",
+        "--mode",
+        "recovery-no-provenance",
+        "--package",
+        "@takazudo/zfb",
+      ]),
+    ).toBeNull();
+    expect(parseArgs(["--version", "6.0.2", "--mode", "mac-local", "--bogus"])).toBeNull();
   });
 
   it("returns null when a required flag is missing", () => {

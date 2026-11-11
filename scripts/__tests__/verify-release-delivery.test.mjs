@@ -12,8 +12,10 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { PUBLISHED_PACKAGES } from "../retire-next-dist-tag.mjs";
 import {
+  CI_BUILD_TARGETS,
   EXIT,
   FULCIO_OIDS,
+  OWNER_MAC_CARRIERS,
   HOMEBREW_FORMULA_URL,
   PLATFORM_CARRIERS,
   PLATFORM_TARGETS,
@@ -75,6 +77,17 @@ function tgz(files) {
   return gzipSync(Buffer.concat(parts));
 }
 
+function rawTgz(files) {
+  const parts = [];
+  for (const [name, { data, mode = 0o644 }] of Object.entries(files)) {
+    const bytes = Buffer.from(data);
+    parts.push(tarHeader(name, bytes.length, mode), bytes);
+    parts.push(Buffer.alloc((512 - (bytes.length % 512)) % 512));
+  }
+  parts.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(parts));
+}
+
 function integrityOf(bytes) {
   return `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
 }
@@ -101,9 +114,10 @@ function releaseJobs() {
     job("Resolve and verify release source", [
       step("Verify immutable source and published Release"),
     ]),
-    job("Detect pre-uploaded macOS-x64 archive", []),
-    job("Prepare build matrix", []),
-    ...PLATFORM_TARGETS.map(({ target, ext }) =>
+    job("Verify source commit required CI", [step("Verify required CI on the source commit")]),
+    job("Provenance downgrade preflight", [step("Provenance downgrade preflight")]),
+    job("Admit owner-Mac Darwin artifacts", [step("Download and admit the ten Darwin inputs")]),
+    ...CI_BUILD_TARGETS.map(({ target, ext }) =>
       job(`Build ${target}`, [
         step("Create archive (Unix tar.gz)", ext === "zip" ? "skipped" : "success"),
         step("Create archive (Windows zip)", ext === "zip" ? "success" : "skipped"),
@@ -116,12 +130,13 @@ function releaseJobs() {
       step("DRY RUN — skip GH Release upload", "skipped"),
       step("Guard — verified release tag required for real release upload"),
       step("Upload archives and checksums to GitHub Release"),
+      step("Verify owner-uploaded Darwin assets are unchanged since admission"),
     ]),
     job("publish", [
+      step("Place admitted Darwin binaries in platform packages"),
       step("DRY RUN — skip publish", "skipped"),
       step("Verify publish context (verified release tag required)"),
       step("Publish to npm"),
-      step("Publish to npm (mixed provenance — local macOS-x64)", "skipped"),
       step("Publish to npm (recovery — no provenance)", "skipped"),
       step("Verify published @takazudo/zfb-md-wasm and upload digest asset"),
     ]),
@@ -203,7 +218,8 @@ function buildPackages() {
       files["dist/shipped-artifacts.json"] = { data: manifestBytes };
     }
     files["package.json"] = { data: JSON.stringify(manifest) };
-    packages[name] = { files };
+    // #4690: owner-Mac Darwin carriers are published with --provenance=false.
+    packages[name] = OWNER_MAC_CARRIERS[name] ? { files, noAttestation: true } : { files };
   }
   return { packages, manifestBytes };
 }
@@ -212,12 +228,24 @@ function buildPackages() {
 function makeWorld(tweak = () => {}) {
   const { packages, manifestBytes } = buildPackages();
   const archives = {};
+  const ownerMac = Object.fromEntries(
+    Object.entries(OWNER_MAC_CARRIERS).map(([pkg, target]) => [target, pkg]),
+  );
   for (const { target, ext } of PLATFORM_TARGETS) {
     const name = `zfb-${VERSION}-${target}.${ext}`;
-    const bytes =
-      ext === "zip"
-        ? Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from(target)])
-        : gzipSync(Buffer.from(target));
+    let bytes;
+    if (ownerMac[target]) {
+      // Owner-Mac archive: one root `zfb` equal to the published carrier's.
+      bytes = rawTgz({ zfb: { data: `binary for ${ownerMac[target]}`, mode: 0o755 } });
+      const addon = `zfb-css-${VERSION}-${target}.node`;
+      archives[addon] = Buffer.from("addon");
+      archives[`${addon}.sha256`] = Buffer.from(`${sha256(archives[addon])}  ${addon}\n`);
+    } else {
+      bytes =
+        ext === "zip"
+          ? Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from(target)])
+          : gzipSync(Buffer.from(target));
+    }
     archives[name] = bytes;
     archives[`${name}.sha256`] = Buffer.from(
       `${sha256(bytes)}  ${name}${ext === "zip" ? "" : "\n"}`,
@@ -606,15 +634,20 @@ describe("complete normal release", () => {
     expect(PUBLISHED_PACKAGES).toHaveLength(11);
     for (const name of Object.keys(PLATFORM_CARRIERS)) {
       const pkg = check(report, "npm", `package:${name}`).evidence;
-      expect(pkg.provenance).toMatchObject({
-        attestationPresent: true,
-        signatureVerified: true,
-        identityMatched: true,
-        subjectBound: true,
-      });
+      expect(pkg.provenance).toMatchObject(
+        OWNER_MAC_CARRIERS[name]
+          ? { attestationPresent: false, expected: "none" }
+          : {
+              attestationPresent: true,
+              signatureVerified: true,
+              identityMatched: true,
+              subjectBound: true,
+            },
+      );
       expect(pkg.contents.binary).toBeTruthy();
     }
-    expect(verifier.seen).toHaveLength(11);
+    // Nine attested packages; the two owner-Mac Darwin carriers carry none.
+    expect(verifier.seen).toHaveLength(9);
     expect(verifier.seen[0].policy.identityRegex).toBe(`^${escapeRegExp(IDENTITY)}$`);
     expect(verifier.seen[0].policy.issuer).toBe("https://token.actions.githubusercontent.com");
     expect(check(report, "wasm", "packed-artifacts").evidence.artifacts).toHaveLength(4);
@@ -760,13 +793,54 @@ describe("npm integrity and provenance", () => {
     ).toBe(STATUS.FAILED);
   });
 
-  it("fails a package that has no provenance attestation", async () => {
+  it("fails a CI-built package that has no provenance attestation", async () => {
     const { report } = await run((w) => {
-      w.packages["@takazudo/zfb-darwin-x64"].noAttestation = true;
+      w.packages["@takazudo/zfb-linux-x64-gnu"].noAttestation = true;
     });
-    expect(check(report, "npm", "package:@takazudo/zfb-darwin-x64").reason).toContain(
+    expect(check(report, "npm", "package:@takazudo/zfb-linux-x64-gnu").reason).toContain(
       "no SLSA provenance",
     );
+  });
+
+  it("verifies owner-Mac Darwin carriers by Release bytes, without provenance (#4690)", async () => {
+    const { report } = await run();
+    for (const name of Object.keys(OWNER_MAC_CARRIERS)) {
+      const pkg = check(report, "npm", `package:${name}`);
+      expect(pkg.status).toBe(STATUS.VERIFIED);
+      expect(pkg.evidence.checks["darwin-identity"].status).toBe(STATUS.VERIFIED);
+      expect(pkg.evidence.checks.provenance.status).toBe(STATUS.VERIFIED);
+    }
+  });
+
+  it("fails an owner-Mac Darwin carrier that carries an attestation", async () => {
+    const { report } = await run((w) => {
+      w.packages["@takazudo/zfb-darwin-arm64"].noAttestation = false;
+    });
+    expect(check(report, "npm", "package:@takazudo/zfb-darwin-arm64").reason).toContain(
+      "carries an attestation",
+    );
+  });
+
+  it("fails an owner-Mac Darwin carrier whose binary differs from the Release archive", async () => {
+    const { report } = await run((w) => {
+      w.packages["@takazudo/zfb-darwin-x64"].files.zfb.data = "different bytes";
+    });
+    expect(check(report, "npm", "package:@takazudo/zfb-darwin-x64").reason).toContain(
+      "differ from the Release Darwin assets",
+    );
+  });
+
+  it("fails a Darwin archive whose addon asset does not match its checksum", async () => {
+    const { report } = await run((w) => {
+      w.archives[`zfb-css-${VERSION}-aarch64-apple-darwin.node`] = Buffer.from("tampered");
+    });
+    expect(check(report, "archives", "archive:aarch64-apple-darwin").reason).toContain(
+      "do not match its .sha256",
+    );
+    expect(
+      check(report, "npm", "package:@takazudo/zfb-darwin-arm64").evidence.checks["darwin-identity"]
+        .status,
+    ).toBe(STATUS.INCOMPLETE);
   });
 
   it.each([
@@ -932,18 +1006,45 @@ describe("workflow jobs, steps and attempts", () => {
     expect(report.verdict).toBe(STATUS.FAILED);
   });
 
-  it.each([
-    ["recovery", "Publish to npm (recovery — no provenance)"],
-    ["mixed-provenance", "Publish to npm (mixed provenance — local macOS-x64)"],
-  ])("classifies the %s path as unsupported, not normal", async (path, stepName) => {
+  it("classifies the recovery path as unsupported, not normal", async () => {
     const { report } = await run((w) => {
       const publish = w.releaseJobs.find((job) => job.name === "publish");
-      publish.steps.find((s) => s.name === stepName).conclusion = "success";
+      publish.steps.find((s) => s.name === "Publish to npm (recovery — no provenance)").conclusion =
+        "success";
       publish.steps.find((s) => s.name === "Publish to npm").conclusion = "skipped";
     });
-    expect(report.release.deliveryPath).toBe(path);
+    expect(report.release.deliveryPath).toBe("recovery");
     expect(check(report, "workflow", "delivery-path").status).toBe(STATUS.INCOMPLETE);
     expect(report.verdict).toBe(STATUS.FAILED);
+  });
+
+  it("classifies a pre-#4690 run with a hosted Darwin build leg as legacy", async () => {
+    const { report } = await run((w) => {
+      w.releaseJobs.push({
+        id: 9300,
+        name: "Build x86_64-apple-darwin",
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "success",
+        steps: [step("Create archive (Unix tar.gz)")],
+      });
+    });
+    expect(report.release.deliveryPath).toBe("legacy-hosted-darwin");
+    expect(check(report, "workflow", "delivery-path").status).toBe(STATUS.INCOMPLETE);
+  });
+
+  it("classifies a finalize-only run as unsupported, not normal", async () => {
+    const { report } = await run((w) => {
+      w.releaseJobs.push({
+        id: 9301,
+        name: "Finalize published release",
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "success",
+        steps: [],
+      });
+    });
+    expect(report.release.deliveryPath).toBe("finalize");
   });
 
   it("accepts a partial rerun that carries earlier successes forward", async () => {
@@ -986,7 +1087,7 @@ describe("workflow jobs, steps and attempts", () => {
     const { report } = await run((w) => {
       w.releaseRun.run_attempt = 2;
       w.releaseRun.conclusion = "failure";
-      const build = w.releaseJobs.find((job) => job.name === "Build aarch64-apple-darwin");
+      const build = w.releaseJobs.find((job) => job.name === "Build aarch64-unknown-linux-gnu");
       w.releaseJobs.push({
         ...structuredClone(build),
         id: 9100,
@@ -994,7 +1095,7 @@ describe("workflow jobs, steps and attempts", () => {
         conclusion: "failure",
       });
     });
-    const job = check(report, "workflow", "job:build:aarch64-apple-darwin");
+    const job = check(report, "workflow", "job:build:aarch64-unknown-linux-gnu");
     expect(job.status).toBe(STATUS.FAILED);
     expect(job.evidence.effective.attempt).toBe(2);
   });
@@ -1112,7 +1213,8 @@ describe("HTTP behavior", () => {
       w.jobsPageSize = 4;
     });
     expect(report.verdict).toBe(STATUS.VERIFIED);
-    expect(calls.filter((c) => c.url.includes(`/runs/${RELEASE_RUN}/jobs`)).length).toBe(4);
+    // 12 release jobs at 4 per page.
+    expect(calls.filter((c) => c.url.includes(`/runs/${RELEASE_RUN}/jobs`)).length).toBe(3);
   });
 
   it("reports pagination that never reaches total_count as incomplete", async () => {
@@ -1413,10 +1515,10 @@ describe("review hardening", () => {
 
   it("fails a required job that appears twice in one attempt", async () => {
     const { report } = await run((w) => {
-      const build = w.releaseJobs.find((job) => job.name === "Build aarch64-apple-darwin");
+      const build = w.releaseJobs.find((job) => job.name === "Build aarch64-unknown-linux-gnu");
       w.releaseJobs.push({ ...structuredClone(build), id: 9200 });
     });
-    const job = check(report, "workflow", "job:build:aarch64-apple-darwin");
+    const job = check(report, "workflow", "job:build:aarch64-unknown-linux-gnu");
     expect(job.status).toBe(STATUS.FAILED);
     expect(job.reason).toContain("ambiguous");
   });
