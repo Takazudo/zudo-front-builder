@@ -1,3 +1,6 @@
+import { routeContext } from "virtual:zudo-doc-route-context";
+import type { RouteContextPayload } from "@takazudo/zudo-doc/route-context";
+import type { PlaygroundProps } from "./components/playground/host-copy";
 import { createNavigationChrome } from "./navigation-chrome";
 import { Island } from "@takazudo/zfb";
 import { defineChromeBindings } from "@takazudo/zudo-doc/chrome-bindings";
@@ -8,6 +11,8 @@ import HighlightPlayground from "./components/playground/highlight-playground";
 import ParsePlayground from "./components/playground/parse-playground";
 import RenderPlayground from "./components/playground/render-playground";
 import WindPreviewEnhancer from "./components/wind-preview-enhancer";
+
+const playgroundBasePath = (routeContext as unknown as RouteContextPayload).settings.base;
 
 // Component-map entries keep the scanner's Fragment-wrapped fixed-target shape.
 function DesignSystemPlaygroundIsland() {
@@ -20,41 +25,41 @@ function DesignSystemPlaygroundIsland() {
   );
 }
 
-function RenderPlaygroundIsland() {
+function RenderPlaygroundIsland({ locale = "en" }: PlaygroundProps) {
   return (
     <>
       <Island when="visible">
-        <RenderPlayground />
+        <RenderPlayground locale={locale} basePath={playgroundBasePath} />
       </Island>
     </>
   );
 }
 
-function CompilePlaygroundIsland() {
+function CompilePlaygroundIsland({ locale = "en" }: PlaygroundProps) {
   return (
     <>
       <Island when="visible">
-        <CompilePlayground />
+        <CompilePlayground locale={locale} basePath={playgroundBasePath} />
       </Island>
     </>
   );
 }
 
-function ParsePlaygroundIsland() {
+function ParsePlaygroundIsland({ locale = "en" }: PlaygroundProps) {
   return (
     <>
       <Island when="visible">
-        <ParsePlayground />
+        <ParsePlayground locale={locale} basePath={playgroundBasePath} />
       </Island>
     </>
   );
 }
 
-function HighlightPlaygroundIsland() {
+function HighlightPlaygroundIsland({ locale = "en" }: PlaygroundProps) {
   return (
     <>
       <Island when="visible">
-        <HighlightPlayground />
+        <HighlightPlayground locale={locale} basePath={playgroundBasePath} />
       </Island>
     </>
   );
