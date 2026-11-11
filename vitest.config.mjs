@@ -29,6 +29,8 @@ const SUBPROCESS_SUITES = [
   "scripts/__tests__/harvest-supervisor-timelines.test.mjs",
   "scripts/__tests__/install-playwright-linux.test.mjs",
   "scripts/__tests__/plugin-logger-diagnostics.test.mjs",
+  "scripts/__tests__/release-context-scripts.test.mjs",
+  "scripts/__tests__/release-darwin-admission.test.mjs",
   "scripts/__tests__/supervisor-watch-handoff.test.mjs",
   "scripts/__tests__/supervisor-watch.test.mjs",
 ];

@@ -1,13 +1,28 @@
 #!/usr/bin/env node
 
 // Verify the immutable registry tarball before describing local digests as
-// shipped. --upload is the only path to the GitHub Release asset.
+// shipped. --upload is the only path to the GitHub Release asset, and it never
+// overwrites one: an identical asset is skipped, a different one fails (#4690).
+//
+// --manifest-from-published (finalization-only recovery, which has no build
+// job): take the expected manifest from the published tarball itself and
+// check the four packed WASM files against it.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { reconcile } from "./release/reconcile-release-assets.mjs";
+import { repoFromEnv } from "./release/gh.mjs";
 
 const NAME = "@takazudo/zfb-md-wasm";
 export const MD_WASM_PACKAGE = NAME;
@@ -113,13 +128,14 @@ function main() {
   const args = process.argv.slice(2);
   const upload = args.includes("--upload");
   const allowMissingManifest = args.includes("--allow-missing-manifest");
+  const fromPublished = args.includes("--manifest-from-published");
   const value = (flag) => {
     const index = args.indexOf(flag);
     if (index < 0 || !args[index + 1]) fail(`missing ${flag}`);
     return args[index + 1];
   };
   const version = value("--version");
-  const manifestPath = resolve(value("--manifest"));
+  const manifestPath = fromPublished ? null : resolve(value("--manifest"));
   if (
     !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:next|beta|rc)\.(0|[1-9]\d*))?$/.test(version)
   ) {
@@ -127,7 +143,7 @@ function main() {
   }
   const tag = upload ? value("--tag") : undefined;
   if (upload && tag !== `v${version}`) fail(`release tag ${tag} does not match v${version}`);
-  if (!existsSync(manifestPath)) {
+  if (!fromPublished && !existsSync(manifestPath)) {
     if (!allowMissingManifest) fail(`local manifest is missing: ${manifestPath}`);
     console.log(
       `::warning::No shipped-artifacts.json in target tree for ${NAME}@${version}; older-tag recovery skips published digest verification and Release asset upload. Digests are NOT verified.`,
@@ -135,8 +151,8 @@ function main() {
     return;
   }
 
-  const expected = readJson(manifestPath);
-  assertMdWasmManifest(expected, version);
+  let expected = fromPublished ? null : readJson(manifestPath);
+  if (expected) assertMdWasmManifest(expected, version);
 
   const temporary = mkdtempSync(join(tmpdir(), "zfb-md-wasm-published-"));
   try {
@@ -150,8 +166,12 @@ function main() {
     const packedPackage = readJson(join(packedRoot, "package.json"));
     if (packedPackage.name !== NAME || packedPackage.version !== version)
       fail("published package name/version differs");
-    const packedManifestBytes = readFileSync(join(packedRoot, "dist/shipped-artifacts.json"));
-    if (!packedManifestBytes.equals(readFileSync(manifestPath)))
+    const packedManifestPath = join(packedRoot, "dist/shipped-artifacts.json");
+    const packedManifestBytes = readFileSync(packedManifestPath);
+    if (fromPublished) {
+      expected = JSON.parse(packedManifestBytes.toString("utf8"));
+      assertMdWasmManifest(expected, version);
+    } else if (!packedManifestBytes.equals(readFileSync(manifestPath)))
       fail("published manifest differs from the local manifest");
 
     for (const { entry, sha256, bytes } of verifyMdWasmArtifacts(expected, (path) =>
@@ -161,9 +181,18 @@ function main() {
     }
     console.log(`Verified all four published ${NAME}@${version} WASM digests.`);
     if (upload) {
-      const asset = join(temporary, `zfb-md-wasm-${version}-shipped-artifacts.json`);
-      copyFileSync(manifestPath, asset);
-      execFileSync("gh", ["release", "upload", tag, asset, "--clobber"], { stdio: "inherit" });
+      const assetDir = join(temporary, "release-asset");
+      mkdirSync(assetDir);
+      const assetName = `zfb-md-wasm-${version}-shipped-artifacts.json`;
+      copyFileSync(fromPublished ? packedManifestPath : manifestPath, join(assetDir, assetName));
+      const result = reconcile({
+        tag,
+        dir: assetDir,
+        files: [assetName],
+        repo: repoFromEnv(),
+        log: (line) => console.log(line),
+      });
+      if (!result.ok) fail(`Release asset reconcile refused: ${result.problems.join("; ")}`);
     }
   } finally {
     rmSync(temporary, { recursive: true, force: true });

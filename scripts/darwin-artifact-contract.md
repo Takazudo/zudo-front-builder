@@ -49,7 +49,9 @@ ZFB_X64_NODE=/path/to/x64/node \
 
 - Refuses a dirty tree (tracked changes or untracked non-ignored files), a
   `--source` that is not `HEAD`, a `--tag` that is not `v<version>` or does not
-  peel to `--source`, an out dir inside the checkout or not empty, a non-Darwin
+  peel to `--source` (without a local tag ref, a DRAFT Release for the tag whose
+  `targetCommitish` is exactly `--source`; a branch-name target or a published
+  Release is refused), an out dir inside the checkout or not empty, a non-Darwin
   host, a host without `hw.optional.arm64=1`, missing Rosetta 2 and a missing x64
   Node. `--check-only` stops after the argument and source-binding refusals.
 - Builds serially, one target and one command at a time:
@@ -68,11 +70,14 @@ ZFB_X64_NODE=/path/to/x64/node \
   `--clobber`. Before uploading anything it compares every same-named remote
   asset: identical bytes are skipped, different bytes stop the run.
 
-`scripts/build-macos-x64-local.sh` remains unchanged for the current
-`--fast-mac` path (`release.yml` `detect-mac-local`, `/l-make-mac-release-binary`),
-which expects only the x86_64 pair. Its `--clobber` upload and lack of receipts
-do not satisfy this contract; retire it when `release.yml` admits through
-`admit-darwin-artifacts.mjs`.
+`release.yml` admits through `admit-darwin-artifacts.mjs` (#4690): its
+`admit-darwin` job runs `scripts/release/admit-release-darwin.sh`, which downloads
+exactly these ten assets from the Release into a fresh directory and fails,
+naming this producer, when any is missing or rejected. The publish job places
+Darwin carrier bytes only from that admitted set
+(`scripts/release/place-darwin-carriers.mjs`, digests re-verified first).
+`scripts/build-macos-x64-local.sh` no longer feeds releases: its `--upload` is
+refused, and it remains only for the hosted carrier-evidence workflow.
 
 ## Receipt schema `zfb-darwin-qualification/v1`
 
