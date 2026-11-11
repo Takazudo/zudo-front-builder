@@ -141,6 +141,10 @@ describe("verify-release-source.sh", () => {
     git("add", ".");
     git("commit", "-q", "-m", "later");
     headCommit = git("rev-parse", "HEAD");
+    // main contains the release commit; "unrelated" is a main that does not.
+    git("update-ref", "refs/remotes/origin/main", headCommit);
+    const orphan = git("commit-tree", `${tagCommit}^{tree}`, "-m", "unrelated history");
+    git("update-ref", "refs/remotes/origin/unrelated", orphan);
   });
   afterAll(() => {
     rmSync(repo, { recursive: true, force: true });
@@ -205,6 +209,37 @@ describe("verify-release-source.sh", () => {
     const result = await verify({ RELEASE_TAG: "v6.1.0", FAKE_GH_RELEASE_JSON: release(target) });
     expect(result.status).toBe(1);
     expect(result.stdout).toMatch(message);
+  });
+
+  it("rejects a real run whose source is not an ancestor of main", async () => {
+    git("checkout", "-q", "v6.1.0");
+    const result = await verify({
+      RELEASE_TAG: "v6.1.0",
+      MAIN_REF: "refs/remotes/origin/unrelated",
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain(
+      `Release source ${tagCommit} (v6.1.0) is not an ancestor of main`,
+    );
+    expect(result.outputs.source_commit).toBeUndefined();
+  });
+
+  it("accepts an ancestor of main, and skips the ancestry check for a dry run", async () => {
+    git("checkout", "-q", "v6.1.0");
+    expect((await verify({ RELEASE_TAG: "v6.1.0" })).status).toBe(0);
+    const dry = await verify({
+      RELEASE_TAG: "v6.1.0",
+      DRY_RUN: "true",
+      MAIN_REF: "refs/remotes/origin/unrelated",
+    });
+    expect(dry.status).toBe(0);
+  });
+
+  it("fails closed when main is not available for a real run", async () => {
+    git("checkout", "-q", "v6.1.0");
+    const result = await verify({ RELEASE_TAG: "v6.1.0", MAIN_REF: "refs/remotes/origin/missing" });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("is not available in this checkout");
   });
 
   it("fails when no Release exists", async () => {

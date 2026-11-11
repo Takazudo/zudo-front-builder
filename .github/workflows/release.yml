@@ -212,7 +212,12 @@ jobs:
           RELEASE_TAG: ${{ steps.resolve.outputs.release_tag }}
           CONTROL_SHA: ${{ github.sha }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
-        run: bash ../.release-control/scripts/release/verify-release-source.sh
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          # fetch-depth: 0 already brings refs/remotes/origin/main; refresh it
+          # explicitly so the ancestry check reads main as of this run.
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          bash ../.release-control/scripts/release/verify-release-source.sh
 
       # npm publish mode. A main-based recovery normally runs control scripts
       # newer than the source, so GitHub's OIDC identity (the control commit)
@@ -347,6 +352,10 @@ jobs:
             MODE_ARGS=(--mode mac-local --package @takazudo/zfb-darwin-arm64 --package @takazudo/zfb-darwin-x64)
             SCOPE="@takazudo/zfb-darwin-arm64 and @takazudo/zfb-darwin-x64 (owner-Mac carriers)"
           fi
+          # The owner's provenance policy is read from main's git object only
+          # (release/provenance-policy.json at origin/main), never from this
+          # checkout's working tree or the release commit.
+          git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
           set +e
           node scripts/check-provenance-preflight.mjs --version "$RELEASE_VERSION" "${MODE_ARGS[@]}"
           STATUS=$?
@@ -1136,8 +1145,10 @@ jobs:
     # (id-token: write), so it never checks out the release source, installs
     # dependencies or runs package code: only the control scripts, node and the
     # pinned npm. Each tarball's sha512 is verified against the pack manifest
-    # before anything is published (scripts/publish-npm-packages.sh). Dry runs
-    # skip the whole job.
+    # before anything is published, and every tarball's CONTENT is re-inspected
+    # here with control scripts (scripts/release/verify-release-tarballs.mjs via
+    # scripts/publish-npm-packages.sh) rather than trusting pack. Dry runs skip
+    # the whole job.
     needs: [pack, release-context, source-ci, provenance-preflight, admit-darwin, release-assets]
     if: ${{ needs.release-context.outputs.is_finalize != 'true' && inputs.dry_run != true }}
     runs-on: ubuntu-latest
@@ -1193,6 +1204,15 @@ jobs:
           name: darwin-admission
           path: ${{ runner.temp }}/darwin-admission
 
+      # build-wasm-md's own manifest: the publish job compares the packed
+      # MD/WASM manifest against it instead of trusting the pack job.
+      - name: Download @takazudo/zfb-md-wasm manifest artifact
+        if: ${{ needs.release-context.outputs.is_recovery != 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasm-md-shipped-artifacts
+          path: ${{ runner.temp }}/wasm-md-shipped-artifacts
+
       - name: Determine dist-tag
         id: dist-tag
         shell: bash
@@ -1244,6 +1264,9 @@ jobs:
           ZFB_LOCAL_BUILT_PACKAGES: packages/zfb-darwin-arm64 packages/zfb-darwin-x64
           ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
           ZFB_DARWIN_ADMISSION_VERDICT: ${{ runner.temp }}/darwin-admission/verdict.json
+          ZFB_RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          ZFB_MD_WASM_BUILD_MANIFEST: ${{ needs.release-context.outputs.is_recovery != 'true' && format('{0}/wasm-md-shipped-artifacts/shipped-artifacts.json', runner.temp) || '' }}
+          ZFB_MD_WASM_ALLOW_MISSING_BUILD_MANIFEST: ${{ needs.release-context.outputs.is_recovery == 'true' && '1' || '' }}
           # Defense in depth (A2, #3140): publish-npm-packages.sh refuses mac-local
           # without this. The provenance-preflight job set `cleared` only when no
           # downgrade exists or the owner acknowledged it.
@@ -1262,6 +1285,9 @@ jobs:
           ZFB_PROVENANCE_EXPECTATIONS_FILE: ${{ runner.temp }}/npm-provenance-expectations.tsv
           ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
           ZFB_DARWIN_ADMISSION_VERDICT: ${{ runner.temp }}/darwin-admission/verdict.json
+          ZFB_RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          ZFB_MD_WASM_BUILD_MANIFEST: ${{ needs.release-context.outputs.is_recovery != 'true' && format('{0}/wasm-md-shipped-artifacts/shipped-artifacts.json', runner.temp) || '' }}
+          ZFB_MD_WASM_ALLOW_MISSING_BUILD_MANIFEST: ${{ needs.release-context.outputs.is_recovery == 'true' && '1' || '' }}
           ZFB_ALLOW_PROVENANCE_DOWNGRADE: ${{ needs.provenance-preflight.outputs.cleared == 'true' && '1' || '' }}
 
       # Every package must carry exactly the provenance recorded for it:

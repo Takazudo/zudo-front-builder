@@ -182,6 +182,35 @@ describe("release.yml structure", () => {
     }
   });
 
+  it("re-inspects tarball content in the publish job with its own inputs (NEW-m1)", () => {
+    for (const name of ["Publish to npm", "Publish to npm (recovery — no provenance)"]) {
+      const step = jobs.publish.steps.find((s) => s.name === name);
+      expect([name, step.env.ZFB_RELEASE_VERSION]).toEqual([
+        name,
+        "${{ needs.release-context.outputs.release_version }}",
+      ]);
+      expect(step.env.ZFB_DARWIN_ADMISSION_VERDICT).toContain("darwin-admission/verdict.json");
+      expect(step.env.ZFB_MD_WASM_BUILD_MANIFEST).toContain("wasm-md-shipped-artifacts");
+    }
+    const download = jobs.publish.steps.find(
+      (s) => s.name === "Download @takazudo/zfb-md-wasm manifest artifact",
+    );
+    expect(download.with.name).toBe("wasm-md-shipped-artifacts");
+  });
+
+  it("reads the provenance policy from main and requires the source on main (NEW-m2)", () => {
+    const preflight = jobs["provenance-preflight"].steps.find((s) => s.id === "preflight").run;
+    expect(preflight).toContain(
+      "git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main",
+    );
+    expect(preflight).not.toContain("--policy-ref");
+    const verify = jobs["release-context"].steps.find((s) => s.id === "verify");
+    expect(verify.env.DRY_RUN).toBe("${{ inputs.dry_run }}");
+    expect(verify.run).toContain(
+      "git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main",
+    );
+  });
+
   it("orders release-assets after source CI", () => {
     expect(jobs["release-assets"].needs).toContain("source-ci");
   });

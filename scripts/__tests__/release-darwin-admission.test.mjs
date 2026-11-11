@@ -281,9 +281,18 @@ describe("release-status (read-only, injected gh/registry)", () => {
               status: "completed",
               conclusion: "success",
               app: "github-actions",
+              // One check suite per context, resolved below to its workflow file.
+              suite: 5000 + i,
             }),
           )
           .join("\n");
+      }
+      const suite = /check_suite_id=(\d+)/.exec(joined);
+      if (suite) {
+        const spec = REQUIRED_CONTEXTS.filter((c) => !c.prOnly)[Number(suite[1]) - 5000];
+        return JSON.stringify({
+          workflow_runs: [{ path: `.github/workflows/${spec.workflow}`, head_sha: source.commit }],
+        });
       }
       if (joined.includes(`commits/${source.commit}/status`))
         return JSON.stringify({ statuses: [] });

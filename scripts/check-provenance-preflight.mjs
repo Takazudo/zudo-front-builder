@@ -38,7 +38,7 @@
 // immutable). A 404 (package never published) is the one non-error absence —
 // it cannot possibly be a downgrade.
 
-import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { fetchPackument, hasAttestation, isPrerelease } from "./check-provenance-drift.mjs";
@@ -46,8 +46,9 @@ import { PUBLISHED_PACKAGES, compareSemver } from "./retire-next-dist-tag.mjs";
 
 /**
  * Owner-authored, committed provenance policy (#4690). Absent by default; only
- * the owner creates it. Read from the CONTROL checkout (this script's own
- * repository root), never from the release source tree.
+ * the owner creates it. Read from the git object at `origin/main` (release.yml
+ * fetches refs/heads/main first), NEVER from a working tree: neither the
+ * release source commit nor the control checkout can supply or alter it.
  *
  *   {
  *     "schema": "zfb-provenance-policy/v1",
@@ -64,9 +65,9 @@ import { PUBLISHED_PACKAGES, compareSemver } from "./retire-next-dist-tag.mjs";
  * unlisted packages are never covered.
  */
 export const POLICY_SCHEMA = "zfb-provenance-policy/v1";
-export const DEFAULT_POLICY_PATH = fileURLToPath(
-  new URL("../release/provenance-policy.json", import.meta.url),
-);
+export const POLICY_PATH = "release/provenance-policy.json";
+export const DEFAULT_POLICY_REF = "origin/main";
+export const DEFAULT_POLICY_REPO = fileURLToPath(new URL("..", import.meta.url));
 
 /**
  * The carriers release.yml publishes from owner-Mac bytes with
@@ -169,10 +170,10 @@ export async function checkMode(mode, { version, packages = MODES[mode], fetchOn
   );
 }
 
-/** Read and validate the policy file; null when absent. Throws when malformed. */
-export function loadPolicy(path = DEFAULT_POLICY_PATH) {
-  if (!existsSync(path)) return null;
-  const policy = JSON.parse(readFileSync(path, "utf8"));
+/** Validate a policy document's text; throws when malformed. */
+export function parsePolicy(text, label = POLICY_PATH) {
+  const policy = JSON.parse(text);
+  const path = label;
   if (policy?.schema !== POLICY_SCHEMA) throw new Error(`${path}: schema must be ${POLICY_SCHEMA}`);
   if (!Array.isArray(policy.decisions)) throw new Error(`${path}: decisions must be an array`);
   const seen = new Set();
@@ -196,6 +197,26 @@ export function loadPolicy(path = DEFAULT_POLICY_PATH) {
     seen.add(d.package);
   }
   return policy;
+}
+
+/**
+ * Read the policy from a git ref (default origin/main) of `repo`; null when the
+ * ref has no policy file. A missing ref throws: without main's view the policy
+ * is unknown, so the caller fails closed instead of treating it as absent.
+ */
+export function loadPolicyAtRef({ repo = DEFAULT_POLICY_REPO, ref = DEFAULT_POLICY_REF } = {}) {
+  const git = (args) =>
+    execFileSync("git", ["-C", repo, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  try {
+    git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  } catch {
+    throw new Error(`${ref} is not available in ${repo} (fetch refs/heads/main first)`);
+  }
+  if (git(["ls-tree", "--name-only", ref, "--", POLICY_PATH]).trim() === "") return null;
+  return parsePolicy(git(["show", `${ref}:${POLICY_PATH}`]), `${ref}:${POLICY_PATH}`);
 }
 
 /**
@@ -277,22 +298,22 @@ export function parseArgs(argv) {
     if (argv[i] === "--version") version = argv[(i += 1)];
     else if (argv[i] === "--mode") mode = argv[(i += 1)];
     else if (argv[i] === "--package") packages.push(argv[(i += 1)]);
-    else if (argv[i] === "--policy") policy = argv[(i += 1)];
+    else if (argv[i] === "--policy-ref") policy = argv[(i += 1)];
     else return null;
   }
   if (!version || !mode) return null;
-  if (policy === undefined && argv.includes("--policy")) return null;
+  if (policy === undefined && argv.includes("--policy-ref")) return null;
   if (packages.some((name) => !name || !PUBLISHED_PACKAGES.includes(name))) return null;
   if (packages.length > 0 && mode !== "mac-local") return null;
   const parsed = packages.length > 0 ? { version, mode, packages } : { version, mode };
-  return policy ? { ...parsed, policy } : parsed;
+  return policy ? { ...parsed, policyRef: policy } : parsed;
 }
 
 async function main(argv) {
   const args = parseArgs(argv);
   if (!args) {
     console.error(
-      "usage: node scripts/check-provenance-preflight.mjs --version <v> --mode mac-local|recovery-no-provenance [--package <name> ...] [--policy <file>]",
+      "usage: node scripts/check-provenance-preflight.mjs --version <v> --mode mac-local|recovery-no-provenance [--package <name> ...] [--policy-ref <git ref, default origin/main>]",
     );
     return 2;
   }
@@ -305,7 +326,7 @@ async function main(argv) {
 
   let policy;
   try {
-    policy = loadPolicy(args.policy ?? DEFAULT_POLICY_PATH);
+    policy = loadPolicyAtRef({ ref: args.policyRef ?? DEFAULT_POLICY_REF });
   } catch (error) {
     console.error(`provenance policy is invalid — failing closed: ${error.message}`);
     return 2;

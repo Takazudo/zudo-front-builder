@@ -9,11 +9,12 @@
 #
 # For a tagged context it also requires: the tag ref was fetched and peels to
 # the checked-out commit; packages/zfb's version is the tag's; a published,
-# non-draft GitHub Release exists for the tag; and a commit-SHA targetCommitish
-# resolves to the same commit.
+# non-draft GitHub Release exists for the tag; a commit-SHA targetCommitish
+# resolves to the same commit; and, unless DRY_RUN=true, the source commit is
+# an ancestor of main (MAIN_REF, default refs/remotes/origin/main).
 #
-# Env in: RELEASE_TAG (empty = branch dry run) CONTROL_SHA WORKFLOW_REF
-#         GITHUB_OUTPUT [GITHUB_STEP_SUMMARY]
+# Env in: RELEASE_TAG (empty = branch dry run) CONTROL_SHA WORKFLOW_REF DRY_RUN
+#         GITHUB_OUTPUT [GITHUB_STEP_SUMMARY] [MAIN_REF]
 # Writes: checkout_sha source_commit source_tree release_version control_sha workflow_ref
 set -euo pipefail
 
@@ -55,6 +56,19 @@ if [[ -n "$RELEASE_TAG" ]]; then
   if [[ "$ACTUAL_TAG" != "$RELEASE_TAG" || "$IS_DRAFT" != "false" || -z "$PUBLISHED_AT" ]]; then
     echo "::error::${RELEASE_TAG} must identify an existing published, non-draft GitHub Release."
     exit 1
+  fi
+  # A real (non-dry-run) release publishes only a commit that main already
+  # contains: a tag on an unmerged branch commit cannot reach npm.
+  if [[ "${DRY_RUN:-}" != "true" ]]; then
+    MAIN_REF="${MAIN_REF:-refs/remotes/origin/main}"
+    if ! git rev-parse --verify --quiet "${MAIN_REF}^{commit}" >/dev/null; then
+      echo "::error::${MAIN_REF} is not available in this checkout; cannot prove ${CHECKOUT_SHA} is on main."
+      exit 1
+    fi
+    if ! git merge-base --is-ancestor "$CHECKOUT_SHA" "$MAIN_REF"; then
+      echo "::error::Release source ${CHECKOUT_SHA} (${RELEASE_TAG}) is not an ancestor of main ($(git rev-parse "$MAIN_REF")). Only commits already on main are released."
+      exit 1
+    fi
   fi
   if [[ "$TARGET_COMMITISH" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
     if ! TARGET_SHA=$(git rev-parse --verify --quiet "${TARGET_COMMITISH}^{commit}"); then

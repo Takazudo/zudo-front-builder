@@ -8,7 +8,9 @@
 //
 // Exit 0 passed, 1 not passed (pending, cancelled, skipped, failed, missing),
 // 2 usage or read error. Only GitHub Actions check runs (app github-actions)
-// count; commit statuses never satisfy a required context (see ACTIONS_APP).
+// count, and each only when its check suite's workflow run is the context's
+// own workflow file (REQUIRED_CONTEXTS[].workflow); commit statuses never
+// satisfy a required context (see ACTIONS_APP).
 //
 // REQUIRED_CONTEXTS mirrors the `main` ruleset in scripts/apply-main-ruleset.sh
 // (a drift test keeps the two lists equal). Each context names the workflow
@@ -66,18 +68,27 @@ const SHA_RE = /^[0-9a-f]{40}$/;
  * run (highest id; a re-run replaces the earlier one for branch protection), or
  * the commit status when no check run exists.
  */
+export const workflowPathOf = (spec) => `.github/workflows/${spec.workflow}`;
+
 export function classifyContext(spec, checkRuns, statuses) {
   const named = checkRuns.filter((run) => run.name === spec.context);
+  // Pinned to the producing workflow file: a job of the same name in another
+  // workflow (or an unresolvable check suite) never satisfies the context.
   const runs = named
-    .filter((run) => run.app === ACTIONS_APP)
+    .filter((run) => run.app === ACTIONS_APP && run.workflowPath === workflowPathOf(spec))
     .sort((a, b) => Number(a.id) - Number(b.id));
   const status = statuses.find((entry) => entry.context === spec.context);
   const base = { context: spec.context, workflow: spec.workflow, prOnly: spec.prOnly };
   const ignored = {};
   if (named.length > runs.length) {
     ignored.ignoredCheckRuns = named
-      .filter((run) => run.app !== ACTIONS_APP)
-      .map((run) => ({ id: run.id, app: run.app ?? null, conclusion: run.conclusion ?? null }));
+      .filter((run) => !runs.includes(run))
+      .map((run) => ({
+        id: run.id,
+        app: run.app ?? null,
+        workflowPath: run.workflowPath ?? null,
+        conclusion: run.conclusion ?? null,
+      }));
   }
   if (status) ignored.ignoredStatus = { state: status.state, creator: status.creator ?? null };
   if (runs.length > 0) {
@@ -140,9 +151,20 @@ export function readSourceCi({ sha, repo, gh = execGh }) {
       "--paginate",
       `repos/${repo}/commits/${sha}/check-runs?per_page=100`,
       "--jq",
-      ".check_runs[] | {id, name, status, conclusion, html_url, app: .app.slug}",
+      ".check_runs[] | {id, name, status, conclusion, html_url, app: .app.slug, suite: .check_suite.id}",
     ]),
   );
+  // Resolve each Actions check suite to its workflow run's file path, once.
+  const paths = new Map();
+  for (const suite of new Set(checkRuns.filter((r) => r.app === ACTIONS_APP).map((r) => r.suite))) {
+    if (suite === undefined || suite === null) continue;
+    const runs = JSON.parse(
+      gh(["api", `repos/${repo}/actions/runs?check_suite_id=${suite}&per_page=1`]),
+    ).workflow_runs;
+    const run = runs?.[0];
+    paths.set(suite, run && run.head_sha === sha ? run.path : null);
+  }
+  for (const run of checkRuns) run.workflowPath = paths.get(run.suite) ?? null;
   const combined = JSON.parse(gh(["api", `repos/${repo}/commits/${sha}/status`]));
   const statuses = (combined.statuses ?? []).map((entry) => ({
     context: entry.context,

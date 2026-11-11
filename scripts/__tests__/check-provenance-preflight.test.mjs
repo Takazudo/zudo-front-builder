@@ -8,15 +8,18 @@
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  DEFAULT_POLICY_PATH,
+  DEFAULT_POLICY_REF,
+  POLICY_PATH,
   applyPolicy,
   checkMode,
   checkPackage,
-  loadPolicy,
+  loadPolicyAtRef,
+  parsePolicy,
   parseArgs,
   report,
   wouldDowngrade,
@@ -386,8 +389,10 @@ describe("owner provenance policy (release/provenance-policy.json, #4690)", () =
   });
 
   it("is read from the control checkout's release/ directory and absent by default", () => {
-    expect(DEFAULT_POLICY_PATH.endsWith(join("release", "provenance-policy.json"))).toBe(true);
-    expect(loadPolicy(join(tmpdir(), "zfb-no-such-policy.json"))).toBeNull();
+    expect([POLICY_PATH, DEFAULT_POLICY_REF]).toEqual([
+      "release/provenance-policy.json",
+      "origin/main",
+    ]);
   });
 
   it("acknowledges a listed local-built carrier at or after its version, naming the decision", () => {
@@ -444,18 +449,10 @@ describe("owner provenance policy (release/provenance-policy.json, #4690)", () =
     ).toBe("downgrade");
   });
 
-  describe("loadPolicy validation (fail closed)", () => {
-    let dir;
-    const write = (body) => {
-      dir = mkdtempSync(join(tmpdir(), "zfb-policy-"));
-      const path = join(dir, "provenance-policy.json");
-      writeFileSync(path, typeof body === "string" ? body : JSON.stringify(body));
-      return path;
-    };
-    afterEach(() => dir && rmSync(dir, { recursive: true, force: true }));
-
+  describe("parsePolicy validation (fail closed)", () => {
+    const text = (body) => (typeof body === "string" ? body : JSON.stringify(body));
     it("accepts a well-formed policy", () => {
-      expect(loadPolicy(write(policy(decision(ARM)))).decisions).toHaveLength(1);
+      expect(parsePolicy(text(policy(decision(ARM)))).decisions).toHaveLength(1);
     });
     it.each([
       ["malformed JSON", "{nope"],
@@ -465,16 +462,75 @@ describe("owner provenance policy (release/provenance-policy.json, #4690)", () =
       ["a bad version", policy(decision(ARM, "six"))],
       ["a duplicate package", policy(decision(ARM), decision(ARM, "7.0.0"))],
     ])("rejects %s", (_label, body) => {
-      expect(() => loadPolicy(write(body))).toThrow();
+      expect(() => parsePolicy(text(body))).toThrow();
     });
   });
 
-  it("parses --policy", () => {
+  describe("read only from origin/main, never a working tree or the release commit", () => {
+    let repo;
+    const git = (...args) =>
+      execFileSync(
+        "git",
+        ["-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", ...args],
+        {
+          encoding: "utf8",
+        },
+      ).trim();
+    const commitPolicy = (body, message) => {
+      mkdirSync(join(repo, "release"), { recursive: true });
+      writeFileSync(join(repo, POLICY_PATH), JSON.stringify(body));
+      git("add", POLICY_PATH);
+      git("commit", "-q", "-m", message);
+      return git("rev-parse", "HEAD");
+    };
+    afterEach(() => repo && rmSync(repo, { recursive: true, force: true }));
+    const init = () => {
+      repo = mkdtempSync(join(tmpdir(), "zfb-policy-repo-"));
+      git("init", "-q");
+      writeFileSync(join(repo, "README"), "x");
+      git("add", ".");
+      git("commit", "-q", "-m", "base");
+      return git("rev-parse", "HEAD");
+    };
+
+    it("ignores a policy present only in the release commit (and its working tree)", () => {
+      const main = init();
+      git("update-ref", "refs/remotes/origin/main", main);
+      commitPolicy(policy(decision(ARM)), "release commit adds a policy");
+      expect(loadPolicyAtRef({ repo })).toBeNull();
+    });
+
+    it("reads the policy committed on main", () => {
+      init();
+      const main = commitPolicy(policy(decision(ARM)), "owner policy on main");
+      git("update-ref", "refs/remotes/origin/main", main);
+      // A later working-tree edit does not change what main says.
+      writeFileSync(join(repo, POLICY_PATH), JSON.stringify(policy(decision(X64))));
+      expect(loadPolicyAtRef({ repo }).decisions.map((d) => d.package)).toEqual([ARM]);
+    });
+
+    it("fails closed when origin/main is not available", () => {
+      init();
+      expect(() => loadPolicyAtRef({ repo })).toThrow(/origin\/main is not available/);
+    });
+
+    it("fails closed on a malformed policy on main", () => {
+      init();
+      const main = commitPolicy({ schema: "nope" }, "bad policy");
+      git("update-ref", "refs/remotes/origin/main", main);
+      expect(() => loadPolicyAtRef({ repo })).toThrow(/schema must be/);
+    });
+  });
+
+  it("parses --policy-ref", () => {
+    expect(
+      parseArgs(["--version", "6.1.0", "--mode", "mac-local", "--policy-ref", "origin/main"]),
+    ).toMatchObject({
+      policyRef: "origin/main",
+    });
+    expect(parseArgs(["--version", "6.1.0", "--mode", "mac-local", "--policy-ref"])).toBeNull();
     expect(
       parseArgs(["--version", "6.1.0", "--mode", "mac-local", "--policy", "/p.json"]),
-    ).toMatchObject({
-      policy: "/p.json",
-    });
-    expect(parseArgs(["--version", "6.1.0", "--mode", "mac-local", "--policy"])).toBeNull();
+    ).toBeNull();
   });
 });
