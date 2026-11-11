@@ -1170,10 +1170,11 @@ describe("island shipped-size budget", () => {
     );
     // The reviewed Darwin contract must track this checkout's lockfiles, the
     // same drift guard the Linux contract test enforces through validate().
-    // A schemaVersion-3 contract tracks the dependency fingerprint instead of
-    // the whole file, so an unrelated lock bump does not redden this check.
+    // schemaVersion 3 and 4 pin the dependency fingerprint (check-budget
+    // fingerprintSchema). toolchain.pnpmLockSha256 stays recorded and is not
+    // compared, so a docs-only lock bump does not redden this check.
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
-    if (darwinContract.schemaVersion === 3) {
+    if (darwinContract.schemaVersion >= 3) {
       expect(darwinContract.dependencyFingerprint).toEqual(checkoutFingerprint(lockText));
     } else {
       expect(
