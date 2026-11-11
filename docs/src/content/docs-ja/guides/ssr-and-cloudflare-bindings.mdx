@@ -486,7 +486,13 @@ id = "<namespace-id>" # printed by `wrangler kv namespace create`
 2. **読み書きする** — 上記のように `env.MY_KV.get(...)` / `.put(...)` を使います。
 3. **デプロイする** — `zfb build` を実行し、`wrangler deploy` します。
 
-他のあらゆるバインディング — R2 バケット、Workers AI、Cache API、Durable Objects、service binding — も、SSR ルートからまったく同じ方法で読めます。`wrangler.toml` で宣言し、`Env` インターフェースにその型を追加し、`getCloudflareContext()` の中で `env` から読み取るだけです。単独の KV・Workers AI・リバースプロキシのレシピは [サンプル](./examples.mdx) の一覧を参照してください。
+R2 バケット、Workers AI、Durable Objects、service binding など、宣言するバインディングも同じ方法で扱います。`wrangler.toml` で宣言し、`Env` に型を追加し、`getCloudflareContext().env` から読み取ります。
+
+**Cache API はランタイムのグローバル**であり、Wrangler で宣言する `Env` バインディングではありません。
+Worker 内で、デフォルトのキャッシュには `caches.default`、名前付きのキャッシュには
+`await caches.open("name")` を使います。Cloudflare の [Cache API リファレンス](https://developers.cloudflare.com/workers/runtime-apis/cache/)
+と [Workers Cache レシピ](../recipes/workers-cache.mdx)を参照してください。
+[サンプル](./examples.mdx)には KV・Workers AI・リバースプロキシのレシピもあります。
 
 ## ローカル開発
 

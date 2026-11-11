@@ -88,8 +88,10 @@ untrusted; MDX JSX, expression, and ESM-shaped AST nodes are inert data.
 
 Both functions take the markdown/MDX `source` and an options object (every
 field optional; `{}` selects all defaults). Both return a result object plus a
-`diagnostics` array — **expected failures come back as diagnostics, never as a
-thrown error** (see the trap contract below for what _does_ throw).
+`diagnostics` array. Structured parser/options failures return diagnostics;
+ordinary network/file/glue/initialization or invalid-JavaScript-value failures
+can reject the Promise too. Use `catch` for rejection and `finally` for cleanup;
+see the error/trap contract below.
 
 ### Diagnostic location contract
 
@@ -799,12 +801,18 @@ comparison to #2447 is unchanged from 2.14.2.
 
 ## Error / trap / re-init contract
 
-- **Expected failures never throw.** Parse errors, malformed options JSON,
+- **Structured parser/options failures return diagnostics.** Parse errors, malformed options JSON,
   unknown themes, a bad filename — all come back as structured `Diagnostic[]`
   entries (`{ severity, source, message, line, column }`) on a normal result,
   with `code` / `html` set to `null`. `line`/`column` are 1-based; for
   `markdown` / `frontmatter` sources they point into the original source, for
   `options` into the options JSON.
+- **Ordinary exceptions can reject too.** Network or file loading, glue import,
+  initialization, and invalid JavaScript values (such as options that cannot be
+  JSON-serialized) are not structured parser diagnostics. Use `catch` around
+  awaited calls and `finally` to release resources or clear pending UI state.
+  Failed initialization is cleared so later calls can retry; these failures do
+  not consume the WASM-trap recovery budget.
 - **A wasm _trap_ is always a bug, and it poisons the instance.** On
   `wasm32-unknown-unknown` a Rust panic (or other internal fault) lowers to a
   wasm trap; `catch_unwind` is not reliable recovery, so the instance is dead

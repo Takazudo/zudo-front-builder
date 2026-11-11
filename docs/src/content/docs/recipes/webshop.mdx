@@ -21,6 +21,15 @@ The demo ships **zero client-side JavaScript**. Every button is a `<form method=
 
 **Repository:** [Takazudo/zfb-example-webshop](https://github.com/Takazudo/zfb-example-webshop)
 
+**[Manifest checked on 2026-11-11](https://github.com/Takazudo/zfb-example-webshop/blob/7f9a17d52b65a12bd6abf32941fc72a0ef4b8985/package.json)** (`7f9a17d52b65a12bd6abf32941fc72a0ef4b8985`)
+
+| Prerequisite / tool | Declared value |
+| --- | --- |
+| Node.js | `>=24.0.0` |
+| Package manager | `pnpm@10.30.0` |
+| Wrangler (devDependency) | `^4.121.0` |
+| TypeScript (devDependency) | `^5.9.3` |
+
 ## What it demonstrates
 
 - **A fully SSR site.** All seven routes export `prerender = false`. The build emits no HTML at
@@ -42,9 +51,9 @@ The demo ships **zero client-side JavaScript**. Every button is a `<form method=
 
 | Piece | What the repo actually uses |
 | --- | --- |
-| Framework | zfb **3.1.0** with its zudo-react JSX runtime; `lib/render.ts` uses `renderToString` for HTML responses |
-| zfb version | `@takazudo/zfb` **3.1.0**, `@takazudo/zfb-runtime` **3.1.0** |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.1.0** — present, and load-bearing |
+| Framework | zfb **6.0.1** with its zudo-react JSX runtime; `lib/render.ts` uses `renderToString` for HTML responses |
+| zfb version | `@takazudo/zfb` **6.0.1**, `@takazudo/zfb-runtime` **6.0.1** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **6.0.1** — present, and load-bearing |
 | Styling | zudo-wind tokens in `zfb.config.ts`; `styles/global.css` authors oklch colour custom properties and component rules |
 | Rendering mode | `export const prerender = false` on **every** route — no SSG pages exist |
 | Cloudflare surface | Workers Static Assets — `main = "./dist/_worker.js"` plus an `[assets]` block in `wrangler.toml` |

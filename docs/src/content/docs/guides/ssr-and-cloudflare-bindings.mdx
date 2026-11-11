@@ -668,12 +668,15 @@ id = "<namespace-id>" # printed by `wrangler kv namespace create`
 2. **Read and write** — `env.MY_KV.get(...)` / `.put(...)` as shown above.
 3. **Deploy** — `zfb build`, then `wrangler deploy`.
 
-Every other binding — R2 buckets, Workers AI, the Cache API, Durable
-Objects, service bindings — reaches an SSR route the exact same way:
-declare it in `wrangler.toml`, add its type to your `Env` interface, and
-read it off `env` inside `getCloudflareContext()`. See the
-[Examples](./examples.mdx) index for standalone KV, Workers AI, and
-reverse-proxy recipes.
+Other declared bindings — R2 buckets, Workers AI, Durable Objects, and service
+bindings — reach an SSR route the same way: declare them in `wrangler.toml`,
+add their types to `Env`, and read them from `getCloudflareContext().env`.
+
+The **Cache API is a runtime global**, not a Wrangler-declared `Env` binding.
+Use `caches.default` for the default cache or `await caches.open("name")` for a
+named cache inside the Worker. See Cloudflare's [Cache API reference](https://developers.cloudflare.com/workers/runtime-apis/cache/)
+and the [Workers Cache recipe](../recipes/workers-cache.mdx). The
+[Examples](./examples.mdx) index also has KV, Workers AI, and reverse-proxy recipes.
 
 ## Local development
 

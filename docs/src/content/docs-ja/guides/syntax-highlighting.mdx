@@ -24,7 +24,7 @@ zfb には、色を焼き込む代わりに各トークンへ再テーマ可能�
 
 ## 認識される言語
 
-フェンス付きコードブロックの言語タグは、zfb のエイリアス表を経由して、syntect に同梱された Sublime Text 互換の文法か、zfb 自身が追加している 3 つの文法（`TOML`、`TypeScript`、`TypeScriptReact`）のいずれかに解決されます。マッピングされているタグは次のとおりです。
+フェンス付きコードブロックの言語タグは、まず syntect 同梱の `SyntaxSet` のトークン検索で、次に zfb の明示的なエイリアスで解決されます。zfb が追加した `TOML`、`TypeScript`、`TypeScriptReact` の文法も含まれます。次の表はエイリアスの代表例であり、認識できる言語の完全な一覧ではありません。
 
 | タグ | 文法 |
 |---|---|
@@ -44,7 +44,7 @@ zfb には、色を焼き込む代わりに各トークンへ再テーマ可能�
 | `html` | HTML |
 | `css` | CSS |
 
-この表にないタグは、上で説明したテーマ適用のハイライトなし経路にフォールバックします。コードは保持・エスケープされますが、トークンの着色は行われません。
+両方の検索で解決できなかったタグだけが、テーマ適用のハイライトなし経路にフォールバックします。コードは保持・エスケープされますが、トークンの着色は行われません。
 
 ## テーマのカスタマイズ（組み込みテーマ）
 
@@ -321,26 +321,83 @@ export default {
 
 ## 補足パターン 1 — クライアントサイドの追加ハイライト
 
-インタラクティブなテーマ切り替えやユーザーごとの設定が必要な場合は、サーバーで描画された出力の上に、クライアントサイドのハイライターを [クライアントアイランド](../architecture/islands.mdx) として重ねます。
+既存の記事 DOM を Prism で拡張するには、[クライアントスクリプト](./client-scripts.mdx)を使います。
+`prismjs` と、TypeScript の型チェック用に `@types/prismjs` をインストールします。
+次の例は `article[data-prism]` 内の TypeScript ブロックだけを対象にし、
+グローバルスタイルシートのパッケージ `@import` で Prism の CSS テーマを読み込みます。
 
-```tsx
-"use client";
-
-import { getScope } from "@takazudo/zfb/zudo-react";
+```ts title="components/prism-article.client.ts"
 import Prism from "prismjs";
 import "prismjs/components/prism-typescript";
 
-export default function PrismRoot({ children }) {
-  const scope = getScope();
-  const ref: { current: HTMLDivElement | null } = { current: null };
-  scope.effect(() => {
-    if (ref.current) Prism.highlightAllUnder(ref.current);
-  });
-  return <div ref={ref}>{children}</div>;
+Prism.manual = true;
+const originals = new Map<HTMLElement, string>();
+
+function restore() {
+  for (const [code, html] of originals) code.innerHTML = html;
+  originals.clear();
+}
+
+function enhance() {
+  restore();
+  for (const code of document.querySelectorAll<HTMLElement>(
+    "article[data-prism] pre > code.language-typescript",
+  )) {
+    originals.set(code, code.innerHTML);
+    code.innerHTML = Prism.highlight(
+      code.textContent ?? "",
+      Prism.languages.typescript,
+      "typescript",
+    );
+  }
+}
+
+// キャッシュされたモジュールの生存期間中、リスナーは一組だけ保持します。
+document.addEventListener("zfb:before-swap", restore);
+document.addEventListener("zfb:page-load", enhance);
+window.addEventListener("pagehide", restore);
+window.addEventListener("pageshow", enhance);
+enhance();
+```
+
+```css title="styles/global.css"
+@import "prismjs/themes/prism.css";
+```
+
+```tsx title="pages/article.tsx"
+import { clientScript } from "@takazudo/zfb";
+import { ClientRouter } from "@takazudo/zfb-runtime";
+
+export default function ArticlePage() {
+  return (
+    <html lang="en">
+      <head>
+        <title>Prism article</title>
+        <ClientRouter />
+      </head>
+      <body>
+        <article data-prism="true">
+          <pre><code class="language-typescript">{"const count: number = 1;"}</code></pre>
+        </article>
+        <script type="module" src={clientScript("prism-article")} />
+      </body>
+    </html>
+  );
 }
 ```
 
-記事の本文を `<PrismRoot>` でラップすると、アイランドが事前描画済みのブロックをその場で再ハイライトします。これはメディアクエリやユーザー設定に依存するテーマに有用ですが、JavaScript が追加され、ハイドレーション後に短い再描画が発生します。
+クライアントナビゲーションを行うページでは、同じ `ClientRouter` とスクリプトを
+共有レイアウトに配置してください。モジュールスクリプトは訪問のたびに再実行されず
+キャッシュされるため、document のリスナーは意図的にモジュールの生存期間中保持します。
+スワップ前に元のマークアップを復元してノード参照を解放し、ページロード後に新しい記事を
+拡張します。`pagehide` と `pageshow` はブラウザーの履歴キャッシュからの復元にも対応します。
+ページロードイベントが繰り返されても、先に復元するのでラッパーは増えません。
+
+この方式はブラウザー用 JavaScript を追加し、ロード後に再描画が生じる場合があります。
+操作するのは明示的に対象とした code 要素だけです。アイランドや別のウィジェットが
+所有する DOM を対象にしないでください。アイランドは任意のサーバー描画済み記事を
+子として包むためのものではなく、厳密な props 転送は空でない `children` を拒否します。
+テーマ切り替えだけなら、上記の組み込みクラスモードで追加スクリプトを避けられます。
 
 ## 補足パターン 2 — カスタム文法のためのポストビルドスクリプト
 

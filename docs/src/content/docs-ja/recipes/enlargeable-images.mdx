@@ -7,7 +7,7 @@ category: Recipes
 
 <Info title="このページで扱うこと">
 
-削除された組み込み機能 `imageEnlarge` を、ユーザーランドの `EnlargeableImg` コンポーネントを [MDX オーバーライド API](../architecture/mdx-components.mdx) 経由で接続することで置き換える方法です。完全にサーバーサイドで動くバリアント（ページごとに JavaScript を送信しない）と、アイランドバリアント（`<Island>` によるクライアントサイドのインタラクティブ性）の両方を示します。
+削除された組み込み機能 `imageEnlarge` を、ユーザーランドの `EnlargeableImg` コンポーネントを [MDX オーバーライド API](../architecture/mdx-components.mdx) 経由で接続することで置き換える方法です。サーバーで描画するバリアント（共有レイアウトの JavaScript を使い、アイランドランタイムや画像ごとのバンドルは不要）と、アイランドバリアント（`<Island>` によるクライアントサイドのインタラクティブ性）の両方を示します。
 
 </Info>
 
@@ -53,7 +53,7 @@ if (props.title === "no-enlarge") {
 
 ## バリアント A — サーバーサイドのみ（アイランドなし）
 
-これはよりシンプルなバリアントです。`EnlargeableImg` はサーバーコンポーネントで、ディスクロージャー風のズームボタンを持つ `<figure>` をレンダリングし、すべてのインタラクティブ性はレイアウト内の小さなグローバルクリックスクリプトに委ねます。ページごとに JavaScript を送信せず、クリックスクリプトはレイアウトレベルで一度だけ置かれるインライン `<script>` です。
+これはよりシンプルなバリアントです。`EnlargeableImg` はサーバーコンポーネントで、ディスクロージャー風のズームボタンを持つ `<figure>` をレンダリングし、すべてのインタラクティブ性はレイアウト内の小さなグローバルクリックスクリプトに委ねます。JavaScript は必要で、共有レイアウトがドキュメントごとに一度クリックスクリプトを含めます。この版にはアイランドランタイムや画像ごとの個別バンドルはありません。
 
 ### コンポーネント
 
@@ -176,7 +176,7 @@ export default {
 };
 ```
 
-プロジェクトルートに `mdx-components.tsx` が存在すると、zfb はビルド時にそれを自動的に `globalThis.__zfb.mdxComponents` へインストールします。すべての `entry.Content` レンダリングは、それを `defaultComponents` の上、かつ呼び出しごとの `components` prop の下にマージするため、すべてのルートで `img: EnlargeableImg` を渡す必要はありません。
+プロジェクトルートに `mdx-components.tsx` が存在すると、zfb はビルド時にそれを自動的に `globalThis.__zfb.mdxComponents` へインストールします。すべての `entry.Content` レンダリングは、`defaultComponents` → ルートのグローバルマップ → 呼び出しごとの `components` prop の順にマージし、後のマップが優先されるため、すべてのルートで `img: EnlargeableImg` を渡す必要はありません。
 
 ## バリアント B — インタラクティブなアイランド
 

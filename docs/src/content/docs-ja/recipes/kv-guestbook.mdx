@@ -23,6 +23,15 @@ Cloudflare のバインディングに対する「読み取り」だけでなく
 
 </Warning>
 
+**[2026-11-11 に確認したマニフェスト](https://github.com/Takazudo/zfb-example-kv-guestbook/blob/f03272320cf27875962d7c7bf7fe3e11ac0419b6/package.json)** (`f03272320cf27875962d7c7bf7fe3e11ac0419b6`)
+
+| 前提条件・ツール | 宣言値 |
+| --- | --- |
+| Node.js | `>=24.0.0` |
+| パッケージマネージャー | `pnpm@10.34.1` |
+| Wrangler (devDependency) | `4.127.0` |
+| TypeScript (devDependency) | `^5.9.0` |
+
 ## 何を示すか
 
 - `prerender = false` のトップページが **レンダリング** と **`POST` の処理** の両方を担当する構成。1 つのルートで 2 つのメソッドを扱い、あいだに POST 後リダイレクトを挟みます。
@@ -37,8 +46,8 @@ Cloudflare のバインディングに対する「読み取り」だけでなく
 
 | 項目 | リポジトリでの実際の値 |
 | --- | --- |
-| フレームワーク | zfb **3.1.0** の zudo-react JSX ランタイム。Preact / React への依存はありません |
-| zfb パッケージ | `@takazudo/zfb`、`@takazudo/zfb-runtime`、`@takazudo/zfb-adapter-cloudflare` はすべて **3.1.0** に固定 |
+| フレームワーク | zfb **6.0.1** の zudo-react JSX ランタイム。Preact / React への依存はありません |
+| zfb パッケージ | `@takazudo/zfb`、`@takazudo/zfb-runtime`、`@takazudo/zfb-adapter-cloudflare` はすべて **6.0.1** に固定 |
 | アダプター | `@takazudo/zfb-adapter-cloudflare` — 導入済みかつ必須 |
 | スタイリング | `layouts/default.tsx` が手書きのクリティカル CSS をインライン化します。事前レンダリングされる `404.html` には `zudo-wind` の `owned-v1` リセットが適用され、ページは生成ユーティリティではなく手書きのクラス名を使います |
 | レンダリング方式 | 静的サイトではありません。`pages/index.tsx`、`pages/api/entries.tsx`、`pages/api/entries/[key].tsx` がいずれも `prerender = false` を export しています。事前レンダリングされるのは `pages/404.tsx` だけです |

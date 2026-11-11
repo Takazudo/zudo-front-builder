@@ -15,14 +15,14 @@ Tauri — each is the right answer for a different project. Choose deliberately:
 - **Mode C** wins when the dynamic part of your app is Rust-doable without zfb
   in the process.
 - **Mode D** wins when you want tight in-process Tauri integration — no child
-  process, no port management.
+  process, with a loopback listener and a discovered port.
 
-The core invariant that governs all four modes:
-
-> **Build time = Node.js required. Runtime = no Node.js, ever.**
-
-zfb's static output is deliberately runtime-agnostic. The build tooling is not.
-Plan your architecture around that boundary rather than against it.
+The Node.js requirement depends on the workflow. A standalone native `zfb`
+binary can build and serve supported native-only projects without Node.js.
+The npm distribution, Node-based plugins, and full TypeScript checking
+(`tsc --noEmit`) require Node.js. A packaged static `dist/` needs no Node.js;
+a packaged compiler or plugin workflow must include its actual dependencies.
+See [Installation](../getting-started/installation.mdx) for these boundaries.
 
 ## Mode A — Ship `dist/` only
 
@@ -76,7 +76,8 @@ for users to see fresh content without a new build.
 **What it is.** Tauri spawns the `zfb` binary as a child process; the WebView
 points at `localhost:<port>`. zfb handles request-time MDX rendering, resource
 discovery, and so on from inside that child process. The sidecar binary is Rust —
-no Node.js required in the packaged app.
+no Node.js is needed for a native-only project. Node-based plugins or full
+TypeScript checks still need their Node.js tooling in the packaged app.
 
 **When to pick it.** You want zfb's full dynamism — `prerender = false` routes,
 MDX rendering at request time, content reloading without a rebuild — but you do
@@ -90,7 +91,8 @@ is clean; the integration glue is not provided out of the box.
 
 **Tradeoff.** You carry extra moving parts: child process lifecycle management,
 port discovery, and IPC plumbing between Tauri and the sidecar. In exchange you
-get zfb's full render pipeline at runtime with no Node.js dependency.
+get the CLI's render/watch pipeline at runtime, with the dependencies required
+by the selected project workflow.
 [CCResDoc](https://github.com/Takazudo/ccresdoc) is a working example: a Tauri
 host spawns the native `zfb` binary on a loopback port and Rust generators
 write MDX into its content tree.
@@ -125,13 +127,14 @@ control over the runtime behaviour, and zero V8 dependency in the packaged app.
 ## Mode D — Embed zfb as a Rust crate inside Tauri
 
 **What it is.** Tauri's `setup` hook spawns a zfb server on a dedicated OS
-thread inside the Tauri process — no child process, no port management,
-in-process Rust-to-Rust handoff for `prerender = false` routes and Tauri IPC
-calls. The WebView points at the ephemeral port the embedded server binds to.
+thread inside the Tauri process. It still binds an HTTP listener on loopback;
+the host discovers its ephemeral port and points the WebView there. The minimal
+builder serves static `dist/` and host-registered Rust handlers. It does not
+start the CLI compiler, watcher, plugins, or request-time JS SSR pipeline.
 
-**When to pick it.** You want zfb's full runtime dynamism and tight Tauri
-integration — IPC, filesystem access, hot content reload — without the sidecar
-lifecycle plumbing of Mode B.
+**When to pick it.** You want an in-process HTTP server with tight Tauri
+integration — IPC, filesystem access, and host-owned handlers — and are prepared
+to wire any live page cache or lower-level SSR/rebuild services yourself.
 
 **What's involved.** Add `zfb-server` as a Cargo dependency and call
 `Server::builder()` inside Tauri's synchronous `setup` callback.
@@ -167,6 +170,10 @@ tauri::Builder::default()
 `serve_in_thread()` spawns a dedicated OS thread with its own `current_thread`
 tokio runtime, so the Tauri synchronous `setup` callback works without changes.
 Read the bound port back from `ServerHandle::addr()` before opening the WebView.
+This JSON-config example needs no compiler worker. A TypeScript config requires
+an explicit `compiler_worker` launcher and worker-mode dispatch in the host's
+`main`; see [Config format](./embed-as-library.mdx).
+That worker compiles the config; it does not start the full CLI watch pipeline.
 
 See the [Embed as Library](./embed-as-library.mdx) guide for the full builder
 API, request-extension injection, and the host-handler seam.
@@ -188,14 +195,15 @@ the right approach depends on what you need:
   The sidecar keeps the file-watch / incremental-rebuild loop running in the
   background; the WebView reflects changes without an app restart.
 - **Mode D** (in-process embed) is the preferred path for tight integration —
-  no child process, no port, direct access to Tauri IPC and the filesystem
-  via `with_request_extension`.
+  no sidecar process, a loopback port discovered through the handle, and direct
+  access to Tauri IPC and the filesystem via `with_request_extension`. The
+  builder alone does not launch the compiler/watch loop.
 - **Mode A or C** do not help here: both assume content is static at the point
   the packaged app runs.
 
 If you need Node.js in the runtime — for example, to run custom `zfb` plugins
 that have Node.js dependencies — consider Electron instead. **Electron** embeds
-Node.js, so `zfb dev` runs naturally inside the main process; the cost is a
+Node.js, so the main process can supervise `zfb dev` as a child; the cost is a
 significant binary size increase and a more complex packaging story. This is not
 a zfb mode per se; it is a framework choice driven by the Node.js-at-runtime
 requirement.
@@ -206,13 +214,13 @@ requirement.
 
 The story is the same regardless of which desktop framework you use.
 
-- **Electron** — `dist/` works as a static asset directory (use
-  `loadFile()` or a `file://` protocol handler). Running `zfb dev` inside the
-  main process is possible because Electron embeds Node.js, but it means
-  shipping the full zfb build toolchain with your app.
+- **Electron** — serve `dist/` through an app protocol that maps root-relative
+  URLs to the asset root, or a loopback HTTP server. Running `zfb dev` as a
+  managed child process is possible when its required Node/plugin tooling is
+  available, but means shipping the build toolchain with your app.
 - **Wails** — embeds a WebView and serves assets from an embedded Go server.
-  Point it at the `dist/` directory. The build-time Node.js requirement is the
-  same as above.
+  Point it at `dist/`; the Node.js requirement depends on the build workflow
+  described above.
 - **Neutralino, Tauri, or any other framework** with a built-in static file
   server — ship `dist/`, no runtime dependency on Node.
 
@@ -229,14 +237,18 @@ set `devUrl` (Tauri v2) or `devPath` (Tauri v1) to `http://localhost:3000`
 (the default `zfb dev` port) so Tauri loads from the live dev server rather
 than a stale snapshot.
 
-**Content Security Policy.** Tauri's default CSP may block inline scripts. zfb's
-island hydration uses inline `<script type="module">` tags. Relax or extend the
-CSP policy in `tauri.conf.json` if you use islands in your app.
+**Content Security Policy.** Island hydration is injected as an external
+`<script type="module" src="…">`. Allow the actual script origin or app scheme
+in your CSP. Island hydration alone does not require broad `unsafe-inline`
+permission. Authored inline scripts (such as a theme bootstrap) need their own
+nonce/hash or an external-script design.
 
-**File paths.** `zfb build` generates absolute-root-relative paths by default
-(`/assets/main.css`). Tauri's custom protocol rewrites these correctly when you
-use the `tauri://` protocol. If you use `file://` directly, you may need to set
-`base` in `zfb.config.ts` to a relative path.
+**File paths.** zfb emits root-relative asset URLs by default. Serve `dist/`
+through an app scheme that maps those URLs to its asset root, or through HTTP
+on loopback. Validate that mapping with your desktop framework. Direct
+`file://` loading is not solved by `base: "./"`: a nonempty `base` must begin
+with `/`, `http://`, or `https://`. Use a supported hosting arrangement and a
+matching root/subpath base instead.
 
 ## See also
 

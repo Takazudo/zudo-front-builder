@@ -18,6 +18,15 @@ long as the isolate does — with **no Cloudflare bindings to provision**.
 - **Live demo** — [zfb-example-json-api.takazudomodular.com](https://zfb-example-json-api.takazudomodular.com/)
 - **Repository** — [github.com/Takazudo/zfb-example-json-api](https://github.com/Takazudo/zfb-example-json-api)
 
+**[Manifest checked on 2026-11-11](https://github.com/Takazudo/zfb-example-json-api/blob/68d23bdfdf649a30c2aef45349fc75693861ca18/package.json)** (`68d23bdfdf649a30c2aef45349fc75693861ca18`)
+
+| Prerequisite / tool | Declared value |
+| --- | --- |
+| Node.js | `>=24.0.0` |
+| Package manager | `pnpm@10.34.1` |
+| Wrangler (devDependency) | `4.127.0` |
+| TypeScript (devDependency) | `^5.9.0` |
+
 ## What it demonstrates
 
 - **Two SSR routes on a mostly static site.** `pages/index.tsx` and `pages/404.tsx` prerender
@@ -46,8 +55,8 @@ long as the isolate does — with **no Cloudflare bindings to provision**.
 | Area | What the repo uses |
 | --- | --- |
 | Framework | zfb with its built-in zudo-react JSX runtime |
-| zfb version | `@takazudo/zfb` **3.1.0**, `@takazudo/zfb-runtime` **3.1.0** |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.1.0** — present and required for Worker routes |
+| zfb version | `@takazudo/zfb` **6.0.1**, `@takazudo/zfb-runtime` **6.0.1** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **6.0.1** — present and required for Worker routes |
 | Styling | zudo-wind with `reset: "owned-v1"`; authored semantic classes in `styles/global.css`, with `authoredClasses` entries for `item-card__meta` and `text-link` |
 | Rendering | Mixed. `/` and `/404` prerender; `/api/items` and `/api/search` are `prerender = false` |
 | Cloudflare surface | Workers Static Assets. `main = "./dist/_worker.js"`, `[assets]` with `binding = "ASSETS"`, `not_found_handling = "404-page"`, `run_worker_first = false` |

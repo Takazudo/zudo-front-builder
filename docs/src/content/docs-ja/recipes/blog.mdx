@@ -15,6 +15,15 @@ category: Recipes
 
 **リポジトリ:** [Takazudo/zfb-example-blog](https://github.com/Takazudo/zfb-example-blog)
 
+**[2026-11-11 に確認したマニフェスト](https://github.com/Takazudo/zfb-example-blog/blob/77beb0cfd7f3ca05000a02e374e0ec238f370cfd/package.json)** (`77beb0cfd7f3ca05000a02e374e0ec238f370cfd`)
+
+| 前提条件・ツール | 宣言値 |
+| --- | --- |
+| Node.js | `>=24.0.0` |
+| パッケージマネージャー | `pnpm@10.30.0` |
+| Wrangler (devDependency) | `4.85.0` |
+| TypeScript (devDependency) | `^5.9.3` |
+
 ## 何を示すか
 
 - `.md` と `.mdx` の記事を 1 つのディレクトリに混在させた `blog` という[コンテンツコレクション](/ja/docs/architecture/content-collections)。
@@ -28,8 +37,8 @@ category: Recipes
 
 | 項目 | zfb-example-blog |
 | --- | --- |
-| フレームワーク | zudo-react と zfb **3.1.0**。テーマ切り替えには zudo-react のアイランドランタイムを使用 |
-| ランタイム | `@takazudo/zfb-runtime` **3.1.0** |
+| フレームワーク | zudo-react と zfb **6.0.1**。テーマ切り替えには zudo-react のアイランドランタイムを使用 |
+| ランタイム | `@takazudo/zfb-runtime` **6.0.1** |
 | スタイリング | `styles/global.css` の手書き CSS。`wind.reset: "owned-v1"` と preflight 互換の手書き `@layer base` ブロック |
 | レンダリング | **純粋な SSG**。`export const prerender = false` を持つルートはありません |
 | コンテンツ | コレクション 1 つ — `blog` → `content/blog`（`.md` 4 本 + `.mdx` 1 本） |
@@ -120,7 +129,7 @@ const THEME_BOOTSTRAP_SCRIPT = `(() => {
 
 ## ローカルで動かす
 
-Node.js >= 22.12.0 と pnpm 10.x が必要です。`pnpm install` だけで `zfb` CLI も入るため、Rust ツールチェインも zfb 本体のチェックアウトも要りません。
+Node.js >= 24.0.0 と pnpm 10.30.0 が必要です。`pnpm install` だけで `zfb` CLI も入るため、Rust ツールチェインも zfb 本体のチェックアウトも要りません。
 
 ```sh
 pnpm install
