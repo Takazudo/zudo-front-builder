@@ -18,9 +18,9 @@ zfb is a Rust workspace. Each crate owns one slice of the build, and the data fl
 - **`zfb-build`** is the orchestrator. It consumes `Change` values, classifies them, asks the graph which pages need rebuilding, and runs the asset pipeline.
 - **`zfb-render`** provides JS host interfaces and the SWC transform API for library consumers. The CLI production path is orchestrated in `zfb-build`: native Rolldown transforms/bundles the generated `createPageRouter` application, embedded V8 dispatches its `fetch`, and zudo-react renders the response.
 - **`zfb-css`** processes CSS modules and global styles.
-- **`zfb-islands`** scans for `"use client"` directives, bundles all islands into a single shared JS bundle, and emits the hydration entry.
+- **`zfb-islands`** scans for `"use client"` directives and emits a shared hydration entry plus any lazy chunks the bundle needs.
 - **`zfb-content`** parses Markdown / MDX content collections and runs the unified plugin chain.
-- **`zfb-server`** is the dev-only HTTP server: a page cache, a static-file route, the browser live-reload WebSocket (plus SSE for tooling), and a request-time SSR dispatcher for `prerender = false` pages.
+- **`zfb-server`** supplies the CLI dev HTTP server — a page cache, static-file serving, the browser live-reload WebSocket (plus SSE for tooling), and request-time SSR dispatch — as well as an embeddable `ServerBuilder` API for Rust hosts.
 
 The crates depend downward: the orchestrator knows about render, css, islands, content. The renderer does not know about the orchestrator. The server only reads.
 
@@ -161,7 +161,7 @@ The SSR layer is wired via a small `SsrDispatcher` trait in `zfb-server`. The bi
 
 This is what makes "dev matches prod" a real guarantee: the dev preview's `prerender = false` output is **semantically equivalent** (same status, body, content-type — timestamps and request IDs may differ) to what the Cloudflare adapter produces from the same source. Dev and build-time SSG share one V8 host, so there is no second renderer inside zfb to drift; in production, workerd runs the adapter's SSR-only bundle built from the same source.
 
-The server is dev-only. Production emits static files for an edge CDN, plus a `_worker.js` from the Cloudflare adapter (verified on Workers Static Assets; Cloudflare Pages advanced mode is unverified) for `prerender = false` routes. Production publication safety belongs to the deployment system; per-file atomic writes do not provide a whole-build deployment swap.
+The CLI dev server is for development; Rust hosts can separately use the [embedding API](../guides/embed-as-library.mdx). Production site builds emit static files for an edge CDN, plus a `_worker.js` from the Cloudflare adapter (verified on Workers Static Assets; Cloudflare Pages advanced mode is unverified) for `prerender = false` routes. Production publication safety belongs to the deployment system; per-file atomic writes do not provide a whole-build deployment swap.
 
 ### Embed-as-library: host-supplied HTTP handlers
 
