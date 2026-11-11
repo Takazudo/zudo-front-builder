@@ -43,7 +43,8 @@ Constraints worth knowing:
 - The identity is exact: renaming the workflow file, moving the publish into another workflow, or
   adding a GitHub environment breaks it until each package's publisher is updated.
 - OIDC publishing from GitHub Actions attests automatically. That is why the Darwin carriers pass
-  `--provenance=false` explicitly (pnpm 12.8.2 ignores `NPM_CONFIG_PROVENANCE=false` alone).
+  `--provenance=false` explicitly. Publishing is `npm publish <tgz>` from the `publish` job only;
+  pnpm packs workspace packages in the unprivileged `pack` job but never publishes.
 
 ## (b) Live proof at the next authorized release
 
@@ -51,10 +52,19 @@ The cutover is unproven until a real release publishes through it. Dry runs, ski
 `finalize_only` runs that publish nothing, and public registry reads do **not** prove OIDC
 publication or dist-tag writes. Record for that release:
 
-- [ ] `release.yml` run ID, attempt and the `publish` job ID; the `npm-oidc-preflight` step passed
-      on attempt 1 (or every retry recorded).
-- [ ] Each of the eleven `npm publish` invocations used OIDC (the job log shows no token auth and
-      no stored credential; the preflight would have failed otherwise).
+- [ ] `release.yml` run ID and attempt (run name exactly `Release v<version>`), and the job IDs of
+      `Pack npm tarballs` and `publish`; the `npm-oidc-preflight` step passed on attempt 1 (or
+      every retry recorded).
+- [ ] The `publish` job verified each tarball's sha512 against the pack manifest, then ran
+      `npm publish <tgz>` eleven times under npm **12.2.1** through OIDC (no token auth, no stored
+      credential; the preflight would have failed otherwise), with an explicit `--provenance` on the
+      nine CI-built packages and `--provenance=false` on the two Darwin carriers. This is the
+      first live evidence that publishing a **tarball** (not a directory) with OIDC provenance
+      works on that npm version; record it either way.
+- [ ] Tarball publishes record no `gitHead` in the registry metadata. Identity therefore comes
+      from the attestation's source `gitCommit` (nine attested packages) and, for the Darwin
+      carriers, from the binary/addon digests matching the admission verdict — record that
+      `npm-package-state.mjs` used those routes, not `gitHead`.
 - [ ] `scripts/verify-npm-provenance-expectations.mjs` passed on the publish job's expectations
       file: nine packages `attested`, both Darwin carriers `none`, exactly as intended.
 - [ ] Independent read: `node scripts/release/npm-package-state.mjs --version <v>
@@ -73,30 +83,62 @@ something passes and call it proven.
 
 ## (c) Darwin provenance downgrade decision
 
-Through 6.0.1, both `@takazudo/zfb-darwin-arm64` and `@takazudo/zfb-darwin-x64` were built on
-hosted macOS runners and published **with** provenance. From the first release built under
-#4687 they are built on the owner's Mac and published **without** provenance, because an Actions
-attestation would falsely claim an Actions build of bytes the Mac produced.
+Through 6.0.1, both Darwin carriers were built on hosted macOS runners and published **with**
+provenance (`@takazudo/zfb-darwin-arm64` attested since 1.0.0, `@takazudo/zfb-darwin-x64` since
+2.13.0). From #4687 on they are built on the owner's Mac and published **without** provenance,
+because an Actions attestation would falsely claim an Actions build of bytes the Mac produced.
 
 Consequence: npm records provenance per version, permanently. A consumer with pnpm
 `trustPolicy: no-downgrade` (pnpm ≥ 10.21; pnpm 11.2+ also re-checks an existing lockfile under
 `--frozen-lockfile`) fails to install that version with `ERR_PNPM_TRUST_DOWNGRADE`. Because pnpm
 resolves all `optionalDependencies`, this affects Linux and Windows consumers of `@takazudo/zfb`
-too, not only Mac users. It continues for every later version until a Darwin package is attested
-again; the downgrade is judged against the earlier attested versions.
+too, not only Mac users. The earlier attested versions stay attested forever, so **every**
+local-Darwin release is a downgrade, not only the first: those consumers can never install a new
+Darwin carrier version while this build model holds.
 
-`release.yml`'s preflight is default-deny: the release blocks before publishing until the owner
-acknowledges by adding this exact line to the draft Release body (or, for a dispatch, setting
-`allow_provenance_downgrade=true`):
+`release.yml`'s preflight is default-deny: each such release blocks before publishing until the
+owner acknowledges it, by one of two routes (see
+[RELEASING.md](../RELEASING.md#provenance-contract-and-the-downgrade-blocker) for the schema and
+limits):
 
-```text
-<!-- zfb-release: allow-provenance-downgrade -->
-```
+- **Per run:** this exact line in the draft Release body, or `allow_provenance_downgrade=true` on a
+  dispatch:
 
-The decision is the owner's alone. Options: acknowledge and publish (and add release-note and
-troubleshooting guidance for affected consumers), or hold the release. The Darwin receipts and the
+  ```text
+  <!-- zfb-release: allow-provenance-downgrade -->
+  ```
+
+- **Durable:** an owner-authored, committed `release/provenance-policy.json`
+  (`zfb-provenance-policy/v1`), one decision per Darwin package with `unattested_from_version`,
+  `reason`, `decided_by` and `issue`. It applies only in `mac-local` mode, only to the run's
+  locally built Darwin carriers, only from that version upward, and is read from the control
+  checkout. It is absent by default; agents never create or edit it.
+
+The decision is the owner's alone (option 3 under "Owner options and follow-ups"). Options:
+acknowledge per release or once by policy (and add release-note and troubleshooting guidance for affected consumers), or hold the
+release. The Darwin receipts and the
 CI admission bind the published bytes to the source and the Mac qualification, but they are not an
 npm attestation, and pnpm's trust policy does not read them.
+
+## Owner options and follow-ups
+
+The owner decides each of these; agents never change npm, GitHub or repository settings for them.
+
+1. **Protected environment for the trusted publisher (follow-up, not done).** Each package's
+   trusted publisher could be bound to a GitHub environment that is protected and restricted to
+   `v*` tags and `main`, so only those refs can obtain a publish token. This needs the workflow to
+   declare that `environment:` on the `publish` and `finalize` jobs at the same time as the npm
+   setting changes; changing either alone breaks publishing. It is a coordinated owner + code
+   change and is tracked as a follow-up.
+2. **Immutable Releases (currently off).** A read-only check shows the repository setting
+   `enabled: false`. Turning it on conflicts with the current flow, in which `release-assets` (and
+   `md-wasm-asset`) upload assets after the Release is published; the flow would have to be
+   reordered so every asset is attached before publication first.
+3. **Darwin provenance policy (M1).** Section (c): acknowledge per release, commit
+   `release/provenance-policy.json`, or hold.
+4. **Receipts are unsigned.** Darwin qualification receipts and their admission bind bytes to the
+   source, not to an operator: anyone with Release write access could upload a self-consistent
+   receipt. Release write access is the trust anchor; keep it limited to the owner.
 
 ## (d) Retire the old credentials — only after (b) is proven
 
@@ -155,11 +197,13 @@ all of RELEASING.md first, then follow RELEASING.md exactly.
    the ten Darwin inputs, print RELEASING.md's paste-ready Mac prompt and STOP. Missing local
    native receipts are a blocker. Never build, emulate or write Darwin evidence, and never use a
    hosted macOS runner.
-4. Provenance: run the mac-local preflight. On a downgrade, STOP and report; never add the
-   acknowledgement marker or dispatch with allow_provenance_downgrade=true.
+4. Provenance: run the mac-local preflight. On an unacknowledged downgrade, STOP and report; never
+   add the acknowledgement marker, dispatch with allow_provenance_downgrade=true, or create or
+   edit release/provenance-policy.json.
 5. Publication: only when Step 0 recommends publish-draft, publish per A12 (stable without Latest
-   in one update), watch release.yml and the installer smoke, and record run/attempt/job IDs with
-   first results and retries.
+   in one update), watch the run named exactly `Release v<version>` (jobs including
+   `Pack npm tarballs`, `publish` and `Upload MD/WASM digest asset`) and the installer smoke, and
+   record run/attempt/job IDs with first results and retries.
 6. Completion: run verify-release-delivery.mjs, npm-package-state.mjs and the provenance
    expectations evidence; promote Latest only on exit 0; report Homebrew as an owner command if
    you lack tap access. If a post-publish step failed, follow Step 0 (dispatch-finalize via an

@@ -32,7 +32,14 @@ adds Codex-specific notes; where they disagree, `RELEASING.md` wins.
   Darwin binaries, emulate them, write receipts, or add a hosted macOS runner.
 - **Stop on the provenance-downgrade blocker.** Never add
   `<!-- zfb-release: allow-provenance-downgrade -->` to a Release body and never dispatch with
-  `allow_provenance_downgrade=true`; report the preflight output for the owner.
+  `allow_provenance_downgrade=true`; never create or edit `release/provenance-policy.json`
+  (the owner's durable acknowledgement). Every local-Darwin release is a downgrade unless that
+  committed policy covers it; report the preflight output for the owner.
+- Publication runs in two jobs: `pack` (no `id-token`; installs, builds, `npm pack` for platform
+  packages and `pnpm pack` for workspace packages) and `publish` (`id-token` only; `npm publish
+  <tgz>` with explicit `--provenance`/`--provenance=false` under npm 12.2.1; pnpm never publishes).
+  Runs are named `Release v<version>[ (finalize only)][ (dry run)]`; the delivery verifier expects
+  the `Pack npm tarballs` and `Upload MD/WASM digest asset` jobs.
 - Run Step 0 (`release-status.mjs`) at the start and after every interruption; act on its single
   recommendation.
 - Follow-up workflow runs are explicit `gh workflow run release.yml --ref main ...` dispatches
