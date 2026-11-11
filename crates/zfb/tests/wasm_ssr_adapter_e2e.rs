@@ -293,10 +293,11 @@ fn assert_wasm_two_pass_contract(root: &Path) -> String {
 
     let assetsignore = read_text(&dist.join(".assetsignore"));
     let ignored: Vec<_> = assetsignore.lines().collect();
+    let runtime_asset_rule = format!("/{runtime_asset}");
     assert_eq!(
         ignored,
-        ["_worker.js", "_zfb_inner.mjs", runtime_asset],
-        ".assetsignore must contain only the Worker files and runtime Wasm asset, once each"
+        ["/_worker.js", "/_zfb_inner.mjs", runtime_asset_rule.as_str()],
+        ".assetsignore must contain only the root-anchored Worker files and runtime Wasm asset, once each"
     );
 
     assert!(
