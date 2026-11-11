@@ -10,7 +10,7 @@ used as a fallback.
 | Producer (Mac only) | `scripts/build-darwin-local.sh` |
 | Shared constants, receipt writer | `scripts/darwin-artifact-contract.mjs` |
 | Admission verifier (Linux-runnable, node builtins only) | `scripts/admit-darwin-artifacts.mjs` |
-| Tests | `scripts/__tests__/admit-darwin-artifacts.test.mjs` |
+| Tests | `scripts/__tests__/admit-darwin-artifacts.test.mjs` (in-process), `scripts/__tests__/admit-darwin-artifacts-cli.test.mjs` (CLI exit codes and `--check-only` refusals) |
 
 ## Prerequisite: Mac evidence exists before a release starts
 
