@@ -110,7 +110,9 @@ Record these in the release report (and keep JSON evidence outside the checkout)
 node scripts/release/release-status.mjs --tag v<version> [--json]
 ```
 
-Read-only. It reports the tag → commit/tree, the Release (absent/draft/published,
+Read-only. It reports the release **source** as `{commit, tree, kind}` (`kind` is `tag` when the
+tag ref exists, otherwise `draft-target`, taken from a draft Release's 40-hex `targetCommitish`;
+source CI and Darwin admission run against that source), the Release (absent/draft/published,
 `targetCommitish`), the expected Release assets (including the ten Darwin inputs) as present,
 missing or conflicting, the source commit's required CI state, a Darwin admission of the
 downloaded assets, per-package npm state, dist-tags, the latest `release.yml` runs for the tag
@@ -124,6 +126,15 @@ downloaded assets, per-package npm state, dist-tags, the latest `release.yml` ru
 | `dispatch-finalize` | [Finalize](#finalize-only-dist-tags-digest-asset-verification) |
 | `blocked:<reason>` | stop and report the reason |
 | `complete` | [A14](#a14-verify-delivery) onward if not yet done, else report |
+
+Before publication the source is `kind: draft-target`; after it, `kind: tag`. Every `blocked:`
+reason is a stop. Source-resolution reasons:
+
+| Reason | Meaning |
+| --- | --- |
+| `blocked:release-missing` | no tag ref and no Release for the version (before A10, expected) |
+| `blocked:release-target-not-sha` | the draft's `targetCommitish` is a branch name, not a full SHA; delete it and recreate it with `--target "$SOURCE_SHA"` (A10) |
+| `blocked:tag-missing` | a **published** Release without a tag ref; investigate, never retag |
 
 Before a version exists (nothing bumped yet), start at [A1](#a1-preconditions). Resuming is always
 idempotent: re-run Step 0, act on its single recommendation, re-run Step 0. Never reconstruct state
@@ -353,7 +364,9 @@ node scripts/release/verify-source-ci.mjs --sha "$SOURCE_SHA" [--json]
 
 It checks the `main` ruleset's required contexts (the list in `scripts/apply-main-ruleset.sh`) on
 exactly that SHA. Exit 0 pass, 1 not passed (pending, cancelled or failed are all "not passed"),
-2 error. Wait and re-run while checks are pending; on a failure, fix on `main`, which produces a
+2 error. `pnpm audit (prod)` and `Docs gate` run only on pull requests, so on a direct `main` push
+they are reported `not-applicable-pr-only`: that is neither a pass nor a failure, and the release
+report names it. `--require-pr-only` makes them required (for a source that went through a PR). Wait and re-run while checks are pending; on a failure, fix on `main`, which produces a
 **new** source SHA — repeat [A4](#a4-version-stamped-measurements-in-ci-before-the-bump-reaches-main)
 when the fix moves version-stamped inputs, then A8–A9. No draft Release before exit 0.
 
@@ -401,14 +414,15 @@ from the exact source SHA, and uploads ten assets to the draft: per target the C
 ```sh
 git fetch origin --tags && git checkout --detach <SOURCE_SHA>
 git status --porcelain                         # must be empty
-git tag v<version> <SOURCE_SHA>                # LOCAL tag only — do not push; the draft has no tag ref yet
 ZFB_X64_NODE=/absolute/path/to/x64/node CARGO_BUILD_JOBS=1 \
   scripts/build-darwin-local.sh --source <SOURCE_SHA> --upload v<version>
 ```
 
-- `--source` must equal `HEAD`; `--upload` implies `--tag`, which must be `v<packages/zfb version>`
-  and peel locally to the source. The local tag satisfies that binding; publishing the draft later
-  creates the remote tag at the same commit.
+- `--source` must equal `HEAD`; `--upload` implies `--tag`, which must be `v<packages/zfb version>`.
+  Without a tag ref the script binds to the **draft** Release instead: `gh release view` must show
+  `isDraft=true` and a `targetCommitish` that is exactly `--source` as a full commit id (a branch
+  name or a published Release is refused). That is why A10 creates the draft with
+  `--target "$SOURCE_SHA"`. An existing tag ref must still peel to the source. Do not create a tag.
 - `ZFB_X64_NODE` is an x64 Node ≥ 24 for the Rosetta addon smoke. `CARGO_BUILD_JOBS=1` suits a
   low-memory Mac. The script honors `HEAVY_GUARD` and the default guard locations, keeps the
   toolchain process-local (`RUSTUP_TOOLCHAIN` or `rust-toolchain.toml`) and refuses a dirty tree,
@@ -421,38 +435,43 @@ ZFB_X64_NODE=/absolute/path/to/x64/node CARGO_BUILD_JOBS=1 \
   `status=failed` is never uploaded.
 
 Record the receipt digests, the `host.arch_label` of each (`native-arm64`,
-`rosetta-translated`) and the `sw_vers` line in the release report. Afterwards delete the local
-tag if desired (`git tag -d v<version>`); it is not needed again.
+`rosetta-translated`) and the `sw_vers` line in the release report.
+
+The retired `scripts/build-macos-x64-local.sh` refuses `--upload` (exit 2); it remains only for
+`css-carrier-verification.yml` and never produces release inputs.
 
 ### Paste-ready Mac prompt
 
-When a non-Mac session reaches `prepare-darwin`, it stops and gives the owner this prompt for a
+When a non-Mac session finds Darwin inputs missing or rejected (`prepare-darwin`, or a failed
+admission in A11), it stops and gives the owner this prompt for a
 local session on the Mac (fill in the values):
 
 ```text
 Phase M of RELEASING.md for zfb v<version>. Source SHA <SOURCE_SHA> (tree <SOURCE_TREE>); the
 draft Release v<version> targets it. In a clean checkout of Takazudo/zudo-front-builder: fetch,
-check out <SOURCE_SHA> detached, create the LOCAL tag v<version> at it (do not push), then run
+check out <SOURCE_SHA> detached (do not create a tag; the script binds to the draft), then run
 `ZFB_X64_NODE=<x64 node> CARGO_BUILD_JOBS=1 scripts/build-darwin-local.sh --source <SOURCE_SHA>
 --upload v<version>` through the heavy guard if present. Do not publish the Release, do not add the
 provenance-downgrade marker unless I decide to, and do not use --clobber. Report the ten uploaded
 asset names, both receipts' arch_label and qualification.status, the first result of every check
-and `node scripts/release/release-status.mjs --tag v<version>`'s recommendation.
+and the script's final admission line.
 ```
 
 ## Phase A continued: publish and deliver
 
 ### A11. Admission and provenance preflight
 
-Re-run Step 0. It downloads the draft's Darwin assets into a temporary directory and runs the same
-admission as CI:
+Download the draft's Darwin assets into an empty temporary directory
+(`gh release download v<version> --pattern '*apple-darwin*' --dir <downloaded>`) and run the same
+admission as CI. Step 0 runs it against the `draft-target` source too; this direct run is the
+cross-check and produces the `admission.json` evidence:
 
 ```sh
 node scripts/admit-darwin-artifacts.mjs --dir <downloaded> --version <version> \
   --source-commit "$SOURCE_SHA" --source-tree "$SOURCE_TREE" --repo-root . --json-out <evidence-dir>/admission.json
 ```
 
-Exit 0 admitted, 1 rejected, 2 usage/I/O error. Rejected or missing inputs → `prepare-darwin` (the
+Exit 0 admitted, 1 rejected, 2 usage/I/O error. Rejected or missing inputs → [Phase M](#phase-m-darwin-inputs-on-the-owners-mac) (the
 owner rebuilds; a conflicting asset must be deleted deliberately by the owner first). Admission
 binds bytes to receipts and the source; it cannot prove the receipt's execution — that is the
 owner's attested record ([contract](scripts/darwin-artifact-contract.md#what-linux-admission-cannot-prove)).
@@ -465,6 +484,8 @@ Then run the provenance preflight for the normal publish mode:
 node scripts/check-provenance-preflight.mjs --version <version> --mode mac-local
 ```
 
+It checks both `@takazudo/zfb-darwin-arm64` and `@takazudo/zfb-darwin-x64` by default (the optional,
+repeatable `--package <name>` narrows it; `release.yml` passes both explicitly).
 Exit 0: no downgrade. Exit 1: a downgrade (see below) — stop unless the owner has acknowledged it.
 Exit 2: registry error, fail closed — retry later; never treat it as acknowledged.
 
@@ -495,12 +516,15 @@ default-deny and blocks it until the owner acknowledges, by one of:
 owner's behalf, even with general release authorization. On a detected downgrade an agent stops,
 reports the preflight output (package, version, earlier attested version) and points to
 [`research/npm-oidc-cutover.md`](research/npm-oidc-cutover.md#c-darwin-provenance-downgrade-decision).
-After the owner acknowledges, re-run Step 0 and continue.
+After the owner acknowledges, re-run the preflight and continue.
 
 ### A12. Publish the draft
 
-Only when Step 0 recommends `publish-draft` (CI passed on the source SHA, all Darwin inputs
-admitted, no unacknowledged downgrade).
+**Only when Step 0 recommends `publish-draft`** — the single gate. Confirm its source is
+`kind: draft-target` at `$SOURCE_SHA`. The direct checks — `verify-source-ci.mjs` exit 0 (A9),
+`admit-darwin-artifacts.mjs` exit 0 and a clear or owner-acknowledged preflight (A11) — are a
+cross-check: if any disagrees with Step 0, stop and report; they never substitute for
+`publish-draft`.
 
 - **Stable:** publish without GitHub Latest in **one** REST update (`make_latest` is a string). A
   bare `gh release edit --draft=false`, or the web UI with "Set as the latest release" checked,
@@ -558,6 +582,12 @@ failure; 2 incomplete evidence (never a pass; re-run once if transient); 3 usage
 recompute the four `.wasm` SHA-256 digests from the published `@takazudo/zfb-md-wasm@<version>`
 tarball and compare with its `dist/shipped-artifacts.json` and the Release asset
 `zfb-md-wasm-<version>-shipped-artifacts.json`.
+
+The verifier accepts the normal `mac-local` run: both Darwin carriers must carry **no**
+attestation and their packed `zfb` and `zfb-css.node` must equal the Release's Darwin archive
+binary and addon bytes, while every other package must be attested. Recovery, finalize and dry-run
+runs, and runs from before #4687 (`legacy-hosted-darwin`, `legacy-fast-mac`), are classified,
+never accepted — they cannot reach exit 0.
 
 Per-package npm identity can be checked independently:
 
@@ -636,7 +666,10 @@ assets present, but a post-publish step did not complete):
 gh workflow run release.yml --ref main -f dry_run=false -f release_tag=v<version> -f finalize_only=true
 ```
 
-No build, no publish: it reconciles dist-tags (advance `latest` when the `ALSO_LATEST` condition
+`finalize_only` needs `release_tag` and a dispatch from `main`. With `dry_run=true` it runs only the
+read-only gate (all eleven packages `present-verified`, the six hosted assets and ten Darwin inputs
+on the Release, provenance expectations) and skips the dist-tag changes, digest upload and smoke —
+useful as a check, never as finalization. With `dry_run=false`, no build, no publish: it reconciles dist-tags (advance `latest` when the `ALSO_LATEST` condition
 applies; retire `next` where it is no longer ahead), uploads the md-wasm digest asset if missing,
 verifies provenance expectations, runs the smoke and notifies. It is idempotent. If build assets are
 missing it stops `blocked`; use recovery instead.
@@ -660,7 +693,6 @@ For an abandoned release (draft created, never published) or an orphan found in 
 2. Bump commit: if it is still `main`'s head (`git rev-list --count <SOURCE_SHA>..origin/main` is
    `0`), `git revert --no-edit <SOURCE_SHA>` and push (one revert removes the version, lockfile and
    five pages). If later commits sit on top, leave it; the next release supersedes the version.
-3. On the Mac, delete the local tag (`git tag -d v<version>`) if one was created.
 
 ## Failure recovery quick reference
 

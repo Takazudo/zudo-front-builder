@@ -149,7 +149,9 @@ all of RELEASING.md first, then follow RELEASING.md exactly.
 2. Exact source: prepare the release from a fresh checkout per A1-A10 (version judgment, CI-measured
    version stamps, bump, five changelog pages, focused checks, push, verify-source-ci.mjs on the
    bump SHA, draft Release targeting it). Record source SHA/tree and your tested checkout/tree.
-3. Darwin inputs: run Step 0. If it recommends prepare-darwin, or admission rejects or misses any of
+3. Darwin inputs: run Step 0 (source kind draft-target before publication) and the A11
+   admission cross-check on the draft's assets. If Step 0 recommends prepare-darwin, or
+   admission rejects or misses any of
    the ten Darwin inputs, print RELEASING.md's paste-ready Mac prompt and STOP. Missing local
    native receipts are a blocker. Never build, emulate or write Darwin evidence, and never use a
    hosted macOS runner.

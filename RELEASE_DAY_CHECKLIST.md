@@ -179,7 +179,8 @@ mixed provenance"). `zfb-darwin-x64` carried no attestation through 2.12.0;
 2.13.0 restored it, and v2.20.3's fast-Mac publish was the downgrade that
 `check-provenance-preflight.mjs` (#3134) was written to block. That script's
 `--clobber` upload, single-target pair and lack of qualification receipts do not
-satisfy the current Darwin contract. Both Darwin targets now come only from
+satisfy the current Darwin contract; it now refuses `--upload` (exit 2) and remains only
+for `css-carrier-verification.yml`. Both Darwin targets now come only from
 `scripts/build-darwin-local.sh` on the owner's Mac, and no hosted macOS runner is
 part of a release.
 
