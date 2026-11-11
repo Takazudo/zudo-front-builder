@@ -83,12 +83,20 @@ for (const width of [1440, 390]) {
   }
 }
 
-test("fallback, legacy anchors and discovery retain their contracts", async ({ page, request }) => {
+test("localized reference, legacy anchors and discovery retain their contracts", async ({
+  page,
+  request,
+}) => {
   await page.goto(route("architecture/render-artifacts"));
-  const title = await page.locator("main h1").textContent();
+  await expect(page.locator("main h1")).toHaveText("Render Artifacts");
   await page.goto(route("architecture/render-artifacts", true));
   await expect(page.locator("html")).toHaveAttribute("lang", "ja");
-  await expect(page.locator("main h1")).toHaveText(title);
+  await expect(page.locator("main h1")).toHaveText("レンダーアーティファクト");
+  await expect(
+    page.getByText("このページはまだ翻訳されていません。原文のまま表示しています。", {
+      exact: true,
+    }),
+  ).toHaveCount(0);
   for (const ja of [false, true]) {
     const anchor = ja ? "6-つのエンジンプリミティブ" : "the-six-engine-primitives";
     await page.goto(route("architecture/engine-vs-framework", ja) + "#" + anchor);
