@@ -34,6 +34,15 @@ the route answers `501` with `cache_context_unavailable` rather than pretending 
 
 </Warning>
 
+**[Manifest checked on 2026-11-11](https://github.com/Takazudo/zfb-example-workers-cache/blob/72568649580197eca58b76b95e9163ff57d5ff8a/package.json)** (`72568649580197eca58b76b95e9163ff57d5ff8a`)
+
+| Prerequisite / tool | Declared value |
+| --- | --- |
+| Node.js | `>=24.0.0` |
+| Package manager | `pnpm@10.34.1` |
+| Wrangler (devDependency) | `4.85.0` |
+| TypeScript (devDependency) | `^5.9.0` |
+
 ## What it demonstrates
 
 - SSR on Cloudflare Workers via `@takazudo/zfb-adapter-cloudflare` — every page in `pages/`
@@ -51,9 +60,9 @@ the route answers `501` with `cache_context_unavailable` rather than pretending 
 
 | Area | Choice |
 | --- | --- |
-| Framework | zfb **3.1.0** with zudo-react; `lib/http.tsx` renders HTML with `renderToString` |
-| zfb version | `@takazudo/zfb` 3.1.0, `@takazudo/zfb-runtime` 3.1.0 |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` 3.1.0 — present and required |
+| Framework | zfb **6.0.1** with zudo-react; `lib/http.tsx` renders HTML with `renderToString` |
+| zfb version | `@takazudo/zfb` 6.0.1, `@takazudo/zfb-runtime` 6.0.1 |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` 6.0.1 — present and required |
 | Styling | `wind: false`; `components/recipe-page.tsx` inlines authored CSS, with no utility generation |
 | Rendering | Pure SSR — all four routes are `prerender = false`; the build emits the Worker bundle and one stylesheet — no HTML pages |
 | Cloudflare surface | Workers Static Assets (`[assets]`) plus Workers Cache (`[cache] enabled = true`) |

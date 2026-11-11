@@ -24,7 +24,7 @@ Markdown / MDX を HTML に変換するパイプラインは
 |---|---|---|
 | JSX コンポーネントにコンパイルされる `:::name` / `::name` / `:name` 構文を追加する | ディレクティブを登録する | `Pipeline::with_defaults` + `DirectiveRegistry`（[Custom Directives](../architecture/custom-directives.mdx)） |
 | 既存の AST ノードを書き換える（見出しのスラッグ化、コードブロックのラップ、`<img>` の JSX マーカーへの置き換え、リンクの正規化） | visitor を書く | `crates/zfb-content/src/plugins/` 配下の新規ファイル |
-| markdown-rs はパースするが zfb が現状捨てている Markdown 構文を表面化する（テーブル、脚注、math、定義、参照スタイルのリンク） | AST コンバーターを拡張する | `crates/zfb-content/src/pipeline.rs` の `mdast_to_hast` |
+| markdown-rs はパースするが zfb が現状捨てている Markdown 構文を表面化する（定義と参照スタイルのリンク・画像） | AST コンバーターを拡張する | `crates/zfb-content/src/pipeline.rs` の `mdast_to_hast` |
 | markdown-rs がパースできない、まったく新しい Markdown 構文を追加する | 対象外 | `markdown` クレートへのアップストリーム変更、その後 zfb のコンバーターアーム |
 
 ほとんどの貢献は 2 行目 — 新しい visitor — に収まります。
@@ -228,13 +228,21 @@ markdown-rs がパースする Markdown 構文の一部は、mdast → hast
 の `mdast_to_hast` を見てください。
 
 ```rust
-// Unhandled: degrade to empty Raw so we never crash on
-// unsupported input. Tables, footnotes, definitions, math,
-// reference links/images, ESM, frontmatter, etc. fall here.
+// 未対応入力でクラッシュしないよう空の Raw にフォールバックします。
+// 参照リンク・画像の定義、
+// 参照リンク・画像、ESM、frontmatter などが対象です。
 _ => HastNode::Raw(String::new()),
 ```
 
-テーブル、脚注、定義、math、参照スタイルのリンク、その他キャッチオールに落ちているものを zfb で表面化したい場合は、2 つの変更が必要です。
+テーブル、脚注、`Math`、`InlineMath` のコンバーターは実装済みです。
+テーブルは列の配置を持つ table / head / body 構造を出力し、脚注は収集したモデルから
+参照・定義・戻りリンクを生成します。数式ノードはエスケープ済みソースを
+`code.language-math`（ブロック数式では `pre` の内側）に出力し、数式の組版はしません。
+コンバーター自体はパーサーの構文を有効にしないため、脚注や数式にはパーサー設定も必要です。
+数式の組版エンジンは別途統合するもので、このコンバーターの実装機能ではありません。
+
+参照スタイルのリンク・画像の定義と参照は、今もキャッチオールに落ちます。
+こうした未対応構文を実装するには、次の 2 つの変更が必要です。
 
 1. **match アーム**を `mdast_to_hast` に追加し、その mdast
    バリアントを適切な `HastNode::Element`（パススルーの JSX/HTML なら

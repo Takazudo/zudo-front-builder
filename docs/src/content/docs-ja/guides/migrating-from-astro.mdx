@@ -100,7 +100,30 @@ export default function DocsLayout({ children }) {
 - **アイランド / クライアントディレクティブ** — `"use client"` と明示的な `<Island>` に
   置き換えられています。[アイランド](../architecture/islands.mdx)を参照してください。
 
-現時点で対応物がない機能もあります。インテグレーションのマーケットプレイス、Astro DB、サーバーエンドポイントなどです。サイトがこれらに依存している場合は、移植に踏み切る前に、zfb のプラグインシステムやアダプターがユースケースをカバーできるか評価してください。
+SSR ルートは `Response` を返すことができ、HTML 以外や GET 以外のエンドポイントにも使えます。
+規約は `export const prerender = false` を持つページのデフォルトエクスポートであり、
+Astro の名前付き `GET` / `POST` エクスポートではありません。ページのデフォルトエクスポートが
+受け取るのは **props** で、`Request` ではありません。Cloudflare アダプターでは、現在の
+`request`、バインディング、実行コンテキストを `getCloudflareContext()` から取得します。
+
+```ts title="pages/api/method.ts"
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+export const prerender = false;
+
+export default function MethodEndpoint() {
+  const { request } = getCloudflareContext();
+  return new Response(JSON.stringify({ method: request.method }), {
+    headers: { "Content-Type": "application/json" },
+  });
+}
+```
+
+メソッドの振り分け、リクエストボディ、レスポンスヘッダーはデフォルトエクスポート内で
+明示的に処理します。デプロイとリクエストスコープの規則は
+[SSR と Cloudflare バインディング](./ssr-and-cloudflare-bindings.mdx)を参照してください。
+インテグレーションのマーケットプレイスや Astro DB に直接対応するものはないため、
+必要に応じてプラグインやアダプターを検討してください。
 
 ### v0 以降のエンジン追加機能
 

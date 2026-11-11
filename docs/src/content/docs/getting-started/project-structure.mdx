@@ -17,6 +17,7 @@ my-site/
 ├── layouts/
 │   └── default.tsx
 ├── components/
+│   ├── design-rules.ts
 │   ├── callout.tsx
 │   ├── theme-toggle.tsx
 │   └── zfb-shim.d.ts
@@ -28,7 +29,10 @@ my-site/
 ├── lib/
 │   └── types.ts
 ├── styles/
+│   ├── design-system.css
 │   └── global.css
+├── DESIGN-NOTES.md
+├── design-tokens.json
 ├── mdx-components.tsx
 ├── zfb.config.ts
 ├── package.json
@@ -63,7 +67,7 @@ Reusable page wrappers. `layouts/default.tsx` is the shell every page imports �
 Plain components and **islands**. The template ships two components and one type declaration:
 
 - `components/callout.tsx` exports one base `Callout` plus five named wrappers — `Note`, `Tip`, `Important`, `Warning`, and `Caution`. Those five names are fixed by the [GitHub alerts](../markdown-features/github-alerts.mdx) markdown feature, which rewrites a `> [!NOTE]` blockquote into a `<Note>` element before rendering.
-- `components/theme-toggle.tsx` is the template's only `"use client"` island — it toggles dark mode and is the only component that ships JavaScript to the browser. The `"use client"` directive at the top of a file is what turns a component into a client-side island; components without it render only on the server. The full mental model is on the [islands page](../architecture/islands.mdx).
+- `components/theme-toggle.tsx` is the template's only `"use client"` island — it toggles dark mode and is the only component that ships JavaScript to the browser. The `"use client"` directive establishes eligibility. A reachable explicit `<Island>` with a single eligible component child selects the hydration target; the directive alone does not hydrate it. Modules without the directive can still enter the client graph through imports or re-exports. The full mental model is on the [islands page](../architecture/islands.mdx).
 - `components/zfb-shim.d.ts` is not a component. It declares the supported bare `zfb` import family for TypeScript by re-exporting each corresponding public entry from `@takazudo/zfb`. The build tools resolve those aliases across SSR, island scanning, client bundles, JSX pragma classification, and zudo-wind class extraction; the config loader separately maps `zfb/config` to an internal runtime stub. The build aliases do not configure TypeScript, and `zfb check` does not inject `compilerOptions.paths`; editors and `zfb check` resolve bare specifiers through this shim, which the project's `tsconfig` includes. The stock config includes `components/`; if you already have a shim, extend it with any missing module declarations. See [Typing bare `zfb` imports](../api/define-config.mdx#typing-bare-zfb-imports) for the complete declaration file.
 
 ## content/
@@ -75,6 +79,22 @@ Content collections. `content/blog/` holds the three seed entries of a `blog` co
 - `styling-with-zudo-wind.md` — the starter's utility tokens, authored CSS, and dark-mode setup.
 
 Collection schemas are declared in `zfb.config.ts` under `collections`. See [Content Collections](../architecture/content-collections.mdx) for the query API.
+
+## Design files
+
+`DESIGN-NOTES.md` records the bundled Everyday design's values and usage rules.
+`styles/design-system.css` owns editable `--ds-*` CSS variables for colors,
+typography, horizontal/vertical spacing, corners, and reading width. The global
+stylesheet imports it; its local dark overrides follow the existing theme toggle.
+
+`design-tokens.json` maps semantic Wind names to those variables (for example,
+`accent` → `var(--ds-accent)`, `reading` → `var(--ds-size-reading)`), plus the
+`wide` breakpoint. It contains token/config data, not generated CSS. The starter
+imports and merges selected maps into `zfb.config.ts`; changing JSON alone does
+not update every hardcoded scale entry. `components/design-rules.ts` is an array
+of human-readable rules rendered by the home page, not a component or validator.
+Keep the CSS, token maps, notes, and rules aligned when editing the design; the
+starter does not depend on the Design System Workshop at runtime.
 
 ## mdx-components.tsx
 
@@ -88,7 +108,7 @@ Shared TypeScript utilities. The template ships `lib/types.ts` with the frontmat
 
 ## styles/
 
-Global CSS. `styles/global.css` is the entry point, imported from `layouts/default.tsx`. It contains authored CSS for the site's base styles and `.prose` block. The `wind` object in `zfb.config.ts` supplies the starter's utility tokens, breakpoint, reset, and `data-theme` dark variant; wind configuration is data rather than stylesheet directives.
+Global CSS. zfb discovers `styles/global.css` as the global entry point; it imports `./design-system.css` with CSS `@import` and adds local dark-theme overrides, base styles, and the `.prose` block. The `wind` object in `zfb.config.ts` supplies the starter's utility tokens, breakpoint, reset, and `data-theme` dark variant; wind configuration is data rather than stylesheet directives.
 
 The split is deliberate: page chrome in `.tsx` files uses zudo-wind utilities inline, while Markdown produces plain tags no utility class can reach, so those are styled once in CSS and opted into with `class="prose"`. The starter explicitly configures `wind`; other projects can omit it for the empty enabled default, or set `wind: false` for authored CSS only. See [Styling](../architecture/styling.mdx) and [zudo-wind configuration](../zudo-wind/configuration.mdx).
 
@@ -115,6 +135,7 @@ The template scaffolds a TypeScript config that wraps its object in `defineConfi
 
 ```ts
 import { defineConfig } from "zfb/config";
+import design from "./design-tokens.json";
 
 export default defineConfig({
   wind: {
@@ -122,11 +143,12 @@ export default defineConfig({
     reset: "owned-v1",
     tokens: {
       spacingUnit: "0.25rem",
-      colors: { accent: "var(--color-accent)" },
-      sizes: { "2xl": "42rem" },
+      spacing: design.tokens.spacing,
+      colors: { white: "#ffffff", ...design.tokens.colors },
+      sizes: { "2xl": "42rem", ...design.tokens.sizes },
       // The starter supplies the rest of its explicit palette and scales here.
     },
-    breakpoints: { sm: { minWidthPx: 640 } },
+    breakpoints: { ...design.breakpoints, sm: { minWidthPx: 640 } },
     dark: { attribute: "data-theme", value: "dark" },
     authoredClasses: { prose: true },
   },
@@ -138,7 +160,7 @@ export default defineConfig({
 });
 ```
 
-This shortened example shows the starter's explicit wind settings alongside its `blog` collection and markdown opt-ins. `outDir` and `publicDir` use their defaults; the full starter palette and scales are declared in its config. GFM task lists and footnotes are enabled on top of the always-on tables and strikethrough, along with [GitHub alerts](../markdown-features/github-alerts.mdx), [code enrichment](../markdown-features/code-enrichment.mdx), and the [heading-marker TOC](../markdown-features/heading-marker-toc.mdx). The [markdown features index](../markdown-features/index.mdx) is the full map of what else you can turn on.
+This shortened example shows the starter's explicit wind settings alongside its `blog` collection and markdown opt-ins. `outDir` and `publicDir` use their defaults; the full starter palette and scales are declared in its config. Colors and sizes spread the semantic design maps after stock entries, so design keys win collisions. Spacing uses the design map directly. Font sizes, families, weights, radii, and breakpoints spread design data before the starter's explicit entries, so those later entries win collisions; this is ordinary object merging, not automatic deep merging. GFM task lists and footnotes are enabled on top of the always-on tables and strikethrough, along with [GitHub alerts](../markdown-features/github-alerts.mdx), [code enrichment](../markdown-features/code-enrichment.mdx), and the [heading-marker TOC](../markdown-features/heading-marker-toc.mdx). The [markdown features index](../markdown-features/index.mdx) is the full map of what else you can turn on.
 
 The config file uses a camelCase schema. Common keys include `outDir` (default `"dist"`), `publicDir` (default `"public"`), `host` (default `"localhost"`), `port` (default `3000`, the `zfb dev` server default — `zfb preview` falls back to `4321` instead when unset), `wind`, `collections`, and `plugins`. This is not an exhaustive list — see [defineConfig](../api/define-config.mdx) for the full schema reference.
 

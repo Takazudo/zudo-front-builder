@@ -18,6 +18,15 @@ Wrangler 環境から外した `wrangler.toml` の構成 — Cloudflare アカ�
 - **ライブデモ:** [zfb-example-ai-summarizer.takazudomodular.com](https://zfb-example-ai-summarizer.takazudomodular.com/)
 - **リポジトリ:** [Takazudo/zfb-example-ai-summarizer](https://github.com/Takazudo/zfb-example-ai-summarizer)
 
+**[2026-11-11 に確認したマニフェスト](https://github.com/Takazudo/zfb-example-ai-summarizer/blob/6ce8f7935cabedb73c12ee090e5ca8147b8c363f/package.json)** (`6ce8f7935cabedb73c12ee090e5ca8147b8c363f`)
+
+| 前提条件・ツール | 宣言値 |
+| --- | --- |
+| Node.js | `>=24.0.0` |
+| パッケージマネージャー | `pnpm@10.34.1` |
+| Wrangler (devDependency) | `4.127.0` |
+| TypeScript (devDependency) | `^5.9.0` |
+
 ## 何を示すか
 
 - **UI 全体が 1 つの zudo-react アイランド。** `pages/index.tsx` は静的な HTML で、
@@ -39,8 +48,8 @@ Wrangler 環境から外した `wrangler.toml` の構成 — Cloudflare アカ�
 
 | 要素 | このリポジトリでの実際 |
 | --- | --- |
-| エンジンと UI | `@takazudo/zfb` **3.1.0** と組み込みの zudo-react ランタイム、`@takazudo/zfb-runtime` **3.1.0** |
-| アダプター | `@takazudo/zfb-adapter-cloudflare` **3.1.0** を `zfb.config.ts` の `adapter` に指定 |
+| エンジンと UI | `@takazudo/zfb` **6.0.1** と組み込みの zudo-react ランタイム、`@takazudo/zfb-runtime` **6.0.1** |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` **6.0.1** を `zfb.config.ts` の `adapter` に指定 |
 | スタイリング | `reset: "owned-v1"` の zudo-wind。コンポーネントクラスとスタイルは `styles/global.css` に手書きし、ユーティリティクラスは使いません |
 | レンダリングモード | `pages/index.tsx` と `pages/404.tsx` は SSG。`prerender = false` を書き出すのは `pages/api/summarize.tsx` だけ |
 | Cloudflare 側の形 | Workers Static Assets — `main = "./dist/_worker.js"`、`./dist` に対する `[assets]` と `ASSETS` バインディング、`not_found_handling = "404-page"`、`run_worker_first = false` |

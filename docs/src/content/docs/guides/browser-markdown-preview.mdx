@@ -104,15 +104,14 @@ untrusted, and MDX JSX/expression/ESM-shaped AST nodes remain inert data.
 
 ## Full/root API surface
 
-Both `compile()` and `renderHtml()` take a markdown/MDX `source` string and
-an options object — every field optional, `{}` selects all defaults — and
-both resolve to a result object with a `diagnostics` array. **Expected
-failures never throw.** Parse errors, malformed options JSON, unknown
-themes, and similar problems all come back as `Diagnostic[]` entries with
-`code`/`html` set to `null`, never as a thrown error. (A thrown
-`ZfbMdWasmTrapError` means an actual bug in the wasm build — see the
-package's own README, "Error / trap / re-init contract", for that
-narrower case.)
+Both `compile()` and `renderHtml()` accept source and an optional options
+object. Parser/options failures return a resolved result with structured
+`diagnostics` and `code` / `html` set to `null`. Network/file loading, glue
+imports, initialization, and invalid JavaScript values can instead reject the
+Promise. Always handle both channels: inspect diagnostics after `await`, use
+`catch` for exceptions, and `finally` for cleanup or clearing pending UI.
+A `ZfbMdWasmTrapError` identifies the separate WASM-trap recovery path, not
+all possible rejection causes; see [Error classes](../api/md-wasm.mdx#error-classes).
 
 ### `compile()` — MDX to ES-module JS
 
@@ -144,16 +143,22 @@ in-content reference to it would throw `ReferenceError` when the module runs.
 it into one with a blob URL and a dynamic `import()`:
 
 ```ts
-const { code, diagnostics } = await compile(source, { filename: "preview.mdx" });
-if (code === null) {
-  // Compilation failed — render the `diagnostics` array instead of a module.
-  return;
+async function loadPreview(source: string) {
+  let url: string | undefined;
+  try {
+    const { code, diagnostics } = await compile(source, { filename: "preview.mdx" });
+    if (code === null) return { diagnostics };
+    url = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
+    const { default: MDXContent } = await import(/* @vite-ignore */ url);
+    return { diagnostics, MDXContent };
+  } catch (error) {
+    // Loading, initialization, evaluation, or WASM failure; show an error UI.
+    console.error(error);
+    return null;
+  } finally {
+    if (url) URL.revokeObjectURL(url);
+  }
 }
-const url = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
-const { default: MDXContent } = await import(/* @vite-ignore */ url);
-URL.revokeObjectURL(url);
-
-// render <MDXContent components={{ Callout }} /> with your framework
 ```
 
 Pass your PascalCase components (`<Callout>` in the source above) through

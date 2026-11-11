@@ -32,9 +32,10 @@ site. See [Class mode (recommended)](#class-mode-recommended) below.
 
 ## Recognized languages
 
-A fenced code block's language tag resolves through zfb's alias table onto one
-of syntect's bundled Sublime Text–compatible grammars, plus three grammars zfb
-adds itself (`TOML`, `TypeScript`, and `TypeScriptReact`). The mapped tags:
+A fenced code block's language tag is first looked up with syntect's bundled
+`SyntaxSet` token lookup, then with zfb's explicit aliases. The set also includes
+zfb's added `TOML`, `TypeScript`, and `TypeScriptReact` grammars. This alias table
+is a useful subset, not an exhaustive list of recognized languages:
 
 | Tag(s) | Grammar |
 |---|---|
@@ -54,8 +55,8 @@ adds itself (`TOML`, `TypeScript`, and `TypeScriptReact`). The mapped tags:
 | `html` | HTML |
 | `css` | CSS |
 
-A tag not in this table falls back to the themed no-highlight path described
-above — the code is preserved and escaped, just without token colouring.
+Only a tag unresolved by both lookups falls back to the themed no-highlight
+path: the code is preserved and escaped, without token colouring.
 
 ## Customising the theme (built-in themes)
 
@@ -426,31 +427,84 @@ any embed that travels without your site's CSS. There the baked-in
 
 ## Supplementary pattern 1 — additional client-side highlighting
 
-If you want interactive theme switching or per-user preferences, layer a
-client-side highlighter on top of the server-rendered output as a
-[client island](../architecture/islands.mdx):
+To enhance existing article DOM with Prism, use a [client script](./client-scripts.mdx).
+Install `prismjs` and, for TypeScript checking, `@types/prismjs`. This example
+opts in only TypeScript blocks inside `article[data-prism]` and loads Prism's
+CSS theme through the global stylesheet's package `@import`:
 
-```tsx
-"use client";
-
-import { getScope } from "@takazudo/zfb/zudo-react";
+```ts title="components/prism-article.client.ts"
 import Prism from "prismjs";
 import "prismjs/components/prism-typescript";
 
-export default function PrismRoot({ children }) {
-  const scope = getScope();
-  const ref: { current: HTMLDivElement | null } = { current: null };
-  scope.effect(() => {
-    if (ref.current) Prism.highlightAllUnder(ref.current);
-  });
-  return <div ref={ref}>{children}</div>;
+Prism.manual = true;
+const originals = new Map<HTMLElement, string>();
+
+function restore() {
+  for (const [code, html] of originals) code.innerHTML = html;
+  originals.clear();
+}
+
+function enhance() {
+  restore();
+  for (const code of document.querySelectorAll<HTMLElement>(
+    "article[data-prism] pre > code.language-typescript",
+  )) {
+    originals.set(code, code.innerHTML);
+    code.innerHTML = Prism.highlight(
+      code.textContent ?? "",
+      Prism.languages.typescript,
+      "typescript",
+    );
+  }
+}
+
+// Keep one set of document listeners for this cached module's lifetime.
+document.addEventListener("zfb:before-swap", restore);
+document.addEventListener("zfb:page-load", enhance);
+window.addEventListener("pagehide", restore);
+window.addEventListener("pageshow", enhance);
+enhance();
+```
+
+```css title="styles/global.css"
+@import "prismjs/themes/prism.css";
+```
+
+```tsx title="pages/article.tsx"
+import { clientScript } from "@takazudo/zfb";
+import { ClientRouter } from "@takazudo/zfb-runtime";
+
+export default function ArticlePage() {
+  return (
+    <html lang="en">
+      <head>
+        <title>Prism article</title>
+        <ClientRouter />
+      </head>
+      <body>
+        <article data-prism="true">
+          <pre><code class="language-typescript">{"const count: number = 1;"}</code></pre>
+        </article>
+        <script type="module" src={clientScript("prism-article")} />
+      </body>
+    </html>
+  );
 }
 ```
 
-Wrap your article body in `<PrismRoot>` and the island will re-highlight the
-pre-rendered blocks in place. This is useful for themes that depend on media
-queries or user preference, but it adds JavaScript and causes a brief re-paint
-after hydration.
+Use the same `ClientRouter` and script in your shared layout for pages that
+participate in client navigation. Module scripts are cached rather than rerun
+on every visit: the document listeners intentionally last for that module's
+lifetime. Before a swap, the script restores the original markup and clears its
+node references; after page load it enhances the new article. `pagehide` and
+`pageshow` cover leaving and restoring a browser history-cache entry. Repeated
+page-load events restore before highlighting, so wrappers do not accumulate.
+
+This adds browser JavaScript and may repaint after load. It owns only the
+opted-in code elements; do not target DOM owned by an island or another widget.
+An island is not a wrapper for arbitrary server-rendered article children:
+strict props transport rejects nonempty `children`. For theme switching alone,
+the built-in class mode above avoids this extra client script.
 
 ## Supplementary pattern 2 — post-build script for custom grammars
 

@@ -17,6 +17,7 @@ my-site/
 ├── layouts/
 │   └── default.tsx
 ├── components/
+│   ├── design-rules.ts
 │   ├── callout.tsx
 │   ├── theme-toggle.tsx
 │   └── zfb-shim.d.ts
@@ -28,7 +29,10 @@ my-site/
 ├── lib/
 │   └── types.ts
 ├── styles/
+│   ├── design-system.css
 │   └── global.css
+├── DESIGN-NOTES.md
+├── design-tokens.json
 ├── mdx-components.tsx
 ├── zfb.config.ts
 ├── package.json
@@ -63,7 +67,7 @@ my-site/
 素のコンポーネントと **島** です。テンプレートには 2 つのコンポーネントと 1 つの型宣言が含まれます。
 
 - `components/callout.tsx` は、ベースとなる `Callout` に加えて `Note`・`Tip`・`Important`・`Warning`・`Caution` の 5 つの名前付きラッパーをエクスポートします。この 5 つの名前は [GitHub アラート](../markdown-features/github-alerts.mdx)機能によって固定されています。この機能は `> [!NOTE]` の引用ブロックを、レンダリング前に `<Note>` 要素へ書き換えます。
-- `components/theme-toggle.tsx` はテンプレート唯一の `"use client"` 島です。ダークモードを切り替えるもので、ブラウザへ JavaScript を出力する唯一のコンポーネントでもあります。ファイル先頭の `"use client"` ディレクティブこそが、コンポーネントをクライアントサイドの島に変えるものです。これがないコンポーネントはサーバー上でのみレンダリングされます。考え方の全体像は [Islands](../architecture/islands.mdx) にあります。
+- `components/theme-toggle.tsx` はテンプレート唯一の `"use client"` 島です。ダークモードを切り替えるもので、ブラウザへ JavaScript を出力する唯一のコンポーネントでもあります。ファイル先頭の `"use client"` はクライアント対象になれることを示します。到達可能な明示的 `<Island>` が、対象となれる単一のコンポーネント子を指定して初めてハイドレーション対象になります。ディレクティブだけではハイドレーションされません。また、ディレクティブのないモジュールも import や再エクスポートを通してクライアントグラフに入ることがあります。考え方の全体像は [Islands](../architecture/islands.mdx) にあります。
 - `components/zfb-shim.d.ts` はコンポーネントではありません。対応するベアの `zfb` インポート群を TypeScript に宣言し、`@takazudo/zfb` の公開エントリからそれぞれの型を再エクスポートします。ビルドツールは SSR、島のスキャン、クライアントバンドル、JSX pragma の判定、zudo-wind のクラス抽出でこれらのエイリアスを解決します。設定ローダーは `zfb/config` を別途、内部のランタイム専用スタブへ対応づけます。ビルド時のエイリアスは TypeScript を設定せず、`zfb check` も `compilerOptions.paths` を注入しません。エディタと `zfb check` は、プロジェクトの `tsconfig` に含まれるこのシムでベア指定子を解決します。標準テンプレートは `components/` を含みます。既存のシムがある場合は、不足しているモジュール宣言を追加してください。宣言ファイル全体は[ベアの `zfb` インポートの型付け](../api/define-config.mdx#typing-bare-zfb-imports)を参照してください。
 
 ## content/
@@ -75,6 +79,22 @@ my-site/
 - `styling-with-zudo-wind.md` — スターターのユーティリティトークン、手書き CSS、ダークモードの設定を説明します。
 
 コレクションスキーマは `zfb.config.ts` の `collections` 配下で宣言します。クエリ API については [Content Collections](../architecture/content-collections.mdx) を参照してください。
+
+## デザインファイル
+
+`DESIGN-NOTES.md` は同梱の Everyday デザインの値と使い方を記録します。
+`styles/design-system.css` は、色、文字、横・縦の余白、角丸、読み幅の編集可能な
+`--ds-*` CSS 変数を所有します。グローバル CSS がこのファイルを読み込み、
+ローカルのダークテーマ上書きは既存のテーマ切り替えに従います。
+
+`design-tokens.json` は Wind の意味的な名前と変数（たとえば `accent` →
+`var(--ds-accent)`、`reading` → `var(--ds-size-reading)`）を対応付け、`wide`
+ブレークポイントも持ちます。生成 CSS ではなく、トークンと設定のデータです。
+スターターは選んだマップを `zfb.config.ts` に import してマージするため、JSON の変更が
+ハードコードされたすべてのスケール値に自動反映されるわけではありません。
+`components/design-rules.ts` はホームページに表示する説明文の配列で、コンポーネントや
+検証器ではありません。デザイン変更時は CSS、トークンマップ、ノート、ルールを揃えて
+更新してください。スターターは実行時に Design System Workshop を必要としません。
 
 ## mdx-components.tsx
 
@@ -88,7 +108,7 @@ my-site/
 
 ## styles/
 
-グローバル CSS です。`styles/global.css` がエントリポイントで、`layouts/default.tsx` から import します。サイトのベーススタイルと `.prose` ブロックは手書き CSS にあります。`zfb.config.ts` の `wind` オブジェクトはスターターのユーティリティトークン、ブレークポイント、リセット、`data-theme` による dark バリアントを設定します。wind の設定はスタイルシートのディレクティブではなくデータです。
+グローバル CSS です。zfb は `styles/global.css` をグローバルのエントリポイントとして検出します。このファイルは CSS の `@import` で `./design-system.css` を読み込み、ローカルのダークテーマ上書き、ベーススタイル、`.prose` ブロックを加えます。`zfb.config.ts` の `wind` オブジェクトはスターターのユーティリティトークン、ブレークポイント、リセット、`data-theme` による dark バリアントを設定します。wind の設定はスタイルシートのディレクティブではなくデータです。
 
 この分割は意図的なものです。`.tsx` ファイル内のページの外枠は zudo-wind のユーティリティをインラインで使いますが、Markdown が生成するのはユーティリティクラスの届かない素のタグです。後者は CSS 側で一度だけスタイルを当て、`class="prose"` でオプトインします。スターターは `wind` を明示的に設定します。他のプロジェクトではキーを省略すると空の有効な設定になり、`wind: false` なら手書き CSS だけを使います。[スタイリング](../architecture/styling.mdx)と [zudo-wind の設定](../zudo-wind/configuration.mdx)を参照してください。
 
@@ -115,6 +135,7 @@ my-site/
 
 ```ts
 import { defineConfig } from "zfb/config";
+import design from "./design-tokens.json";
 
 export default defineConfig({
   wind: {
@@ -122,11 +143,12 @@ export default defineConfig({
     reset: "owned-v1",
     tokens: {
       spacingUnit: "0.25rem",
-      colors: { accent: "var(--color-accent)" },
-      sizes: { "2xl": "42rem" },
-      // The starter supplies the rest of its explicit palette and scales here.
+      spacing: design.tokens.spacing,
+      colors: { white: "#ffffff", ...design.tokens.colors },
+      sizes: { "2xl": "42rem", ...design.tokens.sizes },
+      // パレットとスケールの残りは実際の設定ファイルで指定します。
     },
-    breakpoints: { sm: { minWidthPx: 640 } },
+    breakpoints: { ...design.breakpoints, sm: { minWidthPx: 640 } },
     dark: { attribute: "data-theme", value: "dark" },
     authoredClasses: { prose: true },
   },
@@ -138,7 +160,7 @@ export default defineConfig({
 });
 ```
 
-この短い例は、スターターの明示的な wind 設定と `blog` コレクション、markdown のオプトインを示します。`outDir` と `publicDir` はデフォルトを使い、パレットとスケールの残りは実際の設定ファイルで宣言します。GFM のタスクリストとフットノート、[GitHub アラート](../markdown-features/github-alerts.mdx)、[コードブロックのエンリッチメント](../markdown-features/code-enrichment.mdx)、[見出しマーカー TOC](../markdown-features/heading-marker-toc.mdx) が有効です。全機能は [Markdown 機能](../markdown-features/index.mdx)を参照してください。
+この短い例は、スターターの明示的な wind 設定と `blog` コレクション、markdown のオプトインを示します。`outDir` と `publicDir` はデフォルトを使い、パレットとスケールの残りは実際の設定ファイルで宣言します。colors と sizes は標準の項目の後に design のマップを展開するため、衝突時は design のキーが優先されます。spacing は design のマップを直接使います。fontSizes、fontFamilies、fontWeights、radii、breakpoints は design の後にスターターの明示的な項目を置くため、後者が衝突時に優先されます。通常のオブジェクトのマージであり、自動的な深いマージではありません。GFM のタスクリストとフットノート、[GitHub アラート](../markdown-features/github-alerts.mdx)、[コードブロックのエンリッチメント](../markdown-features/code-enrichment.mdx)、[見出しマーカー TOC](../markdown-features/heading-marker-toc.mdx) が有効です。全機能は [Markdown 機能](../markdown-features/index.mdx)を参照してください。
 
 設定ファイルは camelCase スキーマを使います。主なキーは `outDir`（デフォルト `"dist"`）、`publicDir`（デフォルト `"public"`）、`host`（デフォルト `"localhost"`）、`port`（`zfb dev` は `3000`、`zfb preview` は `4321` にフォールバック）、`wind`、`collections`、`plugins` です。完全なスキーマは [defineConfig](../api/define-config.mdx) を参照してください。
 

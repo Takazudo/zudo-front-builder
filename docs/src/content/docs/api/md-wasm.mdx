@@ -29,7 +29,19 @@ This package is unrelated to importing a `.wasm` module into an SSR route at bui
 
 <Note>
 
-**Expected failures never throw.** Markdown parse errors, malformed options JSON, unknown syntect theme names, and similar problems all come back as a `diagnostics` entry in the resolved result — never as a thrown error or a rejected Promise. Only a genuine wasm trap rejects, with `ZfbMdWasmTrapError` or `ZfbMdWasmTrapRecoveryLimitError` (see [Error classes](#error-classes)).
+**Parser/options diagnostics and Promise rejection are separate channels.**
+Markdown parse errors, malformed options JSON, and unknown themes return
+structured `diagnostics` in a resolved result. A call can still reject because
+of network or file loading, glue import, initialization, or an invalid JavaScript
+value (for example, an options value that cannot be JSON-serialized). These are
+ordinary exceptions, not necessarily WASM traps. Inspect `diagnostics` after
+`await`, handle rejection with `catch`, and release resources or clear pending
+UI state in `finally`.
+
+Genuine WASM traps use `ZfbMdWasmTrapError` / `ZfbMdWasmTrapRecoveryLimitError`
+and the bounded recovery contract described in [Error classes](#error-classes).
+Ordinary load/initialization failures are outside that trap-recovery budget;
+failed initialization is cleared so a later call can retry.
 
 </Note>
 

@@ -19,6 +19,15 @@ smallest realistic shape of a content-driven zfb site.
 
 **Repository:** [Takazudo/zfb-example-blog](https://github.com/Takazudo/zfb-example-blog)
 
+**[Manifest checked on 2026-11-11](https://github.com/Takazudo/zfb-example-blog/blob/77beb0cfd7f3ca05000a02e374e0ec238f370cfd/package.json)** (`77beb0cfd7f3ca05000a02e374e0ec238f370cfd`)
+
+| Prerequisite / tool | Declared value |
+| --- | --- |
+| Node.js | `>=24.0.0` |
+| Package manager | `pnpm@10.30.0` |
+| Wrangler (devDependency) | `4.85.0` |
+| TypeScript (devDependency) | `^5.9.3` |
+
 ## What it demonstrates
 
 - A [content collection](../architecture/content-collections.mdx) named `blog`, mixing `.md` and `.mdx`
@@ -38,8 +47,8 @@ smallest realistic shape of a content-driven zfb site.
 
 | Aspect | zfb-example-blog |
 | --- | --- |
-| Framework | zfb **3.1.0** with zudo-react; the theme toggle uses the zudo-react island runtime |
-| Runtime | `@takazudo/zfb-runtime` **3.1.0** |
+| Framework | zfb **6.0.1** with zudo-react; the theme toggle uses the zudo-react island runtime |
+| Runtime | `@takazudo/zfb-runtime` **6.0.1** |
 | Styling | Authored CSS in `styles/global.css`; `wind.reset: "owned-v1"` plus an authored preflight-parity `@layer base` block |
 | Rendering | **Pure SSG.** No route sets `export const prerender = false` |
 | Content | one collection — `blog` → `content/blog` (4 `.md` + 1 `.mdx`) |
@@ -168,7 +177,7 @@ good-looking admonition.
 
 ## Run it locally
 
-Requires Node.js >= 22.12.0 and pnpm 10.x. A plain `pnpm install` brings the `zfb` CLI with it — no
+Requires Node.js >= 24.0.0 and pnpm 10.30.0. A plain `pnpm install` brings the `zfb` CLI with it — no
 Rust toolchain and no upstream checkout.
 
 ```sh

@@ -23,6 +23,15 @@ oversight.
 
 **Repository:** [github.com/Takazudo/zfb-example-reverse-proxy](https://github.com/Takazudo/zfb-example-reverse-proxy)
 
+**[Manifest checked on 2026-11-11](https://github.com/Takazudo/zfb-example-reverse-proxy/blob/820eb5cf5fdba3278c31e56cca27345e3bd0d4b0/package.json)** (`820eb5cf5fdba3278c31e56cca27345e3bd0d4b0`)
+
+| Prerequisite / tool | Declared value |
+| --- | --- |
+| Node.js | `>=24.0.0` |
+| Package manager | `pnpm@10.34.1` |
+| Wrangler (devDependency) | `4.85.0` |
+| TypeScript (devDependency) | `^5.9.3` |
+
 ## What it demonstrates
 
 - A **catch-all SSR route** — `pages/proxy/[...path].tsx` with `export const prerender = false`
@@ -59,8 +68,8 @@ in intent:
 
 | Piece | What the repo uses |
 | --- | --- |
-| Framework | `@takazudo/zfb` and `@takazudo/zfb-runtime` **3.1.0**, using zudo-react; no Preact or React dependency |
-| Adapter | `@takazudo/zfb-adapter-cloudflare` **3.1.0**, set as `adapter` in `zfb.config.ts` |
+| Framework | `@takazudo/zfb` and `@takazudo/zfb-runtime` **6.0.1**, using zudo-react; no Preact or React dependency |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **6.0.1**, set as `adapter` in `zfb.config.ts` |
 | Styling | Authored CSS in `styles/global.css`; zudo-wind supplies only the `owned-v1` reset, with no utility classes or tokens |
 | Rendering | SSG for `/` and `/404`; one SSR route — `pages/proxy/[...path].tsx` with `export const prerender = false` |
 | Cloudflare surface | Workers Static Assets and a custom domain. `main = "./cloudflare/worker-entry.mjs"` delegates to the adapter-generated `dist/_worker.js` |
