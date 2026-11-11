@@ -400,6 +400,12 @@ function ConnectionStatus() {
 
 getScope is valid during synchronous setup and returns the current owner. Passing it explicitly makes resource ownership visible; a direct helper call during setup shares that same owner and creates no scope of its own. The helper may return computed values, closures, or other ordinary values. See [Scopes and lifecycle](./scopes-and-lifecycle.mdx) and [Reactivity](./reactivity.mdx).
 
+## Local error recovery
+
+`ErrorBoundary` replaces its owned subtree with a fallback after descendant synchronous setup/render failures, renderer-scheduled `Show`/`For` updates, or reactive binding failures. Its reset callback or a changed `resetKey` starts a fresh attempt. It does not catch event handlers, effects, activation, cleanup, or asynchronous rejections, and it does not hide aggregate form validation or island integrity failures. Handle expected application failures in explicit state.
+
+Hydration recreates the boundary interior even when server and client agree. Surrounding siblings are adopted, but DOM identity and edited form state inside the boundary do not survive hydration. See the [API reference](./api-reference.mdx#core-takazudo-zfb-zudo-react-errorboundary) and [Scopes and lifecycle](./scopes-and-lifecycle.mdx#local-subtree-recovery) for the recovery contract.
+
 ## What does not exist
 
 | Preact or React feature | Use instead |
@@ -409,7 +415,6 @@ getScope is valid during synchronous setup and returns the current owner. Passin
 | forwardRef | Pass a Ref object as an ordinary typed prop when a child needs to expose an element. |
 | Suspense and lazy components | Nested promises do not suspend rendering. Start dynamic import from an event handler or browser activation callback, track pending/error state explicitly, and render the resulting state with ordinary bindings or a conditional region. |
 | Class components | Use synchronous function components that create descriptions. Component setup owns its signals and registered work. |
-| Error boundaries | Handle expected application failures in explicit state. Runtime diagnostics isolate a failed island; the runtime does not provide a component boundary that catches arbitrary descendant render errors. |
 | Synthetic events | Use native events with on:event listeners, native event objects, and native currentTarget. |
 
 These are design boundaries, not missing hook aliases. The runtime does not promise React or Preact compatibility, a compatibility wrapper, or mixed ownership between both runtimes. For the wider project upgrade procedure, see [Migrating to v3](../guides/migrating-to-v3.mdx).
@@ -636,4 +641,6 @@ Keep server-to-browser props as data; construct live state and event handlers in
 
 ## Client bundle size
 
-The zudo-react client runtime has no promise to match Preact's bundle size, and no fixed byte budget has been selected. A separate follow-up will measure production island output, evaluate safe optimizations, and set any regression budget from those results. That work does not block the v3 migration. This guide makes no size claim for a project or island.
+zudo-react does not promise Preact bundle-size parity. A regression gate now measures eight frozen fixtures through real `zfb build` output in both workspace and packed modes. Each mode builds twice and checks the complete dist inventory, counting every unique entry, shared, and lazy JS file. The contracts pin raw and `gzip-identity-normalized` v2 ceilings with zero additional allowance; actual gzip is retained separately as transfer-size evidence.
+
+The Linux x64 contract records 6.0.1 CI measurements and is enforced by `health.yml`. The separate Darwin arm64 contract records native 6.0.0 measurements; its local-evidence receipt still marks owner approval of live adoption pending. Each contract is bound to its recorded source, inputs, toolchain, and platform: an old SHA passing does not verify the current head. Neither covers other platforms or promises a size for an arbitrary project. See the [measurement procedure and history](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/README.md), [Darwin contract](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/decision.json), [Linux contract](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/decision-linux-x64.json), and [checker](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/check-budget.mjs).

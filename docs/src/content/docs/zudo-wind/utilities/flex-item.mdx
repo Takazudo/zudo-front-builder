@@ -245,7 +245,7 @@ basis-and-order uses exact supported Wind utility classes.
 
 ## Custom and named values
 
-flex-1 is 1 1 0%, flex-auto is 1 1 auto, flex-initial is 0 1 auto, and flex-none is none. grow and shrink default to 1; the -0 forms use zero, and arbitrary numeric values such as grow-[2] are supported. Give the container display:flex to see the factors take effect.
+flex-1 is 1 1 0%, flex-auto is 1 1 auto, flex-initial is 0 1 auto, and flex-none is none. grow and shrink default to 1; the -0 forms use zero, and arbitrary numeric values such as grow-[2] are supported. Give the container display:flex to see the factors take effect. Basis accepts only auto/full/px/0/min/max/fit/content and positive integer fractions with each part from 1 through 1,000,000; scale, token, arbitrary, and negative values are unsupported. Order accepts first/last/none and ASCII integers 0–2147483647, including negative numeric forms; arbitrary order is unsupported. Numeric magnitude does not set cascade precedence: raw candidate bytes break ties.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
 
