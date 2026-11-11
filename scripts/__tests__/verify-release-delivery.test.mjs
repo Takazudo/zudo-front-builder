@@ -281,14 +281,73 @@ function makeWorld(tweak = () => {}) {
     pkg.bytes ??= tgz(pkg.files);
     pkg.integrity ??= integrityOf(pkg.bytes);
   }
-  world.formula ??= [
-    `  version "${VERSION}"`,
-    ...PLATFORM_TARGETS.filter(({ ext }) => ext !== "zip").map(
-      ({ target }) =>
-        `      sha256 "${sha256(world.archives[`zfb-${VERSION}-${target}.tar.gz`] ?? "")}"`,
-    ),
-  ].join("\n");
+  world.formula ??= generatorFormula(world);
   return world;
+}
+
+const RELEASE_DOWNLOAD = `https://github.com/${REPO}/releases/download/${TAG}`;
+
+function archiveSha(world, target) {
+  const ext = target.includes("windows") ? "zip" : "tar.gz";
+  return sha256(world.archives[`zfb-${VERSION}-${target}.${ext}`] ?? "");
+}
+
+/**
+ * The exact text scripts/update-homebrew-formula.sh writes. `rows` overrides
+ * the url/sha256 pair of a branch, keyed "macos/arm", "macos/intel",
+ * "linux/arm" or "linux/intel".
+ */
+function generatorFormula(world, { version = VERSION, rows = {} } = {}) {
+  const row = (key, target) => ({
+    url: `${RELEASE_DOWNLOAD}/zfb-${VERSION}-${target}.tar.gz`,
+    sha: archiveSha(world, target),
+    ...rows[key],
+  });
+  const dm = row("macos/arm", "aarch64-apple-darwin");
+  const di = row("macos/intel", "x86_64-apple-darwin");
+  const lm = row("linux/arm", "aarch64-unknown-linux-gnu");
+  const li = row("linux/intel", "x86_64-unknown-linux-gnu");
+  return `class Zfb < Formula
+  desc "Content-site engine on the web's Request/Response model, in one Rust binary"
+  homepage "https://takazudomodular.com/pj/zudo-front-builder/"
+  # Source: GitHub Releases from Takazudo/zudo-front-builder (not the npm registry).
+  # Archive contract: zfb-{semver}-{target-triple}.tar.gz, one file at archive root.
+  license "MIT"
+  version "${version}"
+
+  on_macos do
+    on_arm do
+      url "${dm.url}"
+      sha256 "${dm.sha}"
+    end
+
+    on_intel do
+      url "${di.url}"
+      sha256 "${di.sha}"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "${lm.url}"
+      sha256 "${lm.sha}"
+    end
+
+    on_intel do
+      url "${li.url}"
+      sha256 "${li.sha}"
+    end
+  end
+
+  def install
+    bin.install "zfb"
+  end
+
+  test do
+    system bin/"zfb", "--version"
+  end
+end
+`;
 }
 
 function jobIdOf(jobs, prefix) {
@@ -1007,9 +1066,13 @@ describe("mutable channels", () => {
     const { report } = await run((w) => {
       w.latest = { tag_name: "v5.3.0" };
       w.distTags = () => ({ latest: "5.3.0" });
-      w.formula = '  version "5.3.0"\n';
+      w.formula = advancedFormula(w, "5.3.0");
     });
     expect(report.verdict).toBe(STATUS.VERIFIED);
+    expect(check(report, "channels", "homebrew")).toMatchObject({
+      status: STATUS.OBSERVED,
+      evidence: { version: "5.3.0", matchesThisReleaseArchives: false },
+    });
     expect(check(report, "channels", "github-latest")).toMatchObject({
       status: STATUS.OBSERVED,
       evidence: { tag_name: "v5.3.0" },
@@ -1362,5 +1425,223 @@ describe("review hardening", () => {
     const base = ["--version", "5.2.2", "--release-run-id", "1", "--installer-run-id", "2"];
     expect(parseArgs([...base, "--concurrency", "4"]).concurrency).toBe(4);
     expect(() => parseArgs([...base, "--concurrency", "5"])).toThrow(/concurrency/);
+  });
+});
+
+function advancedFormula(world, version) {
+  const rows = {};
+  for (const [key, target] of [
+    ["macos/arm", "aarch64-apple-darwin"],
+    ["macos/intel", "x86_64-apple-darwin"],
+    ["linux/arm", "aarch64-unknown-linux-gnu"],
+    ["linux/intel", "x86_64-unknown-linux-gnu"],
+  ]) {
+    rows[key] = {
+      url: `https://github.com/${REPO}/releases/download/v${version}/zfb-${version}-${target}.tar.gz`,
+      sha: "a".repeat(64),
+    };
+  }
+  return generatorFormula(world, { version, rows });
+}
+
+describe("Homebrew formula binding (--expect-homebrew)", () => {
+  const T = {
+    darwinArm: "aarch64-apple-darwin",
+    darwinIntel: "x86_64-apple-darwin",
+    linuxArm: "aarch64-unknown-linux-gnu",
+    linuxIntel: "x86_64-unknown-linux-gnu",
+  };
+  const urlOf = (target) => `${RELEASE_DOWNLOAD}/zfb-${VERSION}-${target}.tar.gz`;
+  const pairOf = (world, target) => ({ url: urlOf(target), sha: archiveSha(world, target) });
+  const runBrew = (tweak, options = {}) => run(tweak, { expectHomebrew: true, ...options });
+  const brew = (report) => check(report, "channels", "homebrew");
+
+  it("verifies a correct generator-shaped formula with per-target evidence", async () => {
+    const { report, world } = await runBrew(() => {});
+    expect(brew(report).status).toBe(STATUS.VERIFIED);
+    expect(report.verdict).toBe(STATUS.VERIFIED);
+    expect(report.exitCode).toBe(EXIT.verified);
+    expect(brew(report).evidence.rows).toEqual(
+      [T.darwinArm, T.darwinIntel, T.linuxArm, T.linuxIntel].map((target) =>
+        expect.objectContaining({
+          target,
+          matches: true,
+          expected: {
+            url: urlOf(target),
+            sha256: archiveSha(world, target),
+            archiveStatus: STATUS.VERIFIED,
+          },
+          observed: { url: urlOf(target), sha256: archiveSha(world, target) },
+        }),
+      ),
+    );
+  });
+
+  const falsePositives = [
+    [
+      "swapped Darwin/Linux ARM64 rows",
+      (w) => ({ "macos/arm": pairOf(w, T.linuxArm), "linux/arm": pairOf(w, T.darwinArm) }),
+    ],
+    [
+      "Darwin ARM64 reused in all four branches",
+      (w) => {
+        const pair = pairOf(w, T.darwinArm);
+        return { "macos/intel": pair, "linux/arm": pair, "linux/intel": pair };
+      },
+    ],
+    [
+      "the Windows ZIP reused in all four branches",
+      (w) => {
+        const pair = {
+          url: `${RELEASE_DOWNLOAD}/zfb-${VERSION}-x86_64-pc-windows-msvc.zip`,
+          sha: archiveSha(w, "x86_64-pc-windows-msvc"),
+        };
+        return { "macos/arm": pair, "macos/intel": pair, "linux/arm": pair, "linux/intel": pair };
+      },
+    ],
+    [
+      "stale v0.0.1 URLs with the expected hashes",
+      (w) =>
+        Object.fromEntries(
+          [
+            ["macos/arm", T.darwinArm],
+            ["macos/intel", T.darwinIntel],
+            ["linux/arm", T.linuxArm],
+            ["linux/intel", T.linuxIntel],
+          ].map(([key, target]) => [
+            key,
+            {
+              url: `https://github.com/${REPO}/releases/download/v0.0.1/zfb-0.0.1-${target}.tar.gz`,
+              sha: archiveSha(w, target),
+            },
+          ]),
+        ),
+    ],
+  ];
+
+  it.each(falsePositives)("fails %s", async (_label, rowsFor) => {
+    const { report } = await runBrew((w) => {
+      w.formula = generatorFormula(w, { rows: rowsFor(w) });
+    });
+    expect(brew(report).status).toBe(STATUS.FAILED);
+    expect(report.verdict).toBe(STATUS.FAILED);
+    expect(report.exitCode).toBe(EXIT.failed);
+  });
+
+  it("names the mismatching branch in the evidence", async () => {
+    const { report } = await runBrew((w) => {
+      w.formula = generatorFormula(w, {
+        rows: { "macos/arm": pairOf(w, T.linuxArm), "linux/arm": pairOf(w, T.darwinArm) },
+      });
+    });
+    expect(brew(report).reason).toContain(`on_macos/on_arm: url ${urlOf(T.linuxArm)}`);
+    expect(brew(report).evidence.rows[0]).toMatchObject({
+      target: T.darwinArm,
+      matches: false,
+      observed: { url: urlOf(T.linuxArm) },
+    });
+  });
+
+  const structural = [
+    [
+      "a missing row",
+      (f) =>
+        f.replace(
+          /\n {4}on_intel do\n(?: {6}.*\n){2} {4}end\n {2}end\n\n {2}def/,
+          "\n  end\n\n  def",
+        ),
+    ],
+    ["a duplicate url in one row", (f) => f.replace(/( {6}url "[^"]+"\n)/, "$1$1")],
+    ["a missing sha256 field", (f) => f.replace(/ {6}sha256 "[0-9a-f]+"\n/, "")],
+    ["a duplicated os block", (f) => f.replace(/( {2}on_linux do\n[\s\S]*?\n {2}end\n)/, "$1$1")],
+    [
+      "a url inside def install",
+      (f) => f.replace('bin.install "zfb"', `bin.install "zfb"\n    url "${urlOf(T.linuxIntel)}"`),
+    ],
+    [
+      "a url directly under on_macos",
+      (f) => f.replace("  on_macos do\n", `  on_macos do\n    url "${urlOf(T.darwinArm)}"\n`),
+    ],
+    [
+      "an unsupported mirror declaration",
+      (f) => f.replace(/( {6}url "[^"]+"\n)/, `$1      mirror "${urlOf(T.darwinArm)}"\n`),
+    ],
+    ["a url with options", (f) => f.replace(/( {6}url "[^"]+")/, "$1, using: :curl")],
+    ["a second version", (f) => f.replace(/( {2}version "[^"]+"\n)/, "$1$1")],
+    ["an unbalanced block", (f) => f.replace(/\nend\n$/, "\n")],
+    ["a wrong version", (f) => f.replace(`version "${VERSION}"`, 'version "5.2.1"')],
+  ];
+
+  it.each(structural)("fails %s", async (_label, edit) => {
+    const { report } = await runBrew((w) => {
+      const formula = edit(generatorFormula(w));
+      expect(formula).not.toBe(generatorFormula(w));
+      w.formula = formula;
+    });
+    expect(brew(report).status).toBe(STATUS.FAILED);
+    expect(report.exitCode).toBe(EXIT.failed);
+  });
+
+  it("ignores comment, heredoc and embedded-string decoys", async () => {
+    const { report } = await runBrew((w) => {
+      const decoy = urlOf("x86_64-pc-windows-msvc");
+      w.formula = generatorFormula(w)
+        .replace(
+          "    on_arm do\n",
+          `    on_arm do\n      # url "${decoy}"\n      # sha256 "${"b".repeat(64)}"\n`,
+        )
+        .replace(
+          '  desc "',
+          `  # on_linux do\n  #   url "${decoy}"\n  # end\n  caveats "url \\"${decoy}\\" sha256"\n  desc "`,
+        )
+        .replace(
+          '    system bin/"zfb", "--version"\n',
+          `    system bin/"zfb", "--version"\n    (testpath/"note").write <<~EOS\n      url "${decoy}"\n      sha256 "${"c".repeat(64)}"\n      end\n    EOS\n`,
+        );
+    });
+    expect(brew(report).status).toBe(STATUS.VERIFIED);
+  });
+
+  it("ends a plain <<ID heredoc only at a column-0 terminator", async () => {
+    const decoy = urlOf("x86_64-pc-windows-msvc");
+    const { report } = await runBrew((w) => {
+      w.formula = generatorFormula(w).replace(
+        '    system bin/"zfb", "--version"\n',
+        `    system bin/"zfb", "--version"\n    note = <<EOS\n      EOS\n      url "${decoy}"\nEOS\n`,
+      );
+    });
+    expect(brew(report).status).toBe(STATUS.VERIFIED);
+  });
+
+  it("accepts CRLF line endings, tab indentation and extra blank lines", async () => {
+    const { report } = await runBrew((w) => {
+      w.formula = generatorFormula(w)
+        .replace(/^ +/gm, (spaces) => "\t".repeat(spaces.length / 2))
+        .replace(/\n\n/g, "\n\n\n")
+        .replace(/\n/g, "\r\n");
+    });
+    expect(brew(report).status).toBe(STATUS.VERIFIED);
+  });
+
+  it("does not verify a row whose archive evidence is missing", async () => {
+    const { report } = await runBrew((w) => {
+      delete w.archives[`zfb-${VERSION}-${T.linuxIntel}.tar.gz.sha256`];
+    });
+    expect(check(report, "archives", `archive:${T.linuxIntel}`).status).toBe(STATUS.FAILED);
+    expect(brew(report).status).toBe(STATUS.INCOMPLETE);
+    expect(brew(report).reason).toContain(`${T.linuxIntel} archive evidence is ${STATUS.FAILED}`);
+    expect(brew(report).evidence.rows[3]).toMatchObject({ matches: false });
+    expect(report.exitCode).toBe(EXIT.failed);
+  });
+
+  it("observes an invalid formula without failing when Homebrew is not required", async () => {
+    const { report } = await run((w) => {
+      w.formula = generatorFormula(w, {
+        rows: { "macos/arm": pairOf(w, T.linuxArm), "linux/arm": pairOf(w, T.darwinArm) },
+      });
+    });
+    expect(brew(report).status).toBe(STATUS.OBSERVED);
+    expect(brew(report).evidence.matchesThisReleaseArchives).toBe(false);
+    expect(report.verdict).toBe(STATUS.VERIFIED);
   });
 });

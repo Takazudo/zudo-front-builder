@@ -9,13 +9,20 @@
 //
 // invariant: no runtime npm deps — see SECURITY-DEPS.md
 
+import { Buffer } from "node:buffer";
 import { copyFile, lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 // `.assetsignore` tells the Workers Static Assets uploader to skip the
-// generated JavaScript files. Every copied Wasm basename is appended later,
-// so it too is reachable only through the Worker's module graph and never
-// served as a public static asset.
+// generated JavaScript files. Every copied Wasm basename is excluded too, so
+// it is reachable only through the Worker's module graph and never served as
+// a public static asset.
+//
+// Wrangler reads `<assets root>/.assetsignore` with the gitignore-style
+// `ignore` (node-ignore) matcher, where the last matching rule wins. The
+// generated exclusions are therefore appended as one final block of
+// root-anchored literal rules, after every user rule, so a user negation such
+// as `!_worker.js` cannot re-include a generated file.
 const ASSETS_IGNORE_BASE_ENTRIES = ["_worker.js", "_zfb_inner.mjs"];
 const RESERVED_OUTPUT_NAMES = new Set([...ASSETS_IGNORE_BASE_ENTRIES, ".assetsignore"]);
 
@@ -57,6 +64,13 @@ async function resolveAssets(inputBundlePath, assetPaths) {
     if (!outputName || outputName === "." || outputName === "..") {
       throw new Error("asset path has no valid basename: " + assetPath);
     }
+    if (UNREPRESENTABLE_ASSETS_IGNORE_CHAR.test(outputName)) {
+      throw new Error(
+        "asset basename cannot be excluded literally in .assetsignore " +
+          "(it contains CR, LF, or '?'); rename the asset: " +
+          JSON.stringify(outputName),
+      );
+    }
     if (RESERVED_OUTPUT_NAMES.has(outputName)) {
       throw new Error("asset basename collides with generated adapter output: " + outputName);
     }
@@ -97,9 +111,11 @@ async function pathExists(path) {
   }
 }
 
+// The policy is handled as latin1 text so every byte of the user's file is
+// kept as-is (it may not be UTF-8); generated rules are UTF-8 encoded first.
 async function readExistingAssetsIgnore(path) {
   try {
-    return await readFile(path, "utf8");
+    return await readFile(path, "latin1");
   } catch (error) {
     if (error && typeof error === "object" && error.code === "ENOENT") {
       return "";
@@ -108,15 +124,56 @@ async function readExistingAssetsIgnore(path) {
   }
 }
 
-function mergeAssetsIgnore(existing, requiredEntries) {
-  const listed = new Set(existing.split(/\r?\n/));
-  const missing = requiredEntries.filter((entry) => !listed.has(entry));
-  if (missing.length === 0) {
+// CR/LF would split a line-oriented rule. node-ignore 5.x (Wrangler's
+// matcher) turns even an escaped `\?` into a single-character wildcard, so a
+// literal `?` cannot be excluded without also excluding neighboring files.
+const UNREPRESENTABLE_ASSETS_IGNORE_CHAR = /[\r\n?]/;
+
+// Root-anchored literal rule for one output basename. The leading `/` anchors
+// the rule to the assets root and also neutralizes a leading `#` or `!`.
+// `\`, `*`, `[` and `]` are backslash-escaped. Trailing whitespace is
+// stripped by both Git and node-ignore unless quoted: a trailing space is
+// written `\ `, and a trailing tab `[<tab>]`, because node-ignore rewrites an
+// escaped `\<tab>` into a space. Interior spaces and tabs are already literal.
+function literalAssetsIgnoreRule(name) {
+  let trailingStart = name.length;
+  while (
+    trailingStart > 0 &&
+    (name[trailingStart - 1] === " " || name[trailingStart - 1] === "\t")
+  ) {
+    trailingStart -= 1;
+  }
+  let rule = "/";
+  for (let index = 0; index < name.length; index += 1) {
+    const char = name[index];
+    if (char === "\\" || char === "*" || char === "[" || char === "]") {
+      rule += "\\" + char;
+    } else if (index >= trailingStart && char === " ") {
+      rule += "\\ ";
+    } else if (index >= trailingStart && char === "\t") {
+      rule += "[\t]";
+    } else {
+      rule += char;
+    }
+  }
+  return rule;
+}
+
+// Preserve every existing line and its order, then append the generated block
+// last so it wins. Earlier generated blocks are kept: assets copied by an
+// earlier emission may still be in the output directory. The block is skipped
+// only when the identical complete block already ends the file on a line
+// boundary, so repeated emission does not grow the file.
+function mergeAssetsIgnore(existing, requiredNames) {
+  const block = Buffer.from(
+    requiredNames.map((name) => literalAssetsIgnoreRule(name) + "\n").join(""),
+    "utf8",
+  ).toString("latin1");
+  if (existing === block || existing.endsWith("\n" + block)) {
     return existing;
   }
-
   const prefix = existing.length > 0 && !existing.endsWith("\n") ? existing + "\n" : existing;
-  return prefix + missing.map((entry) => entry + "\n").join("");
+  return prefix + block;
 }
 
 /**
@@ -130,8 +187,9 @@ function mergeAssetsIgnore(existing, requiredEntries) {
  *   _zfb_inner.mjs   — the input bundle, copied with any trailing external
  *                      `sourceMappingURL` comment removed (no map is emitted)
  *   <asset>.wasm     — each bundle-relative Wasm input, copied by basename
- *   .assetsignore    — excludes every generated JavaScript and Wasm basename
- *                      from the asset upload
+ *   .assetsignore    — existing rules, then a final block of root-anchored
+ *                      literal exclusions for every generated JavaScript and
+ *                      Wasm basename
  *
  * @param {{ inputBundlePath: string; outdir: string; assets?: readonly string[]; workerWrapperSource: string }} input
  * @returns {Promise<{ workerPath: string; innerBundlePath: string; assetsIgnorePath: string }>}
@@ -167,7 +225,7 @@ export async function emitWorker({ inputBundlePath, outdir, assets = [], workerW
     ...ASSETS_IGNORE_BASE_ENTRIES,
     ...resolvedAssets.map((asset) => asset.outputName),
   ]);
-  await writeFile(assetsIgnorePath, assetsIgnore, "utf8");
+  await writeFile(assetsIgnorePath, assetsIgnore, "latin1");
 
   return { workerPath, innerBundlePath, assetsIgnorePath };
 }

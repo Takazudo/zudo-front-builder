@@ -298,3 +298,134 @@ describe("livereload.js socket URL", () => {
     }
   });
 });
+
+describe("livereload.js css reload URLs", () => {
+  let harness: LivereloadHarness;
+  let src: FakeSourceInstance;
+  const T1 = 1_700_000_000_000;
+  const T2 = 1_700_000_000_500;
+  type HappyDomSettings = {
+    disableCSSFileLoading: boolean;
+    handleDisabledFileLoadingAsSuccess: boolean;
+  };
+  const happySettings = (window as unknown as { happyDOM: { settings: HappyDomSettings } }).happyDOM
+    .settings;
+  let savedSettings: HappyDomSettings;
+
+  beforeEach(() => {
+    savedSettings = {
+      disableCSSFileLoading: happySettings.disableCSSFileLoading,
+      handleDisabledFileLoadingAsSuccess: happySettings.handleDisabledFileLoadingAsSuccess,
+    };
+    // The rewritten hrefs point at unresolvable hosts; keep happy-dom from fetching them.
+    happySettings.disableCSSFileLoading = true;
+    happySettings.handleDisabledFileLoadingAsSuccess = true;
+    document.head.innerHTML = "";
+    harness = setupLivereloadScript();
+    src = harness.instances[0];
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(T1);
+  });
+
+  afterEach(() => {
+    window.dispatchEvent(pageTransitionEvent("pagehide", false));
+    harness.cleanup();
+    document.head.innerHTML = "";
+    Object.assign(happySettings, savedSettings);
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function addStylesheet(href: string): HTMLLinkElement {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.setAttribute("href", href);
+    document.head.append(link);
+    return link;
+  }
+
+  function setBase(href: string): void {
+    const base = document.createElement("base");
+    base.href = href;
+    document.head.prepend(base);
+  }
+
+  it.each([
+    [
+      "functional query and fragment",
+      "/theme.css?theme=dark&v=old#sheet",
+      `https://site.test/theme.css?theme=dark&v=${T1}#sheet`,
+    ],
+    ["fragment only", "/base/style.css#theme", `https://site.test/base/style.css?v=${T1}#theme`],
+    [
+      "repeated non-v parameters",
+      "/a.css?tag=x&tag=y&v=1&v=2",
+      `https://site.test/a.css?tag=x&tag=y&v=${T1}`,
+    ],
+    [
+      "protocol-relative font stylesheet",
+      "//fonts.example.test/css2?family=Inter:wght@400;700&display=swap",
+      `https://fonts.example.test/css2?family=Inter:wght@400;700&display=swap&v=${T1}`,
+    ],
+    ["plain root-relative", "/style.css", `https://site.test/style.css?v=${T1}`],
+    [
+      "valueless flag and percent-encoded space",
+      "/flags.css?flag&x=a%20b&y=c+d",
+      `https://site.test/flags.css?flag&x=a%20b&y=c+d&v=${T1}`,
+    ],
+    [
+      "document-relative under <base>",
+      "theme.css?x=1",
+      `https://site.test/sub/docs/theme.css?x=1&v=${T1}`,
+    ],
+    [
+      "parent-relative under <base>",
+      "../shared.css#f",
+      `https://site.test/sub/shared.css?v=${T1}#f`,
+    ],
+  ])("%s keeps its meaning and gets a request-query v", (_label, href, expected) => {
+    setBase("https://site.test/sub/docs/page.html");
+    const link = addStylesheet(href);
+
+    src.dispatch("css", "");
+
+    expect(link.getAttribute("href")).toBe(expected);
+    const url = new URL(link.getAttribute("href")!);
+    expect(url.searchParams.getAll("v")).toEqual([String(T1)]);
+  });
+
+  it("resolves a relative href against the document URL without <base>", () => {
+    const link = addStylesheet("styles/site.css?mode=a");
+
+    src.dispatch("css", "");
+
+    expect(link.getAttribute("href")).toBe(
+      new URL(`styles/site.css?mode=a&v=${T1}`, document.baseURI).href,
+    );
+  });
+
+  it("repeated reloads keep a single, updated v", () => {
+    setBase("https://site.test/");
+    const link = addStylesheet("/theme.css?theme=dark#sheet");
+
+    src.dispatch("css", "");
+    vi.setSystemTime(T2);
+    src.dispatch("css", "");
+
+    expect(link.getAttribute("href")).toBe(`https://site.test/theme.css?theme=dark&v=${T2}#sheet`);
+  });
+
+  it("a malformed href does not stop later valid stylesheets from reloading", () => {
+    setBase("https://site.test/");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const bad = addStylesheet("http://[malformed/style.css");
+    const good = addStylesheet("/after.css?keep=1");
+
+    expect(() => src.dispatch("css", "")).not.toThrow();
+
+    expect(bad.getAttribute("href")).toBe("http://[malformed/style.css");
+    expect(good.getAttribute("href")).toBe(`https://site.test/after.css?keep=1&v=${T1}`);
+    expect(warnSpy).toHaveBeenCalled();
+  });
+});

@@ -293,10 +293,11 @@ fn assert_wasm_two_pass_contract(root: &Path) -> String {
 
     let assetsignore = read_text(&dist.join(".assetsignore"));
     let ignored: Vec<_> = assetsignore.lines().collect();
+    let runtime_asset_rule = format!("/{runtime_asset}");
     assert_eq!(
         ignored,
-        ["_worker.js", "_zfb_inner.mjs", runtime_asset],
-        ".assetsignore must contain only the Worker files and runtime Wasm asset, once each"
+        ["/_worker.js", "/_zfb_inner.mjs", runtime_asset_rule.as_str()],
+        ".assetsignore must contain only the root-anchored Worker files and runtime Wasm asset, once each"
     );
 
     assert!(
@@ -357,6 +358,125 @@ fn build_keeps_ssg_and_ssr_wasm_assets_in_their_respective_passes() {
     let (_temp, _node_modules, root) = scaffold_fixture(&adapter);
     run_build(&root);
     let _runtime_asset = assert_wasm_two_pass_contract(&root);
+}
+
+/// Paths that `git check-ignore` reports as ignored by `policy`, used as the
+/// gitignore-style reference matcher for the rule subset the adapter emits
+/// (root-anchored literals) plus plain user globs, anchors and negations.
+fn git_ignored_paths(policy: &str, paths: &[&str]) -> Vec<String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let repo = tempfile::tempdir().expect("create git check-ignore tempdir");
+    let init = Command::new("git")
+        .args(["init", "-q"])
+        .arg(repo.path())
+        .status()
+        .expect("spawn git init");
+    assert!(init.success(), "git init must succeed");
+    fs::write(repo.path().join(".gitignore"), policy).expect("write policy as .gitignore");
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["check-ignore", "--no-index", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn git check-ignore");
+    child
+        .stdin
+        .take()
+        .expect("check-ignore stdin")
+        .write_all((paths.join("\n") + "\n").as_bytes())
+        .expect("write check-ignore paths");
+    let output = child.wait_with_output().expect("wait for git check-ignore");
+    // check-ignore exits 1 when no path is ignored.
+    assert!(
+        matches!(output.status.code(), Some(0 | 1)),
+        "git check-ignore failed: {}",
+        output.status
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Combined acceptance for #4681 + #4682: a subpath build places the user's
+/// public policy at `dist/.assetsignore` (Wrangler's only reading location)
+/// before adapter emission, and the final root file preserves it unchanged
+/// and ends with the adapter's effective root-anchored exclusions. The user's
+/// patterns stay relative to the upload root; nothing is rebased under `base`.
+#[test]
+fn subpath_build_keeps_public_assetsignore_at_root_with_generated_exclusions_last() {
+    if !pnpm_available() {
+        eprintln!("[wasm_ssr_adapter_e2e] pnpm is not available; skipping.");
+        return;
+    }
+
+    let adapter = workspace_adapter_package();
+    let (_temp, _node_modules, root) = scaffold_fixture(&adapter);
+    fs::write(
+        root.join("zfb.config.json"),
+        "{\n  \"adapter\": \"@takazudo/zfb-adapter-cloudflare\",\n  \"base\": \"/sub/\"\n}\n",
+    )
+    .expect("rewrite fixture config with a subpath base");
+    let user_policy =
+        "private.txt\n/root-only.txt\n/sub/secret.txt\n!_worker.js\n!_zfb_inner.mjs\n";
+    fs::create_dir_all(root.join("public")).expect("create public dir");
+    fs::write(root.join("public/.assetsignore"), user_policy).expect("write public policy");
+    for name in ["private.txt", "root-only.txt", "secret.txt", "visible.txt"] {
+        fs::write(root.join("public").join(name), name).expect("write public file");
+    }
+
+    run_build(&root);
+
+    let dist = root.join("dist");
+    assert!(
+        !dist.join("sub/.assetsignore").exists(),
+        "the public policy must not be relocated beneath the base segment"
+    );
+    for name in ["private.txt", "root-only.txt", "secret.txt", "visible.txt"] {
+        assert!(
+            dist.join("sub").join(name).is_file(),
+            "public/{name} must follow the base segment"
+        );
+    }
+    let runtime_assets = wasm_assets_in(&dist);
+    let runtime_asset = named_wasm_asset(&runtime_assets, "ssr-only-");
+    let policy = read_text(&dist.join(".assetsignore"));
+    let generated_block = format!("/_worker.js\n/_zfb_inner.mjs\n/{runtime_asset}\n");
+    assert_eq!(
+        policy,
+        format!("{user_policy}{generated_block}"),
+        "the root policy must be the user's bytes followed by the generated block"
+    );
+
+    let runtime_asset_path = runtime_asset.to_owned();
+    assert_eq!(
+        git_ignored_paths(
+            &policy,
+            &[
+                "sub/private.txt",
+                "sub/root-only.txt",
+                "sub/secret.txt",
+                "sub/visible.txt",
+                "_worker.js",
+                "_zfb_inner.mjs",
+                runtime_asset_path.as_str(),
+                "sub/_worker.js",
+            ],
+        ),
+        [
+            "sub/private.txt",
+            "sub/secret.txt",
+            "_worker.js",
+            "_zfb_inner.mjs",
+            runtime_asset_path.as_str(),
+        ],
+        "unanchored rules match under the base, root anchors are not rebased, and \
+         generated exclusions win over later user negations"
+    );
 }
 
 /// The deploy handoff needs the workspace-pinned Wrangler binary. It stays

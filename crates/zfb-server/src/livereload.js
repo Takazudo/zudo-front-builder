@@ -5,9 +5,9 @@
 // event types:
 //
 //   - "page":    full document reload (location.reload()).
-//   - "css":     hot-swap every <link rel="stylesheet"> by appending
-//                or updating a ?v=<timestamp> cache-busting query
-//                string.
+//   - "css":     hot-swap every <link rel="stylesheet"> by setting its
+//                ?v=<timestamp> cache-busting query parameter, keeping
+//                every other parameter and the fragment.
 //   - "islands": dynamic import the named bundle URL and re-run the
 //                hydration runtime so the affected component swaps in
 //                place. Payload is a JSON object {component, bundleUrl}.
@@ -40,6 +40,34 @@
   var retryDelay = 1000;
   var suspended = false;
 
+  // Replace every `v` pair of a "?a=1&v=old" search string with one
+  // `v=<ts>` at the first one's position (appended when absent), leaving all
+  // other pairs byte-for-byte.
+  function withCacheBuster(search, ts) {
+    var pairs = search.replace(/^\?/, "").split("&");
+    var out = [];
+    var placed = false;
+    for (var i = 0; i < pairs.length; i++) {
+      var pair = pairs[i];
+      if (pair === "") continue;
+      var key = pair.split("=")[0];
+      var decoded;
+      try {
+        decoded = decodeURIComponent(key.replace(/\+/g, " "));
+      } catch (e) {
+        decoded = key;
+      }
+      if (decoded === "v") {
+        if (!placed) out.push("v=" + ts);
+        placed = true;
+      } else {
+        out.push(pair);
+      }
+    }
+    if (!placed) out.push("v=" + ts);
+    return "?" + out.join("&");
+  }
+
   var handlers = {
     page: function () {
       window.location.reload();
@@ -51,8 +79,19 @@
         var link = links[i];
         var href = link.getAttribute("href");
         if (!href) continue;
-        var base = href.split("?")[0];
-        link.setAttribute("href", base + "?v=" + ts);
+        // Resolve against document.baseURI (honors <base>) and replace only
+        // the `v` cache-buster: every other query pair keeps its exact bytes
+        // (a valueless flag, `%20` vs `+`, font family/display), the fragment
+        // is kept, and `v` lands in the request query, never in a fragment.
+        try {
+          var url = new URL(href, document.baseURI);
+          url.search = withCacheBuster(url.search, ts);
+          link.setAttribute("href", url.href);
+        } catch (e) {
+          if (typeof console !== "undefined" && console.warn) {
+            console.warn("[zfb] livereload: skipping stylesheet with invalid href", href);
+          }
+        }
       }
     },
     // Wire contract: component="" means "bundle changed, unknown components;
