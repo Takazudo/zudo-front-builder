@@ -5,9 +5,9 @@
 // event types:
 //
 //   - "page":    full document reload (location.reload()).
-//   - "css":     hot-swap every <link rel="stylesheet"> by appending
-//                or updating a ?v=<timestamp> cache-busting query
-//                string.
+//   - "css":     hot-swap every <link rel="stylesheet"> by setting its
+//                ?v=<timestamp> cache-busting query parameter, keeping
+//                every other parameter and the fragment.
 //   - "islands": dynamic import the named bundle URL and re-run the
 //                hydration runtime so the affected component swaps in
 //                place. Payload is a JSON object {component, bundleUrl}.
@@ -51,8 +51,19 @@
         var link = links[i];
         var href = link.getAttribute("href");
         if (!href) continue;
-        var base = href.split("?")[0];
-        link.setAttribute("href", base + "?v=" + ts);
+        // Resolve against document.baseURI (honors <base>) and replace only
+        // the `v` cache-buster: other query parameters (e.g. a font
+        // family/display or a theme switch) and the fragment are kept, and
+        // `v` lands in the request query rather than inside a fragment.
+        try {
+          var url = new URL(href, document.baseURI);
+          url.searchParams.set("v", ts);
+          link.setAttribute("href", url.href);
+        } catch (e) {
+          if (typeof console !== "undefined" && console.warn) {
+            console.warn("[zfb] livereload: skipping stylesheet with invalid href", href);
+          }
+        }
       }
     },
     // Wire contract: component="" means "bundle changed, unknown components;
