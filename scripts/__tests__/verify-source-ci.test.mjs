@@ -22,6 +22,7 @@ const run = (name, status = "completed", conclusion = "success", id = nextId++) 
   name,
   status,
   conclusion: status === "completed" ? conclusion : null,
+  app: "github-actions",
 });
 const pushContexts = REQUIRED_CONTEXTS.filter((c) => !c.prOnly).map((c) => c.context);
 const allGreen = () => pushContexts.map((name) => run(name));
@@ -38,10 +39,36 @@ describe("evaluate", () => {
     expect(verdict.results.filter((r) => r.state === "passed")).toHaveLength(pushContexts.length);
   });
 
-  it("treats a job-level skip as passing, like the ruleset", () => {
+  it("does not pass a skipped required job on a push source commit", () => {
     const runs = allGreen();
     runs[0].conclusion = "skipped";
-    expect(evaluate({ sha: SHA, checkRuns: runs, statuses: [] }).passed).toBe(true);
+    const verdict = evaluate({ sha: SHA, checkRuns: runs, statuses: [] });
+    expect(verdict.passed).toBe(false);
+    expect(verdict.blocking).toContain("health: skipped");
+  });
+
+  it("counts only check runs from the GitHub Actions app", () => {
+    const runs = allGreen().filter((r) => r.name !== "health");
+    runs.push({ ...run("health"), app: "some-other-app" });
+    const verdict = evaluate({ sha: SHA, checkRuns: runs, statuses: [] });
+    expect(verdict.passed).toBe(false);
+    const health = verdict.results.find((r) => r.context === "health");
+    expect(health.state).toBe("missing");
+    expect(health.ignoredCheckRuns[0].app).toBe("some-other-app");
+  });
+
+  it("never accepts a commit status for a required context", () => {
+    const runs = allGreen().filter((r) => r.name !== "health");
+    const verdict = evaluate({
+      sha: SHA,
+      checkRuns: runs,
+      statuses: [{ context: "health", state: "success", creator: "github-actions[bot]" }],
+    });
+    expect(verdict.passed).toBe(false);
+    expect(verdict.results.find((r) => r.context === "health").ignoredStatus).toEqual({
+      state: "success",
+      creator: "github-actions[bot]",
+    });
   });
 
   it.each([
@@ -73,18 +100,6 @@ describe("evaluate", () => {
     const passed = evaluate({ sha: SHA, checkRuns: runs, statuses: [] });
     expect(passed.passed).toBe(true);
     expect(passed.results.find((r) => r.context === "health").history).toHaveLength(3);
-  });
-
-  it("falls back to a commit status for a context with no check run", () => {
-    const runs = allGreen().filter((r) => r.name !== "health");
-    expect(
-      evaluate({ sha: SHA, checkRuns: runs, statuses: [{ context: "health", state: "success" }] })
-        .passed,
-    ).toBe(true);
-    expect(
-      evaluate({ sha: SHA, checkRuns: runs, statuses: [{ context: "health", state: "pending" }] })
-        .passed,
-    ).toBe(false);
   });
 
   it("can require the pull_request-only contexts too", () => {

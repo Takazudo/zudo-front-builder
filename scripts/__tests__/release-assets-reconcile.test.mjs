@@ -9,7 +9,13 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { finalizeDecision } from "../release/finalize-gate.mjs";
 import { plan, reconcile } from "../release/reconcile-release-assets.mjs";
 import { assetInventory, expectedReleaseAssets } from "../release/release-assets-contract.mjs";
-import { distTagsSettled, recommendNextAction, resolveSource } from "../release/release-status.mjs";
+import {
+  distTagsSettled,
+  recommendNextAction,
+  resolveSource,
+  runMatchesTag,
+} from "../release/release-status.mjs";
+import { alsoLatest, main as alsoLatestMain } from "../release/resolve-also-latest.mjs";
 
 const sha256 = (data) => createHash("sha256").update(Buffer.from(data)).digest("hex");
 const dirs = [];
@@ -360,5 +366,82 @@ describe("resolveSource", () => {
     ["no Release and no tag", {}, null, { kind: null, problem: "release-missing" }],
   ])("%s", (_label, tagInfo, release, want) => {
     expect(resolveSource({ tagInfo, release })).toMatchObject(want);
+  });
+});
+
+describe("runMatchesTag (exact run-name match)", () => {
+  it.each([
+    ["Release v6.1.1", "main", true],
+    ["Release v6.1.1 (finalize only)", "main", true],
+    ["Release v6.1.1 (dry run)", "main", true],
+    ["Release v6.1.1 (finalize only) (dry run)", "main", true],
+    ["Release v6.1.10", "main", false],
+    ["Release v6.1.1-next.1", "main", false],
+    ["Release v6x1x1", "main", false],
+    ["Some other title", "v6.1.1", true],
+  ])("%s on %s → %s", (displayTitle, headBranch, want) => {
+    expect(runMatchesTag({ displayTitle, headBranch }, "v6.1.1")).toBe(want);
+  });
+});
+
+describe("resolve-also-latest (prerelease dual-tag, fail closed)", () => {
+  it.each([
+    ["latest", "6.0.1", false],
+    ["next", "", true],
+    ["next", "7.0.0-next.1", true],
+    ["next", "6.0.1", false],
+  ])("dist-tag %s with latest=%s → %s", (tag, latest, want) => {
+    expect(alsoLatest(tag, latest)).toBe(want);
+  });
+
+  const run = async (response) => {
+    let out = "";
+    let err = "";
+    const code = await alsoLatestMain(["--dist-tag", "next"], {
+      request: async () => (typeof response === "function" ? response() : response),
+      out: { write: (c) => (out += c) },
+      err: { write: (c) => (err += c) },
+    });
+    return { code, out, err };
+  };
+  const body = (obj, status = 200) => ({ status, body: Buffer.from(JSON.stringify(obj)) });
+
+  it("prints 1 while latest is a prerelease, empty once it is stable", async () => {
+    expect((await run(body({ latest: "7.0.0-next.1", next: "7.0.0-next.1" }))).out).toBe("1\n");
+    expect((await run(body({ latest: "6.0.1" }))).out).toBe("\n");
+  });
+
+  it("treats only a definitive 404 (never published) as an empty latest", async () => {
+    const result = await run({ status: 404, body: Buffer.from("not found") });
+    expect(result).toMatchObject({ code: 0, out: "1\n" });
+  });
+
+  it.each([
+    ["a 5xx", { status: 503, body: Buffer.from("down") }],
+    ["an auth failure", { status: 401, body: Buffer.from("no") }],
+    ["malformed JSON", { status: 200, body: Buffer.from("{x") }],
+    [
+      "a network error",
+      () => {
+        throw new Error("ECONNRESET");
+      },
+    ],
+  ])("fails closed (exit 2, no decision) on %s", async (_label, response) => {
+    const result = await run(response);
+    expect(result.code).toBe(2);
+    expect(result.out).toBe("");
+    expect(result.err).toContain("failing closed");
+  });
+
+  it("does not read the registry for a latest publish", async () => {
+    let out = "";
+    const code = await alsoLatestMain(["--dist-tag", "latest"], {
+      request: async () => {
+        throw new Error("must not be called");
+      },
+      out: { write: (c) => (out += c) },
+      err: { write: () => {} },
+    });
+    expect([code, out]).toEqual([0, "\n"]);
   });
 });

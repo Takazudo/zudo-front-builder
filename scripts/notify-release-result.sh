@@ -1,23 +1,30 @@
 #!/usr/bin/env bash
 # Report a failed or incomplete release without treating a mode's expected
-# skips as failures: a dry run skips the smoke, a normal/recovery run skips
-# finalize, and a finalize-only run (#4690) skips build, build-wasm-md,
-# release-assets and publish.
+# skips as failures (#4690):
+#   normal/recovery  skips finalize and finalize-assets;
+#   finalize-only    skips build, build-wasm-md, release-assets, pack, publish
+#                    and md-wasm-asset;
+#   dry run          additionally skips every write job (publish,
+#                    md-wasm-asset, finalize-assets) and the smoke.
 set -euo pipefail
 
-jobs=(release-context source-ci provenance-preflight admit-darwin build build-wasm-md release-assets publish finalize smoke-clean-room)
-results=("$RELEASE_CONTEXT_RESULT" "$SOURCE_CI_RESULT" "$PROVENANCE_PREFLIGHT_RESULT" "$ADMIT_DARWIN_RESULT" "$BUILD_RESULT" "$BUILD_WASM_MD_RESULT" "$RELEASE_ASSETS_RESULT" "$PUBLISH_RESULT" "$FINALIZE_RESULT" "$SMOKE_CLEAN_ROOM_RESULT")
+jobs=(release-context source-ci provenance-preflight admit-darwin build build-wasm-md release-assets pack publish md-wasm-asset finalize finalize-assets smoke-clean-room)
+results=("$RELEASE_CONTEXT_RESULT" "$SOURCE_CI_RESULT" "$PROVENANCE_PREFLIGHT_RESULT" "$ADMIT_DARWIN_RESULT" "$BUILD_RESULT" "$BUILD_WASM_MD_RESULT" "$RELEASE_ASSETS_RESULT" "$PACK_RESULT" "$PUBLISH_RESULT" "$MD_WASM_ASSET_RESULT" "$FINALIZE_RESULT" "$FINALIZE_ASSETS_RESULT" "$SMOKE_CLEAN_ROOM_RESULT")
 
 expected_skip() {
   local job="$1"
-  if [[ "${DRY_RUN:-}" == true && "$job" == smoke-clean-room ]]; then
-    return 0
+  if [[ "${DRY_RUN:-}" == true ]]; then
+    case "$job" in
+      smoke-clean-room | publish | md-wasm-asset | finalize-assets) return 0 ;;
+    esac
   fi
   if [[ "${FINALIZE_ONLY:-}" == true ]]; then
-    [[ "$job" == build || "$job" == build-wasm-md || "$job" == release-assets || "$job" == publish ]]
-  else
-    [[ "$job" == finalize ]]
+    case "$job" in
+      build | build-wasm-md | release-assets | pack | publish | md-wasm-asset) return 0 ;;
+    esac
+    return 1
   fi
+  [[ "$job" == finalize || "$job" == finalize-assets ]]
 }
 
 problems=()

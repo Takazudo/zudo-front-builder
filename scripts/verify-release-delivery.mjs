@@ -167,15 +167,20 @@ export const RELEASE_REQUIRED_JOBS = Object.freeze([
     skipped: ["DRY RUN — skip GH Release upload"],
   },
   {
+    id: "pack",
+    name: "Pack npm tarballs",
+    success: ["Place admitted Darwin binaries in platform packages", "Pack npm tarballs"],
+  },
+  {
     id: "publish",
     name: "publish",
-    success: [
-      "Place admitted Darwin binaries in platform packages",
-      "Verify publish context (verified release tag required)",
-      "Publish to npm",
-      "Verify published @takazudo/zfb-md-wasm and upload digest asset",
-    ],
-    skipped: ["DRY RUN — skip publish", "Publish to npm (recovery — no provenance)"],
+    success: ["Verify publish context (verified release tag required)", "Publish to npm"],
+    skipped: ["Publish to npm (recovery — no provenance)"],
+  },
+  {
+    id: "md-wasm-asset",
+    name: "Upload MD/WASM digest asset",
+    success: ["Verify published @takazudo/zfb-md-wasm and upload digest asset"],
   },
   {
     id: "smoke-clean-room",

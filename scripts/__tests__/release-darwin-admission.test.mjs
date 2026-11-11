@@ -280,6 +280,7 @@ describe("release-status (read-only, injected gh/registry)", () => {
               name: c.context,
               status: "completed",
               conclusion: "success",
+              app: "github-actions",
             }),
           )
           .join("\n");

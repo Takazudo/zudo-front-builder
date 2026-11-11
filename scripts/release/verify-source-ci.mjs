@@ -6,8 +6,9 @@
 //   node scripts/release/verify-source-ci.mjs --sha <40-hex> [--json] [--repo owner/name]
 //                                             [--require-pr-only]
 //
-// Exit 0 passed, 1 not passed (pending, cancelled, failed, missing), 2 usage or
-// read error.
+// Exit 0 passed, 1 not passed (pending, cancelled, skipped, failed, missing),
+// 2 usage or read error. Only GitHub Actions check runs (app github-actions)
+// count; commit statuses never satisfy a required context (see ACTIONS_APP).
 //
 // REQUIRED_CONTEXTS mirrors the `main` ruleset in scripts/apply-main-ruleset.sh
 // (a drift test keeps the two lists equal). Each context names the workflow
@@ -45,8 +46,17 @@ export const REQUIRED_CONTEXTS = Object.freeze([
   { context: "Docs gate", workflow: "docs-checks.yml", prOnly: true },
 ]);
 
-// The ruleset reads a job-level skip as success (docs-only PRs, #4372).
-const PASSING_CONCLUSIONS = new Set(["success", "skipped"]);
+// Only `success` passes. The ruleset reads a job-level skip as success, but that
+// exists for docs-only PRs (#4372); a push to main runs every required job, so a
+// skipped required job on a release source commit is not evidence of passing.
+const PASSING_CONCLUSIONS = new Set(["success"]);
+
+// Every required context is a GitHub Actions job, so only check runs created by
+// the GitHub Actions app count. Commit statuses are NEVER accepted: any token
+// with `statuses: write` can post a status under any context name, and no
+// required context is produced as a status, so there is no expected creator to
+// pin. A status named like a required context is reported as ignored evidence.
+export const ACTIONS_APP = "github-actions";
 
 const SHA_RE = /^[0-9a-f]{40}$/;
 
@@ -57,11 +67,19 @@ const SHA_RE = /^[0-9a-f]{40}$/;
  * the commit status when no check run exists.
  */
 export function classifyContext(spec, checkRuns, statuses) {
-  const runs = checkRuns
-    .filter((run) => run.name === spec.context)
+  const named = checkRuns.filter((run) => run.name === spec.context);
+  const runs = named
+    .filter((run) => run.app === ACTIONS_APP)
     .sort((a, b) => Number(a.id) - Number(b.id));
   const status = statuses.find((entry) => entry.context === spec.context);
   const base = { context: spec.context, workflow: spec.workflow, prOnly: spec.prOnly };
+  const ignored = {};
+  if (named.length > runs.length) {
+    ignored.ignoredCheckRuns = named
+      .filter((run) => run.app !== ACTIONS_APP)
+      .map((run) => ({ id: run.id, app: run.app ?? null, conclusion: run.conclusion ?? null }));
+  }
+  if (status) ignored.ignoredStatus = { state: status.state, creator: status.creator ?? null };
   if (runs.length > 0) {
     const effective = runs.at(-1);
     const evidence = {
@@ -74,21 +92,17 @@ export function classifyContext(spec, checkRuns, statuses) {
         status: run.status,
         conclusion: run.conclusion ?? null,
       })),
+      ...ignored,
     };
     if (effective.status !== "completed") return { ...base, state: "pending", ...evidence };
     if (PASSING_CONCLUSIONS.has(effective.conclusion)) {
       return { ...base, state: "passed", ...evidence };
     }
     if (effective.conclusion === "cancelled") return { ...base, state: "cancelled", ...evidence };
+    if (effective.conclusion === "skipped") return { ...base, state: "skipped", ...evidence };
     return { ...base, state: "failed", ...evidence };
   }
-  if (status) {
-    const evidence = { commitStatus: status.state, url: status.target_url ?? null };
-    if (status.state === "success") return { ...base, state: "passed", ...evidence };
-    if (status.state === "pending") return { ...base, state: "pending", ...evidence };
-    return { ...base, state: "failed", ...evidence };
-  }
-  return { ...base, state: spec.prOnly ? "not-applicable-pr-only" : "missing" };
+  return { ...base, state: spec.prOnly ? "not-applicable-pr-only" : "missing", ...ignored };
 }
 
 /** Pure: the verdict over every required context. */
@@ -126,11 +140,16 @@ export function readSourceCi({ sha, repo, gh = execGh }) {
       "--paginate",
       `repos/${repo}/commits/${sha}/check-runs?per_page=100`,
       "--jq",
-      ".check_runs[] | {id, name, status, conclusion, html_url}",
+      ".check_runs[] | {id, name, status, conclusion, html_url, app: .app.slug}",
     ]),
   );
   const combined = JSON.parse(gh(["api", `repos/${repo}/commits/${sha}/status`]));
-  return { checkRuns, statuses: combined.statuses ?? [] };
+  const statuses = (combined.statuses ?? []).map((entry) => ({
+    context: entry.context,
+    state: entry.state,
+    creator: entry.creator?.login ?? null,
+  }));
+  return { checkRuns, statuses };
 }
 
 export function parseArgs(argv) {

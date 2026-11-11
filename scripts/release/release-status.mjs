@@ -210,6 +210,20 @@ async function readDistTags({ request, registry }) {
   return tags;
 }
 
+/**
+ * Pure: is this release.yml run for exactly `tag`? release.yml's run-name is
+ * `Release <tag>[ (finalize only)][ (dry run)]`, so main-based dispatches match
+ * by title; release:published runs also carry headBranch = tag. Exact, never a
+ * substring (v6.1.1 must not match v6.1.10 or v6.1.1-next.1).
+ */
+export function runMatchesTag(run, tag) {
+  if (run.headBranch === tag) return true;
+  const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^Release ${escaped}( \\(finalize only\\))?( \\(dry run\\))?$`).test(
+    String(run.displayTitle ?? ""),
+  );
+}
+
 function readRuns({ tag, repo, gh }) {
   const runs = JSON.parse(
     gh([
@@ -225,11 +239,7 @@ function readRuns({ tag, repo, gh }) {
       "databaseId,attempt,status,conclusion,event,headBranch,headSha,displayTitle,createdAt,url",
     ]),
   );
-  // release.yml's run-name carries the effective tag, so release:published
-  // runs (headBranch = tag) and main-based dispatches are both matched.
-  return runs
-    .filter((run) => run.headBranch === tag || String(run.displayTitle).includes(tag))
-    .slice(0, 5);
+  return runs.filter((run) => runMatchesTag(run, tag)).slice(0, 5);
 }
 
 function probeCapabilities({ repo, gh }) {

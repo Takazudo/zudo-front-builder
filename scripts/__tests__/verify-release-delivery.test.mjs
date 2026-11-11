@@ -132,12 +132,16 @@ function releaseJobs() {
       step("Upload archives and checksums to GitHub Release"),
       step("Verify owner-uploaded Darwin assets are unchanged since admission"),
     ]),
-    job("publish", [
+    job("Pack npm tarballs", [
       step("Place admitted Darwin binaries in platform packages"),
-      step("DRY RUN — skip publish", "skipped"),
+      step("Pack npm tarballs"),
+    ]),
+    job("publish", [
       step("Verify publish context (verified release tag required)"),
       step("Publish to npm"),
       step("Publish to npm (recovery — no provenance)", "skipped"),
+    ]),
+    job("Upload MD/WASM digest asset", [
       step("Verify published @takazudo/zfb-md-wasm and upload digest asset"),
     ]),
     job("smoke-clean-room / Clean-room smoke (ubuntu-latest, dist_tag=latest)", [
@@ -1059,9 +1063,6 @@ describe("workflow jobs, steps and attempts", () => {
         conclusion: "failure",
       };
       failed.steps.find((s) => s.name === "Publish to npm").conclusion = "failure";
-      failed.steps.find(
-        (s) => s.name === "Verify published @takazudo/zfb-md-wasm and upload digest asset",
-      ).conclusion = "skipped";
       Object.assign(publish, { id: 9002, run_attempt: 2 });
       w.releaseJobs.push(failed);
       // Some packages were attested by the failed first attempt, the rest by the rerun.
@@ -1213,8 +1214,8 @@ describe("HTTP behavior", () => {
       w.jobsPageSize = 4;
     });
     expect(report.verdict).toBe(STATUS.VERIFIED);
-    // 12 release jobs at 4 per page.
-    expect(calls.filter((c) => c.url.includes(`/runs/${RELEASE_RUN}/jobs`)).length).toBe(3);
+    // 14 release jobs at 4 per page.
+    expect(calls.filter((c) => c.url.includes(`/runs/${RELEASE_RUN}/jobs`)).length).toBe(4);
   });
 
   it("reports pagination that never reaches total_count as incomplete", async () => {

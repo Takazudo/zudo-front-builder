@@ -318,17 +318,104 @@ describe("collectStates / expectations / CLI", () => {
     expect(report.allVerified).toBe(false);
   });
 
-  it("expectation shape: normal (Darwin none, rest attested) vs recovery (all none)", () => {
-    const normal = expectationShape([
-      { name: "@takazudo/zfb", attested: true },
-      { name: "@takazudo/zfb-darwin-arm64", attested: false },
+  it("expectations are per package from observed provenance (mixed partial + recovery/finalize)", () => {
+    const shape = expectationShape([
+      { name: "@takazudo/zfb", observedProvenance: "attested" }, // first normal attempt
+      { name: "create-zfb", observedProvenance: "none" }, // published by the recovery
+      { name: "@takazudo/zfb-runtime", observedProvenance: "attested" },
+      { name: "@takazudo/zfb-darwin-arm64", observedProvenance: "attested" }, // never expected
+      { name: "@takazudo/zfb-darwin-x64", observedProvenance: "none" },
     ]);
-    expect(normal.map((e) => e.expected)).toEqual(["attested", "none"]);
-    const recovery = expectationShape([
-      { name: "@takazudo/zfb", attested: false },
-      { name: "@takazudo/zfb-darwin-arm64", attested: false },
-    ]);
-    expect(recovery.map((e) => e.expected)).toEqual(["none", "none"]);
+    expect(shape.map((e) => e.expected)).toEqual(["attested", "none", "attested", "none", "none"]);
+  });
+
+  it("finalize after a mixed partial publish: observed provenance flows into the expectations", async () => {
+    const { request } = registry({
+      [versionUrl("@takazudo/zfb", REAL.version)]: ok(attestedRecord()),
+      [`${REG}/att/zfb`]: ok(FIXTURE),
+      [versionUrl("create-zfb", REAL.version)]: ok({
+        name: "create-zfb",
+        version: REAL.version,
+        gitHead: REAL.commit,
+        dist: {},
+      }),
+    });
+    const report = await collectStates({
+      version: REAL.version,
+      sourceCommit: REAL.commit,
+      packages: ["@takazudo/zfb", "create-zfb"],
+      registry: REG,
+      request,
+      delayMs: 0,
+    });
+    expect(report.allVerified).toBe(true);
+    expect(expectationShape(report.packages).map((e) => e.expected)).toEqual(["attested", "none"]);
+  });
+
+  describe("--tarball-integrity (exact byte match with the packed tarball)", () => {
+    const record = (extra = {}) => ({
+      name: "create-zfb",
+      version: REAL.version,
+      dist: { integrity: REAL.integrity },
+      ...extra,
+    });
+    it("verifies on an exact dist.integrity match without gitHead or attestation", async () => {
+      const { request } = registry({ [versionUrl("create-zfb", REAL.version)]: ok(record()) });
+      const result = await packageState(
+        "create-zfb",
+        ctx(request, { tarballIntegrity: REAL.integrity }),
+      );
+      expect(result).toMatchObject({
+        state: "present-verified",
+        method: "integrity",
+        observedProvenance: "none",
+      });
+    });
+    it("an exact match outranks a foreign gitHead", async () => {
+      const { request } = registry({
+        [versionUrl("create-zfb", REAL.version)]: ok(record({ gitHead: OTHER })),
+      });
+      const result = await packageState(
+        "create-zfb",
+        ctx(request, { tarballIntegrity: REAL.integrity }),
+      );
+      expect(result.method).toBe("integrity");
+    });
+    it("a mismatch falls back to gitHead (a recovery rebuild differs byte-wise)", async () => {
+      const { request } = registry({
+        [versionUrl("create-zfb", REAL.version)]: ok(record({ gitHead: REAL.commit })),
+      });
+      const result = await packageState(
+        "create-zfb",
+        ctx(request, { tarballIntegrity: integrityOf(Buffer.from("rebuilt")) }),
+      );
+      expect(result).toMatchObject({ state: "present-verified", method: "gitHead" });
+    });
+    it("never overrides an attestation that names another commit", async () => {
+      const { request } = registry({
+        [versionUrl(REAL.name, REAL.version)]: ok(attestedRecord()),
+        [`${REG}/att/zfb`]: ok(FIXTURE),
+      });
+      const result = await packageState(
+        REAL.name,
+        ctx(request, { sourceCommit: OTHER, tarballIntegrity: REAL.integrity }),
+      );
+      expect(result.state).toBe("present-unverified");
+    });
+    it("is accepted only with exactly one --package", () => {
+      const base = [
+        "--version",
+        "1.0.0",
+        "--source-commit",
+        REAL.commit,
+        "--tarball-integrity",
+        "sha512-x",
+      ];
+      expect(parseArgs(base)).toBeNull();
+      expect(parseArgs([...base, "--package", "create-zfb"])).toMatchObject({
+        tarballIntegrity: "sha512-x",
+      });
+    });
   });
 
   it("parses arguments strictly", () => {
@@ -356,7 +443,7 @@ describe("collectStates / expectations / CLI", () => {
     ];
     const env = { ZFB_NPM_REGISTRY: REG, ZFB_NPM_STATE_DELAY_MS: "0" };
     expect(await main(args, { env, out, request })).toBe(0);
-    expect(text).toMatch(/^create-zfb\tabsent\tE404 on 3 read\(s\)/);
+    expect(text).toMatch(/^create-zfb\tabsent\tE404 on 3 read\(s\)[^\t]*\tnone\n/);
     expect(await main([...args, "--require-all-verified"], { env, out, request })).toBe(1);
     expect(await main(["--version", REAL.version], { env, out, request })).toBe(2);
   });
