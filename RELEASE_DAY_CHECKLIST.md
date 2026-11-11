@@ -122,9 +122,18 @@ a real stable version holds `latest` the condition is false and prereleases no
 longer touch it — a prerelease can never clobber a real stable `latest` after
 launch.
 
+`release.yml` authenticates every npm write (publish, `dist-tag add`,
+`dist-tag rm`) through GitHub OIDC trusted publishing only; there is no npm
+token secret to create or rotate. Each of the 11 packages needs a trusted
+publisher on npmjs.com for `Takazudo/zudo-front-builder`, workflow
+`release.yml`, no environment, with **Allow npm dist-tag** enabled (it is off
+by default, and without it the dist-tag writes fail with an auth error).
+
 The retry logic in `release.yml` already retries each `npm dist-tag add` up to
-5 times with exponential backoff. If that exhausts, the workflow prints a manual
-remediation command per package. For the two user-facing install surfaces:
+5 times with exponential backoff, and never moves `latest` to a lower version.
+If that exhausts, the workflow prints a manual remediation command per package,
+to run from a maintainer's own interactive npm session. For the two
+user-facing install surfaces:
 
 ```sh
 npm dist-tag add @takazudo/zfb@0.1.0-next.6 latest

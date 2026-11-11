@@ -28,8 +28,8 @@
 # Platform packages (zfb-darwin-*, zfb-linux-*, zfb-win32-*) are published with
 # `npm publish` (NOT pnpm): pnpm pack normalises file modes to 0644, stripping
 # the 0755 exec bit off the `zfb` binary; npm preserves it (issue #447 / #441).
-# The `( cd "$dir" && npm publish ... )` invocation below is kept byte-identical
-# to the original for that reason.
+# The `( cd "$dir" && npm publish ... )` invocation below keeps that shape
+# (npm, inside the package dir) for that reason.
 #
 # Non-platform packages (@takazudo/zfb-slugify, @takazudo/zfb,
 # @takazudo/zfb-runtime,
@@ -42,27 +42,57 @@
 #
 # Usage:
 #   scripts/publish-npm-packages.sh <all-provenance|mac-local|recovery-no-provenance>
-#     all-provenance — every package (incl. zfb-darwin-x64) was built in CI, so
-#                      all carry OIDC-attested --provenance.
-#     mac-local      — zfb-darwin-x64 was built locally (outside this GHA job) and
-#                      cannot carry OIDC provenance, so it is published WITHOUT
-#                      --provenance; every other package keeps --provenance.
+#     all-provenance — every package (incl. both darwin carriers) was built in CI,
+#                      so all carry OIDC-attested provenance (`--provenance`).
+#     mac-local      — the platform packages named by ZFB_LOCAL_BUILT_PACKAGES
+#                      were built locally (outside this GHA job). Their bytes are
+#                      not described by this job's OIDC identity, so they are
+#                      published with provenance explicitly suppressed
+#                      (`--provenance=false`); every other package keeps
+#                      `--provenance`.
 #     recovery-no-provenance
 #                    — a fixed workflow running from main built an older verified
 #                      release tag. GitHub OIDC identifies the main workflow SHA,
-#                      not that tag SHA, so every package is published WITHOUT a
-#                      misleading provenance attestation.
+#                      not that tag SHA, so every package is published with
+#                      provenance explicitly suppressed.
+#
+# Authentication is GitHub OIDC trusted publishing ONLY. No stored npm token is
+# read or accepted: scripts/npm-oidc-preflight.mjs refuses to continue when the
+# job has no GitHub ID-token request variables or when any stored npm credential
+# is visible (npm and pnpm silently fall back to such a credential when the
+# OIDC exchange fails, so one would hide a trusted-publisher misconfiguration).
+#
+# Provenance is EXPLICIT in every mode, never left to a client default: npm
+# 12.2.1 and pnpm 12.8.2 both auto-generate provenance for a public package
+# published through OIDC from a public repository when no flag is given. Each
+# publish therefore passes `--provenance` or `--provenance=false`. For pnpm,
+# `NPM_CONFIG_PROVENANCE=false` alone was measured NOT to suppress that
+# auto-provenance (pnpm 12.8.2 against a local fake registry/OIDC endpoint,
+# 2026-11-12); only the `--provenance=false` flag does. The env var is still set
+# on suppressed publishes for npm's benefit.
 #
 # The two provenance-omitting modes additionally emit a one-shot trust-downgrade
 # advisory (::warning + job summary) — see emit_trust_downgrade_advisory below.
 #
 # Required env:
 #   DIST_TAG          npm dist-tag to publish under (next | latest).
-#   NODE_AUTH_TOKEN   npm auth token (set by the calling workflow step's env).
+#   ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN
+#                     provided by GitHub Actions when the job has
+#                     `permissions: id-token: write`.
 # Optional env:
 #   ALSO_LATEST       "1" → after publishing, also advance the `latest` dist-tag
 #                     (prerelease dual-tag policy, see #481). Delegated to
 #                     scripts/advance-latest-dist-tag.sh, which has its own retry.
+#   ZFB_LOCAL_BUILT_PACKAGES
+#                     mac-local only: whitespace/comma-separated platform package
+#                     dirs that were built outside this job. Defaults to
+#                     `packages/zfb-darwin-x64` (the historical single-carrier
+#                     escape hatch). Every entry must be a known platform dir;
+#                     setting it in any other mode is refused.
+#   ZFB_PROVENANCE_EXPECTATIONS_FILE
+#                     when set, receives one TSV line per package:
+#                     `<name>\t<version>\t<attested|none>\t<outcome>`; read by
+#                     scripts/verify-npm-provenance-expectations.mjs after publish.
 #   PUBLISH_RECHECK_ATTEMPTS / PUBLISH_RECHECK_DELAY
 #                     post-failure registry-recheck tuning (defaults 3 / 2s);
 #                     the test suite sets DELAY=0 to stay fast.
@@ -105,6 +135,10 @@ PLATFORM_DIRS=(
 # prefix (verified locally: `pnpm -r --filter "@takazudo/zfb-md-wasm" exec pwd`
 # resolves to crates/zfb-md-wasm/npm), so it belongs in the same
 # idempotent/tolerant/dist-tag publish machinery as the packages/* entries.
+# Platform carriers built outside this job (mac-local only); filled by
+# prepare_local_built_packages from ZFB_LOCAL_BUILT_PACKAGES.
+LOCAL_BUILT_DIRS=()
+
 NONPLATFORM_DIRS=(
   packages/zfb-slugify
   packages/zfb
@@ -185,6 +219,82 @@ should_skip_publish() {
   return 1
 }
 
+# ── Explicit per-package provenance ─────────────────────────────────────────
+
+# Parse ZFB_LOCAL_BUILT_PACKAGES (whitespace/comma separated) into
+# LOCAL_BUILT_DIRS. Only meaningful for mac-local; every entry must be a known
+# platform carrier so a typo cannot silently leave a local binary attested.
+prepare_local_built_packages() {
+  local mode="$1" raw entry known dir
+  raw="${ZFB_LOCAL_BUILT_PACKAGES-}"
+  LOCAL_BUILT_DIRS=()
+  if [[ "$mode" != "mac-local" ]]; then
+    if [[ -n "${raw//[[:space:],]/}" ]]; then
+      echo "::error::ZFB_LOCAL_BUILT_PACKAGES is set ('${raw}') but mode is '${mode}'; only mac-local publishes locally-built carriers. Refusing to publish."
+      return 1
+    fi
+    return 0
+  fi
+  if [[ -z "${raw//[[:space:],]/}" ]]; then
+    raw="packages/zfb-darwin-x64"
+  fi
+  for entry in ${raw//,/ }; do
+    entry="${entry%/}"
+    known=0
+    for dir in "${PLATFORM_DIRS[@]}"; do
+      [[ "$dir" == "$entry" ]] && known=1
+    done
+    if [[ "$known" -ne 1 ]]; then
+      echo "::error::ZFB_LOCAL_BUILT_PACKAGES entry '${entry}' is not a platform package dir (${PLATFORM_DIRS[*]}). Refusing to publish."
+      return 1
+    fi
+    LOCAL_BUILT_DIRS+=("$entry")
+  done
+}
+
+is_local_built_dir() {
+  local dir
+  for dir in "${LOCAL_BUILT_DIRS[@]}"; do
+    [[ "$dir" == "$1" ]] && return 0
+  done
+  return 1
+}
+
+# Echo `attested` or `none` for a package dir under <mode>. The single source of
+# truth for both the publish flag and the post-publish expectation map.
+expected_provenance() {
+  local dir="$1" mode="$2"
+  case "$mode" in
+    recovery-no-provenance) echo none ;;
+    mac-local)
+      if is_local_built_dir "$dir"; then echo none; else echo attested; fi
+      ;;
+    *) echo attested ;;
+  esac
+}
+
+# The explicit CLI flag for an expectation (same spelling for npm and pnpm).
+provenance_flag() {
+  if [[ "$1" == "attested" ]]; then
+    echo "--provenance"
+  else
+    echo "--provenance=false"
+  fi
+}
+
+record_expectation() {
+  local name="$1" version="$2" expected="$3" outcome="$4"
+  if [[ -n "${ZFB_PROVENANCE_EXPECTATIONS_FILE:-}" ]]; then
+    printf '%s\t%s\t%s\t%s\n' "$name" "$version" "$expected" "$outcome" >>"$ZFB_PROVENANCE_EXPECTATIONS_FILE"
+  fi
+}
+
+# Fail-closed auth guard shared with the dist-tag helpers: GitHub OIDC must be
+# available and no stored npm credential may be visible.
+assert_npm_oidc_only() {
+  "${ZFB_NPM_OIDC_PREFLIGHT_NODE:-node}" "${PUBLISH_SCRIPT_DIR}/npm-oidc-preflight.mjs"
+}
+
 # Decide what a publish exit status means.
 #   status 0                    → success.
 #   conflict error text         → already published (double-PUT race) → tolerate.
@@ -229,59 +339,79 @@ _run_and_classify() {
   return "$rc"
 }
 
-# Platform publish runner — kept byte-identical to the original invocation:
-# `npm publish` (not pnpm) run inside the package dir, so the 0755 exec bit on
-# the binary survives (issue #447 / #441). $2 ("" | "--provenance") is
-# intentionally word-split.
-# shellcheck disable=SC2086
+# Platform publish runner: `npm publish` (not pnpm) run inside the package dir,
+# so the 0755 exec bit on the binary survives (issue #447 / #441). $2 is the
+# explicit provenance flag; a suppressed publish also sets
+# NPM_CONFIG_PROVENANCE=false so no npm config layer can re-enable it.
 _npm_publish_dir() {
-  ( cd "$1" && npm publish --tag "$DIST_TAG" --access public $2 )
+  local dir="$1" flag="$2"
+  if [[ "$flag" == "--provenance=false" ]]; then
+    ( cd "$dir" && NPM_CONFIG_PROVENANCE=false npm publish --tag "$DIST_TAG" --access public "$flag" )
+  else
+    ( cd "$dir" && npm publish --tag "$DIST_TAG" --access public "$flag" )
+  fi
 }
 
-publish_platform_packages() {
-  local mode="$1" dir name version prov
-  # Preflight every carrier before the first irreversible publication.
-  # Recovery of older tags has no CSS export and needs no new artifact.
+# Non-platform publish runner (pnpm rewrites workspace:* deps). The flag is
+# what actually suppresses pnpm's OIDC auto-provenance; see the header.
+_pnpm_publish() {
+  local flag="$1"; shift
+  if [[ "$flag" == "--provenance=false" ]]; then
+    NPM_CONFIG_PROVENANCE=false pnpm "$@" "$flag"
+  else
+    pnpm "$@" "$flag"
+  fi
+}
+
+# Preflight every carrier before the first irreversible publication.
+# Recovery of older tags has no CSS export and needs no new artifact.
+preflight_css_artifacts() {
+  local dir
   if node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then
     for dir in "${PLATFORM_DIRS[@]}"; do
       [[ -f "$dir/zfb-css.node" ]] || { echo "Missing native CSS artifact: $dir/zfb-css.node" >&2; return 1; }
     done
   fi
+}
+
+publish_platform_packages() {
+  local mode="$1" dir name version expected
   for dir in "${PLATFORM_DIRS[@]}"; do
     name="$(manifest_field "$dir" name)"
     version="$(manifest_field "$dir" version)"
+    expected="$(expected_provenance "$dir" "$mode")"
     if should_skip_publish "$name" "$version"; then
+      record_expectation "$name" "$version" "$expected" already-present
       continue
     fi
-    prov="--provenance"
-    if [[ "$mode" == "recovery-no-provenance" ]]; then
-      prov=""
-      echo "→ ${name}: main-based tag recovery — publishing WITHOUT --provenance."
-    elif [[ "$mode" == "mac-local" && "$dir" == "packages/zfb-darwin-x64" ]]; then
-      # Locally-built macOS-x64 binary: no GHA OIDC context → omit --provenance.
-      prov=""
-      echo "→ ${name}: locally-built macOS-x64 binary (no OIDC) — publishing WITHOUT --provenance."
+    if [[ "$expected" == "none" ]]; then
+      if [[ "$mode" == "recovery-no-provenance" ]]; then
+        echo "→ ${name}: main-based tag recovery — publishing with provenance suppressed (--provenance=false)."
+      else
+        echo "→ ${name}: locally-built carrier (not built by this job) — publishing with provenance suppressed (--provenance=false)."
+      fi
     fi
-    _run_and_classify "$name" "$version" _npm_publish_dir "$dir" "$prov"
+    _run_and_classify "$name" "$version" _npm_publish_dir "$dir" "$(provenance_flag "$expected")"
+    record_expectation "$name" "$version" "$expected" publish-attempted
   done
 }
 
 publish_nonplatform_packages() {
-  local mode="$1" dir name version extra_flags provenance_flags
+  local mode="$1" dir name version extra_flags expected
   for dir in "${NONPLATFORM_DIRS[@]}"; do
     name="$(manifest_field "$dir" name)"
     version="$(manifest_field "$dir" version)"
+    expected="$(expected_provenance "$dir" "$mode")"
     if should_skip_publish "$name" "$version"; then
+      record_expectation "$name" "$version" "$expected" already-present
       if [[ "$dir" == "crates/zfb-md-wasm/npm" ]]; then
         verify_published_md_wasm "$version" "$mode"
       fi
       continue
     fi
     extra_flags=()
-    provenance_flags=(--provenance)
-    if [[ "$mode" == "recovery-no-provenance" ]]; then
-      provenance_flags=()
-      echo "→ ${name}: main-based tag recovery — publishing WITHOUT --provenance."
+    if [[ "$expected" == "none" ]]; then
+      echo "→ ${name}: main-based tag recovery — publishing with provenance suppressed (--provenance=false)."
     fi
     if [[ "$dir" == "crates/zfb-md-wasm/npm" ]]; then
       # @takazudo/zfb-md-wasm's `prepublishOnly` hook runs `pnpm build && pnpm
@@ -300,9 +430,11 @@ publish_nonplatform_packages() {
     # explicit and version-robust). --fail-if-no-match makes a name that matches
     # no workspace package a loud failure, never a silent no-op.
     _run_and_classify "$name" "$version" \
-      pnpm -r --filter "$name" --fail-if-no-match publish \
+      _pnpm_publish "$(provenance_flag "$expected")" \
+      -r --filter "$name" --fail-if-no-match publish \
       --tag "$DIST_TAG" --no-git-checks --access public \
-      "${provenance_flags[@]}" "${extra_flags[@]}"
+      "${extra_flags[@]}"
+    record_expectation "$name" "$version" "$expected" publish-attempted
     if [[ "$dir" == "crates/zfb-md-wasm/npm" ]]; then
       verify_published_md_wasm "$version" "$mode"
     fi
@@ -348,10 +480,15 @@ verify_published_md_wasm() {
 # CAN do is say so loudly, once, so the release operator schedules the only
 # remedy that exists — a subsequent normally-attested release.
 emit_trust_downgrade_advisory() {
-  local mode="$1" scope
+  local mode="$1" scope dir
   case "$mode" in
     recovery-no-provenance) scope="EVERY package in this release" ;;
-    mac-local) scope="@takazudo/zfb-darwin-x64" ;;
+    mac-local)
+      scope=""
+      for dir in "${LOCAL_BUILT_DIRS[@]}"; do
+        scope="${scope:+${scope}, }$(manifest_field "$dir" name)"
+      done
+      ;;
     *) return 0 ;;
   esac
 
@@ -425,6 +562,19 @@ main() {
       fi
       ;;
   esac
+
+  if ! prepare_local_built_packages "$mode"; then
+    return 2
+  fi
+  preflight_css_artifacts
+  # OIDC-only auth (fail closed) before the first registry call of any kind.
+  if ! assert_npm_oidc_only; then
+    echo "::error::npm OIDC preflight refused; nothing was published."
+    return 1
+  fi
+  if [[ -n "${ZFB_PROVENANCE_EXPECTATIONS_FILE:-}" ]]; then
+    : >"$ZFB_PROVENANCE_EXPECTATIONS_FILE"
+  fi
 
   echo "== Publishing all workspace packages (mode=${mode}, dist-tag=${DIST_TAG}) =="
   emit_trust_downgrade_advisory "$mode"

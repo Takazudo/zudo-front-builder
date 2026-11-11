@@ -11,7 +11,8 @@
 // Plus a drift guard: PUBLISHED_PACKAGES must match both the workspace's set of
 // publishable packages and scripts/advance-latest-dist-tag.sh's list.
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vite-plus/test";
@@ -22,6 +23,7 @@ import {
   decideNextTagAction,
   isTerminalNpmError,
   parseSemver,
+  preflightRefusalLines,
   retireNextDistTag,
 } from "../retire-next-dist-tag.mjs";
 
@@ -112,11 +114,20 @@ describe("decideNextTagAction", () => {
   });
 });
 
-// Fake `npm` runner: answers `view ... dist-tags --json` from a table and
-// records every `dist-tag rm` it is asked to perform.
-function makeNpm({ tags, failRmTimes = 0, failView = false, requireOtp = false }) {
+// Fake `npm` runner: answers `view ... dist-tags --json` from a mutable table
+// and records every `dist-tag rm` it is asked to perform. A successful rm
+// deletes `next` from the table, so the script's post-write re-read sees it.
+function makeNpm({
+  tags,
+  failRmTimes = 0,
+  failView = false,
+  rmError = "E409 conflict",
+  ignoreRm = false,
+  beforeView,
+}) {
   const removed = [];
   const calls = [];
+  let views = 0;
   let rmFailuresLeft = failRmTimes;
   return {
     removed,
@@ -124,20 +135,18 @@ function makeNpm({ tags, failRmTimes = 0, failView = false, requireOtp = false }
     npm: async (args) => {
       if (args[0] === "view") {
         if (failView) throw new Error("ENOTFOUND registry.npmjs.org");
+        views += 1;
+        beforeView?.(tags, views);
         return JSON.stringify(tags[args[1]] ?? {});
       }
       if (args[0] === "dist-tag" && args[1] === "rm") {
         calls.push(args);
-        if (requireOtp && !args.includes("--otp")) {
-          throw new Error(
-            "npm error code EOTP\nnpm error This operation requires a one-time password.",
-          );
-        }
         if (rmFailuresLeft > 0) {
           rmFailuresLeft -= 1;
-          throw new Error("E409 conflict");
+          throw new Error(rmError);
         }
         removed.push(args[2]);
+        if (!ignoreRm && tags[args[2]]) delete tags[args[2]].next;
         return "";
       }
       throw new Error(`unexpected npm call: ${args.join(" ")}`);
@@ -250,60 +259,130 @@ describe("isTerminalNpmError", () => {
   });
 });
 
-describe("OTP handling", () => {
-  const TAGS = {
+describe("auth failures under OIDC-only auth", () => {
+  const TAGS = () => ({
     "@takazudo/zfb": { next: "1.1.0-next.1", latest: "2.7.1" },
     "@takazudo/zfb-runtime": { next: "1.1.0-next.1", latest: "2.7.1" },
-  };
+  });
 
-  it("aborts the whole sweep on EOTP instead of retrying it ten times", async () => {
-    // The behaviour this test pins down was observed live: with 2FA on the
-    // account, the backoff loop spent 75s per package to produce the same EOTP
-    // ten times over.
-    const { npm, calls } = makeNpm({ tags: TAGS, requireOtp: true });
+  it("stops the sweep on ENEEDAUTH and surfaces it as an ::error:: plus a job summary", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "retire-next-"));
+    const summaryPath = join(dir, "summary.md");
+    try {
+      const { npm, calls } = makeNpm({
+        tags: TAGS(),
+        failRmTimes: Number.MAX_SAFE_INTEGER,
+        rmError: "npm error code ENEEDAUTH\nnpm error need auth",
+      });
+      const lines = [];
+      const { results, failed, authFailed } = await retireNextDistTag({
+        packages: ["@takazudo/zfb", "@takazudo/zfb-runtime"],
+        npm,
+        wait: async () => {
+          throw new Error("must not back off on a terminal auth error");
+        },
+        log: (line) => lines.push(line),
+        summaryPath,
+      });
+
+      expect(calls).toHaveLength(1); // one attempt, on the first package only
+      expect(failed).toBe(1);
+      expect(authFailed).toBe(true);
+      expect(results).toHaveLength(1); // sweep stopped; second package untouched
+      expect(results[0]).toMatchObject({ action: "error", terminal: true });
+      expect(lines.some((l) => l.startsWith("::error title=npm dist-tag auth failure::"))).toBe(
+        true,
+      );
+      expect(lines.some((l) => l.includes("Allow npm dist-tag"))).toBe(true);
+      expect(lines.some((l) => l.includes("--otp"))).toBe(false);
+      expect(readFileSync(summaryPath, "utf8")).toMatch(/npm dist-tag auth failure/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps an ordinary (non-auth) failure at ::warning:: severity with no summary", async () => {
+    const { npm } = makeNpm({ tags: TAGS(), failRmTimes: Number.MAX_SAFE_INTEGER });
     const lines = [];
-    const { results, failed } = await retireNextDistTag({
-      packages: ["@takazudo/zfb", "@takazudo/zfb-runtime"],
+    const { authFailed } = await retireNextDistTag({
+      packages: ["@takazudo/zfb"],
       npm,
-      wait: async () => {
-        throw new Error("must not back off on a terminal auth error");
-      },
-      log: (line) => lines.push(line),
-    });
-
-    expect(calls).toHaveLength(1); // one attempt, on the first package only
-    expect(failed).toBe(1);
-    expect(results).toHaveLength(1); // sweep stopped; second package untouched
-    expect(results[0]).toMatchObject({ action: "error", terminal: true });
-    expect(lines.some((l) => l.includes("not retried"))).toBe(true);
-    expect(lines.some((l) => l.includes("--otp=<code>"))).toBe(true);
-  });
-
-  it("passes --otp through to npm when given", async () => {
-    const { npm, calls, removed } = makeNpm({ tags: TAGS, requireOtp: true });
-    const { failed } = await retireNextDistTag({
-      packages: ["@takazudo/zfb", "@takazudo/zfb-runtime"],
-      npm,
-      otp: "123456",
       wait: noWait,
-      log: silent,
+      log: (line) => lines.push(line),
+      summaryPath: undefined,
     });
-
-    expect(failed).toBe(0);
-    expect(removed).toEqual(["@takazudo/zfb", "@takazudo/zfb-runtime"]);
-    expect(calls[0]).toEqual(["dist-tag", "rm", "@takazudo/zfb", "next", "--otp", "123456"]);
+    expect(authFailed).toBe(false);
+    expect(lines.some((l) => l.startsWith("::error"))).toBe(false);
   });
 
-  it("omits --otp entirely when none is given", async () => {
-    const { npm, calls } = makeNpm({ tags: TAGS });
-    await retireNextDistTag({
+  it("formats a preflight refusal as ::error:: annotations", () => {
+    const lines = preflightRefusalLines(["environment variable NODE_AUTH_TOKEN is defined"]);
+    expect(lines.every((l) => l.startsWith("::error title=npm dist-tag auth failure::"))).toBe(
+      true,
+    );
+    expect(lines.join("\n")).toMatch(/NODE_AUTH_TOKEN/);
+  });
+
+  it("never passes --otp — there is no interactive credential in the release path", async () => {
+    const { npm, calls } = makeNpm({ tags: TAGS() });
+    await retireNextDistTag({ packages: ["@takazudo/zfb"], npm, wait: noWait, log: silent });
+    expect(calls[0]).toEqual(["dist-tag", "rm", "@takazudo/zfb", "next"]);
+  });
+});
+
+describe("read-compare-write guards", () => {
+  it("leaves 'next' alone when a concurrent publish moved it ahead between read and rm", async () => {
+    const { npm, calls } = makeNpm({
+      tags: { "@takazudo/zfb": { next: "1.1.0-next.1", latest: "2.7.1" } },
+      // First view = the sweep's read; second = the re-read right before rm.
+      beforeView: (tags, n) => {
+        if (n === 2) tags["@takazudo/zfb"].next = "3.0.0-next.1";
+      },
+    });
+    const { results, failed } = await retireNextDistTag({
       packages: ["@takazudo/zfb"],
       npm,
       wait: noWait,
       log: silent,
     });
+    expect(calls).toHaveLength(0);
+    expect(failed).toBe(0);
+    expect(results[0]).toMatchObject({ action: "changed" });
+  });
 
-    expect(calls[0]).toEqual(["dist-tag", "rm", "@takazudo/zfb", "next"]);
+  it("does not report success when the post-rm re-read still shows 'next'", async () => {
+    const { npm } = makeNpm({
+      tags: { "@takazudo/zfb": { next: "1.1.0-next.1", latest: "2.7.1" } },
+      ignoreRm: true,
+    });
+    const lines = [];
+    const { results, failed } = await retireNextDistTag({
+      packages: ["@takazudo/zfb"],
+      npm,
+      wait: noWait,
+      log: (line) => lines.push(line),
+      maxAttempts: 2,
+    });
+    expect(failed).toBe(1);
+    expect(results[0]).toMatchObject({ action: "error", terminal: false });
+    expect(lines.some((l) => l.includes("re-read after rm still shows next=1.1.0-next.1"))).toBe(
+      true,
+    );
+  });
+
+  it("confirms a removal by re-reading", async () => {
+    const tags = { "@takazudo/zfb": { next: "1.1.0-next.1", latest: "2.7.1" } };
+    const { npm } = makeNpm({ tags });
+    const lines = [];
+    const { results } = await retireNextDistTag({
+      packages: ["@takazudo/zfb"],
+      npm,
+      wait: noWait,
+      log: (line) => lines.push(line),
+    });
+    expect(results[0].action).toBe("retired");
+    expect(tags["@takazudo/zfb"].next).toBeUndefined();
+    expect(lines.some((l) => l.includes("confirmed by re-read"))).toBe(true);
   });
 });
 
