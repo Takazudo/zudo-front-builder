@@ -364,6 +364,9 @@ SOURCE_SHA=$(git rev-parse HEAD); SOURCE_TREE=$(git rev-parse HEAD^{tree})
 node scripts/release/verify-source-ci.mjs --sha "$SOURCE_SHA" [--json]
 ```
 
+The source commit must also be an ancestor of `main`: `release.yml`'s release-context refuses a
+real tagged run whose source is not reachable from `origin/main` (dry runs skip that check).
+
 It checks the `main` ruleset's required contexts (the list in `scripts/apply-main-ruleset.sh`) on
 exactly that SHA. Only GitHub Actions check runs count, and each only when its check suite's
 workflow run is the context's own workflow file (for example `health` from
