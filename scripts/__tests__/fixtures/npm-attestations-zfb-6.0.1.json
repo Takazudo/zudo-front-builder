@@ -1,0 +1,25 @@
+{
+  "_comment": "Trimmed real capture of https://registry.npmjs.org/-/npm/v1/attestations/@takazudo%2fzfb@6.0.1 (2026-11-12): verificationMaterial and signatures removed; dsseEnvelope.payload is byte-identical to the registry response.",
+  "attestations": [
+    {
+      "predicateType": "https://github.com/npm/attestation/tree/main/specs/publish/v0.1",
+      "bundle": {
+        "mediaType": "application/vnd.dev.sigstore.bundle+json;version=0.2",
+        "dsseEnvelope": {
+          "payload": "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjAuMSIsInN1YmplY3QiOlt7Im5hbWUiOiJwa2c6bnBtLyU0MHRha2F6dWRvL3pmYkA2LjAuMSIsImRpZ2VzdCI6eyJzaGE1MTIiOiIwMjk1N2JlMzYwYzExZmNlM2JjOGZhNGIxYzhhNDQ3ZTljN2U5OTNhZjVhNGE1Zjk0YjE0MTRlZmFhN2RiMDg5ODAxZjRhZTEwYmQ2MmZjM2QxMzE4NzQwMGZjZWEyZWNkOTQ1NmNmZGIxNjI1MThjZTkyNWFkNGJhY2RmNjkyYSJ9fV0sInByZWRpY2F0ZVR5cGUiOiJodHRwczovL2dpdGh1Yi5jb20vbnBtL2F0dGVzdGF0aW9uL3RyZWUvbWFpbi9zcGVjcy9wdWJsaXNoL3YwLjEiLCJwcmVkaWNhdGUiOnsibmFtZSI6IkB0YWthenVkby96ZmIiLCJ2ZXJzaW9uIjoiNi4wLjEiLCJyZWdpc3RyeSI6Imh0dHBzOi8vcmVnaXN0cnkubnBtanMub3JnIn19",
+          "payloadType": "application/vnd.in-toto+json"
+        }
+      }
+    },
+    {
+      "predicateType": "https://slsa.dev/provenance/v1",
+      "bundle": {
+        "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+        "dsseEnvelope": {
+          "payload": "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJuYW1lIjoicGtnOm5wbS8lNDB0YWthenVkby96ZmJANi4wLjEiLCJkaWdlc3QiOnsic2hhNTEyIjoiMDI5NTdiZTM2MGMxMWZjZTNiYzhmYTRiMWM4YTQ0N2U5YzdlOTkzYWY1YTRhNWY5NGIxNDE0ZWZhYTdkYjA4OTgwMWY0YWUxMGJkNjJmYzNkMTMxODc0MDBmY2VhMmVjZDk0NTZjZmRiMTYyNTE4Y2U5MjVhZDRiYWNkZjY5MmEifX1dLCJwcmVkaWNhdGVUeXBlIjoiaHR0cHM6Ly9zbHNhLmRldi9wcm92ZW5hbmNlL3YxIiwicHJlZGljYXRlIjp7ImJ1aWxkRGVmaW5pdGlvbiI6eyJidWlsZFR5cGUiOiJodHRwczovL3Nsc2EtZnJhbWV3b3JrLmdpdGh1Yi5pby9naXRodWItYWN0aW9ucy1idWlsZHR5cGVzL3dvcmtmbG93L3YxIiwiZXh0ZXJuYWxQYXJhbWV0ZXJzIjp7IndvcmtmbG93Ijp7InJlZiI6InJlZnMvdGFncy92Ni4wLjEiLCJyZXBvc2l0b3J5IjoiaHR0cHM6Ly9naXRodWIuY29tL1Rha2F6dWRvL3p1ZG8tZnJvbnQtYnVpbGRlciIsInBhdGgiOiIuZ2l0aHViL3dvcmtmbG93cy9yZWxlYXNlLnltbCJ9fSwiaW50ZXJuYWxQYXJhbWV0ZXJzIjp7ImdpdGh1YiI6eyJldmVudF9uYW1lIjoicmVsZWFzZSIsInJlcG9zaXRvcnlfaWQiOiIxMjIxMDk5MTk3IiwicmVwb3NpdG9yeV9vd25lcl9pZCI6IjEyODIzMyJ9fSwicmVzb2x2ZWREZXBlbmRlbmNpZXMiOlt7InVyaSI6ImdpdCtodHRwczovL2dpdGh1Yi5jb20vVGFrYXp1ZG8venVkby1mcm9udC1idWlsZGVyQHJlZnMvdGFncy92Ni4wLjEiLCJkaWdlc3QiOnsiZ2l0Q29tbWl0IjoiZTZiZDBhN2M2ODY0YTIyMTFmZTRkODQ2ZWM4NTExYjJiN2YzMDBiZCJ9fV19LCJydW5EZXRhaWxzIjp7ImJ1aWxkZXIiOnsiaWQiOiJodHRwczovL2dpdGh1Yi5jb20vYWN0aW9ucy9ydW5uZXIvZ2l0aHViLWhvc3RlZCJ9LCJtZXRhZGF0YSI6eyJpbnZvY2F0aW9uSWQiOiJodHRwczovL2dpdGh1Yi5jb20vVGFrYXp1ZG8venVkby1mcm9udC1idWlsZGVyL2FjdGlvbnMvcnVucy80MjcxNjc5MDgzNy9hdHRlbXB0cy8xIn19fX0=",
+          "payloadType": "application/vnd.in-toto+json"
+        }
+      }
+    }
+  ]
+}
