@@ -38,10 +38,35 @@
 // immutable). A 404 (package never published) is the one non-error absence —
 // it cannot possibly be a downgrade.
 
-import { pathToFileURL } from "node:url";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { fetchPackument, hasAttestation, isPrerelease } from "./check-provenance-drift.mjs";
-import { PUBLISHED_PACKAGES } from "./retire-next-dist-tag.mjs";
+import { PUBLISHED_PACKAGES, compareSemver } from "./retire-next-dist-tag.mjs";
+
+/**
+ * Owner-authored, committed provenance policy (#4690). Absent by default; only
+ * the owner creates it. Read from the CONTROL checkout (this script's own
+ * repository root), never from the release source tree.
+ *
+ *   {
+ *     "schema": "zfb-provenance-policy/v1",
+ *     "decisions": [{
+ *       "package": "@takazudo/zfb-darwin-arm64",
+ *       "unattested_from_version": "6.1.0",
+ *       "reason": "...", "decided_by": "...", "issue": "https://github.com/..."
+ *     }]
+ *   }
+ *
+ * A decision acknowledges a downgrade only for its package, at a version >=
+ * unattested_from_version, in mac-local mode, and only when that package is one
+ * of the run's locally-built carriers. CI-built packages, recovery mode and
+ * unlisted packages are never covered.
+ */
+export const POLICY_SCHEMA = "zfb-provenance-policy/v1";
+export const DEFAULT_POLICY_PATH = fileURLToPath(
+  new URL("../release/provenance-policy.json", import.meta.url),
+);
 
 /**
  * The carriers release.yml publishes from owner-Mac bytes with
@@ -144,6 +169,56 @@ export async function checkMode(mode, { version, packages = MODES[mode], fetchOn
   );
 }
 
+/** Read and validate the policy file; null when absent. Throws when malformed. */
+export function loadPolicy(path = DEFAULT_POLICY_PATH) {
+  if (!existsSync(path)) return null;
+  const policy = JSON.parse(readFileSync(path, "utf8"));
+  if (policy?.schema !== POLICY_SCHEMA) throw new Error(`${path}: schema must be ${POLICY_SCHEMA}`);
+  if (!Array.isArray(policy.decisions)) throw new Error(`${path}: decisions must be an array`);
+  const seen = new Set();
+  for (const [index, d] of policy.decisions.entries()) {
+    for (const key of ["package", "unattested_from_version", "reason", "decided_by", "issue"]) {
+      if (typeof d?.[key] !== "string" || d[key].trim() === "") {
+        throw new Error(`${path}: decisions[${index}].${key} must be a non-empty string`);
+      }
+    }
+    if (!PUBLISHED_PACKAGES.includes(d.package)) {
+      throw new Error(
+        `${path}: decisions[${index}].package ${d.package} is not a published package`,
+      );
+    }
+    try {
+      compareSemver(d.unattested_from_version, d.unattested_from_version);
+    } catch {
+      throw new Error(`${path}: decisions[${index}].unattested_from_version is not a version`);
+    }
+    if (seen.has(d.package)) throw new Error(`${path}: duplicate decision for ${d.package}`);
+    seen.add(d.package);
+  }
+  return policy;
+}
+
+/**
+ * Pure: mark downgrades the owner's policy covers. Only mac-local, only the
+ * run's locally-built packages, only versions >= unattested_from_version.
+ */
+export function applyPolicy(results, { mode, version, policy, localBuilt = MAC_LOCAL_PACKAGES }) {
+  if (!policy || mode !== "mac-local") return results;
+  return results.map((r) => {
+    if (r.status !== "downgrade" || !localBuilt.includes(r.name)) return r;
+    const decision = policy.decisions.find((d) => d.package === r.name);
+    if (!decision) return r;
+    let cmp;
+    try {
+      cmp = compareSemver(version, decision.unattested_from_version);
+    } catch {
+      return r;
+    }
+    if (cmp < 0) return r;
+    return { ...r, status: "policy-acknowledged", decision };
+  });
+}
+
 /**
  * Render the verdicts and return the process exit code:
  *   0 — no downgrade; 1 — at least one downgrade, no errors; 2 — a registry
@@ -159,6 +234,11 @@ export function report(results, { log = console.log } = {}) {
     else if (r.status === "skipped") log(`  skipped  ${r.name} (${r.detail})`);
     else if (r.status === "downgrade") {
       log(`DOWNGRADE ${r.name}@${r.version} (earlier attested: ${r.earlierAttested})`);
+    } else if (r.status === "policy-acknowledged") {
+      const d = r.decision;
+      log(
+        `ACKNOWLEDGED ${r.name}@${r.version} (earlier attested: ${r.earlierAttested}) by release/provenance-policy.json: unattested_from_version=${d.unattested_from_version} decided_by=${d.decided_by} issue=${d.issue} reason=${JSON.stringify(d.reason)}`,
+      );
     } else if (r.status === "error") log(`  ERROR    ${r.name}: ${r.detail}`);
   }
 
@@ -174,7 +254,12 @@ export function report(results, { log = console.log } = {}) {
     );
     return 1;
   }
-  log(`== PASS: no provenance trust downgrade ==`);
+  const acknowledged = results.filter((r) => r.status === "policy-acknowledged");
+  log(
+    acknowledged.length
+      ? `== PASS: ${acknowledged.length} downgrade(s) acknowledged by the owner's committed policy; no other downgrade ==`
+      : `== PASS: no provenance trust downgrade ==`,
+  );
   return 0;
 }
 
@@ -186,24 +271,28 @@ export function report(results, { log = console.log } = {}) {
 export function parseArgs(argv) {
   let version;
   let mode;
+  let policy;
   const packages = [];
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--version") version = argv[(i += 1)];
     else if (argv[i] === "--mode") mode = argv[(i += 1)];
     else if (argv[i] === "--package") packages.push(argv[(i += 1)]);
+    else if (argv[i] === "--policy") policy = argv[(i += 1)];
     else return null;
   }
   if (!version || !mode) return null;
+  if (policy === undefined && argv.includes("--policy")) return null;
   if (packages.some((name) => !name || !PUBLISHED_PACKAGES.includes(name))) return null;
   if (packages.length > 0 && mode !== "mac-local") return null;
-  return packages.length > 0 ? { version, mode, packages } : { version, mode };
+  const parsed = packages.length > 0 ? { version, mode, packages } : { version, mode };
+  return policy ? { ...parsed, policy } : parsed;
 }
 
 async function main(argv) {
   const args = parseArgs(argv);
   if (!args) {
     console.error(
-      "usage: node scripts/check-provenance-preflight.mjs --version <v> --mode mac-local|recovery-no-provenance [--package <name> ...]",
+      "usage: node scripts/check-provenance-preflight.mjs --version <v> --mode mac-local|recovery-no-provenance [--package <name> ...] [--policy <file>]",
     );
     return 2;
   }
@@ -214,11 +303,18 @@ async function main(argv) {
     return 2;
   }
 
-  const results = await checkMode(args.mode, {
-    version: args.version,
-    ...(args.packages ? { packages: args.packages } : {}),
-  });
-  return report(results);
+  let policy;
+  try {
+    policy = loadPolicy(args.policy ?? DEFAULT_POLICY_PATH);
+  } catch (error) {
+    console.error(`provenance policy is invalid — failing closed: ${error.message}`);
+    return 2;
+  }
+  const localBuilt = args.packages ?? MODES[args.mode];
+  const results = await checkMode(args.mode, { version: args.version, packages: localBuilt });
+  return report(
+    applyPolicy(results, { mode: args.mode, version: args.version, policy, localBuilt }),
+  );
 }
 
 // Only run when executed directly, so the test suite can import the pure parts.
