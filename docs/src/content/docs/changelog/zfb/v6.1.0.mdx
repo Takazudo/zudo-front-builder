@@ -1,0 +1,18 @@
+---
+title: v6.1.0
+sidebar_position: 171
+---
+
+# v6.1.0
+
+Released: 2026-11-12
+
+## Bug Fixes
+
+- Keep the top-level `public/.assetsignore` at the build output root when `base` is a subpath, so Wrangler still reads your exclusions and the file itself is not uploaded (541ee95e7).
+- Keep stylesheet query parameters and fragments when CSS live reload re-requests a stylesheet in the dev server; only the `v` cache-busting parameter changes (2922d6773, 7b3eb3c12).
+
+## Other Changes
+
+- npm packages are now published through OIDC trusted publishing from `release.yml`, with no stored npm token. The nine CI-built packages keep their npm provenance attestations (7c83a020f, c73e979b4).
+- `@takazudo/zfb-darwin-arm64` and `@takazudo/zfb-darwin-x64` are now built and qualified on the maintainer's Apple Silicon Mac (`x86_64-apple-darwin` runs under Rosetta 2) and published **without** an npm provenance attestation, because an Actions attestation would wrongly claim an Actions build. Earlier versions of both packages were attested, so pnpm's opt-in `trustPolicy: no-downgrade` rejects them with `ERR_PNPM_TRUST_DOWNGRADE`. Because pnpm resolves every `optionalDependencies` entry, this affects Linux and Windows installs of `@takazudo/zfb` too. If you use that policy, exempt those two packages with `trustPolicyExclude` in `pnpm-workspace.yaml`. The binaries are bound to the release source by the Darwin qualification receipts attached to the GitHub Release (1e8748fa5, fe0fbbcad).

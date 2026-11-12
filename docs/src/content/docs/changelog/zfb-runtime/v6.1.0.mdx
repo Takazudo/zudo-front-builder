@@ -1,0 +1,12 @@
+---
+title: v6.1.0
+sidebar_position: 57
+---
+
+# v6.1.0
+
+Released: 2026-11-12
+
+## Bug Fixes
+
+- With `prefetchAll` enabled, the load and viewport prefetch scans now respect each link's own strategy, so explicit hover, tap, viewport and load links are no longer fetched or observed by the wrong scan, both initially and after `zfb:after-swap` (9bfd8a201, 7b3eb3c12).

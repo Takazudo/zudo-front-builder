@@ -1302,7 +1302,7 @@ describe("island shipped-size budget", () => {
       readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
-    expect(linuxContract.toolchain.packageVersion).toBe("6.0.1");
+    expect(linuxContract.toolchain.packageVersion).toBe("6.1.0");
     // A schemaVersion-4 contract tracks the dependency fingerprint, the same
     // drift guard as the Darwin contract above; its whole-file pnpmLockSha256
     // is baseline provenance, pinned by the live bundler-backend test below.

@@ -1,0 +1,12 @@
+---
+title: v6.1.0
+sidebar_position: 57
+---
+
+# v6.1.0
+
+Released: 2026-11-12
+
+## Bug Fixes
+
+- Append the generated-file exclusions as a final block of root-anchored literal rules after every user rule in `.assetsignore`, so a later user negation such as `!_worker.js` can no longer re-include the generated Worker, its inner bundle or copied Wasm, and Wasm basenames are never read as patterns (02a08ea5f).
