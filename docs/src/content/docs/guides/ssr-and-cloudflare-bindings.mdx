@@ -410,14 +410,16 @@ dist/
 ```
 
 ```text
-_worker.js
-_zfb_inner.mjs
-index_bg-a1b2c3d4.wasm
+/_worker.js
+/_zfb_inner.mjs
+/index_bg-a1b2c3d4.wasm
 ```
 
 The last block is the relevant part of `dist/.assetsignore`: the Wasm file is
-a Worker module, not a public static asset. The adapter merges these required
-entries with an existing ignore file rather than overwriting it.
+a Worker module, not a public static asset. Each entry starts with `/`, so it
+matches only the file at the root of `dist/`. The adapter keeps the lines of an
+existing ignore file and appends these entries after them, so they take
+precedence over any earlier rule.
 
 ### Wrangler rules and size limits
 

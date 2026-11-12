@@ -273,12 +273,12 @@ dist/
 ```
 
 ```text
-_worker.js
-_zfb_inner.mjs
-index_bg-a1b2c3d4.wasm
+/_worker.js
+/_zfb_inner.mjs
+/index_bg-a1b2c3d4.wasm
 ```
 
-最後のブロックは `dist/.assetsignore` の該当部分です。Wasm ファイルは Worker モジュールであり、公開静的アセットではありません。アダプターは既存の ignore ファイルを上書きせず、これらの必須エントリをマージします。
+最後のブロックは `dist/.assetsignore` の該当部分です。Wasm ファイルは Worker モジュールであり、公開静的アセットではありません。各エントリは `/` で始まるため、`dist/` 直下のファイルだけに一致します。アダプターは既存の ignore ファイルの行をそのまま残し、その後ろにこれらのエントリを追加するので、先にあるルールより優先されます。
 
 ### Wrangler のルールとサイズ制限
 
