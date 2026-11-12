@@ -147,10 +147,13 @@ The adapter emits `dist/.assetsignore` alongside `_worker.js` and
 also adds every copied basename:
 
 ```
-_worker.js
-_zfb_inner.mjs
-index_bg-a1b2c3d4.wasm
+/_worker.js
+/_zfb_inner.mjs
+/index_bg-a1b2c3d4.wasm
 ```
+
+Each entry starts with `/`, so it matches only that file at the root of
+`dist/`, not a same-named file in a subdirectory.
 
 This excludes the wrapper, inner SSR bundle, and compiled Wasm modules from
 the asset upload, so they are reachable only through the Worker's own module
@@ -159,9 +162,11 @@ graph — never served as public static files. Without it, a request for
 plain-text download.
 
 **Merge behavior:** zfb copies your project's `public/` directory into
-`dist/` _after_ running this adapter. If `public/.assetsignore` adds entries,
-zfb merges them with the generated entries; it does not drop the wrapper,
-inner-bundle, or Wasm exclusions.
+`dist/` _before_ running this adapter. A top-level `public/.assetsignore` is
+always copied to the root of `dist/`, even under a sub-path `base`. The
+adapter keeps every existing line in its original order and appends its own
+entries as the last block, so a `!` rule in your file cannot re-include the
+wrapper, inner bundle, or Wasm files.
 
 ## CLI asset contract
 
