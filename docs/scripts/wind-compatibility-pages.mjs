@@ -220,8 +220,10 @@ function localizedNote(value, locale, field) {
 // splits as interpolation (crates/zudo-wind/src/extract/*); the utility catalog is unchanged.
 // #4658 extraction only: standalone script templates retain class context across interpolation,
 // including attribute-position expressions and escaped backslashes; the utility catalog is unchanged.
+// Rust 1.100.0 clippy (needless_bool): the JSX attribute-name check in
+// crates/zudo-wind/src/extract/script.rs returns its condition directly; behavior and catalog unchanged.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "a8770e4454ddaa1d2711b9a3b4d3ba798c0ac6bde2d6cbb07284b4f52a56ed33";
+  "28856b8f0be4e57e6778e4acef89b167b05ff321eb6d1bf91c5a924fd6866e3e";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];
