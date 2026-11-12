@@ -2124,16 +2124,19 @@ fn default_compiler_worker() -> Result<zfb_config_loader::WorkerLauncher> {
 }
 
 /// Unit tests run inside the libtest harness, which has no worker mode, so
-/// they start the `zfb` binary Cargo builds beside the test executable
-/// (`<target>/<profile>/deps/zfb-<hash>` → `<target>/<profile>/zfb`).
+/// they start the `zfb` binary Cargo uplifts into `<target>/<profile>/`. The
+/// test executable sits at `<profile>/deps/zfb-<hash>` up to Cargo 1.99 and at
+/// `<profile>/build/zfb/<hash>/out/zfb-<hash>` under Cargo 1.100's build-dir
+/// layout, so search the nearest few ancestors.
 #[cfg(test)]
 fn default_compiler_worker() -> Result<zfb_config_loader::WorkerLauncher> {
     let exe = std::env::current_exe().context("locate the unit-test executable")?;
     let zfb = exe
-        .parent()
-        .and_then(Path::parent)
-        .map(|profile| profile.join(format!("zfb{}", std::env::consts::EXE_SUFFIX)))
-        .filter(|zfb| zfb.is_file())
+        .ancestors()
+        .skip(1)
+        .take(5)
+        .map(|dir| dir.join(format!("zfb{}", std::env::consts::EXE_SUFFIX)))
+        .find(|zfb| zfb.is_file())
         .with_context(|| {
             format!(
                 "zfb unit tests need the zfb binary beside {} to host the compiler worker; \
