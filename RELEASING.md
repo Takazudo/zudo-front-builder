@@ -272,7 +272,8 @@ Procedure:
    metric normalizes the version token). If it failed, a size moved: stop for a reviewed decision.
 4. On the probe branch write the rehearsal commit:
    - set `crates/zfb-md-wasm/shipped-sizes.json` `measuredOnVersion` and the measured columns
-     (keep ceilings); run `node scripts/assert-md-wasm-size-docs.mjs --fix`, `pnpm format:mdx`,
+     (keep ceilings), and check its `measuredWithRustc` equals `crates/zfb-md-wasm/rust-toolchain-pin`
+     and the `md-wasm Rust toolchain:` line in that job's log; run `node scripts/assert-md-wasm-size-docs.mjs --fix`, `pnpm format:mdx`,
      then `node scripts/assert-md-wasm-size-docs.mjs`;
    - run
      `node scripts/rebaseline-island-size-linux.mjs --artifact <dir> --run-id <id> --job-id <id> --head-sha <probe-head> --reason release-bump --label "Release probe PR #<pr> run for v<version>"`.

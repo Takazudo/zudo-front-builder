@@ -13,6 +13,12 @@ set -euo pipefail
 # same rustc. A floating `stable` let v6.1.0 measure on rustc 1.99.1 and build
 # on 1.100.0 hours later, failing the release.
 #
+# Only the components passed as arguments are installed: a later step that
+# needs rustfmt or clippy must ask for it here.
+#
+# shipped-sizes.json records measuredWithRustc; a vitest keeps it equal to the
+# pin, so bumping the pin without a fresh measurement fails in T1.
+#
 # Usage: scripts/select-md-wasm-rust-toolchain.sh [extra-component ...]
 # Writes RUSTUP_TOOLCHAIN to $GITHUB_ENV when that is set.
 
@@ -28,7 +34,7 @@ fi
 components=()
 for c in "$@"; do components+=(--component "$c"); done
 
-rustup toolchain install "$pin" --profile minimal --target wasm32-unknown-unknown ${components[@]+"${components[@]}"}
+rustup toolchain install "$pin" --profile minimal --no-self-update --target wasm32-unknown-unknown ${components[@]+"${components[@]}"}
 
 actual="$(RUSTUP_TOOLCHAIN="$pin" rustc --version)"
 case "$actual" in

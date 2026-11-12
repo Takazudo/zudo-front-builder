@@ -3,10 +3,10 @@
 // shipped .wasm files (release.yml build-wasm-md) compile with the same rustc.
 // v6.1.0 measured on 1.99.1 and built on 1.100.0 under floating `stable`.
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { parse } from "yaml";
 import { scriptsDir } from "./helpers/darwin-fixture.mjs";
 
@@ -21,6 +21,12 @@ const runs = (step, text) => typeof step.run === "string" && step.run.includes(t
 describe("md-wasm Rust toolchain pin", () => {
   it("is an exact rustc version", () => {
     expect(pin).toMatch(/^1\.\d+\.\d+$/);
+  });
+
+  it("matches the rustc shipped-sizes.json was measured with", () => {
+    // A pin bump needs a fresh CI measurement on the new compiler (RELEASING.md A4).
+    const manifest = JSON.parse(read("crates/zfb-md-wasm/shipped-sizes.json"));
+    expect(manifest.measuredWithRustc).toBe(pin);
   });
 
   for (const [workflow, jobName, buildStep] of [
@@ -56,8 +62,14 @@ describe("md-wasm Rust toolchain pin", () => {
 });
 
 describe(SELECTOR, () => {
+  const tempDirs = [];
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
   function fakeToolchain(rustcVersion) {
     const dir = mkdtempSync(join(tmpdir(), "md-wasm-pin-"));
+    tempDirs.push(dir);
     const log = join(dir, "rustup.log");
     writeFileSync(join(dir, "rustup"), `#!/bin/sh\necho "$@" >> "${log}"\n`);
     writeFileSync(
@@ -83,7 +95,7 @@ describe(SELECTOR, () => {
     const fake = fakeToolchain(pin);
     run(fake, ["clippy"]);
     expect(readFileSync(fake.log, "utf8").trim()).toBe(
-      `toolchain install ${pin} --profile minimal --target wasm32-unknown-unknown --component clippy`,
+      `toolchain install ${pin} --profile minimal --no-self-update --target wasm32-unknown-unknown --component clippy`,
     );
     expect(readFileSync(fake.githubEnv, "utf8")).toBe(`RUSTUP_TOOLCHAIN=${pin}\n`);
   });
