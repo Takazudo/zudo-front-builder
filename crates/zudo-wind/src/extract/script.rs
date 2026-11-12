@@ -404,10 +404,7 @@ fn attribute_assignment(prefix: &str) -> bool {
     }
     let before_name = before.strip_suffix(name).unwrap_or("");
     // JSX needs whitespace between a tag/previous attribute and this name.
-    if !before_name.ends_with(char::is_whitespace) || before_name.trim_end().ends_with('.') {
-        return false;
-    }
-    true
+    before_name.ends_with(char::is_whitespace) && !before_name.trim_end().ends_with('.')
 }
 
 /// A literal that is a module specifier (`import`/`export … from`,
