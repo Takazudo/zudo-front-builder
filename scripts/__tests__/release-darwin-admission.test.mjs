@@ -342,6 +342,10 @@ describe("release-status (read-only, injected gh/registry)", () => {
     expect(status.npm.summary.absent, why).toHaveLength(11);
     expect(status.recommendedAction, why).toBe("publish-draft");
     expect(render(status)).toContain("recommended next action: publish-draft");
+    // #4701: both A12 routes are named, dry run first, pinned to the frozen source.
+    expect(render(status)).toContain(
+      `gh workflow run release-coordinator.yml --ref main -f version=${status.version} -f sha=${status.source.commit} -f dry_run=true`,
+    );
     const verbs = calls.map((args) => `${args[0]} ${args[1]}`);
     expect(verbs.filter((v) => /upload|delete|edit|create|workflow run/.test(v))).toEqual([]);
   });

@@ -42,6 +42,18 @@ the first mutation. Where this skill and `RELEASING.md` disagree, `RELEASING.md`
   (`id-token` only: `npm publish <tgz>` with explicit provenance; no install, no pnpm). Find
   `release.yml` runs by their exact name `Release v<version>[ (finalize only)][ (dry run)]`; the
   delivery verifier requires the `Pack npm tarballs` and `Upload MD/WASM digest asset` jobs.
+- **A12 has two routes with the same gate (`publish-draft` + clear/owner-acknowledged A11).** On
+  the owner's Mac with tag rights, use the local PATCH. In a Cloud session that cannot push tags
+  (or whose `gh` is unauthenticated), use the Actions route: dispatch `release-coordinator.yml`
+  from `main` with the frozen `version` + `sha`, first with `dry_run=true`. Use the GitHub MCP
+  server's workflow dispatch if `gh` is unavailable, and read the run back. Never push a tag from
+  another checkout, add a PAT or bypass protection to get around a refusal. A `TAG_CREATE_FAILED`
+  is reported with its recorded diagnostics, not explained. Re-sending identical inputs resumes.
+  The coordinator never re-runs a failed release; follow Step 0. Moving tag creation to Actions is
+  not the whole release in the Cloud: Phase M, the downgrade decision and Homebrew stay with the
+  owner and the Mac.
+- After a coordinated `release.yml` run succeeds, check for its `workflow_run` installer smoke. If
+  none appears, dispatch `node-free-smoke.yml` at the tag once (RELEASING.md A13).
 - Keep JSON evidence outside the checkout (the session scratchpad or the repo-scoped cclogs dir)
   and name the paths in the final report.
 - The report uses verdict headings (see `RELEASING.md` "Release report").

@@ -256,6 +256,11 @@ function probeCapabilities({ repo, gh }) {
     actionsReadable: probe(
       () => JSON.parse(gh(["api", `repos/${repo}/actions/workflows/release.yml`])).state,
     ),
+    // #4701: the Actions route for callers without tag rights (Cloud).
+    coordinatorWorkflow: probe(
+      () =>
+        JSON.parse(gh(["api", `repos/${repo}/actions/workflows/release-coordinator.yml`])).state,
+    ),
   };
 }
 
@@ -384,6 +389,13 @@ export function render(status) {
   }
   if (status.capabilities) out.push(`  capabilities: ${JSON.stringify(status.capabilities)}`);
   out.push(`recommended next action: ${status.recommendedAction}`);
+  if (status.recommendedAction === "publish-draft" && status.source?.commit) {
+    // Both A12 routes publish the same draft; neither acknowledges a
+    // provenance downgrade (owner-only, see RELEASING.md A11).
+    out.push(
+      `  A12 local route: PATCH the draft (make_latest "false"); Actions route (no tag push needed): gh workflow run release-coordinator.yml --ref main -f version=${status.version} -f sha=${status.source.commit} -f dry_run=true, then dry_run=false`,
+    );
+  }
   return `${out.join("\n")}\n`;
 }
 

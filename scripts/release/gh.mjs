@@ -13,6 +13,9 @@ export class GhError extends Error {
     const stderr = String(error?.stderr ?? "").trim();
     super(`gh ${args.join(" ")} failed: ${stderr || error?.message || "unknown error"}`);
     this.stderr = stderr;
+    // `gh api --include` writes the response status and headers (e.g.
+    // X-Github-Request-Id) to stdout even when the request fails.
+    this.stdout = String(error?.stdout ?? "");
     this.status = error?.status ?? null;
     this.notFound = /\bHTTP 404\b|Not Found|release not found/i.test(stderr);
   }

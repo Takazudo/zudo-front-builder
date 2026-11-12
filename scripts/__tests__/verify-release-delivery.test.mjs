@@ -1119,6 +1119,88 @@ describe("workflow jobs, steps and attempts", () => {
   });
 });
 
+// #4701: release-coordinator.yml dispatches release.yml AT the tag ref
+// (control = source), so the OIDC trigger is workflow_dispatch, not release.
+function tagDispatch(w) {
+  w.releaseRun.event = "workflow_dispatch";
+  w.statementTweak = (name, statement) => {
+    statement.predicate.buildDefinition.internalParameters.github.event_name = "workflow_dispatch";
+  };
+  w.signerTweak = (name, signer) => {
+    signer.oids[FULCIO_OIDS.buildTrigger] = "workflow_dispatch";
+  };
+}
+
+describe("tag-dispatched release (release coordinator, #4701)", () => {
+  it("verifies a release.yml run dispatched at the tag like a published-event run", async () => {
+    const { report } = await run(tagDispatch);
+    expect(report.release.deliveryPath).toBe("tag-dispatch");
+    expect(check(report, "workflow", "delivery-path").status).toBe(STATUS.VERIFIED);
+    expect(report.verdict).toBe(STATUS.VERIFIED);
+  });
+
+  it("rejects tag-dispatch provenance that claims a release event", async () => {
+    const { report } = await run((w) => {
+      tagDispatch(w);
+      w.statementTweak = () => {};
+    });
+    expect(report.verdict).toBe(STATUS.FAILED);
+  });
+
+  it("rejects a release-event run whose provenance claims a dispatch", async () => {
+    const { report } = await run((w) => {
+      w.statementTweak = (name, statement) => {
+        statement.predicate.buildDefinition.internalParameters.github.event_name =
+          "workflow_dispatch";
+      };
+    });
+    expect(report.verdict).toBe(STATUS.FAILED);
+  });
+
+  it("keeps a dispatch from main (recovery/manual) unsupported", async () => {
+    const { report } = await run((w) => {
+      tagDispatch(w);
+      w.releaseRun.head_branch = "main";
+    });
+    expect(report.release.deliveryPath).toBe("manual-dispatch");
+    expect(report.verdict).not.toBe(STATUS.VERIFIED);
+  });
+
+  it("accepts an installer smoke dispatched at the tag commit", async () => {
+    const { report } = await run((w) => {
+      tagDispatch(w);
+      Object.assign(w.installerRun, {
+        event: "workflow_dispatch",
+        head_branch: TAG,
+        head_sha: COMMIT,
+      });
+    });
+    expect(check(report, "consumption", "installer-run").status).toBe(STATUS.VERIFIED);
+    expect(report.verdict).toBe(STATUS.VERIFIED);
+  });
+
+  it("rejects an installer smoke dispatched anywhere but the tag", async () => {
+    const atMain = await run((w) => {
+      Object.assign(w.installerRun, {
+        event: "workflow_dispatch",
+        head_branch: "main",
+        head_sha: COMMIT,
+      });
+    });
+    expect(check(atMain.report, "consumption", "installer-run").reason).toContain("not " + TAG);
+    const otherCommit = await run((w) => {
+      Object.assign(w.installerRun, {
+        event: "workflow_dispatch",
+        head_branch: TAG,
+        head_sha: "2222222222222222222222222222222222222222",
+      });
+    });
+    expect(check(otherCommit.report, "consumption", "installer-run").reason).toContain(
+      "not the tag commit",
+    );
+  });
+});
+
 describe("exact-version consumption", () => {
   it("accepts a valid installer run whose own branch is main", async () => {
     const { report } = await run();

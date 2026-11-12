@@ -844,15 +844,28 @@ export function classifyDeliveryPath(run, grouped) {
   }
   if (ran(publish, "Publish to npm (recovery — no provenance)")) return "recovery";
   if (grouped.has("Finalize published release")) return "finalize";
-  if (run.event === "workflow_dispatch") return "manual-dispatch";
-  if (run.event !== "release") return `unsupported-event:${run.event}`;
+  // #4701: release-coordinator.yml dispatches release.yml AT the tag ref
+  // (head_branch = the v* tag, control = source); a dispatch from main is a
+  // recovery/manual run and stays unsupported here.
+  const tagDispatch =
+    run.event === "workflow_dispatch" && /^v\d/.test(String(run.head_branch ?? ""));
+  if (run.event === "workflow_dispatch" && !tagDispatch) return "manual-dispatch";
+  if (run.event !== "release" && !tagDispatch) return `unsupported-event:${run.event}`;
   // Runs from before #4690 built Darwin on hosted macOS (and the fast-Mac
   // escape hatch published darwin-x64 locally); neither is the current path.
   if ([...OWNER_MAC_TARGETS].some((target) => grouped.has(`Build ${target}`))) {
     return "legacy-hosted-darwin";
   }
   if (ran(publish, "Publish to npm (mixed provenance — local macOS-x64)")) return "legacy-fast-mac";
-  return "normal";
+  return tagDispatch ? "tag-dispatch" : "normal";
+}
+
+/** Delivery paths this verifier accepts: the published-event run and its tag-dispatch twin. */
+export const SUPPORTED_DELIVERY_PATHS = new Set(["normal", "tag-dispatch"]);
+
+/** The OIDC trigger a supported path's provenance must name (the run's own event). */
+export function expectedBuildTrigger(path) {
+  return path === "tag-dispatch" ? "workflow_dispatch" : "release";
 }
 
 function cleanLog(text) {
@@ -1017,7 +1030,7 @@ async function verifyReleaseWorkflow(ctx) {
   ctx.releaseJobs = grouped;
   const path = classifyDeliveryPath(run, grouped);
   ctx.deliveryPath = path;
-  if (path === "normal") section.verified("delivery-path", { path });
+  if (SUPPORTED_DELIVERY_PATHS.has(path)) section.verified("delivery-path", { path });
   else if (path === "dry-run") {
     section.failed("delivery-path", "the run took the dry-run branch and delivered nothing", {
       path,
@@ -1025,7 +1038,7 @@ async function verifyReleaseWorkflow(ctx) {
   } else {
     section.incomplete(
       "delivery-path",
-      `delivery path "${path}" is not supported by this verifier (normal release path only)`,
+      `delivery path "${path}" is not supported by this verifier (normal release path or its tag dispatch only)`,
       { path },
     );
   }
@@ -1249,7 +1262,8 @@ export function checkProvenanceClaims({ statement, signer, expected }) {
     problems.push(`workflow repository is ${workflow.repository}`);
   if (workflow.path !== RELEASE_WORKFLOW_PATH) problems.push(`workflow path is ${workflow.path}`);
   if (workflow.ref !== expected.ref) problems.push(`workflow ref is ${workflow.ref}`);
-  if (build.internalParameters?.github?.event_name !== "release") {
+  const trigger = expected.trigger ?? "release";
+  if (build.internalParameters?.github?.event_name !== trigger) {
     problems.push(`event_name is ${build.internalParameters?.github?.event_name}`);
   }
   const deps = build.resolvedDependencies ?? [];
@@ -1289,7 +1303,7 @@ export function checkProvenanceClaims({ statement, signer, expected }) {
     [FULCIO_OIDS.sourceRepositoryUri]: expected.repositoryUri,
     [FULCIO_OIDS.sourceRepositoryDigest]: expected.commit,
     [FULCIO_OIDS.sourceRepositoryRef]: expected.ref,
-    [FULCIO_OIDS.buildTrigger]: "release",
+    [FULCIO_OIDS.buildTrigger]: trigger,
     [FULCIO_OIDS.runInvocationUri]: invocationId,
   };
   // Numeric ids pin the repository and owner against a rename-and-recreate.
@@ -1419,6 +1433,7 @@ async function verifyProvenance(ctx, name, record, tarballSha512) {
     repositoryUri: `https://github.com/${ctx.canonicalRepo}`,
     ref: `refs/tags/${ctx.tag}`,
     commit: ctx.commit,
+    trigger: expectedBuildTrigger(ctx.deliveryPath),
     runId: ctx.releaseRunId,
     eligibleAttempts: ctx.eligibleAttempts ?? [],
     repositoryId: ctx.repositoryId,
@@ -1783,7 +1798,14 @@ async function verifyConsumption(ctx) {
   if (ctx.releaseRun?.updated_at) runEvidence.releaseRunUpdatedAt = ctx.releaseRun.updated_at;
   const problems = [];
   if (run.path !== INSTALLER_WORKFLOW_PATH) problems.push(`workflow path is ${run.path}`);
-  if (run.event !== "workflow_run") problems.push(`event is ${run.event}, not workflow_run`);
+  if (run.event === "workflow_dispatch") {
+    // #4701: the explicit fallback dispatch must run at the release tag itself.
+    if (run.head_branch !== tag) problems.push(`dispatched at ${run.head_branch}, not ${tag}`);
+    if (ctx.commit && run.head_sha !== ctx.commit)
+      problems.push(`dispatched commit ${run.head_sha} is not the tag commit`);
+  } else if (run.event !== "workflow_run") {
+    problems.push(`event is ${run.event}, not workflow_run or a dispatch at ${tag}`);
+  }
   // A workflow_run installer is created by a Release run's completion, so one
   // created before that run existed cannot have installed this release. The
   // run's first creation is the bound: reruns move updated_at past it.
