@@ -23,6 +23,11 @@ adds Codex-specific notes; where they disagree, `RELEASING.md` wins.
 
    Push to `main`, Release write and Actions dispatch must all be available for the steps you will
    run. Missing capability is a stop: report it; never change credentials, secrets or protection.
+   A refused tag push is **not** missing capability for A12. Use the Actions route
+   (`release-coordinator.yml`, RELEASING.md "A12 (Actions route)") through whatever can dispatch
+   a workflow and read runs, such as `gh` or a GitHub MCP server. When nothing can, print the
+   exact dispatch for the owner. An unauthenticated `gh` is never a reason to push a tag from
+   another checkout.
 
 ## Cloud rules
 
@@ -43,7 +48,18 @@ adds Codex-specific notes; where they disagree, `RELEASING.md` wins.
 - Run Step 0 (`release-status.mjs`) at the start and after every interruption; act on its single
   recommendation.
 - Follow-up workflow runs are explicit `gh workflow run release.yml --ref main ...` dispatches
-  with `dry_run` always passed explicitly (its default is false).
+  with `dry_run` always passed explicitly (its default is false). The coordinator's own dispatch
+  of `release.yml` at the tag is the one exception, and only the coordinator makes it.
+- The coordinator (`dry_run` defaults to true) needs the frozen `version` and the full source
+  `sha`.
+  - It never substitutes a newer `main`, and a resume keeps the same SHA.
+  - It stops before any write on missing Mac inputs or an unacknowledged downgrade. That is a stop
+    for you too.
+  - Re-sending identical inputs resumes. A `TAG_CREATE_FAILED` is reported with its recorded
+    diagnostics; never add a PAT.
+  - A Cloud-started publication is "tag creation in Actions", not "the whole release in the
+    Cloud". Phase M, the downgrade decision, Homebrew, and the A8 push without admin bypass stay
+    with the owner.
 - Heavy commands use `HEAVY_GUARD` or a guard under `$HOME/.codex/scripts/` when present, else run
   directly. Check free disk before any full Rust build (an observed Cloud filesystem was 32 GB).
 - Homebrew needs push access to `Takazudo/homebrew-tap`; without it, report the exact

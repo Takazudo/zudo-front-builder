@@ -1,0 +1,251 @@
+# release-coordinator.yml (#4701)
+#
+# Starts a zfb release for a caller that cannot push tags. Claude Code Cloud's
+# git proxy refuses tag pushes, and its `gh` may be unauthenticated. The
+# procedure is RELEASING.md "A12 (Actions route): release coordinator".
+#
+# Dispatch it on main with the frozen candidate:
+#   version = the lockstep version at sha (no "v"), e.g. 6.2.0
+#   sha     = the full 40-character source commit (on main; normally main's
+#             head when the candidate was frozen). It is never substituted:
+#             a newer main only produces a notice, and a resume keeps it.
+#   dry_run = true (the DEFAULT here) runs the read-only gate only
+#
+# Jobs, each with only its own permissions:
+#   gate     scripts/release/coordinate-release.mjs gate. Builds on
+#            release-status.mjs (Step 0) plus the candidate contract:
+#              - the 11 manifests, the five changelog lanes and the A4
+#                measurement at the SHA
+#              - required CI on the SHA and Darwin admission of the owner-Mac
+#                inputs on the draft
+#              - the tag is absent or already at the SHA, and npm state
+#              - the provenance preflight: an unacknowledged downgrade stops it
+#            dry_run stops after this job.
+#   tag      creates refs/tags/v<version> at the SHA with GITHUB_TOKEN through
+#            the REST API. It is create-only: the same SHA resumes, another
+#            SHA is refused, and a tag is never moved or deleted. A refusal
+#            records GitHub's response and the candidate, control and
+#            workflow SHAs. It does not guess the cause.
+#   publish  publishes the draft Release in one PATCH with make_latest
+#            "false". Latest is promoted only after delivery verification
+#            (A15). This job never edits the Release body.
+#   dispatch runs release.yml at ref v<version> with dry_run=false and NO
+#            other input. A Release published by GITHUB_TOKEN does not start
+#            `release: published` workflows; workflow_dispatch is the
+#            documented exception. At the tag, control SHA = source SHA, the
+#            same as `release: published`, so the npm trusted publisher
+#            (release.yml, no environment) and mac-local provenance are
+#            unchanged. An active or successful run for this tag + SHA is
+#            reused, never duplicated.
+#
+# Owner-only decisions stay owner-only. This workflow never sets
+# allow_provenance_downgrade, writes release/provenance-policy.json, builds
+# Darwin bytes or uses a macOS runner. It holds no id-token and no npm
+# credential. Missing Mac inputs or an unacknowledged downgrade stop the gate
+# before any write.
+#
+# Every job re-runs the gate immediately before its own write, so a re-sent
+# dispatch with the same inputs resumes where the previous one stopped.
+
+name: Release coordinator
+run-name: >-
+  Release coordinator v${{ inputs.version }} @ ${{ inputs.sha }}${{ inputs.dry_run && ' (dry run)' || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Lockstep version to release, e.g. 6.2.0 (no 'v'; must match every package at sha)"
+        required: true
+        type: string
+      sha:
+        description: "Full 40-character source commit on main (the draft Release's target)"
+        required: true
+        type: string
+      dry_run:
+        description: "Read-only gate only: no tag, no Release publish, no dispatch"
+        type: boolean
+        default: true
+
+permissions: {}
+
+# One coordinator at a time, never cancelled: a tag/publish/dispatch sequence
+# must not be interrupted by a re-sent request (the re-send resumes instead).
+concurrency:
+  group: release-coordinator
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Coordinator gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # contents: write is needed only to READ the draft Release. GitHub
+      # lists drafts only to tokens with push access. The gate makes no write:
+      # scripts/__tests__/coordinate-release.test.mjs records every gh call
+      # it makes and fails on any write.
+      contents: write
+      actions: read # release.yml runs for the tag
+      checks: read # required CI on the source commit
+      statuses: read # required CI on the source commit
+    steps:
+      - name: Require a dispatch from main
+        if: ${{ github.ref != 'refs/heads/main' }}
+        shell: bash
+        run: |
+          echo "::error::The release coordinator runs only from refs/heads/main (got ${GITHUB_REF})."
+          exit 1
+
+      # Full history: the candidate's git objects (manifests, changelog,
+      # Darwin admission inputs) and origin/main for the ancestry check and the
+      # owner's provenance policy.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+          package-manager-cache: false
+
+      - name: Gate the candidate (read-only)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          node scripts/release/coordinate-release.mjs gate --version "$VERSION" --sha "$SHA" \
+            --json "$RUNNER_TEMP/coordinator-gate.json"
+
+      - name: Upload gate evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-coordinator-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/coordinator-gate.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  tag:
+    name: Create or confirm the release tag
+    needs: gate
+    if: ${{ inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create refs/tags/v<version> (ephemeral GITHUB_TOKEN)
+      actions: read # the gate re-runs right before the write
+      checks: read
+      statuses: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+          package-manager-cache: false
+
+      - name: Create or confirm v<version> at the candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          node scripts/release/coordinate-release.mjs tag --version "$VERSION" --sha "$SHA" \
+            --json "$RUNNER_TEMP/coordinator-tag.json"
+
+      - name: Upload tag evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-coordinator-tag-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/coordinator-tag.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  publish:
+    name: Publish the draft Release (not Latest)
+    needs: tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # PATCH the draft Release to published, make_latest "false"
+      actions: read
+      checks: read
+      statuses: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+          package-manager-cache: false
+
+      - name: Publish the draft without GitHub Latest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          node scripts/release/coordinate-release.mjs publish --version "$VERSION" --sha "$SHA"
+
+  dispatch:
+    name: Dispatch release.yml at the tag
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # contents: write only so the re-run gate can still read the Release
+      # (see the gate job); this job writes nothing to contents.
+      contents: write
+      actions: write # workflow_dispatch of release.yml at the tag
+      checks: read
+      statuses: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+          package-manager-cache: false
+
+      - name: Start (or reuse) the release.yml run at the tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          node scripts/release/coordinate-release.mjs dispatch --version "$VERSION" --sha "$SHA" \
+            --json "$RUNNER_TEMP/coordinator-dispatch.json"
+
+      - name: Upload dispatch evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-coordinator-dispatch-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/coordinator-dispatch.json
+          if-no-files-found: ignore
+          retention-days: 30

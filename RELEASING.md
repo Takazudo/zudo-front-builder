@@ -58,6 +58,19 @@ they are missing, the release is blocked: hand the owner the
 [paste-ready Mac prompt](#paste-ready-mac-prompt) and stop. A Mac-only test never counts as Cloud
 acceptance, and a Cloud run never creates Mac evidence.
 
+**Moving tag creation to Actions does not move the whole release to the Cloud.** A session that
+cannot push tags, such as Claude Code Cloud, can start publication through the
+[Actions route](#a12-actions-route-release-coordinator). Cloud still cannot do these steps:
+
+| Step | Who can do it |
+| --- | --- |
+| Phase M (Darwin build and receipts) | Only the owner's Mac. |
+| A provenance-downgrade acknowledgement | Only the owner. |
+| The A8 push to `main` | Needs the ruleset's admin bypass. A session without it prepares the bump as a PR the owner merges. |
+| The A15 Homebrew push | Needs tap credentials. |
+
+The owner's Mac and the owner still finish every release that needs these steps.
+
 ### Heavy local commands
 
 Some steps (Rust tests, the Darwin build) are heavy. Run them through the machine-wide guard when
@@ -83,7 +96,14 @@ node scripts/release/release-status.mjs --tag v<version> --probe-capabilities
 ```
 
 It reports `gh auth status`, the repository permission (`gh api repos/{owner}/{repo}` →
-`.permissions`) and whether Actions workflows are readable. It never dispatches anything. Phase A
+`.permissions`), whether Actions workflows are readable, and whether `release-coordinator.yml`
+exists. It never dispatches anything.
+
+An unauthenticated `gh` in a Cloud session is not a reason to push a tag from a local checkout.
+Use the GitHub capability the session does have, such as a GitHub MCP server that can run a
+workflow and read runs, for the [Actions route](#a12-actions-route-release-coordinator). If the
+session has none, report the exact owner action: the `gh workflow run release-coordinator.yml`
+command, or the Actions UI's "Run workflow" with the same inputs. Phase A
 needs push to `main` (the release bump goes straight to `main` through the ruleset's admin bypass,
 which exists only for this authorized procedure), Release write and `actions: write` for
 dispatches. Missing capability is a stop, not a reason to change credentials or protection.
@@ -100,7 +120,9 @@ Record these in the release report (and keep JSON evidence outside the checkout)
   where the focused checks of [A7](#a7-focused-checks) ran. Its tree must equal the source tree;
   if the commit was amended or rebased afterwards, the local results describe something else.
 - **Workflow/control SHA** — the commit whose `release.yml` ran. For the normal
-  `release: published` event it is the source SHA. For a `workflow_dispatch` recovery or finalize
+  `release: published` event, and for the coordinator's dispatch **at the tag**, it is the source
+  SHA. The coordinator itself runs from `main` (its own control SHA, recorded in its job summary),
+  but the `release.yml` it starts does not. For a `workflow_dispatch` recovery or finalize
   run from `main` it is `main`'s head at dispatch, which differs from the source SHA; record both.
 - **Run evidence** — every run ID, attempt number, job ID and conclusion, first results and all
   retries; the Darwin receipts' digests and the admission verdict.
@@ -123,7 +145,7 @@ downloaded assets, per-package npm state, dist-tags, the latest `release.yml` ru
 | Recommendation | Go to |
 | --- | --- |
 | `prepare-darwin` | [Phase M](#phase-m-darwin-inputs-on-the-owners-mac) (Cloud: hand off and stop) |
-| `publish-draft` | [A11](#a11-admission-and-provenance-preflight) then [A12](#a12-publish-the-draft) |
+| `publish-draft` | [A11](#a11-admission-and-provenance-preflight) then [A12](#a12-publish-the-draft), or its [Actions route](#a12-actions-route-release-coordinator) when the session cannot push tags |
 | `dispatch-recovery` | [Recovery](#recovery-a-published-release-whose-build-or-publish-failed) |
 | `dispatch-finalize` | [Finalize](#finalize-only-dist-tags-digest-asset-verification) |
 | `blocked:<reason>` | stop and report the reason |
@@ -608,7 +630,10 @@ version. The preflight in `release.yml` is default-deny and blocks each such rel
 owner acknowledges it by one of two routes:
 
 1. **Per run:** the line `<!-- zfb-release: allow-provenance-downgrade -->` in the draft Release
-   body, or the `allow_provenance_downgrade=true` input on a dispatch.
+   body, or the `allow_provenance_downgrade=true` input on a dispatch. A `release.yml` dispatched
+   at the tag (the [Actions route](#a12-actions-route-release-coordinator)) reads that line from
+   the published Release body. The coordinator checks the same thing before it tags, and never
+   sets the input.
 2. **Durable policy:** an owner-authored, committed `release/provenance-policy.json`:
 
    ```json
@@ -666,13 +691,83 @@ SHA). There is no tag-push flow and never a second Release for the version. Rele
 never clobbered: a missing asset is uploaded, an identical one skipped, a different one fails the
 run naming the asset.
 
+### A12 (Actions route): release coordinator
+
+Use this route when the session cannot push tags or publish the draft itself. Claude Code Cloud's
+git proxy refuses tag pushes, and its `gh` may be unauthenticated. It has the same single gate:
+Step 0 must recommend `publish-draft`, and A11 must be clear or owner-acknowledged. Never add a
+PAT, a second credential or a protection bypass to make another route work.
+
+Dispatch `.github/workflows/release-coordinator.yml` **from `main`**. Use the GitHub MCP server's
+workflow dispatch, `gh`, or the Actions UI:
+
+```sh
+gh workflow run release-coordinator.yml --ref main \
+  -f version=<version> -f sha="$SOURCE_SHA" -f dry_run=true    # read-only gate first
+gh workflow run release-coordinator.yml --ref main \
+  -f version=<version> -f sha="$SOURCE_SHA" -f dry_run=false
+```
+
+`dry_run` defaults to **true** here, the opposite of `release.yml`. Pass it explicitly anyway.
+
+**Inputs:**
+
+- `sha` is the frozen source SHA: the draft's target, normally `main`'s green head when you froze
+  it.
+  - The coordinator never substitutes another commit. A newer `main` only produces a notice.
+  - A resume passes the same SHA again.
+  - A different candidate means a new draft, new Phase M inputs and a new version or cleanup.
+
+Its jobs (`scripts/release/coordinate-release.mjs`) re-run the gate before every write, so
+re-sending identical inputs resumes and never duplicates:
+
+1. **gate** (read-only). It is `release-status.mjs` plus the candidate contract:
+   - **Candidate:** the eleven manifests, the five changelog lanes and the A4 `measuredOnVersion`
+     at the SHA. The candidate's own `release.yml` and `node-free-smoke.yml` must carry the
+     coordinator contract markers, so an older candidate is refused.
+   - **CI:** required CI on the SHA.
+   - **Darwin:** admission of the owner-Mac inputs.
+   - **Tag and npm:** the tag is absent or already at the SHA, and npm state is consistent.
+   - **Provenance:** an unacknowledged downgrade stops it before any write. So do missing Mac
+     inputs.
+   - **Plan:** it prints `start`, `resume` (the tag or Release already exists at the SHA and no
+     run has happened yet) or `reuse` (a run for this tag and SHA is active or succeeded).
+2. **tag**: `POST /git/refs` for `refs/tags/v<version>` at the SHA, with the run's `GITHUB_TOKEN`.
+   - The same SHA is a no-op. Another SHA is refused. A tag is never moved or deleted.
+   - On refusal it records GitHub's response (HTTP status, message, request ID), the candidate,
+     control and workflow SHAs, and whether `.github/workflows` differs between the candidate and
+     the control commit. It does **not** state a cause.
+   - A 403 seen when tagging an older SHA elsewhere (zdtp) has an unconfirmed explanation. Report
+     the recorded facts. The owner decides whether to push the tag from a user credential or pick
+     another candidate.
+3. **publish**: publishes the draft in one PATCH with `make_latest: "false"`. It never edits the
+   body. A Release published by `GITHUB_TOKEN` starts no workflow.
+4. **dispatch**: runs `release.yml` **at ref `v<version>`** with `dry_run=false` and no other
+   input.
+   - At the tag, control SHA = source SHA and the mode is `mac-local`, exactly like
+     `release: published`. The trusted publisher (`release.yml`, no environment) and provenance
+     stay honest.
+   - An active or successful run for the tag and SHA is reused.
+   - A failed one is **not** re-run: follow Step 0 (`dispatch-recovery`/`dispatch-finalize`, from
+     `main`, as before). The same applies once any recovery or finalize run exists.
+   - Run history comes from the coordinator's own listing: every real run on the tag ref, plus
+     dispatches from `main` that carry the tag's run name. Dry runs are filtered out before any
+     limit applies, and a listing that reaches its limit is inconclusive.
+   - Immediately before the dispatch it lists the runs again and refuses if one has appeared.
+   - The gate logs the SHA-256 of the Release body it checked, and the tag-dispatched
+     `release.yml` logs the digest of the body it read. Compare the two when auditing an
+     acknowledgement.
+
+Then continue at A13. The run is named `Release v<version>`, with event `workflow_dispatch` and
+head branch `v<version>`.
+
 ### A13. Watch the runs
 
-1. Find the `release.yml` run (event `release`, head branch `v<version>`) and record its run ID and
-   attempt:
+1. Find the `release.yml` run (head branch `v<version>`) and record its run ID and attempt. Its
+   event is `release`, or `workflow_dispatch` on the Actions route:
 
    ```sh
-   gh run list --workflow release.yml --event release --limit 5 \
+   gh run list --workflow release.yml --limit 5 \
      --json databaseId,attempt,headBranch,headSha,status,conclusion \
      --jq '.[] | select(.headBranch == "v<version>")'
    ```
@@ -682,9 +777,19 @@ run naming the asset.
    `provenance-preflight`, `admit-darwin`, `build` (Linux, Windows), `build-wasm-md`,
    `release-assets`, `pack` (`Pack npm tarballs`), `publish`, `md-wasm-asset`
    (`Upload MD/WASM digest asset`), `smoke-clean-room`, `notify`.
-3. **Stable:** a successful Release run triggers `node-free-smoke.yml` by `workflow_run`; record the
-   run whose `Smoke released (install.sh)` job installed the exact tag (after a rerun, the run the
-   final attempt triggered).
+3. **Stable:** a successful Release run triggers `node-free-smoke.yml` by `workflow_run`. Record
+   the run whose `Smoke released (install.sh)` job installed the exact tag. After a rerun, use the
+   run the final attempt triggered.
+
+   **Actions route:** it is not established whether `workflow_run` follows a `release.yml` run that
+   `GITHUB_TOKEN` dispatched. If no `workflow_run` installer for the tag appears a few minutes
+   after the Release run succeeds, dispatch it at the tag, once:
+
+   ```sh
+   gh workflow run node-free-smoke.yml --ref refs/tags/v<version> -f release_tag=v<version>
+   ```
+
+   Only `smoke-released` runs, from the tag's commit. Record which kind it was.
 4. Do not rely on follow-up workflows being triggered by events that `GITHUB_TOKEN` created; any
    follow-up this procedure needs is an explicit `gh workflow run` dispatch (below).
 5. On failure: `gh run view <id> --log-failed`. A clearly transient failure (runner eviction,
@@ -710,7 +815,10 @@ recompute the four `.wasm` SHA-256 digests from the published `@takazudo/zfb-md-
 tarball and compare with its `dist/shipped-artifacts.json` and the Release asset
 `zfb-md-wasm-<version>-shipped-artifacts.json`.
 
-The verifier accepts the normal `mac-local` run: both Darwin carriers must carry **no**
+The verifier accepts the normal `mac-local` run, started either by `release: published` or by
+the coordinator's dispatch at the tag (`tag-dispatch`). Each run's provenance must name its own
+trigger (`release` or `workflow_dispatch`). The installer run must be a `workflow_run` or a
+dispatch at exactly the tag commit. Both Darwin carriers must carry **no**
 attestation and their packed `zfb` and `zfb-css.node` must equal the Release's Darwin archive
 binary and addon bytes, while every other package must be attested. Recovery, finalize and dry-run
 runs, and runs from before #4687 (`legacy-hosted-darwin`, `legacy-fast-mac`), are classified,
@@ -760,8 +868,9 @@ Prereleases skip the installer smoke, the delivery verifier, Latest and Homebrew
 ## Workflow dispatches: recovery, finalize, dry run
 
 `release.yml`'s `workflow_dispatch` inputs are `dry_run`, `release_tag`, `allow_provenance_downgrade`
-and `finalize_only`. Always dispatch from `--ref main` (a `v*` ref would load that tag's old
-workflow), always pass `dry_run` explicitly (**its default is false**), and record the control SHA
+and `finalize_only`. For recovery, finalize and dry runs, always dispatch from `--ref main` (a `v*`
+ref would load that tag's old workflow). The only tag-ref dispatch is the coordinator's first run
+of a new candidate, whose own workflow is the right one; always pass `dry_run` explicitly (**its default is false**), and record the control SHA
 (`main`'s head) next to the source SHA.
 
 ### Recovery: a published Release whose build or publish failed
@@ -853,6 +962,15 @@ For an abandoned release (draft created, never published) or an orphan found in 
 | Asset conflict (different bytes) | stop; never clobber; owner decides |
 | Delivery verifier exit 1 / persistent 2 | Release stays not-Latest; no Homebrew; report |
 | Homebrew push fails | release still delivered; report the command for a retry |
+| Coordinator stopped in **gate** | nothing was written; fix the named cause, re-send the same inputs |
+| Coordinator `OWNER_ACK_REQUIRED` | stop; owner decision (A11) |
+| Coordinator `TAG_CREATE_FAILED` | report its recorded diagnostics; no PAT, no bypass; owner decides |
+| Coordinator stopped after **tag** or **publish** | re-send the same inputs (it resumes) |
+| Coordinator `RUN_FAILED` | Step 0 → recovery/finalize from `main` |
+| Coordinator `RECOVERY_STARTED` | a recovery/finalize run already exists; Step 0 decides, not the coordinator |
+| Coordinator `RUN_APPEARED` or `DISPATCH_READBACK_PENDING` | `gh run list --workflow release.yml --branch v<version>` first; a re-send reuses a listed run, never dispatches a second |
+| Coordinator `RUNS_TRUNCATED` (exit 3) | the run history could not be read completely; do not treat it as "never ran" |
+| No installer run after a coordinated release | dispatch `node-free-smoke.yml` at the tag (A13) |
 
 ## Release report
 

@@ -31,6 +31,15 @@
 # which refuses when OIDC is unavailable or any stored npm credential is
 # visible — npm/pnpm would otherwise fall back to it silently.
 #
+# Actions route (#4701, zfb-release-coordinator: tag-dispatch-v1): for callers
+# that cannot push tags, release-coordinator.yml creates the tag, publishes the
+# draft without Latest and dispatches THIS workflow at ref v<version>. A tag-ref
+# dispatch is a normal (non-recovery) run: control SHA = source SHA, mac-local
+# provenance. Its owner acknowledgement is read from the published Release body
+# (the same marker line as on `release: published`) or the owner-only input.
+# scripts/release/coordinate-release.mjs refuses a candidate whose release.yml
+# lacks the marker above.
+#
 # Follow-ups never rely on events created by GITHUB_TOKEN (they do not trigger
 # workflows): recovery and finalization are explicit dispatches from main, e.g.
 #   gh workflow run release.yml --ref main -f release_tag=vX.Y.Z
@@ -253,20 +262,43 @@ jobs:
           # must not be spliced into a shell command (script injection).
           RELEASE_BODY: ${{ github.event.release.body }}
           DISPATCH_ALLOW: ${{ inputs.allow_provenance_downgrade }}
+          IS_RECOVERY: ${{ steps.resolve.outputs.is_recovery }}
+          RELEASE_TAG: ${{ steps.resolve.outputs.release_tag }}
+          TRIGGER_REF: ${{ github.ref }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           ALLOW=false
+          MARKER='<!-- zfb-release: allow-provenance-downgrade -->'
           if [[ "$EVENT_NAME" == "release" ]]; then
             # Web-UI release bodies are CRLF; strip \r before an exact-line
             # match so the marker matches regardless of line-ending style.
             # This reads the event payload snapshot, not a live `gh release
             # view` — the body is fixed at the moment the event fired, so a
             # post-publish edit cannot race the check.
-            if printf '%s' "$RELEASE_BODY" | tr -d '\r' | grep -Fxq '<!-- zfb-release: allow-provenance-downgrade -->'; then
+            if printf '%s' "$RELEASE_BODY" | tr -d '\r' | grep -Fxq "$MARKER"; then
               ALLOW=true
             fi
           elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             if [[ "$DISPATCH_ALLOW" == "true" ]]; then
               ALLOW=true
+            elif [[ "$IS_RECOVERY" != "true" && -n "$RELEASE_TAG" && "$TRIGGER_REF" == "refs/tags/${RELEASE_TAG}" ]]; then
+              # #4701: a tag-ref dispatch (release-coordinator.yml) is the
+              # normal path started without a `release: published` event, so
+              # it honours the same owner-authored marker in the published
+              # Release body, read once here. Recovery dispatches from main
+              # never do: they need the owner-only input.
+              if ! BODY=$(gh release view "$RELEASE_TAG" --json isDraft,body --jq 'select(.isDraft == false) | .body'); then
+                echo "::error::Could not read the ${RELEASE_TAG} Release body; failing closed (acknowledgement unknown)."
+                exit 1
+              fi
+              # Same digest the coordinator logs for the body it gated
+              # (CR-stripped, no trailing newline): compare the two when
+              # auditing who acknowledged what.
+              echo "Release body sha256 (CR-stripped): $(printf '%s' "$BODY" | tr -d '\r' | sha256sum | cut -d' ' -f1)"
+              if printf '%s' "$BODY" | tr -d '\r' | grep -Fxq "$MARKER"; then
+                ALLOW=true
+              fi
             fi
           fi
           echo "allow_downgrade=$ALLOW" >> "$GITHUB_OUTPUT"
