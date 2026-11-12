@@ -328,10 +328,19 @@ describe("release-status (read-only, injected gh/registry)", () => {
       absentReads: 1,
       delayMs: 0,
     });
-    expect(status.admission.admitted).toBe(true);
-    expect(status.sourceCi.passed).toBe(true);
-    expect(status.npm.summary.absent).toHaveLength(11);
-    expect(status.recommendedAction).toBe("publish-draft");
+    // On failure, name the cause: admitFromRelease turns any I/O or git error
+    // into {admitted: null, errors}, which would otherwise surface only as a
+    // bare true/null mismatch (one unreproduced failure, #4690).
+    const why = JSON.stringify({
+      admission: status.admission?.errors,
+      sourceCi: status.sourceCi?.blocking ?? status.sourceCiError,
+      npm: status.npm?.summary,
+      action: status.recommendedAction,
+    });
+    expect(status.admission?.admitted, why).toBe(true);
+    expect(status.sourceCi?.passed, why).toBe(true);
+    expect(status.npm.summary.absent, why).toHaveLength(11);
+    expect(status.recommendedAction, why).toBe("publish-draft");
     expect(render(status)).toContain("recommended next action: publish-draft");
     const verbs = calls.map((args) => `${args[0]} ${args[1]}`);
     expect(verbs.filter((v) => /upload|delete|edit|create|workflow run/.test(v))).toEqual([]);
