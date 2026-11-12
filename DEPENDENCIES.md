@@ -2978,6 +2978,27 @@ The frozen harness already pins the ratio rejection in its `alias-anchor-repetit
 
 **Next trigger:** the next published lockstep pair, a yank of either 0.0.58 crate, or a new advisory against it, handled through the YAML candidate watch.
 
+##### `noyalib 0.0.60` / `noyalib-serde-yaml 0.0.60` released differential evaluation (#4695) — KEEP
+
+**Verdict: KEEP — retain production noyalib / noyalib-serde-yaml =0.0.58; evaluated 0.0.60 is rejected for same-toolchain size growth.** Triggered by the YAML candidate watch alert #4693. 0.0.59 is covered cumulatively by 0.0.60. Full evidence is on [#4695](https://github.com/Takazudo/zudo-front-builder/issues/4695#issuecomment-6819095343).
+
+**Inputs.** `noyalib 0.0.60` (published 2026-11-10T09:24:35Z, checksum `c4f58e0d7f94aac1ff656e07a05512093b0a0f866f5778f94e84909f50fc3157`) and `noyalib-serde-yaml 0.0.60` (2026-11-10T09:43:02Z, `781246c307fe8df6bea8495462618c4da9de1fe429d9e59e6f6308c7f15b903d`); both non-yanked, MIT OR Apache-2.0, MSRV 1.89.0. The alias pins core `=0.0.60` with `std` and `compat-serde-yaml`. Core manifest changes: `libm` moves to dev-dependencies, optional `serde-saphyr` 1.1 → 2.0, `jsonschema` 0.58 → 0.60, and `recovery` no longer implies `std`.
+
+**Phase 1 (Linux, rustc 1.97.0).** The differential harness passed 4/4, resource budgets 5/5, error messages 2/2, `zfb-content` 1,123 tests, md-wasm API/AST pins 59/59 and CLI diagnostics 11/11; the three native checks exited 0. `cargo deny check` passed at both pins with identical license counts (Apache-2.0 309, MIT 512). The probe lock changed only the two pair records and dropped `libm` from `noyalib`'s dependencies.
+
+**Phase 2 size (CI wasm-md, rustc 1.99.1, wasm-bindgen 0.2.121).** Control `main` job 131040485166 against probe job 131069453726. The local disk gate was not met (32,199,950,336 B free), so no local Phase 2 build ran.
+
+| Artifact | finalWasm Δ | gzip9 Δ | Candidate gzip9 |
+| --- | ---: | ---: | ---: |
+| default | +3,909 | +1,303 | 1,537,440 |
+| highlight-only | 0 | −1 | 821,782 |
+| render-only | +3,053 | +1,069 | 1,115,951 |
+| parse-only | +3,081 | +1,332 | 301,856 |
+
+Every artifact stays under its ceiling, but default, render-only and parse-only exceed the ≤1,024 B growth limit and render-only must not grow. The 0.0.58 owner exception does not extend to this pair. Glue sizes did not change.
+
+**Downstream contract.** `Cargo.toml`, `Cargo.lock`, the harness label, `shipped-sizes.json` and the YAML candidate baseline are unchanged. The baseline refresh was blocked in the evaluating session (no upstream GitHub API access), so #4693 stays open. **Next trigger:** a newer complete pair, a yank of either 0.0.58 crate, a new advisory, or evidence addressing 0.0.60's size growth.
+
 ##### `serde-saphyr 1.2.0` differential evaluation (#2788) — KEEP
 
 This evaluation deliberately used **serde-saphyr 1.2.0**, superseding the
