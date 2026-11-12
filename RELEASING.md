@@ -248,7 +248,11 @@ Three gates move with the version string, so every release version is measured i
 
 - **md-wasm** — the four `.wasm` files embed `ZFB_RELEASE_VERSION`; exact sizes can move with the
   stamp. Never measure or refresh `shipped-sizes.json` from a Mac build
-  ([`LOCAL-VS-CI-SIZES.md`](crates/zfb-md-wasm/LOCAL-VS-CI-SIZES.md)).
+  ([`LOCAL-VS-CI-SIZES.md`](crates/zfb-md-wasm/LOCAL-VS-CI-SIZES.md)). The rustc version moves
+  them too, so health.yml's `wasm-md` job and release.yml's `build-wasm-md` job both compile with
+  the exact version in `crates/zfb-md-wasm/rust-toolchain-pin`, not floating `stable` (v6.1.0
+  measured on 1.99.1 and built on 1.100.0 six hours later, failing its release run). Changing the
+  pin is its own reviewed change and needs a fresh measurement.
 - **Linux island size** — `research/v3-island-size/decision-linux-x64.json` pins the package
   version; the release must record it with fresh CI evidence.
 - **Wind preview digest** — `docs/public/wind-examples/manifest.json`'s `compiler.sourceSha256`
