@@ -1,14 +1,40 @@
 # release.yml
 #
-# Cross-compiles the zfb Rust binary for 5 platforms, packages each binary
-# as a tar.gz (Unix) or zip (Windows), generates SHA-256 checksum files,
-# attaches them as GitHub Release assets, and publishes all workspace npm
-# packages in topological order.
+# Builds the three hosted-runner zfb binaries (Linux x64/arm64, Windows x64),
+# admits the two owner-Mac Darwin binaries from the GitHub Release, packages
+# and checksums the hosted ones, reconciles all Release assets, and publishes
+# every workspace npm package in topological order.
 #
-# IMPORTANT: NPM_TOKEN must be an Automation-type token (bypasses 2FA).
-# A standard user token will fail in unattended CI publish because npm
-# requires 2FA for scoped publish unless the token type is "Automation".
-# Create one at https://www.npmjs.com/settings/<user>/tokens with type "Automation".
+# Darwin (#4690): hosted macOS runners are NOT used. Both Darwin targets are
+# built and qualified on the owner's Apple Silicon Mac with
+# scripts/build-darwin-local.sh and uploaded to the DRAFT Release (ten inputs:
+# archive, .sha256, CSS addon, .sha256 and qualification receipt per target).
+# The admit-darwin job downloads exactly those ten into a fresh directory and
+# runs scripts/admit-darwin-artifacts.mjs against the release source commit;
+# anything missing or rejected fails before any irreversible step, naming the
+# Mac command. The Darwin carriers are published with --provenance=false (an
+# Actions attestation would falsely claim they were built here); every other
+# package keeps OIDC provenance. Contract: scripts/darwin-artifact-contract.md.
+#
+# Source vs control: the SOURCE commit (the release tag's commit) is what is
+# built and published; the CONTROL commit (github.sha) is whose workflow and
+# helper scripts run. release-context records both, plus the source tree and
+# the workflow ref, in its outputs and job summary. A main-based recovery runs
+# new control scripts against an older source tree.
+#
+# npm auth: GitHub OIDC trusted publishing ONLY — no npm token secret exists
+# or is read. Every published package has a trusted publisher on npmjs.com for
+# owner Takazudo, repository zudo-front-builder, workflow file release.yml (no
+# environment), with "Allow npm dist-tag" enabled so the dist-tag helpers can
+# authenticate too. The publish/finalize jobs pin npm 12.2.1 (OIDC for publish
+# AND dist-tag add/rm) and every write path runs scripts/npm-oidc-preflight.mjs,
+# which refuses when OIDC is unavailable or any stored npm credential is
+# visible — npm/pnpm would otherwise fall back to it silently.
+#
+# Follow-ups never rely on events created by GITHUB_TOKEN (they do not trigger
+# workflows): recovery and finalization are explicit dispatches from main, e.g.
+#   gh workflow run release.yml --ref main -f release_tag=vX.Y.Z
+#   gh workflow run release.yml --ref main -f release_tag=vX.Y.Z -f finalize_only=true
 #
 # ── Release-channel policy (LOCKED — consumed by S4/S5/S6 installers) ──────
 #
@@ -36,6 +62,8 @@
 #   "zfb.exe" (Windows).  No nested directory.  Produced by:
 #     Unix:    tar -C <bindir> -czf <archive> zfb
 #     Windows: cd <bindir>; Compress-Archive zfb.exe <archive>
+#   (Darwin archives are produced by scripts/build-darwin-local.sh to the
+#   same contract and checked by the admission verifier.)
 #
 # Checksum file: {archive-name}.sha256
 #   One line: "<64-hex-lowercase>  <archive-basename>"  (two spaces, GNU coreutils
@@ -43,6 +71,9 @@
 #     Linux/macOS: sha256sum <archive> | sed 's|.*/||'   (basename only)
 #     Windows:     (Get-FileHash).Hash.ToLower() + "  " + basename
 #   Installers parse the first whitespace-delimited field as the hash.
+#
+# Release assets are never clobbered: scripts/release/reconcile-release-assets.mjs
+# uploads a missing asset, skips an identical one and fails on a different one.
 
 # pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
 # commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names the
@@ -52,12 +83,19 @@
 
 name: Release
 
+# The effective tag is in the run name so scripts/release/release-status.mjs can
+# find main-based recovery/finalize dispatches for a tag.
+run-name: >-
+  Release ${{ inputs.release_tag || github.event.release.tag_name || github.ref_name }}${{ inputs.finalize_only && ' (finalize only)' || '' }}${{ inputs.dry_run && ' (dry run)' || '' }}
+
 # Queue releases for the same effective tag; never cancel — a mid-publish run
 # would leave a partial npm publish that is worse than the storage cost. Manual
 # recovery runs execute the fixed workflow from main while building an existing
 # published tag, so github.ref alone is not sufficient for this key.
+# The key is the normalized tag (never a ref path), and dry runs queue in their
+# own group, so a dry run can never displace or cancel a pending real run.
 concurrency:
-  group: release-${{ inputs.release_tag || github.event.release.tag_name || github.ref }}
+  group: release-${{ inputs.dry_run && 'dry-run-' || '' }}${{ inputs.release_tag || github.event.release.tag_name || github.ref_name }}
   cancel-in-progress: false
 
 on:
@@ -70,17 +108,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Skip publish + GH Release upload steps (build + tarball + sha256 only)"
-        type: boolean
-        default: false
-      skip_macos_x64:
-        # Manual override: forces detect-mac-local to output mac_local_present=true
-        # without querying the GH Release. Use this on workflow_dispatch when you
-        # have already uploaded the macOS-x64 archive + .sha256 to the Release and
-        # want to skip the macos-15-intel build leg. Under the normal `release: published`
-        # trigger, auto-detection (detect-mac-local job) handles this automatically.
-        # See RELEASE_DAY_CHECKLIST.md.
-        description: "Manual override: treat the macOS-x64 archive as already present (forces mac_local_present=true)"
+        description: "No npm publish, no dist-tag change, no Release asset upload (build + tarball + sha256 + read-only checks only)"
         type: boolean
         default: false
       release_tag:
@@ -92,17 +120,29 @@ on:
         required: false
         default: ""
       allow_provenance_downgrade:
-        # A2 (#3140): acknowledges that this run's fast-Mac or recovery publish
-        # mode omits npm provenance for at least one package that an earlier
-        # version attested — a permanent trust downgrade for consumers with
-        # pnpm's trustPolicy=no-downgrade. Default-deny: the preflight blocks
-        # the run unless this is explicitly set true. On a `release: published`
-        # trigger the equivalent acknowledgement is a release-body marker
-        # instead (see release-context's "Resolve provenance-downgrade
-        # acknowledgement" step).
-        description: "Recovery/fast-Mac only: acknowledge an npm provenance trust downgrade for this publish (consumers with pnpm trustPolicy=no-downgrade will fail to install)"
+        # A2 (#3140): acknowledges that this run omits npm provenance for at
+        # least one package that an earlier version attested — a permanent
+        # trust downgrade for consumers with pnpm's trustPolicy=no-downgrade.
+        # Default-deny: the preflight blocks the run unless this is explicitly
+        # set true. On a `release: published` trigger the equivalent
+        # acknowledgement is a release-body marker instead (see
+        # release-context's "Resolve provenance-downgrade acknowledgement"
+        # step). Nothing in this workflow ever sets it on the owner's behalf.
+        description: "Owner only: acknowledge an npm provenance trust downgrade for this publish (consumers with pnpm trustPolicy=no-downgrade will fail to install)"
         type: boolean
         default: false
+      finalize_only:
+        # Finalization-only recovery (#4690): with release_tag, from main. No
+        # build and no package publish. Requires every package present-verified
+        # and every build asset on the Release (scripts/release/finalize-gate.mjs),
+        # then reconciles dist-tags, the MD/WASM digest asset, provenance
+        # expectations and runs the smoke. Idempotent.
+        description: "Recovery only (with release_tag): skip build/publish; finalize dist-tags, digest asset, provenance check and smoke"
+        type: boolean
+        default: false
+
+# Least privilege: no job gets a token scope it does not declare below.
+permissions: {}
 
 jobs:
   # Resolve every trigger to one immutable source commit before any build starts.
@@ -116,14 +156,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      # checkout + `gh release view` of the tag's Release.
       contents: read
     outputs:
       release_tag: ${{ steps.resolve.outputs.release_tag }}
       release_version: ${{ steps.verify.outputs.release_version }}
       checkout_sha: ${{ steps.verify.outputs.checkout_sha }}
+      source_commit: ${{ steps.verify.outputs.source_commit }}
+      source_tree: ${{ steps.verify.outputs.source_tree }}
+      control_sha: ${{ steps.verify.outputs.control_sha }}
+      workflow_ref: ${{ steps.verify.outputs.workflow_ref }}
       is_recovery: ${{ steps.resolve.outputs.is_recovery }}
+      is_finalize: ${{ steps.resolve.outputs.is_finalize }}
+      publish_mode: ${{ steps.mode.outputs.publish_mode }}
       allow_downgrade: ${{ steps.ack.outputs.allow_downgrade }}
     steps:
+      # The control checkout (this workflow's own commit) provides the helper
+      # scripts; a recovery tag's tree predates them.
+      - name: Checkout release control scripts
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .release-control
+          persist-credentials: false
+
       - name: Resolve requested release context
         id: resolve
         shell: bash
@@ -132,129 +188,61 @@ jobs:
           EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
           REQUESTED_TAG: ${{ inputs.release_tag }}
           DRY_RUN: ${{ inputs.dry_run }}
+          FINALIZE_ONLY: ${{ inputs.finalize_only }}
           TRIGGER_REF: ${{ github.ref }}
           TRIGGER_SHA: ${{ github.sha }}
-        run: |
-          RELEASE_TAG=""
-          CHECKOUT_REF="$TRIGGER_SHA"
-          IS_RECOVERY=false
-
-          if [[ "$EVENT_NAME" == "release" ]]; then
-            RELEASE_TAG="$EVENT_RELEASE_TAG"
-          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            if [[ -n "$REQUESTED_TAG" ]]; then
-              if [[ "$TRIGGER_REF" != "refs/heads/main" ]]; then
-                echo "::error::Tag recovery must run the reviewed workflow from refs/heads/main; got '${TRIGGER_REF}'."
-                exit 1
-              fi
-              RELEASE_TAG="$REQUESTED_TAG"
-              IS_RECOVERY=true
-            elif [[ "$TRIGGER_REF" =~ ^refs/tags/v ]]; then
-              # Backward-compatible manual dispatch for tags containing this
-              # recovery implementation. Existing broken tags should instead
-              # dispatch main with release_tag set explicitly.
-              RELEASE_TAG="${TRIGGER_REF#refs/tags/}"
-            elif [[ "$DRY_RUN" != "true" ]]; then
-              echo "::error::A real manual release requires release_tag=vX.Y.Z and must be dispatched from main."
-              echo "::error::Branch smoke tests must use dry_run=true."
-              exit 1
-            fi
-          else
-            echo "::error::Unsupported release trigger: '${EVENT_NAME}'."
-            exit 1
-          fi
-
-          if [[ -n "$RELEASE_TAG" ]]; then
-            if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(next|beta|rc)\.(0|[1-9][0-9]*))?$ ]]; then
-              echo "::error::Release tag '${RELEASE_TAG}' is not an allowed v* semver tag."
-              exit 1
-            fi
-            CHECKOUT_REF="$RELEASE_TAG"
-          fi
-
-          {
-            echo "release_tag=$RELEASE_TAG"
-            echo "checkout_ref=$CHECKOUT_REF"
-            echo "is_recovery=$IS_RECOVERY"
-          } >> "$GITHUB_OUTPUT"
-          echo "Resolved source ref: ${CHECKOUT_REF}${RELEASE_TAG:+ (release ${RELEASE_TAG})}"
+        run: bash .release-control/scripts/release/resolve-release-context.sh
 
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ steps.resolve.outputs.checkout_ref }}
+          path: source
           # The tag ref and its peeled commit must both be available for the
           # immutable-source assertion below.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Verify immutable source and published Release
         id: verify
         shell: bash
+        working-directory: source
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ steps.resolve.outputs.release_tag }}
+          CONTROL_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          CHECKOUT_SHA=$(git rev-parse HEAD)
+          # fetch-depth: 0 already brings refs/remotes/origin/main; refresh it
+          # explicitly so the ancestry check reads main as of this run.
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          bash ../.release-control/scripts/release/verify-release-source.sh
 
-          # A tag-less context is permitted only for the branch dry-run already
-          # admitted by the resolver above.
-          if [[ -z "$RELEASE_TAG" ]]; then
-            echo "checkout_sha=$CHECKOUT_SHA" >> "$GITHUB_OUTPUT"
-            echo "Verified dry-run source commit: $CHECKOUT_SHA"
-            exit 0
+      # npm publish mode. A main-based recovery normally runs control scripts
+      # newer than the source, so GitHub's OIDC identity (the control commit)
+      # does not describe the artifacts: recovery-no-provenance. When the
+      # dispatch's control commit IS the source commit, that identity is
+      # truthful, so the normal mac-local mode keeps honest provenance.
+      - name: Resolve npm publish mode
+        id: mode
+        shell: bash
+        env:
+          IS_RECOVERY: ${{ steps.resolve.outputs.is_recovery }}
+          SOURCE_COMMIT: ${{ steps.verify.outputs.source_commit }}
+          CONTROL_SHA: ${{ github.sha }}
+        run: |
+          MODE=mac-local
+          if [[ "$IS_RECOVERY" == "true" && "$SOURCE_COMMIT" != "$CONTROL_SHA" ]]; then
+            MODE=recovery-no-provenance
           fi
+          echo "publish_mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "publish mode: $MODE (recovery=$IS_RECOVERY, source=$SOURCE_COMMIT, control=$CONTROL_SHA)"
 
-          if ! git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"; then
-            echo "::error::Tag ref refs/tags/${RELEASE_TAG} was not fetched."
-            exit 1
-          fi
-          TAG_SHA=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
-          if [[ "$CHECKOUT_SHA" != "$TAG_SHA" ]]; then
-            echo "::error::Checked-out commit ${CHECKOUT_SHA} does not match ${RELEASE_TAG} (${TAG_SHA})."
-            exit 1
-          fi
-
-          EXPECTED_VERSION="${RELEASE_TAG#v}"
-          ACTUAL_VERSION=$(node -p "require('./packages/zfb/package.json').version")
-          if [[ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]]; then
-            echo "::error::packages/zfb version '${ACTUAL_VERSION}' does not match tag '${RELEASE_TAG}'."
-            exit 1
-          fi
-          echo "release_version=$EXPECTED_VERSION" >> "$GITHUB_OUTPUT"
-
-          if ! RELEASE_JSON=$(gh release view "$RELEASE_TAG" \
-            --json tagName,isDraft,publishedAt,targetCommitish,url); then
-            echo "::error::No GitHub Release exists for ${RELEASE_TAG}."
-            exit 1
-          fi
-          ACTUAL_TAG=$(jq -r '.tagName' <<<"$RELEASE_JSON")
-          IS_DRAFT=$(jq -r '.isDraft' <<<"$RELEASE_JSON")
-          PUBLISHED_AT=$(jq -r '.publishedAt // empty' <<<"$RELEASE_JSON")
-          TARGET_COMMITISH=$(jq -r '.targetCommitish // empty' <<<"$RELEASE_JSON")
-          RELEASE_URL=$(jq -r '.url' <<<"$RELEASE_JSON")
-          if [[ "$ACTUAL_TAG" != "$RELEASE_TAG" || "$IS_DRAFT" != "false" || -z "$PUBLISHED_AT" ]]; then
-            echo "::error::${RELEASE_TAG} must identify an existing published, non-draft GitHub Release."
-            exit 1
-          fi
-
-          # When the Release records an exact commit rather than a branch name,
-          # require it to resolve to the same commit as the tag.
-          if [[ "$TARGET_COMMITISH" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
-            TARGET_SHA=$(git rev-parse "${TARGET_COMMITISH}^{commit}")
-            if [[ "$TARGET_SHA" != "$TAG_SHA" ]]; then
-              echo "::error::Release target ${TARGET_COMMITISH} (${TARGET_SHA}) does not match tag ${RELEASE_TAG} (${TAG_SHA})."
-              exit 1
-            fi
-          fi
-
-          echo "checkout_sha=$CHECKOUT_SHA" >> "$GITHUB_OUTPUT"
-          echo "Verified ${RELEASE_TAG} -> ${CHECKOUT_SHA} | version ${ACTUAL_VERSION} | ${RELEASE_URL}"
-
-      # A2 (#3140): resolve whether an npm provenance trust downgrade (fast-Mac
-      # or main-based recovery publish, neither of which can carry OIDC
-      # provenance for every package) has been explicitly acknowledged for this
-      # run. Default-deny — anything other than an exact marker/input match
-      # leaves allow_downgrade=false, and the preflight steps below then block
-      # the run on any detected downgrade.
+      # A2 (#3140): resolve whether an npm provenance trust downgrade has been
+      # explicitly acknowledged for this run. Default-deny — anything other
+      # than an exact marker/input match leaves allow_downgrade=false, and the
+      # provenance-preflight job then blocks the run on any detected downgrade.
       - name: Resolve provenance-downgrade acknowledgement
         id: ack
         shell: bash
@@ -284,200 +272,229 @@ jobs:
           echo "allow_downgrade=$ALLOW" >> "$GITHUB_OUTPUT"
           echo "Provenance-downgrade acknowledgement: $ALLOW"
 
-  # A2: detect whether a locally-built macOS-x64 archive has been pre-uploaded
-  # to the GH Release. Runs before prepare-matrix so the result can gate the
-  # darwin-x64 build leg. On workflow_dispatch with skip_macos_x64=true the
-  # manual override short-circuits the query and outputs true directly.
-  detect-mac-local:
-    name: Detect pre-uploaded macOS-x64 archive
+  # Required CI of the SOURCE commit (the main ruleset's contexts, on exactly
+  # that SHA). Gates every non-dry-run publication and finalization; a dry run
+  # reports it without failing.
+  source-ci:
+    name: Verify source commit required CI
     needs: release-context
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: read
-    outputs:
-      mac_local_present: ${{ steps.detect.outputs.mac_local_present }}
-      preflight_cleared: ${{ steps.preflight.outputs.cleared }}
+      contents: read # checkout of the control scripts
+      checks: read # check runs on the source commit
+      statuses: read # commit statuses on the source commit
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
-          ref: ${{ needs.release-context.outputs.checkout_sha }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
-      - id: detect
+      - name: Verify required CI on the source commit
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EVENT_NAME: ${{ github.event_name }}
-          SKIP_MACOS_X64: ${{ inputs.skip_macos_x64 }}
-          TAG: ${{ needs.release-context.outputs.release_tag }}
+          SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          # Manual override: workflow_dispatch with skip_macos_x64=true always
-          # reports present so no Release query is needed.
-          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$SKIP_MACOS_X64" == "true" ]]; then
-            echo "workflow_dispatch + skip_macos_x64=true — reporting mac_local_present=true (manual override)"
-            echo "mac_local_present=true" >> "$GITHUB_OUTPUT"
+          set +e
+          node scripts/release/verify-source-ci.mjs --sha "$SOURCE_COMMIT" | tee "$RUNNER_TEMP/source-ci.txt"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          {
+            echo "### Source commit required CI"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/source-ci.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$STATUS" -eq 0 ]]; then exit 0; fi
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "::warning::Source commit ${SOURCE_COMMIT} required CI is not passed (exit ${STATUS}); dry run continues, a real release would stop here."
             exit 0
           fi
+          echo "::error::Source commit ${SOURCE_COMMIT} required CI is not passed (exit ${STATUS}). Pending, cancelled, skipped-by-failure, failed and missing are not passed. Wait for or fix CI on that exact SHA; nothing was published."
+          exit 1
 
-          # Tag-less branch dry-runs have no Release to query. Recovery dispatches
-          # do have a verified tag and follow the same detection path as release events.
-          if [[ -z "$TAG" ]]; then
-            echo "No release tag in this context — reporting mac_local_present=false"
-            echo "mac_local_present=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # release: published — query the GH Release for both the archive and its
-          # .sha256 companion. A missing Release yields empty output (|| true guard),
-          # which is treated as false.
-          ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
-          ARCHIVE="zfb-${ZFB_SEMVER}-x86_64-apple-darwin.tar.gz"
-          echo "Querying GH Release '${TAG}' for '${ARCHIVE}' and '${ARCHIVE}.sha256'"
-
-          ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null || echo "")
-
-          TAR_PRESENT=false
-          SHA_PRESENT=false
-          ADDON="zfb-css-${ZFB_SEMVER}-x86_64-apple-darwin.node"
-          ADDON_PRESENT=false
-          # Older recovery tags predate the CSS API and have only the archive.
-          if ! node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then ADDON_PRESENT=true; fi
-          if grep -Fxq "$ADDON" <<<"$ASSETS" && grep -Fxq "${ADDON}.sha256" <<<"$ASSETS"; then ADDON_PRESENT=true; fi
-          if echo "$ASSETS" | grep -Fxq "$ARCHIVE"; then
-            TAR_PRESENT=true
-          fi
-          if echo "$ASSETS" | grep -Fxq "${ARCHIVE}.sha256"; then
-            SHA_PRESENT=true
-          fi
-
-          if [[ "$TAR_PRESENT" == "true" && "$SHA_PRESENT" == "true" && "$ADDON_PRESENT" == "true" ]]; then
-            echo "Both macOS-x64 assets found on the Release — reporting mac_local_present=true"
-            echo "mac_local_present=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$TAR_PRESENT" == "true" && "$SHA_PRESENT" == "false" ]]; then
-            echo "::warning::macOS-x64 archive '${ARCHIVE}' is present but '${ARCHIVE}.sha256' is missing. Treating as not present (mac_local_present=false). Upload both files to the GH Release to use the fast-Mac path."
-            echo "mac_local_present=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "macOS-x64 archive not found on the Release — reporting mac_local_present=false"
-            echo "mac_local_present=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # A2 (#3140): the checkout above is pinned to checkout_sha, which for a
-      # recovery run is an old release-tag tree that predates this preflight
-      # script. Mirror the publish job's `.release-control` pattern — check out
-      # the workflow's own commit separately, without replacing the release
-      # source tree, so the script always exists regardless of which tag is
-      # being built.
-      - name: Checkout provenance preflight control script
-        if: ${{ inputs.dry_run != true && steps.detect.outputs.mac_local_present == 'true' }}
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+  # A2 (#3140) / #4690: before any build, block a publish that would be an npm
+  # provenance trust downgrade unless explicitly acknowledged. Normal releases
+  # publish both Darwin carriers without provenance (mac-local); main-based
+  # recovery publishes every package without provenance. Skipped for dry runs
+  # and finalization (nothing is published).
+  provenance-preflight:
+    name: Provenance downgrade preflight
+    needs: release-context
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # checkout of the control scripts
+    outputs:
+      cleared: ${{ steps.preflight.outputs.cleared }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ github.sha }}
-          path: .release-control
+          persist-credentials: false
 
-      # A2 (#3140): before any build leg runs, block a fast-Mac publish that
-      # would be an npm provenance trust downgrade for @takazudo/zfb-darwin-x64
-      # unless explicitly acknowledged. Skipped on dry runs (no release_version
-      # is resolved for a tag-less dry run, and nothing is actually published).
-      - name: Provenance downgrade preflight (fast-Mac)
+      - name: Provenance downgrade preflight
         id: preflight
-        if: ${{ inputs.dry_run != true && steps.detect.outputs.mac_local_present == 'true' }}
+        if: ${{ inputs.dry_run != true && needs.release-context.outputs.is_finalize != 'true' }}
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
           ALLOW_DOWNGRADE: ${{ needs.release-context.outputs.allow_downgrade }}
+          PUBLISH_MODE: ${{ needs.release-context.outputs.publish_mode }}
         run: |
+          if [[ "$PUBLISH_MODE" == "recovery-no-provenance" ]]; then
+            MODE_ARGS=(--mode recovery-no-provenance)
+            SCOPE="every package (main-based recovery)"
+          else
+            MODE_ARGS=(--mode mac-local --package @takazudo/zfb-darwin-arm64 --package @takazudo/zfb-darwin-x64)
+            SCOPE="@takazudo/zfb-darwin-arm64 and @takazudo/zfb-darwin-x64 (owner-Mac carriers)"
+          fi
+          # The owner's provenance policy is read from main's git object only
+          # (release/provenance-policy.json at origin/main), never from this
+          # checkout's working tree or the release commit.
+          git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
           set +e
-          node .release-control/scripts/check-provenance-preflight.mjs --version "$RELEASE_VERSION" --mode mac-local
+          node scripts/check-provenance-preflight.mjs --version "$RELEASE_VERSION" "${MODE_ARGS[@]}"
           STATUS=$?
           set -e
           if [[ "$STATUS" -eq 0 ]]; then
             echo "cleared=true" >> "$GITHUB_OUTPUT"
           elif [[ "$STATUS" -eq 1 ]]; then
             if [[ "$ALLOW_DOWNGRADE" == "true" ]]; then
-              echo "::warning::Publishing @takazudo/zfb-darwin-x64 via the fast-Mac path would be an npm provenance trust downgrade (an earlier version carries an attestation). Acknowledged for this run — proceeding. Consumers with pnpm's trustPolicy=no-downgrade will fail to install @takazudo/zfb-darwin-x64@<this version>."
+              echo "::warning::Publishing ${SCOPE} without provenance is an npm provenance trust downgrade (an earlier version carries an attestation). Acknowledged for this run — proceeding. Consumers with pnpm's trustPolicy=no-downgrade will fail to install it."
               {
-                echo "### :warning: npm provenance trust downgrade acknowledged (fast-Mac)"
+                echo "### :warning: npm provenance trust downgrade acknowledged"
                 echo
-                echo "\`@takazudo/zfb-darwin-x64\` is published without provenance via the fast-Mac path in this run, and an earlier version already carries an attestation — a provenance trust downgrade. This was explicitly acknowledged."
+                echo "${SCOPE} is published without provenance in this run, and an earlier version already carries an attestation — a provenance trust downgrade. This was explicitly acknowledged by the owner."
                 echo
-                echo "**Consumers with npm/pnpm \`trust-policy=no-downgrade\` will fail to install this version of \`@takazudo/zfb-darwin-x64\`.**"
+                echo "**Consumers with npm/pnpm \`trust-policy=no-downgrade\` will fail to install it.**"
               } >> "$GITHUB_STEP_SUMMARY"
               echo "cleared=true" >> "$GITHUB_OUTPUT"
             else
-              echo "::error::Provenance trust downgrade detected for the fast-Mac publish and not acknowledged. Add '<!-- zfb-release: allow-provenance-downgrade -->' as its own line in the Release body, or re-run workflow_dispatch with allow_provenance_downgrade=true, to proceed anyway."
+              echo "::error::Provenance trust downgrade detected for ${SCOPE} and not acknowledged. Only the owner may proceed: add '<!-- zfb-release: allow-provenance-downgrade -->' as its own line in the Release body before publishing it, or dispatch from main with allow_provenance_downgrade=true. Nothing was built or published."
               exit 1
             fi
           else
-            echo "::error::Provenance preflight (mac-local) failed with a registry error (exit ${STATUS}) — failing closed. Retry the release."
+            echo "::error::Provenance preflight failed with a registry error (exit ${STATUS}) — failing closed. Retry the release."
             exit 1
           fi
 
-  # Emits the build matrix as JSON so the darwin-x64 leg can be conditionally
-  # dropped (GitHub's static `matrix.exclude` cannot reference inputs or job
-  # outputs). The full matrix lives here as the single source of truth; jq
-  # removes the x86_64-apple-darwin entry when mac_local_present is true.
-  prepare-matrix:
-    name: Prepare build matrix
-    needs: detect-mac-local
+  # #4690: admit the ten owner-Mac Darwin inputs from the Release. Tag-less
+  # branch dry runs have no Release and skip admission (their publish/assembly
+  # path never needs Darwin bytes).
+  admit-darwin:
+    name: Admit owner-Mac Darwin artifacts
+    needs: release-context
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
+    permissions:
+      contents: read # checkouts + `gh release view/download` of the Release assets
     outputs:
-      settings: ${{ steps.set.outputs.settings }}
+      admitted: ${{ steps.admit.outputs.admitted }}
     steps:
-      - id: set
+      - name: Tag-less dry run — Darwin admission not applicable
+        if: ${{ needs.release-context.outputs.release_tag == '' }}
+        shell: bash
+        run: echo "No release tag in this context (branch dry run); no Darwin inputs exist to admit."
+
+      # Control scripts at the workspace root (recovery tags predate them).
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        if: ${{ needs.release-context.outputs.release_tag != '' }}
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # The source commit's git objects decide the admitted input digests.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        if: ${{ needs.release-context.outputs.release_tag != '' }}
+        with:
+          ref: ${{ needs.release-context.outputs.source_commit }}
+          path: .release-source
+          persist-credentials: false
+
+      - name: Download and admit the ten Darwin inputs
+        id: admit
         shell: bash
         env:
-          MAC_LOCAL_PRESENT: ${{ needs.detect-mac-local.outputs.mac_local_present }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
+          SOURCE_TREE: ${{ needs.release-context.outputs.source_tree }}
         run: |
-          ALL='[
-            {"host":"macos-latest","target":"aarch64-apple-darwin","platform":"darwin-arm64","binary":"zfb","archive_ext":"tar.gz"},
-            {"host":"macos-15-intel","target":"x86_64-apple-darwin","platform":"darwin-x64","binary":"zfb","archive_ext":"tar.gz"},
-            {"host":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","platform":"linux-x64-gnu","binary":"zfb","archive_ext":"tar.gz","use_cross":true},
-            {"host":"ubuntu-latest","target":"aarch64-unknown-linux-gnu","platform":"linux-arm64-gnu","binary":"zfb","archive_ext":"tar.gz","use_cross":true,"qemu":true},
-            {"host":"windows-latest","target":"x86_64-pc-windows-msvc","platform":"win32-x64-msvc","binary":"zfb.exe","archive_ext":"zip"}
-          ]'
-          # Both Linux legs build inside cross containers pinned in Cross.toml so the
-          # binaries never require more than GLIBC_2.34 (#3623: Amazon Linux 2023 /
-          # RHEL 9-class distros). The host runner's glibc no longer matters for the
-          # x86_64 leg, so it is not tied to a specific ubuntu-* label. `qemu` marks
-          # the leg whose binary cannot execute on the host and is verified under
-          # QEMU instead.
-          # x86_64-apple-darwin runs on macos-15-intel, NOT macos-13: the macOS 13
-          # image was retired 2025-12-04 and a job requesting it queues forever
-          # rather than failing fast — which would hang `publish` (it needs `build`)
-          # and silently block the npm release. This leg only runs when the Mac
-          # archive was NOT pre-uploaded, so the dead label went unnoticed for 8+
-          # releases. macos-15-intel is the x86_64 image selected here; GitHub also
-          # lists macos-26-intel, so revisit this leg when the selected image retires
-          # in Fall 2027.
-          if [[ "$MAC_LOCAL_PRESENT" == "true" ]]; then
-            SETTINGS="$(echo "$ALL" | jq -c '[.[] | select(.target != "x86_64-apple-darwin")]')"
-            echo "mac_local_present=true → dropping the x86_64-apple-darwin (macos-15-intel) build leg"
-          else
-            SETTINGS="$(echo "$ALL" | jq -c '.')"
+          if [[ -z "$RELEASE_TAG" ]]; then
+            echo "admitted=not-applicable" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          echo "Resolved build matrix:"
-          echo "$SETTINGS" | jq '.'
-          echo "settings=$SETTINGS" >> "$GITHUB_OUTPUT"
+          bash scripts/release/admit-release-darwin.sh \
+            --tag "$RELEASE_TAG" --version "$RELEASE_VERSION" \
+            --source-commit "$SOURCE_COMMIT" --source-tree "$SOURCE_TREE" \
+            --repo-root .release-source --out "$RUNNER_TEMP/darwin-admission" \
+            --control-dir scripts
+          echo "admitted=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Darwin admission: admitted"
+            echo
+            jq -r '.targets | to_entries[] | "- `\(.key)` \(.value.arch_label): binary `\(.value.binary.sha256)`, addon `\(.value.addon.sha256)`"' \
+              "$RUNNER_TEMP/darwin-admission/verdict.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The admitted bytes travel to release-assets/publish/finalize through
+      # this artifact; they re-verify every digest against verdict.json before
+      # use. Uploaded on rejection too, as evidence.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() && needs.release-context.outputs.release_tag != '' }}
+        with:
+          name: darwin-admission
+          path: ${{ runner.temp }}/darwin-admission
+          if-no-files-found: ignore
+          retention-days: 3
 
   build:
-    needs: [prepare-matrix, release-context]
+    needs: [release-context, provenance-preflight, admit-darwin]
+    if: ${{ needs.release-context.outputs.is_finalize != 'true' }}
     name: Build ${{ matrix.settings.target }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
-        # Dynamic matrix from prepare-matrix — the darwin-x64 leg is dropped when
-        # mac_local_present=true (detect-mac-local job). See the prepare-matrix job above.
-        settings: ${{ fromJSON(needs.prepare-matrix.outputs.settings) }}
+        # Hosted legs only. Both Darwin targets come from the owner's Mac and
+        # are admitted by the admit-darwin job (#4690); no macOS runner is used.
+        # Both Linux legs build inside cross containers pinned in Cross.toml so
+        # the binaries never require more than GLIBC_2.34 (#3623: Amazon Linux
+        # 2023 / RHEL 9-class distros). `qemu` marks the leg whose binary cannot
+        # execute on the host and is verified under QEMU instead.
+        settings:
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x64-gnu
+            binary: zfb
+            archive_ext: tar.gz
+            use_cross: true
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            platform: linux-arm64-gnu
+            binary: zfb
+            archive_ext: tar.gz
+            use_cross: true
+            qemu: true
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: win32-x64-msvc
+            binary: zfb.exe
+            archive_ext: zip
     runs-on: ${{ matrix.settings.host }}
-    # The native Intel leg has two independent cold Rust builds. The 5.2.1
-    # run exhausted 45 minutes during the addon build; 90 is an operating
-    # allowance to validate, not a guarantee of host throughput.
-    timeout-minutes: ${{ matrix.settings.target == 'x86_64-apple-darwin' && 90 || 45 }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ needs.release-context.outputs.checkout_sha }}
+          persist-credentials: false
 
       # pnpm version is read from package.json's "packageManager" field
       # (pnpm@12.8.2). action-setup@v4 errors out if BOTH "version:" here
@@ -745,7 +762,10 @@ jobs:
   build-wasm-md:
     name: Build @takazudo/zfb-md-wasm npm package
     needs: release-context
+    if: ${{ needs.release-context.outputs.is_finalize != 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # Keep this exact timeout to match health.yml: four wasm-release passes,
     # package tests, pack, and the checksum-verified prebuilt wasm-bindgen
     # install fit here.
@@ -754,6 +774,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ needs.release-context.outputs.checkout_sha }}
+          persist-credentials: false
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
@@ -895,29 +916,24 @@ jobs:
           retention-days: 1
 
   release-assets:
-    # Attaches all 5 archives + 5 sha256 files to the GitHub Release.
-    # Runs after all platform builds complete to avoid first-vs-append GH Release
-    # race conditions. Skipped on dry_run; release-context guarantees that a
-    # real run has a verified existing published tag even during main recovery.
+    # Reconciles the 3 hosted archives + their sha256 files onto the Release
+    # (missing → upload, identical → skip, different → fail; never --clobber),
+    # and verifies the 10 owner-Mac Darwin inputs are still exactly the
+    # admitted bytes (they are uploaded by the owner, never by this job).
+    # Runs after all hosted builds to avoid first-vs-append races.
     name: Upload GitHub Release assets
-    needs: [build, release-context]
+    needs: [build, release-context, admit-darwin, source-ci]
+    if: ${{ needs.release-context.outputs.is_finalize != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write
+      contents: write # Release asset upload
     steps:
+      # Control scripts (recovery tags predate the reconcile helper).
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
-          ref: ${{ needs.release-context.outputs.checkout_sha }}
-
-      - name: Resolve version
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
-        run: |
-          ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
-          echo "ZFB_SEMVER=$ZFB_SEMVER" >> "$GITHUB_ENV"
-          echo "Tag: $RELEASE_TAG | semver: $ZFB_SEMVER"
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Download all archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -934,7 +950,7 @@ jobs:
         if: ${{ inputs.dry_run == true }}
         shell: bash
         run: |
-          echo "DRY RUN — would have uploaded the following assets to GH Release:"
+          echo "DRY RUN — would have reconciled the following assets onto the GH Release:"
           ls release-assets/
           echo "Set dry_run=false with a verified release context to upload these assets."
 
@@ -956,67 +972,67 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
         run: |
-          # The Release already exists and was verified by release-context.
-          # Upload assets directly instead of using an action that also PATCHes
-          # Release metadata: on a main-based recovery that metadata update is
-          # evaluated against refs/heads/main and can 403 even though asset
-          # upload permission is present. --clobber keeps partial-run retries
-          # idempotent without changing the Release body/channel/tag.
-          shopt -s nullglob
-          ASSETS=(release-assets/*)
-          if [[ ${#ASSETS[@]} -eq 0 ]]; then
-            echo "::error::No collected Release assets found."
-            exit 1
-          fi
-          gh release upload "$RELEASE_TAG" "${ASSETS[@]}" --clobber
+          # Direct asset uploads only — never a Release metadata PATCH, which a
+          # main-based recovery would evaluate against refs/heads/main.
+          node scripts/release/reconcile-release-assets.mjs --tag "$RELEASE_TAG" --dir release-assets
 
-  publish:
-    # Publishes all workspace packages once all platform binaries are built.
-    # scripts/publish-npm-packages.sh follows the dependency graph:
-    #   platform packages → @takazudo/zfb-slugify → @takazudo/zfb → @takazudo/zfb-runtime → @takazudo/zfb-adapter-cloudflare → create-zfb
-    # pnpm (not npm) is used so workspace:* peer-deps are rewritten at publish time.
-    # @takazudo/zfb-md-wasm (needs: build-wasm-md) is a separate, unrelated
-    # dependency graph (crates/zfb-md-wasm/npm) — it's just published
-    # alongside the rest, see the "Download @takazudo/zfb-md-wasm dist
-    # artifact" step below.
-    needs: [build, detect-mac-local, build-wasm-md, release-context]
+      - name: Download admitted Darwin inputs
+        if: ${{ needs.release-context.outputs.release_tag != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: darwin-admission
+          path: ${{ runner.temp }}/darwin-admission
+
+      # Read-only: owner-uploaded Darwin assets must still be the admitted bytes.
+      - name: Verify owner-uploaded Darwin assets are unchanged since admission
+        if: ${{ needs.release-context.outputs.release_tag != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
+        run: |
+          node scripts/release/reconcile-release-assets.mjs --tag "$RELEASE_TAG" \
+            --dir "$RUNNER_TEMP/darwin-admission/inputs" --verify-only
+
+  # Assembles and packs every npm tarball WITHOUT the npm OIDC credential
+  # (#4690): dependency install, package build/test (each workspace package's
+  # prepublishOnly) and packing run here; the publish job only verifies and
+  # uploads these exact bytes. Darwin carrier bytes come only from the admitted
+  # owner-Mac inputs. Tag-less branch dry runs build but do not pack (they have
+  # no Darwin bytes).
+  pack:
+    name: Pack npm tarballs
+    needs: [build, build-wasm-md, release-context, source-ci, provenance-preflight, admit-darwin]
+    if: ${{ needs.release-context.outputs.is_finalize != 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
-      contents: write
-      # id-token: write enables npm OIDC-attested provenance via --provenance below.
-      # Each published tarball carries a signed attestation linking to the GHA run + commit SHA.
-      id-token: write
-    outputs:
-      dist_tag: ${{ steps.dist-tag.outputs.dist_tag }}
+      contents: read # checkouts only; no id-token here on purpose
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ needs.release-context.outputs.checkout_sha }}
+          persist-credentials: false
 
-      # The verified source checkout above intentionally contains the release
-      # tag's old helper scripts. Recovery needs the newly-fixed publish helper
-      # from the workflow commit on main, so check that immutable control commit
-      # out separately without replacing the tag source tree.
-      - name: Checkout recovery control scripts
-        if: ${{ needs.release-context.outputs.is_recovery == 'true' }}
+      # Pack/placement helpers come from the control commit (recovery tags
+      # predate them), checked out beside the source tree.
+      - name: Checkout release control scripts
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ github.sha }}
           path: .release-control
+          persist-credentials: false
 
-      # pnpm version is read from package.json's "packageManager" field
-      # (pnpm@12.8.2). action-setup@v4 errors out if BOTH "version:" here
-      # and "packageManager:" in package.json are set — pick one. We pick
-      # package.json so the version is single-source-of-truth.
+      # pnpm version is read from package.json's "packageManager" field.
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: 24.14.0
-          registry-url: "https://registry.npmjs.org"
+          node-version: 24.22.1
           cache: "pnpm"
 
       - name: Download all platform binaries
@@ -1026,69 +1042,27 @@ jobs:
           path: artifacts
           merge-multiple: false
 
-      # Fast-Mac gate (A2): when detect-mac-local found the pre-uploaded archive,
-      # download and extract the binary so @takazudo/zfb-darwin-x64 can be
-      # published without running the macos-15-intel build leg. detect-mac-local already
-      # verified both the archive and its .sha256 are present before outputting true.
-      - name: Verify + fetch pre-built macOS-x64 archive from GH Release
-        if: ${{ needs.detect-mac-local.outputs.mac_local_present == 'true' && inputs.dry_run != true }}
+      - name: Download admitted Darwin inputs
+        if: ${{ needs.release-context.outputs.release_tag != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: darwin-admission
+          path: ${{ runner.temp }}/darwin-admission
+
+      # The ONLY source of Darwin carrier bytes: the admitted owner-Mac inputs,
+      # re-verified against verdict.json right before they are placed.
+      - name: Place admitted Darwin binaries in platform packages
+        if: ${{ needs.release-context.outputs.release_tag != '' }}
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
         run: |
-          TAG="$RELEASE_TAG"
-          ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
-          ARCHIVE="zfb-${ZFB_SEMVER}-x86_64-apple-darwin.tar.gz"
-          echo "Fetching pre-built macOS-x64 asset from GH Release ${TAG}: ${ARCHIVE} (+ .sha256)"
-
-          ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name')
-          ADDON="zfb-css-${ZFB_SEMVER}-x86_64-apple-darwin.node"
-          ASSET_FILES=("$ARCHIVE" "${ARCHIVE}.sha256")
-          HAS_CSS=false
-          if node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then
-            HAS_CSS=true
-            ASSET_FILES+=("$ADDON" "${ADDON}.sha256")
-          fi
-          for f in "${ASSET_FILES[@]}"; do
-            if ! grep -Fxq "$f" <<<"$ASSETS"; then
-              echo "::error::mac_local_present=true but '${f}' is not attached to GH Release ${TAG}."
-              echo "::error::Run ./scripts/build-macos-x64-local.sh --upload ${TAG} on a Mac first."
-              echo "Assets currently on the release:"; echo "$ASSETS"
-              exit 1
-            fi
-          done
-          echo "Both macOS-x64 assets present on the release."
-
-          PATTERNS=()
-          for f in "${ASSET_FILES[@]}"; do PATTERNS+=(--pattern "$f"); done
-          gh release download "$TAG" "${PATTERNS[@]}" --dir prebuilt-macos-x64 --clobber
-
-          # Validate the archive against its published checksum before trusting
-          # it — guards against a corrupted/interrupted upload or an independent
-          # clobber putting a mismatched binary on the Release.
-          ( cd prebuilt-macos-x64 && sha256sum -c "${ARCHIVE}.sha256" )
-
-          tar -C prebuilt-macos-x64 -xzf "prebuilt-macos-x64/${ARCHIVE}"
-          if [[ ! -f prebuilt-macos-x64/zfb ]]; then
-            echo "::error::Archive ${ARCHIVE} did not contain a 'zfb' binary at its root."
-            exit 1
-          fi
-          if [[ "$HAS_CSS" == true ]]; then
-            ( cd prebuilt-macos-x64 && sha256sum -c "${ADDON}.sha256" )
-            cp "prebuilt-macos-x64/$ADDON" packages/zfb-darwin-x64/zfb-css.node
-          fi
-          cp prebuilt-macos-x64/zfb packages/zfb-darwin-x64/zfb
-          chmod +x packages/zfb-darwin-x64/zfb
-          echo "Placed locally-built macOS-x64 binary into packages/zfb-darwin-x64/zfb"
+          node .release-control/scripts/release/place-darwin-carriers.mjs \
+            --verdict "$RUNNER_TEMP/darwin-admission/verdict.json" \
+            --inputs "$RUNNER_TEMP/darwin-admission/inputs" \
+            --packages-root .
 
       - name: Place CI-built binaries in platform packages
         shell: bash
         run: |
-          cp artifacts/binary-aarch64-apple-darwin/zfb packages/zfb-darwin-arm64/zfb
-          if node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then
-            cp artifacts/binary-aarch64-apple-darwin/zfb-css.node packages/zfb-darwin-arm64/zfb-css.node
-          fi
           cp artifacts/binary-aarch64-unknown-linux-gnu/zfb packages/zfb-linux-arm64-gnu/zfb
           if node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then
             cp artifacts/binary-aarch64-unknown-linux-gnu/zfb-css.node packages/zfb-linux-arm64-gnu/zfb-css.node
@@ -1101,27 +1075,12 @@ jobs:
           if node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then
             cp artifacts/binary-x86_64-pc-windows-msvc/zfb-css.node packages/zfb-win32-x64-msvc/zfb-css.node
           fi
-          chmod +x packages/zfb-darwin-arm64/zfb
           chmod +x packages/zfb-linux-arm64-gnu/zfb
           chmod +x packages/zfb-linux-x64-gnu/zfb
 
-      # When mac_local_present=false, the macOS-x64 binary comes from the CI build artifact.
-      # When mac_local_present=true, it was placed by the "Verify + fetch" step above instead.
-      - name: Place CI-built macOS-x64 binary
-        if: ${{ needs.detect-mac-local.outputs.mac_local_present != 'true' }}
-        shell: bash
-        run: |
-          cp artifacts/binary-x86_64-apple-darwin/zfb packages/zfb-darwin-x64/zfb
-          if node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then
-            cp artifacts/binary-x86_64-apple-darwin/zfb-css.node packages/zfb-darwin-x64/zfb-css.node
-          fi
-          chmod +x packages/zfb-darwin-x64/zfb
-
-      # Built by the build-wasm-md job above (needs the Rust wasm32 toolchain
-      # + pinned wasm-bindgen-cli — this job installs neither). Downloaded
-      # straight into the package's dist/ so it's ready to pack/publish
-      # without a rebuild; see the "Build TypeScript packages" exclusion and
-      # publish-npm-packages.sh's --ignore-scripts handling for this package.
+      # Built by the build-wasm-md job (needs the Rust wasm32 toolchain +
+      # pinned wasm-bindgen-cli — this job installs neither). Downloaded
+      # straight into the package's dist/ so it is packed without a rebuild.
       - name: Download @takazudo/zfb-md-wasm dist artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1139,8 +1098,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # @takazudo/zfb-md-wasm is excluded: its dist/ was already built by the
-      # build-wasm-md job and downloaded above; this job has no Rust wasm32
-      # toolchain, so re-running its `build` script here would fail.
+      # build-wasm-md job and downloaded above.
       - name: Build TypeScript packages
         run: pnpm -r --filter '!./examples/*' --filter '!@takazudo/zfb-md-wasm' build
 
@@ -1148,68 +1106,141 @@ jobs:
         shell: bash
         run: node scripts/sync-platform-versions.mjs
 
+      # npm pack for carriers (0755 binary checked in the packed tgz), pnpm pack
+      # for workspace packages (workspace:* rewritten; prepublishOnly build+test
+      # runs first), MD/WASM from its prebuilt dist with its digest manifest
+      # verified. Writes manifest.json {name, version, file, integrity, provenance}.
+      - name: Pack npm tarballs
+        if: ${{ needs.release-context.outputs.release_tag != '' }}
+        shell: bash
+        env:
+          PUBLISH_MODE: ${{ needs.release-context.outputs.publish_mode }}
+          IS_RECOVERY: ${{ needs.release-context.outputs.is_recovery }}
+        run: |
+          ARGS=(--mode "$PUBLISH_MODE" --out "$RUNNER_TEMP/npm-tarballs" --root .
+            --admission "$RUNNER_TEMP/darwin-admission/verdict.json")
+          if [[ "$PUBLISH_MODE" == "mac-local" ]]; then
+            ARGS+=(--local-built "packages/zfb-darwin-arm64 packages/zfb-darwin-x64")
+          fi
+          if [[ "$IS_RECOVERY" != "true" ]]; then
+            ARGS+=(--md-wasm-manifest "$RUNNER_TEMP/wasm-md-shipped-artifacts/shipped-artifacts.json")
+          fi
+          node .release-control/scripts/release/pack-release-tarballs.mjs "${ARGS[@]}"
+          {
+            echo "### npm tarballs (mode \`$PUBLISH_MODE\`)"
+            echo
+            jq -r '.packages[] | "- `\(.name)@\(.version)` \(.provenance) `\(.integrity)`"' "$RUNNER_TEMP/npm-tarballs/manifest.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ needs.release-context.outputs.release_tag != '' }}
+        with:
+          name: npm-tarballs
+          path: ${{ runner.temp }}/npm-tarballs
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    # Publishes the pack job's tarballs. This job holds the npm OIDC credential
+    # (id-token: write), so it never checks out the release source, installs
+    # dependencies or runs package code: only the control scripts, node and the
+    # pinned npm. Each tarball's sha512 is verified against the pack manifest
+    # before anything is published, and every tarball's CONTENT is re-inspected
+    # here with control scripts (scripts/release/verify-release-tarballs.mjs via
+    # scripts/publish-npm-packages.sh) rather than trusting pack. Dry runs skip
+    # the whole job.
+    needs: [pack, release-context, source-ci, provenance-preflight, admit-darwin, release-assets]
+    if: ${{ needs.release-context.outputs.is_finalize != 'true' && inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # Control-script checkout only; the MD/WASM digest asset upload lives in
+      # md-wasm-asset, a separate job without id-token.
+      contents: read
+      # The npm credential: npm exchanges the job's GitHub ID token for a
+      # short-lived publish token (trusted publishing) and signs the provenance
+      # of every package published with --provenance. Also used by the
+      # dist-tag helpers (advance-latest, retire-next).
+      id-token: write
+    outputs:
+      dist_tag: ${{ steps.dist-tag.outputs.dist_tag }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # No `registry-url:` on purpose: with it, setup-node writes an .npmrc
+      # holding `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` and exports
+      # a placeholder NODE_AUTH_TOKEN — a token slot npm would use instead of
+      # failing loudly when the OIDC exchange fails. Node >= 24.15 is required by
+      # npm 12.2.1. No cache: nothing is installed here.
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.22.1
+
+      # npm 12.2.0 is the first npm whose OIDC exchange also covers
+      # `npm dist-tag add/rm`; pin the exact reviewed release.
+      - name: Install and assert pinned npm
+        shell: bash
+        run: |
+          npm install -g npm@12.2.1
+          NPM_VERSION="$(npm --version)"
+          echo "node $(node --version), npm ${NPM_VERSION}"
+          if [[ "$NPM_VERSION" != "12.2.1" ]]; then
+            echo "::error::expected npm 12.2.1 (OIDC for publish and dist-tag), got ${NPM_VERSION}"
+            exit 1
+          fi
+
+      - name: Download npm tarballs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-tarballs
+          path: ${{ runner.temp }}/npm-tarballs
+
+      - name: Download admitted Darwin inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: darwin-admission
+          path: ${{ runner.temp }}/darwin-admission
+
+      # build-wasm-md's own manifest: the publish job compares the packed
+      # MD/WASM manifest against it instead of trusting the pack job.
+      - name: Download @takazudo/zfb-md-wasm manifest artifact
+        if: ${{ needs.release-context.outputs.is_recovery != 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasm-md-shipped-artifacts
+          path: ${{ runner.temp }}/wasm-md-shipped-artifacts
+
       - name: Determine dist-tag
         id: dist-tag
         shell: bash
         env:
           RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
         run: |
-          TAG="$RELEASE_TAG"
-          if [[ "$TAG" =~ -next\. ]] || [[ "$TAG" =~ -beta\. ]] || [[ "$TAG" =~ -rc\. ]]; then
+          if [[ "$RELEASE_TAG" =~ -(next|beta|rc)\. ]]; then
             DIST_TAG="next"
           else
             DIST_TAG="latest"
           fi
           echo "DIST_TAG=$DIST_TAG" >> "$GITHUB_ENV"
           echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
-          echo "Resolved dist-tag: $DIST_TAG (from tag: $TAG)"
+          echo "Resolved dist-tag: $DIST_TAG (from tag: $RELEASE_TAG)"
 
-      # ── Prerelease dual-tag gate (fixes #481) ──────────────────────────────
-      # Background: npm assigns `latest` automatically on a package's FIRST
-      # publish, regardless of --tag.  Because we always publish prereleases
-      # with --tag next, `latest` froze at the very first publish (next.2) and
-      # never advanced — leaving documented `create zfb@latest` pointing at a
-      # broken release.
-      #
-      # Self-disabling policy: while the registry `latest` is empty (first ever
-      # publish) OR is itself a prerelease (contains "-"), we are still in the
-      # prerelease phase and must advance `latest` alongside `next`.  As soon as
-      # a real stable version is published as `latest` this step outputs
-      # ALSO_LATEST="" and the dist-tag-add block below is skipped — a
-      # prerelease can never clobber a real stable `latest` after launch.
-      #
-      # We use @takazudo/zfb as the signal package; lockstep guarantees that
-      # create-zfb and all platform packages carry the same version.
+      # Prerelease dual-tag gate (#481): while @takazudo/zfb has no `latest` or
+      # its `latest` is a prerelease, a `next` publish also advances `latest`.
+      # Only a definitive 404 counts as "no latest"; any other registry error
+      # fails closed (scripts/release/resolve-also-latest.mjs).
       - name: Check if latest should also advance (prerelease dual-tag)
         shell: bash
         run: |
-          if [[ "$DIST_TAG" != "next" ]]; then
-            echo "DIST_TAG is '$DIST_TAG' (not 'next') — dual-tag not applicable."
-            echo "ALSO_LATEST=" >> "$GITHUB_ENV"
-          else
-            CURRENT_LATEST=$(npm view @takazudo/zfb dist-tags.latest 2>/dev/null || echo "")
-            echo "Current @takazudo/zfb dist-tags.latest: '${CURRENT_LATEST}'"
-            # Empty (first publish) OR contains "-" (latest is itself a prerelease → still in prerelease phase)
-            if [[ -z "$CURRENT_LATEST" || "$CURRENT_LATEST" == *-* ]]; then
-              echo "ALSO_LATEST=1" >> "$GITHUB_ENV"
-              echo "Dual-tag ENABLED: will also advance 'latest' after publishing with --tag next."
-            else
-              echo "ALSO_LATEST=" >> "$GITHUB_ENV"
-              echo "Dual-tag DISABLED: latest='${CURRENT_LATEST}' is a stable release — skipping."
-            fi
-          fi
-
-      - name: DRY RUN — skip publish
-        if: ${{ inputs.dry_run == true }}
-        shell: bash
-        run: |
-          echo "DRY RUN — would have published all workspace packages with tag $DIST_TAG"
-          echo "Set dry_run=false to perform an actual publish."
+          ALSO_LATEST="$(node scripts/release/resolve-also-latest.mjs --dist-tag "$DIST_TAG")"
+          echo "ALSO_LATEST=${ALSO_LATEST}" >> "$GITHUB_ENV"
 
       # Defense in depth: release-context already verifies the exact tag commit,
       # published Release, and package version before any build starts.
       - name: Verify publish context (verified release tag required)
-        if: ${{ inputs.dry_run != true }}
         shell: bash
         env:
           RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
@@ -1219,140 +1250,98 @@ jobs:
             exit 1
           fi
 
-      # ── CI gate: verify binary mode in packed tarballs ────────────────────
-      # pnpm pack normalises all file modes to 0644 (issue #447 / #441).
-      # npm pack preserves the source file mode. This step asserts that each
-      # platform package's binary carries mode 0755 (493 decimal) in the
-      # tarball BEFORE we attempt to publish, so the job fails loudly if
-      # someone reverts to pnpm publish for these packages in the future.
-      # Windows (win32-x64-msvc / zfb.exe) is excluded — execute bits are
-      # not meaningful on Windows and npm/tar may report a different value.
-      - name: Verify binary mode in platform package tarballs
-        if: ${{ inputs.dry_run != true }}
-        shell: bash
-        run: |
-          FAILED=0
-          for dir in \
-            packages/zfb-darwin-arm64 \
-            packages/zfb-darwin-x64 \
-            packages/zfb-linux-arm64-gnu \
-            packages/zfb-linux-x64-gnu; do
-            BIN_NAME="zfb"
-            MODE=$(cd "$dir" && npm pack --dry-run --json 2>/dev/null \
-              | jq -r --arg b "$BIN_NAME" '.[] | .files[] | select(.path == $b) | .mode')
-            if [[ "$MODE" != "493" ]]; then
-              echo "::error::${dir}: binary '${BIN_NAME}' mode is '${MODE}', expected 493 (0755). Was pnpm publish used instead of npm publish?"
-              FAILED=1
-            else
-              echo "${dir}: binary '${BIN_NAME}' mode OK (${MODE} = 0755)"
-            fi
-          done
-          if [[ "$FAILED" -ne 0 ]]; then
-            exit 1
-          fi
-
-      # ── Publish ───────────────────────────────────────────────────────────
-      # The publish loop lives in scripts/publish-npm-packages.sh (shared by both
-      # the normal and mixed-provenance steps below). It is IDEMPOTENT (skips any
-      # <name>@<version> already on the registry) and TOLERANT of npm's double-PUT
-      # race (a lost-ACK retry that 403s "cannot publish over the previously
-      # published versions"), so a partial publish can be safely re-run and a
-      # transient network blip can't abort the release mid-way. See the script
-      # header and the v0.1.0-next.42 incident for the full rationale.
-      #
-      # Platform packages (zfb-darwin-*, zfb-linux-*, zfb-win32-*) are still
-      # published via `npm publish` (not pnpm): pnpm pack normalises file modes to
-      # 0644, stripping the binary's 0755 exec bit; npm preserves it (#447 / #441).
-      # Non-platform packages use `pnpm publish` so workspace:* deps are rewritten.
-      # DIST_TAG and ALSO_LATEST are inherited from $GITHUB_ENV (set above).
-
-      # Normal path: every package published with OIDC-attested --provenance.
+      # Normal path (#4690): both Darwin carriers hold admitted owner-Mac bytes
+      # and are published with --provenance=false; every other package with
+      # OIDC --provenance. Also used by a recovery whose control commit is the
+      # source commit (release-context's publish_mode).
       - name: Publish to npm
-        if: ${{ inputs.dry_run != true && needs.release-context.outputs.is_recovery != 'true' && needs.detect-mac-local.outputs.mac_local_present != 'true' }}
-        shell: bash
-        run: bash scripts/publish-npm-packages.sh all-provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      # Mixed-provenance path: the macOS-x64 binary was built locally (outside this
-      # GHA job) so it cannot carry OIDC provenance. The `mac-local` mode publishes
-      # zfb-darwin-x64 WITHOUT --provenance and every other package WITH it
-      # (option B). See RELEASE_DAY_CHECKLIST.md and the script header.
-      - name: Publish to npm (mixed provenance — local macOS-x64)
-        if: ${{ inputs.dry_run != true && needs.release-context.outputs.is_recovery != 'true' && needs.detect-mac-local.outputs.mac_local_present == 'true' }}
+        if: ${{ inputs.dry_run != true && needs.release-context.outputs.publish_mode == 'mac-local' }}
         shell: bash
         run: bash scripts/publish-npm-packages.sh mac-local
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          # Defense in depth (A2, #3140): publish-npm-packages.sh refuses to
-          # publish in mac-local mode without this set. detect-mac-local's own
-          # preflight step already blocked the run above unless the downgrade
-          # was cleared (no downgrade, or acknowledged) — mirror that verdict
-          # here rather than re-deriving it from the raw acknowledgement, so a
-          # downgrade that was detected but never acknowledged still cannot
-          # reach this step even if the job-level gate above were bypassed.
-          ZFB_ALLOW_PROVENANCE_DOWNGRADE: ${{ needs.detect-mac-local.outputs.preflight_cleared == 'true' && '1' || '' }}
+          ZFB_PUBLISH_TARBALLS_DIR: ${{ runner.temp }}/npm-tarballs
+          ZFB_PROVENANCE_EXPECTATIONS_FILE: ${{ runner.temp }}/npm-provenance-expectations.tsv
+          ZFB_LOCAL_BUILT_PACKAGES: packages/zfb-darwin-arm64 packages/zfb-darwin-x64
+          ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
+          ZFB_DARWIN_ADMISSION_VERDICT: ${{ runner.temp }}/darwin-admission/verdict.json
+          ZFB_RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          ZFB_MD_WASM_BUILD_MANIFEST: ${{ needs.release-context.outputs.is_recovery != 'true' && format('{0}/wasm-md-shipped-artifacts/shipped-artifacts.json', runner.temp) || '' }}
+          ZFB_MD_WASM_ALLOW_MISSING_BUILD_MANIFEST: ${{ needs.release-context.outputs.is_recovery == 'true' && '1' || '' }}
+          # Defense in depth (A2, #3140): publish-npm-packages.sh refuses mac-local
+          # without this. The provenance-preflight job set `cleared` only when no
+          # downgrade exists or the owner acknowledged it.
+          ZFB_ALLOW_PROVENANCE_DOWNGRADE: ${{ needs.provenance-preflight.outputs.cleared == 'true' && '1' || '' }}
 
-      # A2 (#3140): main-based recovery always omits provenance for every
-      # package (see below), which is always a trust downgrade for any package
-      # that already carries an attestation. Block it here, before the
-      # recovery publish step, unless explicitly acknowledged.
-      - name: Provenance downgrade preflight (recovery)
-        id: preflight-recovery
-        if: ${{ inputs.dry_run != true && needs.release-context.outputs.is_recovery == 'true' }}
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
-          ALLOW_DOWNGRADE: ${{ needs.release-context.outputs.allow_downgrade }}
-        run: |
-          set +e
-          node .release-control/scripts/check-provenance-preflight.mjs --version "$RELEASE_VERSION" --mode recovery-no-provenance
-          STATUS=$?
-          set -e
-          if [[ "$STATUS" -eq 0 ]]; then
-            echo "cleared=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$STATUS" -eq 1 ]]; then
-            if [[ "$ALLOW_DOWNGRADE" == "true" ]]; then
-              echo "::warning::Recovery publish (no provenance) would be an npm provenance trust downgrade for at least one package (an earlier version carries an attestation). Acknowledged for this run — proceeding. Consumers with pnpm's trustPolicy=no-downgrade will fail to install one or more packages from this release."
-              {
-                echo "### :warning: npm provenance trust downgrade acknowledged (recovery)"
-                echo
-                echo "Recovery publishes every package without provenance in this run, and at least one already carries an earlier attestation — a provenance trust downgrade. This was explicitly acknowledged."
-                echo
-                echo "**Consumers with npm/pnpm \`trust-policy=no-downgrade\` will fail to install one or more packages from this release.**"
-              } >> "$GITHUB_STEP_SUMMARY"
-              echo "cleared=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "::error::Provenance trust downgrade detected for the recovery publish and not acknowledged. Add '<!-- zfb-release: allow-provenance-downgrade -->' as its own line in the Release body, or re-run workflow_dispatch with allow_provenance_downgrade=true, to proceed anyway."
-              exit 1
-            fi
-          else
-            echo "::error::Provenance preflight (recovery) failed with a registry error (exit ${STATUS}) — failing closed. Retry the release."
-            exit 1
-          fi
-
-      # Main-based recovery deliberately omits provenance for every package.
-      # GitHub's OIDC subject identifies github.sha (the main commit containing
-      # this fixed workflow), while the artifacts were built from checkout_sha
-      # (the older release tag). Attesting them as main would be misleading.
+      # Main-based recovery whose control commit differs from the source:
+      # GitHub's OIDC subject identifies github.sha, not the source commit, so
+      # attesting the artifacts would be misleading. Every package that is not
+      # already present-verified is published with --provenance=false.
       - name: Publish to npm (recovery — no provenance)
-        if: ${{ inputs.dry_run != true && needs.release-context.outputs.is_recovery == 'true' }}
+        if: ${{ inputs.dry_run != true && needs.release-context.outputs.publish_mode == 'recovery-no-provenance' }}
         shell: bash
-        run: bash .release-control/scripts/publish-npm-packages.sh recovery-no-provenance
+        run: bash scripts/publish-npm-packages.sh recovery-no-provenance
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          # Defense in depth (A2, #3140): see the mac-local step's comment above.
-          ZFB_ALLOW_PROVENANCE_DOWNGRADE: ${{ steps.preflight-recovery.outputs.cleared == 'true' && '1' || '' }}
+          ZFB_PUBLISH_TARBALLS_DIR: ${{ runner.temp }}/npm-tarballs
+          ZFB_PROVENANCE_EXPECTATIONS_FILE: ${{ runner.temp }}/npm-provenance-expectations.tsv
+          ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
+          ZFB_DARWIN_ADMISSION_VERDICT: ${{ runner.temp }}/darwin-admission/verdict.json
+          ZFB_RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          ZFB_MD_WASM_BUILD_MANIFEST: ${{ needs.release-context.outputs.is_recovery != 'true' && format('{0}/wasm-md-shipped-artifacts/shipped-artifacts.json', runner.temp) || '' }}
+          ZFB_MD_WASM_ALLOW_MISSING_BUILD_MANIFEST: ${{ needs.release-context.outputs.is_recovery == 'true' && '1' || '' }}
+          ZFB_ALLOW_PROVENANCE_DOWNGRADE: ${{ needs.provenance-preflight.outputs.cleared == 'true' && '1' || '' }}
 
-      # The publish helper verifies MD/WASM through every successful decision
-      # path. Re-check published bytes here and let this script alone decide
-      # whether the versioned Release asset may be uploaded. Recovery uses the
-      # current control script against the verified older tag tree.
+      # Every package must carry exactly the provenance recorded for it:
+      # the explicit flag for a fresh publish, or the observed source-bound
+      # provenance for an already-present one. Reads only.
+      - name: Verify npm provenance expectations
+        shell: bash
+        env:
+          EXPECTATIONS: ${{ runner.temp }}/npm-provenance-expectations.tsv
+        run: node scripts/verify-npm-provenance-expectations.mjs --expectations "$EXPECTATIONS"
+
+      # ── Prerelease graduation cleanup (the reverse of the dual-tag gate) ───
+      # Removes `next` wherever it is no longer strictly ahead of `latest`, so a
+      # graduated prerelease tag never freezes. Always exits 0; an auth failure
+      # (trusted publisher or its "Allow npm dist-tag" option) is raised to
+      # ::error:: plus a job-summary section.
+      - name: Retire stale 'next' dist-tag
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
+        run: node scripts/retire-next-dist-tag.mjs
+
+  # The MD/WASM digest manifest becomes a Release asset only after the published
+  # tarball's four WASM digests are re-verified. Needs contents: write, so it
+  # runs apart from the id-token job.
+  md-wasm-asset:
+    name: Upload MD/WASM digest asset
+    needs: [publish, release-context]
+    if: ${{ needs.release-context.outputs.is_finalize != 'true' && inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # Release asset reconcile (never clobber)
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.22.1
+
+      - name: Download npm tarballs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-tarballs
+          path: ${{ runner.temp }}/npm-tarballs
+
       - name: Verify published @takazudo/zfb-md-wasm and upload digest asset
         if: ${{ inputs.dry_run != true }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
           RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
           IS_RECOVERY: ${{ needs.release-context.outputs.is_recovery }}
@@ -1361,44 +1350,150 @@ jobs:
             echo "::error::Verified release tag/version mismatch: $RELEASE_TAG / $RELEASE_VERSION"
             exit 1
           fi
-          if [[ "$IS_RECOVERY" != "true" ]]; then
-            cmp crates/zfb-md-wasm/npm/dist/shipped-artifacts.json \
-              "$RUNNER_TEMP/wasm-md-shipped-artifacts/shipped-artifacts.json"
-          fi
-          CONTROL_PREFIX=scripts
           EXTRA_ARGS=()
           if [[ "$IS_RECOVERY" == "true" ]]; then
-            CONTROL_PREFIX=.release-control/scripts
             EXTRA_ARGS=(--allow-missing-manifest)
           fi
-          node "$CONTROL_PREFIX/verify-zfb-md-wasm-published-digests.mjs" \
+          node scripts/verify-zfb-md-wasm-published-digests.mjs \
             --version "$RELEASE_VERSION" \
-            --manifest crates/zfb-md-wasm/npm/dist/shipped-artifacts.json \
+            --manifest "$RUNNER_TEMP/npm-tarballs/zfb-md-wasm-shipped-artifacts.json" \
             --tag "$RELEASE_TAG" --upload "${EXTRA_ARGS[@]}"
 
-      # ── Prerelease graduation cleanup (the reverse of the dual-tag gate) ───
-      # The ALSO_LATEST block above is the FORWARD half of the prerelease
-      # invariant: while the line is unreleased, a `--tag next` publish also
-      # advances `latest`. This is the REVERSE half — once a stable ships,
-      # the old `next` tag is dead and must be removed.
-      #
-      # Without it, `next` freezes at whatever prerelease shipped last and keeps
-      # resolving forever: after 1.0.0 graduated, `next` sat at 1.1.0-next.1
-      # while `latest` walked to 2.7.x, so `@takazudo/zfb@next` quietly served a
-      # version a full major behind. A frozen dist-tag is worse than a missing
-      # one — it still installs.
-      #
-      # Safe to run on EVERY publish, prerelease included: the script removes
-      # `next` only where it is no longer strictly ahead of `latest`, so a
-      # genuine soak (next=3.0.0-next.1 against latest=2.7.2) is left alone.
-      # It always exits 0 — a leftover dist-tag must never redden a good
-      # release; failures surface as ::warning:: and retry on the next one.
+  # Finalization-only recovery (#4690): no build, no install, no package
+  # publish. scripts/release/finalize-gate.mjs admits it only when all 11
+  # packages are present-verified for the source commit and every build asset
+  # is on the Release; then dist-tags and the provenance expectations are
+  # reconciled. The digest-asset upload is the separate finalize-assets job.
+  finalize:
+    name: Finalize published release
+    needs: [release-context, source-ci, admit-darwin]
+    if: ${{ needs.release-context.outputs.is_finalize == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # control checkout + `gh release view` in the gate
+      id-token: write # npm OIDC for dist-tag add/rm
+    outputs:
+      dist_tag: ${{ steps.dist-tag.outputs.dist_tag }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # No registry-url (see the publish job): OIDC only, no token slot.
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.22.1
+
+      - name: Install and assert pinned npm
+        shell: bash
+        run: |
+          npm install -g npm@12.2.1
+          NPM_VERSION="$(npm --version)"
+          if [[ "$NPM_VERSION" != "12.2.1" ]]; then
+            echo "::error::expected npm 12.2.1 (OIDC for dist-tag), got ${NPM_VERSION}"
+            exit 1
+          fi
+
+      - name: Download admitted Darwin inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: darwin-admission
+          path: ${{ runner.temp }}/darwin-admission
+
+      # Read-only gate; also writes the per-package observed provenance
+      # expectations of the already-published packages.
+      - name: Finalization gate (all packages present-verified, build assets complete)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
+          SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
+        run: |
+          node scripts/release/finalize-gate.mjs --tag "$RELEASE_TAG" \
+            --source-commit "$SOURCE_COMMIT" \
+            --admission "$RUNNER_TEMP/darwin-admission/verdict.json" \
+            --expectations-out "$RUNNER_TEMP/npm-provenance-expectations.tsv"
+
+      - name: Determine dist-tag
+        id: dist-tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
+        run: |
+          if [[ "$RELEASE_TAG" =~ -(next|beta|rc)\. ]]; then
+            DIST_TAG="next"
+          else
+            DIST_TAG="latest"
+          fi
+          echo "DIST_TAG=$DIST_TAG" >> "$GITHUB_ENV"
+          echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
+          ALSO_LATEST="$(node scripts/release/resolve-also-latest.mjs --dist-tag "$DIST_TAG")"
+          echo "ALSO_LATEST=${ALSO_LATEST}" >> "$GITHUB_ENV"
+          echo "Resolved dist-tag: $DIST_TAG (from tag: $RELEASE_TAG); ALSO_LATEST='${ALSO_LATEST}'"
+
+      - name: DRY RUN — skip finalization writes
+        if: ${{ inputs.dry_run == true }}
+        shell: bash
+        run: echo "DRY RUN — the gate passed; no dist-tag change, no Release asset upload."
+
+      # Prerelease dual-tag (#481), same rule as the publish job.
+      - name: Advance 'latest' dist-tag (prerelease phase only)
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+        run: |
+          if [[ "${ALSO_LATEST:-}" == "1" ]]; then
+            bash scripts/advance-latest-dist-tag.sh "$RELEASE_VERSION"
+          else
+            echo "ALSO_LATEST not set — 'latest' is not advanced."
+          fi
+
+      - name: Verify npm provenance expectations
+        shell: bash
+        run: |
+          node scripts/verify-npm-provenance-expectations.mjs \
+            --expectations "$RUNNER_TEMP/npm-provenance-expectations.tsv"
+
       - name: Retire stale 'next' dist-tag
         if: ${{ inputs.dry_run != true }}
         shell: bash
         run: node scripts/retire-next-dist-tag.mjs
+
+  # Finalization's Release asset write, apart from the id-token job.
+  finalize-assets:
+    name: Finalize MD/WASM digest asset
+    needs: [finalize, release-context]
+    if: ${{ needs.release-context.outputs.is_finalize == 'true' && inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # Release asset reconcile (never clobber)
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.22.1
+
+      - name: Verify published @takazudo/zfb-md-wasm and upload digest asset
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+        run: |
+          node scripts/verify-zfb-md-wasm-published-digests.mjs \
+            --version "$RELEASE_VERSION" --manifest-from-published \
+            --tag "$RELEASE_TAG" --upload
 
   smoke-clean-room:
     # Post-publish clean-room smoke: installs create-zfb@<dist-tag> from the
@@ -1415,39 +1510,48 @@ jobs:
     #
     # The shell logic also serves drift-net's scheduled moving-channel exam.
     # This release invocation passes the version verified from the release
-    # tag, including workflow_dispatch recovery runs from main.
-    needs: [publish, release-context]
+    # tag, including workflow_dispatch recovery and finalize runs from main.
+    needs: [publish, finalize, release-context]
     # Skip on dry_run — nothing was published, so no registry smoke to run.
-    if: ${{ inputs.dry_run != true }}
+    if: ${{ always() && inputs.dry_run != true && (needs.publish.result == 'success' || needs.finalize.result == 'success') }}
+    permissions:
+      contents: read
     uses: ./.github/workflows/reusable-smoke-clean-room.yml
     with:
-      dist_tag: ${{ needs.publish.outputs.dist_tag }}
+      dist_tag: ${{ needs.publish.outputs.dist_tag || needs.finalize.outputs.dist_tag }}
       expected_version: ${{ needs.release-context.outputs.release_version }}
       runner: ubuntu-latest
 
   notify:
     # Alerting guard: a red build/release-assets/publish/smoke-clean-room leg
     # otherwise sits unseen in the Actions tab once the release skill's watch
-    # ends. `needs` lists every upstream job (not just build/publish/
-    # smoke-clean-room) with `if: always()` + bash-computed FAILED_JOB —
-    # gating on a bare `if: failure()` over only 3 jobs would stay silent if
-    # an earlier job (e.g. detect-mac-local) fails and cascades a *skip*
-    # (not a failure) into its dependents. Same IFTTT pattern as
-    # docs-deploy.yml's notify job (status-computed, reuses IFTTT_PROD_NOTIFY).
+    # ends. `needs` lists every upstream job with `if: always()` +
+    # bash-computed FAILED_JOB — gating on a bare `if: failure()` would stay
+    # silent if an earlier job fails and cascades a *skip* (not a failure)
+    # into its dependents. scripts/notify-release-result.sh knows which skips
+    # each mode expects (finalize vs build/publish, dry-run smoke). Same IFTTT
+    # pattern as docs-deploy.yml's notify job (reuses IFTTT_PROD_NOTIFY).
     needs:
       [
         release-context,
-        detect-mac-local,
-        prepare-matrix,
+        source-ci,
+        provenance-preflight,
+        admit-darwin,
         build,
         build-wasm-md,
         release-assets,
+        pack,
         publish,
+        md-wasm-asset,
+        finalize,
+        finalize-assets,
         smoke-clean-room,
       ]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     env:
       IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
     steps:
@@ -1455,19 +1559,26 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Report incomplete delivery
         shell: bash
         env:
           RELEASE_CONTEXT_RESULT: ${{ needs.release-context.result }}
-          DETECT_MAC_LOCAL_RESULT: ${{ needs.detect-mac-local.result }}
-          PREPARE_MATRIX_RESULT: ${{ needs.prepare-matrix.result }}
+          SOURCE_CI_RESULT: ${{ needs.source-ci.result }}
+          PROVENANCE_PREFLIGHT_RESULT: ${{ needs.provenance-preflight.result }}
+          ADMIT_DARWIN_RESULT: ${{ needs.admit-darwin.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           BUILD_WASM_MD_RESULT: ${{ needs.build-wasm-md.result }}
           RELEASE_ASSETS_RESULT: ${{ needs.release-assets.result }}
+          PACK_RESULT: ${{ needs.pack.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
+          MD_WASM_ASSET_RESULT: ${{ needs.md-wasm-asset.result }}
+          FINALIZE_RESULT: ${{ needs.finalize.result }}
+          FINALIZE_ASSETS_RESULT: ${{ needs.finalize-assets.result }}
           SMOKE_CLEAN_ROOM_RESULT: ${{ needs.smoke-clean-room.result }}
           DRY_RUN: ${{ inputs.dry_run }}
+          FINALIZE_ONLY: ${{ needs.release-context.outputs.is_finalize || inputs.finalize_only }}
           RAW_TAG: ${{ needs.release-context.outputs.release_tag || github.event.release.tag_name || inputs.release_tag }}
           GITHUB_SHA_VAL: ${{ needs.release-context.outputs.checkout_sha || github.sha }}
           SERVER_URL: ${{ github.server_url }}

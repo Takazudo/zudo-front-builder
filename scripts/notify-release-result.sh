@@ -1,9 +1,32 @@
 #!/usr/bin/env bash
-# Report a failed or incomplete release without treating dry-run smoke skips as failures.
+# Report a failed or incomplete release without treating a mode's expected
+# skips as failures (#4690):
+#   normal/recovery  skips finalize and finalize-assets;
+#   finalize-only    skips build, build-wasm-md, release-assets, pack, publish
+#                    and md-wasm-asset;
+#   dry run          additionally skips every write job (publish,
+#                    md-wasm-asset, finalize-assets) and the smoke.
 set -euo pipefail
 
-jobs=(release-context detect-mac-local prepare-matrix build build-wasm-md release-assets publish smoke-clean-room)
-results=("$RELEASE_CONTEXT_RESULT" "$DETECT_MAC_LOCAL_RESULT" "$PREPARE_MATRIX_RESULT" "$BUILD_RESULT" "$BUILD_WASM_MD_RESULT" "$RELEASE_ASSETS_RESULT" "$PUBLISH_RESULT" "$SMOKE_CLEAN_ROOM_RESULT")
+jobs=(release-context source-ci provenance-preflight admit-darwin build build-wasm-md release-assets pack publish md-wasm-asset finalize finalize-assets smoke-clean-room)
+results=("$RELEASE_CONTEXT_RESULT" "$SOURCE_CI_RESULT" "$PROVENANCE_PREFLIGHT_RESULT" "$ADMIT_DARWIN_RESULT" "$BUILD_RESULT" "$BUILD_WASM_MD_RESULT" "$RELEASE_ASSETS_RESULT" "$PACK_RESULT" "$PUBLISH_RESULT" "$MD_WASM_ASSET_RESULT" "$FINALIZE_RESULT" "$FINALIZE_ASSETS_RESULT" "$SMOKE_CLEAN_ROOM_RESULT")
+
+expected_skip() {
+  local job="$1"
+  if [[ "${DRY_RUN:-}" == true ]]; then
+    case "$job" in
+      smoke-clean-room | publish | md-wasm-asset | finalize-assets) return 0 ;;
+    esac
+  fi
+  if [[ "${FINALIZE_ONLY:-}" == true ]]; then
+    case "$job" in
+      build | build-wasm-md | release-assets | pack | publish | md-wasm-asset) return 0 ;;
+    esac
+    return 1
+  fi
+  [[ "$job" == finalize || "$job" == finalize-assets ]]
+}
+
 problems=()
 skipped=()
 all_skipped=()
@@ -12,18 +35,16 @@ for i in "${!jobs[@]}"; do
   if [[ "$result" == failure || "$result" == cancelled ]]; then
     problems+=("${jobs[$i]} ${result}")
   fi
-  if [[ "$result" == skipped ]]; then
+  if [[ "$result" == skipped ]] && ! expected_skip "${jobs[$i]}"; then
     all_skipped+=("${jobs[$i]}")
-    if [[ !( "${DRY_RUN:-}" == true && "${jobs[$i]}" == smoke-clean-room ) ]]; then
-      skipped+=("${jobs[$i]}")
-    fi
+    skipped+=("${jobs[$i]}")
   fi
 done
 if [[ ${#problems[@]} -eq 0 && ${#skipped[@]} -gt 0 ]]; then
   problems+=("required stage skipped")
 fi
 if [[ ${#problems[@]} -eq 0 ]]; then
-  echo "Release workflow completed successfully${DRY_RUN:+ (dry_run=$DRY_RUN)}; no notification."
+  echo "Release workflow completed successfully${DRY_RUN:+ (dry_run=$DRY_RUN)}${FINALIZE_ONLY:+ (finalize_only=$FINALIZE_ONLY)}; no notification."
   exit 0
 fi
 

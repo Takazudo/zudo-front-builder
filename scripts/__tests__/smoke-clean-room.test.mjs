@@ -233,10 +233,14 @@ describe("real clean-room script with offline registry and CLI stubs", () => {
       resolve(".github/workflows/reusable-smoke-clean-room.yml"),
       "utf8",
     );
+    // release-context's verify step runs scripts/release/verify-release-source.sh (#4690).
+    const verifySource = readFileSync(resolve("scripts/release/verify-release-source.sh"), "utf8");
     expect(release).toContain("release_version: ${{ steps.verify.outputs.release_version }}");
-    expect(release).toContain('echo "release_version=$EXPECTED_VERSION" >> "$GITHUB_OUTPUT"');
+    expect(release).toContain("scripts/release/verify-release-source.sh");
+    expect(verifySource).toContain('RELEASE_VERSION="$EXPECTED_VERSION"');
+    expect(verifySource).toContain('echo "release_version=$RELEASE_VERSION"');
     expect(release).toMatch(
-      /smoke-clean-room:[\s\S]*?needs: \[publish, release-context\][\s\S]*?if: \$\{\{ inputs\.dry_run != true \}\}[\s\S]*?expected_version: \$\{\{ needs\.release-context\.outputs\.release_version \}\}/,
+      /smoke-clean-room:[\s\S]*?needs: \[publish, finalize, release-context\][\s\S]*?if: \$\{\{ always\(\) && inputs\.dry_run != true && [^\n]*\}\}[\s\S]*?expected_version: \$\{\{ needs\.release-context\.outputs\.release_version \}\}/,
     );
     expect(reusable).toContain("EXPECTED_VERSION: ${{ inputs.expected_version }}");
   });

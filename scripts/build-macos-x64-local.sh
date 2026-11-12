@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # build-macos-x64-local.sh
 #
+# RETIRED FOR RELEASES (#4690). release.yml no longer reads anything this
+# script produces: both Darwin targets are built, qualified and uploaded with
+# scripts/build-darwin-local.sh and admitted by scripts/admit-darwin-artifacts.mjs.
+# `--upload` is refused so this script can never put un-receipted bytes into a
+# Release slot. It remains only for the hosted carrier-evidence workflow
+# (.github/workflows/css-carrier-verification.yml → scripts/verify-css-carrier.sh
+# fast-mac mode), which uses `--out-dir` and never touches a Release.
+#
 # Escape hatch for the Intel macOS CI runner (issue #437), originally written
 # because the former Intel image was chronically queue-starved. That image was
 # retired 2025-12-04; the CI leg now targets `macos-15-intel`. GitHub also lists
@@ -12,13 +20,9 @@
 # EXACT format release.yml would have produced on the runner.
 #
 # Usage:
-#   ./scripts/build-macos-x64-local.sh [--upload <tag>] [--out-dir DIR]
+#   ./scripts/build-macos-x64-local.sh [--out-dir DIR]
 #
-# --upload <tag>  After building, upload the archive + .sha256 to the GitHub
-#                 Release for <tag> via `gh release upload --clobber`. The tag
-#                 (e.g. v0.1.0-next.1) must already have a Release. Without this
-#                 flag the files are only written locally and the upload command
-#                 is printed for you to run manually.
+# --upload <tag>  Refused (exit 2) since #4690.
 #
 # --out-dir DIR   Where to write the archive, separate addon, and checksums. Default: repo root.
 # ZFB_X64_NODE    Path to x64 Node >=24 for addon verification (required on ARM-only Node hosts).
@@ -46,14 +50,15 @@ set -euo pipefail
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
-upload_tag=""
 out_dir=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --upload)
-      upload_tag="$2"
-      shift 2
+      echo "--upload is retired (#4690): Release Darwin inputs come only from" >&2
+      echo "  scripts/build-darwin-local.sh --source <sha> --tag <tag> --upload <tag>" >&2
+      echo "which writes qualification receipts and never clobbers an asset." >&2
+      exit 2
       ;;
     --out-dir)
       out_dir="$2"
@@ -262,44 +267,6 @@ echo "==> Built:"
 echo "    ${archive_path}"
 echo "    ${archive_path}.sha256"
 
-# ── Optional upload to the GH Release ─────────────────────────────────────────
-
-if [[ -n "$upload_tag" ]]; then
-  # Normally `/l-make-release` creates the draft Release before this script runs.
-  # If the draft does not exist yet, create one now (as a draft so that publishing
-  # it later — after assets are uploaded — is what fires `release: published`).
-  # IMPORTANT: Must be created as --draft so the release: published event fires
-  # only after the user explicitly publishes it, not during this upload step.
-  if ! gh release view "$upload_tag" >/dev/null 2>&1; then
-    echo "==> GH Release ${upload_tag} does not exist yet — creating a draft"
-    # Match the channel policy: *-next.* / *-beta.* / *-rc.* tags are prereleases.
-    prerelease_flag=""
-    if [[ "$upload_tag" =~ -next\. ]] || [[ "$upload_tag" =~ -beta\. ]] || [[ "$upload_tag" =~ -rc\. ]]; then
-      prerelease_flag="--prerelease"
-    fi
-    gh release create "$upload_tag" \
-      --title "$upload_tag" \
-      --notes "Release ${upload_tag} (macOS-x64 pre-built locally; remaining assets uploaded by release.yml)" \
-      --draft \
-      $prerelease_flag
-  fi
-
-  echo "==> Uploading to GitHub Release ${upload_tag} (--clobber)"
-  # --clobber makes re-runs idempotent (overwrites an existing asset of the
-  # same name instead of erroring).
-  gh release upload "$upload_tag" \
-    "$archive_path" \
-    "${archive_path}.sha256" \
-    "${out_dir}/${addon}" "${out_dir}/${addon}.sha256" \
-    --clobber
-  echo "==> Uploaded. Now publish the draft GH Release (gh release edit ${upload_tag} --draft=false or web UI) to trigger release.yml."
-  echo "    The workflow's detect-mac-local job will see the pre-uploaded archive and skip the macos-15-intel build leg."
-else
-  echo ""
-  echo "Not uploaded. To attach these to the draft GH Release for <tag>, run:"
-  echo "  gh release upload <tag> \\"
-  echo "    \"${archive_path}\" \\"
-  echo "    \"${archive_path}.sha256\" \"${out_dir}/${addon}\" \"${out_dir}/${addon}.sha256\" --clobber"
-  echo "Then publish the draft Release (gh release edit <tag> --draft=false or web UI) to trigger release.yml."
-  echo "The workflow's detect-mac-local job will see the pre-uploaded archive and skip the macos-15-intel build leg."
-fi
+# Release upload is retired (#4690); see the header. The files above are local only.
+echo ""
+echo "Not uploaded. Release Darwin inputs come only from scripts/build-darwin-local.sh."

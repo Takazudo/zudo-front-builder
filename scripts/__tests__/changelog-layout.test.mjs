@@ -17,7 +17,8 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DOCS_ROOT = join(REPO_ROOT, "docs");
 const CHANGELOG_ROOT = join(DOCS_ROOT, "src", "content", "docs", "changelog");
 const REDIRECTS_PATH = join(DOCS_ROOT, "public", "_redirects");
-const RELEASE_SKILL_RELATIVE_PATH = ".claude/skills/l-make-release/SKILL.md";
+// The release skills are thin entries; the canonical procedure (and its changelog contract) is RELEASING.md (#4690).
+const RELEASE_SKILL_RELATIVE_PATH = "RELEASING.md";
 const POSITION_HELPER_PATH = join(REPO_ROOT, "scripts", "next-changelog-sidebar-position.mjs");
 
 const LANES = ["zfb", "zfb-runtime", "zfb-adapter-cloudflare", "create-zfb", "zfb-md-wasm"];

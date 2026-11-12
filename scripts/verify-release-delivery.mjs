@@ -110,16 +110,43 @@ export const PLATFORM_CARRIERS = Object.freeze({
   "@takazudo/zfb-win32-x64-msvc": { binary: "zfb.exe", os: "win32", cpu: "x64" },
 });
 
-// Job and step names of the normal provenance-enabled path in release.yml.
-// `success` steps must have run and succeeded; `skipped` steps are the dry-run
-// and alternative-publication branches, which must not have run.
+// Darwin carriers are built on the owner's Mac and admitted from Release
+// assets (#4690): they ship WITHOUT provenance, and their identity is the
+// Release's Darwin archive binary + CSS addon bytes.
+export const OWNER_MAC_CARRIERS = Object.freeze({
+  "@takazudo/zfb-darwin-arm64": "aarch64-apple-darwin",
+  "@takazudo/zfb-darwin-x64": "x86_64-apple-darwin",
+});
+const OWNER_MAC_TARGETS = new Set(Object.values(OWNER_MAC_CARRIERS));
+export const CI_BUILD_TARGETS = Object.freeze(
+  PLATFORM_TARGETS.filter(({ target }) => !OWNER_MAC_TARGETS.has(target)),
+);
+
+// Job and step names of the normal release path in release.yml. `success`
+// steps must have run and succeeded; `skipped` steps are the dry-run and
+// recovery branches, which must not have run.
 export const RELEASE_REQUIRED_JOBS = Object.freeze([
   {
     id: "release-context",
     name: "Resolve and verify release source",
     success: ["Verify immutable source and published Release"],
   },
-  ...PLATFORM_TARGETS.map(({ target, ext }) => ({
+  {
+    id: "source-ci",
+    name: "Verify source commit required CI",
+    success: ["Verify required CI on the source commit"],
+  },
+  {
+    id: "provenance-preflight",
+    name: "Provenance downgrade preflight",
+    success: ["Provenance downgrade preflight"],
+  },
+  {
+    id: "admit-darwin",
+    name: "Admit owner-Mac Darwin artifacts",
+    success: ["Download and admit the ten Darwin inputs"],
+  },
+  ...CI_BUILD_TARGETS.map(({ target, ext }) => ({
     id: `build:${target}`,
     name: `Build ${target}`,
     success: [ext === "zip" ? "Create archive (Windows zip)" : "Create archive (Unix tar.gz)"],
@@ -135,22 +162,25 @@ export const RELEASE_REQUIRED_JOBS = Object.freeze([
     success: [
       "Guard — verified release tag required for real release upload",
       "Upload archives and checksums to GitHub Release",
+      "Verify owner-uploaded Darwin assets are unchanged since admission",
     ],
     skipped: ["DRY RUN — skip GH Release upload"],
   },
   {
+    id: "pack",
+    name: "Pack npm tarballs",
+    success: ["Place admitted Darwin binaries in platform packages", "Pack npm tarballs"],
+  },
+  {
     id: "publish",
     name: "publish",
-    success: [
-      "Verify publish context (verified release tag required)",
-      "Publish to npm",
-      "Verify published @takazudo/zfb-md-wasm and upload digest asset",
-    ],
-    skipped: [
-      "DRY RUN — skip publish",
-      "Publish to npm (mixed provenance — local macOS-x64)",
-      "Publish to npm (recovery — no provenance)",
-    ],
+    success: ["Verify publish context (verified release tag required)", "Publish to npm"],
+    skipped: ["Publish to npm (recovery — no provenance)"],
+  },
+  {
+    id: "md-wasm-asset",
+    name: "Upload MD/WASM digest asset",
+    success: ["Verify published @takazudo/zfb-md-wasm and upload digest asset"],
   },
   {
     id: "smoke-clean-room",
@@ -813,11 +843,15 @@ export function classifyDeliveryPath(run, grouped) {
     return "dry-run";
   }
   if (ran(publish, "Publish to npm (recovery — no provenance)")) return "recovery";
-  if (ran(publish, "Publish to npm (mixed provenance — local macOS-x64)"))
-    return "mixed-provenance";
+  if (grouped.has("Finalize published release")) return "finalize";
   if (run.event === "workflow_dispatch") return "manual-dispatch";
   if (run.event !== "release") return `unsupported-event:${run.event}`;
-  if (!grouped.has("Build x86_64-apple-darwin")) return "mixed-provenance";
+  // Runs from before #4690 built Darwin on hosted macOS (and the fast-Mac
+  // escape hatch published darwin-x64 locally); neither is the current path.
+  if ([...OWNER_MAC_TARGETS].some((target) => grouped.has(`Build ${target}`))) {
+    return "legacy-hosted-darwin";
+  }
+  if (ran(publish, "Publish to npm (mixed provenance — local macOS-x64)")) return "legacy-fast-mac";
   return "normal";
 }
 
@@ -991,7 +1025,7 @@ async function verifyReleaseWorkflow(ctx) {
   } else {
     section.incomplete(
       "delivery-path",
-      `delivery path "${path}" is not supported by this verifier (normal provenance-enabled release only)`,
+      `delivery path "${path}" is not supported by this verifier (normal release path only)`,
       { path },
     );
   }
@@ -1018,6 +1052,50 @@ async function verifyReleaseWorkflow(ctx) {
   return section;
 }
 
+/**
+ * Owner-Mac Darwin identity from the Release: the sha256 of the archive's one
+ * `zfb` entry and of the CSS addon asset (checked against its .sha256 file).
+ * Stored on ctx for the npm carrier comparison.
+ */
+async function readOwnerMacIdentity(ctx, target, archiveBytes, assets, evidence) {
+  const problems = [];
+  const identity = {};
+  try {
+    const files = parseTar(gunzipSync(archiveBytes, { maxOutputLength: LIMITS.unpacked }));
+    const entries = [...files.keys()];
+    if (entries.length !== 1 || entries[0] !== "zfb") {
+      problems.push(`Darwin archive must hold exactly one root zfb (has ${entries.join(", ")})`);
+    } else identity.binarySha256 = sha("sha256", files.get("zfb").data);
+  } catch (error) {
+    problems.push(`Darwin archive unreadable: ${error.message}`);
+  }
+  const addonName = `zfb-css-${ctx.version}-${target}.node`;
+  const addon = assets.filter((asset) => asset.name === addonName);
+  const addonSum = assets.filter((asset) => asset.name === `${addonName}.sha256`);
+  if (addon.length !== 1 || addonSum.length !== 1) {
+    problems.push(`expected one ${addonName} and its .sha256`);
+  } else {
+    const [bytes, sumBytes] = await Promise.all([
+      ctx.http.getBytes(addon[0].browser_download_url, {
+        maxBytes: LIMITS.archive,
+        accept: "application/octet-stream",
+      }),
+      ctx.http.getBytes(addonSum[0].browser_download_url, {
+        maxBytes: 4096,
+        accept: "application/octet-stream",
+      }),
+    ]);
+    identity.addonSha256 = sha("sha256", bytes);
+    const match = /^([0-9a-f]{64}) {2}(\S+)\r?\n?$/.exec(sumBytes.toString("utf8"));
+    if (!match || match[2] !== addonName || match[1] !== identity.addonSha256) {
+      problems.push(`${addonName} bytes do not match its .sha256 file`);
+    }
+  }
+  evidence.ownerMac = identity;
+  if (!problems.length) ctx.ownerMacIdentity[target] = identity;
+  return problems;
+}
+
 async function verifyArchives(ctx) {
   const section = new Section("archives");
   const { http, version, release } = ctx;
@@ -1027,10 +1105,18 @@ async function verifyArchives(ctx) {
   }
   const assets = release.assets ?? [];
   const expectedNames = new Set([`zfb-md-wasm-${version}-shipped-artifacts.json`]);
+  ctx.ownerMacIdentity = {};
   await mapLimit(PLATFORM_TARGETS, ctx.concurrency, async ({ target, ext }) => {
     const name = `zfb-${version}-${target}.${ext}`;
     const checksumName = `${name}.sha256`;
     expectedNames.add(name).add(checksumName);
+    if (OWNER_MAC_TARGETS.has(target)) {
+      const addon = `zfb-css-${version}-${target}.node`;
+      expectedNames
+        .add(addon)
+        .add(`${addon}.sha256`)
+        .add(`zfb-${version}-${target}.qualification.json`);
+    }
     const archives = assets.filter((asset) => asset.name === name);
     const checksums = assets.filter((asset) => asset.name === checksumName);
     const id = `archive:${target}`;
@@ -1094,6 +1180,9 @@ async function verifyArchives(ctx) {
       }
       if (archive.digest && archive.digest !== `sha256:${computed}`) {
         problems.push(`API digest ${archive.digest} differs from the downloaded bytes`);
+      }
+      if (OWNER_MAC_TARGETS.has(target) && magicOk) {
+        problems.push(...(await readOwnerMacIdentity(ctx, target, archiveBytes, assets, evidence)));
       }
       if (problems.length) section.failed(id, problems.join("; "), evidence);
       else section.verified(id, evidence);
@@ -1461,6 +1550,52 @@ async function verifyNpmPackage(ctx, name) {
     }
   } else {
     mark("contents", STATUS.FAILED, { reason: "not inspected: tarball integrity failed" });
+  }
+
+  const ownerMacTarget = OWNER_MAC_CARRIERS[name];
+  if (ownerMacTarget) {
+    // #4690: owner-Mac carriers are published with --provenance=false; an
+    // attestation would falsely claim an Actions build. Identity comes from
+    // the admitted Release bytes instead.
+    const expected = ctx.ownerMacIdentity?.[ownerMacTarget];
+    const files = integrityOk ? readNpmTarball(bytes) : null;
+    if (!expected) {
+      mark("darwin-identity", STATUS.INCOMPLETE, {
+        reason: `the Release ${ownerMacTarget} archive/addon identity could not be established`,
+      });
+    } else if (!files) {
+      mark("darwin-identity", STATUS.FAILED, { reason: "not inspected: tarball integrity failed" });
+    } else {
+      const binary = files.get("zfb");
+      const addon = files.get("zfb-css.node");
+      const actual = {
+        binarySha256: binary ? sha("sha256", binary.data) : null,
+        addonSha256: addon ? sha("sha256", addon.data) : null,
+      };
+      const same =
+        actual.binarySha256 === expected.binarySha256 &&
+        actual.addonSha256 === expected.addonSha256;
+      mark("darwin-identity", same ? STATUS.VERIFIED : STATUS.FAILED, {
+        expected,
+        actual,
+        ...(same
+          ? {}
+          : { reason: "packed zfb / zfb-css.node differ from the Release Darwin assets" }),
+      });
+    }
+    const attested = Boolean(record.dist?.attestations?.url);
+    pkg.provenance = { attestationPresent: attested, expected: "none" };
+    mark(
+      "provenance",
+      attested ? STATUS.FAILED : STATUS.VERIFIED,
+      attested
+        ? {
+            reason:
+              "owner-Mac Darwin carrier carries an attestation; release.yml publishes it with --provenance=false",
+          }
+        : { note: "no attestation, as intended for an owner-Mac carrier" },
+    );
+    return finishPackage(pkg);
   }
 
   const provenance = await verifyProvenance(ctx, name, record, sha512);
@@ -2103,7 +2238,7 @@ export async function verifyReleaseDelivery(options, deps = {}) {
         "Foreign-platform binaries are hashed and inspected, never executed.",
         "The installer run is the explicitly selected run; GitHub's API does not name the Release run that triggered a workflow_run.",
         "Mutable channels (GitHub Latest, npm dist-tags, Homebrew) are observations unless an --expect-* flag was given.",
-        "Only the normal provenance-enabled release path is supported; dry-run, recovery, mixed-provenance and manual paths are classified, never accepted.",
+        "Only the normal release path is supported (owner-Mac Darwin carriers without provenance, every other package attested); dry-run, recovery, finalize, legacy and manual paths are classified, never accepted.",
       ],
       requestCount: http.requests?.length ?? null,
     };

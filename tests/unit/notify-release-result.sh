@@ -16,8 +16,9 @@ chmod +x "$tmp/curl"
 export PATH="$tmp:$PATH" SINK="$tmp/sink"
 export IFTTT_PROD_NOTIFY=https://fake.invalid/hook RAW_TAG=v5.2.1 GITHUB_SHA_VAL=abcdef123456
 export SERVER_URL=https://github.com REPO=owner/repo RUN_ID=123 DRY_RUN=false
-export RELEASE_CONTEXT_RESULT=success DETECT_MAC_LOCAL_RESULT=success PREPARE_MATRIX_RESULT=success
+export RELEASE_CONTEXT_RESULT=success SOURCE_CI_RESULT=success PROVENANCE_PREFLIGHT_RESULT=success ADMIT_DARWIN_RESULT=success
 export BUILD_RESULT=success BUILD_WASM_MD_RESULT=success RELEASE_ASSETS_RESULT=success PUBLISH_RESULT=success SMOKE_CLEAN_ROOM_RESULT=success
+export FINALIZE_RESULT=skipped FINALIZE_ONLY=false PACK_RESULT=success MD_WASM_ASSET_RESULT=success FINALIZE_ASSETS_RESULT=skipped
 
 run_case() {
   rm -f "$SINK"
@@ -26,8 +27,9 @@ run_case() {
 run_case
 [[ ! -e "$SINK" ]] || { echo 'successful release notified' >&2; exit 1; }
 for pair in \
-  RELEASE_CONTEXT_RESULT:release-context DETECT_MAC_LOCAL_RESULT:detect-mac-local \
-  PREPARE_MATRIX_RESULT:prepare-matrix BUILD_RESULT:build BUILD_WASM_MD_RESULT:build-wasm-md \
+  RELEASE_CONTEXT_RESULT:release-context SOURCE_CI_RESULT:source-ci \
+  PROVENANCE_PREFLIGHT_RESULT:provenance-preflight ADMIT_DARWIN_RESULT:admit-darwin \
+  BUILD_RESULT:build BUILD_WASM_MD_RESULT:build-wasm-md PACK_RESULT:pack MD_WASM_ASSET_RESULT:md-wasm-asset \
   RELEASE_ASSETS_RESULT:release-assets PUBLISH_RESULT:publish SMOKE_CLEAN_ROOM_RESULT:smoke-clean-room; do
   variable=${pair%%:*}
   job=${pair#*:}
@@ -55,4 +57,35 @@ grep -Fq 'build cancelled' "$SINK"
 RELEASE_ASSETS_RESULT=skipped run_case
 [[ -e "$SINK" ]]
 grep -Fq 'required stage skipped' "$SINK"
+# A normal run whose finalize job is skipped is not incomplete; a normal run
+# whose finalize RAN and failed is.
+FINALIZE_RESULT=failure run_case
+[[ -e "$SINK" ]]
+grep -Fq 'finalize failure' "$SINK"
+# Finalize-only (#4690): build/build-wasm-md/release-assets/publish skips are
+# expected; a skipped finalize or smoke is not.
+finalize_case() {
+  FINALIZE_ONLY=true BUILD_RESULT=skipped BUILD_WASM_MD_RESULT=skipped RELEASE_ASSETS_RESULT=skipped \
+    PACK_RESULT=skipped PUBLISH_RESULT=skipped MD_WASM_ASSET_RESULT=skipped run_case
+}
+FINALIZE_RESULT=success FINALIZE_ASSETS_RESULT=success finalize_case
+[[ ! -e "$SINK" ]] || { echo 'successful finalize notified' >&2; exit 1; }
+FINALIZE_RESULT=success FINALIZE_ASSETS_RESULT=skipped finalize_case
+[[ -e "$SINK" ]]
+grep -Fq 'skipped: finalize-assets' "$SINK"
+# A tagged dry run skips every write job and the smoke, nothing else.
+DRY_RUN=true PUBLISH_RESULT=skipped MD_WASM_ASSET_RESULT=skipped SMOKE_CLEAN_ROOM_RESULT=skipped run_case
+[[ ! -e "$SINK" ]] || { echo 'successful dry run (write jobs skipped) notified' >&2; exit 1; }
+DRY_RUN=true PACK_RESULT=skipped PUBLISH_RESULT=skipped SMOKE_CLEAN_ROOM_RESULT=skipped run_case
+[[ -e "$SINK" ]]
+grep -Fq 'skipped: pack' "$SINK"
+FINALIZE_RESULT=skipped finalize_case
+[[ -e "$SINK" ]]
+grep -Fq 'skipped: finalize' "$SINK"
+FINALIZE_RESULT=failure SMOKE_CLEAN_ROOM_RESULT=skipped finalize_case
+[[ -e "$SINK" ]]
+grep -Fq 'finalize failure' "$SINK"
+ADMIT_DARWIN_RESULT=failure BUILD_RESULT=skipped RELEASE_ASSETS_RESULT=skipped PUBLISH_RESULT=skipped SMOKE_CLEAN_ROOM_RESULT=skipped run_case
+[[ -e "$SINK" ]]
+grep -Fq 'admit-darwin failure' "$SINK"
 echo 'release notification cases passed'

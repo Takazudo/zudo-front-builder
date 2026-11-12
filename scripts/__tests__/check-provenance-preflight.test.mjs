@@ -6,11 +6,20 @@
 // Everything here runs offline against hand-built packuments and an injected
 // fetch, matching check-provenance-drift.test.mjs's approach.
 
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  DEFAULT_POLICY_REF,
+  POLICY_PATH,
+  applyPolicy,
   checkMode,
   checkPackage,
+  loadPolicyAtRef,
+  parsePolicy,
   parseArgs,
   report,
   wouldDowngrade,
@@ -180,7 +189,7 @@ describe("checkPackage", () => {
 });
 
 describe("checkMode", () => {
-  it("maps mac-local to just @takazudo/zfb-darwin-x64", async () => {
+  it("maps mac-local to both owner-Mac Darwin carriers (#4690)", async () => {
     const seen = [];
     const results = await checkMode("mac-local", {
       version: "1.0.0",
@@ -189,8 +198,37 @@ describe("checkMode", () => {
         return packument({});
       },
     });
+    expect(seen.sort()).toEqual(["@takazudo/zfb-darwin-arm64", "@takazudo/zfb-darwin-x64"]);
+    expect(results.every((r) => r.status === "ok")).toBe(true);
+  });
+
+  it("flags both Darwin carriers as a downgrade after an all-attested release like 6.0.1", async () => {
+    // 6.0.1 was CI-built with provenance for every package; the first release
+    // whose Darwin carriers come from the owner's Mac (--provenance=false) is
+    // a downgrade for both, which the default-deny gate must block.
+    const results = await checkMode("mac-local", {
+      version: "6.0.2",
+      fetchOne: async () =>
+        packument({ "6.0.1": { attested: true, time: "2026-11-09T00:00:00.000Z" } }),
+    });
+    expect(results.map((r) => [r.name, r.status]).sort()).toEqual([
+      ["@takazudo/zfb-darwin-arm64", "downgrade"],
+      ["@takazudo/zfb-darwin-x64", "downgrade"],
+    ]);
+    expect(report(results, { log: () => {} })).toBe(1);
+  });
+
+  it("honors an explicit --package list for mac-local", async () => {
+    const seen = [];
+    await checkMode("mac-local", {
+      version: "1.0.0",
+      packages: ["@takazudo/zfb-darwin-x64"],
+      fetchOne: async (name) => {
+        seen.push(name);
+        return packument({});
+      },
+    });
     expect(seen).toEqual(["@takazudo/zfb-darwin-x64"]);
-    expect(results).toEqual([{ name: "@takazudo/zfb-darwin-x64", status: "ok" }]);
   });
 
   it("maps recovery-no-provenance to all 11 published packages", async () => {
@@ -292,9 +330,207 @@ describe("parseArgs", () => {
     });
   });
 
+  it("collects --package for mac-local only, and only published names", () => {
+    expect(
+      parseArgs([
+        "--version",
+        "6.0.2",
+        "--mode",
+        "mac-local",
+        "--package",
+        "@takazudo/zfb-darwin-arm64",
+        "--package",
+        "@takazudo/zfb-darwin-x64",
+      ]),
+    ).toEqual({
+      version: "6.0.2",
+      mode: "mac-local",
+      packages: ["@takazudo/zfb-darwin-arm64", "@takazudo/zfb-darwin-x64"],
+    });
+    expect(
+      parseArgs(["--version", "6.0.2", "--mode", "mac-local", "--package", "left-pad"]),
+    ).toBeNull();
+    expect(
+      parseArgs([
+        "--version",
+        "6.0.2",
+        "--mode",
+        "recovery-no-provenance",
+        "--package",
+        "@takazudo/zfb",
+      ]),
+    ).toBeNull();
+    expect(parseArgs(["--version", "6.0.2", "--mode", "mac-local", "--bogus"])).toBeNull();
+  });
+
   it("returns null when a required flag is missing", () => {
     expect(parseArgs(["--version", "2.20.3"])).toBeNull();
     expect(parseArgs(["--mode", "mac-local"])).toBeNull();
     expect(parseArgs([])).toBeNull();
+  });
+});
+
+describe("owner provenance policy (release/provenance-policy.json, #4690)", () => {
+  const ARM = "@takazudo/zfb-darwin-arm64";
+  const X64 = "@takazudo/zfb-darwin-x64";
+  const decision = (pkg, from = "6.1.0") => ({
+    package: pkg,
+    unattested_from_version: from,
+    reason: "Darwin carriers are built on the owner's Mac",
+    decided_by: "owner",
+    issue: "https://github.com/Takazudo/zudo-front-builder/issues/4690",
+  });
+  const policy = (...decisions) => ({ schema: "zfb-provenance-policy/v1", decisions });
+  const down = (name, version = "6.1.0") => ({
+    name,
+    status: "downgrade",
+    version,
+    earlierAttested: "6.0.1",
+  });
+
+  it("is read from the control checkout's release/ directory and absent by default", () => {
+    expect([POLICY_PATH, DEFAULT_POLICY_REF]).toEqual([
+      "release/provenance-policy.json",
+      "origin/main",
+    ]);
+  });
+
+  it("acknowledges a listed local-built carrier at or after its version, naming the decision", () => {
+    const out = [];
+    const results = applyPolicy([down(ARM), down(X64)], {
+      mode: "mac-local",
+      version: "6.1.0",
+      policy: policy(decision(ARM), decision(X64)),
+      localBuilt: [ARM, X64],
+    });
+    expect(results.map((r) => r.status)).toEqual(["policy-acknowledged", "policy-acknowledged"]);
+    expect(report(results, { log: (l) => out.push(l) })).toBe(0);
+    expect(out.join("\n")).toContain(
+      `ACKNOWLEDGED ${ARM}@6.1.0 (earlier attested: 6.0.1) by release/provenance-policy.json: unattested_from_version=6.1.0 decided_by=owner`,
+    );
+  });
+
+  it.each([
+    ["a version before unattested_from_version", { version: "6.0.2" }],
+    ["recovery mode", { mode: "recovery-no-provenance" }],
+    ["a package that is not local-built in this run", { localBuilt: [X64] }],
+    ["an unlisted package", { policy: policy(decision(X64)) }],
+    ["no policy at all", { policy: null }],
+  ])("still blocks for %s", (_label, overrides) => {
+    const ctx = {
+      mode: "mac-local",
+      version: "6.1.0",
+      policy: policy(decision(ARM)),
+      localBuilt: [ARM, X64],
+      ...overrides,
+    };
+    const results = applyPolicy([down(ARM, ctx.version)], ctx);
+    expect(results[0].status).toBe("downgrade");
+    expect(report(results, { log: () => {} })).toBe(1);
+  });
+
+  it("never covers a CI-built package even when listed", () => {
+    const results = applyPolicy([down("@takazudo/zfb")], {
+      mode: "mac-local",
+      version: "6.1.0",
+      policy: policy(decision("@takazudo/zfb")),
+      localBuilt: [ARM, X64],
+    });
+    expect(results[0].status).toBe("downgrade");
+  });
+
+  it("acknowledges a later prerelease/stable but not an earlier prerelease of the same core", () => {
+    const ctx = { mode: "mac-local", policy: policy(decision(ARM, "6.1.0")), localBuilt: [ARM] };
+    expect(
+      applyPolicy([down(ARM, "6.2.0-next.1")], { ...ctx, version: "6.2.0-next.1" })[0].status,
+    ).toBe("policy-acknowledged");
+    expect(
+      applyPolicy([down(ARM, "6.1.0-next.3")], { ...ctx, version: "6.1.0-next.3" })[0].status,
+    ).toBe("downgrade");
+  });
+
+  describe("parsePolicy validation (fail closed)", () => {
+    const text = (body) => (typeof body === "string" ? body : JSON.stringify(body));
+    it("accepts a well-formed policy", () => {
+      expect(parsePolicy(text(policy(decision(ARM)))).decisions).toHaveLength(1);
+    });
+    it.each([
+      ["malformed JSON", "{nope"],
+      ["a wrong schema", { schema: "x", decisions: [] }],
+      ["a missing reason", policy({ ...decision(ARM), reason: "" })],
+      ["an unknown package", policy(decision("left-pad"))],
+      ["a bad version", policy(decision(ARM, "six"))],
+      ["a duplicate package", policy(decision(ARM), decision(ARM, "7.0.0"))],
+    ])("rejects %s", (_label, body) => {
+      expect(() => parsePolicy(text(body))).toThrow();
+    });
+  });
+
+  describe("read only from origin/main, never a working tree or the release commit", () => {
+    let repo;
+    const git = (...args) =>
+      execFileSync(
+        "git",
+        ["-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", ...args],
+        {
+          encoding: "utf8",
+        },
+      ).trim();
+    const commitPolicy = (body, message) => {
+      mkdirSync(join(repo, "release"), { recursive: true });
+      writeFileSync(join(repo, POLICY_PATH), JSON.stringify(body));
+      git("add", POLICY_PATH);
+      git("commit", "-q", "-m", message);
+      return git("rev-parse", "HEAD");
+    };
+    afterEach(() => repo && rmSync(repo, { recursive: true, force: true }));
+    const init = () => {
+      repo = mkdtempSync(join(tmpdir(), "zfb-policy-repo-"));
+      git("init", "-q");
+      writeFileSync(join(repo, "README"), "x");
+      git("add", ".");
+      git("commit", "-q", "-m", "base");
+      return git("rev-parse", "HEAD");
+    };
+
+    it("ignores a policy present only in the release commit (and its working tree)", () => {
+      const main = init();
+      git("update-ref", "refs/remotes/origin/main", main);
+      commitPolicy(policy(decision(ARM)), "release commit adds a policy");
+      expect(loadPolicyAtRef({ repo })).toBeNull();
+    });
+
+    it("reads the policy committed on main", () => {
+      init();
+      const main = commitPolicy(policy(decision(ARM)), "owner policy on main");
+      git("update-ref", "refs/remotes/origin/main", main);
+      // A later working-tree edit does not change what main says.
+      writeFileSync(join(repo, POLICY_PATH), JSON.stringify(policy(decision(X64))));
+      expect(loadPolicyAtRef({ repo }).decisions.map((d) => d.package)).toEqual([ARM]);
+    });
+
+    it("fails closed when origin/main is not available", () => {
+      init();
+      expect(() => loadPolicyAtRef({ repo })).toThrow(/origin\/main is not available/);
+    });
+
+    it("fails closed on a malformed policy on main", () => {
+      init();
+      const main = commitPolicy({ schema: "nope" }, "bad policy");
+      git("update-ref", "refs/remotes/origin/main", main);
+      expect(() => loadPolicyAtRef({ repo })).toThrow(/schema must be/);
+    });
+  });
+
+  it("parses --policy-ref", () => {
+    expect(
+      parseArgs(["--version", "6.1.0", "--mode", "mac-local", "--policy-ref", "origin/main"]),
+    ).toMatchObject({
+      policyRef: "origin/main",
+    });
+    expect(parseArgs(["--version", "6.1.0", "--mode", "mac-local", "--policy-ref"])).toBeNull();
+    expect(
+      parseArgs(["--version", "6.1.0", "--mode", "mac-local", "--policy", "/p.json"]),
+    ).toBeNull();
   });
 });
