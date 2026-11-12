@@ -2034,8 +2034,8 @@ describe("island shipped-size budget", () => {
 // Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // Exact immediate predecessors of the live contracts: for Linux, the
-// schemaVersion-4 v6.0.0 release contract (#4656, Actions evidence)
-// that the v6.0.1 release bump moved; for Darwin, the schemaVersion-4 v5.2.2
+// schemaVersion-4 v6.0.1 release contract (#4664, Actions evidence)
+// that the v6.1.0 release bump moved; for Darwin, the schemaVersion-4 v5.2.2
 // bundler-backend contract that its #4645 v6.0.0 release bump moved
 // (owner-attested local evidence).
 // Each must equal a frozen verbatim fixture, so the metadata check also holds in
@@ -2044,16 +2044,18 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // flat record carries no baselineRunId.
 const repinnedFromContracts = [
   {
-    // The v6.0.1 release bump cites the frozen schemaVersion-4 v6.0.0 Linux contract.
+    // The v6.1.0 release bump cites the frozen schemaVersion-4 v6.0.1 Linux contract, as
+    // recorded by the rebaseline at release probe head 248d22090 (PR #4700; blob identical
+    // to main 7c008e2ea).
     file: "decision-linux-x64.json",
-    commit: "1b0ddb4885ce765c806163ae9edde4e69c891d03",
-    sha256: "df6a014d2cdd1c51d476d29f7c7c66344a9c86e5df9747973d1733bd98f96458",
-    fixture: "fixtures/island-size-linux-x64-v6.0.0-release.json",
+    commit: "248d22090d2040e109c2cf6d27bbc0c74bccb9cd",
+    sha256: "5005f4c67baf3eb3e6b284a223940cb269c1a137bb624bcaf29d1a5543958068",
+    fixture: "fixtures/island-size-linux-x64-v6.0.1-release.json",
     schemaVersion: 4,
     outcome: "release-version-stamp",
-    packageVersion: "6.0.0",
-    baselineSourceSha: "4273be5674b9bb9a7a36794bf02b937ab7f6dea3",
-    baselineRunId: 42582498638,
+    packageVersion: "6.0.1",
+    baselineSourceSha: "5c5acb10c9c4e812fe7e95fed8ef49f954229eb2",
+    baselineRunId: 42700776335,
   },
   {
     // The Darwin v6.0.0 release bump cites the authentic schema-4 predecessor.
@@ -3988,6 +3990,13 @@ describe("live contracts preserve released evidence and authentic predecessors",
       "df6a014d2cdd1c51d476d29f7c7c66344a9c86e5df9747973d1733bd98f96458",
     );
 
+  // Verbatim main contract at 7c008e2ea, before the v6.1.0 release bump.
+  const linuxV601 = () =>
+    frozenDenoExit(
+      "fixtures/island-size-linux-x64-v6.0.1-release.json",
+      "5005f4c67baf3eb3e6b284a223940cb269c1a137bb624bcaf29d1a5543958068",
+    );
+
   // The v6.0.0 release probe (#4656, health run 42582498638) re-pinned the
   // esbuild-free Linux contract to 6.0.0 with every total unchanged.
   it("moves the frozen v5.2.2 bundler-backend Linux contract only by the v6.0.0 release bump", () => {
@@ -4022,7 +4031,7 @@ describe("live contracts preserve released evidence and authentic predecessors",
   // The v6.0.1 release probe (#4664) preserves every raw and normalized-gzip ceiling.
   it("moves the frozen v6.0.0 Linux contract only by the v6.0.1 release bump", () => {
     const predecessor = linuxV600();
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    const live = linuxV601();
     expect(live.schemaVersion).toBe(4);
     expect(live.toolchain.bundlerIdentity).toBe("rolldown-24bc2d0");
     expect(live.outcome).toBe("release-version-stamp");
@@ -4036,6 +4045,36 @@ describe("live contracts preserve released evidence and authentic predecessors",
       runId: 42700776335,
       jobId: 129444651875,
       sourceSha: "b21dba5d8d0c905b33d0baeb4c046b58ab4b913a",
+    });
+    for (const key of [
+      "bundlerBackend",
+      "cargoTransition",
+      "cargoRewire",
+      "cargoRemoval",
+      "fingerprintTransition",
+    ]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    expectReleaseBumpOnly(predecessor, live);
+  });
+
+  // The v6.1.0 release probe (#4700) preserves every raw and normalized-gzip ceiling.
+  it("moves the frozen v6.0.1 Linux contract only by the v6.1.0 release bump", () => {
+    const predecessor = linuxV601();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.schemaVersion).toBe(4);
+    expect(live.toolchain.bundlerIdentity).toBe("rolldown-24bc2d0");
+    expect(live.outcome).toBe("release-version-stamp");
+    expect(live.toolchain.packageVersion).toBe("6.1.0");
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "e71b309401cb7720c550dfbdca57ad7bb12803fde4db3290ebf4edf57fdde858",
+    );
+    expect(live.baselineSourceSha).toBe("248d22090d2040e109c2cf6d27bbc0c74bccb9cd");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "ci",
+      runId: 43210823671,
+      jobId: 131157722281,
+      sourceSha: "2c52d001c1c6c365d90468ce33a093c1039d0807",
     });
     for (const key of [
       "bundlerBackend",
