@@ -1,0 +1,64 @@
+---
+title: definePlugin
+description: プラグインモジュールのデフォルトエクスポートを ZfbPlugin として型付けする恒等ヘルパー。フックのシグネチャやフィールド名の誤りをコンパイル時に検出できます。
+sidebar_position: 8
+---
+
+## シグネチャ
+
+```ts
+definePlugin(plugin: ZfbPlugin): ZfbPlugin
+```
+
+`definePlugin` は `@takazudo/zfb/plugins` からエクスポートされます。[`defineConfig`](./define-config.mdx) と同様に、引数を変更せずに返す恒等ヘルパーです。役割はオブジェクトリテラルを `ZfbPlugin` として型付けし、エディターで各フィールドの型やフックのシグネチャの誤りをコンパイル時に確認できるようにすることだけです。
+
+```ts
+// plugins/my-plugin.ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+
+export default definePlugin({
+  name: "my-plugin",
+  async preBuild({ outDir, logger }) {
+    logger.info(`generating index into ${outDir}`);
+  },
+});
+```
+
+プラグインモジュールは、`definePlugin` が返したオブジェクト（または同等の `ZfbPlugin` の形のリテラル）をデフォルトエクスポートします。`zfb.config.ts` は `name` でそのモジュールを参照し、Rust 側のプラグインホストが動的 `import()` で読み込みます。
+
+## `ZfbPlugin` の形状
+
+```ts
+interface ZfbPlugin {
+  name: string;
+  setup?(ctx: ZfbSetupContext): Promise<void> | void;
+  preBuild?(ctx: ZfbBuildHookContext): Promise<void> | void;
+  postBuild?(ctx: ZfbBuildHookContext): Promise<void> | void;
+  devMiddleware?(ctx: ZfbDevMiddlewareContext): Promise<void> | void;
+  previewMiddleware?(ctx: ZfbPreviewMiddlewareContext): Promise<void> | void;
+}
+```
+
+`name` は表示用です。内部でプラグインを識別するのは `name` ではなく、解決されたモジュール指定子で、`name` はログやエラー行にのみ現れます。5 つのフックはすべて任意かつ独立しており、必要なものだけ宣言できます。複数のプラグインが同じ対象を操作するときは、`zfb.config.ts` の `plugins` 配列での宣言順が重要です。
+
+フックの順序、`setup` の 4 つの登録メソッド、`devMiddleware` / `previewMiddleware` のリクエスト・レスポンス契約、実例を含むライフサイクル全体は、[プラグイン](../architecture/plugins.mdx)を参照してください。
+
+## フックのシグネチャ
+
+- **`setup?(ctx: ZfbSetupContext)`** — ホストの起動ごと（`zfb build`、`zfb dev`、`zfb preview`）に 1 回、`preBuild` より前に実行します。`ctx` は `command`（`"build" | "dev" | "preview"`）、`projectRoot`、`config`、`options`、`logger` と、登録用の `addAlias`、`addVirtualModule`、`injectRoute`、`addClientEntry` を公開します。`addVirtualModule(specifier, loader, options?)` の任意の第 3 引数 `ZfbVirtualModuleOptions` には、ローダーに代わって `zfb dev` が監視する絶対パスの一覧 `watchFiles?: string[]` を指定できます。変更があれば、記憶済みソースを使わずにそのローダーを再実行します。各パスは絶対パスである必要があり、相対パスや空文字列は例外になります。また、ディレクトリではなく**ファイル**を指す必要があります。既存のディレクトリを指定すると `setup` 中に例外になります。zfb はファイルの親ディレクトリしか監視せず、そのディレクトリの内側の変更を検知できないためです。まだ存在しないパスは有効で、ディレクトリの検査はパスが存在するときだけ行います。`"preview"` での登録も形状の一貫性のために受け付けますが、動作しません。preview は、それらの登録を使う走査 → バンドル → レンダリングのパイプラインを再実行しません。`injectRoute(pattern, entrypoint, opts?)` のパターンは `pages/` のファイル名規則に従います。`/_engine/tokens` のように `_` で始まるパスセグメントを生むパターンは規約上非公開なので、`zfb build` と `zfb dev` の両方が警告を出し、ページを生成しません。[`injectRoute` のパターンに `_` で始まるセグメントを含めない](../architecture/dynamic-routes.mdx#paths-の契約-injectroute-のパターンに-_-で始まるセグメントを含めない)を参照してください。
+- **`preBuild?(ctx: ZfbBuildHookContext)`** — バンドラー、レンダラー、CSS、islands の各処理前にファイルを生成するためのフック。`zfb build` ごとに 1 回、`zfb dev` の起動ごとに 1 回実行します。`zfb preview` では実行しません。
+- **`postBuild?(ctx: ZfbBuildHookContext)`** — `dist/` の書き込み完了後の仕上げ処理です。完全なルートマニフェスト `ctx.routes` はこのフックにだけ存在し、`preBuild` では `undefined` です。`zfb preview` では実行しません。
+- **`devMiddleware?(ctx: ZfbDevMiddlewareContext)`** — `ctx.register(path, handler)` で `zfb dev` のリクエストごとの HTTP ハンドラーを登録します。`zfb dev` の間だけ実行します。
+- **`previewMiddleware?(ctx: ZfbPreviewMiddlewareContext)`** — `devMiddleware` に対応する `zfb preview`（静的モード）用フック。同じ登録呼び出しとリクエスト・レスポンスの形を使いますが、モードごとに明示的な登録が必要です。`devMiddleware` だけを登録したプラグインのハンドラーは `zfb preview` では動きません。
+
+`preBuild` / `postBuild` は `{ projectRoot, scratchDir, outDir, config, options, logger }`（`postBuild` にはさらに `routes`）、`devMiddleware` / `previewMiddleware` は `{ projectRoot, scratchDir, config, options, logger, register }`、`setup` は `{ command, projectRoot, scratchDir, config, options, logger, addAlias, addVirtualModule, injectRoute, addClientEntry }` を受け取ります。どのコンテキストでも `options` は、そのプラグインの `PluginConfig.options` ブロックをそのままコピーしたものです。
+
+`@takazudo/zfb/plugins` は `ZfbPlugin`、`definePlugin` とともに、`ZfbBuildHookContext`、`ZfbDevMiddlewareContext`、`ZfbPreviewMiddlewareContext`、`ZfbSetupContext`、`ZfbPluginLogger`、`ZfbRouteEntry`、`ZfbRouteManifest`、`ZfbVirtualModuleLoader`、`ZfbVirtualModuleOptions` もエクスポートします。
+
+`scratchDir` は、プラグインの内部的な中間生成物用に、4 種類すべてのコンテキストで必ず渡される絶対パスです。デフォルトは `<projectRoot>/.zfb-build/plugins` で、[`--scratch-dir` / `ZFB_SCRATCH_DIR`](./cli.mdx#スクラッチディレクトリ) を指定すると `<scratch dir>/plugins` になります。インポート可能なルートの配置先ではなく、ここに生成したルートモジュールはバンドルにステージングされません。zfb はこのディレクトリを作成しないため、`mkdir(scratchDir, { recursive: true })` を呼び、`<scratchDir>/<plugin-name>/` のサブディレクトリを使ってください。`--scratch-dir` によるプラグインの分離は、プラグインがこのディレクトリを使う場合に限られます。プロジェクトルートの独自ディレクトリ（例: `.zudo-doc/`）へ書き続けるプラグインは、並行するコマンド間で共有されたままです。実例は[中間ファイル用のスクラッチ領域](../architecture/plugins.mdx#中間ファイル用のスクラッチ領域)を参照してください。
+
+## 関連ページ
+
+- [プラグイン](../architecture/plugins.mdx) — フックの契約全体、実例、競合検出エラー（`AliasConflict`、`VirtualModuleConflict`、`InjectRouteConflict`、`ClientEntryConflict`、`InvalidClientEntry`）。
+- [`defineConfig`](./define-config.mdx) — `zfb.config.ts` での `plugins: [{ name: "...", options: {...} }]` の設定。
+- [`definePreset`](./define-preset.mdx) — プリセットが追加するプラグインに出自を付け、相対パスのプラグイン指定子をプリセットパッケージ基準で解決する仕組み。

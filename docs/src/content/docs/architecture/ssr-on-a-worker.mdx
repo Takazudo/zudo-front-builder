@@ -335,18 +335,19 @@ Remix-without-the-Remix-runtime. No RSC streaming, no Server Actions abstraction
 Two categories of output are intentionally absent from `dist/_worker.js` and
 `dist/_zfb_inner.mjs`:
 
-**Island browser code** — components marked with `"use client"` are compiled by a separate
-bundler step into a **single combined** browser-shipped bundle. In dev the bundle
-lands at `dist/assets/islands.js` (stable filename, no hash); in production
-`ProductionAssetPipeline` writes it as `dist/assets/islands-<hash>.js` and
-rewrites every reference in the rendered HTML to the hashed URL. The bundle is
-neither part of `dist/_worker.js` nor of `dist/_zfb_inner.mjs` — it is browser-shipped
-JavaScript, not server-executed Worker code. The island's initial HTML comes
-from the server — written into a static file at build time on a prerendered
-page, or rendered per request by the Worker on a `prerender = false` page. The
-browser then downloads the islands bundle the page references and its top-level hydration code
-walks every `[data-zfb-island]` element on the page. See
-[Islands](./islands.mdx) for the full mechanism.
+**Island browser code** — a separate native Rolldown pass emits a shared
+browser entry plus possible lazy chunks. Dev defaults to
+`.zfb-build/dev-assets/assets/islands.js`, served at `/assets/islands.js`;
+scratch settings can relocate its disk directory. Production writes
+`dist/assets/islands-<hash>.js` and any companion chunks.
+
+A production build with islands injects that shared entry into **every
+prerendered HTML page**, even one without island roots. A no-island build emits
+none. That post-processing rule does not extend to arbitrary request-time SSR
+responses; those must provide the required browser assets through their own
+supported composition. The browser entry is not part of `_worker.js` or
+`_zfb_inner.mjs`; its hydration code visits `[data-zfb-island]` elements. See
+[Islands](./islands.mdx).
 
 This separation covers the *browser* bundle only. An island's component also
 has server-rendering code: when an SSR route renders an `<Island>`, that

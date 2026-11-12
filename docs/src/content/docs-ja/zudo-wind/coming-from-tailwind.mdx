@@ -29,7 +29,7 @@ Tailwind のデフォルトテーマの名前空間には、`--color-*`、`--fon
 
 ## 短い手順で移行する
 
-このガイドを載せるドキュメントサイトは、独自の chrome に引き続き Tailwind を使います。この手順とコンパイル済みサンプルが説明するのは、利用者のプロジェクトで使う zudo-wind v1 です。
+このドキュメントサイトも、公開済み zudo-doc の zudo-wind スタイルとホストの手書き CSS を使い、Tailwind の import やディレクティブは使いません。この手順と分離されたコンパイル済みサンプルは、利用者のプロジェクトの移行を説明します。過去の Tailwind との比較測定は、当時の fixture とツールの記録として以下に残しています。
 
 1. エントリーのスタイルシートと import 先から Tailwind の import とエンジンディレクティブを削除します。通常の手書き CSS と <code>@layer</code> は残します。影響を受けるデフォルトテーマ変数の参照を次のコマンドで探します。
 
@@ -512,7 +512,7 @@ Tailwind は `group-hover:text-accent` を `.group-hover\:text-accent:is(:where(
 
 クラスに見える文字列のすべてがユーティリティルールを作るわけではありません。`site-header` のような名前はユーティリティ基部に一致しないため、通常のクラスとしてマークアップに残り、wind はルールを出力しません。一方 `text-link` は `text` 基部に一致してユーティリティとして検証されるため、必要なトークンがなければ ZW006 になります。未解決の名前をすべて通常のクラスとして扱うのではなく、綴り間違いを検出できる厳格な分類です。単独の `group` または `peer` マーカーもルールを出力せず、対応する候補のために関係メタデータを提供します。
 
-`line-clamp-2`、`order-1`、`basis-1/2`、`container` など zudo-wind が実装しない Tailwind ユーティリティは、通常のテキストとして扱われません。代わりに手書きすべき宣言を添えた ZW014 として報告され、既定では警告、`wind.strict: true` ではエラーです。`card__title` のようにアンダースコアを含む名前は通常のクラスのままです。
+`line-clamp-2`、`order-[2]`、`basis-[20px]`、`container` など zudo-wind が実装しない Tailwind ユーティリティは、通常のテキストとして扱われません。代わりに手書きすべき宣言を添えた ZW014 として報告され、既定では警告、`wind.strict: true` ではエラーです。`card__title` のようにアンダースコアを含む名前は通常のクラスのままです。
 
 | 候補の結果 | 動作 |
 | --- | --- |
@@ -598,6 +598,10 @@ export default defineConfig({
 ~~~
 
 既存の base と components レイヤーは残します。wind の前置きが順序を定めます。手書きの `.prose` クラスはスタイルシートに残し、`authoredClasses` に完全な名前を登録します。[デフォルトテーマ変数](#デフォルトテーマ変数)で説明したように、色トークンが設定されているなら、手書き CSS 内の旧 `var(--color-neutral-900)` 参照を出力されるトークン変数 `var(--zw-color-neutral-900)` に更新します。設定済みの `accent` トークンは手書きの `--color-accent` を参照するため、テーマ切り替えでは引き続きその値を変更できます。スキャフォールドは `owned-v1` リセットを使いますが、ほかのプロジェクトのデフォルトは `none` です。ここで扱うのは言語とスタイルシートの変更です。プロジェクト全体の移行順序は[v3 への移行](../guides/migrating-to-v3.mdx)を参照してください。
+
+現在の言語は spec 1、revision 14 で、カタログは 219 項目です。言語のバージョン／リビジョン、シリアライズされたスキーマのバージョン、移行語彙のリビジョン、npm パッケージのバージョンは別の識別子です。リビジョン 13 は固定 display クラスを 13 個（contents、flow-root、list-item、table、inline-table、および table-caption／cell／column／column-group／footer-group／header-group／row／row-group）追加し、display は計 21 個になりました。appearance-auto と appearance-none も追加しました。これらの固定形は接尾辞、任意値、トークン、負数、スラッシュ形式を受け付けません。
+
+リビジョン 14 は order-first／last／none、ASCII 整数 0～2147483647 と -order-2 のような負の数値形式を追加しました。任意値の order は未対応です。basis は auto／full／px／0／min／max／fit／content と、分子・分母がそれぞれ 1～1,000,000 の正の整数分数だけを受け付けます。スケール、トークン、任意値、負数の basis は未対応です。SVG の塗りは fill-current／none と stroke-current／none だけで、任意色、トークン色、数値の stroke 幅、負数、不透明度の接尾辞は追加していません。固定形 not-sr-only は sr-only の切り取り用宣言を戻し、その後に出力されますが、以前の手書きスタイルすべてを復元するものではありません。これらは既存のバリアントと決定的なカタログ順序を使い、class 属性内の順序では決まりません。order の数値の大小はカスケードの勝敗を決めず、同順位なら候補の UTF-8 バイト列で決まります。
 
 ## 未対応の機能と代替方法
 

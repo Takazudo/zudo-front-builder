@@ -245,7 +245,7 @@ basis-and-order は対応済みの Wind ユーティリティクラスを使い�
 
 ## 任意値と名前付きの値
 
-flex-1 は 1 1 0%、flex-auto は 1 1 auto、flex-initial は 0 1 auto、flex-none は none です。grow と shrink の既定値は1で、-0 形は0です。grow-[2] のような任意の数値も使えます。比率の効果を見るには親に display:flex を設定します。
+flex-1 は 1 1 0%、flex-auto は 1 1 auto、flex-initial は 0 1 auto、flex-none は none です。grow と shrink の既定値は1で、-0 形は0です。grow-[2] のような任意の数値も使えます。比率の効果を見るには親に display:flex を設定します。 basis は auto／full／px／0／min／max／fit／content と、分子・分母が各 1～1,000,000 の正の整数分数だけを受け付けます。スケール、トークン、任意値、負数は未対応です。order は first／last／none と ASCII 整数 0～2147483647、その負の数値形式を受け付け、任意値は未対応です。数値の大小はカスケードの優先度を決めず、同順位なら候補のバイト列で決まります。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
 

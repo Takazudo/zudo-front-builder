@@ -99,14 +99,14 @@ parseButton.addEventListener("click", async () => {
 
 ## 完全なルート API
 
-`compile()` と `renderHtml()` はどちらも、markdown/MDX の `source` 文字列とオプション
-オブジェクト — すべてのフィールドは任意で、`{}` はすべてのデフォルトを選びます — を受け
-取り、どちらも `diagnostics` 配列を持つ結果オブジェクトに解決します。**想定される失敗は
-決してスローしません。** パースエラー、不正なオプション JSON、未知のテーマなどの問題は、
-すべて `code` / `html` が `null` に設定された `Diagnostic[]` エントリとして返され、
-スローされるエラーになることはありません。（スローされる `ZfbMdWasmTrapError` は wasm
-ビルドの実際のバグを意味します — その、より限定的なケースについては、パッケージ自身の
-README「Error / trap / re-init contract」を参照してください。）
+`compile()` と `renderHtml()` はソースと任意のオプションオブジェクトを受け取ります。
+パーサーやオプションの失敗は、構造化された `diagnostics` と `null` の `code` / `html`
+を持つ結果として解決されます。一方、ネットワーク・ファイルの読み込み、glue の import、
+初期化、不正な JavaScript 値は Promise の reject になることがあります。
+`await` 後に診断を確認し、例外には `catch`、後始末や UI の処理中状態の解除には
+`finally` を使って、両方の経路を扱ってください。`ZfbMdWasmTrapError` は WASM トラップの
+回復経路を表し、すべての reject の原因を表すものではありません。
+[エラークラス](../api/md-wasm.mdx#エラークラス)を参照してください。
 
 ### `compile()` — MDX から ES モジュール JS へ
 
@@ -137,16 +137,22 @@ frontmatter の値は結果の `frontmatter` フィールドで返されます �
 blob URL と動的な `import()` でそれを実行可能なモジュールに変換します:
 
 ```ts
-const { code, diagnostics } = await compile(source, { filename: "preview.mdx" });
-if (code === null) {
-  // Compilation failed — render the `diagnostics` array instead of a module.
-  return;
+async function loadPreview(source: string) {
+  let url: string | undefined;
+  try {
+    const { code, diagnostics } = await compile(source, { filename: "preview.mdx" });
+    if (code === null) return { diagnostics };
+    url = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
+    const { default: MDXContent } = await import(/* @vite-ignore */ url);
+    return { diagnostics, MDXContent };
+  } catch (error) {
+    // 読み込み・初期化・評価・WASM の失敗。エラー UI に表示します。
+    console.error(error);
+    return null;
+  } finally {
+    if (url) URL.revokeObjectURL(url);
+  }
 }
-const url = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
-const { default: MDXContent } = await import(/* @vite-ignore */ url);
-URL.revokeObjectURL(url);
-
-// render <MDXContent components={{ Callout }} /> with your framework
 ```
 
 PascalCase のコンポーネント（上記ソースの `<Callout>`）は、モジュールの `components` prop を

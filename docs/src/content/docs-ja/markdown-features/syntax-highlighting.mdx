@@ -76,7 +76,4 @@ export default {
 
 ## 順序に関する注意
 
-`SyntectPlugin` は hast フェーズで、`CodeTitlePlugin`、`MermaidPlugin`、その他
-すべてのコードブロックビジターの後、**最後に**実行されます。各 `<pre><code>`
-要素を生の HTML フラグメントに置き換えるため、構造化された `<pre>` を読み取る
-必要があるプラグインは、これより前に実行されなければなりません。
+`CodeTitlePlugin` や `MermaidPlugin` など、元の `<pre><code>` を読む必要があるビジターは `SyntectPlugin` より前に実行します。その後 Syntect がハイライト構造を生成し、有効な場合は `codeEnrichment` が後から行単位の構造に diff マーカー、行番号、ハイライトなどを加えます。順序はハイライト前のビジター → Syntect → ハイライト後のコード拡張であり、Syntect が全ビジターの最後ではありません。

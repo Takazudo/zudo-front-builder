@@ -9,6 +9,12 @@ import {
   type Ref,
 } from "@takazudo/zfb/zudo-react";
 
+import {
+  localizedSamples,
+  playgroundApiHref,
+  playgroundCopy,
+  type PlaygroundProps,
+} from "./host-copy";
 import DiagnosticsList from "./diagnostics-list";
 import PlaygroundShell from "./playground-shell";
 import SamplePicker, { type PlaygroundSample } from "./sample-picker";
@@ -106,16 +112,17 @@ function getOutcome(result: HighlightCodeResult | null): HighlightOutcome | null
     : "success";
 }
 
-function outcomeLabel(outcome: HighlightOutcome): string {
+function outcomeLabel(outcome: HighlightOutcome, locale: PlaygroundProps["locale"]): string {
+  const copy = playgroundCopy(locale);
   switch (outcome) {
     case "success":
-      return "Success";
+      return copy.success;
     case "warning":
-      return "Success with warning";
+      return copy.warning;
     case "options-error":
-      return "Options error";
+      return copy.optionsError;
     case "error":
-      return "Highlight error";
+      return copy.highlightError;
   }
 }
 
@@ -151,22 +158,27 @@ const loadHighlightModule = createModuleLoader<HighlightModule>(async () => {
 const inputClass =
   "rounded border border-muted bg-surface px-hsp-md py-vsp-xs text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2";
 
-function HighlightOutput({ result }: { result: ReadonlySignal<HighlightCodeResult | null> }) {
+function HighlightOutput({
+  result,
+  locale,
+}: {
+  result: ReadonlySignal<HighlightCodeResult | null>;
+  locale: PlaygroundProps["locale"];
+}) {
+  const copy = playgroundCopy(locale);
   const hasResult = computed(() => result.value !== null);
   const hasHtml = computed(() => result.value?.html != null);
   const html = computed(() => result.value?.html ?? "");
   const failureMessage = computed(() =>
     result.value?.diagnostics.some((diagnostic) => diagnostic.source === "options")
-      ? "No HTML output: the supplied options were rejected."
-      : "No HTML output was returned.",
+      ? copy.optionsRejected
+      : copy.noHtml,
   );
 
   return (
     <Show
       when={hasResult}
-      fallback={() => (
-        <p class="m-0 text-small text-muted">Run the highlighter to see semantic HTML.</p>
-      )}
+      fallback={() => <p class="m-0 text-small text-muted">{copy.highlightPrompt}</p>}
     >
       {() => (
         <Show
@@ -175,12 +187,12 @@ function HighlightOutput({ result }: { result: ReadonlySignal<HighlightCodeResul
         >
           {() => (
             <div class="flex flex-col gap-vsp-sm">
-              <section aria-label="Rendered semantic HTML">
-                <h3 class="mb-vsp-2xs text-small font-semibold">Rendered semantic HTML</h3>
+              <section aria-label={copy.semanticHtml}>
+                <h3 class="mb-vsp-2xs text-small font-semibold">{copy.semanticHtml}</h3>
                 <div class="zd-html-preview-code" rawHtml={html} />
               </section>
-              <section aria-label="Raw HTML source">
-                <h3 class="mb-vsp-2xs text-small font-semibold">Raw HTML source</h3>
+              <section aria-label={copy.rawHtml}>
+                <h3 class="mb-vsp-2xs text-small font-semibold">{copy.rawHtml}</h3>
                 <pre class="m-0 overflow-auto whitespace-pre-wrap break-words">{html}</pre>
               </section>
             </div>
@@ -191,7 +203,11 @@ function HighlightOutput({ result }: { result: ReadonlySignal<HighlightCodeResul
   );
 }
 
-export default function HighlightPlayground() {
+export default function HighlightPlayground({
+  locale = "en",
+  basePath = "",
+}: PlaygroundProps = {}) {
+  const copy = playgroundCopy(locale);
   const scope = getScope();
   const initialSample = SAMPLES[2];
   const source = signal(initialSample.value);
@@ -229,10 +245,10 @@ export default function HighlightPlayground() {
   const outcome = computed(() => getOutcome(displayedResult.value));
   const hasOutcome = computed(() => outcome.value !== null);
   const diagnostics = computed(() => displayedResult.value?.diagnostics ?? []);
-  const emptyMessage = computed(() => (displayedResult.value ? "No diagnostics." : undefined));
+  const emptyMessage = computed(() => (displayedResult.value ? copy.noDiagnostics : undefined));
   const trapError = computed(() => {
     const current = state.value;
-    return current.status === "error" ? errorMessage(current.error) : null;
+    return current.status === "error" ? `${copy.runError}: ${errorMessage(current.error)}` : null;
   });
   const hasTrapError = computed(() => trapError.value !== null);
 
@@ -282,22 +298,16 @@ export default function HighlightPlayground() {
       onRun={runHighlight}
       pending={computed(() => state.value.status === "loading")}
       hasRun={computed(() => state.value.status !== "idle")}
-      labels={{
-        input: "Source code",
-        output: "HTML output",
-        run: "Run",
-        pending: "Running…",
-        firstRunNotice: "The first Run downloads a WebAssembly module.",
-        apiReference: "API reference",
-      }}
-      apiReferenceHref="/docs/api/md-wasm/"
+      labels={{ ...copy, input: copy.sourceCode, output: copy.htmlOutput }}
+      apiReferenceHref={playgroundApiHref(locale, basePath)}
+      textareaLabel={copy.sourceCode}
       options={
         <div class="flex flex-col gap-vsp-sm">
           <SamplePicker
-            samples={SAMPLES}
+            samples={localizedSamples(SAMPLES, locale)}
             activeSampleId={activeSampleId}
             onPick={pickSample}
-            label="Samples"
+            label={copy.samples}
           />
 
           <div class="grid grid-cols-1 gap-vsp-sm md:grid-cols-2">
@@ -327,17 +337,14 @@ export default function HighlightPlayground() {
 
           <fieldset class="m-0 flex flex-col gap-vsp-2xs border-0 p-0">
             <legend class="font-mono text-small font-semibold text-fg">roleClasses</legend>
-            <p class="m-0 text-caption text-muted">
-              Optional full-role class overrides; clear a field to restore its default semantic
-              class.
-            </p>
+            <p class="m-0 text-caption text-muted">{copy.roleHelp}</p>
             <div class="grid grid-cols-1 gap-vsp-sm md:grid-cols-2">
               <label class="flex flex-col gap-vsp-3xs text-small text-fg">
                 <span class="font-mono">roleClasses.keyword</span>
                 <input
                   class={inputClass}
                   modelValue={keywordClass}
-                  placeholder="default: hi-kw"
+                  placeholder={copy.keywordDefault}
                   on:input={clearDisplayedResult}
                 />
               </label>
@@ -346,7 +353,7 @@ export default function HighlightPlayground() {
                 <input
                   class={inputClass}
                   modelValue={stringClass}
-                  placeholder="default: hi-str"
+                  placeholder={copy.stringDefault}
                   on:input={clearDisplayedResult}
                 />
               </label>
@@ -366,17 +373,18 @@ export default function HighlightPlayground() {
                     : "m-0 text-small font-semibold",
                 )}
               >
-                {computed(() => (outcome.value ? outcomeLabel(outcome.value) : ""))}
+                {computed(() => (outcome.value ? outcomeLabel(outcome.value, locale) : ""))}
               </p>
             )}
           </Show>
-          <HighlightOutput result={displayedResult} />
+          <HighlightOutput result={displayedResult} locale={locale} />
         </div>
       }
       diagnostics={
         <DiagnosticsList
           diagnostics={diagnostics}
-          label="Highlight diagnostics"
+          locale={locale}
+          label={copy.highlightDiagnostics}
           emptyMessage={emptyMessage}
         />
       }

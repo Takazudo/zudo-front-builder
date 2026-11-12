@@ -16,11 +16,21 @@ Either way, a page here is:
 - Written as an explanation, not a code dump — the _why_ matters as much as the _how_
 - Anchored to a specific zfb version range, so you know what state of the engine it assumes
 
-The external example repositories pin zfb 3.1.0 (checked on 2026-10-03) and use zudo-react; their styling uses zudo-wind utilities where configured and authored CSS throughout.
+The nine ordinary external example repositories pin their ZFB packages to
+**6.0.1** and declare **Node.js >=24.0.0** (manifests checked at the immutable
+commits linked on each recipe, 2026-11-11). Their pnpm and Wrangler versions
+vary; use each recipe's prerequisite table rather than this monorepo's tooling.
+They use zudo-react, with configured zudo-wind utilities and authored CSS.
+
+[Agent Conversations](./agent-conversations.mdx) is the historical exception:
+its walkthrough is dated **2026-10-01** at commit
+`a21cc1081f656027d075c1e09c425e65f368f3ae`. That snapshot's nested apps use
+ZFB 4.7.0 and its root declares Node.js >=22.16 / pnpm 10.12.1. It is not a
+current 6.0.1 recipe.
 
 ## Recipes
 
-- [Enlargeable Images](./enlargeable-images.mdx) — reproduce the old `imageEnlarge` built-in in userland using the `img` component override. Covers the server-side (no JS) and islands variants, plus the `no-enlarge` opt-out.
+- [Enlargeable Images](./enlargeable-images.mdx) — reproduce the old `imageEnlarge` built-in in userland using the `img` component override. Covers the server-rendered variant (shared layout JS, no island runtime or per-image bundle) and islands variant, plus the `no-enlarge` opt-out.
 - [Admonitions](./admonitions.mdx) — register `:::note`, `:::tip`, `:::info`, `:::warning`, `:::danger`, `:::caution`, and `:::details` using the `directives` feature with minimal component stubs and CSS hooks.
 
 ## Example sites

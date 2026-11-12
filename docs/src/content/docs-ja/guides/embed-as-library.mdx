@@ -4,7 +4,7 @@ description: Server ビルダー API を介して、Rust ホスト（Tauri・CLI
 sidebar_position: 7
 ---
 
-`zfb-server` クレートは小さなビルダー API を提供しており、Rust ホストが zfb の HTTP サーバーをインプロセスで動かせます。子サイドカーも追加のバイナリも不要です。`zfb dev` を支えるのと同じクレートが組み込みサーバーを支えており、唯一の違いは誰がライフサイクルを所有するかだけです。
+`zfb-server` クレートは小さなビルダー API を提供しており、Rust ホストが zfb の HTTP サーバーをインプロセスで動かせます。子サイドカーも追加のバイナリも不要です。`zfb dev` と HTTP 配信基盤を共有しますが、最小のビルダーは CLI のコンパイラ、監視、プラグイン、JS SSR パイプラインを起動しません。その接続とライフサイクルはホストが所有します。
 
 このガイドでは、公開ビルダーの形、リクエスト拡張の注入ポイント、そしてホストハンドラの継ぎ目（`with_ssr_handler`）を解説します。
 
@@ -23,7 +23,7 @@ zfb-server = { git = "https://github.com/Takazudo/zudo-front-builder", package =
 
 ホストが次のことを必要とするとき、ライブラリとして組み込む方法を選びます。
 
-- zfb のフルなルートテーブルをデスクトップまたは CLI プロセス内で動かす、
+- 静的 dist とホスト所有の Rust ハンドラをデスクトップまたは CLI プロセス内で配信する、
 - ハンドラが毎リクエストで読むべきプロセス単位のコンテキスト（`AppHandle`、FS の権限セット、認証トークンなど）を付与する、
 - 特定の URL パターンを、JS ランタイムを一切経由せずに Rust 所有のレスポンス（Markdown ルックアップ、データベース読み込み、サイドカー API ブリッジ）でショートサーキットする。
 
@@ -61,7 +61,7 @@ handle.shutdown()?;
 
 ビルダーが確定する主な選択肢:
 
-- **`ServerMode::Embed`** はライブリロードのスクリプト注入と `/__zfb/reload` SSE エンドポイントをオフにします。それ以外のルートテーブルは `zfb dev` と同一です。
+- **`ServerMode::Embed`** はブラウザー用の WebSocket リロードとスクリプト注入、およびツール用の `/__zfb/reload` SSE エンドポイントを無効にします。CLI のコンパイラ・監視・プラグイン・SSR サービスを構成するものではありません。
 - **`bind("127.0.0.1:0")`** は OS にエフェメラルポートを要求します。実際のポートは `ServerHandle::addr()` から読み取ってください。
 - **`serve_in_thread()`** は独自の `current_thread` tokio ランタイムを持つ専用の OS スレッドを起動するため、ホスト側に独自の tokio ランタイムは不要です（Tauri の同期的な `setup` コールバックも変更なしで機能します）。
 - **`ServerHandle::shutdown()`** は冪等です。2 回呼んでも何も起こりません。
@@ -234,9 +234,9 @@ cache.remove(["/blog/stale"]).await;             // drop a vanished route
 `ServeOpts` は直接フィールドを埋めるプレーンな構造体です。ライブコンテンツに関係するフィールドは次のとおりです。
 
 - **`pages: PageCache`** — レベル 1 と同じ共有キャッシュです。監視側からこれに書き込みます。
-- **`broadcast: ReloadTx`** — ライブリロードのセンダーです。`ReloadTx` は `tokio::sync::broadcast::Sender<ReloadEvent>` です。再ビルドごとに `ReloadEvent` を送ると、SSE ストリームを受信している接続済みクライアントがリロードします。（`tokio::sync::broadcast::channel::<ReloadEvent>(capacity)` でチャンネルを作り、`Sender` を保持します。選んだ `mode` によって SSE エンドポイントがマウントされるかが決まります。）
+- **`broadcast: ReloadTx`** — ライブリロードのセンダーです。`ReloadTx` は `tokio::sync::broadcast::Sender<ReloadEvent>` です。再ビルドごとに `ReloadEvent` を送ると、ブラウザーは WebSocket チャンネルでリロードを受信します。SSE はツール用にも残されています。（`tokio::sync::broadcast::channel::<ReloadEvent>(capacity)` でチャンネルを作り、`Sender` を保持します。選んだ `mode` によって SSE エンドポイントがマウントされるかが決まります。）
 - **`ssr_routes: Option<SsrRoutesHandle>`** — `prerender = false` ページ向けのリクエスト時 JS SSR で、セッション中に差し替え可能です。
-- **`mode: ServerMode`** — ライブリロードのスクリプト注入と `/__zfb/reload` SSE エンドポイントのマウントが必要なら `ServerMode::Dev` を選びます。`Embed`/`Preview` ではこれらはオフです。
+- **`mode: ServerMode`** — ブラウザー用 WebSocket リロードのスクリプト注入とツール用 `/__zfb/reload` SSE エンドポイントのマウントが必要なら `ServerMode::Dev` を選びます。`Embed`/`Preview` ではこれらはオフです。
 
 ```rust
 use zfb_server::{serve_with_listener, ServeOpts, ServerMode, PageCache, ReloadEvent};
@@ -259,7 +259,7 @@ let opts = ServeOpts {
     ssr_routes: None,
     base: None,
     trailing_slash: false,
-    mode: ServerMode::Dev, // Dev mounts the livereload SSE endpoint
+    mode: ServerMode::Dev, // Dev はブラウザー用 WebSocket リロードとツール用 SSE を有効にします
     islands_bundle_url: None,
     css_bundle_url: None,
     allowed_hosts: Vec::new(),
@@ -282,11 +282,11 @@ serve_with_listener(opts, listener, std::future::pending()).await?;
 
 ## メソッド予算
 
-組み込みの API 表面は意図的に小さく保たれています。`Server` 型と `ServerBuilder` 型を合わせて公開するメソッドは 9 個です。`Server::builder`、`Server::serve`、`Server::serve_in_thread`、それに 6 つのビルダーメソッド（`config_path`、`mode`、`bind`、`with_request_extension`、`with_ssr_handler`、`build`）です。`ServerHandle::addr`、`ServerHandle::shutdown`、`ServerHandle::join` は意図的に別の型に置かれており、この予算からは除外されています。
+組み込みの API 表面は意図的に小さく保たれています。`Server` 型と `ServerBuilder` 型を合わせて公開するメソッドのうち予算に数えるものは 10 個です。`Server::builder`、`Server::serve`、`Server::serve_in_thread`、それに 7 つのビルダーメソッド（`config_path`、`mode`、`bind`、`with_request_extension`、`with_ssr_handler`、`compiler_worker`、`build`）です。`ServerHandle::addr`、`ServerHandle::shutdown`、`ServerHandle::join` は意図的に別の型に置かれており、この予算からは除外されています。
 
 `with_page_cache`（上記）はライブコンテンツ向けの脱出口であり、これも設計上このカウントから除外されています。これは `ServeOpts` へ降りることに対応するビルダーレベルの手段であって、静的 dist 向けの中核 API 表面の一部ではありません。
 
-将来の機能で合計 10 個を超える必要が生じた場合、正しい対応は継ぎ目を再設計するフォローアップイシューであって、10 個目のメソッドを付け足すことではありません。
+将来の機能で合計 10 個を超える必要が生じた場合、正しい対応は継ぎ目を再設計するフォローアップイシューであって、さらにメソッドを付け足すことではありません。
 
 ## サンプルクレート
 

@@ -148,7 +148,7 @@ One practical note about the dev-side SSR path:
 auto-refresh.** On every edit tick, `zfb dev` re-bundles, starts a fresh V8
 host, swaps it into the running server, and shuts the old host down — so the
 next request to a `prerender = false` route renders the updated code. However,
-SSR-only edits produce no static HTML writes, which means no SSE `Page` event
+SSR-only edits produce no static HTML writes, which means no reload `Page` event
 fires and the open browser tab does not automatically reload. **Reload the
 browser tab manually** after editing an SSR page to see the new output.
 
@@ -312,15 +312,19 @@ binding = "ASSETS"
 run_worker_first = true
 ```
 
-The cost: every request now pays for a Worker invocation, even the ones
-that used to be served for free straight off the edge — there is no more
-"static hits never touch the Worker" fast path. Reach for this only when
-a route genuinely needs to run ahead of static serving. The canonical
-case is a **password/session gate**: an SSR route checks a cookie on
-every request — including ones for prerendered pages — and redirects to
-a login page before the asset layer ever serves the protected content
-(see the [`password-gate` example](./examples.mdx), which does exactly
-this).
+Every request now pays for a Worker invocation, including static hits. However,
+this setting alone does **not** make an inner SSR route an authentication gate:
+the emitted adapter wrapper probes `env.ASSETS` for GET/HEAD and returns any
+non-404 response **before** calling the inner route application. An existing
+static page can therefore be served without running your SSR cookie check.
+
+To protect static content, point Wrangler's `main` at an **outer/custom Worker**
+that checks the session before delegating to assets or the generated zfb Worker.
+Use `run_worker_first = true` so the platform reaches that outer gate first;
+keep login/public exceptions explicit in that gate. The
+[password-gate recipe](../recipes/password-gate.mdx) documents this custom-worker
+arrangement. An SSR handler can still authenticate its own dynamic route, but it
+cannot protect static responses that the wrapper has already returned.
 
 <Warning title="compatibility_flags = ['nodejs_compat'] is mandatory">
 
@@ -664,12 +668,15 @@ id = "<namespace-id>" # printed by `wrangler kv namespace create`
 2. **Read and write** — `env.MY_KV.get(...)` / `.put(...)` as shown above.
 3. **Deploy** — `zfb build`, then `wrangler deploy`.
 
-Every other binding — R2 buckets, Workers AI, the Cache API, Durable
-Objects, service bindings — reaches an SSR route the exact same way:
-declare it in `wrangler.toml`, add its type to your `Env` interface, and
-read it off `env` inside `getCloudflareContext()`. See the
-[Examples](./examples.mdx) index for standalone KV, Workers AI, and
-reverse-proxy recipes.
+Other declared bindings — R2 buckets, Workers AI, Durable Objects, and service
+bindings — reach an SSR route the same way: declare them in `wrangler.toml`,
+add their types to `Env`, and read them from `getCloudflareContext().env`.
+
+The **Cache API is a runtime global**, not a Wrangler-declared `Env` binding.
+Use `caches.default` for the default cache or `await caches.open("name")` for a
+named cache inside the Worker. See Cloudflare's [Cache API reference](https://developers.cloudflare.com/workers/runtime-apis/cache/)
+and the [Workers Cache recipe](../recipes/workers-cache.mdx). The
+[Examples](./examples.mdx) index also has KV, Workers AI, and reverse-proxy recipes.
 
 ## Local development
 

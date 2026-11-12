@@ -446,7 +446,7 @@ sidebar_position: 5
 
 数値形式には ASCII 数字を使います。正の分数は正の整数からなります。サイズ、移動、inset のユーティリティは分数を受け入れ、aspect ユーティリティは括弧なしの正の整数比を受け入れます。色の `/N` は 0～100 の整数 `N` による不透明度修飾子です。`color-mix(in oklab, VALUE N%, transparent)` を出力し、`/0` と `/100` でも同じ関数形式を保ちます。角括弧の色にも同じ修飾子を使えます。サイズまたは inset のスラッシュは不透明度として解釈しません。
 
-負の接頭辞はカタログで許可された群だけに使えます。対象は inset、`auto` を除く margin、子要素間の余白、`auto` を除く z-index、tracking、outline 幅のオフセット、translate、rotate、scroll margin です。padding を含むほかの群では拒否されます。リテラルの長さや数値には先頭のマイナスを 1 つ適用し、負のゼロはゼロに正規化します。リテラル以外には `calc(V * -1)` を出力します。`-p-2` のような未対応の負の値は無効です。
+負の接頭辞はカタログで許可された群だけに使えます。対象は inset、`auto` を除く margin、子要素間の余白、`auto` を除く z-index、tracking、outline 幅のオフセット、translate、rotate、scroll margin、数値の order です。padding を含むほかの群では拒否されます。リテラルの長さや数値には先頭のマイナスを 1 つ適用し、負のゼロはゼロに正規化します。リテラル以外には `calc(V * -1)` を出力します。`-p-2` のような未対応の負の値は無効です。
 
 サイズと移動の基部、および7つの inset 基部（`inset`、`inset-x`、`inset-y`、`top`、`right`、`bottom`、`left`）は正の整数分数を受け入れ、`aspect-N/D` は正の整数によるアスペクト比を受け入れます。分子と分母はそれぞれ 1～1,000,000 です。サイズの分数は `calc(100% * N / D)` を出力し、幅と高さの両方を設定します。アスペクト比は比率をそのまま出力するため、`aspect-4/3` は `aspect-ratio: 4 / 3` になります。アスペクト比の括弧なし表記ではゼロや小数を使えません。小数の比率には `aspect-[1.5/2.5]`、カスタムプロパティには `aspect-[var(--project-ratio)]` のような任意値を使ってください。不透明度修飾子は色専用です。`bg-panel/40` は、設定された色を透明色と oklab で 40% の比率で混ぜます。padding やサイズの値には使えません。
 
@@ -480,7 +480,9 @@ v1 は有限の集合としてカタログを受け入れます。群には表�
 
 リビジョン 9 は `help`、`none`、`progress`、`crosshair`、`cell`、`copy`、`alias`、`no-drop`、`context-menu`、`vertical-text`、`all-scroll`、`zoom-in`、`zoom-out` の13のカーソルキーワードを追加しました。cursor は引き続きキーワード専用で、トークン、負数、スラッシュ、任意値は使えません。
 
-リビジョン 10 は7つの inset 基部に分数を追加し、リビジョン 11 は固定キーワードの `justify-self`、`justify-items`、`place-self`、`place-content` を追加しました。リビジョン 12 は定数 `translate-x-px` と `translate-y-px` を追加し、それぞれの軸変数に 1px を出力します（負数形は -1px）。`px` はテーマトークンではなく言語定数です。現在のカタログは spec 1 revision 12 です。
+リビジョン 10 は7つの inset 基部に分数を追加し、リビジョン 11 は固定キーワードの `justify-self`、`justify-items`、`place-self`、`place-content` を追加しました。リビジョン 12 は定数 `translate-x-px` と `translate-y-px` を追加し、それぞれの軸変数に 1px を出力します（負数形は -1px）。`px` はテーマトークンではなく言語定数です。現在の言語は spec 1、revision 14 で、カタログは 219 項目です。言語のバージョン／リビジョン、シリアライズされたスキーマのバージョン、移行語彙のリビジョン、npm パッケージのバージョンは別の識別子です。リビジョン 13 は固定 display クラスを 13 個（contents、flow-root、list-item、table、inline-table、および table-caption／cell／column／column-group／footer-group／header-group／row／row-group）追加し、display は計 21 個になりました。appearance-auto と appearance-none も追加しました。これらの固定形は接尾辞、任意値、トークン、負数、スラッシュ形式を受け付けません。
+
+リビジョン 14 は order-first／last／none、ASCII 整数 0～2147483647 と -order-2 のような負の数値形式を追加しました。任意値の order は未対応です。basis は auto／full／px／0／min／max／fit／content と、分子・分母がそれぞれ 1～1,000,000 の正の整数分数だけを受け付けます。スケール、トークン、任意値、負数の basis は未対応です。SVG の塗りは fill-current／none と stroke-current／none だけで、任意色、トークン色、数値の stroke 幅、負数、不透明度の接尾辞は追加していません。固定形 not-sr-only は sr-only の切り取り用宣言を戻し、その後に出力されますが、以前の手書きスタイルすべてを復元するものではありません。これらは既存のバリアントと決定的なカタログ順序を使い、class 属性内の順序では決まりません。order の数値の大小はカスケードの勝敗を決めず、同順位なら候補の UTF-8 バイト列で決まります。
 
 `space-x/y` は後続の表示対象の直接の子に margin-left または margin-top を設定し、`divide-x/y` は実線の左または上のボーダーを設定します。セレクタは `C > :not([hidden]) ~ :not([hidden])` で、`C` は完全なユーティリティの対象セレクタです。両側の兄弟要素を `hidden` 属性で絞ります。その属性を持たず `display: none` になっている要素は調べません。逆方向フラグはなく、表示上の順序も推測しません。疑似要素バリアントはこれらの子ユーティリティと組み合わせられません。たとえば `before:divide-y` は子セレクタが誤った対象を指すため、R23/ZW005 で拒否されます。
 

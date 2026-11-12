@@ -4,7 +4,7 @@ description: "Run zfb's HTTP server in-process from a Rust host (Tauri, CLI, ser
 sidebar_position: 7
 ---
 
-The `zfb-server` crate ships a small builder API so a Rust host can run zfb's HTTP server in-process — no child sidecar, no extra binary. The same crate that powers `zfb dev` powers your embedded server; the only difference is who owns the lifecycle.
+The `zfb-server` crate ships a small builder API so a Rust host can run zfb's HTTP server in-process — no child sidecar, no extra binary. It shares HTTP-serving infrastructure with `zfb dev`, but the minimal builder does not start the CLI compiler, watcher, plugins, or JS SSR pipeline. The host owns that wiring as well as the lifecycle.
 
 This guide covers the public builder shape, the request-extension injection point, and the host-handler seam (`with_ssr_handler`).
 
@@ -24,7 +24,7 @@ zfb-server = { git = "https://github.com/Takazudo/zudo-front-builder", package =
 
 Pick the embed-as-library path when the host needs to:
 
-- run zfb's full route table inside a desktop or CLI process,
+- serve static dist files and host-owned Rust handlers inside a desktop or CLI process,
 - attach per-process context (an `AppHandle`, an FS capability set, an auth token) that handlers should read on every request,
 - short-circuit specific URL patterns with a Rust-owned response (a markdown lookup, a database read, a sidecar API bridge) without round-tripping through any JS runtime.
 
@@ -62,7 +62,7 @@ handle.shutdown()?;
 
 Key choices the builder commits to:
 
-- **`ServerMode::Embed`** turns off the live-reload script injection and the `/__zfb/reload` SSE endpoint. The route table is otherwise identical to `zfb dev`.
+- **`ServerMode::Embed`** disables browser WebSocket reload and its script injection, and the tooling `/__zfb/reload` SSE endpoint. It does not populate the CLI's compiler/watch/plugin/SSR services.
 - **`bind("127.0.0.1:0")`** asks the OS for an ephemeral port; read the actual port back from `ServerHandle::addr()`.
 - **`serve_in_thread()`** spawns a dedicated OS thread with its own `current_thread` tokio runtime, so the host does not need a tokio runtime of its own (Tauri's synchronous `setup` callback works without changes).
 - **`ServerHandle::shutdown()`** is idempotent — calling it twice is a no-op.
@@ -226,7 +226,7 @@ cache.remove(["/blog/stale"]).await;             // drop a vanished route
 
 Cache keys are the leading-slash URL path the browser asks for (`/`, `/blog/foo`, `/sitemap.xml`). The page-cache layer sits above the on-disk `dist/` fallback in the precedence list above, so a cache hit shadows the static file at the same URL while a miss still falls through to disk. `PageCache` also exposes `insert_with_content_type`, `insert_bytes_with_content_type` (binary bodies), and `replace_all` (atomic full swap) for non-HTML and bulk-rebuild cases.
 
-This is enough when all you need is dynamic page bytes. What it does **not** give you is a livereload channel — `ServerMode::Embed` does not inject the live-reload script or mount the `/__zfb/reload` SSE endpoint, and the builder owns the `broadcast` sender internally.
+This is enough when all you need is dynamic page bytes. What it does **not** give you is a livereload channel — `ServerMode::Embed` does not inject the browser WebSocket reload script or mount the tooling `/__zfb/reload` SSE endpoint, and the builder owns the `broadcast` sender internally.
 
 ### Level 2: drop to `ServeOpts` + `serve_with_listener`
 
@@ -235,9 +235,9 @@ When you need more than a page cache — a live livereload `broadcast` channel, 
 `ServeOpts` is a plain struct you fill in directly. The fields relevant to live content are:
 
 - **`pages: PageCache`** — same shared cache as Level 1; write into it from your watcher.
-- **`broadcast: ReloadTx`** — the live-reload sender. `ReloadTx` is `tokio::sync::broadcast::Sender<ReloadEvent>`. After each rebuild, send a `ReloadEvent` into it and connected clients receiving the SSE stream reload. (You build the channel with `tokio::sync::broadcast::channel::<ReloadEvent>(capacity)` and keep the `Sender`; the `mode` you pick decides whether the SSE endpoint is mounted.)
+- **`broadcast: ReloadTx`** — the live-reload sender. `ReloadTx` is `tokio::sync::broadcast::Sender<ReloadEvent>`. After each rebuild, send a `ReloadEvent` into it and connected clients receiving the WebSocket reload channel refresh. (You build the channel with `tokio::sync::broadcast::channel::<ReloadEvent>(capacity)` and keep the `Sender`; `Dev` mode enables browser WebSocket reload and retains the SSE endpoint for tooling.)
 - **`ssr_routes: Option<SsrRoutesHandle>`** — request-time JS SSR for `prerender = false` pages, swappable mid-session.
-- **`mode: ServerMode`** — pick `ServerMode::Dev` if you want the livereload script injection and `/__zfb/reload` SSE endpoint mounted; `Embed`/`Preview` keep those off.
+- **`mode: ServerMode`** — pick `ServerMode::Dev` for browser WebSocket reload/script injection and the tooling `/__zfb/reload` SSE endpoint; `Embed`/`Preview` keep those off.
 
 ```rust
 use zfb_server::{serve_with_listener, ServeOpts, ServerMode, PageCache, ReloadEvent};
@@ -260,7 +260,7 @@ let opts = ServeOpts {
     ssr_routes: None,
     base: None,
     trailing_slash: false,
-    mode: ServerMode::Dev, // Dev mounts the livereload SSE endpoint
+    mode: ServerMode::Dev, // Dev mounts browser WebSocket reload and tooling SSE
     islands_bundle_url: None,
     css_bundle_url: None,
     allowed_hosts: Vec::new(),
@@ -283,7 +283,7 @@ Seeding the cache covers serving dynamic *bytes*, but it does not run zfb's MDX 
 
 ## Method budget
 
-The whole embed surface is intentionally small. The `Server` and `ServerBuilder` types combined expose nine methods that count toward the budget: `Server::builder`, `Server::serve`, `Server::serve_in_thread`, plus six builder methods (`config_path`, `mode`, `bind`, `with_request_extension`, `with_ssr_handler`, `build`). `ServerHandle::addr`, `ServerHandle::shutdown`, and `ServerHandle::join` are deliberately on a separate type and are excluded from the budget.
+The whole embed surface is intentionally small. The `Server` and `ServerBuilder` types combined expose ten methods that count toward the budget: `Server::builder`, `Server::serve`, `Server::serve_in_thread`, plus seven builder methods (`config_path`, `mode`, `bind`, `with_request_extension`, `with_ssr_handler`, `compiler_worker`, `build`). `ServerHandle::addr`, `ServerHandle::shutdown`, and `ServerHandle::join` are deliberately on a separate type and are excluded from the budget.
 
 `with_page_cache` (above) is the live-content escape hatch and is likewise excluded from the count by design — it is the builder-level parallel to dropping to `ServeOpts`, not part of the core static-dist surface.
 

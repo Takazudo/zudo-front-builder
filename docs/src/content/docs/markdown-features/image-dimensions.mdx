@@ -43,11 +43,11 @@ The plugin resolves `src` values against the file system using `BuildContext`:
 
 - **Absolute paths** (e.g. `/img/hero.png`) are resolved against the project's `public` directory.
 - **Relative paths** (e.g. `./assets/hero.png`, `assets/hero.png`) are resolved relative to the markdown source file's directory.
-- **Remote and `data:` URLs** are skipped silently.
+- **Remote URLs** are skipped by default; **`data:` URLs** are always skipped. With `skipRemote: false`, sources still use the filesystem resolution described below.
 
 ## Options
 
-- `skipRemote` (default `true`) — when `true`, `http://`, `https://`, and protocol-relative (`//`) image sources are skipped. Set to `false` only for unusual setups; probing remote images requires network access at build time. `data:` URLs are always skipped regardless of this setting.
+- `skipRemote` (default `true`) — when `true`, skips `http://`, `https://`, and protocol-relative (`//`) sources. Setting `false` only disables that skip; it adds no network fetching. The implementation still resolves the string as a filesystem path, checks containment, and probes a local file. An ordinary URL will generally fail to resolve to an image file and may warn. Supply explicit dimensions or a local image when remote dimensions are needed. `data:` URLs are always skipped.
 
 ```ts
 imageDimensions: { skipRemote: false },

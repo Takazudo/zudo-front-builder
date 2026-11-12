@@ -39,7 +39,7 @@ zfb new <name> [--template <template>]
 
 ### Templates
 
-v0 ships two templates, both baked into the binary at compile time from `crates/zfb/templates/`:
+zfb ships two templates, both baked into the binary at compile time from `crates/zfb/templates/`:
 
 - `basic-blog` (default) — full-featured blog scaffold with `package.json`; `zfb new` runs `pnpm install` for it automatically when pnpm is on `PATH`.
 - `node-free` — ships no `package.json` and skips the post-scaffold `pnpm install` step entirely, for projects run with no Node/pnpm on `PATH`. See [Markdown and HTML Pages](../architecture/md-html-pages.mdx) for the `.md`/`.html` page-authoring surface, and [Install without Node](../getting-started/installation.mdx) for installing the `zfb` binary itself without Node.
@@ -473,12 +473,13 @@ zfb check [--skip-tsc] [--scratch-dir <path>] [--define <KEY=EXPR>]...
 
 This command checks TypeScript, collection schemas, and SSR routes, and reports advisory JSX pragmas:
 
-1. **TypeScript** — invokes `tsc --noEmit` as a subprocess. Catches type errors in `zfb.config.ts`, collection schemas, and `src/`.
-2. **Collection schema validation** — validates every collection entry's frontmatter against the JSON Schema declared in each collection's `schema` field in `zfb.config.json`/`zfb.config.ts`. The build itself does not validate frontmatter, so this is the enforcement gate.
+1. **TypeScript** — invokes `tsc --noEmit` as a subprocess. Checks the files selected by the project’s `tsconfig.json`, such as config, `src/`, and `pages/` when included.
+2. **Native collection schema validation** — validates every collection entry's frontmatter against the JSON Schema declared in each collection's `schema` field in `zfb.config.json`/`zfb.config.ts`. The build parses frontmatter but does not automatically enforce the supplied schema, so this is the schema enforcement gate.
+3. **Native route checks** — scan routes and inspect SSR page contracts independently of `tsc`; strong Request/props findings fail, while heuristic findings warn.
 
 The TypeScript step uses the project's `tsconfig.json`, so a full `zfb check` requires one. Use `--skip-tsc` to run the other checks without it.
 
-Either failure mode exits with a non-zero code.
+Any failing required check exits with a non-zero code.
 
 The ZB005 advisory scans authored `.tsx` and `.jsx` files throughout the project, including components outside `pages/`; it excludes dependencies, generated output, scratch directories, and symlinks. It runs with `--skip-tsc` and never fails the check by itself. The SSR route-contract check also runs where routes exist: strong findings fail, while heuristic findings warn.
 
