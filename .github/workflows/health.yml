@@ -101,6 +101,7 @@ jobs:
               - 'scripts/assert-zfb-md-wasm-exports.sh'
               - 'scripts/assert-zfb-md-wasm-budgets.mjs'
               - 'scripts/assert-zfb-md-wasm-release.mjs'
+              - 'scripts/select-md-wasm-rust-toolchain.sh'
               - 'scripts/package-tsc.mjs'
               - 'crates/zfb-md-wasm/npm/scripts/**'
               - 'crates/zfb-md-wasm/npm/test/**'
@@ -1129,10 +1130,12 @@ jobs:
         with:
           components: clippy
 
-      # Job-local target install (see the job-level comment above for why
-      # this isn't in rust-toolchain.toml).
-      - name: rustup target add wasm32-unknown-unknown
-        run: rustup target add wasm32-unknown-unknown
+      # Exact rustc from crates/zfb-md-wasm/rust-toolchain-pin, with the
+      # job-local wasm32 target (see the job-level comment above for why the
+      # target isn't in rust-toolchain.toml). release.yml's build-wasm-md job
+      # uses the same pin, so the sizes measured here are the sizes it builds.
+      - name: Select pinned md-wasm Rust toolchain
+        run: bash scripts/select-md-wasm-rust-toolchain.sh clippy
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         if: ${{ matrix.label == 'default' }}

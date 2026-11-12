@@ -817,10 +817,21 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
 
-      # No `targets` key in rust-toolchain.toml (decision baked in #1575) —
-      # install job-locally, same as health.yml's wasm-md job.
-      - name: rustup target add wasm32-unknown-unknown
-        run: rustup target add wasm32-unknown-unknown
+      # Exact rustc from the source's crates/zfb-md-wasm/rust-toolchain-pin,
+      # the same pin health.yml's wasm-md job measured shipped-sizes.json
+      # with, plus the job-local wasm32 target (no `targets` key in
+      # rust-toolchain.toml, #1575).
+      # A recovery of a tag cut before the pin existed keeps the old
+      # floating-stable behavior, loudly.
+      - name: Select pinned md-wasm Rust toolchain
+        shell: bash
+        run: |
+          if [ -f scripts/select-md-wasm-rust-toolchain.sh ]; then
+            bash scripts/select-md-wasm-rust-toolchain.sh
+          else
+            echo "::warning::source has no md-wasm Rust toolchain pin; building with floating stable"
+            rustup target add wasm32-unknown-unknown
+          fi
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
