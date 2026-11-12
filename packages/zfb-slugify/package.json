@@ -1,6 +1,6 @@
 {
   "name": "@takazudo/zfb-slugify",
-  "version": "6.0.1",
+  "version": "6.1.0",
   "private": false,
   "type": "module",
   "description": "Zero-dependency heading-anchor slug utilities for zfb.",
