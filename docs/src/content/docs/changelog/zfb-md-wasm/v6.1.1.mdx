@@ -1,0 +1,13 @@
+---
+title: v6.1.1
+sidebar_position: 58
+---
+
+# v6.1.1
+
+Released: 2026-11-13
+
+## Other Changes
+
+- The four `.wasm` artifacts are now compiled with a pinned Rust toolchain (rustc 1.100.0, recorded in the package's size manifest as `measuredWithRustc`) instead of floating stable, so the sizes CI measures are the sizes the release builds. The compiler change moved the byte sizes of all four artifacts slightly; the size tables in the package README show the new values. As in every release, all four SHA-256 digests also move: take them from the GitHub Release asset `zfb-md-wasm-6.1.1-shipped-artifacts.json` or the package export `@takazudo/zfb-md-wasm/shipped-artifacts.json` (b264ed739, 83f7ba638).
+- v6.1.0 was tagged on GitHub but never published to npm: its release run failed at the MD/WASM size gate before any package was published, because the Rust compiler changed between measuring and building. v6.1.1 is the first npm release that carries the v6.1.0 changes; read the v6.1.0 notes in this changelog or on the v6.1.0 GitHub Release when upgrading from 6.0.1 (b264ed739).
