@@ -135,6 +135,7 @@ const npmSummary = (overrides = {}) => ({
     "present-verified": ["x"],
     "present-unverified": [],
     uncertain: [],
+    processing: [],
     ...overrides,
   },
 });
@@ -179,6 +180,11 @@ describe("finalizeDecision", () => {
       /present-unverified/,
     ],
     ["an uncertain registry read", { npm: npmSummary({ uncertain: ["a"] }) }, /uncertain/],
+    [
+      "a version npm is still processing",
+      { npm: npmSummary({ processing: ["p"] }) },
+      /npm is still processing: wait, then dispatch finalize_only \(p\)/,
+    ],
     ["a non-admitted Darwin verdict", { admission: { admitted: false } }, /not admitted/],
   ])("blocks on %s", (_label, change, reason) => {
     const decision = finalizeDecision({
@@ -308,7 +314,55 @@ describe("recommendNextAction", () => {
   });
 });
 
+describe("wait-npm-processing precedence", () => {
+  const base = (npmOverrides, extra = {}) => ({
+    tag: { commit: "c".repeat(40) },
+    source: { kind: "tag", commit: "c".repeat(40) },
+    release: { isDraft: false, targetMismatch: false },
+    runs: [],
+    assets: assetInventory(V, allAssets()),
+    sourceCi: { passed: true, results: [] },
+    admission: { admitted: true },
+    npm: npmSummary(npmOverrides),
+    distTags: { settled: true },
+    ...extra,
+  });
+  it("processing beats absent (never a recovery republish)", () => {
+    expect(recommendNextAction(base({ processing: ["p"], absent: ["a"] }))).toBe(
+      "wait-npm-processing",
+    );
+    expect(recommendNextAction(base({ processing: ["p"] }))).toBe("wait-npm-processing");
+  });
+  it("uncertain and unverified block before processing", () => {
+    expect(recommendNextAction(base({ processing: ["p"], uncertain: ["u"] }))).toBe(
+      "blocked:npm-uncertain",
+    );
+    expect(recommendNextAction(base({ processing: ["p"], "present-unverified": ["u"] }))).toBe(
+      "blocked:npm-unverified",
+    );
+  });
+  it("a summary without a processing key keeps the old behaviour", () => {
+    const npm = { summary: { absent: ["a"], "present-unverified": [], uncertain: [] } };
+    expect(recommendNextAction(base({}, { npm }))).toBe("dispatch-recovery");
+  });
+});
+
 describe("distTagsSettled", () => {
+  const pendingTags = (latest, pending) => ({
+    "@takazudo/zfb": { tags: { latest, "release-pending": pending } },
+  });
+  it("is unsettled while release-pending lingers at or below the version", () => {
+    const result = distTagsSettled("6.1.0", pendingTags("6.1.0", "6.1.0"));
+    expect(result.settled).toBe(false);
+    expect(result.problems[0]).toContain("release-pending=6.1.0");
+    expect(distTagsSettled("6.1.0", pendingTags("6.1.0", "6.0.9")).settled).toBe(false);
+  });
+  it("a newer release-pending (a later release in flight) is legitimate", () => {
+    expect(distTagsSettled("6.1.0", pendingTags("6.1.0", "6.2.0")).settled).toBe(true);
+  });
+  it("is settled once the holding tag is gone", () => {
+    expect(distTagsSettled("6.1.0", pendingTags("6.1.0", undefined)).settled).toBe(true);
+  });
   const tags = (latest, next) => ({
     "@takazudo/zfb": { tags: { latest, ...(next ? { next } : {}) } },
   });

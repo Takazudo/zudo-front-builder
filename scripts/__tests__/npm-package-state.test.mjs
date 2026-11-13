@@ -2,7 +2,7 @@
 // the release source commit (#4690). In-process with an injected HTTP reader;
 // the attestation fixture is a trimmed real registry capture.
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vite-plus/test";
@@ -15,6 +15,7 @@ import {
   parseArgs,
   provenanceIdentity,
 } from "../release/npm-package-state.mjs";
+import { parseReceipts, resolveNpmToken, supportDeadline } from "../release/publish-receipts.mjs";
 import { scriptsDir } from "./helpers/darwin-fixture.mjs";
 
 const REG = "https://registry.test";
@@ -446,5 +447,257 @@ describe("collectStates / expectations / CLI", () => {
     expect(text).toMatch(/^create-zfb\tabsent\tE404 on 3 read\(s\)[^\t]*\tnone\n/);
     expect(await main([...args, "--require-all-verified"], { env, out, request })).toBe(1);
     expect(await main(["--version", REAL.version], { env, out, request })).toBe(2);
+  });
+});
+
+describe("processing: accepted by npm but still not visible", () => {
+  const NAME = "@takazudo/zfb-linux-arm64-gnu";
+  const SECRET = "npm_SECRETTOKENVALUE0123456789";
+  const KEY = `${NAME}@${REAL.version}`;
+  const receipts =
+    (outcome, acceptedAt = "2026-11-13T04:00:00Z") =>
+    async () =>
+      new Map([[KEY, { expected: "attested", outcome, acceptedAt }]]);
+  const statusUrl = `${REG}/-/package/@takazudo%2Fzfb-linux-arm64-gnu/version/${REAL.version}/status`;
+  const statusReply = (status) => ok({ status });
+
+  it.each(["publish-accepted", "processing"])("receipt outcome %s is processing", async (o) => {
+    const { request } = registry({});
+    const result = await packageState(
+      NAME,
+      ctx(request, { receiptsProvider: receipts(o), statusToken: null }),
+    );
+    expect(result).toMatchObject({
+      state: "processing",
+      evidence: "receipt",
+      acceptedAt: "2026-11-13T04:00:00Z",
+      supportDeadline: "2026-11-14T04:00:00.000Z",
+    });
+  });
+
+  it.each(["already-present", "publish-attempted"])(
+    "receipt outcome %s does not make an E404 version processing",
+    async (o) => {
+      const { request } = registry({});
+      const result = await packageState(NAME, ctx(request, { receiptsProvider: receipts(o) }));
+      expect(result.state).toBe("absent");
+    },
+  );
+
+  it("an unknown accept time prints unknown and invents no deadline", async () => {
+    const { request } = registry({});
+    const result = await packageState(
+      NAME,
+      ctx(request, { receiptsProvider: receipts("processing", null) }),
+    );
+    expect(result.supportDeadline).toBeNull();
+    expect(result.detail).toContain("accepted unknown");
+  });
+
+  it("status API validating is processing (mocked fetch sends the bearer token)", async () => {
+    const seen = [];
+    const request = async (url, options) => {
+      seen.push({ url, options });
+      return url === statusUrl ? statusReply("validating") : notFound();
+    };
+    const result = await packageState(NAME, ctx(request, { statusToken: SECRET }));
+    expect(result).toMatchObject({ state: "processing", evidence: "status-api" });
+    expect(seen.find((call) => call.url === statusUrl).options.headers.authorization).toBe(
+      `Bearer ${SECRET}`,
+    );
+  });
+
+  it("an unknown status string, an HTTP error or a throw is uncertain, never absent", async () => {
+    for (const reply of [statusReply("quarantined"), { status: 500, body: Buffer.from("x") }]) {
+      const request = async (url) => (url === statusUrl ? reply : notFound());
+      const result = await packageState(NAME, ctx(request, { statusToken: SECRET }));
+      expect(result.state).toBe("uncertain");
+    }
+    const failing = async (url) => {
+      if (url === statusUrl) throw new Error("socket hang up");
+      return notFound();
+    };
+    expect((await packageState(NAME, ctx(failing, { statusToken: SECRET }))).state).toBe(
+      "uncertain",
+    );
+  });
+
+  it("a 404 from the status API leaves the version absent", async () => {
+    const { request } = registry({});
+    const result = await packageState(NAME, ctx(request, { statusToken: SECRET }));
+    expect(result.state).toBe("absent");
+  });
+
+  it("without a token the status API is never called", async () => {
+    const { request, calls } = registry({});
+    await packageState(NAME, ctx(request));
+    expect(calls.some((url) => url.endsWith("/status"))).toBe(false);
+  });
+
+  it("unreadable receipts are uncertain (fail closed), not absent", async () => {
+    const { request } = registry({});
+    const result = await packageState(
+      NAME,
+      ctx(request, {
+        receiptsProvider: async () => {
+          throw new Error("gh run list failed");
+        },
+      }),
+    );
+    expect(result).toMatchObject({ state: "uncertain" });
+    expect(result.error).toContain("receipts unreadable");
+  });
+
+  it("a visible version ignores receipts", async () => {
+    const { request } = registry({
+      [versionUrl(REAL.name, REAL.version)]: ok({ ...attestedRecord(), gitHead: REAL.commit }),
+      [`${REG}/att/zfb`]: ok(FIXTURE),
+    });
+    const result = await packageState(REAL.name, {
+      ...ctx(request),
+      receiptsProvider: async () =>
+        new Map([[`${REAL.name}@${REAL.version}`, { outcome: "processing" }]]),
+    });
+    expect(result.state).toBe("present-verified");
+  });
+
+  it("collectStates summarizes processing and loads receipts once", async () => {
+    const { request } = registry({});
+    let loads = 0;
+    const report = await collectStates({
+      version: REAL.version,
+      sourceCommit: REAL.commit,
+      packages: [NAME, "create-zfb"],
+      registry: REG,
+      request,
+      absentReads: 1,
+      delayMs: 0,
+      receiptsLoader: async () => {
+        loads++;
+        return new Map([
+          [KEY, { outcome: "publish-accepted", acceptedAt: "2026-11-13T04:00:00Z" }],
+        ]);
+      },
+    });
+    expect(report.summary.processing).toEqual([NAME]);
+    expect(report.summary.absent).toEqual(["create-zfb"]);
+    expect(report.processing[0].supportDeadline).toBe("2026-11-14T04:00:00.000Z");
+    expect(report.allVerified).toBe(false);
+    expect(loads).toBe(1);
+  });
+
+  it("CLI: reads the receipt through gh, exits 0, and never prints the npm credential", async () => {
+    let text = "";
+    let stderr = "";
+    const out = { write: (chunk) => (text += chunk) };
+    const realStderr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => {
+      stderr += chunk;
+      return true;
+    };
+    const ghCalls = [];
+    const gh = (args) => {
+      ghCalls.push(args.join(" "));
+      if (args[0] === "run" && args[1] === "list")
+        return JSON.stringify([
+          {
+            databaseId: 7,
+            attempt: 1,
+            headBranch: "main",
+            displayTitle: `Release v${REAL.version}`,
+            createdAt: "2026-11-13T04:00:00Z",
+            startedAt: "2026-11-13T04:00:05Z",
+          },
+        ]);
+      if (args[0] === "api")
+        return JSON.stringify({
+          artifacts: [{ name: "npm-publish-receipts", created_at: "2026-11-13T04:10:00Z" }],
+        });
+      if (args[0] === "run" && args[1] === "download") {
+        const dir = args[args.indexOf("--dir") + 1];
+        writeFileSync(join(dir, "r.tsv"), `${NAME}\t${REAL.version}\tattested\tpublish-accepted\n`);
+        return "";
+      }
+      throw new Error(`unexpected gh ${args.join(" ")}`);
+    };
+    try {
+      const code = await main(
+        [
+          "--version",
+          REAL.version,
+          "--source-commit",
+          REAL.commit,
+          "--package",
+          NAME,
+          "--tag",
+          `v${REAL.version}`,
+          "--tsv",
+        ],
+        {
+          env: { ZFB_NPM_REGISTRY: REG, ZFB_NPM_STATE_DELAY_MS: "0", NPM_TOKEN: SECRET },
+          out,
+          request: registry({}).request,
+          gh,
+        },
+      );
+      expect(code).toBe(0);
+    } finally {
+      process.stderr.write = realStderr;
+    }
+    expect(text).toMatch(new RegExp(`^${NAME}\\tprocessing\\t`));
+    expect(text).toContain("2026-11-13T04:10:00Z");
+    expect(text + stderr + ghCalls.join("\n")).not.toContain(SECRET);
+  });
+
+  it("the CLI with the default registry reads the credential but still prints nothing of it", async () => {
+    let text = "";
+    const out = { write: (chunk) => (text += chunk) };
+    const request = async (url, options) => {
+      if (url.endsWith("/status")) {
+        expect(options.headers.authorization).toBe(`Bearer ${SECRET}`);
+        return statusReply("validating");
+      }
+      return notFound();
+    };
+    const code = await main(
+      ["--version", REAL.version, "--source-commit", REAL.commit, "--package", NAME, "--json"],
+      { env: { ZFB_NPM_STATE_DELAY_MS: "0", NPM_TOKEN: SECRET }, out, request },
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(text).summary.processing).toEqual([NAME]);
+    expect(text).not.toContain(SECRET);
+  });
+});
+
+describe("resolveNpmToken", () => {
+  it("prefers NPM_TOKEN, then the npmrc line, and ignores an unexpanded placeholder", () => {
+    expect(resolveNpmToken({ NPM_TOKEN: " tok " })).toBe("tok");
+    const rc = (text) => () => text;
+    expect(resolveNpmToken({ HOME: "/h" }, rc("//registry.npmjs.org/:_authToken=abc\n"))).toBe(
+      "abc",
+    );
+    expect(
+      resolveNpmToken({ HOME: "/h" }, rc("//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n")),
+    ).toBeNull();
+    expect(resolveNpmToken({ HOME: "/h" }, rc("//other.test/:_authToken=abc\n"))).toBeNull();
+    expect(
+      resolveNpmToken({ HOME: "/h" }, () => {
+        throw new Error("ENOENT");
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("parseReceipts / supportDeadline", () => {
+  it("reads the 4-column TSV and ignores blanks and comments", () => {
+    const map = parseReceipts(
+      "# x\n\na\t1.0.0\tnone\tprocessing\nb\t1.0.0\tattested\tpublish-attempted\n",
+    );
+    expect(map.get("a@1.0.0")).toEqual({ expected: "none", outcome: "processing" });
+    expect(map.get("b@1.0.0").outcome).toBe("publish-attempted");
+  });
+  it("is null for an unknown time", () => {
+    expect(supportDeadline(null)).toBeNull();
+    expect(supportDeadline("nonsense")).toBeNull();
   });
 });
