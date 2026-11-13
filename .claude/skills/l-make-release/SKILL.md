@@ -37,7 +37,9 @@ the first mutation. Where this skill and `RELEASING.md` disagree, `RELEASING.md`
 - On a provenance-downgrade preflight result, stop and report; never edit the Release body to add
   `<!-- zfb-release: allow-provenance-downgrade -->`, and never create or edit
   `release/provenance-policy.json` — both are owner-only. Every local-Darwin release is a
-  downgrade unless the owner's committed policy covers it.
+  downgrade unless the owner's committed policy covers it. That policy is on `main` for both
+  Darwin carriers from 6.1.1: a preflight that exits 0 with two `ACKNOWLEDGED` lines is clear, so
+  record them and continue without asking the owner. Stop only for a downgrade it does not cover.
 - Publishing is `pack` (unprivileged: install, build, `npm pack`/`pnpm pack`) then `publish`
   (`id-token` only: `npm publish <tgz>` with explicit provenance; no install, no pnpm). Find
   `release.yml` runs by their exact name `Release v<version>[ (finalize only)][ (dry run)]`; the

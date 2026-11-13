@@ -661,8 +661,10 @@ owner acknowledges it by one of two routes:
    versions `>=` its `unattested_from_version`. CI-built packages, unlisted packages and
    `recovery-no-provenance` are never covered. It is read only from `main`'s committed tree
    (`git show origin/main:release/provenance-policy.json` after fetching `refs/heads/main`), never
-   from a working tree, the control checkout or the release source commit. The file is absent by
-   default.
+   from a working tree, the control checkout or the release source commit. The owner committed it
+   on 2026-11-13 for both Darwin carriers from 6.1.1, so a normal `mac-local` release prints two
+   `ACKNOWLEDGED` lines, exits 0 and needs no per-run marker; the agent records those lines and
+   continues without asking.
 
 **Only the owner does any of these.** No agent, skill or script adds the marker, sets the input, or
 creates or edits `release/provenance-policy.json`, even with general release authorization. On a detected downgrade an agent stops,

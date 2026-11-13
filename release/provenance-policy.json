@@ -1,0 +1,19 @@
+{
+  "schema": "zfb-provenance-policy/v1",
+  "decisions": [
+    {
+      "package": "@takazudo/zfb-darwin-arm64",
+      "unattested_from_version": "6.1.1",
+      "reason": "Darwin carriers are built and qualified on the owner's Apple Silicon Mac and published without an npm provenance attestation (#4687); the owner accepts this downgrade for every mac-local release instead of a per-run Release body marker.",
+      "decided_by": "Takazudo",
+      "issue": "https://github.com/Takazudo/zudo-front-builder/issues/4687"
+    },
+    {
+      "package": "@takazudo/zfb-darwin-x64",
+      "unattested_from_version": "6.1.1",
+      "reason": "Darwin carriers are built on the owner's Apple Silicon Mac (x86_64 under Rosetta 2) and published without an npm provenance attestation (#4687); the owner accepts this downgrade for every mac-local release instead of a per-run Release body marker.",
+      "decided_by": "Takazudo",
+      "issue": "https://github.com/Takazudo/zudo-front-builder/issues/4687"
+    }
+  ]
+}
