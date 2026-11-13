@@ -35,13 +35,15 @@ import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
+import { PROCESSING_OUTCOMES as RECEIPT_PROCESSING_OUTCOMES } from "./release/publish-receipts.mjs";
+
 const execFileAsync = promisify(execFile);
 
 /** SLSA predicate npm records for GitHub Actions provenance (registry, 6.0.1). */
 export const SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1";
 
 /** Outcomes where npm accepted the publish, so an E404 means "still processing". */
-export const PROCESSING_OUTCOMES = new Set(["publish-accepted", "processing"]);
+export const PROCESSING_OUTCOMES = new Set(RECEIPT_PROCESSING_OUTCOMES);
 
 export function parseExpectations(text) {
   const rows = [];

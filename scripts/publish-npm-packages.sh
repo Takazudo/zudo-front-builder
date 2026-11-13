@@ -593,7 +593,9 @@ publish_tarballs() {
     fi
     _run_and_classify "$name" "$version" "$integrity" _npm_publish_tarball "$file" "$(provenance_flag "$expected")"
     record_expectation "$name" "$version" "$expected" "${PUBLISH_OUTCOME:-publish-accepted}"
-    if [[ "$dir" == "crates/zfb-md-wasm/npm" ]]; then
+    # An E409-staged version is not readable yet; the md-wasm-asset and
+    # finalize-assets jobs re-verify its digests once npm finishes processing.
+    if [[ "$dir" == "crates/zfb-md-wasm/npm" && "$PUBLISH_OUTCOME" != processing ]]; then
       verify_published_md_wasm "$version" "$mode"
     fi
   done

@@ -966,8 +966,8 @@ else
 fi
 
 run_advance 1.2.0-next.3 1.2.0-next.10
-if [ "$ADV_RC" -ne 0 ] && [ ! -s "$ADV_LOG" ] && grep -q 'refusing to move .latest. backwards' "$ADV_OUT"; then
-  pass "advance-latest: refuses to move latest to a lower version (next.3 < next.10), no write"
+if [ "$ADV_RC" -eq 0 ] && [ ! -s "$ADV_LOG" ] && grep -q "'latest' already points past 1.2.0-next.3" "$ADV_OUT"; then
+  pass "advance-latest: a newer latest (next.10 > next.3) is left alone on every package, no write, exit 0"
 else
   fail "advance-latest: regression guard (exit=$ADV_RC, writes=$(tr '\n' ' ' <"$ADV_LOG"))"
 fi
@@ -1002,8 +1002,8 @@ ADV_PATH="$RACY_BIN:$MOCK_BIN" MOCK_RACE_VERSION=1.2.0-next.9
 export MOCK_RACE_VERSION
 run_advance 1.2.0-next.3 1.2.0-next.2
 unset MOCK_RACE_VERSION ADV_PATH
-if [ "$ADV_RC" -ne 0 ] && [ "$(cat "$ADV_DIR/_takazudo_zfb")" = 1.2.0-next.9 ] \
-   && grep -q 'refusing to move .latest. backwards' "$ADV_OUT"; then
+if [ "$ADV_RC" -eq 0 ] && [ "$(cat "$ADV_DIR/_takazudo_zfb")" = 1.2.0-next.9 ] \
+   && grep -q 'is never moved backwards' "$ADV_OUT"; then
   pass "advance-latest: a concurrent newer latest seen on re-read is detected and never overwritten"
 else
   fail "advance-latest: concurrent change (exit=$ADV_RC, zfb latest=$(cat "$ADV_DIR/_takazudo_zfb"), out=$(grep -i 'zfb:' "$ADV_OUT" | head -3 | tr '\n' ' '))"
@@ -1033,8 +1033,8 @@ fi
 
 ADV_SEED_NEXT=1.2.0-next.10
 run_advance 1.2.0-next.3 "" --tag next
-if [ "$ADV_RC" -ne 0 ] && [ ! -s "$ADV_LOG" ] && grep -q "refusing to move 'next' backwards" "$ADV_OUT"; then
-  pass "advance next: never moves next backwards, no write"
+if [ "$ADV_RC" -eq 0 ] && [ ! -s "$ADV_LOG" ] && grep -q "'next' already points past 1.2.0-next.3" "$ADV_OUT"; then
+  pass "advance next: never moves next backwards, no write, exit 0"
 else
   fail "advance next: backwards guard (exit=$ADV_RC, writes=$(tr '\n' ' ' <"$ADV_LOG"))"
 fi
@@ -1064,7 +1064,7 @@ fi
 # Plan-before-write: one package's guard refusal on `latest` stops the whole
 # run before ANY write, including the `next` moves that would have passed.
 ADV_SEED_NEXT=1.2.0-next.2
-ADV_DIR_SEED_ZFB=1.3.0-next.1
+ADV_DIR_SEED_ZFB=1.1.0
 run_advance_partial() {
   ADV_DIR=$(mktemp -d)
   ADV_LOG=$(mktemp)

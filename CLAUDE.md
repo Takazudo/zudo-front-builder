@@ -274,8 +274,10 @@ always advances, or no tag at all.** A *frozen* tag is worse than a missing one:
 it still resolves, so tooling reads it as a live channel and silently installs old
 code, where a missing tag fails loudly.
 
-- **`latest`** — maintained by npm on publish, plus `scripts/advance-latest-dist-tag.sh`
-  during the prerelease phase (the `ALSO_LATEST` gate in `release.yml`, #481).
+- **`latest`** — moved by `scripts/promote-release-channel.sh` (via
+  `scripts/advance-latest-dist-tag.sh`) after every package is verified: for a stable release,
+  and during the prerelease phase (the `ALSO_LATEST` gate in `release.yml`, #481). Publishing
+  itself only sets the `release-pending` holding tag (#4717).
 - **`next`** — NOT a standing channel. It exists only while a prerelease is
   *strictly ahead* of `latest`. `scripts/retire-next-dist-tag.mjs` runs from
   `release.yml` on every publish and removes `next` wherever it is no longer
@@ -288,7 +290,7 @@ code, where a missing tag fails loudly.
 (`scripts/publish-npm-packages.sh`) uses it, so a package that npm keeps in pre-publication
 processing can never leave a half-moved channel. `scripts/promote-release-channel.sh` moves
 `latest`/`next` on all eleven packages together only after every package is `present-verified`;
-the channel promotion and the retire sweep then remove `release-pending`. It never counts as a
+the retire sweep (`scripts/retire-next-dist-tag.mjs`) then removes `release-pending`. It never counts as a
 channel, and nothing may install from it. A newer `release-pending` is a release in flight and the
 sweep keeps it.
 

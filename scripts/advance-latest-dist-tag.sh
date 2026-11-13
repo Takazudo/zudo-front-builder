@@ -131,7 +131,8 @@ _read_tag() {
   npm view "$1" "dist-tags.$2" --prefer-online
 }
 
-# _guard <pkg> <tag> <ver> <current> → 0 move, 2 already there, 1 refuse.
+# _guard <pkg> <tag> <ver> <current> → 0 move, 2 already there, 3 already
+# ahead (a newer release owns the tag — leave it), 1 refuse.
 _guard() {
   local pkg="$1" tag="$2" ver="$3" current="$4" cmp
   if [[ "$current" == "$ver" ]]; then
@@ -145,8 +146,8 @@ _guard() {
     return 1
   fi
   if [[ "$cmp" -lt 0 ]]; then
-    echo "::error::${pkg}: current ${tag}=${current} is newer than ${ver} — refusing to move '${tag}' backwards."
-    return 1
+    echo "  ${pkg}: current ${tag}=${current} is newer than ${ver} — '${tag}' is never moved backwards; leaving it."
+    return 3
   fi
   case "$tag" in
     latest)
@@ -170,6 +171,7 @@ _guard() {
 # Phase 1: read + guard every (tag, package) pair without writing anything.
 # Appends "<tag> <pkg>" to PLANNED for each pair that needs a write.
 PLANNED=()
+AHEAD_TAGS=" "
 _plan_one() {
   local pkg="$1" tag="$2" ver="$3"
   local max_attempts=5
@@ -188,6 +190,10 @@ _plan_one() {
           ;;
         2)
           echo "  plan: ${pkg}: ${tag} is already ${ver} — nothing to do"
+          return 0
+          ;;
+        3)
+          AHEAD_TAGS="${AHEAD_TAGS}${tag} "
           return 0
           ;;
         *) return 1 ;;
@@ -215,8 +221,8 @@ _tag_with_retry() {
       current="${current//[[:space:]]/}"
       rc=0
       _guard "$pkg" "$tag" "$ver" "$current" || rc=$?
-      if [[ "$rc" -eq 2 ]]; then
-        echo "  ${pkg}: ${tag} is already ${ver} — nothing to do (attempt ${attempt})"
+      if [[ "$rc" -eq 2 || "$rc" -eq 3 ]]; then
+        echo "  ${pkg}: ${tag} is already at or past ${ver} — nothing to do (attempt ${attempt})"
         return 0
       fi
       if [[ "$rc" -ne 0 ]]; then
@@ -254,10 +260,17 @@ if [[ "$PLAN_FAILED" -ne 0 ]]; then
   exit 1
 fi
 
+# A tag that a newer release already owns on any package is left alone on
+# every package, so a backport or superseded release never splits the channel.
+for ahead in $AHEAD_TAGS; do
+  echo "::notice::'${ahead}' already points past ${ZFB_SEMVER} on at least one package (a newer release owns it) — '${ahead}' is left unchanged on every package."
+done
+
 FAILED=0
 for entry in "${PLANNED[@]+"${PLANNED[@]}"}"; do
   tag="${entry%% *}"
   pkg="${entry#* }"
+  [[ "$AHEAD_TAGS" == *" ${tag} "* ]] && continue
   _tag_with_retry "$pkg" "$ZFB_SEMVER" "$tag" || FAILED=1
 done
 

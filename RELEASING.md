@@ -945,9 +945,10 @@ all packages together. The sweep (`retire-next-dist-tag.mjs`) then removes `next
 longer ahead and `release-pending` where the channel tag has reached it. A newer `release-pending`
 is a later release in flight and is kept.
 
-Finalizing a release that a newer version has already superseded fails with
-`refusing to move 'latest' backwards`. That is deliberate fail-closed behaviour; the sweep still
-clears `release-pending`. Do not work around it.
+A channel tag is never moved backwards. When a newer release already owns `latest` (or `next`) on
+any package, such as a backport or finalizing a release that has since been superseded, the
+promotion leaves that tag unchanged on every package and logs a notice instead of failing. The
+sweep still clears `release-pending`.
 
 ### npm is still processing a package
 
