@@ -75,7 +75,10 @@
 # advisory (::warning + job summary) — see emit_trust_downgrade_advisory below.
 #
 # Required env:
-#   DIST_TAG          npm dist-tag to publish under (next | latest).
+#   (no dist-tag input) every package is published under the holding tag
+#                     `release-pending` (#4717). `latest` / `next` move only
+#                     after verification, for all 11 packages together, in
+#                     scripts/promote-release-channel.sh.
 #   ZFB_PUBLISH_TARBALLS_DIR
 #                     the pack job's output: manifest.json + one .tgz per package
 #                     (+ zfb-md-wasm-shipped-artifacts.json when the tree has it).
@@ -99,9 +102,6 @@
 #                     node binary for verify-release-tarballs.mjs (tests: a stub).
 #   ZFB_NPM_PACKAGE_STATE_NODE
 #                     node binary for npm-package-state.mjs (tests: a stub).
-#   ALSO_LATEST       "1" → after publishing, also advance the `latest` dist-tag
-#                     (prerelease dual-tag policy, see #481). Delegated to
-#                     scripts/advance-latest-dist-tag.sh, which has its own retry.
 #   ZFB_LOCAL_BUILT_PACKAGES
 #                     mac-local only: whitespace/comma-separated platform package
 #                     dirs that were built outside this job. Defaults to
@@ -136,6 +136,11 @@ set -euo pipefail
 
 # Companion control scripts resolve relative to this file.
 PUBLISH_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Holding dist-tag for every publish (#4717). Not a semver range, so npm never
+# confuses it with a version; retire-next-dist-tag.mjs sweeps it once the
+# channel tag reaches it.
+HOLDING_DIST_TAG="release-pending"
 
 # Platform package dirs (the ZFB_LOCAL_BUILT_PACKAGES vocabulary).
 PLATFORM_DIRS=(
@@ -534,7 +539,7 @@ _run_and_classify() {
   local name="$1" version="$2" integrity="$3"; shift 3
   local tmp status rc
   tmp="$(mktemp)"
-  echo "→ publishing ${name}@${version} (dist-tag ${DIST_TAG}) ..."
+  echo "→ publishing ${name}@${version} (dist-tag ${HOLDING_DIST_TAG}) ..."
   set +e
   "$@" 2>&1 | tee "$tmp"
   status=${PIPESTATUS[0]}
@@ -552,9 +557,9 @@ _run_and_classify() {
 _npm_publish_tarball() {
   local file="$1" flag="$2"
   if [[ "$flag" == "--provenance=false" ]]; then
-    NPM_CONFIG_PROVENANCE=false npm publish "$file" --tag "$DIST_TAG" --access public --ignore-scripts "$flag"
+    NPM_CONFIG_PROVENANCE=false npm publish "$file" --tag "$HOLDING_DIST_TAG" --access public --ignore-scripts "$flag"
   else
-    npm publish "$file" --tag "$DIST_TAG" --access public --ignore-scripts "$flag"
+    npm publish "$file" --tag "$HOLDING_DIST_TAG" --access public --ignore-scripts "$flag"
   fi
 }
 
@@ -667,20 +672,6 @@ emit_trust_downgrade_advisory() {
   fi
 }
 
-# Prerelease dual-tag (#481): advance `latest` alongside `next` while still in
-# the prerelease phase. Runs only after every package is published (idempotently),
-# so a partial publish never clobbers `latest`. advance-latest-dist-tag.sh has its
-# own retry/backoff.
-maybe_advance_latest() {
-  if [[ "${ALSO_LATEST:-}" != "1" ]]; then
-    return 0
-  fi
-  local zfb_semver
-  zfb_semver="$(tarball_field_by_dir packages/zfb version)"
-  echo "== Prerelease dual-tag: advancing 'latest' to ${zfb_semver} =="
-  bash "${PUBLISH_SCRIPT_DIR}/advance-latest-dist-tag.sh" "$zfb_semver"
-}
-
 main() {
   local mode="${1:-}"
   case "$mode" in
@@ -690,8 +681,6 @@ main() {
       return 2
       ;;
   esac
-  : "${DIST_TAG:?DIST_TAG must be set (the npm dist-tag, e.g. next|latest)}"
-
   # Defense in depth (A2, #3140): these two modes publish at least one package
   # WITHOUT provenance, which is a permanent trust downgrade for a package that
   # already carries an earlier attestation. release.yml runs a preflight
@@ -729,10 +718,9 @@ main() {
     : >"$ZFB_PROVENANCE_EXPECTATIONS_FILE"
   fi
 
-  echo "== Publishing ${#TARBALL_ROWS[@]} packed tarballs (mode=${mode}, dist-tag=${DIST_TAG}) =="
+  echo "== Publishing ${#TARBALL_ROWS[@]} packed tarballs (mode=${mode}, dist-tag=${HOLDING_DIST_TAG}) =="
   emit_trust_downgrade_advisory "$mode"
   publish_tarballs "$mode"
-  maybe_advance_latest
   echo "== Publish complete: every package is on the registry (newly published or already present). =="
 }
 

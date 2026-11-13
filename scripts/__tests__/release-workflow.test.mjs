@@ -26,9 +26,10 @@ const EXPECTED_PERMISSIONS = {
   "build-wasm-md": { contents: "read" },
   "release-assets": { contents: "write" },
   pack: { contents: "read" },
-  publish: { contents: "read", "id-token": "write" },
+  // actions: read — receipt lookup (publish-receipts.mjs, #4716).
+  publish: { contents: "read", "id-token": "write", actions: "read" },
   "md-wasm-asset": { contents: "write" },
-  finalize: { contents: "read", "id-token": "write" },
+  finalize: { contents: "read", "id-token": "write", actions: "read" },
   "finalize-assets": { contents: "write" },
   "smoke-clean-room": { contents: "read" },
   notify: { contents: "read" },
@@ -40,6 +41,7 @@ const MUTATING = [
   /\bnpm publish\b/,
   /\bnpm dist-tag (add|rm)\b/,
   /advance-latest-dist-tag\.sh/,
+  /promote-release-channel\.sh/,
   /retire-next-dist-tag\.mjs/,
   /gh release upload/,
   /--upload\b/,
@@ -271,6 +273,53 @@ describe("release.yml structure", () => {
       /publish-npm-packages|npm publish|pnpm publish|cargo|cross build/,
     );
     expect(finalizeRuns).toContain("finalize-gate.mjs");
+  });
+
+  it("moves channel tags only in the post-verification promotion step (#4717)", () => {
+    const stepIndex = (job, name) => jobs[job].steps.findIndex((s) => s.name === name);
+    const PROMOTE = "Promote channel dist-tag (all packages verified)";
+    const SWEEP = "Sweep stale 'next' and 'release-pending' dist-tags";
+    // The only writers of `latest` / `next` are the promotion steps.
+    const advancing = steps.filter(({ step }) =>
+      /advance-latest-dist-tag\.sh|promote-release-channel\.sh|npm dist-tag add/.test(
+        String(step.run ?? ""),
+      ),
+    );
+    expect(advancing.map(label).sort()).toEqual([`finalize: ${PROMOTE}`, `publish: ${PROMOTE}`]);
+    for (const [job, after] of [
+      ["publish", "Verify npm provenance expectations"],
+      ["finalize", "Verify npm provenance expectations"],
+    ]) {
+      const promote = jobs[job].steps[stepIndex(job, PROMOTE)];
+      expect([job, promote.run]).toEqual([
+        job,
+        'bash scripts/promote-release-channel.sh "$RELEASE_VERSION"',
+      ]);
+      // No status function: runs only when every earlier step (the verifier) passed.
+      expect([job, promote.if]).toEqual([job, "${{ inputs.dry_run != true }}"]);
+      expect(promote.env.ZFB_RELEASE_SOURCE_COMMIT).toContain("source_commit");
+      expect(promote.env.ZFB_DARWIN_ADMISSION_VERDICT).toContain("darwin-admission/verdict.json");
+      expect(stepIndex(job, PROMOTE)).toBeGreaterThan(stepIndex(job, after));
+      expect(stepIndex(job, SWEEP)).toBeGreaterThan(stepIndex(job, PROMOTE));
+      expect(jobs[job].steps[stepIndex(job, SWEEP)].if).toBe(
+        "${{ always() && inputs.dry_run != true }}",
+      );
+    }
+    expect(stepIndex("finalize", PROMOTE)).toBeGreaterThan(
+      stepIndex(
+        "finalize",
+        "Finalization gate (all packages present-verified, build assets complete)",
+      ),
+    );
+  });
+
+  it("publishes every package under the release-pending holding tag (#4717)", () => {
+    const script = readFileSync(join(repoRoot, "scripts/publish-npm-packages.sh"), "utf8");
+    expect(script).toMatch(/^HOLDING_DIST_TAG="release-pending"$/m);
+    const tags = [...script.matchAll(/npm publish [^\n]*--tag (\S+)/g)].map((m) => m[1]);
+    expect(tags.length).toBeGreaterThan(0);
+    expect(new Set(tags)).toEqual(new Set(['"$HOLDING_DIST_TAG"']));
+    expect(script).not.toMatch(/advance-latest-dist-tag|maybe_advance_latest|\$DIST_TAG/);
   });
 
   it("records the source/control split in release-context outputs", () => {
