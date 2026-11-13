@@ -293,7 +293,9 @@ describe("release-status (read-only, injected gh/registry)", () => {
       if (suite) {
         const spec = REQUIRED_CONTEXTS.filter((c) => !c.prOnly)[Number(suite[1]) - 5000];
         return JSON.stringify({
-          workflow_runs: [{ path: `.github/workflows/${spec.workflow}`, head_sha: source.commit }],
+          workflow_runs: [
+            { path: `.github/workflows/${spec.workflow}`, head_sha: source.commit, event: "push" },
+          ],
         });
       }
       if (joined.includes(`commits/${source.commit}/status`))
