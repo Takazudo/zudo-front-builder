@@ -39,7 +39,9 @@ adds Codex-specific notes; where they disagree, `RELEASING.md` wins.
   `<!-- zfb-release: allow-provenance-downgrade -->` to a Release body and never dispatch with
   `allow_provenance_downgrade=true`; never create or edit `release/provenance-policy.json`
   (the owner's durable acknowledgement). Every local-Darwin release is a downgrade unless that
-  committed policy covers it; report the preflight output for the owner.
+  committed policy covers it. The owner's policy on `main` covers both Darwin carriers from 6.1.1,
+  so a preflight that exits 0 with two `ACKNOWLEDGED` lines is clear: record them and continue.
+  Report the preflight output for the owner only when a downgrade is not covered.
 - Publication runs in two jobs: `pack` (no `id-token`; installs, builds, `npm pack` for platform
   packages and `pnpm pack` for workspace packages) and `publish` (`id-token` only; `npm publish
   <tgz>` with explicit `--provenance`/`--provenance=false` under npm 12.2.1; pnpm never publishes).
