@@ -85,6 +85,9 @@ assert_exit 'is_publish_conflict: empty → NO match' 1 \
 assert_exit 'should_skip_publish: present-verified → skip (0)' 0 \
   'package_state() { echo present-verified; }; should_skip_publish foo 1.2.3'
 
+assert_exit 'should_skip_publish: processing → refuse (3) with do-not-republish message' 3 \
+  'package_state() { echo processing; }; out=$(should_skip_publish foo 1.2.3 2>&1); r=$?; case "$out" in *"npm is still processing foo@1.2.3 — do not republish"*finalize_only*) exit $r ;; *) exit 99 ;; esac'
+
 assert_exit 'should_skip_publish: absent → publish (1)' 1 \
   'package_state() { echo absent; }; should_skip_publish foo 1.2.3'
 
@@ -107,6 +110,25 @@ assert_exit 'classify: exit 0 → success (0)' 0 \
 
 assert_exit 'classify: conflict text + present-verified → tolerate (0)' 0 \
   'f=$(mktemp); printf "%s" "remote: You cannot publish over the previously published versions: 1.2.3" >"$f"; package_state() { echo present-verified; }; PUBLISH_RECHECK_DELAY=0 classify_publish_result foo 1.2.3 1 "$f"; r=$?; rm -f "$f"; exit $r'
+
+assert_exit 'classify: exit 0 → outcome publish-accepted' 0 \
+  'classify_publish_result foo 1.2.3 0 /dev/null >/dev/null; [ "$PUBLISH_OUTCOME" = publish-accepted ]'
+
+assert_exit 'is_publish_staged: E409 "previously staged version" → match' 0 \
+  'is_publish_staged "npm error code E409
+npm error 409 Conflict - PUT https://registry.npmjs.org/@takazudo%2fzfb - Cannot publish over previously staged version: 6.1.3"'
+
+assert_exit 'is_publish_staged: published-versions conflict → no match' 1 \
+  'is_publish_staged "You cannot publish over the previously published versions: 1.2.3"'
+
+assert_exit 'classify: E409 previously staged → processing, success, no registry recheck' 0 \
+  'f=$(mktemp); printf "%s" "npm error code E409 Cannot publish over previously staged version: 1.2.3" >"$f"; package_state() { echo "recheck must not run" >&2; echo absent; return 9; }; classify_publish_result foo 1.2.3 1 "$f" >/dev/null 2>&1; r=$?; rm -f "$f"; [ "$r" -eq 0 ] && [ "$PUBLISH_OUTCOME" = processing ]'
+
+assert_exit 'classify: conflict + present-verified → outcome already-present' 0 \
+  'f=$(mktemp); printf "%s" "EPUBLISHCONFLICT" >"$f"; package_state() { echo present-verified; }; PUBLISH_RECHECK_DELAY=0 classify_publish_result foo 1.2.3 1 "$f" >/dev/null; r=$?; rm -f "$f"; [ "$r" -eq 0 ] && [ "$PUBLISH_OUTCOME" = already-present ]'
+
+assert_exit 'classify: genuine publish failure (E401) still fails with no outcome' 1 \
+  'f=$(mktemp); printf "%s" "npm error code E401 Unable to authenticate" >"$f"; package_state() { echo absent; }; PUBLISH_RECHECK_DELAY=0 classify_publish_result foo 1.2.3 1 "$f" >/dev/null 2>&1; r=$?; [ -z "$PUBLISH_OUTCOME" ] || exit 7; rm -f "$f"; [ "$r" -ne 0 ] && exit 1; exit 0'
 
 assert_exit 'classify: conflict text but present-unverified → fail (1)' 1 \
   'f=$(mktemp); printf "%s" "EPUBLISHCONFLICT" >"$f"; package_state() { echo present-unverified; }; PUBLISH_RECHECK_DELAY=0 classify_publish_result foo 1.2.3 1 "$f"; r=$?; rm -f "$f"; exit $r'
@@ -794,7 +816,7 @@ PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG=/dev/null MOCK_EXISTING=
   ZFB_PROVENANCE_EXPECTATIONS_FILE="$EXPECT_FILE" bash "$SCRIPT" recovery-no-provenance >/dev/null 2>&1 || MX_RC=$?
 MX_BAD=""
 for n in $ALL_NAMES; do
-  want="none	publish-attempted"
+  want="none	publish-accepted"
   for p in $MIXED_PRESENT; do [ "$p" = "$n" ] && want="attested	already-present"; done
   got=$(awk -F '\t' -v n="$n" '$1 == n { print $3 "\t" $4 }' "$EXPECT_FILE")
   [ "$got" = "$want" ] || MX_BAD="$MX_BAD $n($got)"

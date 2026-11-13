@@ -3,6 +3,12 @@
 // a JSON object with provenance.predicateType; an unattested one prints nothing
 // and exits 0; a missing version fails with E404.
 
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -213,5 +219,102 @@ describe("npm 12 array output", () => {
     const { npm } = fakeNpm({ "@takazudo/zfb@9.9.9": ["[]"] });
     const { failed } = await verifyExpectations([row], opts(npm));
     expect(failed).toBe(1);
+  });
+});
+
+describe("processing rows (accepted by npm, still E404)", () => {
+  const E404 = () => npmError("npm error code E404");
+  const processingRow = (outcome, name = "@takazudo/zfb-linux-arm64-gnu") => ({
+    name,
+    version: "9.9.9",
+    expected: "attested",
+    outcome,
+  });
+
+  for (const outcome of ["publish-accepted", "processing"]) {
+    it(`reports a ${outcome} row that stays E404 as processing, not never-visible`, async () => {
+      const { npm } = fakeNpm({ "@takazudo/zfb-linux-arm64-gnu@9.9.9": [E404()] });
+      const { results, processingOnly } = await verifyExpectations(
+        [processingRow(outcome)],
+        opts(npm),
+      );
+      expect(results[0].verdict).toBe("processing");
+      expect(results[0].detail).toContain("still processing");
+      expect(results[0].detail).not.toContain("never became visible");
+      expect(processingOnly).toBe(true);
+    });
+  }
+
+  it("keeps the legacy publish-attempted row on the not-visible failure", async () => {
+    const { npm } = fakeNpm({ "@takazudo/zfb-linux-arm64-gnu@9.9.9": [E404()] });
+    const { results, processingOnly } = await verifyExpectations(
+      [processingRow("publish-attempted")],
+      opts(npm),
+    );
+    expect(results[0].verdict).toBe("not-visible");
+    expect(processingOnly).toBe(false);
+  });
+
+  it("is not processing-only when a real mismatch coexists", async () => {
+    const { npm } = fakeNpm({
+      "@takazudo/zfb-linux-arm64-gnu@9.9.9": [E404()],
+      "@takazudo/zfb@9.9.9": [""],
+    });
+    const { results, processingOnly, failed } = await verifyExpectations(
+      [processingRow("processing"), processingRow("publish-accepted", "@takazudo/zfb")],
+      opts(npm),
+    );
+    expect(results.map((r) => r.verdict)).toEqual(["processing", "mismatch"]);
+    expect(failed).toBe(2);
+    expect(processingOnly).toBe(false);
+  });
+
+  it("checks a processing row that became visible exactly as before", async () => {
+    const { npm } = fakeNpm({ "@takazudo/zfb-linux-arm64-gnu@9.9.9": [E404(), ATTESTED] });
+    const { failed, processingOnly } = await verifyExpectations(
+      [processingRow("processing")],
+      opts(npm),
+    );
+    expect(failed).toBe(0);
+    expect(processingOnly).toBe(false);
+  });
+});
+
+describe("CLI exit codes", () => {
+  const script = fileURLToPath(
+    new URL("../verify-npm-provenance-expectations.mjs", import.meta.url),
+  );
+  const run = (tsv) => {
+    const dir = mkdtempSync(join(tmpdir(), "receipts-"));
+    const file = join(dir, "r.tsv");
+    writeFileSync(file, tsv);
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "npm"), "#!/bin/sh\necho 'npm error code E404' >&2\nexit 1\n", {
+      mode: 0o755,
+    });
+    return spawnSync(process.execPath, [script, "--expectations", file], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        NPM_PROVENANCE_VERIFY_ATTEMPTS: "1",
+      },
+    });
+  };
+
+  it("exits 3 when only processing rows are unresolved", () => {
+    const r = run(
+      "@takazudo/a\t1.0.0\tattested\tprocessing\n@takazudo/b\t1.0.0\tattested\tpublish-accepted\n",
+    );
+    expect(r.status).toBe(3);
+    expect(r.stdout).toContain("PROCESSING_PACKAGES=@takazudo/a@1.0.0,@takazudo/b@1.0.0");
+  });
+
+  it("exits 1 when a processing row coexists with a real failure", () => {
+    const r = run(
+      "@takazudo/a\t1.0.0\tattested\tprocessing\n@takazudo/b\t1.0.0\tattested\tpublish-attempted\n",
+    );
+    expect(r.status).toBe(1);
   });
 });

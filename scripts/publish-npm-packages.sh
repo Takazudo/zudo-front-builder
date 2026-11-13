@@ -112,6 +112,9 @@
 #                     when set, receives one TSV line per package:
 #                     `<name>\t<version>\t<attested|none>\t<outcome>`; read by
 #                     scripts/verify-npm-provenance-expectations.mjs after publish.
+#                     Outcomes: already-present, publish-accepted (npm printed
+#                     `+ name@version`), processing (E409 "previously staged":
+#                     accepted earlier, still in npm pre-publication processing).
 #                     An already-present package records what the registry
 #                     OBSERVABLY carries (attestation to the source commit →
 #                     attested, else none), so a partial normal publish resumed
@@ -293,13 +296,20 @@ verify_tarball_contents() {
 # True when the npm error text is specifically "this exact version already
 # exists". Matching the phrase (NOT a bare E403) avoids swallowing a genuine
 # permissions 403 ("You do not have permission to publish ...").
+# npm accepted an earlier publish of this version and still holds it in
+# pre-publication processing (status API "validating"); a second PUT answers
+# E409. That is pending, not absent: never retry or republish it (#4716).
+is_publish_staged() {
+  printf '%s' "$1" | grep -qiE 'cannot publish over (the )?previously staged version'
+}
+
 is_publish_conflict() {
   printf '%s' "$1" | grep -qiE 'cannot publish over the previously published versions|EPUBLISHCONFLICT'
 }
 
 # Registry state of <name>@<version>, bound to the release source commit, from
 # scripts/release/npm-package-state.mjs (#4690). Echoes "<state> <observed>":
-#   state    absent | present-verified | present-unverified | uncertain
+#   state    absent | present-verified | present-unverified | processing | uncertain
 #   observed attested | none — the provenance the registry version carries
 #            for the source commit (an attestation whose gitCommit is it).
 # A skip is allowed ONLY for present-verified. `absent` needs definitive 404s on
@@ -326,7 +336,7 @@ package_state() {
   detail="$(printf '%s\n' "$line" | awk -F '\t' -v n="$name" '$1 == n { print $3; exit }')"
   observed="$(printf '%s\n' "$line" | awk -F '\t' -v n="$name" '$1 == n { print $4; exit }')"
   case "$state" in
-    absent | present-verified | present-unverified | uncertain) ;;
+    absent | present-verified | present-unverified | processing | uncertain) ;;
     *)
       echo "  state of ${name}@${version}: unparseable helper output '${line}' — treating as uncertain" >&2
       state=uncertain
@@ -372,6 +382,10 @@ should_skip_publish() {
       return 0
       ;;
     absent) return 1 ;;
+    processing)
+      echo "::error::npm is still processing ${name}@${version} — do not republish; wait, then dispatch finalize_only."
+      return 3
+      ;;
     *)
       echo "::error::${name}@${version} registry state is ${state}; refusing to skip or publish it (fail closed)."
       return 3
@@ -478,10 +492,22 @@ assert_npm_oidc_only() {
 #                                 race / lost ACK of our own publish).
 #   anything else               → real failure → return the status (fail the
 #                                 job), repeating the original error text.
+#
+# Sets PUBLISH_OUTCOME for the receipts row: publish-accepted (npm printed
+# `+ name@version`), processing (E409 "previously staged"), or already-present
+# (a conflict/lost ACK whose version is verified on the registry).
+PUBLISH_OUTCOME=""
 classify_publish_result() {
   local name="$1" version="$2" status="$3" outfile="$4" integrity="${5:-}" result state kind
+  PUBLISH_OUTCOME=""
   if [[ "$status" -eq 0 ]]; then
+    PUBLISH_OUTCOME=publish-accepted
     echo "✓ published ${name}@${version}."
+    return 0
+  fi
+  if is_publish_staged "$(cat "$outfile")"; then
+    PUBLISH_OUTCOME=processing
+    echo "::warning title=npm still processing::${name}@${version} was accepted by npm earlier and is still in pre-publication processing (E409 previously staged). Not retrying or republishing; continuing with the remaining packages."
     return 0
   fi
   if is_publish_conflict "$(cat "$outfile")"; then
@@ -492,6 +518,7 @@ classify_publish_result() {
   result="$(recheck_state "$name" "$version" "$integrity")"
   state="${result%% *}"
   if [[ "$state" == present-verified ]]; then
+    PUBLISH_OUTCOME=already-present
     echo "✓ ${name}@${version}: publish exited ${status} but the version is on the registry and verified against the source commit (${kind}) — tolerating as skip."
     return 0
   fi
@@ -560,7 +587,7 @@ publish_tarballs() {
       fi
     fi
     _run_and_classify "$name" "$version" "$integrity" _npm_publish_tarball "$file" "$(provenance_flag "$expected")"
-    record_expectation "$name" "$version" "$expected" publish-attempted
+    record_expectation "$name" "$version" "$expected" "${PUBLISH_OUTCOME:-publish-accepted}"
     if [[ "$dir" == "crates/zfb-md-wasm/npm" ]]; then
       verify_published_md_wasm "$version" "$mode"
     fi
