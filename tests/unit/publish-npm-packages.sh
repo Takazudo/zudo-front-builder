@@ -103,6 +103,11 @@ assert_exit 'package_state: helper failure → uncertain' 0 \
 assert_exit 'package_state: unparseable helper output → uncertain' 0 \
   'ZFB_NPM_PACKAGE_STATE_NODE=echo; [ "$(package_state foo 1.2.3 2>/dev/null)" = "uncertain none" ]'
 
+# The helper reports `processing` (#4715/#4716); package_state must hand it to
+# should_skip_publish unchanged — never downgraded to absent/uncertain.
+assert_exit 'package_state: helper processing state is passed through' 0 \
+  'stub=$(mktemp); printf "#!/bin/sh\nprintf \"foo\\tprocessing\\taccepted 2026-11-13\\tnone\\n\"\n" >"$stub"; chmod +x "$stub"; ZFB_NPM_PACKAGE_STATE_NODE=$stub; got=$(package_state foo 1.2.3 2>/dev/null); rm -f "$stub"; [ "$got" = "processing none" ]'
+
 # ── classify_publish_result ───────────────────────────────────────────────────
 
 assert_exit 'classify: exit 0 → success (0)' 0 \
