@@ -1,10 +1,10 @@
 {
-  "measuredOnVersion": "6.1.1",
+  "measuredOnVersion": "6.1.2",
   "measuredWithRustc": "1.100.0",
   "measured": {
     "root": {
       "finalWasm": 3421090,
-      "gzip9": 1535688,
+      "gzip9": 1535689,
       "glue": 14998,
       "glueGzip9": 4199
     },
@@ -16,7 +16,7 @@
     },
     "render": {
       "finalWasm": 2244162,
-      "gzip9": 1115872,
+      "gzip9": 1115873,
       "glue": 8772,
       "glueGzip9": 2661
     },
