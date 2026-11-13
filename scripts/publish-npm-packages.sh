@@ -309,7 +309,7 @@ is_publish_conflict() {
 
 # Registry state of <name>@<version>, bound to the release source commit, from
 # scripts/release/npm-package-state.mjs (#4690). Echoes "<state> <observed>":
-#   state    absent | present-verified | present-unverified | uncertain
+#   state    absent | present-verified | present-unverified | processing | uncertain
 #   observed attested | none — the provenance the registry version carries
 #            for the source commit (an attestation whose gitCommit is it).
 # A skip is allowed ONLY for present-verified. `absent` needs definitive 404s on
@@ -336,7 +336,7 @@ package_state() {
   detail="$(printf '%s\n' "$line" | awk -F '\t' -v n="$name" '$1 == n { print $3; exit }')"
   observed="$(printf '%s\n' "$line" | awk -F '\t' -v n="$name" '$1 == n { print $4; exit }')"
   case "$state" in
-    absent | present-verified | present-unverified | uncertain) ;;
+    absent | present-verified | present-unverified | processing | uncertain) ;;
     *)
       echo "  state of ${name}@${version}: unparseable helper output '${line}' — treating as uncertain" >&2
       state=uncertain
@@ -382,6 +382,10 @@ should_skip_publish() {
       return 0
       ;;
     absent) return 1 ;;
+    processing)
+      echo "::error::npm is still processing ${name}@${version} — do not republish; wait, then dispatch finalize_only."
+      return 3
+      ;;
     *)
       echo "::error::${name}@${version} registry state is ${state}; refusing to skip or publish it (fail closed)."
       return 3

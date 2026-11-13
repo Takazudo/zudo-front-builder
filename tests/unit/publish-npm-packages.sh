@@ -85,6 +85,9 @@ assert_exit 'is_publish_conflict: empty → NO match' 1 \
 assert_exit 'should_skip_publish: present-verified → skip (0)' 0 \
   'package_state() { echo present-verified; }; should_skip_publish foo 1.2.3'
 
+assert_exit 'should_skip_publish: processing → refuse (3) with do-not-republish message' 3 \
+  'package_state() { echo processing; }; out=$(should_skip_publish foo 1.2.3 2>&1); r=$?; case "$out" in *"npm is still processing foo@1.2.3 — do not republish"*finalize_only*) exit $r ;; *) exit 99 ;; esac'
+
 assert_exit 'should_skip_publish: absent → publish (1)' 1 \
   'package_state() { echo absent; }; should_skip_publish foo 1.2.3'
 

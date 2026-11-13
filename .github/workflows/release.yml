@@ -1209,6 +1209,8 @@ jobs:
       # of every package published with --provenance. Also used by the
       # dist-tag helpers (advance-latest, retire-next).
       id-token: write
+      # Receipt lookup (publish-receipts.mjs) lists runs and downloads artifacts.
+      actions: read
     outputs:
       dist_tag: ${{ steps.dist-tag.outputs.dist_tag }}
       npm_processing: ${{ steps.verify-provenance.outputs.npm_processing }}
@@ -1311,6 +1313,8 @@ jobs:
         shell: bash
         run: bash scripts/publish-npm-packages.sh mac-local
         env:
+          ZFB_RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
           ZFB_PUBLISH_TARBALLS_DIR: ${{ runner.temp }}/npm-tarballs
           ZFB_PROVENANCE_EXPECTATIONS_FILE: ${{ runner.temp }}/npm-provenance-expectations.tsv
           ZFB_LOCAL_BUILT_PACKAGES: packages/zfb-darwin-arm64 packages/zfb-darwin-x64
@@ -1333,6 +1337,8 @@ jobs:
         shell: bash
         run: bash scripts/publish-npm-packages.sh recovery-no-provenance
         env:
+          ZFB_RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
           ZFB_PUBLISH_TARBALLS_DIR: ${{ runner.temp }}/npm-tarballs
           ZFB_PROVENANCE_EXPECTATIONS_FILE: ${{ runner.temp }}/npm-provenance-expectations.tsv
           ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
@@ -1477,6 +1483,7 @@ jobs:
     permissions:
       contents: read # control checkout + `gh release view` in the gate
       id-token: write # npm OIDC for dist-tag add/rm
+      actions: read # receipt lookup
     outputs:
       dist_tag: ${{ steps.dist-tag.outputs.dist_tag }}
     steps:
