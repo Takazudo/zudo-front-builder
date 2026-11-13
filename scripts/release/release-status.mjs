@@ -13,8 +13,8 @@
 // verifier on the downloaded inputs, in a temp dir); per-package npm state
 // (npm-package-state); npm dist-tags; and the latest release.yml runs for the
 // tag. The recommended action is one of:
-//   prepare-darwin | publish-draft | dispatch-recovery | dispatch-finalize |
-//   blocked:<reason> | complete
+//   prepare-darwin | publish-draft | wait-npm-processing | dispatch-recovery |
+//   dispatch-finalize | blocked:<reason> | complete
 // --probe-capabilities adds `gh auth status`, the caller's repo permissions and
 // whether Actions workflows are readable.
 //
@@ -29,6 +29,7 @@ import { admitDarwinArtifacts, sourceInputs } from "../admit-darwin-artifacts.mj
 import { PUBLISHED_PACKAGES } from "../retire-next-dist-tag.mjs";
 import { GhError, execGh, isMain, repoFromEnv } from "./gh.mjs";
 import { DEFAULT_REGISTRY, collectStates, defaultRequest } from "./npm-package-state.mjs";
+import { loadReceipts, resolveNpmToken, runMatchesTag } from "./publish-receipts.mjs";
 import { assetInventory, expectedReleaseAssets } from "./release-assets-contract.mjs";
 import { evaluate as evaluateSourceCi, readSourceCi } from "./verify-source-ci.mjs";
 
@@ -56,6 +57,8 @@ function compareSemver(a, b) {
  * Stable: `latest` is this version or higher, and `next` is absent or strictly
  * ahead of `latest`. Prerelease: `next` is this version or higher, and `latest`
  * equals it while the registry is still in the prerelease phase (#481).
+ * A `release-pending` holding tag at or below this version (or the channel
+ * tag) is unsettled; a newer one is a later release in flight and legitimate.
  */
 export function distTagsSettled(version, tags) {
   const problems = [];
@@ -65,6 +68,13 @@ export function distTagsSettled(version, tags) {
       continue;
     }
     const { latest, next } = entry.tags;
+    const pending = entry.tags["release-pending"];
+    if (pending) {
+      const channel = entry.tags[PRERELEASE_RE.test(version) ? "next" : "latest"];
+      const bound = channel && compareSemver(channel, version) > 0 ? channel : version;
+      if (compareSemver(pending, bound) <= 0)
+        problems.push(`${name}: release-pending=${pending} lingers (<= ${bound})`);
+    }
     if (PRERELEASE_RE.test(version)) {
       if (!next || compareSemver(next, version) < 0) problems.push(`${name}: next=${next ?? "∅"}`);
       if ((!latest || latest.includes("-")) && latest !== version)
@@ -125,6 +135,7 @@ export function recommendNextAction(s) {
   const npm = s.npm.summary;
   if (npm.uncertain.length) return "blocked:npm-uncertain";
   if (npm["present-unverified"].length) return "blocked:npm-unverified";
+  if (npm.processing?.length) return "wait-npm-processing";
   if (npm.absent.length || s.assets.ci.missing.length) return "dispatch-recovery";
   if (s.assets.mdWasm.missing.length || !s.distTags.settled) return "dispatch-finalize";
   return "complete";
@@ -210,20 +221,6 @@ async function readDistTags({ request, registry }) {
   return tags;
 }
 
-/**
- * Pure: is this release.yml run for exactly `tag`? release.yml's run-name is
- * `Release <tag>[ (finalize only)][ (dry run)]`, so main-based dispatches match
- * by title; release:published runs also carry headBranch = tag. Exact, never a
- * substring (v6.1.1 must not match v6.1.10 or v6.1.1-next.1).
- */
-export function runMatchesTag(run, tag) {
-  if (run.headBranch === tag) return true;
-  const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^Release ${escaped}( \\(finalize only\\))?( \\(dry run\\))?$`).test(
-    String(run.displayTitle ?? ""),
-  );
-}
-
 function readRuns({ tag, repo, gh }) {
   const runs = JSON.parse(
     gh([
@@ -274,6 +271,7 @@ export async function collectStatus({
   probe = false,
   absentReads = 3,
   delayMs = 2000,
+  npmToken = null,
 }) {
   const version = tag.slice(1);
   const status = { schema: "zfb-release-status/v1", tag, version, repo };
@@ -333,6 +331,8 @@ export async function collectStatus({
         request,
         absentReads,
         delayMs,
+        receiptsLoader: () => loadReceipts({ tag, repo, gh }),
+        statusToken: npmToken,
       })
     : null;
   const tags = await readDistTags({ request, registry });
@@ -377,6 +377,16 @@ export function render(status) {
       out.push(
         `  npm ${result.state.padEnd(19)} ${result.name}  ${result.error ?? result.detail ?? result.method ?? ""}`,
       );
+    }
+    if (status.npm.processing?.length) {
+      out.push(
+        "  npm is still processing these versions (accepted, not yet visible). Do not republish; wait, check the status API, contact npm support after 24 h, then dispatch finalize_only:",
+      );
+      for (const item of status.npm.processing) {
+        out.push(
+          `    ${item.name}@${status.version}: accepted ${item.acceptedAt ?? "unknown"}, contact npm support after ${item.supportDeadline ?? "unknown (accept time unknown)"}`,
+        );
+      }
     }
   }
   out.push(
@@ -433,6 +443,10 @@ export async function main(
       registry: env.ZFB_NPM_REGISTRY ?? DEFAULT_REGISTRY,
       repoRoot: opts["repo-root"] ?? process.cwd(),
       probe: opts.probe,
+      npmToken:
+        (env.ZFB_NPM_REGISTRY ?? DEFAULT_REGISTRY) === DEFAULT_REGISTRY
+          ? resolveNpmToken(env)
+          : null,
     });
   } catch (error) {
     process.stderr.write(`release-status: ${error.message}\n`);
@@ -442,7 +456,7 @@ export async function main(
   return 0;
 }
 
-export { compareSemver };
+export { compareSemver, runMatchesTag };
 
 if (isMain(import.meta.url)) {
   process.exitCode = await main(process.argv.slice(2));

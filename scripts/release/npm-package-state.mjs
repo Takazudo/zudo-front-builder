@@ -5,6 +5,7 @@
 //   node scripts/release/npm-package-state.mjs --version V --source-commit SHA
 //        [--admission verdict.json] [--package NAME ...] [--tarball-integrity SRI] [--json | --tsv]
 //        [--require-all-verified] [--expectations-out FILE] [--registry URL]
+//        [--tag vX.Y.Z (or env ZFB_RELEASE_TAG)] [--repo owner/name]
 //
 // States:
 //   absent              every bounded re-read answered a definitive 404
@@ -13,6 +14,11 @@
 //                       commit (see below).
 //   present-unverified  the version exists but nothing ties it to the source
 //                       commit, or something contradicts it. Fail closed.
+//   processing          npm accepted the publish but the version still reads
+//                       E404: a receipt says publish-accepted/processing, or
+//                       the authenticated status API answers a known
+//                       non-published status (e.g. validating). Never absent,
+//                       never republished (E409 "previously staged").
 //   uncertain           a network/5xx/auth/parse failure; the original error is
 //                       kept in `error`. Fail closed.
 //
@@ -37,7 +43,13 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseTarGz } from "../admit-darwin-artifacts.mjs";
 import { PUBLISHED_PACKAGES } from "../retire-next-dist-tag.mjs";
-import { isMain } from "./gh.mjs";
+import { execGh, isMain, repoFromEnv } from "./gh.mjs";
+import {
+  PROCESSING_OUTCOMES,
+  loadReceipts,
+  resolveNpmToken,
+  supportDeadline,
+} from "./publish-receipts.mjs";
 
 export const DEFAULT_REGISTRY = "https://registry.npmjs.org";
 export const SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1";
@@ -51,8 +63,14 @@ export const STATES = Object.freeze([
   "absent",
   "present-verified",
   "present-unverified",
+  "processing",
   "uncertain",
 ]);
+
+// GET /-/package/{name}/version/{v}/status (authenticated) answers
+// {"status":"validating"} while npm holds a version in pre-publication
+// processing. Only statuses listed here count as processing.
+const PROCESSING_STATUSES = Object.freeze(["validating"]);
 
 class ReadError extends Error {
   constructor(message, { status = null, cause } = {}) {
@@ -71,10 +89,10 @@ function sleep(ms) {
 }
 
 /** Default HTTP reader: { status, json(), bytes() } or a thrown ReadError. */
-export async function defaultRequest(url, { timeoutMs = 30000 } = {}) {
+export async function defaultRequest(url, { timeoutMs = 30000, headers } = {}) {
   let response;
   try {
-    response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers });
   } catch (error) {
     throw new ReadError(`GET ${url} failed: ${error.message}`, { cause: error });
   }
@@ -166,6 +184,71 @@ export function darwinDigestProblems(files, verdict, triple) {
   return problems;
 }
 
+function processingResult(name, { evidence, acceptedAt, outcome, expected, status }) {
+  const deadline = supportDeadline(acceptedAt);
+  return {
+    name,
+    state: "processing",
+    evidence,
+    outcome: outcome ?? null,
+    status: status ?? null,
+    acceptedAt: acceptedAt ?? null,
+    supportDeadline: deadline,
+    expected: expected ?? "none",
+    detail: `npm accepted the publish (${evidence}${status ? `: ${status}` : ""}); version still not visible, accepted ${acceptedAt ?? "unknown"}`,
+  };
+}
+
+async function absentOrProcessing(name, read, ctx) {
+  if (ctx.receiptsProvider) {
+    let receipts;
+    try {
+      receipts = await ctx.receiptsProvider();
+    } catch (error) {
+      return { name, state: "uncertain", error: `publish receipts unreadable: ${error.message}` };
+    }
+    const receipt = receipts.get(`${name}@${ctx.version}`);
+    if (receipt && PROCESSING_OUTCOMES.includes(receipt.outcome)) {
+      return processingResult(name, { evidence: "receipt", ...receipt });
+    }
+  }
+  if (ctx.statusToken) {
+    const url = `${ctx.registry}/-/package/${registryPath(name)}/version/${encodeURIComponent(ctx.version)}/status`;
+    let response;
+    try {
+      response = await ctx.request(url, {
+        headers: { authorization: `Bearer ${ctx.statusToken}` },
+      });
+    } catch (error) {
+      return { name, state: "uncertain", error: `version status unreadable: ${error.message}` };
+    }
+    if (response.status === 200) {
+      let status;
+      try {
+        status = JSON.parse(response.body.toString("utf8")).status;
+      } catch {
+        status = undefined;
+      }
+      if (PROCESSING_STATUSES.includes(status)) {
+        return processingResult(name, { evidence: "status-api", status });
+      }
+      return {
+        name,
+        state: "uncertain",
+        error: `unknown npm version status ${JSON.stringify(String(status).slice(0, 40))}`,
+      };
+    }
+    if (response.status !== 404) {
+      return {
+        name,
+        state: "uncertain",
+        error: `version status API answered HTTP ${response.status}`,
+      };
+    }
+  }
+  return { name, state: "absent", detail: read.detail };
+}
+
 export async function packageState(name, ctx) {
   const { version, sourceCommit, verdict, registry, request } = ctx;
   let read;
@@ -174,7 +257,7 @@ export async function packageState(name, ctx) {
   } catch (error) {
     return { name, state: "uncertain", error: error.message };
   }
-  if (read.absent) return { name, state: "absent", detail: read.detail };
+  if (read.absent) return absentOrProcessing(name, read, ctx);
   const record = read.record;
   const base = {
     name,
@@ -305,8 +388,15 @@ export async function collectStates({
   absentReads = 3,
   delayMs = 2000,
   tarballIntegrity = null,
+  receiptsLoader = null,
+  statusToken = null,
 }) {
+  let receiptsPromise;
   const ctx = {
+    receiptsProvider: receiptsLoader
+      ? () => (receiptsPromise ??= Promise.resolve().then(receiptsLoader))
+      : null,
+    statusToken,
     version,
     sourceCommit,
     verdict,
@@ -320,6 +410,9 @@ export async function collectStates({
   for (const name of packages) results.push(await packageState(name, ctx));
   const byState = Object.fromEntries(STATES.map((state) => [state, []]));
   for (const result of results) byState[result.state].push(result.name);
+  const processing = results
+    .filter((result) => result.state === "processing")
+    .map(({ name, acceptedAt, supportDeadline }) => ({ name, acceptedAt, supportDeadline }));
   return {
     schema: "zfb-npm-package-state/v1",
     version,
@@ -327,6 +420,7 @@ export async function collectStates({
     admission: verdict ? { admitted: Boolean(verdict.admitted) } : null,
     packages: results,
     summary: byState,
+    processing,
     allVerified: byState["present-verified"].length === results.length,
   };
 }
@@ -348,6 +442,8 @@ export function parseArgs(argv) {
         "--package",
         "--registry",
         "--tarball-integrity",
+        "--tag",
+        "--repo",
       ].includes(arg) ||
       arg === "--expectations-out"
     ) {
@@ -364,11 +460,14 @@ export function parseArgs(argv) {
   return opts;
 }
 
-export async function main(argv, { env = process.env, out = process.stdout, request } = {}) {
+export async function main(
+  argv,
+  { env = process.env, out = process.stdout, request, gh = execGh } = {},
+) {
   const opts = parseArgs(argv);
   if (!opts) {
     process.stderr.write(
-      "usage: npm-package-state.mjs --version V --source-commit <40-hex> [--admission FILE] [--package NAME ...] [--tarball-integrity sha512-… (one --package)] [--json|--tsv] [--require-all-verified] [--expectations-out FILE] [--registry URL]\n",
+      "usage: npm-package-state.mjs --version V --source-commit <40-hex> [--admission FILE] [--package NAME ...] [--tarball-integrity sha512-… (one --package)] [--json|--tsv] [--require-all-verified] [--expectations-out FILE] [--registry URL] [--tag vX.Y.Z] [--repo owner/name]\n",
     );
     return 2;
   }
@@ -381,21 +480,36 @@ export async function main(argv, { env = process.env, out = process.stdout, requ
       return 2;
     }
   }
+  const tag = opts.tag ?? env.ZFB_RELEASE_TAG ?? null;
+  if (tag && tag !== `v${opts.version}`) {
+    process.stderr.write(
+      `npm-package-state: --tag ${tag} does not match --version ${opts.version}\n`,
+    );
+    return 2;
+  }
+  const registry = opts.registry ?? env.ZFB_NPM_REGISTRY ?? DEFAULT_REGISTRY;
+  const repo = opts.repo ?? repoFromEnv(env);
   const report = await collectStates({
     version: opts.version,
     sourceCommit: opts.sourceCommit,
     verdict,
     packages: opts.packages.length ? opts.packages : PUBLISHED_PACKAGES,
-    registry: opts.registry ?? env.ZFB_NPM_REGISTRY ?? DEFAULT_REGISTRY,
+    registry,
     request: request ?? defaultRequest,
+    receiptsLoader: tag ? () => loadReceipts({ tag, repo, gh }) : null,
+    statusToken: registry === DEFAULT_REGISTRY ? resolveNpmToken(env) : null,
     absentReads: Number(env.ZFB_NPM_STATE_ABSENT_READS ?? 3),
     delayMs: Number(env.ZFB_NPM_STATE_DELAY_MS ?? 2000),
     tarballIntegrity: opts.tarballIntegrity ?? null,
   });
   if (opts.expectationsOut) {
-    const lines = expectationShape(report.packages).map(
-      ({ name, expected }) => `${name}\t${opts.version}\t${expected}\talready-present\n`,
-    );
+    const processingNames = new Map(report.packages.map((result) => [result.name, result]));
+    const lines = expectationShape(report.packages).map(({ name, expected }) => {
+      const result = processingNames.get(name);
+      return result.state === "processing"
+        ? `${name}\t${opts.version}\t${result.expected}\tprocessing\n`
+        : `${name}\t${opts.version}\t${expected}\talready-present\n`;
+    });
     writeFileSync(opts.expectationsOut, lines.join(""));
   }
   if (opts.format === "json") out.write(`${JSON.stringify(report, null, 2)}\n`);

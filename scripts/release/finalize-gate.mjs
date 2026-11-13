@@ -15,7 +15,8 @@
 // Exit 0 cleared, 1 blocked, 2 usage or read error.
 import { readFileSync, writeFileSync } from "node:fs";
 import { execGh, isMain, repoFromEnv } from "./gh.mjs";
-import { collectStates, expectationShape } from "./npm-package-state.mjs";
+import { DEFAULT_REGISTRY, collectStates, expectationShape } from "./npm-package-state.mjs";
+import { loadReceipts, resolveNpmToken } from "./publish-receipts.mjs";
 import { assetInventory } from "./release-assets-contract.mjs";
 
 /** Pure: the finalization decision. */
@@ -33,6 +34,11 @@ export function finalizeDecision({ inventory, npm, admission }) {
     );
   }
   if (!admission?.admitted) reasons.push("blocked: Darwin inputs are not admitted");
+  if (npm.summary.processing?.length) {
+    reasons.push(
+      `blocked: npm is still processing: wait, then dispatch finalize_only (${npm.summary.processing.join(", ")})`,
+    );
+  }
   for (const state of ["absent", "present-unverified", "uncertain"]) {
     const names = npm.summary[state];
     if (names.length) {
@@ -90,6 +96,9 @@ export async function main(argv, { gh = execGh, env = process.env, request } = {
     verdict: admission,
     ...(request ? { request } : {}),
     ...(env.ZFB_NPM_REGISTRY ? { registry: env.ZFB_NPM_REGISTRY } : {}),
+    receiptsLoader: () => loadReceipts({ tag: opts.tag, repo, gh }),
+    statusToken:
+      (env.ZFB_NPM_REGISTRY ?? DEFAULT_REGISTRY) === DEFAULT_REGISTRY ? resolveNpmToken(env) : null,
   });
   for (const result of npm.packages) {
     process.stdout.write(
