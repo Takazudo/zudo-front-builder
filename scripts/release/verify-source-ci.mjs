@@ -62,6 +62,14 @@ export const ACTIONS_APP = "github-actions";
 
 const SHA_RE = /^[0-9a-f]{40}$/;
 
+// Required contexts are produced by push / pull_request / merge_group runs. The
+// same workflow file also runs on workflow_run (the post-release installer smoke)
+// and workflow_dispatch, where these jobs report `skipped`; such a later suite must
+// not mask the push run's result (v6.1.2 source 38db86d58, run 43401576405).
+export const SOURCE_CI_EVENTS = new Set(["push", "pull_request", "merge_group"]);
+const countsAsSourceCi = (run) =>
+  run.workflowEvent === undefined || SOURCE_CI_EVENTS.has(run.workflowEvent);
+
 /**
  * Pure: classify one required context from every check run and commit status
  * that carries its name on the SHA. The effective record is the newest check
@@ -75,7 +83,12 @@ export function classifyContext(spec, checkRuns, statuses) {
   // Pinned to the producing workflow file: a job of the same name in another
   // workflow (or an unresolvable check suite) never satisfies the context.
   const runs = named
-    .filter((run) => run.app === ACTIONS_APP && run.workflowPath === workflowPathOf(spec))
+    .filter(
+      (run) =>
+        run.app === ACTIONS_APP &&
+        run.workflowPath === workflowPathOf(spec) &&
+        countsAsSourceCi(run),
+    )
     .sort((a, b) => Number(a.id) - Number(b.id));
   const status = statuses.find((entry) => entry.context === spec.context);
   const base = { context: spec.context, workflow: spec.workflow, prOnly: spec.prOnly };
@@ -87,6 +100,7 @@ export function classifyContext(spec, checkRuns, statuses) {
         id: run.id,
         app: run.app ?? null,
         workflowPath: run.workflowPath ?? null,
+        workflowEvent: run.workflowEvent ?? null,
         conclusion: run.conclusion ?? null,
       }));
   }
@@ -156,6 +170,7 @@ export function readSourceCi({ sha, repo, gh = execGh }) {
   );
   // Resolve each Actions check suite to its workflow run's file path, once.
   const paths = new Map();
+  const events = new Map();
   for (const suite of new Set(checkRuns.filter((r) => r.app === ACTIONS_APP).map((r) => r.suite))) {
     if (suite === undefined || suite === null) continue;
     const runs = JSON.parse(
@@ -163,8 +178,12 @@ export function readSourceCi({ sha, repo, gh = execGh }) {
     ).workflow_runs;
     const run = runs?.[0];
     paths.set(suite, run && run.head_sha === sha ? run.path : null);
+    events.set(suite, run?.event ?? null);
   }
-  for (const run of checkRuns) run.workflowPath = paths.get(run.suite) ?? null;
+  for (const run of checkRuns) {
+    run.workflowPath = paths.get(run.suite) ?? null;
+    run.workflowEvent = events.get(run.suite) ?? null;
+  }
   const combined = JSON.parse(gh(["api", `repos/${repo}/commits/${sha}/status`]));
   const statuses = (combined.statuses ?? []).map((entry) => ({
     context: entry.context,

@@ -185,3 +185,33 @@ describe("parseExpectations / classifyNpmError", () => {
     expect(classifyNpmError("npm error code ETIMEDOUT")).toBe("transient");
   });
 });
+
+// npm 12.2.1 (release.yml publish job) wraps `npm view <spec> dist.attestations --json`
+// in an array; release run 43396497614 read nine attested v6.1.2 packages as mismatches.
+describe("npm 12 array output", () => {
+  const row = {
+    name: "@takazudo/zfb",
+    version: "9.9.9",
+    expected: "attested",
+    outcome: "publish-attempted",
+  };
+
+  it("accepts a one-element array carrying the SLSA provenance predicate", async () => {
+    const { npm } = fakeNpm({ "@takazudo/zfb@9.9.9": [`[${ATTESTED}]`] });
+    const { failed } = await verifyExpectations([row], opts(npm));
+    expect(failed).toBe(0);
+  });
+
+  it("still rejects an array whose record lacks the SLSA predicate", async () => {
+    const other = JSON.stringify([{ url: "x", provenance: { predicateType: "other" } }]);
+    const { npm } = fakeNpm({ "@takazudo/zfb@9.9.9": [other] });
+    const { failed } = await verifyExpectations([row], opts(npm));
+    expect(failed).toBe(1);
+  });
+
+  it("still rejects an empty array", async () => {
+    const { npm } = fakeNpm({ "@takazudo/zfb@9.9.9": ["[]"] });
+    const { failed } = await verifyExpectations([row], opts(npm));
+    expect(failed).toBe(1);
+  });
+});

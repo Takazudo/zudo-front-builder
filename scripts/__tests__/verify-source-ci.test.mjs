@@ -138,7 +138,9 @@ describe("CLI", () => {
       const suite = /check_suite_id=(\d+)/.exec(args[1]);
       if (suite) {
         const workflow = WORKFLOWS[Number(suite[1]) - 1000];
-        return JSON.stringify({ workflow_runs: [{ path: pathFor(workflow), head_sha: headSha }] });
+        return JSON.stringify({
+          workflow_runs: [{ path: pathFor(workflow), head_sha: headSha, event: "push" }],
+        });
       }
       throw new Error(`unexpected gh ${args.join(" ")}`);
     };
@@ -250,5 +252,39 @@ describe("drift guards", () => {
       );
       expect([spec.context, matches]).toEqual([spec.context, true]);
     }
+  });
+});
+
+// The post-release installer smoke runs node-free-smoke.yml on workflow_run and posts
+// same-named, skipped required jobs on the release commit (v6.1.2, run 43401576405).
+describe("source CI events", () => {
+  const smoke = "Smoke amd64 (local mode)";
+  const spec = REQUIRED_CONTEXTS.find((c) => c.context === smoke);
+  const withEvent = (record, workflowEvent) => ({ ...record, workflowEvent });
+
+  it("does not let a later workflow_run suite's skipped job mask the push pass", () => {
+    const checkRuns = [
+      withEvent(run(smoke, "completed", "success", 10), "push"),
+      withEvent(run(smoke, "completed", "skipped", 20), "workflow_run"),
+    ];
+    const result = classifyContext(spec, checkRuns, []);
+    expect(result.state).toBe("passed");
+    expect(result.checkRunId).toBe(10);
+    expect(result.ignoredCheckRuns).toEqual([
+      expect.objectContaining({ id: 20, workflowEvent: "workflow_run" }),
+    ]);
+  });
+
+  it("still lets a later push re-run failure override an earlier pass", () => {
+    const checkRuns = [
+      withEvent(run(smoke, "completed", "success", 10), "push"),
+      withEvent(run(smoke, "completed", "failure", 20), "push"),
+    ];
+    expect(classifyContext(spec, checkRuns, []).state).toBe("failed");
+  });
+
+  it("fails closed when the suite's event could not be resolved", () => {
+    const checkRuns = [withEvent(run(smoke, "completed", "success", 10), null)];
+    expect(classifyContext(spec, checkRuns, []).state).toBe("missing");
   });
 });
