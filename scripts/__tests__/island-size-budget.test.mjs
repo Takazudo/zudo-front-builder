@@ -1302,7 +1302,7 @@ describe("island shipped-size budget", () => {
       readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
-    expect(linuxContract.toolchain.packageVersion).toBe("6.1.2");
+    expect(linuxContract.toolchain.packageVersion).toBe("6.1.3");
     // A schemaVersion-4 contract tracks the dependency fingerprint, the same
     // drift guard as the Darwin contract above; its whole-file pnpmLockSha256
     // is baseline provenance, pinned by the live bundler-backend test below.
@@ -2034,8 +2034,8 @@ describe("island shipped-size budget", () => {
 // Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // Exact immediate predecessors of the live contracts: for Linux, the
-// schemaVersion-4 v6.1.1 release contract (#4705, Actions evidence)
-// that the v6.1.2 release bump moved; for Darwin, the schemaVersion-4 v5.2.2
+// schemaVersion-4 v6.1.2 release contract (#4710, Actions evidence)
+// that the v6.1.3 release bump moved; for Darwin, the schemaVersion-4 v5.2.2
 // bundler-backend contract that its #4645 v6.0.0 release bump moved
 // (owner-attested local evidence).
 // Each must equal a frozen verbatim fixture, so the metadata check also holds in
@@ -2044,18 +2044,18 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // flat record carries no baselineRunId.
 const repinnedFromContracts = [
   {
-    // The v6.1.2 release bump cites the frozen schemaVersion-4 v6.1.1 Linux contract, as
-    // recorded by the rebaseline at release probe head 294a192a4 (PR #4710; blob identical
-    // to main bce1247f0).
+    // The v6.1.3 release bump cites the frozen schemaVersion-4 v6.1.2 Linux contract, as
+    // recorded by the rebaseline at release probe head f6388b7d5 (PR #4713; blob identical
+    // to main 2c9fe076c).
     file: "decision-linux-x64.json",
-    commit: "294a192a48f30980048e3fcdf3ddd2a419925414",
-    sha256: "63a08ddc996e45f28799ef0798db2e568fac44cdb8cc37dd76d40d58679edc67",
-    fixture: "fixtures/island-size-linux-x64-v6.1.1-release.json",
+    commit: "f6388b7d5da3357a5792d30a4241fc33161ec800",
+    sha256: "8c257bfa88b3ae7d528c921e1f06b814b4b20bf9fadfc5fc8bc1b46070b5c368",
+    fixture: "fixtures/island-size-linux-x64-v6.1.2-release.json",
     schemaVersion: 4,
     outcome: "release-version-stamp",
-    packageVersion: "6.1.1",
-    baselineSourceSha: "2e03d272f4f1e630fbe443caf28b1535095d51f6",
-    baselineRunId: 43316117564,
+    packageVersion: "6.1.2",
+    baselineSourceSha: "294a192a48f30980048e3fcdf3ddd2a419925414",
+    baselineRunId: 43382274321,
   },
   {
     // The Darwin v6.0.0 release bump cites the authentic schema-4 predecessor.
@@ -4011,6 +4011,13 @@ describe("live contracts preserve released evidence and authentic predecessors",
       "63a08ddc996e45f28799ef0798db2e568fac44cdb8cc37dd76d40d58679edc67",
     );
 
+  // Verbatim main contract at 2c9fe076c, before the v6.1.3 release bump.
+  const linuxV612 = () =>
+    frozenDenoExit(
+      "fixtures/island-size-linux-x64-v6.1.2-release.json",
+      "8c257bfa88b3ae7d528c921e1f06b814b4b20bf9fadfc5fc8bc1b46070b5c368",
+    );
+
   // The v6.0.0 release probe (#4656, health run 42582498638) re-pinned the
   // esbuild-free Linux contract to 6.0.0 with every total unchanged.
   it("moves the frozen v5.2.2 bundler-backend Linux contract only by the v6.0.0 release bump", () => {
@@ -4135,7 +4142,7 @@ describe("live contracts preserve released evidence and authentic predecessors",
   // The v6.1.2 release probe (#4710) preserves every raw and normalized-gzip ceiling.
   it("moves the frozen v6.1.1 Linux contract only by the v6.1.2 release bump", () => {
     const predecessor = linuxV611();
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    const live = linuxV612();
     expect(live.schemaVersion).toBe(4);
     expect(live.toolchain.bundlerIdentity).toBe("rolldown-24bc2d0");
     expect(live.outcome).toBe("release-version-stamp");
@@ -4149,6 +4156,36 @@ describe("live contracts preserve released evidence and authentic predecessors",
       runId: 43382274321,
       jobId: 131742629832,
       sourceSha: "a79183a39d32b6ec9bf633803e274e0d6f80ffd8",
+    });
+    for (const key of [
+      "bundlerBackend",
+      "cargoTransition",
+      "cargoRewire",
+      "cargoRemoval",
+      "fingerprintTransition",
+    ]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    expectReleaseBumpOnly(predecessor, live);
+  });
+
+  // The v6.1.3 release probe (#4713) preserves every raw and normalized-gzip ceiling.
+  it("moves the frozen v6.1.2 Linux contract only by the v6.1.3 release bump", () => {
+    const predecessor = linuxV612();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.schemaVersion).toBe(4);
+    expect(live.toolchain.bundlerIdentity).toBe("rolldown-24bc2d0");
+    expect(live.outcome).toBe("release-version-stamp");
+    expect(live.toolchain.packageVersion).toBe("6.1.3");
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "04d0dd7f775a6edd392acdb648d4b29895021ba5f2dc3d16b6041b0fa9ab0580",
+    );
+    expect(live.baselineSourceSha).toBe("f6388b7d5da3357a5792d30a4241fc33161ec800");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "ci",
+      runId: 43422556476,
+      jobId: 131875922006,
+      sourceSha: "af67058854ec7298e73088dac3769eea5b61e559",
     });
     for (const key of [
       "bundlerBackend",
