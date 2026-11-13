@@ -83,8 +83,15 @@ export async function observeAttestation(name, version, npm) {
   } catch {
     return { state: "transient", detail: `unparseable npm view output: ${trimmed.slice(0, 200)}` };
   }
-  const predicate = parsed?.provenance?.predicateType;
-  if (predicate === SLSA_PROVENANCE_V1) return { state: "attested", detail: predicate };
+  // npm 12 (the publish job's pinned CLI) prints `npm view <spec> <field> --json` as a
+  // one-element array; older CLIs print the bare object.
+  const records = Array.isArray(parsed) ? parsed : [parsed];
+  if (
+    records.length > 0 &&
+    records.every((record) => record?.provenance?.predicateType === SLSA_PROVENANCE_V1)
+  ) {
+    return { state: "attested", detail: SLSA_PROVENANCE_V1 };
+  }
   return { state: "other", detail: `unexpected attestation shape: ${trimmed.slice(0, 200)}` };
 }
 

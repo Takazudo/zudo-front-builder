@@ -1198,7 +1198,8 @@ jobs:
     needs: [pack, release-context, source-ci, provenance-preflight, admit-darwin, release-assets]
     if: ${{ needs.release-context.outputs.is_finalize != 'true' && inputs.dry_run != true }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # ~3 min of publishing plus the verifier's ~21 min visibility wait below (#4711).
+    timeout-minutes: 40
     permissions:
       # Control-script checkout only; the MD/WASM digest asset upload lives in
       # md-wasm-asset, a separate job without id-token.
@@ -1342,10 +1343,13 @@ jobs:
       # Every package must carry exactly the provenance recorded for it:
       # the explicit flag for a fresh publish, or the observed source-bound
       # provenance for an already-present one. Reads only.
+      # Large binary carriers took ~6.5-12.5 min to become visible after publish
+      # (#4711); 9 attempts doubling from 5 s wait up to ~21 min.
       - name: Verify npm provenance expectations
         shell: bash
         env:
           EXPECTATIONS: ${{ runner.temp }}/npm-provenance-expectations.tsv
+          NPM_PROVENANCE_VERIFY_ATTEMPTS: "9"
         run: node scripts/verify-npm-provenance-expectations.mjs --expectations "$EXPECTATIONS"
 
       # ── Prerelease graduation cleanup (the reverse of the dual-tag gate) ───
