@@ -54,6 +54,8 @@
 #   Tag matching *-next.*, *-beta.*, or *-rc.* → GH Release is created with
 #   prerelease: true.  Same tags get npm dist-tag "next".
 #   All other v* tags → prerelease: false, npm dist-tag "latest".
+#   Packages are published under the holding tag "release-pending"; the
+#   channel tag moves on all packages together only after verification (#4717).
 #
 # Installer opt-in to a prerelease:
 #   ZFB_VERSION=v0.X.Y-next.N       — install that exact version
@@ -1207,7 +1209,7 @@ jobs:
       # The npm credential: npm exchanges the job's GitHub ID token for a
       # short-lived publish token (trusted publishing) and signs the provenance
       # of every package published with --provenance. Also used by the
-      # dist-tag helpers (advance-latest, retire-next).
+      # dist-tag helpers (promote-release-channel, retire-next).
       id-token: write
       # Receipt lookup (publish-receipts.mjs) lists runs and downloads artifacts.
       actions: read
@@ -1406,13 +1408,31 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
-      # ── Prerelease graduation cleanup (the reverse of the dual-tag gate) ───
-      # Removes `next` wherever it is no longer strictly ahead of `latest`, so a
-      # graduated prerelease tag never freezes. Always exits 0; an auth failure
-      # (trusted publisher or its "Allow npm dist-tag" option) is raised to
-      # ::error:: plus a job-summary section.
-      - name: Retire stale 'next' dist-tag
+      # ── Channel promotion (#4717) ──────────────────────────────────────────
+      # Every package was published under the `release-pending` holding tag.
+      # Only after the verifier passed — and only when all 11 packages are
+      # present-verified for the source commit — does `latest` (stable) or
+      # `next` (+ `latest` under ALSO_LATEST) move, for all packages together.
+      # A run that stopped on `processing` never reaches this step, so the
+      # channel tags stay where they were until finalize_only promotes them.
+      - name: Promote channel dist-tag (all packages verified)
         if: ${{ inputs.dry_run != true }}
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
+          ZFB_DARWIN_ADMISSION_VERDICT: ${{ runner.temp }}/darwin-admission/verdict.json
+        run: bash scripts/promote-release-channel.sh "$RELEASE_VERSION"
+
+      # ── Dist-tag sweep (the reverse of promotion) ─────────────────────────
+      # Removes `next` wherever it is no longer strictly ahead of `latest`, and
+      # `release-pending` wherever the channel tag has reached it, so neither
+      # freezes. Runs even when verification or promotion failed: it only ever
+      # removes tags the channel has already caught up with. Always exits 0; an
+      # auth failure (trusted publisher or its "Allow npm dist-tag" option) is
+      # raised to ::error:: plus a job-summary section.
+      - name: Sweep stale 'next' and 'release-pending' dist-tags
+        if: ${{ always() && inputs.dry_run != true }}
         shell: bash
         run: node scripts/retire-next-dist-tag.mjs
 
@@ -1553,27 +1573,26 @@ jobs:
         shell: bash
         run: echo "DRY RUN — the gate passed; no dist-tag change, no Release asset upload."
 
-      # Prerelease dual-tag (#481), same rule as the publish job.
-      - name: Advance 'latest' dist-tag (prerelease phase only)
-        if: ${{ inputs.dry_run != true }}
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
-        run: |
-          if [[ "${ALSO_LATEST:-}" == "1" ]]; then
-            bash scripts/advance-latest-dist-tag.sh "$RELEASE_VERSION"
-          else
-            echo "ALSO_LATEST not set — 'latest' is not advanced."
-          fi
-
       - name: Verify npm provenance expectations
         shell: bash
         run: |
           node scripts/verify-npm-provenance-expectations.mjs \
             --expectations "$RUNNER_TEMP/npm-provenance-expectations.tsv"
 
-      - name: Retire stale 'next' dist-tag
+      # Channel promotion (#4717), same step as the publish job: stable moves
+      # `latest`, a prerelease moves `next` (+ `latest` under ALSO_LATEST), on
+      # all packages together and only when every one is present-verified.
+      - name: Promote channel dist-tag (all packages verified)
         if: ${{ inputs.dry_run != true }}
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
+          ZFB_DARWIN_ADMISSION_VERDICT: ${{ runner.temp }}/darwin-admission/verdict.json
+        run: bash scripts/promote-release-channel.sh "$RELEASE_VERSION"
+
+      - name: Sweep stale 'next' and 'release-pending' dist-tags
+        if: ${{ always() && inputs.dry_run != true }}
         shell: bash
         run: node scripts/retire-next-dist-tag.mjs
 

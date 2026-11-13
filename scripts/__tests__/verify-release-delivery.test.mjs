@@ -1261,7 +1261,36 @@ describe("mutable channels", () => {
       status: STATUS.OBSERVED,
       evidence: { tag_name: "v5.3.0" },
     });
-    expect(report.sections.channels.status).toBe(STATUS.NOT_APPLICABLE);
+    // Mutable channels stay observations; only the holding-tag check is enforced.
+    expect(check(report, "channels", "npm-holding-tag").status).toBe(STATUS.VERIFIED);
+    expect(
+      report.sections.channels.checks
+        .filter((c) => c.id !== "npm-holding-tag")
+        .every((c) => c.status === STATUS.OBSERVED),
+    ).toBe(true);
+  });
+
+  it("fails while release-pending lingers at or below the release version (#4717)", async () => {
+    for (const pending of [VERSION, "0.0.1"]) {
+      const { report } = await run((w) => {
+        w.distTags = (name) => ({
+          latest: VERSION,
+          ...(name === "@takazudo/zfb-linux-arm64-gnu" ? { "release-pending": pending } : {}),
+        });
+      });
+      const holding = check(report, "channels", "npm-holding-tag");
+      expect(holding.status).toBe(STATUS.FAILED);
+      expect(holding.reason).toContain(`@takazudo/zfb-linux-arm64-gnu=${pending}`);
+      expect(report.verdict).toBe(STATUS.FAILED);
+    }
+  });
+
+  it("ignores a release-pending that belongs to a later release in flight", async () => {
+    const { report } = await run((w) => {
+      w.distTags = () => ({ latest: VERSION, "release-pending": "99.0.0" });
+    });
+    expect(check(report, "channels", "npm-holding-tag").status).toBe(STATUS.VERIFIED);
+    expect(report.verdict).toBe(STATUS.VERIFIED);
   });
 
   it("enforces channels only when expectations are requested", async () => {

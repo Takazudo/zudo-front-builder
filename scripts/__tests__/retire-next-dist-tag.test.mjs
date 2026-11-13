@@ -9,7 +9,8 @@
 //      go red over a leftover dist-tag).
 //
 // Plus a drift guard: PUBLISHED_PACKAGES must match both the workspace's set of
-// publishable packages and scripts/advance-latest-dist-tag.sh's list.
+// publishable packages and scripts/advance-latest-dist-tag.sh's PACKAGES array.
+// The `release-pending` holding-tag sweep (#4717) is covered alongside.
 
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,9 +19,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  HOLDING_DIST_TAG,
   PUBLISHED_PACKAGES,
   compareSemver,
   decideNextTagAction,
+  decideReleasePendingAction,
   isTerminalNpmError,
   parseSemver,
   preflightRefusalLines,
@@ -114,9 +117,74 @@ describe("decideNextTagAction", () => {
   });
 });
 
+describe("decideReleasePendingAction (#4717)", () => {
+  it("is not a semver range, so npm never treats it as a version", () => {
+    expect(HOLDING_DIST_TAG).toBe("release-pending");
+    expect(parseSemver(HOLDING_DIST_TAG)).toBeNull();
+  });
+
+  it("retires a holding tag the stable channel has reached", () => {
+    expect(decideReleasePendingAction({ latest: "6.1.3", "release-pending": "6.1.3" }).action).toBe(
+      "retire",
+    );
+    expect(decideReleasePendingAction({ latest: "6.1.4", "release-pending": "6.1.3" }).action).toBe(
+      "retire",
+    );
+  });
+
+  it("keeps a holding tag ahead of latest — a release in flight or still processing", () => {
+    const decision = decideReleasePendingAction({ latest: "6.1.2", "release-pending": "6.1.3" });
+    expect(decision.action).toBe("keep");
+    expect(decision.reason).toMatch(/in flight/);
+  });
+
+  it("retires a prerelease holding tag that next has reached", () => {
+    expect(
+      decideReleasePendingAction({
+        latest: "6.1.3",
+        next: "7.0.0-next.2",
+        "release-pending": "7.0.0-next.2",
+      }).action,
+    ).toBe("retire");
+  });
+
+  it("never lets a prerelease soak on next retire a stable holding version", () => {
+    expect(
+      decideReleasePendingAction({
+        latest: "6.1.2",
+        next: "7.0.0-next.2",
+        "release-pending": "6.1.3",
+      }).action,
+    ).toBe("keep");
+  });
+
+  it("keeps a prerelease holding tag ahead of both channels", () => {
+    expect(
+      decideReleasePendingAction({
+        latest: "6.1.3",
+        next: "7.0.0-next.1",
+        "release-pending": "7.0.0-next.2",
+      }).action,
+    ).toBe("keep");
+  });
+
+  it("refuses to delete on a guess", () => {
+    expect(decideReleasePendingAction({ latest: "6.1.3", "release-pending": "junk" }).action).toBe(
+      "keep",
+    );
+    expect(decideReleasePendingAction({ latest: "junk", "release-pending": "6.1.3" }).action).toBe(
+      "keep",
+    );
+  });
+
+  it("reports absent when there is no holding tag", () => {
+    expect(decideReleasePendingAction({ latest: "6.1.3" }).action).toBe("absent");
+  });
+});
+
 // Fake `npm` runner: answers `view ... dist-tags --json` from a mutable table
 // and records every `dist-tag rm` it is asked to perform. A successful rm
-// deletes `next` from the table, so the script's post-write re-read sees it.
+// deletes the named tag from the table, so the script's post-write re-read sees it.
 function makeNpm({
   tags,
   failRmTimes = 0,
@@ -146,7 +214,7 @@ function makeNpm({
           throw new Error(rmError);
         }
         removed.push(args[2]);
-        if (!ignoreRm && tags[args[2]]) delete tags[args[2]].next;
+        if (!ignoreRm && tags[args[2]]) delete tags[args[2]][args[3]];
         return "";
       }
       throw new Error(`unexpected npm call: ${args.join(" ")}`);
@@ -240,6 +308,97 @@ describe("retireNextDistTag", () => {
 
     expect(failed).toBe(1);
     expect(results[0].action).toBe("error");
+  });
+});
+
+describe("release-pending sweep (#4717)", () => {
+  it("removes release-pending at or below the channel and leaves a newer one alone", async () => {
+    const tags = {
+      "@takazudo/zfb": { latest: "6.1.3", "release-pending": "6.1.3" },
+      "@takazudo/zfb-linux-arm64-gnu": { latest: "6.1.3", "release-pending": "6.1.2" },
+      "create-zfb": { latest: "6.1.3", "release-pending": "6.1.4" },
+      "@takazudo/zfb-runtime": { latest: "6.1.3" },
+    };
+    const { npm, calls } = makeNpm({ tags });
+    const { pendingResults, results, failed } = await retireNextDistTag({
+      packages: Object.keys(tags),
+      npm,
+      wait: noWait,
+      log: silent,
+    });
+    expect(calls).toEqual([
+      ["dist-tag", "rm", "@takazudo/zfb", HOLDING_DIST_TAG],
+      ["dist-tag", "rm", "@takazudo/zfb-linux-arm64-gnu", HOLDING_DIST_TAG],
+    ]);
+    expect(pendingResults.map((r) => r.action)).toEqual(["retired", "retired", "keep", "absent"]);
+    expect(results.map((r) => r.action)).toEqual(["absent", "absent", "absent", "absent"]);
+    expect(tags["create-zfb"][HOLDING_DIST_TAG]).toBe("6.1.4");
+    expect(tags["@takazudo/zfb"].latest).toBe("6.1.3");
+    expect(failed).toBe(0);
+  });
+
+  it("sweeps both next and release-pending once a prerelease graduates", async () => {
+    const tags = {
+      "@takazudo/zfb": { latest: "7.0.0", next: "7.0.0-rc.1", "release-pending": "7.0.0" },
+    };
+    const { npm, calls } = makeNpm({ tags });
+    await retireNextDistTag({ packages: ["@takazudo/zfb"], npm, wait: noWait, log: silent });
+    expect(calls).toEqual([
+      ["dist-tag", "rm", "@takazudo/zfb", "next"],
+      ["dist-tag", "rm", "@takazudo/zfb", HOLDING_DIST_TAG],
+    ]);
+    expect(tags["@takazudo/zfb"]).toEqual({ latest: "7.0.0" });
+  });
+
+  it("re-decides on fresh state: a holding tag moved ahead before the rm is kept", async () => {
+    const { npm, calls } = makeNpm({
+      tags: { "@takazudo/zfb": { latest: "6.1.3", "release-pending": "6.1.3" } },
+      beforeView: (tags, n) => {
+        if (n === 2) tags["@takazudo/zfb"][HOLDING_DIST_TAG] = "6.1.4";
+      },
+    });
+    const { pendingResults } = await retireNextDistTag({
+      packages: ["@takazudo/zfb"],
+      npm,
+      wait: noWait,
+      log: silent,
+    });
+    expect(calls).toHaveLength(0);
+    expect(pendingResults[0]).toMatchObject({ action: "changed" });
+  });
+
+  it("writes nothing in dry-run mode", async () => {
+    const { npm, calls } = makeNpm({
+      tags: { "@takazudo/zfb": { latest: "6.1.3", "release-pending": "6.1.3" } },
+    });
+    const { pendingResults } = await retireNextDistTag({
+      dryRun: true,
+      packages: ["@takazudo/zfb"],
+      npm,
+      wait: noWait,
+      log: silent,
+    });
+    expect(calls).toEqual([]);
+    expect(pendingResults[0]).toMatchObject({ action: "retire", dryRun: true });
+  });
+
+  it("reports a permanent holding-tag failure without rejecting", async () => {
+    const lines = [];
+    const { npm } = makeNpm({
+      tags: { "@takazudo/zfb": { latest: "6.1.3", "release-pending": "6.1.3" } },
+      failRmTimes: Number.MAX_SAFE_INTEGER,
+    });
+    const { failed, pendingResults } = await retireNextDistTag({
+      packages: ["@takazudo/zfb"],
+      npm,
+      wait: noWait,
+      log: (line) => lines.push(line),
+    });
+    expect(failed).toBe(1);
+    expect(pendingResults[0].action).toBe("error");
+    expect(lines.some((l) => l.includes(`npm dist-tag rm @takazudo/zfb ${HOLDING_DIST_TAG}`))).toBe(
+      true,
+    );
   });
 });
 
@@ -424,7 +583,9 @@ describe("PUBLISHED_PACKAGES drift guard", () => {
     // here, `next` retires there. A package present in only one list is the
     // exact drift that froze `next` at 1.1.0-next.1 in the first place.
     const sh = readFileSync(join(REPO_ROOT, "scripts", "advance-latest-dist-tag.sh"), "utf8");
-    const tagged = [...sh.matchAll(/^_tag_with_retry "([^"]+)"/gm)].map((m) => m[1]);
+    const block = /^PACKAGES=\(\n([\s\S]*?)^\)$/m.exec(sh);
+    expect(block).not.toBeNull();
+    const tagged = [...block[1].matchAll(/^\s*"([^"]+)"\s*$/gm)].map((m) => m[1]);
 
     expect(tagged.length).toBeGreaterThan(0);
     expect([...PUBLISHED_PACKAGES].sort()).toEqual([...tagged].sort());
