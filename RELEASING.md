@@ -146,6 +146,7 @@ downloaded assets, per-package npm state, dist-tags, the latest `release.yml` ru
 | --- | --- |
 | `prepare-darwin` | [Phase M](#phase-m-darwin-inputs-on-the-owners-mac) (Cloud: hand off and stop) |
 | `publish-draft` | [A11](#a11-admission-and-provenance-preflight) then [A12](#a12-publish-the-draft), or its [Actions route](#a12-actions-route-release-coordinator) when the session cannot push tags |
+| `wait-npm-processing` | [npm is still processing a package](#npm-is-still-processing-a-package): stop and report |
 | `dispatch-recovery` | [Recovery](#recovery-a-published-release-whose-build-or-publish-failed) |
 | `dispatch-finalize` | [Finalize](#finalize-only-dist-tags-digest-asset-verification) |
 | `blocked:<reason>` | stop and report the reason |
@@ -803,6 +804,13 @@ head branch `v<version>`.
    network) may be rerun once (`gh run rerun <id> --failed`) — record the first result and the
    retry. Otherwise go to Step 0 and follow its recommendation. Never unpublish or delete the
    Release.
+6. Every package is published under the transient `release-pending` dist-tag, never under
+   `latest` or `next`. The `publish` job moves the channel tag (`latest` for a stable,
+   `next` for a prerelease, plus `latest` with `ALSO_LATEST`) only after its provenance
+   verification passes for all eleven packages, through `scripts/promote-release-channel.sh`.
+   If npm keeps a package in pre-publication processing, the verifier exits 3, the run fails and
+   no channel tag moves on any package. Go to
+   [npm is still processing a package](#npm-is-still-processing-a-package).
 
 ### A14. Verify delivery
 
@@ -929,6 +937,57 @@ separate `finalize-assets` job (`contents: write`, no `id-token`) uploads the md
 missing; then the smoke and notify run. The run is named `Release v<version> (finalize only)`. It is
 idempotent. If build assets are
 missing it stops `blocked`; use recovery instead.
+
+Finalize is also where a release that stopped on npm processing completes. The `finalize` job runs
+`scripts/promote-release-channel.sh` (the same promotion as the `publish` job): it refuses unless
+all eleven packages are `present-verified` for the source commit, then moves the channel tag on
+all packages together. The sweep (`retire-next-dist-tag.mjs`) then removes `next` where it is no
+longer ahead and `release-pending` where the channel tag has reached it. A newer `release-pending`
+is a later release in flight and is kept.
+
+Finalizing a release that a newer version has already superseded fails with
+`refusing to move 'latest' backwards`. That is deliberate fail-closed behaviour; the sweep still
+clears `release-pending`. Do not work around it.
+
+### npm is still processing a package
+
+npm sometimes accepts a publish and holds the version in pre-publication processing, so it keeps
+answering E404 (#4711 is the precedent: large carriers took 6 to 12 minutes, and a stuck one
+needs npm support).
+
+**Signs**
+
+- The `Verify npm provenance expectations` step exits 3 and the job summary shows
+  "npm accepted the publish but is still processing", listing the packages.
+- Step 0 recommends `wait-npm-processing`. The package state is `processing`, never `absent`.
+
+**What to do**
+
+1. Stop and report. Do not recover.
+2. Check the status API locally with your own npm login. `{"status":"validating"}` means still
+   processing. Never print the credential:
+
+   ```sh
+   TOKEN="$(sed -n 's|^//registry.npmjs.org/:_authToken=||p' "$HOME/.npmrc")"
+   curl -s -H "Authorization: Bearer ${TOKEN}" \
+     "https://registry.npmjs.org/-/package/<name, with / as %2f>/version/<version>/status"
+   ```
+
+3. Wait up to 24 hours. If a package is still processing after that, contact npm support.
+4. Once every package is visible, finalize from `main`:
+
+   ```sh
+   gh workflow run release.yml --ref main -f release_tag=vX.Y.Z -f finalize_only=true
+   ```
+
+   Re-run Step 0 first: it must recommend `dispatch-finalize`.
+
+**Never**
+
+- Never republish (npm answers E409 "previously staged"), and never cut a new version to work
+  around the wait.
+- Never move `latest` or `next` by hand. Only `promote-release-channel.sh` moves them, after
+  verification.
 
 ### Dry run
 
