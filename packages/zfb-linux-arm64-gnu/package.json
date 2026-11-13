@@ -1,6 +1,6 @@
 {
   "name": "@takazudo/zfb-linux-arm64-gnu",
-  "version": "6.1.2",
+  "version": "6.1.3",
   "description": "Platform-specific zfb binary (linux-arm64-gnu)",
   "license": "MIT",
   "os": [
