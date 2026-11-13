@@ -47,6 +47,8 @@ adds Codex-specific notes; where they disagree, `RELEASING.md` wins.
   <tgz>` with explicit `--provenance`/`--provenance=false` under npm 12.2.1; pnpm never publishes).
   Runs are named `Release v<version>[ (finalize only)][ (dry run)]`; the delivery verifier expects
   the `Pack npm tarballs` and `Upload MD/WASM digest asset` jobs.
+- `wait-npm-processing` from Step 0 (or a verifier exit 3) means npm is still processing a package:
+  stop and report, never recover. See `RELEASING.md` "npm is still processing a package".
 - Run Step 0 (`release-status.mjs`) at the start and after every interruption; act on its single
   recommendation.
 - Follow-up workflow runs are explicit `gh workflow run release.yml --ref main ...` dispatches
