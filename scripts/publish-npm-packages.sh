@@ -75,7 +75,10 @@
 # advisory (::warning + job summary) — see emit_trust_downgrade_advisory below.
 #
 # Required env:
-#   DIST_TAG          npm dist-tag to publish under (next | latest).
+#   (no dist-tag input) every package is published under the holding tag
+#                     `release-pending` (#4717). `latest` / `next` move only
+#                     after verification, for all 11 packages together, in
+#                     scripts/promote-release-channel.sh.
 #   ZFB_PUBLISH_TARBALLS_DIR
 #                     the pack job's output: manifest.json + one .tgz per package
 #                     (+ zfb-md-wasm-shipped-artifacts.json when the tree has it).
@@ -99,9 +102,6 @@
 #                     node binary for verify-release-tarballs.mjs (tests: a stub).
 #   ZFB_NPM_PACKAGE_STATE_NODE
 #                     node binary for npm-package-state.mjs (tests: a stub).
-#   ALSO_LATEST       "1" → after publishing, also advance the `latest` dist-tag
-#                     (prerelease dual-tag policy, see #481). Delegated to
-#                     scripts/advance-latest-dist-tag.sh, which has its own retry.
 #   ZFB_LOCAL_BUILT_PACKAGES
 #                     mac-local only: whitespace/comma-separated platform package
 #                     dirs that were built outside this job. Defaults to
@@ -112,6 +112,9 @@
 #                     when set, receives one TSV line per package:
 #                     `<name>\t<version>\t<attested|none>\t<outcome>`; read by
 #                     scripts/verify-npm-provenance-expectations.mjs after publish.
+#                     Outcomes: already-present, publish-accepted (npm printed
+#                     `+ name@version`), processing (E409 "previously staged":
+#                     accepted earlier, still in npm pre-publication processing).
 #                     An already-present package records what the registry
 #                     OBSERVABLY carries (attestation to the source commit →
 #                     attested, else none), so a partial normal publish resumed
@@ -133,6 +136,11 @@ set -euo pipefail
 
 # Companion control scripts resolve relative to this file.
 PUBLISH_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Holding dist-tag for every publish (#4717). Not a semver range, so npm never
+# confuses it with a version; retire-next-dist-tag.mjs sweeps it once the
+# channel tag reaches it.
+HOLDING_DIST_TAG="release-pending"
 
 # Platform package dirs (the ZFB_LOCAL_BUILT_PACKAGES vocabulary).
 PLATFORM_DIRS=(
@@ -293,13 +301,20 @@ verify_tarball_contents() {
 # True when the npm error text is specifically "this exact version already
 # exists". Matching the phrase (NOT a bare E403) avoids swallowing a genuine
 # permissions 403 ("You do not have permission to publish ...").
+# npm accepted an earlier publish of this version and still holds it in
+# pre-publication processing (status API "validating"); a second PUT answers
+# E409. That is pending, not absent: never retry or republish it (#4716).
+is_publish_staged() {
+  printf '%s' "$1" | grep -qiE 'cannot publish over (the )?previously staged version'
+}
+
 is_publish_conflict() {
   printf '%s' "$1" | grep -qiE 'cannot publish over the previously published versions|EPUBLISHCONFLICT'
 }
 
 # Registry state of <name>@<version>, bound to the release source commit, from
 # scripts/release/npm-package-state.mjs (#4690). Echoes "<state> <observed>":
-#   state    absent | present-verified | present-unverified | uncertain
+#   state    absent | present-verified | present-unverified | processing | uncertain
 #   observed attested | none — the provenance the registry version carries
 #            for the source commit (an attestation whose gitCommit is it).
 # A skip is allowed ONLY for present-verified. `absent` needs definitive 404s on
@@ -326,7 +341,7 @@ package_state() {
   detail="$(printf '%s\n' "$line" | awk -F '\t' -v n="$name" '$1 == n { print $3; exit }')"
   observed="$(printf '%s\n' "$line" | awk -F '\t' -v n="$name" '$1 == n { print $4; exit }')"
   case "$state" in
-    absent | present-verified | present-unverified | uncertain) ;;
+    absent | present-verified | present-unverified | processing | uncertain) ;;
     *)
       echo "  state of ${name}@${version}: unparseable helper output '${line}' — treating as uncertain" >&2
       state=uncertain
@@ -372,6 +387,10 @@ should_skip_publish() {
       return 0
       ;;
     absent) return 1 ;;
+    processing)
+      echo "::error::npm is still processing ${name}@${version} — do not republish; wait, then dispatch finalize_only."
+      return 3
+      ;;
     *)
       echo "::error::${name}@${version} registry state is ${state}; refusing to skip or publish it (fail closed)."
       return 3
@@ -478,10 +497,22 @@ assert_npm_oidc_only() {
 #                                 race / lost ACK of our own publish).
 #   anything else               → real failure → return the status (fail the
 #                                 job), repeating the original error text.
+#
+# Sets PUBLISH_OUTCOME for the receipts row: publish-accepted (npm printed
+# `+ name@version`), processing (E409 "previously staged"), or already-present
+# (a conflict/lost ACK whose version is verified on the registry).
+PUBLISH_OUTCOME=""
 classify_publish_result() {
   local name="$1" version="$2" status="$3" outfile="$4" integrity="${5:-}" result state kind
+  PUBLISH_OUTCOME=""
   if [[ "$status" -eq 0 ]]; then
+    PUBLISH_OUTCOME=publish-accepted
     echo "✓ published ${name}@${version}."
+    return 0
+  fi
+  if is_publish_staged "$(cat "$outfile")"; then
+    PUBLISH_OUTCOME=processing
+    echo "::warning title=npm still processing::${name}@${version} was accepted by npm earlier and is still in pre-publication processing (E409 previously staged). Not retrying or republishing; continuing with the remaining packages."
     return 0
   fi
   if is_publish_conflict "$(cat "$outfile")"; then
@@ -492,6 +523,7 @@ classify_publish_result() {
   result="$(recheck_state "$name" "$version" "$integrity")"
   state="${result%% *}"
   if [[ "$state" == present-verified ]]; then
+    PUBLISH_OUTCOME=already-present
     echo "✓ ${name}@${version}: publish exited ${status} but the version is on the registry and verified against the source commit (${kind}) — tolerating as skip."
     return 0
   fi
@@ -507,7 +539,7 @@ _run_and_classify() {
   local name="$1" version="$2" integrity="$3"; shift 3
   local tmp status rc
   tmp="$(mktemp)"
-  echo "→ publishing ${name}@${version} (dist-tag ${DIST_TAG}) ..."
+  echo "→ publishing ${name}@${version} (dist-tag ${HOLDING_DIST_TAG}) ..."
   set +e
   "$@" 2>&1 | tee "$tmp"
   status=${PIPESTATUS[0]}
@@ -525,9 +557,9 @@ _run_and_classify() {
 _npm_publish_tarball() {
   local file="$1" flag="$2"
   if [[ "$flag" == "--provenance=false" ]]; then
-    NPM_CONFIG_PROVENANCE=false npm publish "$file" --tag "$DIST_TAG" --access public --ignore-scripts "$flag"
+    NPM_CONFIG_PROVENANCE=false npm publish "$file" --tag "$HOLDING_DIST_TAG" --access public --ignore-scripts "$flag"
   else
-    npm publish "$file" --tag "$DIST_TAG" --access public --ignore-scripts "$flag"
+    npm publish "$file" --tag "$HOLDING_DIST_TAG" --access public --ignore-scripts "$flag"
   fi
 }
 
@@ -560,8 +592,10 @@ publish_tarballs() {
       fi
     fi
     _run_and_classify "$name" "$version" "$integrity" _npm_publish_tarball "$file" "$(provenance_flag "$expected")"
-    record_expectation "$name" "$version" "$expected" publish-attempted
-    if [[ "$dir" == "crates/zfb-md-wasm/npm" ]]; then
+    record_expectation "$name" "$version" "$expected" "${PUBLISH_OUTCOME:-publish-accepted}"
+    # An E409-staged version is not readable yet; the md-wasm-asset and
+    # finalize-assets jobs re-verify its digests once npm finishes processing.
+    if [[ "$dir" == "crates/zfb-md-wasm/npm" && "$PUBLISH_OUTCOME" != processing ]]; then
       verify_published_md_wasm "$version" "$mode"
     fi
   done
@@ -640,20 +674,6 @@ emit_trust_downgrade_advisory() {
   fi
 }
 
-# Prerelease dual-tag (#481): advance `latest` alongside `next` while still in
-# the prerelease phase. Runs only after every package is published (idempotently),
-# so a partial publish never clobbers `latest`. advance-latest-dist-tag.sh has its
-# own retry/backoff.
-maybe_advance_latest() {
-  if [[ "${ALSO_LATEST:-}" != "1" ]]; then
-    return 0
-  fi
-  local zfb_semver
-  zfb_semver="$(tarball_field_by_dir packages/zfb version)"
-  echo "== Prerelease dual-tag: advancing 'latest' to ${zfb_semver} =="
-  bash "${PUBLISH_SCRIPT_DIR}/advance-latest-dist-tag.sh" "$zfb_semver"
-}
-
 main() {
   local mode="${1:-}"
   case "$mode" in
@@ -663,8 +683,6 @@ main() {
       return 2
       ;;
   esac
-  : "${DIST_TAG:?DIST_TAG must be set (the npm dist-tag, e.g. next|latest)}"
-
   # Defense in depth (A2, #3140): these two modes publish at least one package
   # WITHOUT provenance, which is a permanent trust downgrade for a package that
   # already carries an earlier attestation. release.yml runs a preflight
@@ -702,10 +720,9 @@ main() {
     : >"$ZFB_PROVENANCE_EXPECTATIONS_FILE"
   fi
 
-  echo "== Publishing ${#TARBALL_ROWS[@]} packed tarballs (mode=${mode}, dist-tag=${DIST_TAG}) =="
+  echo "== Publishing ${#TARBALL_ROWS[@]} packed tarballs (mode=${mode}, dist-tag=${HOLDING_DIST_TAG}) =="
   emit_trust_downgrade_advisory "$mode"
   publish_tarballs "$mode"
-  maybe_advance_latest
   echo "== Publish complete: every package is on the registry (newly published or already present). =="
 }
 

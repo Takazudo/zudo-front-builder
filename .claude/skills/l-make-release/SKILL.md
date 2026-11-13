@@ -40,6 +40,8 @@ the first mutation. Where this skill and `RELEASING.md` disagree, `RELEASING.md`
   downgrade unless the owner's committed policy covers it. That policy is on `main` for both
   Darwin carriers from 6.1.1: a preflight that exits 0 with two `ACKNOWLEDGED` lines is clear, so
   record them and continue without asking the owner. Stop only for a downgrade it does not cover.
+- `wait-npm-processing` from Step 0 (or a verifier exit 3) means npm is still processing a package:
+  stop and report, never recover. See `RELEASING.md` "npm is still processing a package".
 - Publishing is `pack` (unprivileged: install, build, `npm pack`/`pnpm pack`) then `publish`
   (`id-token` only: `npm publish <tgz>` with explicit provenance; no install, no pnpm). Find
   `release.yml` runs by their exact name `Release v<version>[ (finalize only)][ (dry run)]`; the

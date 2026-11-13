@@ -19,6 +19,12 @@
  * once; an expected one that is absent is retried within the budget before
  * failing as a mismatch.
  *
+ * A `publish-accepted` or `processing` row (npm accepted the publish) that is
+ * still E404 after the attempt budget is "processing": accepted by npm, not dropped. When processing rows are
+ * the ONLY unresolved ones the exit code is 3; anything else unresolved is 1.
+ * Legacy `publish-attempted` rows stay readable and keep the old "never became
+ * visible" failure.
+ *
  * Usage: node scripts/verify-npm-provenance-expectations.mjs --expectations <file>
  *   env NPM_PROVENANCE_VERIFY_ATTEMPTS (default 6), NPM_PROVENANCE_VERIFY_DELAY_MS
  *   (default 5000, doubled per retry).
@@ -29,10 +35,15 @@ import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
+import { PROCESSING_OUTCOMES as RECEIPT_PROCESSING_OUTCOMES } from "./release/publish-receipts.mjs";
+
 const execFileAsync = promisify(execFile);
 
 /** SLSA predicate npm records for GitHub Actions provenance (registry, 6.0.1). */
 export const SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1";
+
+/** Outcomes where npm accepted the publish, so an E404 means "still processing". */
+export const PROCESSING_OUTCOMES = new Set(RECEIPT_PROCESSING_OUTCOMES);
 
 export function parseExpectations(text) {
   const rows = [];
@@ -134,6 +145,13 @@ export async function verifyRow(
     };
   }
   if (last.state === "not-visible") {
+    if (PROCESSING_OUTCOMES.has(row.outcome)) {
+      return {
+        ok: false,
+        verdict: "processing",
+        detail: `accepted by npm, still processing — not dropped: ${last.detail}`,
+      };
+    }
     return {
       ok: false,
       verdict: "not-visible",
@@ -157,7 +175,14 @@ export async function verifyExpectations(rows, options = {}) {
       );
     }
   }
-  return { results, failed: results.filter((r) => !r.ok).length };
+  const unresolved = results.filter((r) => !r.ok);
+  const processing = unresolved.filter((r) => r.verdict === "processing");
+  return {
+    results,
+    failed: unresolved.length,
+    processing: processing.length,
+    processingOnly: unresolved.length > 0 && processing.length === unresolved.length,
+  };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -180,10 +205,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     );
     process.exit(1);
   }
-  const { failed } = await verifyExpectations(rows, {
+  const { failed, processingOnly, results } = await verifyExpectations(rows, {
     attempts: Number(process.env.NPM_PROVENANCE_VERIFY_ATTEMPTS ?? 6),
     delayMs: Number(process.env.NPM_PROVENANCE_VERIFY_DELAY_MS ?? 5000),
   });
   console.log(`Provenance expectations: ${rows.length - failed}/${rows.length} verified.`);
+  if (processingOnly) {
+    const names = results
+      .filter((r) => r.verdict === "processing")
+      .map((r) => `${r.name}@${r.version}`);
+    console.log(`PROCESSING_PACKAGES=${names.join(",")}`);
+    process.exit(3);
+  }
   process.exit(failed === 0 ? 0 : 1);
 }

@@ -37,7 +37,9 @@
  *   consumption  the release run's clean-room smoke job and the selected
  *                installer run's "Smoke released (install.sh)" job, from their logs
  *   channels     GitHub Latest, npm dist-tags and Homebrew. These are mutable and are
- *                only observed unless an --expect-* flag asks for a value.
+ *                only observed unless an --expect-* flag asks for a value. One check is
+ *                always enforced: no package still carries the `release-pending`
+ *                holding tag at or below this version (#4717).
  *
  * Read-only: every request is an HTTP GET, and the only subprocesses are
  * `git rev-parse HEAD` and `git status --porcelain` for the verifier's own
@@ -60,7 +62,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
-import { PUBLISHED_PACKAGES } from "./retire-next-dist-tag.mjs";
+import { HOLDING_DIST_TAG, PUBLISHED_PACKAGES, compareSemver } from "./retire-next-dist-tag.mjs";
 import {
   MD_WASM_PACKAGE,
   MD_WASM_PATHS,
@@ -2136,6 +2138,29 @@ async function observeChannels(ctx) {
       tagEvidence,
       failedTag?.error,
     );
+  }
+  // The `release-pending` holding tag (#4717) must not linger at or below this
+  // version: promotion and the sweep clear it. A newer one is a later release
+  // in flight and is ignored. Always enforced, unlike the channel values above.
+  const lingering = tags.filter((entry) => {
+    const pending = entry.distTags?.[HOLDING_DIST_TAG];
+    if (entry.error || !pending) return false;
+    try {
+      return compareSemver(pending, version) <= 0;
+    } catch {
+      return true; // unparseable: cannot prove it is a later release
+    }
+  });
+  if (lingering.length) {
+    section.failed(
+      "npm-holding-tag",
+      `${HOLDING_DIST_TAG} still points at or below ${version} for ${lingering.map((e) => `${e.name}=${e.distTags[HOLDING_DIST_TAG]}`).join(", ")}`,
+      tagEvidence,
+    );
+  } else if (failedTag) {
+    section.error("npm-holding-tag", failedTag.error, tagEvidence, { missingIsFailure: false });
+  } else {
+    section.verified("npm-holding-tag", tagEvidence);
   }
   try {
     const formula = await http.getText(HOMEBREW_FORMULA_URL);

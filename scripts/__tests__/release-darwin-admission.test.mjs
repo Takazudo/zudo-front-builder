@@ -352,6 +352,59 @@ describe("release-status (read-only, injected gh/registry)", () => {
     expect(verbs.filter((v) => /upload|delete|edit|create|workflow run/.test(v))).toEqual([]);
   });
 
+  it("published release with an accepted-but-invisible package → wait-npm-processing, not recovery", async () => {
+    const SECRET = "npm_NEVERPRINTTHIS0123456789";
+    const processingName = "@takazudo/zfb-linux-arm64-gnu";
+    const base = world(fixture(source), { isDraft: false });
+    const gh = (args) => {
+      if (args[0] === "run" && args[1] === "list")
+        return JSON.stringify([
+          {
+            databaseId: 99,
+            attempt: 1,
+            status: "completed",
+            conclusion: "failure",
+            event: "release",
+            headBranch: TAG,
+            displayTitle: `Release ${TAG}`,
+            createdAt: "2026-11-13T04:00:00Z",
+            startedAt: "2026-11-13T04:00:05Z",
+            url: "u",
+          },
+        ]);
+      if (args[0] === "api" && args[1].includes("/actions/runs/99/artifacts"))
+        return JSON.stringify({
+          artifacts: [{ name: "npm-publish-receipts", created_at: "2026-11-13T04:10:00Z" }],
+        });
+      if (args[0] === "run" && args[1] === "download") {
+        writeFileSync(
+          join(args[args.indexOf("--dir") + 1], "receipts.tsv"),
+          `${processingName}\t${VERSION}\tattested\tpublish-accepted\n`,
+        );
+        return "";
+      }
+      return base.gh(args);
+    };
+    const status = await collectStatus({
+      tag: TAG,
+      repo: "o/r",
+      gh,
+      request: base.request,
+      repoRoot: source.repo,
+      absentReads: 1,
+      delayMs: 0,
+      npmToken: SECRET,
+    });
+    expect(status.npm.summary.processing).toEqual([processingName]);
+    expect(status.npm.summary.absent).toHaveLength(10);
+    expect(status.recommendedAction).toBe("wait-npm-processing");
+    const text = render(status);
+    expect(text).toContain("recommended next action: wait-npm-processing");
+    expect(text).toContain("contact npm support after 24 h");
+    expect(text).toContain("2026-11-14T04:10:00.000Z");
+    expect(text + JSON.stringify(status)).not.toContain(SECRET);
+  });
+
   it("draft missing a Darwin input → prepare-darwin", async () => {
     const dir = fixture(source);
     unlinkSync(join(dir, assetNames(VERSION, ARM).addon));

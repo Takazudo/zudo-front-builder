@@ -6,6 +6,14 @@
  * a version strictly newer than `latest`.** Run after a publish; any `next` tag
  * that is no longer ahead of `latest` is removed from the registry.
  *
+ * It also sweeps the `release-pending` holding tag (#4717) that every publish
+ * uses: once `latest` (or, for a prerelease, `next`) has reached the holding
+ * version, the holding tag is removed. A newer holding version — a release in
+ * flight, or one npm is still processing — is kept. npm refuses only
+ * `dist-tag rm latest`, so removing `release-pending` is allowed. A version
+ * that finishes processing after a finalize can set `release-pending` again;
+ * the next release's sweep clears it.
+ *
  * Why this exists
  * ---------------
  * `latest` is maintained by npm automatically; `next` is not. zfb published its
@@ -62,9 +70,9 @@ const execFileAsync = promisify(execFile);
 
 /**
  * Every package this repo publishes, in the same order as
- * scripts/advance-latest-dist-tag.sh. The two lists must stay identical — a
+ * scripts/advance-latest-dist-tag.sh (its PACKAGES array). The two lists must stay identical — a
  * package that gets `latest` advanced but never gets `next` retired is exactly
- * the drift this script exists to prevent. tests/unit/retire-next-dist-tag.sh
+ * the drift this script exists to prevent. scripts/__tests__/retire-next-dist-tag.test.mjs
  * asserts the two lists match each other AND the workspace's set of
  * non-private packages, so adding a package to only one place fails the gate.
  */
@@ -160,9 +168,15 @@ export function decideNextTagAction(distTags) {
   }
 
   if (cmp > 0) {
-    return { action: "keep", reason: `next=${next} is ahead of latest=${latest} (active soak)` };
+    return {
+      action: "keep",
+      reason: `next=${next} is ahead of latest=${latest} (active soak)`,
+    };
   }
-  return { action: "retire", reason: `next=${next} is not ahead of latest=${latest}` };
+  return {
+    action: "retire",
+    reason: `next=${next} is not ahead of latest=${latest}`,
+  };
 }
 
 /**
@@ -196,7 +210,7 @@ function writeAuthFailureSummary(summaryPath, results) {
     appendFileSync(
       summaryPath,
       [
-        "### :x: npm dist-tag auth failure ('next' retirement)",
+        "### :x: npm dist-tag auth failure ('next' / 'release-pending' sweep)",
         "",
         failedPkgs.length > 0
           ? `npm refused \`dist-tag rm\` for ${failedPkgs.join(", ")} with an authentication error, and the sweep stopped.`
@@ -213,7 +227,173 @@ function writeAuthFailureSummary(summaryPath, results) {
 }
 
 /**
- * Retire the `next` dist-tag wherever it is no longer ahead of `latest`.
+ * The holding dist-tag every package is published under (#4717); `latest` /
+ * `next` move only after verification (scripts/promote-release-channel.sh).
+ */
+export const HOLDING_DIST_TAG = "release-pending";
+
+/**
+ * Policy for the holding tag, as a pure function of one package's dist-tags.
+ * `release-pending` is retired once the channel has caught up with it: when it
+ * points at or below `latest`, or (for a prerelease holding version) at or
+ * below `next`. A stable holding version is compared with `latest` only — a
+ * prerelease soak on `next` says nothing about whether a stable shipped. A
+ * newer holding version is a later release in flight (or one npm is still
+ * processing) and is kept. Returns { action: "absent" | "keep" | "retire", reason }.
+ */
+export function decideReleasePendingAction(distTags) {
+  const pending = distTags?.[HOLDING_DIST_TAG];
+  if (!pending) return { action: "absent", reason: `no '${HOLDING_DIST_TAG}' dist-tag` };
+  const parsed = parseSemver(pending);
+  if (!parsed) {
+    return {
+      action: "keep",
+      reason: `cannot compare (unparseable version: ${pending})`,
+    };
+  }
+  const channels = ["latest"];
+  if (parsed.prerelease.length > 0) channels.push("next");
+  const compared = [];
+  for (const channel of channels) {
+    const value = distTags?.[channel];
+    if (!value) continue;
+    let cmp;
+    try {
+      cmp = compareSemver(pending, value);
+    } catch {
+      continue; // an unparseable channel version never justifies a delete
+    }
+    if (cmp <= 0) {
+      return {
+        action: "retire",
+        reason: `${HOLDING_DIST_TAG}=${pending} is at or below ${channel}=${value}`,
+      };
+    }
+    compared.push(`${channel}=${value}`);
+  }
+  return {
+    action: "keep",
+    reason: `${HOLDING_DIST_TAG}=${pending} is ahead of ${compared.join(", ") || "every channel tag"} (release in flight)`,
+  };
+}
+
+/**
+ * Remove one dist-tag from one package with read-compare-write and retry.
+ * `decide` is re-run on freshly read dist-tags before every `rm`.
+ * Returns { outcome: "retired" | "changed" | null, terminal, lastError, reason }.
+ */
+async function removeTagWithRetry({ pkg, tag, decide, reason, npm, wait, log, maxAttempts }) {
+  const rmArgs = ["dist-tag", "rm", pkg, tag];
+  let outcome = null;
+  let terminal = false;
+  let lastError = "";
+  let delay = 5000;
+  let currentReason = reason;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      // Re-read immediately before the write and re-decide on fresh state:
+      // a concurrent publish may have moved the tag ahead (or removed it).
+      const fresh = decide(await readDistTags(pkg, npm));
+      if (fresh.action !== "retire") {
+        outcome = "changed";
+        currentReason = fresh.reason;
+        break;
+      }
+      currentReason = fresh.reason;
+      await npm(rmArgs);
+      const after = await readDistTags(pkg, npm);
+      if (!after?.[tag]) {
+        log(
+          `  ${pkg}: removed '${tag}' (${currentReason}) — OK, confirmed by re-read (attempt ${attempt})`,
+        );
+        outcome = "retired";
+        break;
+      }
+      lastError = `re-read after rm still shows ${tag}=${after[tag]}`;
+    } catch (error) {
+      lastError = error.message;
+      if (isTerminalNpmError(lastError)) {
+        terminal = true;
+        break;
+      }
+    }
+    if (attempt < maxAttempts) {
+      log(
+        `  ${pkg}: dist-tag rm ${tag} not confirmed (attempt ${attempt}/${maxAttempts}: ${lastError}) — retrying in ${delay / 1000}s...`,
+      );
+      await wait(delay);
+      delay *= 2;
+    }
+  }
+  return { outcome, terminal, lastError, reason: currentReason };
+}
+
+/**
+ * Sweep one tag of one package: decide on `distTags`, then remove when the
+ * policy says so. Returns { result, failed, terminal }.
+ */
+async function sweepTag({ pkg, tag, decide, distTags, dryRun, npm, wait, log, maxAttempts }) {
+  const decision = decide(distTags);
+  if (decision.action !== "retire") {
+    log(`  ${pkg}: ${tag}: ${decision.action} — ${decision.reason}`);
+    return { result: { pkg, ...decision }, failed: false, terminal: false };
+  }
+  if (dryRun) {
+    log(`  ${pkg}: would remove '${tag}' — ${decision.reason}`);
+    return {
+      result: { pkg, action: "retire", dryRun: true, reason: decision.reason },
+      failed: false,
+      terminal: false,
+    };
+  }
+  const { outcome, terminal, lastError, reason } = await removeTagWithRetry({
+    pkg,
+    tag,
+    decide,
+    reason: decision.reason,
+    npm,
+    wait,
+    log,
+    maxAttempts,
+  });
+  if (outcome === "changed") {
+    log(`  ${pkg}: left '${tag}' in place — dist-tags changed before the write (${reason}).`);
+    return {
+      result: { pkg, action: "changed", reason },
+      failed: false,
+      terminal: false,
+    };
+  }
+  if (outcome === "retired") {
+    return {
+      result: { pkg, action: "retired", reason },
+      failed: false,
+      terminal: false,
+    };
+  }
+  if (terminal) {
+    log(
+      `::error title=npm dist-tag auth failure::${pkg}: 'npm dist-tag rm ${tag}' was refused with an authentication error (${lastError}). The release workflow authenticates only through GitHub OIDC trusted publishing: check the package's trusted publisher (repository, workflow release.yml) and that its "Allow npm dist-tag" option is enabled. Not retried.`,
+    );
+    return {
+      result: { pkg, action: "error", terminal: true, reason: lastError },
+      failed: true,
+      terminal: true,
+    };
+  }
+  log(
+    `::warning::${pkg}: could not remove the stale '${tag}' dist-tag after ${maxAttempts} attempts (${lastError}). Manual remediation (maintainer's own interactive npm session): npm dist-tag rm ${pkg} ${tag}`,
+  );
+  return {
+    result: { pkg, action: "error", terminal: false, reason: lastError },
+    failed: true,
+    terminal: false,
+  };
+}
+
+/**
+ * Retire the `next` dist-tag wherever it is no longer ahead of `latest`, and
+ * the `release-pending` holding tag wherever the channel has caught up with it.
  * Callers that write (not dry-run) must have passed the OIDC preflight; the CLI
  * below enforces that before calling this.
  *
@@ -223,7 +403,9 @@ function writeAuthFailureSummary(summaryPath, results) {
  * @param {(args: string[]) => Promise<string>} [options.npm]  Injected for tests.
  * @param {(ms: number) => Promise<void>} [options.wait]       Injected for tests.
  * @param {(line: string) => void} [options.log]
- * @returns {Promise<{results: Array<object>, failed: number}>} Never rejects.
+ * @returns {Promise<{results: Array<object>, pendingResults: Array<object>, failed: number, authFailed: boolean}>}
+ *   `results` is the `next` outcome per package, `pendingResults` the
+ *   `release-pending` one. Never rejects.
  */
 export async function retireNextDistTag(options = {}) {
   const {
@@ -237,8 +419,10 @@ export async function retireNextDistTag(options = {}) {
   } = options;
 
   const results = [];
+  const pendingResults = [];
   let failed = 0;
   let authFailed = false;
+  const common = { dryRun, npm, wait, log, maxAttempts };
 
   for (const pkg of packages) {
     let distTags;
@@ -246,113 +430,54 @@ export async function retireNextDistTag(options = {}) {
       distTags = await readDistTags(pkg, npm);
     } catch (error) {
       failed += 1;
-      log(`::warning::${pkg}: could not read dist-tags (${error.message}) — 'next' left as-is.`);
+      log(
+        `::warning::${pkg}: could not read dist-tags (${error.message}) — 'next' and '${HOLDING_DIST_TAG}' left as-is.`,
+      );
       results.push({ pkg, action: "error", reason: error.message });
+      pendingResults.push({ pkg, action: "error", reason: error.message });
       continue;
     }
 
-    const decision = decideNextTagAction(distTags);
-    if (decision.action !== "retire") {
-      log(`  ${pkg}: ${decision.action} — ${decision.reason}`);
-      results.push({ pkg, ...decision });
-      continue;
-    }
-
-    if (dryRun) {
-      log(`  ${pkg}: would remove 'next' — ${decision.reason}`);
-      results.push({ pkg, action: "retire", dryRun: true, reason: decision.reason });
-      continue;
-    }
-
-    const rmArgs = ["dist-tag", "rm", pkg, "next"];
-
-    let outcome = null; // "retired" | "changed" once settled
-    let terminal = false;
-    let lastError = "";
-    let delay = 5000;
-    let currentReason = decision.reason;
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      try {
-        // Re-read immediately before the write and re-decide on fresh state:
-        // a concurrent publish may have moved `next` ahead (or removed it).
-        const fresh = decideNextTagAction(await readDistTags(pkg, npm));
-        if (fresh.action !== "retire") {
-          outcome = "changed";
-          currentReason = fresh.reason;
-          break;
-        }
-        currentReason = fresh.reason;
-        await npm(rmArgs);
-        const after = await readDistTags(pkg, npm);
-        if (!after?.next) {
-          log(
-            `  ${pkg}: removed 'next' (${currentReason}) — OK, confirmed by re-read (attempt ${attempt})`,
-          );
-          outcome = "retired";
-          break;
-        }
-        lastError = `re-read after rm still shows next=${after.next}`;
-      } catch (error) {
-        lastError = error.message;
-        if (isTerminalNpmError(lastError)) {
-          terminal = true;
-          break;
-        }
-      }
-      if (attempt < maxAttempts) {
-        log(
-          `  ${pkg}: dist-tag rm not confirmed (attempt ${attempt}/${maxAttempts}: ${lastError}) — retrying in ${delay / 1000}s...`,
-        );
-        await wait(delay);
-        delay *= 2;
+    for (const [tag, decide, sink] of [
+      ["next", decideNextTagAction, results],
+      [HOLDING_DIST_TAG, decideReleasePendingAction, pendingResults],
+    ]) {
+      // The `next` removal may have changed the tags; the holding-tag sweep
+      // re-reads before any write, so the first read is only a pre-filter.
+      const swept = await sweepTag({ pkg, tag, decide, distTags, ...common });
+      sink.push(swept.result);
+      if (swept.failed) failed += 1;
+      if (swept.terminal) {
+        authFailed = true;
+        break;
       }
     }
-
-    if (outcome === "changed") {
-      log(
-        `  ${pkg}: left 'next' in place — dist-tags changed before the write (${currentReason}).`,
-      );
-      results.push({ pkg, action: "changed", reason: currentReason });
-    } else if (outcome === "retired") {
-      results.push({ pkg, action: "retired", reason: currentReason });
-    } else if (terminal) {
-      failed += 1;
-      authFailed = true;
-      log(
-        `::error title=npm dist-tag auth failure::${pkg}: 'npm dist-tag rm' was refused with an authentication error (${lastError}). The release workflow authenticates only through GitHub OIDC trusted publishing: check the package's trusted publisher (repository, workflow release.yml) and that its "Allow npm dist-tag" option is enabled. Not retried.`,
-      );
-      results.push({ pkg, action: "error", terminal: true, reason: lastError });
+    if (authFailed) {
       // One terminal auth failure means every remaining package will fail the
       // same way. Stop rather than replaying the same error ten times.
       log(
-        `::error title=npm dist-tag auth failure::Aborting the 'next' sweep after an auth failure; remaining packages were not attempted.`,
+        `::error title=npm dist-tag auth failure::Aborting the dist-tag sweep after an auth failure; remaining packages were not attempted.`,
       );
       break;
-    } else {
-      failed += 1;
-      log(
-        `::warning::${pkg}: could not remove the stale 'next' dist-tag after ${maxAttempts} attempts (${lastError}). Manual remediation (maintainer's own interactive npm session): npm dist-tag rm ${pkg} next`,
-      );
-      results.push({ pkg, action: "error", terminal: false, reason: lastError });
     }
   }
 
-  if (authFailed) writeAuthFailureSummary(summaryPath, results);
-  return { results, failed, authFailed };
+  if (authFailed) writeAuthFailureSummary(summaryPath, [...results, ...pendingResults]);
+  return { results, pendingResults, failed, authFailed };
 }
 
 /** Annotation lines for a preflight refusal (exported for tests). */
 export function preflightRefusalLines(problems) {
   return [
     ...problems.map((p) => `::error title=npm dist-tag auth failure::${p}`),
-    "::error title=npm dist-tag auth failure::npm OIDC preflight refused; no 'next' dist-tag was touched.",
+    "::error title=npm dist-tag auth failure::npm OIDC preflight refused; no 'next' or 'release-pending' dist-tag was touched.",
   ];
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const dryRun = process.argv.includes("--dry-run");
   console.log(
-    `Retiring stale 'next' dist-tags${dryRun ? " (DRY RUN — no registry writes)" : ""}...`,
+    `Retiring stale 'next' and '${HOLDING_DIST_TAG}' dist-tags${dryRun ? " (DRY RUN — no registry writes)" : ""}...`,
   );
   if (!dryRun) {
     const problems = npmOidcPreflight();
@@ -363,10 +488,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.exit(0);
     }
   }
-  const { results, failed } = await retireNextDistTag({ dryRun });
-  const retired = results.filter((r) => r.action === "retired" || r.dryRun).length;
+  const { results, pendingResults, failed } = await retireNextDistTag({
+    dryRun,
+  });
+  const count = (list, action) =>
+    list.filter((r) => r.action === action || (action === "retired" && r.dryRun)).length;
   console.log(
-    `'next' dist-tag sweep complete: ${retired} retired, ${results.length - retired - failed} left in place, ${failed} failed.`,
+    `dist-tag sweep complete: 'next' ${count(results, "retired")} retired; '${HOLDING_DIST_TAG}' ${count(pendingResults, "retired")} retired; ${failed} failed.`,
   );
   // Always 0: a leftover dist-tag must never redden an otherwise good release.
   // Failures are surfaced as ::warning:: (auth: ::error::) annotations above.

@@ -274,8 +274,10 @@ always advances, or no tag at all.** A *frozen* tag is worse than a missing one:
 it still resolves, so tooling reads it as a live channel and silently installs old
 code, where a missing tag fails loudly.
 
-- **`latest`** — maintained by npm on publish, plus `scripts/advance-latest-dist-tag.sh`
-  during the prerelease phase (the `ALSO_LATEST` gate in `release.yml`, #481).
+- **`latest`** — moved by `scripts/promote-release-channel.sh` (via
+  `scripts/advance-latest-dist-tag.sh`) after every package is verified: for a stable release,
+  and during the prerelease phase (the `ALSO_LATEST` gate in `release.yml`, #481). Publishing
+  itself only sets the `release-pending` holding tag (#4717).
 - **`next`** — NOT a standing channel. It exists only while a prerelease is
   *strictly ahead* of `latest`. `scripts/retire-next-dist-tag.mjs` runs from
   `release.yml` on every publish and removes `next` wherever it is no longer
@@ -284,6 +286,17 @@ code, where a missing tag fails loudly.
   leftover dist-tag must never redden an otherwise good release, and the
   invariant self-heals on the next one.
 
+**Explicit exception: `release-pending` is a transient holding tag.** Every publish
+(`scripts/publish-npm-packages.sh`) uses it, so a package that npm keeps in pre-publication
+processing can never leave a half-moved channel. `scripts/promote-release-channel.sh` moves
+`latest`/`next` on all eleven packages together only after every package is `present-verified`;
+the retire sweep (`scripts/retire-next-dist-tag.mjs`) then removes `release-pending`. It never counts as a
+channel, and nothing may install from it. A newer `release-pending` is a release in flight and the
+sweep keeps it.
+
+npm sets `latest` automatically on a package's first-ever publish (no tag move needed). Keep that
+in mind when adding a 12th package.
+
 This exists because it already went wrong once: zfb graduated at `1.0.0`, shipped
 `1.1.0-next.1` on 2026-07-31, and never touched `next` again — so `@takazudo/zfb@next`
 served a version a full major behind while `latest` walked to 2.7.1, confusing
@@ -291,10 +304,13 @@ consumers and dependency-bumping tooling. `release.yml` had only the forward hal
 of the invariant (advance `latest` during prerelease); the retirement script is the
 missing reverse half.
 
-**When adding a publishable package**, add it to BOTH `advance-latest-dist-tag.sh`
-and `PUBLISHED_PACKAGES` in `retire-next-dist-tag.mjs`. The drift guard in
-`scripts/__tests__/retire-next-dist-tag.test.mjs` fails the T1 gate if the two
+**When adding a publishable package**, add it to BOTH the `PACKAGES` array in
+`advance-latest-dist-tag.sh` (called by `promote-release-channel.sh`) and `PUBLISHED_PACKAGES` in
+`retire-next-dist-tag.mjs`. The drift guard in
+`scripts/__tests__/retire-next-dist-tag.test.mjs` fails the T1 gate if those two
 lists disagree with each other or with the workspace's set of non-private packages.
+`promote-release-channel.sh` expects 11 present-verified packages (`EXPECTED_PACKAGE_COUNT`), so
+update that count too.
 
 `drift-net.yml` deliberately smokes **`latest` only**. A scheduled leg on `next`
 would go red every week whenever the tag is correctly absent.

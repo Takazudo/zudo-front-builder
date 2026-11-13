@@ -54,6 +54,8 @@
 #   Tag matching *-next.*, *-beta.*, or *-rc.* → GH Release is created with
 #   prerelease: true.  Same tags get npm dist-tag "next".
 #   All other v* tags → prerelease: false, npm dist-tag "latest".
+#   Packages are published under the holding tag "release-pending"; the
+#   channel tag moves on all packages together only after verification (#4717).
 #
 # Installer opt-in to a prerelease:
 #   ZFB_VERSION=v0.X.Y-next.N       — install that exact version
@@ -1207,10 +1209,14 @@ jobs:
       # The npm credential: npm exchanges the job's GitHub ID token for a
       # short-lived publish token (trusted publishing) and signs the provenance
       # of every package published with --provenance. Also used by the
-      # dist-tag helpers (advance-latest, retire-next).
+      # dist-tag helpers (promote-release-channel, retire-next).
       id-token: write
+      # Receipt lookup (publish-receipts.mjs) lists runs and downloads artifacts.
+      actions: read
     outputs:
       dist_tag: ${{ steps.dist-tag.outputs.dist_tag }}
+      npm_processing: ${{ steps.verify-provenance.outputs.npm_processing }}
+      npm_processing_packages: ${{ steps.verify-provenance.outputs.npm_processing_packages }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -1309,6 +1315,8 @@ jobs:
         shell: bash
         run: bash scripts/publish-npm-packages.sh mac-local
         env:
+          ZFB_RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
           ZFB_PUBLISH_TARBALLS_DIR: ${{ runner.temp }}/npm-tarballs
           ZFB_PROVENANCE_EXPECTATIONS_FILE: ${{ runner.temp }}/npm-provenance-expectations.tsv
           ZFB_LOCAL_BUILT_PACKAGES: packages/zfb-darwin-arm64 packages/zfb-darwin-x64
@@ -1331,6 +1339,8 @@ jobs:
         shell: bash
         run: bash scripts/publish-npm-packages.sh recovery-no-provenance
         env:
+          ZFB_RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
           ZFB_PUBLISH_TARBALLS_DIR: ${{ runner.temp }}/npm-tarballs
           ZFB_PROVENANCE_EXPECTATIONS_FILE: ${{ runner.temp }}/npm-provenance-expectations.tsv
           ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
@@ -1345,20 +1355,84 @@ jobs:
       # provenance for an already-present one. Reads only.
       # Large binary carriers took ~6.5-12.5 min to become visible after publish
       # (#4711); 9 attempts doubling from 5 s wait up to ~21 min.
+      # Exit 3 = every unresolved package was accepted by npm and is still in
+      # pre-publication processing (#4716). The step stays failed: pending is
+      # not passed.
       - name: Verify npm provenance expectations
+        id: verify-provenance
         shell: bash
         env:
           EXPECTATIONS: ${{ runner.temp }}/npm-provenance-expectations.tsv
           NPM_PROVENANCE_VERIFY_ATTEMPTS: "9"
-        run: node scripts/verify-npm-provenance-expectations.mjs --expectations "$EXPECTATIONS"
+          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
+        run: |
+          set +e
+          node scripts/verify-npm-provenance-expectations.mjs --expectations "$EXPECTATIONS" | tee "$RUNNER_TEMP/verify-provenance.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [[ "$rc" -eq 3 ]]; then
+            packages="$(sed -n 's/^PROCESSING_PACKAGES=//p' "$RUNNER_TEMP/verify-provenance.log" | tail -n1)"
+            {
+              echo "npm_processing=true"
+              echo "npm_processing_packages=${packages}"
+            } >> "$GITHUB_OUTPUT"
+            next_steps="Wait, then check the status API locally (GET /-/package/{name}/version/{version}/status, authenticated; \"validating\" means still processing). Contact npm support if it is still processing after 24 h. Once the versions are visible, dispatch: gh workflow run release.yml --ref main -f release_tag=${RELEASE_TAG} -f finalize_only=true"
+            {
+              echo "### :hourglass: npm accepted the publish but is still processing"
+              echo
+              echo "Packages accepted by npm and not yet visible (not dropped, not republished):"
+              echo
+              echo '```'
+              tr ',' '\n' <<<"$packages"
+              echo '```'
+              echo
+              echo "1. Wait."
+              echo "2. Check the status API locally: \`GET /-/package/{name}/version/{version}/status\` (authenticated)."
+              echo "3. Contact npm support if still processing after 24 h."
+              echo "4. Then run: \`gh workflow run release.yml --ref main -f release_tag=${RELEASE_TAG} -f finalize_only=true\`"
+              echo
+              echo "This job stays failed: pending is not passed."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=npm still processing::${packages} accepted by npm but not yet visible. ${next_steps}"
+          fi
+          exit "$rc"
 
-      # ── Prerelease graduation cleanup (the reverse of the dual-tag gate) ───
-      # Removes `next` wherever it is no longer strictly ahead of `latest`, so a
-      # graduated prerelease tag never freezes. Always exits 0; an auth failure
-      # (trusted publisher or its "Allow npm dist-tag" option) is raised to
-      # ::error:: plus a job-summary section.
-      - name: Retire stale 'next' dist-tag
+      # Receipts feed the release-status/finalize tooling (#4715); keep them even
+      # when the verifier failed.
+      - name: Upload npm publish receipts
+        if: ${{ always() && inputs.dry_run != true }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-publish-receipts
+          path: ${{ runner.temp }}/npm-provenance-expectations.tsv
+          retention-days: 30
+          if-no-files-found: ignore
+
+      # ── Channel promotion (#4717) ──────────────────────────────────────────
+      # Every package was published under the `release-pending` holding tag.
+      # Only after the verifier passed — and only when all 11 packages are
+      # present-verified for the source commit — does `latest` (stable) or
+      # `next` (+ `latest` under ALSO_LATEST) move, for all packages together.
+      # A run that stopped on `processing` never reaches this step, so the
+      # channel tags stay where they were until finalize_only promotes them.
+      - name: Promote channel dist-tag (all packages verified)
         if: ${{ inputs.dry_run != true }}
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
+          ZFB_DARWIN_ADMISSION_VERDICT: ${{ runner.temp }}/darwin-admission/verdict.json
+        run: bash scripts/promote-release-channel.sh "$RELEASE_VERSION"
+
+      # ── Dist-tag sweep (the reverse of promotion) ─────────────────────────
+      # Removes `next` wherever it is no longer strictly ahead of `latest`, and
+      # `release-pending` wherever the channel tag has reached it, so neither
+      # freezes. Runs even when verification or promotion failed: it only ever
+      # removes tags the channel has already caught up with. Always exits 0; an
+      # auth failure (trusted publisher or its "Allow npm dist-tag" option) is
+      # raised to ::error:: plus a job-summary section.
+      - name: Sweep stale 'next' and 'release-pending' dist-tags
+        if: ${{ always() && inputs.dry_run != true }}
         shell: bash
         run: node scripts/retire-next-dist-tag.mjs
 
@@ -1429,6 +1503,7 @@ jobs:
     permissions:
       contents: read # control checkout + `gh release view` in the gate
       id-token: write # npm OIDC for dist-tag add/rm
+      actions: read # receipt lookup
     outputs:
       dist_tag: ${{ steps.dist-tag.outputs.dist_tag }}
     steps:
@@ -1498,27 +1573,26 @@ jobs:
         shell: bash
         run: echo "DRY RUN — the gate passed; no dist-tag change, no Release asset upload."
 
-      # Prerelease dual-tag (#481), same rule as the publish job.
-      - name: Advance 'latest' dist-tag (prerelease phase only)
-        if: ${{ inputs.dry_run != true }}
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
-        run: |
-          if [[ "${ALSO_LATEST:-}" == "1" ]]; then
-            bash scripts/advance-latest-dist-tag.sh "$RELEASE_VERSION"
-          else
-            echo "ALSO_LATEST not set — 'latest' is not advanced."
-          fi
-
       - name: Verify npm provenance expectations
         shell: bash
         run: |
           node scripts/verify-npm-provenance-expectations.mjs \
             --expectations "$RUNNER_TEMP/npm-provenance-expectations.tsv"
 
-      - name: Retire stale 'next' dist-tag
+      # Channel promotion (#4717), same step as the publish job: stable moves
+      # `latest`, a prerelease moves `next` (+ `latest` under ALSO_LATEST), on
+      # all packages together and only when every one is present-verified.
+      - name: Promote channel dist-tag (all packages verified)
         if: ${{ inputs.dry_run != true }}
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
+          ZFB_DARWIN_ADMISSION_VERDICT: ${{ runner.temp }}/darwin-admission/verdict.json
+        run: bash scripts/promote-release-channel.sh "$RELEASE_VERSION"
+
+      - name: Sweep stale 'next' and 'release-pending' dist-tags
+        if: ${{ always() && inputs.dry_run != true }}
         shell: bash
         run: node scripts/retire-next-dist-tag.mjs
 
@@ -1635,6 +1709,8 @@ jobs:
           RELEASE_ASSETS_RESULT: ${{ needs.release-assets.result }}
           PACK_RESULT: ${{ needs.pack.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
+          NPM_PROCESSING: ${{ needs.publish.outputs.npm_processing }}
+          NPM_PROCESSING_PACKAGES: ${{ needs.publish.outputs.npm_processing_packages }}
           MD_WASM_ASSET_RESULT: ${{ needs.md-wasm-asset.result }}
           FINALIZE_RESULT: ${{ needs.finalize.result }}
           FINALIZE_ASSETS_RESULT: ${{ needs.finalize-assets.result }}

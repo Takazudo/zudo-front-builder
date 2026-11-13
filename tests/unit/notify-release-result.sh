@@ -88,4 +88,15 @@ grep -Fq 'finalize failure' "$SINK"
 ADMIT_DARWIN_RESULT=failure BUILD_RESULT=skipped RELEASE_ASSETS_RESULT=skipped PUBLISH_RESULT=skipped SMOKE_CLEAN_ROOM_RESULT=skipped run_case
 [[ -e "$SINK" ]]
 grep -Fq 'admit-darwin failure' "$SINK"
+# npm still processing (publish job exit 3): distinct from a plain publish failure.
+PUBLISH_RESULT=failure NPM_PROCESSING=true NPM_PROCESSING_PACKAGES=@takazudo/zfb-linux-arm64-gnu@6.1.3 \
+  FINALIZE_RESULT=skipped run_case
+[[ -e "$SINK" ]]
+grep -Fq 'publish pending: npm accepted but is still processing @takazudo/zfb-linux-arm64-gnu@6.1.3' "$SINK"
+! grep -Fq 'publish failure' "$SINK"
+PUBLISH_RESULT=failure NPM_PROCESSING=false run_case
+[[ -e "$SINK" ]]
+grep -Fq 'publish failure' "$SINK"
+PUBLISH_RESULT=failure run_case
+grep -Fq 'publish failure' "$SINK"
 echo 'release notification cases passed'

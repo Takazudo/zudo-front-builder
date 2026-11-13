@@ -27,13 +27,24 @@ expected_skip() {
   [[ "$job" == finalize || "$job" == finalize-assets ]]
 }
 
+# publish fails while npm still holds accepted packages in pre-publication
+# processing (verifier exit 3): report that as pending, not as a broken publish.
+npm_processing=false
+if [[ "${NPM_PROCESSING:-}" == true && "$PUBLISH_RESULT" == failure ]]; then
+  npm_processing=true
+fi
+
 problems=()
 skipped=()
 all_skipped=()
 for i in "${!jobs[@]}"; do
   result="${results[$i]}"
   if [[ "$result" == failure || "$result" == cancelled ]]; then
-    problems+=("${jobs[$i]} ${result}")
+    if [[ "${jobs[$i]}" == publish && "$npm_processing" == true ]]; then
+      problems+=("publish pending: npm accepted but is still processing ${NPM_PROCESSING_PACKAGES:-packages}; wait, check the status API, contact npm support after 24 h, then dispatch finalize_only")
+    else
+      problems+=("${jobs[$i]} ${result}")
+    fi
   fi
   if [[ "$result" == skipped ]] && ! expected_skip "${jobs[$i]}"; then
     all_skipped+=("${jobs[$i]}")

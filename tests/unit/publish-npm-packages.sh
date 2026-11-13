@@ -85,6 +85,9 @@ assert_exit 'is_publish_conflict: empty → NO match' 1 \
 assert_exit 'should_skip_publish: present-verified → skip (0)' 0 \
   'package_state() { echo present-verified; }; should_skip_publish foo 1.2.3'
 
+assert_exit 'should_skip_publish: processing → refuse (3) with do-not-republish message' 3 \
+  'package_state() { echo processing; }; out=$(should_skip_publish foo 1.2.3 2>&1); r=$?; case "$out" in *"npm is still processing foo@1.2.3 — do not republish"*finalize_only*) exit $r ;; *) exit 99 ;; esac'
+
 assert_exit 'should_skip_publish: absent → publish (1)' 1 \
   'package_state() { echo absent; }; should_skip_publish foo 1.2.3'
 
@@ -100,6 +103,11 @@ assert_exit 'package_state: helper failure → uncertain' 0 \
 assert_exit 'package_state: unparseable helper output → uncertain' 0 \
   'ZFB_NPM_PACKAGE_STATE_NODE=echo; [ "$(package_state foo 1.2.3 2>/dev/null)" = "uncertain none" ]'
 
+# The helper reports `processing` (#4715/#4716); package_state must hand it to
+# should_skip_publish unchanged — never downgraded to absent/uncertain.
+assert_exit 'package_state: helper processing state is passed through' 0 \
+  'stub=$(mktemp); printf "#!/bin/sh\nprintf \"foo\\tprocessing\\taccepted 2026-11-13\\tnone\\n\"\n" >"$stub"; chmod +x "$stub"; ZFB_NPM_PACKAGE_STATE_NODE=$stub; got=$(package_state foo 1.2.3 2>/dev/null); rm -f "$stub"; [ "$got" = "processing none" ]'
+
 # ── classify_publish_result ───────────────────────────────────────────────────
 
 assert_exit 'classify: exit 0 → success (0)' 0 \
@@ -107,6 +115,25 @@ assert_exit 'classify: exit 0 → success (0)' 0 \
 
 assert_exit 'classify: conflict text + present-verified → tolerate (0)' 0 \
   'f=$(mktemp); printf "%s" "remote: You cannot publish over the previously published versions: 1.2.3" >"$f"; package_state() { echo present-verified; }; PUBLISH_RECHECK_DELAY=0 classify_publish_result foo 1.2.3 1 "$f"; r=$?; rm -f "$f"; exit $r'
+
+assert_exit 'classify: exit 0 → outcome publish-accepted' 0 \
+  'classify_publish_result foo 1.2.3 0 /dev/null >/dev/null; [ "$PUBLISH_OUTCOME" = publish-accepted ]'
+
+assert_exit 'is_publish_staged: E409 "previously staged version" → match' 0 \
+  'is_publish_staged "npm error code E409
+npm error 409 Conflict - PUT https://registry.npmjs.org/@takazudo%2fzfb - Cannot publish over previously staged version: 6.1.3"'
+
+assert_exit 'is_publish_staged: published-versions conflict → no match' 1 \
+  'is_publish_staged "You cannot publish over the previously published versions: 1.2.3"'
+
+assert_exit 'classify: E409 previously staged → processing, success, no registry recheck' 0 \
+  'f=$(mktemp); printf "%s" "npm error code E409 Cannot publish over previously staged version: 1.2.3" >"$f"; package_state() { echo "recheck must not run" >&2; echo absent; return 9; }; classify_publish_result foo 1.2.3 1 "$f" >/dev/null 2>&1; r=$?; rm -f "$f"; [ "$r" -eq 0 ] && [ "$PUBLISH_OUTCOME" = processing ]'
+
+assert_exit 'classify: conflict + present-verified → outcome already-present' 0 \
+  'f=$(mktemp); printf "%s" "EPUBLISHCONFLICT" >"$f"; package_state() { echo present-verified; }; PUBLISH_RECHECK_DELAY=0 classify_publish_result foo 1.2.3 1 "$f" >/dev/null; r=$?; rm -f "$f"; [ "$r" -eq 0 ] && [ "$PUBLISH_OUTCOME" = already-present ]'
+
+assert_exit 'classify: genuine publish failure (E401) still fails with no outcome' 1 \
+  'f=$(mktemp); printf "%s" "npm error code E401 Unable to authenticate" >"$f"; package_state() { echo absent; }; PUBLISH_RECHECK_DELAY=0 classify_publish_result foo 1.2.3 1 "$f" >/dev/null 2>&1; r=$?; [ -z "$PUBLISH_OUTCOME" ] || exit 7; rm -f "$f"; [ "$r" -ne 0 ] && exit 1; exit 0'
 
 assert_exit 'classify: conflict text but present-unverified → fail (1)' 1 \
   'f=$(mktemp); printf "%s" "EPUBLISHCONFLICT" >"$f"; package_state() { echo present-unverified; }; PUBLISH_RECHECK_DELAY=0 classify_publish_result foo 1.2.3 1 "$f"; r=$?; rm -f "$f"; exit $r'
@@ -171,12 +198,16 @@ case "$1" in
     ;;
   view)
     spec="$2"
-    if [ "${3:-}" = "dist-tags.latest" ]; then
-      # Mock dist-tag state: one file per package under MOCK_DISTTAG_DIR.
-      f="${MOCK_DISTTAG_DIR:-/nonexistent}/$(printf '%s' "$spec" | tr '/@' '__')"
+    case "${3:-}" in dist-tags.*)
+      # Mock dist-tag state: one file per package under MOCK_DISTTAG_DIR
+      # (`latest`: <pkg>; any other tag: <tag>.<pkg>).
+      tag="${3#dist-tags.}"
+      prefix=""; [ "$tag" = latest ] || prefix="$tag."
+      f="${MOCK_DISTTAG_DIR:-/nonexistent}/${prefix}$(printf '%s' "$spec" | tr '/@' '__')"
       [ -f "$f" ] && cat "$f"
       exit 0
-    fi
+      ;;
+    esac
     if [ "$spec" = "@takazudo/zfb-md-wasm@${MOCK_VERSION:-}" ] && [ -f "${MOCK_PUBLISHED_MARKER:-/dev/null}" ]; then
       printf '%s\n' "$MOCK_VERSION"
       exit 0
@@ -222,7 +253,8 @@ case "$1" in
     printf 'dist-tag %s\n' "$*" >>"${MOCK_DISTTAG_LOG:-/dev/null}"
     if [ "$2" = add ] && [ -n "${MOCK_DISTTAG_DIR:-}" ]; then
       spec="$3"; pkg="${spec%@*}"; ver="${spec##*@}"
-      printf '%s\n' "$ver" >"$MOCK_DISTTAG_DIR/$(printf '%s' "$pkg" | tr '/@' '__')"
+      prefix=""; [ "${4:-latest}" = latest ] || prefix="$4."
+      printf '%s\n' "$ver" >"$MOCK_DISTTAG_DIR/${prefix}$(printf '%s' "$pkg" | tr '/@' '__')"
     fi
     exit 0
     ;;
@@ -438,31 +470,38 @@ else
   fail "integration: fresh publish exited non-zero"
 fi
 
-# Case 3 — dual-tag wiring: everything already published (all skipped) AND
-# ALSO_LATEST=1 → the script still reaches maybe_advance_latest, which invokes
-# scripts/advance-latest-dist-tag.sh (→ mock `npm dist-tag add`). Expect exit 0
-# and a non-empty dist-tag log.
+# Case 3 — holding tag (#4717): every publish goes out under `release-pending`,
+# and the publish script never moves a channel tag itself, even with
+# ALSO_LATEST=1 (promotion happens after verification, in
+# scripts/promote-release-channel.sh).
 PUB_LOG=$(mktemp)
+ARGS_LOG=$(mktemp)
 DISTTAG_LOG=$(mktemp)
 DISTTAG_DIR=$(mktemp -d)
 : >"$PUB_LOG"
+: >"$ARGS_LOG"
 : >"$DISTTAG_LOG"
 if PATH="$MOCK_BIN:$PATH" \
    DIST_TAG=next \
    ALSO_LATEST=1 \
    MOCK_DISTTAG_DIR="$DISTTAG_DIR" \
    MOCK_PUBLISH_LOG="$PUB_LOG" \
+   MOCK_ARGS_LOG="$ARGS_LOG" \
    MOCK_DISTTAG_LOG="$DISTTAG_LOG" \
-   MOCK_EXISTING="$ALL_SPECS" \
+   MOCK_EXISTING="" \
    bash "$SCRIPT" all-provenance >/dev/null 2>&1; then
-  if [ ! -s "$PUB_LOG" ] && [ -s "$DISTTAG_LOG" ]; then
-    pass "integration: ALSO_LATEST=1 advances 'latest' even when all publishes are skipped"
+  PUBLISHES=$(grep -c 'publish' "$ARGS_LOG" || true)
+  HELD=$(grep -c -- '--tag release-pending' "$ARGS_LOG" || true)
+  if [ "$PUBLISHES" -eq 11 ] && [ "$HELD" -eq 11 ] && [ ! -s "$DISTTAG_LOG" ] \
+     && [ -z "$(ls -A "$DISTTAG_DIR")" ]; then
+    pass "integration: all 11 publishes use --tag release-pending and no channel tag moves (even with ALSO_LATEST=1)"
   else
-    fail "integration: dual-tag wiring (publog empty? $([ -s "$PUB_LOG" ] && echo no || echo yes); disttag ran? $([ -s "$DISTTAG_LOG" ] && echo yes || echo no))"
+    fail "integration: holding tag (publishes=$PUBLISHES held=$HELD disttag=$(tr '\n' ' ' <"$DISTTAG_LOG")): $(tr '\n' ' ' <"$ARGS_LOG")"
   fi
 else
-  fail "integration: dual-tag run exited non-zero"
+  fail "integration: holding-tag run exited non-zero"
 fi
+rm -rf "$DISTTAG_DIR"
 
 # Case 4 — bad mode argument is rejected (exit 2).
 if PATH="$MOCK_BIN:$PATH" DIST_TAG=next bash "$SCRIPT" bogus-mode >/dev/null 2>&1; then
@@ -794,7 +833,7 @@ PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG=/dev/null MOCK_EXISTING=
   ZFB_PROVENANCE_EXPECTATIONS_FILE="$EXPECT_FILE" bash "$SCRIPT" recovery-no-provenance >/dev/null 2>&1 || MX_RC=$?
 MX_BAD=""
 for n in $ALL_NAMES; do
-  want="none	publish-attempted"
+  want="none	publish-accepted"
   for p in $MIXED_PRESENT; do [ "$p" = "$n" ] && want="attested	already-present"; done
   got=$(awk -F '\t' -v n="$n" '$1 == n { print $3 "\t" $4 }' "$EXPECT_FILE")
   [ "$got" = "$want" ] || MX_BAD="$MX_BAD $n($got)"
@@ -898,18 +937,24 @@ rm -f "$ADV2_OUT"
 # ── advance-latest-dist-tag.sh read-compare-write ───────────────────────────
 ADV_SCRIPT="$REPO_ROOT/scripts/advance-latest-dist-tag.sh"
 
-# run_advance <target> <seed-latest-or-empty> → sets ADV_RC, ADV_OUT, ADV_DIR, ADV_LOG
+# run_advance <target> <seed-latest-or-empty> [advance args...] → sets ADV_RC,
+# ADV_OUT, ADV_DIR, ADV_LOG. ADV_SEED_NEXT seeds `next` the same way.
 run_advance() {
   ADV_DIR=$(mktemp -d)
   ADV_LOG=$(mktemp)
   ADV_OUT=$(mktemp)
   : >"$ADV_LOG"
+  ADV_TARGET="$1"
   if [ -n "$2" ]; then
     for n in $ALL_NAMES; do printf '%s\n' "$2" >"$ADV_DIR/$(printf '%s' "$n" | tr '/@' '__')"; done
   fi
+  if [ -n "${ADV_SEED_NEXT:-}" ]; then
+    for n in $ALL_NAMES; do printf '%s\n' "$ADV_SEED_NEXT" >"$ADV_DIR/next.$(printf '%s' "$n" | tr '/@' '__')"; done
+  fi
+  shift 2
   ADV_RC=0
   PATH="${ADV_PATH:-$MOCK_BIN}:$PATH" MOCK_DISTTAG_DIR="$ADV_DIR" MOCK_DISTTAG_LOG="$ADV_LOG" \
-    bash "$ADV_SCRIPT" "$1" >"$ADV_OUT" 2>&1 || ADV_RC=$?
+    bash "$ADV_SCRIPT" "$@" "$ADV_TARGET" >"$ADV_OUT" 2>&1 || ADV_RC=$?
 }
 
 run_advance 1.2.0-next.3 1.2.0-next.2
@@ -921,8 +966,8 @@ else
 fi
 
 run_advance 1.2.0-next.3 1.2.0-next.10
-if [ "$ADV_RC" -ne 0 ] && [ ! -s "$ADV_LOG" ] && grep -q 'refusing to move .latest. backwards' "$ADV_OUT"; then
-  pass "advance-latest: refuses to move latest to a lower version (next.3 < next.10), no write"
+if [ "$ADV_RC" -eq 0 ] && [ ! -s "$ADV_LOG" ] && grep -q "'latest' already points past 1.2.0-next.3" "$ADV_OUT"; then
+  pass "advance-latest: a newer latest (next.10 > next.3) is left alone on every package, no write, exit 0"
 else
   fail "advance-latest: regression guard (exit=$ADV_RC, writes=$(tr '\n' ' ' <"$ADV_LOG"))"
 fi
@@ -957,8 +1002,8 @@ ADV_PATH="$RACY_BIN:$MOCK_BIN" MOCK_RACE_VERSION=1.2.0-next.9
 export MOCK_RACE_VERSION
 run_advance 1.2.0-next.3 1.2.0-next.2
 unset MOCK_RACE_VERSION ADV_PATH
-if [ "$ADV_RC" -ne 0 ] && [ "$(cat "$ADV_DIR/_takazudo_zfb")" = 1.2.0-next.9 ] \
-   && grep -q 'refusing to move .latest. backwards' "$ADV_OUT"; then
+if [ "$ADV_RC" -eq 0 ] && [ "$(cat "$ADV_DIR/_takazudo_zfb")" = 1.2.0-next.9 ] \
+   && grep -q 'is never moved backwards' "$ADV_OUT"; then
   pass "advance-latest: a concurrent newer latest seen on re-read is detected and never overwritten"
 else
   fail "advance-latest: concurrent change (exit=$ADV_RC, zfb latest=$(cat "$ADV_DIR/_takazudo_zfb"), out=$(grep -i 'zfb:' "$ADV_OUT" | head -3 | tr '\n' ' '))"
@@ -973,6 +1018,167 @@ if [ "$ADV_RC" -ne 0 ] && grep -q 'npm OIDC preflight' "$ADV_OUT"; then
   pass "advance-latest: refuses to run with a stored token in the environment"
 else
   fail "advance-latest: token refusal (exit=$ADV_RC)"
+fi
+
+# ── next channel guards (#4717) ─────────────────────────────────────────────
+ADV_SEED_NEXT=1.2.0-next.2
+run_advance 1.2.0-next.3 "" --tag next
+if [ "$ADV_RC" -eq 0 ] && [ "$(grep -c 'dist-tag add' "$ADV_LOG")" -eq 11 ] \
+   && ! grep -q ' latest$' "$ADV_LOG" \
+   && [ "$(cat "$ADV_DIR/next._takazudo_zfb")" = 1.2.0-next.3 ] && [ ! -f "$ADV_DIR/_takazudo_zfb" ]; then
+  pass "advance next: moves next forward for all 11 and leaves latest alone"
+else
+  fail "advance next: forward move (exit=$ADV_RC, writes=$(tr '\n' ' ' <"$ADV_LOG"))"
+fi
+
+ADV_SEED_NEXT=1.2.0-next.10
+run_advance 1.2.0-next.3 "" --tag next
+if [ "$ADV_RC" -eq 0 ] && [ ! -s "$ADV_LOG" ] && grep -q "'next' already points past 1.2.0-next.3" "$ADV_OUT"; then
+  pass "advance next: never moves next backwards, no write, exit 0"
+else
+  fail "advance next: backwards guard (exit=$ADV_RC, writes=$(tr '\n' ' ' <"$ADV_LOG"))"
+fi
+unset ADV_SEED_NEXT
+
+run_advance 1.2.0-next.3 "" --tag next
+if [ "$ADV_RC" -eq 0 ] && [ "$(grep -c 'dist-tag add' "$ADV_LOG")" -eq 11 ]; then
+  pass "advance next: an absent next is created"
+else
+  fail "advance next: absent next (exit=$ADV_RC)"
+fi
+
+run_advance 1.2.0 "" --tag next
+if [ "$ADV_RC" -ne 0 ] && [ ! -s "$ADV_LOG" ] && grep -q "only carries" "$ADV_OUT"; then
+  pass "advance next: refuses to point next at a stable version, no write"
+else
+  fail "advance next: stable guard (exit=$ADV_RC, writes=$(tr '\n' ' ' <"$ADV_LOG"))"
+fi
+
+run_advance 1.2.0-alpha.1 "" --tag next
+if [ "$ADV_RC" -ne 0 ] && [ ! -s "$ADV_LOG" ]; then
+  pass "advance next: refuses a prerelease outside next/beta/rc, no write"
+else
+  fail "advance next: alpha guard (exit=$ADV_RC)"
+fi
+
+# Plan-before-write: one package's guard refusal on `latest` stops the whole
+# run before ANY write, including the `next` moves that would have passed.
+ADV_SEED_NEXT=1.2.0-next.2
+ADV_DIR_SEED_ZFB=1.1.0
+run_advance_partial() {
+  ADV_DIR=$(mktemp -d)
+  ADV_LOG=$(mktemp)
+  ADV_OUT=$(mktemp)
+  for n in $ALL_NAMES; do
+    f=$(printf '%s' "$n" | tr '/@' '__')
+    printf '%s\n' 1.2.0-next.2 >"$ADV_DIR/$f"
+    printf '%s\n' 1.2.0-next.2 >"$ADV_DIR/next.$f"
+  done
+  printf '%s\n' "$ADV_DIR_SEED_ZFB" >"$ADV_DIR/_takazudo_zfb-md-wasm"
+  ADV_RC=0
+  PATH="$MOCK_BIN:$PATH" MOCK_DISTTAG_DIR="$ADV_DIR" MOCK_DISTTAG_LOG="$ADV_LOG" \
+    bash "$ADV_SCRIPT" --tag next --tag latest 1.2.0-next.3 >"$ADV_OUT" 2>&1 || ADV_RC=$?
+}
+run_advance_partial
+if [ "$ADV_RC" -ne 0 ] && [ ! -s "$ADV_LOG" ] && grep -q 'no dist-tag was moved' "$ADV_OUT" \
+   && [ "$(cat "$ADV_DIR/next._takazudo_zfb")" = 1.2.0-next.2 ]; then
+  pass "advance: one refused package stops every write — no half-moved channel"
+else
+  fail "advance: plan-before-write (exit=$ADV_RC, writes=$(tr '\n' ' ' <"$ADV_LOG"))"
+fi
+unset ADV_SEED_NEXT ADV_DIR_SEED_ZFB
+
+run_advance 1.2.0-next.3 "" --tag latest --tag latest
+if [ "$ADV_RC" -ne 0 ] && [ ! -s "$ADV_LOG" ]; then
+  pass "advance: a duplicated --tag is refused"
+else
+  fail "advance: duplicate tag (exit=$ADV_RC)"
+fi
+
+# ── promote-release-channel.sh: the all-verified gate (#4717) ────────────────
+PROMOTE_SCRIPT="$REPO_ROOT/scripts/promote-release-channel.sh"
+# Stub for npm-package-state.mjs --require-all-verified --tsv: all 11 rows,
+# MOCK_PROMOTE_PROCESSING names packages still in npm processing.
+cat >"$MOCK_BIN/promote-state-node" <<'MOCK_PSTATE'
+#!/bin/sh
+printf 'promote-state %s\n' "$*" >>"${MOCK_STATE_LOG:-/dev/null}"
+rc=0
+for n in $MOCK_ALL_NAMES; do
+  state=present-verified
+  for p in ${MOCK_PROMOTE_PROCESSING:-}; do [ "$p" = "$n" ] && state=processing; done
+  [ "$state" = present-verified ] || rc=1
+  printf '%s\t%s\tgitHead\tnone\n' "$n" "$state"
+done
+exit $rc
+MOCK_PSTATE
+chmod +x "$MOCK_BIN/promote-state-node"
+
+# run_promote <version> <seed-latest> [env...] → PR_RC, PR_OUT, PR_DIR, PR_LOG
+run_promote() {
+  PR_DIR=$(mktemp -d)
+  PR_LOG=$(mktemp)
+  PR_OUT=$(mktemp)
+  PR_VER="$1"; PR_SEED="$2"; shift 2
+  for n in $ALL_NAMES; do printf '%s\n' "$PR_SEED" >"$PR_DIR/$(printf '%s' "$n" | tr '/@' '__')"; done
+  PR_RC=0
+  env "$@" PATH="$MOCK_BIN:$PATH" MOCK_DISTTAG_DIR="$PR_DIR" MOCK_DISTTAG_LOG="$PR_LOG" \
+    MOCK_ALL_NAMES="$ALL_NAMES" ZFB_NPM_PACKAGE_STATE_NODE="$MOCK_BIN/promote-state-node" \
+    bash "$PROMOTE_SCRIPT" "$PR_VER" >"$PR_OUT" 2>&1 || PR_RC=$?
+}
+
+run_promote 1.3.0 1.2.0 DIST_TAG=latest
+if [ "$PR_RC" -eq 0 ] && [ "$(grep -c 'dist-tag add .* latest$' "$PR_LOG")" -eq 11 ] \
+   && [ "$(cat "$PR_DIR/_takazudo_zfb-linux-arm64-gnu")" = 1.3.0 ]; then
+  pass "promote: stable moves latest on all 11 once every package is present-verified"
+else
+  fail "promote: stable (exit=$PR_RC, writes=$(tr '\n' ' ' <"$PR_LOG"), out=$(tail -3 "$PR_OUT" | tr '\n' ' '))"
+fi
+
+run_promote 1.3.0 1.2.0 DIST_TAG=latest MOCK_PROMOTE_PROCESSING=@takazudo/zfb-linux-arm64-gnu
+if [ "$PR_RC" -ne 0 ] && [ ! -s "$PR_LOG" ] && grep -q 'npm still processing' "$PR_OUT" \
+   && [ "$(cat "$PR_DIR/_takazudo_zfb")" = 1.2.0 ]; then
+  pass "promote: a processing package leaves latest untouched on every package"
+else
+  fail "promote: processing gate (exit=$PR_RC, writes=$(tr '\n' ' ' <"$PR_LOG"))"
+fi
+
+run_promote 1.3.0-next.2 1.3.0-next.1 DIST_TAG=next ALSO_LATEST=1
+if [ "$PR_RC" -eq 0 ] && [ "$(grep -c 'dist-tag add .* next$' "$PR_LOG")" -eq 11 ] \
+   && [ "$(grep -c 'dist-tag add .* latest$' "$PR_LOG")" -eq 11 ] \
+   && [ "$(cat "$PR_DIR/next._takazudo_zfb")" = 1.3.0-next.2 ] \
+   && [ "$(cat "$PR_DIR/_takazudo_zfb")" = 1.3.0-next.2 ]; then
+  pass "promote: prerelease moves next and, under ALSO_LATEST, latest after verification"
+else
+  fail "promote: prerelease + ALSO_LATEST (exit=$PR_RC, writes=$(tr '\n' ' ' <"$PR_LOG"))"
+fi
+
+run_promote 1.3.0-next.2 1.2.0 DIST_TAG=next
+if [ "$PR_RC" -eq 0 ] && [ "$(grep -c 'dist-tag add .* next$' "$PR_LOG")" -eq 11 ] \
+   && ! grep -q ' latest$' "$PR_LOG" && [ "$(cat "$PR_DIR/_takazudo_zfb")" = 1.2.0 ]; then
+  pass "promote: prerelease without ALSO_LATEST moves next only"
+else
+  fail "promote: prerelease only (exit=$PR_RC, writes=$(tr '\n' ' ' <"$PR_LOG"))"
+fi
+
+run_promote 1.3.0-next.2 1.3.0-next.1 DIST_TAG=next ALSO_LATEST=1 MOCK_PROMOTE_PROCESSING="create-zfb @takazudo/zfb-md-wasm"
+if [ "$PR_RC" -ne 0 ] && [ ! -s "$PR_LOG" ]; then
+  pass "promote: prerelease with processing packages moves neither next nor latest"
+else
+  fail "promote: prerelease processing gate (exit=$PR_RC, writes=$(tr '\n' ' ' <"$PR_LOG"))"
+fi
+
+run_promote 1.3.0 1.2.0 DIST_TAG=next
+if [ "$PR_RC" -ne 0 ] && [ ! -s "$PR_LOG" ]; then
+  pass "promote: refuses a DIST_TAG that disagrees with the version"
+else
+  fail "promote: DIST_TAG mismatch (exit=$PR_RC)"
+fi
+
+run_promote 1.3.0 1.2.0 DIST_TAG=latest ZFB_RELEASE_SOURCE_COMMIT=
+if [ "$PR_RC" -ne 0 ] && [ ! -s "$PR_LOG" ]; then
+  pass "promote: refuses without the release source commit"
+else
+  fail "promote: missing source commit (exit=$PR_RC)"
 fi
 
 # ── Published MD/WASM decision seam and actual upload gate ──────────────────
