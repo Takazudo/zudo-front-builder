@@ -267,7 +267,8 @@ export const CANDIDATE_CONFIG = Object.freeze({
     crate: "noyalib",
     repo: "sebastienrousseau/noyalib",
     role: ADOPTED_ROLE,
-    pendingReleasePr: null,
+    // Upstream v0.0.61 release-candidate PR (open, release held upstream); set at the #4693 triage.
+    pendingReleasePr: 521,
   },
   "noyalib-serde-yaml": {
     crate: "noyalib-serde-yaml",
