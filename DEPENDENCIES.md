@@ -2999,6 +2999,16 @@ Every artifact stays under its ceiling, but default, render-only and parse-only 
 
 **Downstream contract.** `Cargo.toml`, `Cargo.lock`, the harness label, `shipped-sizes.json` and the YAML candidate baseline are unchanged. The baseline refresh was blocked in the evaluating session (no upstream GitHub API access), so #4693 stays open. **Next trigger:** a newer complete pair, a yank of either 0.0.58 crate, a new advisory, or evidence addressing 0.0.60's size growth.
 
+##### YAML candidate watch baseline refresh after the 0.0.60 KEEP (#4693)
+
+**Observation.** An authenticated detector run on the owner's Mac at `2026-11-14T19:26:18.308Z` against the 2026-10-21 baseline was complete (`errors: []`) and exited 10, `CANDIDATE_DRIFT`. Every triage-severity delta on the adopted pair was a publish, tag or Release of 0.0.59 or 0.0.60 on both crates, which the 0.0.60 KEEP above already evaluated. Neither pair had a yank, an unyank or an archive change. The RustSec and GitHub advisory records for `noyalib` are the 2026-10-06/08 advisories against `<= 0.0.54`, already handled by the 0.0.53 and 0.0.55+ pins; `noyalib-serde-yaml` has none. The remaining deltas were informational: branch additions, deletions and advances on both adopted repositories, `saphyr` 0.3.0–0.3.4 and `serde-saphyr` 2.1.0/2.1.1 (2.1.0 yanked) with their branch churn.
+
+**Release-PR pointer.** `CANDIDATE_CONFIG.noyalib.pendingReleasePr` moves from `null` to `521` as a deliberate tracking change. Upstream [noyalib#521](https://github.com/sebastienrousseau/noyalib/pull/521) (`feat/v0.0.61`) was open, prepares v0.0.61 with breaking parse-behavior changes, and states that the release remains held. An open release PR is not a published pair. `noyalib-serde-yaml` had no open PR (its `feat/v0.0.61` branch has no PR), so its pointer stays `null`. The re-run with the pointer set added only `release-pr-changed null -> #521 OPEN`.
+
+**Refresh.** A `--snapshot` taken at `2026-11-14T19:27:35.216Z` with the pointer already set records all seven candidates, passes `validateCandidateRecord` for each, and compares to itself with no drift. It replaces `scripts/yaml-candidate-baseline.json`. The post-refresh live run at `2026-11-14T19:28:10.356Z` exited 0, `no-drift`, `errors: []`.
+
+**Unchanged.** Production stays on `noyalib` / `noyalib-serde-yaml` `=0.0.58`; `Cargo.toml`, `Cargo.lock`, the harness label and `shipped-sizes.json` are unchanged. **Next trigger:** a merge or close of noyalib#521 (now observed as `release-pr-state-changed`), a newer published pair such as 0.0.61, a yank of either 0.0.58 crate, or a new advisory against 0.0.58.
+
 ##### `serde-saphyr 1.2.0` differential evaluation (#2788) — KEEP
 
 This evaluation deliberately used **serde-saphyr 1.2.0**, superseding the

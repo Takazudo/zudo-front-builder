@@ -82,7 +82,19 @@ export function createSource({ label = "source" } = {}) {
   const git = (...args) =>
     execFileSync(
       "git",
-      ["-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", ...args],
+      [
+        "-C",
+        repo,
+        "-c",
+        "user.email=t@example.invalid",
+        "-c",
+        "user.name=t",
+        // A host's global commit signing (e.g. a 1Password SSH signer) must not
+        // decide whether a throwaway fixture commit can be written.
+        "-c",
+        "commit.gpgsign=false",
+        ...args,
+      ],
       {
         encoding: "utf8",
       },

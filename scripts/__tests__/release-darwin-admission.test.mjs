@@ -489,3 +489,28 @@ describe("release-status (read-only, injected gh/registry)", () => {
     expect(status.recommendedAction).toBe("dispatch-recovery");
   });
 });
+
+describe("createSource fixture isolation", () => {
+  it("writes its commit even when the host's git config demands signing with a failing signer", () => {
+    const dir = tmp("zfb-gitconfig-");
+    const config = join(dir, "gitconfig");
+    writeFileSync(
+      config,
+      '[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n[gpg "ssh"]\n\tprogram = false\n[user]\n\tsigningkey = key::ssh-ed25519 AAAA\n',
+    );
+    const saved = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = config;
+    let signed;
+    try {
+      signed = createSource({ label: "signing-hostile host config" });
+    } finally {
+      if (saved === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = saved;
+    }
+    try {
+      expect(signed.commit).toMatch(/^[0-9a-f]{40}$/);
+    } finally {
+      rmSync(signed.repo, { recursive: true, force: true });
+    }
+  });
+});
