@@ -132,9 +132,50 @@ const removedRunFingerprint = (profile) => `target/${profile}/.fingerprint/${V8_
 const withoutRunFingerprint = (tree, profile) =>
   tree.filter((entry) => !entry.startsWith(removedRunFingerprint(profile)));
 
+// The same tree under Cargo 1.100's build-dir layout (measured with cargo
+// 1.100.0): each unit lives in <profile>/build/<pkg>/<hash>/ with its own
+// fingerprint/ and out/, and rusty_v8's archive moves to <profile>/build/gn_out/
+// because its build script writes three levels above OUT_DIR.
+const NEW_V8_LIB = "1a2b3c4d5e6f7081";
+const NEW_V8_RUN = "9f8e7d6c5b4a3921";
+const NEW_V8_BUILD_SCRIPT = "0011223344556677";
+const NEW_SERDE_RUN = "aabbccddeeff0011";
+
+function newLayoutFixture(base, profile, { archive }) {
+  const b = `target/${profile}/build`;
+  for (const file of ["lib-v8", "lib-v8.json", "dep-lib-v8"])
+    touch(base, `${b}/v8/${NEW_V8_LIB}/fingerprint/${file}`);
+  touch(base, `${b}/v8/${NEW_V8_LIB}/out/libv8-${NEW_V8_LIB}.rlib`);
+  for (const file of [
+    "run-build-script-build-script-build",
+    "run-build-script-build-script-build.json",
+  ]) {
+    touch(base, `${b}/v8/${NEW_V8_RUN}/fingerprint/${file}`);
+    touch(base, `${b}/serde/${NEW_SERDE_RUN}/fingerprint/${file}`);
+  }
+  touch(base, `${b}/v8/${NEW_V8_RUN}/run/output`);
+  touch(base, `${b}/v8/${NEW_V8_RUN}/out/gn_root`);
+  for (const file of [
+    "build-script-build-script-build",
+    "build-script-build-script-build.json",
+    "dep-build-script-build-script-build",
+  ]) {
+    touch(base, `${b}/v8/${NEW_V8_BUILD_SCRIPT}/fingerprint/${file}`);
+  }
+  touch(base, `${b}/serde/${NEW_SERDE_RUN}/run/output`);
+  touch(base, `${b}/gn_out/args.gn`);
+  if (archive) {
+    touch(base, `${b}/gn_out/obj/librusty_v8.a`);
+    touch(base, `${b}/gn_out/obj/librusty_v8.sum`);
+  }
+}
+
+const newRunFingerprint = (profile) => `target/${profile}/build/v8/${NEW_V8_RUN}/fingerprint/`;
+
 describe("wind-computed-style v8 build-script re-run step", () => {
   it("extracts a non-trivial script that parses under bash -n", () => {
     expect(script).toContain('"$profile/gn_out/obj/librusty_v8.a"');
+    expect(script).toContain('"$profile/build/gn_out/obj/librusty_v8.a"');
     const result = spawnSync("bash", ["-n", "-c", script], {
       encoding: "utf8",
     });
@@ -268,5 +309,56 @@ describe("wind-computed-style v8 build-script re-run step", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toBe(`re-run v8 build script: target/debug/.fingerprint/${V8_RUN}/\n`);
     expect(snapshot(base)).toEqual(withoutRunFingerprint(before, "debug"));
+  });
+  it("leaves an intact Cargo 1.100 restore with the archive untouched", () => {
+    const base = workspace();
+    newLayoutFixture(base, "debug", { archive: true });
+    const before = snapshot(base);
+    const result = runStep(base);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(snapshot(base)).toEqual(before);
+  });
+
+  it("drops only v8's build-script-run fingerprint under the Cargo 1.100 layout", () => {
+    const base = workspace();
+    newLayoutFixture(base, "debug", { archive: false });
+    const before = snapshot(base);
+    const result = runStep(base);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(`re-run v8 build script: ${newRunFingerprint("debug")}\n`);
+    expect(snapshot(base)).toEqual(
+      before.filter((entry) => !entry.startsWith(newRunFingerprint("debug"))),
+    );
+    const after = snapshot(base);
+    for (const path of [
+      `target/debug/build/v8/${NEW_V8_LIB}/fingerprint/lib-v8`,
+      `target/debug/build/v8/${NEW_V8_BUILD_SCRIPT}/fingerprint/build-script-build-script-build`,
+      `target/debug/build/serde/${NEW_SERDE_RUN}/fingerprint/run-build-script-build-script-build`,
+      `target/debug/build/v8/${NEW_V8_RUN}/run/output`,
+      `target/debug/build/v8/${NEW_V8_RUN}/out/gn_root`,
+    ]) {
+      expect(after).toContain(path);
+    }
+  });
+
+  it("does not read the legacy archive path as present for a Cargo 1.100 tree", () => {
+    const base = workspace();
+    newLayoutFixture(base, "debug", { archive: false });
+    touch(base, "target/debug/gn_out/obj/librusty_v8.a");
+    const result = runStep(base);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(`re-run v8 build script: ${newRunFingerprint("debug")}\n`);
+  });
+
+  it("is idempotent under the Cargo 1.100 layout", () => {
+    const base = workspace();
+    newLayoutFixture(base, "debug", { archive: false });
+    expect(runStep(base).status).toBe(0);
+    const afterFirst = snapshot(base);
+    const second = runStep(base);
+    expect(second.status, second.stderr).toBe(0);
+    expect(second.stdout).toBe("");
+    expect(snapshot(base)).toEqual(afterFirst);
   });
 });
