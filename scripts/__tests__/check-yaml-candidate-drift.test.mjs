@@ -985,20 +985,27 @@ describe("observation and CLI", () => {
   });
 
   it("does not query retired release PRs when both adopted pointers are null", async () => {
+    const originalCorePendingReleasePr = CANDIDATE_CONFIG.noyalib.pendingReleasePr;
+    const originalAliasPendingReleasePr = CANDIDATE_CONFIG["noyalib-serde-yaml"].pendingReleasePr;
     const requests = [];
-    const observed = await observeSnapshot({
-      clients: completeClients({
-        pullRequest: async (repo, number) => {
-          requests.push({ repo, number });
-          return { state: "open", merged_at: null };
-        },
-      }),
-    });
-    expect(CANDIDATE_CONFIG.noyalib.pendingReleasePr).toBeNull();
-    expect(CANDIDATE_CONFIG["noyalib-serde-yaml"].pendingReleasePr).toBeNull();
-    expect(requests).toEqual([]);
-    expect(observed.candidates.noyalib.pendingReleasePr).toBeNull();
-    expect(observed.candidates["noyalib-serde-yaml"].pendingReleasePr).toBeNull();
+    try {
+      CANDIDATE_CONFIG.noyalib.pendingReleasePr = null;
+      CANDIDATE_CONFIG["noyalib-serde-yaml"].pendingReleasePr = null;
+      const observed = await observeSnapshot({
+        clients: completeClients({
+          pullRequest: async (repo, number) => {
+            requests.push({ repo, number });
+            return { state: "open", merged_at: null };
+          },
+        }),
+      });
+      expect(requests).toEqual([]);
+      expect(observed.candidates.noyalib.pendingReleasePr).toBeNull();
+      expect(observed.candidates["noyalib-serde-yaml"].pendingReleasePr).toBeNull();
+    } finally {
+      CANDIDATE_CONFIG.noyalib.pendingReleasePr = originalCorePendingReleasePr;
+      CANDIDATE_CONFIG["noyalib-serde-yaml"].pendingReleasePr = originalAliasPendingReleasePr;
+    }
   });
 
   it("observes explicitly configured core and alias release PRs", async () => {
@@ -1032,8 +1039,8 @@ describe("observation and CLI", () => {
   });
 
   it("treats a malformed pending-release PR response as operational failure", async () => {
-    // A synthetic pointer exercises response validation while both adopted
-    // release PR pointers are retired.
+    // A synthetic pointer exercises response validation independently of the
+    // configured adopted release PR pointers.
     const originalPendingReleasePr = CANDIDATE_CONFIG.noyalib.pendingReleasePr;
     CANDIDATE_CONFIG.noyalib.pendingReleasePr = 999;
     try {
@@ -1200,7 +1207,7 @@ describe("committed baseline guard", () => {
       role: "adopted",
       pendingReleasePr: null,
     });
-    expect(CANDIDATE_CONFIG.noyalib.pendingReleasePr).toBeNull();
+    expect(CANDIDATE_CONFIG.noyalib.pendingReleasePr).toBe(521);
   });
 
   it("is a valid, self-consistent schemaVersion 3 baseline with no drift against itself", async () => {
