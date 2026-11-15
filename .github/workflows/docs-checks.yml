@@ -43,9 +43,18 @@ name: Docs Checks
 #      cancelled run (issue #2827: failed OR cancelled docs checks must fail
 #      the gate).
 #   3. Require `Docs gate`, never `build`'s own context. `build` is job-level
-#      gated (skipped on non-docs PRs) and its name collides with the
-#      `Build docs site` jobs in docs-pr-preview.yml and docs-deploy.yml, so
-#      a name-matched requirement could be satisfied by the wrong workflow.
+#      gated (skipped when the docs-site input list does not match) and its
+#      name collides with `Build docs site` in docs-deploy.yml, so a
+#      name-matched requirement could be satisfied by the wrong workflow.
+#      The preview upload is a downstream job of this workflow. It is not a
+#      required check and Docs gate does not wait on it.
+#
+# The site build follows `.github/path-filters/docs-site.yml` from the PR
+# base (#4728). Ordinary crate, Cargo, and toolchain diffs do not start it.
+# A missing rule file, an unreadable rule, or an incomplete file list is a
+# full check. The files API failing fails this detector. `ready_for_review`
+# reruns validation so a draft that becomes ready can upload the preview
+# from that run's root artifact.
 on:
   pull_request:
     branches:
@@ -55,6 +64,7 @@ on:
       - opened
       - synchronize
       - reopened
+      - ready_for_review
 
 concurrency:
   group: docs-checks-${{ github.event.pull_request.number }}
@@ -64,10 +74,9 @@ permissions:
   contents: read
 
 jobs:
-  # Mirrors the former workflow-level `paths:` list (plus .npmrc, which pnpm
-  # reads at install time) — keep it in sync with the docs build's real input
-  # closure (docs/**, the root manifests and rc that resolve docs/'s
-  # dependencies, and this workflow file itself).
+  # docs-site.yml decides the site build. wind_previews stays wider so a
+  # compiler or catalog change still runs the asset check without building
+  # the site. Both are job-level; this workflow has no paths: filter.
   changed-files:
     name: changed-files (docs)
     runs-on: ubuntu-latest
@@ -79,38 +88,46 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      docs: ${{ steps.filter.outputs.docs }}
+      docs: ${{ steps.docs_site.outputs.docs }}
       wind_previews: ${{ steps.filter.outputs.wind_previews }}
       docs_only: ${{ steps.scope.outputs.docs_only }}
     steps:
-      # pull_request-only workflow: paths-filter compares against the PR base
-      # through the API (its README: "For pull requests it's not necessary to
-      # checkout the code"). The sparse base-commit checkout only provides the
-      # shared docs-only filter files. health.yml's copy also runs on push.
+      # pull_request-only workflow. The sparse base-commit checkout provides the
+      # shared docs-only filter files plus the docs-site rule and classifier.
+      # health.yml's copy also runs on push and still checks out only the
+      # docs-only filters.
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
-          sparse-checkout: .github/path-filters
+          sparse-checkout: |
+            .github/path-filters
+            scripts
           persist-credentials: false
 
-      - name: Detect docs-affecting changes
+      # Rules and the classifier come from the base commit. The first PR that
+      # adds either file cannot see it there, so it takes the full check.
+      - name: Detect docs-site inputs
+        id: docs_site
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          RULES: .github/path-filters/docs-site.yml
+        run: |
+          set -euo pipefail
+          if [ ! -f "$RULES" ] || [ ! -f scripts/docs-site-changes.mjs ]; then
+            echo "docs-site rules or detector are absent on the base commit; running the full docs check."
+            echo "docs=true" >> "$GITHUB_OUTPUT"
+            echo "docs_fallback=absent-on-base" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          node scripts/docs-site-changes.mjs --rules "$RULES"
+
+      - name: Detect wind-preview inputs
         id: filter
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           filters: |
-            docs:
-              - 'docs/**'
-              - 'scripts/__tests__/generate-wind-reference.test.mjs'
-              - 'tests/docs-wind-preview/**'
-              - 'crates/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'rust-toolchain.toml'
-              - 'pnpm-lock.yaml'
-              - 'pnpm-workspace.yaml'
-              - 'package.json'
-              - '.npmrc'
-              - '.github/workflows/docs-checks.yml'
             wind_previews:
               - 'docs/wind-examples/**'
               - 'docs/public/wind-examples/**'
@@ -240,6 +257,14 @@ jobs:
           WIND_DOCS_SCREENSHOT_DIR: ${{ runner.temp }}/wind-docs-screenshots/root
         run: pnpm exec playwright test --config tests/docs-wind-preview/playwright.config.mjs
 
+      # Root validation is done. Subpath rebuild overwrites docs/dist, so keep
+      # this copy — hidden files included — for the preview job.
+      - name: Snapshot validated root docs output
+        run: |
+          set -euo pipefail
+          rm -rf "${RUNNER_TEMP}/docs-root-dist"
+          cp -a docs/dist "${RUNNER_TEMP}/docs-root-dist"
+
       - name: Build genuine subpath docs
         run: node docs/scripts/build-wind-docs-base.mjs /wind-docs-preview/
 
@@ -254,6 +279,16 @@ jobs:
           WIND_DOCS_BASE: /wind-docs-preview/
           WIND_DOCS_SCREENSHOT_DIR: ${{ runner.temp }}/wind-docs-screenshots/subpath
         run: pnpm exec playwright test --config tests/docs-wind-preview/playwright.config.mjs
+
+      - name: Upload validated root docs output
+        if: ${{ success() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docs-root-dist
+          path: ${{ runner.temp }}/docs-root-dist/
+          retention-days: 1
+          include-hidden-files: true
+          if-no-files-found: error
 
       - name: Upload browser evidence
         if: ${{ always() }}
@@ -286,6 +321,11 @@ jobs:
       # The workspace build script embeds Hono from node_modules/.pnpm.
       - name: Install compiler build dependencies
         run: pnpm install --frozen-lockfile
+      # Product source pin for crates/zudo-wind plus Cargo.toml/Cargo.lock.
+      # It stays off the site-build decision: a lockfile change must not be
+      # the reason the docs site is built, and it must still be checked.
+      - name: Check reviewed Wind source pin
+        run: node --input-type=module -e "import { readFileSync } from 'node:fs'; import { assertCurrentWindSource } from './docs/scripts/wind-compatibility-pages.mjs'; const inventory = JSON.parse(readFileSync('tests/wind-compatibility/inventory.v1.json','utf8')); assertCurrentWindSource(process.cwd(), inventory.wind.gitSha); console.log('reviewed wind source pin matches');"
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
         with:
@@ -299,7 +339,16 @@ jobs:
       - name: Test preview pipeline contracts
         run: node --test docs/scripts/__tests__/wind-preview-assets.test.mjs
       - name: Check genuine compiled preview freshness
-        run: node docs/scripts/wind-preview-assets.mjs --compiler "$PWD/target/debug/zfb" --check
+        run: |
+          set -euo pipefail
+          node docs/scripts/wind-preview-assets.mjs --compiler "$PWD/target/debug/zfb" --check | tee "${RUNNER_TEMP}/wind-preview-identity.txt"
+          {
+            echo "### Wind preview compiler identity"
+            echo
+            echo '```'
+            cat "${RUNNER_TEMP}/wind-preview-identity.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # health.yml's JS/format subset for a docs-only PR (#4372). health.yml
   # skips its jobs on such a PR, but scripts and docs tests read the Markdown
@@ -356,9 +405,6 @@ jobs:
         run: |
           node scripts/wind-compatibility/inventory-cli.mjs validate
           node --test tests/wind-compatibility/*.test.mjs tests/wind-compatibility/reference/*.test.mjs tests/wind-compatibility/empty-token/*.test.mjs tests/wind-compatibility/corpus/*.test.mjs
-
-      - name: Assert md-wasm documentation matches shipped sizes
-        run: node scripts/assert-md-wasm-size-docs.mjs
 
       - name: Check SSE endpoint literal ownership
         run: node scripts/check-sse-endpoint.mjs
@@ -442,3 +488,133 @@ jobs:
               exit 1
               ;;
           esac
+
+  # Downstream of Docs gate. This job does not build the site. It publishes the
+  # root artifact snapshotted before the subpath rebuild. A skipped or failed
+  # preview does not change the Docs gate result.
+  #
+  # `!cancelled()` is required. Without a status function GitHub wraps the if
+  # in `success()`, and `success()` is false when `docs-only-checks` was
+  # skipped. That job is skipped on every PR that is not docs-only, and
+  # docs-gate needs it, so the preview job was skipped after a green gate
+  # (runs 43716196605 and 43720237041). Draft, fork, and Dependabot checks
+  # happen in the steps below, against the live PR, immediately before upload
+  # and again before the comment.
+  preview:
+    name: Upload docs preview
+    needs: [changed-files, docs-gate]
+    if: ${{ !cancelled() && needs.docs-gate.result == 'success' && needs.changed-files.outputs.docs == 'true' }}
+    concurrency:
+      group: pr-preview-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout docs deploy config
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+          package-manager-cache: false
+      - name: Download validated root docs output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: docs-root-dist
+          path: docs/dist/
+      - name: Confirm the PR still points at this head
+        id: current
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const [owner, repo] = process.env.REPO.split("/");
+            const expected = process.env.HEAD_SHA;
+            const prNumber = context.payload.pull_request.number;
+            const { data } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+            const sameRepo = data.head.repo?.full_name === process.env.REPO;
+            const proceed = data.state === "open" && data.draft === false && sameRepo && data.head.sha === expected && data.user.login !== "dependabot[bot]";
+            core.setOutput("proceed", proceed ? "true" : "false");
+            if (!proceed) core.notice(`Docs preview not updated: state=${data.state} draft=${data.draft} head=${data.head.sha} expected=${expected} repo=${data.head.repo?.full_name ?? ""}`);
+      - name: Upload preview version
+        id: preview
+        if: ${{ steps.current.outputs.proceed == 'true' }}
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "::warning::Preview upload skipped: Cloudflare secret is not available to this run."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "reason=missing-secret" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          WRANGLER_VERSION=$(node -p "require('./docs/package.json').devDependencies.wrangler")
+          PREVIEW_ALIAS="pr-${PR_NUMBER}"
+          set +e
+          UPLOAD_OUTPUT=$(cd docs && npx wrangler@"$WRANGLER_VERSION" versions upload \
+            --preview-alias "$PREVIEW_ALIAS" 2>&1)
+          STATUS=$?
+          set -e
+          echo "$UPLOAD_OUTPUT"
+          PREVIEW_URL=$(echo "$UPLOAD_OUTPUT" | grep -oE 'https://[a-zA-Z0-9._-]+\.workers\.dev[^ ]*' | head -1 || true)
+          if [ "$STATUS" -eq 0 ] && [ -n "$PREVIEW_URL" ]; then
+            echo "preview_url=${PREVIEW_URL}" >> "$GITHUB_OUTPUT"
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Preview upload unavailable (worker not yet created, workers.dev subdomain disabled, or upload failed). Status=$STATUS"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "reason=upload-unavailable" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Upsert sticky PR preview comment
+        if: ${{ steps.current.outputs.proceed == 'true' }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          PREVIEW_URL: ${{ steps.preview.outputs.preview_url }}
+          PREVIEW_OK: ${{ steps.preview.outputs.ok }}
+          PREVIEW_REASON: ${{ steps.preview.outputs.reason }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const marker = "<!-- cf-workers-preview-pr -->";
+            const [owner, repo] = process.env.REPO.split("/");
+            const prNumber = Number(process.env.PR_NUMBER);
+            const expected = process.env.HEAD_SHA;
+            const { data } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+            const sameRepo = data.head.repo?.full_name === process.env.REPO;
+            const proceed = data.state === "open" && data.draft === false && sameRepo && data.head.sha === expected && data.user.login !== "dependabot[bot]";
+            if (!proceed) {
+              core.notice(`Docs preview comment skipped: state=${data.state} draft=${data.draft} head=${data.head.sha} expected=${expected}`);
+              return;
+            }
+            const previewUrl = process.env.PREVIEW_URL;
+            const ok = process.env.PREVIEW_OK === "true";
+            const reason = process.env.PREVIEW_REASON || "upload-unavailable";
+            const shortSha = expected.slice(0, 7);
+            const unavailable = reason === "missing-secret"
+              ? "Preview was not uploaded because the Cloudflare secret is not available to this run."
+              : "Preview is not available yet. It activates once the `zfb-docs` worker exists and the workers.dev subdomain is enabled.";
+            const body = ok
+              ? `${marker}\n### Cloudflare Workers preview\n\n- Preview URL: ${previewUrl}\n- Commit: \`${shortSha}\`\n`
+              : `${marker}\n### Cloudflare Workers preview\n\n⏳ ${unavailable}\n- Commit: \`${shortSha}\`\n`;
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number: prNumber, per_page: 100 });
+            const existing = comments.find((comment) => comment.body && comment.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+            }

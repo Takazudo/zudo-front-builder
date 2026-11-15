@@ -84,8 +84,8 @@ function correctFiles() {
       }
       const count = index >= 4 ? 2 : 1;
       const versionProse = ja
-        ? `出荷された **${manifest.measuredOnVersion}** のアーティファクトの行です。\nこれらは永続的な保証ではなく ${manifest.measuredOnVersion} の測定値です。`
-        : `These are the shipped **${manifest.measuredOnVersion}** artifact rows.\nThese are ${manifest.measuredOnVersion} measurements, not permanent promises.`;
+        ? `歴史的な記録である **${manifest.measuredOnVersion}** のアーティファクトの行です。\nこれらは永続的な保証ではなく ${manifest.measuredOnVersion} の測定値です。`
+        : `These are the historical **${manifest.measuredOnVersion}** artifact rows.\nThese are ${manifest.measuredOnVersion} measurements, not permanent promises.`;
       const sections = Array.from(
         { length: count },
         () => `${versionProse}\n${shippedTable({ ja })}\n${ja ? jaProse : enProse}`,

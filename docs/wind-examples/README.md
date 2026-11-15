@@ -107,7 +107,10 @@ Normal docs build/deploy consumes committed assets and never builds Rust.
 The narrowly gated `wind-previews` job in `docs-checks.yml` builds one no-V8
 workspace binary, checks all fixtures and freshness, and feeds the required,
 fail-closed `Docs gate`. Compiler/catalog, records/config, generator scripts,
-assets, and Rust manifests trigger it. The docs job checks both utility locales,
+assets, and Rust manifests trigger that asset check. A `compiler.sourceSha256`
+difference alone does not fail it and does not rewrite the saved manifest.
+The docs site build is a separate decision (`docs-site.yml`) and does not start
+for an ordinary crate, Cargo, or toolchain diff. The docs job checks both utility locales,
 guide blocks, exact coverage, built routes and fragments, and native Chromium
 previews in English and Japanese at root and genuine prefix mounts. Failure,
 cancellation, detector failure, and unexplained skipping all fail the gate.

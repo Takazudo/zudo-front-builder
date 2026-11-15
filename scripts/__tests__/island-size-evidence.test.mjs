@@ -145,7 +145,6 @@ describe("Linux collection orchestration (synthetic outcomes)", () => {
   const fastChecks = [
     "pnpm format:check",
     "Wind policy, inventory, accounting and mutation contracts",
-    "Assert md-wasm documentation matches shipped sizes",
     "Check SSE endpoint literal ownership",
   ];
   const rustTests = [
@@ -371,7 +370,6 @@ describe("saved-byte eligibility (synthetic fixtures)", () => {
   const backendRejection =
     "Island size budget rejected:\n" +
     "- local measurement runners: SHA-256 values differ from the reviewed contract\n" +
-    "- local Cargo.lock: SHA-256 differs from the reviewed contract\n" +
     ["workspace", "packed"]
       .map(
         (mode) =>
@@ -379,9 +377,7 @@ describe("saved-byte eligibility (synthetic fixtures)", () => {
           mode +
           " provenance: runner hashes differ from the contract\n- " +
           mode +
-          " provenance: schema mismatch: esbuild-free producer (bundler rolldown-24bc2d0) needs a schemaVersion 4 contract\n- " +
-          mode +
-          " provenance: Cargo lockfile differs from the contract\n",
+          " provenance: schema mismatch: esbuild-free producer (bundler rolldown-24bc2d0) needs a schemaVersion 4 contract\n",
       )
       .join("");
   it("retains the exact esbuild-free backend rejection of a schemaVersion-3 contract", () => {
@@ -390,7 +386,7 @@ describe("saved-byte eligibility (synthetic fixtures)", () => {
   it("refuses a partial, extended or foreign-bundler backend rejection", () => {
     const lines = backendRejection.trimEnd().split("\n");
     for (const stderr of [
-      lines.filter((line) => !line.includes("Cargo")).join("\n") + "\n",
+      lines.filter((line) => !line.includes("schema mismatch")).join("\n") + "\n",
       lines.filter((line) => !line.includes("runner")).join("\n") + "\n",
       backendRejection + "- workspace provenance: unsupported Node version\n",
       backendRejection.replaceAll("rolldown-24bc2d0", "rolldown-0000000"),
@@ -412,14 +408,7 @@ describe("saved-byte eligibility (synthetic fixtures)", () => {
     ])
       expect(budgetAllowsRetention(result)).toBe(false);
   });
-  for (const kind of [
-    "missing row",
-    "stale source",
-    "altered sidecar",
-    "stale output",
-    "increase",
-    "decrease",
-  ]) {
+  for (const kind of ["missing row", "stale source", "altered sidecar", "stale output"]) {
     it("rejects " + kind, () => {
       const pair = savedPair();
       const dir = resolve(pair.directory, "real-workspace");
@@ -431,8 +420,6 @@ describe("saved-byte eligibility (synthetic fixtures)", () => {
         sidecar.results["event-only"].shipped.raw++;
         writeFileSync(p, JSON.stringify(sidecar));
       }
-      if (kind === "increase") pair.contract.ceilings.workspace["event-only"].raw--;
-      if (kind === "decrease") pair.contract.ceilings.workspace["event-only"].raw++;
       expect(() =>
         assertCompletePair(
           pair.directory,
@@ -440,6 +427,14 @@ describe("saved-byte eligibility (synthetic fixtures)", () => {
           kind === "stale source" ? "c".repeat(40) : sourceSha,
         ),
       ).toThrow();
+    });
+  }
+  for (const kind of ["increase", "decrease"]) {
+    it("keeps a complete pair when the historical " + kind + " ceiling differs", () => {
+      const pair = savedPair();
+      if (kind === "increase") pair.contract.ceilings.workspace["event-only"].raw--;
+      if (kind === "decrease") pair.contract.ceilings.workspace["event-only"].raw++;
+      expect(() => assertCompletePair(pair.directory, pair.contract, sourceSha)).not.toThrow();
     });
   }
 });

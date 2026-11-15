@@ -174,7 +174,6 @@ describe("docs-checks.yml docs-only lane", () => {
       "pnpm typecheck:workspace",
       "pnpm test:workspace",
       "pnpm format:check",
-      "node scripts/assert-md-wasm-size-docs.mjs",
       "node scripts/check-sse-endpoint.mjs",
     ]) {
       expect(laneRuns).toContain(command);

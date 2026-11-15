@@ -1,5 +1,5 @@
 ---
-description: "Release @takazudo/zfb by following the canonical RELEASING.md: judge the version, measure version-stamped sizes in CI, bump the eleven lockstep packages, write the five package changelog pages, push, verify required CI on the bump SHA, create the draft GH Release, admit the owner-Mac Darwin inputs (built with scripts/build-darwin-local.sh; x86_64 Rosetta-translated), publish without GitHub Latest, watch release.yml and the installer smoke, verify delivery, then promote Latest and update Homebrew. npm auth is OIDC trusted publishing only. STABLE-BY-DEFAULT: with no argument a patch/minor lands on npm `latest`; a major stops and asks. Stops (never works around) on missing Darwin inputs or an unacknowledged provenance downgrade. Pass --confirm to stop at the unpublished draft. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
+description: "Release @takazudo/zfb by following the canonical RELEASING.md: judge the version, bump the eleven lockstep packages, write the five package changelog pages, push, verify required CI on the bump SHA, create the draft GH Release, admit the owner-Mac Darwin inputs (built with scripts/build-darwin-local.sh; x86_64 Rosetta-translated), publish without GitHub Latest, watch release.yml and the installer smoke, verify delivery, then promote Latest and update Homebrew. Artifact sizes and island totals are reports; a version bump does not rebaseline them. npm auth is OIDC trusted publishing only. STABLE-BY-DEFAULT: with no argument a patch/minor lands on npm `latest`; a major stops and asks. Stops (never works around) on missing Darwin inputs or an unacknowledged provenance downgrade. Pass --confirm to stop at the unpublished draft. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
 user-invocable: true
 argument-description: "Optional — no argument: judge the level from the commits and land a patch/minor stable (a major stops and asks). next — force a prerelease (-next.1 at the judged level from a stable, or -next.N+1 continuing a prerelease). major|minor|patch — force a prerelease on that component. stable — promote the current prerelease. stable major|minor|patch — force a specific stable bump. --confirm — present the proposal and wait, and stop at the unpublished draft. cancel — delete an orphaned draft GH Release instead of releasing. resume — re-run scripts/release/release-status.mjs and continue from its recommendation."
 ---
@@ -9,6 +9,8 @@ argument-description: "Optional — no argument: judge the level from the commit
 **Follow [`RELEASING.md`](../../../RELEASING.md) exactly.** It is the canonical, tool-neutral
 procedure; this skill only maps arguments and adds Claude Code notes. Read the whole file before
 the first mutation. Where this skill and `RELEASING.md` disagree, `RELEASING.md` wins.
+A version bump does not open a size-measurement draft, rewrite historical size tables, or
+rebaseline the island-size decision. Artifact, packing, and digest checks stay mandatory.
 
 ## Arguments
 

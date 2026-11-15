@@ -1,12 +1,14 @@
 ---
 name: zfb-release
-description: "Release @takazudo/zfb and its lockstep packages by following the repository's canonical RELEASING.md (version judgment, CI-measured version stamps, bump, five-lane changelog, required CI on the bump SHA, draft Release, Darwin admission, publish, watch, delivery verification, Latest promotion, Homebrew). Use only when the owner has authorized a specific release. Cloud sessions consume owner-Mac Darwin inputs and stop when they are missing."
+description: "Release @takazudo/zfb and its lockstep packages by following the repository's canonical RELEASING.md (version judgment, bump, five-lane changelog, required CI on the bump SHA, draft Release, Darwin admission, publish, watch, delivery verification, Latest promotion, Homebrew). Artifact sizes and island totals are reports; a version bump does not rebaseline them. Use only when the owner has authorized a specific release. Cloud sessions consume owner-Mac Darwin inputs and stop when they are missing."
 ---
 
 # zfb release (Codex)
 
 Follow [`RELEASING.md`](../../../RELEASING.md) at the repository root **exactly**. This file only
-adds Codex-specific notes; where they disagree, `RELEASING.md` wins.
+adds Codex-specific notes; where they disagree, `RELEASING.md` wins. A version bump does not
+open a size-measurement draft, rewrite historical size tables, or rebaseline the island-size
+decision. Artifact, packing, and digest checks stay mandatory.
 
 ## Before anything else
 

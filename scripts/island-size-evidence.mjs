@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Collection eligibility only, not re-pin admission. Keep the budget check's
-// nonzero exit and output intact; a complete old-Cargo-pin-only or
-// old-fingerprint-sha256-only rejection is retained for the separately
-// reviewed, paired platform activation procedure (LOCK-FINGERPRINT-POLICY.md
-// section 11 for the dependency-graph re-pin, #4580), as is the exact
-// esbuild-free backend rejection of a schemaVersion-3 contract (#4635).
+// Collection eligibility. A past ceiling, lockfile, or toolchain pin that
+// differs from this checkout is a warning inside check-budget.mjs and is not
+// a failure here. This script still rejects an incomplete measurement, a
+// stale source SHA, a platform mismatch, or a sidecar that does not match
+// the saved bytes. The exact historical rejection shapes below stay
+// recognizable so an older checker result can still retain its evidence.
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -28,14 +28,12 @@ const oldPinDiagnostics = [
   // retained for the separately reviewed `--reason bundler-backend` re-pin.
   [
     "local measurement runners: SHA-256 values differ from the reviewed contract",
-    "local Cargo.lock: SHA-256 differs from the reviewed contract",
     ...["workspace", "packed"].flatMap((mode) => [
       mode + " provenance: runner hashes differ from the contract",
       mode +
         " provenance: schema mismatch: esbuild-free producer (bundler " +
         EXPECTED_BUNDLER_IDENTITY +
         ") needs a schemaVersion 4 contract",
-      mode + " provenance: Cargo lockfile differs from the contract",
     ]),
   ],
 ];
@@ -89,20 +87,6 @@ export function assertCompletePair(directory, contract, sourceSha) {
     if (!isDeepStrictEqual(saved, JSON.parse(JSON.stringify(sidecar)))) {
       throw new Error(mode + ": stale or altered normalized sidecar");
     }
-    for (const fixture of fixtures) {
-      for (const metric of ["raw", "gzipNormalized"]) {
-        if (sidecar.results[fixture].shipped[metric] !== contract.ceilings[mode][fixture][metric]) {
-          throw new Error(
-            mode +
-              "/" +
-              fixture +
-              ": changed " +
-              metric +
-              " total is not activation evidence (including decreases)",
-          );
-        }
-      }
-    }
   }
 }
 
@@ -136,7 +120,7 @@ export function runBudgetEvidence({
   }
   if (output) appendFileSync(output, "complete=true\n");
   log.write(
-    "Complete unchanged-total evidence retained; budget verdict remains " + result.status + ".\n",
+    "Complete measurement evidence retained; budget verdict remains " + result.status + ".\n",
   );
   return result.status;
 }

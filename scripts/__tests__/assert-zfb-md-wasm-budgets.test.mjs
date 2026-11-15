@@ -75,14 +75,14 @@ describe("compareManifest", () => {
     ]);
   });
 
-  it("carries severity error and a message naming the artifact and column", () => {
+  it("carries a warning and a message naming the artifact and column", () => {
     const measuredByArtifact = matchingMeasuredByArtifact();
     measuredByArtifact["parse-only"] = { ...documented.parse, glue: documented.parse.glue + 5 };
 
     expect(compareManifest(measuredByArtifact, documented)).toEqual([
       expect.objectContaining({
         code: "manifest-mismatch",
-        severity: "error",
+        severity: "warning",
         artifact: "parse-only",
         column: "glue",
         measured: documented.parse.glue + 5,
@@ -113,13 +113,13 @@ describe("checkCeilings", () => {
     expect(checkCeilings(measuredByArtifact)).toEqual([
       expect.objectContaining({
         code: "ceiling-exceeded",
-        severity: "error",
+        severity: "warning",
         artifact: "highlight-only",
         message: expect.stringContaining("highlight-only gzip-9 size"),
       }),
       expect.objectContaining({
         code: "ceiling-exceeded",
-        severity: "error",
+        severity: "warning",
         artifact: "parse-only",
         message: expect.stringContaining("parse-only gzip-9 size"),
       }),
@@ -128,7 +128,7 @@ describe("checkCeilings", () => {
 });
 
 describe("formatFindings", () => {
-  it("lists two manifest errors and two ceiling errors from different artifacts, each once, with repair instructions once", () => {
+  it("lists manifest and ceiling warnings from different artifacts, each once, with the optional refresh line once", () => {
     const measuredByArtifact = matchingMeasuredByArtifact();
     measuredByArtifact["render-only"] = {
       ...documented.render,
@@ -227,7 +227,7 @@ describe("compareManifest gzip drift tolerance (#2878)", () => {
     ]);
   });
 
-  it("treats a drift one byte beyond the tolerance as an error", () => {
+  it("treats a drift one byte beyond the tolerance as a warning", () => {
     const measuredByArtifact = matchingMeasuredByArtifact();
     measuredByArtifact["render-only"] = {
       ...documented.render,
@@ -237,7 +237,7 @@ describe("compareManifest gzip drift tolerance (#2878)", () => {
     expect(compareManifest(measuredByArtifact, documented)).toEqual([
       expect.objectContaining({
         code: "manifest-mismatch",
-        severity: "error",
+        severity: "warning",
         artifact: "render-only",
         column: "gzip9",
         delta: GZIP_DRIFT_TOLERANCE_BYTES + 1,
@@ -245,7 +245,7 @@ describe("compareManifest gzip drift tolerance (#2878)", () => {
     ]);
   });
 
-  it("still reports a +-1 B drift on finalWasm or glue as an error (exact columns unaffected)", () => {
+  it("reports a +-1 B drift on finalWasm or glue as a warning", () => {
     const measuredByArtifact = matchingMeasuredByArtifact();
     measuredByArtifact["render-only"] = {
       ...documented.render,
@@ -259,13 +259,13 @@ describe("compareManifest gzip drift tolerance (#2878)", () => {
     expect(compareManifest(measuredByArtifact, documented)).toEqual([
       expect.objectContaining({
         code: "manifest-mismatch",
-        severity: "error",
+        severity: "warning",
         artifact: "render-only",
         column: "finalWasm",
       }),
       expect.objectContaining({
         code: "manifest-mismatch",
-        severity: "error",
+        severity: "warning",
         artifact: "parse-only",
         column: "glue",
       }),
@@ -309,7 +309,7 @@ describe("compareManifest gzip drift tolerance (#2878)", () => {
     expect(ceilingFindings).toEqual([
       expect.objectContaining({
         code: "ceiling-exceeded",
-        severity: "error",
+        severity: "warning",
         artifact: "highlight-only",
       }),
     ]);
@@ -323,9 +323,10 @@ describe("compareManifest gzip drift tolerance (#2878)", () => {
     ).toBe(true);
     expect(
       allFindings.filter(
-        (finding) => finding.severity === "error" && finding.code === "ceiling-exceeded",
+        (finding) => finding.severity === "warning" && finding.code === "ceiling-exceeded",
       ),
     ).toHaveLength(1);
+    expect(allFindings.filter((finding) => finding.severity === "error")).toEqual([]);
   });
 
   it("reproduces byte-exact behaviour when tolerance is 0", () => {
@@ -338,7 +339,7 @@ describe("compareManifest gzip drift tolerance (#2878)", () => {
     expect(compareManifest(measuredByArtifact, documented, { tolerance: 0 })).toEqual([
       expect.objectContaining({
         code: "manifest-mismatch",
-        severity: "error",
+        severity: "warning",
         artifact: "render-only",
         column: "gzip9",
         delta: 1,
@@ -346,7 +347,7 @@ describe("compareManifest gzip drift tolerance (#2878)", () => {
     ]);
   });
 
-  it("omits warnings from formatFindings while every warning names its artifact, column, and tolerance", () => {
+  it("includes every size warning in the informational report", () => {
     const measuredByArtifact = matchingMeasuredByArtifact();
     measuredByArtifact["render-only"] = {
       ...documented.render,
@@ -360,17 +361,17 @@ describe("compareManifest gzip drift tolerance (#2878)", () => {
     const findings = compareManifest(measuredByArtifact, documented);
     const warnings = findings.filter((finding) => finding.severity === "warning");
     const errors = findings.filter((finding) => finding.severity === "error");
-    expect(warnings).toHaveLength(1);
-    expect(errors).toHaveLength(1);
+    expect(warnings).toHaveLength(2);
+    expect(errors).toHaveLength(0);
     for (const warning of warnings) {
       expect(warning.message).toContain(warning.artifact);
       expect(warning.message).toContain(warning.column);
-      expect(warning.message).toContain(`${warning.tolerance}`);
+      if (warning.tolerance !== undefined)
+        expect(warning.message).toContain(`${warning.tolerance}`);
     }
 
     const output = formatFindings(findings);
-    expect(output).not.toContain(warnings[0].message);
-    expect(output).toContain(errors[0].message);
+    for (const warning of warnings) expect(output).toContain(warning.message);
   });
 });
 

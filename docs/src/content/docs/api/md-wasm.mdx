@@ -362,7 +362,7 @@ highlight entries have independent recovery state.
 
 ### Shipped artifact sizes and locked ceilings
 
-These are the shipped **6.1.4** artifact rows — optimized final wasm after
+These are the historical **6.1.4** artifact rows — optimized final wasm after
 wasm-bindgen and wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue
 bytes/gzip:
 
@@ -376,16 +376,14 @@ bytes/gzip:
 The #2447 decision snapshot found the split package layout at 3,638,607 B
 versus 2,314,818 B for root plus highlight, a 210 s clean production
 ceiling, and a selected-snapshot median of 155.015 s [153.496, 165.977].
-Locked gzip-9 ceilings are root 1,600,000 B, highlight 880,000 B, render
+Historical reference ceilings are root 1,600,000 B, highlight 880,000 B, render
 1,125,000 B, and parse 325,000 B; the complete packed tarball ceiling is
 3,900,000 B. All four ship inside their ceilings, with 64,314 B (root),
 57,533 B (highlight), 9,124 B (render), and 23,507 B (parse) of headroom.
 These are 6.1.4 measurements, not permanent promises — re-measure against
 the version you actually install.
 
-**Sizes are guarded; content digests are not.** The byte sizes above are held by
-`shipped-sizes.json` and asserted in CI, so they move only on a deliberate
-artifact change. SHA-256 digests are a different matter: every release stamps
+**Exact bytes and digests come from that version's artifacts.** The table above is a historical measurement for the version it names, not a current distributed size or a guaranteed capacity. SHA-256 digests are a different matter: every release stamps
 its own version string into each `.wasm` — the value `version()` returns — so
 all four digests change on **every** release, including a documentation-only
 patch whose compiled code is identical and whose byte sizes do not move at all.

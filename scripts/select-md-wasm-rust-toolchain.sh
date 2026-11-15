@@ -7,17 +7,14 @@ set -euo pipefail
 # (plus the wasm32 target) and select it for the rest of the job through
 # RUSTUP_TOOLCHAIN, which overrides rust-toolchain.toml's floating `stable`.
 #
-# The md-wasm release gate compares exact .wasm byte sizes against
-# shipped-sizes.json. Those sizes are measured by health.yml's wasm-md job and
-# rebuilt by release.yml's build-wasm-md job, so both must compile with the
-# same rustc. A floating `stable` let v6.1.0 measure on rustc 1.99.1 and build
-# on 1.100.0 hours later, failing the release.
+# health.yml's wasm-md job and release.yml's build-wasm-md job both compile
+# with this pin, not floating stable. A floating `stable` let v6.1.0 measure
+# on rustc 1.99.1 and build on 1.100.0 hours later. The selected rustc is
+# checked below. shipped-sizes.json measuredWithRustc is a historical label
+# and does not have to move when the pin changes.
 #
 # Only the components passed as arguments are installed: a later step that
 # needs rustfmt or clippy must ask for it here.
-#
-# shipped-sizes.json records measuredWithRustc; a vitest keeps it equal to the
-# pin, so bumping the pin without a fresh measurement fails in T1.
 #
 # Usage: scripts/select-md-wasm-rust-toolchain.sh [extra-component ...]
 # Writes RUSTUP_TOOLCHAIN to $GITHUB_ENV when that is set.

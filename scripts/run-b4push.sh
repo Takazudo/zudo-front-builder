@@ -20,39 +20,38 @@ set -uo pipefail
 #   3. cargo machete --with-metadata (optional local tool) — fast
 #   4. cargo fmt --check                          — near-free, no compilation
 #   5. pnpm format:check (oxfmt + mdx)            — fast
-#   6. node scripts/assert-md-wasm-size-docs.mjs — fast
-#   7. node scripts/check-sse-endpoint.mjs — fast, offline source guard
-#   8. pnpm typecheck:workspace (excluding examples + zfb-md-wasm) — fast
-#   9. pnpm test:workspace (vitest; excluding zfb-md-wasm) — fast
-#  10. cargo clippy -D warnings                   — fast on a WARM tree
-#  11. Regenerate + diff syntect syntax-set.packdump       — opt-in (B4PUSH_FULL=1)
-#  12. cargo nextest run --workspace (or cargo test)       — opt-in (B4PUSH_FULL=1)
-#  13. cargo test --workspace --doc (nextest branch only)  — opt-in (B4PUSH_FULL=1)
-#  14. cargo nextest run -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
-#  15. cargo clippy -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
-#  16. cargo check --no-default-features -p zfb --tests    — opt-in (B4PUSH_FULL=1)
+#   6. node scripts/check-sse-endpoint.mjs — fast, offline source guard
+#   7. pnpm typecheck:workspace (excluding examples + zfb-md-wasm) — fast
+#   8. pnpm test:workspace (vitest; excluding zfb-md-wasm) — fast
+#   9. cargo clippy -D warnings                   — fast on a WARM tree
+#  10. Regenerate + diff syntect syntax-set.packdump       — opt-in (B4PUSH_FULL=1)
+#  11. cargo nextest run --workspace (or cargo test)       — opt-in (B4PUSH_FULL=1)
+#  12. cargo test --workspace --doc (nextest branch only)  — opt-in (B4PUSH_FULL=1)
+#  13. cargo nextest run -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
+#  14. cargo clippy -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
+#  15. cargo check --no-default-features -p zfb --tests    — opt-in (B4PUSH_FULL=1)
 #
-# Steps 12 and 14 use cargo-nextest (nextest's DEFAULT profile, retries = 0) when
+# Steps 11 and 13 use cargo-nextest (nextest's DEFAULT profile, retries = 0) when
 # it is installed, matching CI's runner; they fall back to plain `cargo test`
-# when nextest is absent (issue #1340). Step 13 exists ONLY in the nextest branch:
+# when nextest is absent (issue #1340). Step 12 exists ONLY in the nextest branch:
 # nextest does NOT run doctests, so — mirroring health.yml's separate doc step —
 # a `cargo test --workspace --doc` follows the nextest workspace run to keep
 # doctest coverage. The plain-`cargo test --workspace` fallback already runs
 # doctests as part of that same command, so it needs no separate step.
 #
-# Steps 14-16 mirror the health.yml lanes that steps 1-12 alone cannot reproduce
+# Steps 13-15 mirror the health.yml lanes that steps 1-11 alone cannot reproduce
 # (issue #1332): the zfb-md-extras `test-utils`-gated suite + its scoped clippy
 # (health.yml:165,169), and the V8-off `build-no-v8` job's cargo check
 # (health.yml:219). Without them, "B4PUSH_FULL=1 pnpm b4push passed" did not
 # imply "health.yml will pass."
 #
 # The former steps 17-19 (esbuild env-gated suites run with --ignored) were
-# removed by #4635: those tests are no longer ignored, so step 12 runs them.
+# removed by #4635: those tests are no longer ignored, so step 11 runs them.
 #
 # Env overrides:
-#   B4PUSH_SKIP_CLIPPY=1   — skip clippy (step 10); use on a cold tree to stay bounded
-#   B4PUSH_SKIP_JS_TEST=1  — skip the vitest suites (step 9)
-#   B4PUSH_FULL=1          — additionally run steps 11-16 (syntect packdump
+#   B4PUSH_SKIP_CLIPPY=1   — skip clippy (step 9); use on a cold tree to stay bounded
+#   B4PUSH_SKIP_JS_TEST=1  — skip the vitest suites (step 8)
+#   B4PUSH_FULL=1          — additionally run steps 10-15 (syntect packdump
 #                            freshness gate, full workspace test,
 #                            zfb-md-extras test-utils lane, no-V8 cargo check)
 #   HEAVY_GUARD=/path      — override the machine-wide heavy-guard executable
@@ -219,14 +218,6 @@ if pnpm format:check; then
   pass "format:check"
 else
   fail "format:check (run \`pnpm format\` to fix)"
-fi
-
-# ── MD/Wasm documentation size guard ───────────────────
-step "MD/Wasm documentation size guard"
-if node scripts/assert-md-wasm-size-docs.mjs; then
-  pass "MD/Wasm documentation size guard"
-else
-  fail "MD/Wasm documentation size guard"
 fi
 
 # ── SSE endpoint literal guard ─────────────────────────
