@@ -12,7 +12,7 @@
   "decisionIssue": 3469,
   "outcome": "release-version-stamp",
   "selectedOptimizations": [],
-  "baselineSourceSha": "f6388b7d5da3357a5792d30a4241fc33161ec800",
+  "baselineSourceSha": "30f9202164012db6f9fe82ec31f56a9711aa3b01",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -32,12 +32,12 @@
     "measure.mjs": "e7571c3e781e2c10cddecc135e2ea411232f766e8f043f1fd8b95582c468b47c"
   },
   "toolchain": {
-    "packageVersion": "6.1.3",
+    "packageVersion": "6.1.4",
     "honoVersion": "4.12.25",
     "bundlerIdentity": "rolldown-24bc2d0",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "04d0dd7f775a6edd392acdb648d4b29895021ba5f2dc3d16b6041b0fa9ab0580",
+    "pnpmLockSha256": "32448019bc5d6e715b697b9fd448aa988899cecd5b9ecdf9900eb5567e8d2519",
     "cargoLockSha256": "b4e8f2413e0c8df9df8cd47fb8e555189560ad01bae65d3e9d637d6a51810634"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
@@ -116,46 +116,46 @@
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v6.1.3 ceilings on metric gzip-identity-normalized v2, re-pinned from health run 43422556476 at PR merge source af67058854ec7298e73088dac3769eea5b61e559 (probe head f6388b7d5da3357a5792d30a4241fc33161ec800). Every raw and gzipNormalized total is unchanged from the v6.1.2 contract. This records a release-bump re-pin; equal totals alone do not prove byte-identical product code. 9 actual gzip totals moved by -4 to +4 bytes (evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v6.1.4 ceilings on metric gzip-identity-normalized v2, re-pinned from health run 43696697276 at PR merge source 44950825faf763af939ae36777093d95a7e41616 (probe head 30f9202164012db6f9fe82ec31f56a9711aa3b01). Every raw and gzipNormalized total is unchanged from the v6.1.3 contract. This records a release-bump re-pin; equal totals alone do not prove byte-identical product code. 10 actual gzip totals moved by -3 to +3 bytes (evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 43422556476,
-    "jobId": 131875922006,
-    "sourceSha": "af67058854ec7298e73088dac3769eea5b61e559",
+    "runId": 43696697276,
+    "jobId": 132758765035,
+    "sourceSha": "44950825faf763af939ae36777093d95a7e41616",
     "repinnedFrom": {
       "schemaVersion": 4,
       "outcome": "release-version-stamp",
-      "packageVersion": "6.1.2",
-      "baselineSourceSha": "294a192a48f30980048e3fcdf3ddd2a419925414",
-      "baselineRunId": 43382274321,
+      "packageVersion": "6.1.3",
+      "baselineSourceSha": "f6388b7d5da3357a5792d30a4241fc33161ec800",
+      "baselineRunId": 43422556476,
       "contract": {
-        "sha256": "8c257bfa88b3ae7d528c921e1f06b814b4b20bf9fadfc5fc8bc1b46070b5c368",
-        "commit": "f6388b7d5da3357a5792d30a4241fc33161ec800",
+        "sha256": "be8a894be09611a0edbab5b051d02e3be98147749ef2dfed123fa8b685555c76",
+        "commit": "30f9202164012db6f9fe82ec31f56a9711aa3b01",
         "path": "research/v3-island-size/decision-linux-x64.json"
       }
     },
     "actualGzip": {
       "workspace": {
         "blog-theme": 21408,
-        "event-only": 21267,
-        "json-api": 21367,
-        "model": 21271,
-        "multi-island": 21366,
+        "event-only": 21268,
+        "json-api": 21366,
+        "model": 21273,
+        "multi-island": 21367,
         "no-island": 0,
-        "scalar-signal": 21273,
-        "show-for": 21355
+        "scalar-signal": 21271,
+        "show-for": 21358
       },
       "packed": {
         "blog-theme": 21408,
         "event-only": 21266,
-        "json-api": 21367,
-        "model": 21272,
-        "multi-island": 21366,
+        "json-api": 21365,
+        "model": 21271,
+        "multi-island": 21365,
         "no-island": 0,
         "scalar-signal": 21274,
-        "show-for": 21359
+        "show-for": 21356
       }
     },
-    "note": "Release probe PR #4713 run for v6.1.3 at PR merge source af67058854ec7298e73088dac3769eea5b61e559 (probe head f6388b7d5da3357a5792d30a4241fc33161ec800). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v6.1.2 contract; 9 actual gzip totals moved by -4 to +4 bytes (evidence only, not a ceiling). Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Release probe PR #4725 run for v6.1.4 at PR merge source 44950825faf763af939ae36777093d95a7e41616 (probe head 30f9202164012db6f9fe82ec31f56a9711aa3b01). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v6.1.3 contract; 10 actual gzip totals moved by -3 to +3 bytes (evidence only, not a ceiling). Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }
