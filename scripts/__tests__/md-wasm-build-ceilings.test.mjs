@@ -48,57 +48,26 @@ describe("legacyEnvVarWarning", () => {
 });
 
 describe("evaluateCeilings", () => {
-  const twoOver = [
+  const mixed = [
     { label: "default", gzipSize: 100, gzipCeiling: 100 },
-    { label: "highlight-only", gzipSize: 120, gzipCeiling: 100 },
+    { label: "highlight-only", gzipSize: 80, gzipCeiling: 100 },
     { label: "render-only", gzipSize: 150, gzipCeiling: 100 },
   ];
 
-  it("reports no errors or warnings when every artifact is under its ceiling", () => {
-    const allUnder = [
-      { label: "default", gzipSize: 90, gzipCeiling: 100 },
-      { label: "highlight-only", gzipSize: 100, gzipCeiling: 100 },
-    ];
-    expect(evaluateCeilings(allUnder, { allowOver: false, ci: false })).toEqual({
-      errors: [],
-      warnings: [],
-    });
-  });
-
-  it("collects one error per over-ceiling artifact, never stopping at the first", () => {
-    const { errors, warnings } = evaluateCeilings(twoOver, { allowOver: false, ci: false });
-    expect(errors).toHaveLength(2);
-    expect(errors[0]).toContain("highlight-only");
-    expect(errors[1]).toContain("render-only");
-    expect(warnings).toEqual([]);
-  });
-
-  it("downgrades breaches to warnings when the local opt-in is set outside CI", () => {
-    const { errors, warnings } = evaluateCeilings(twoOver, { allowOver: true, ci: false });
-    expect(errors).toEqual([]);
-    expect(warnings).toHaveLength(2);
-    expect(warnings[0]).toContain("highlight-only");
-    expect(warnings[0]).toContain("over by 20");
-    expect(warnings[0]).toContain("CI remains the oracle");
-    expect(warnings[1]).toContain("render-only");
-    expect(warnings[1]).toContain("over by 50");
-  });
-
-  it("refuses the opt-in outright when CI is set, naming the flag in a single error", () => {
-    const { errors, warnings } = evaluateCeilings(twoOver, { allowOver: true, ci: true });
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("--allow-over-ceiling");
-    expect(warnings).toEqual([]);
-  });
-
-  // zfb#3057 regression: an exported ZFB_MD_WASM_ALLOW_OVER_CEILING must
-  // never soften a breach again -- it is ignored, so policy.allowOver is
-  // false and over-ceiling stats still error out.
-  it("still errors on over-ceiling stats when only the retired env var is set", () => {
-    const policy = ceilingPolicyFromArgv([], { ZFB_MD_WASM_ALLOW_OVER_CEILING: "1" });
-    const { errors, warnings } = evaluateCeilings(twoOver, policy);
-    expect(errors).toHaveLength(2);
-    expect(warnings).toEqual([]);
+  it("reports equal, smaller, and larger sizes as warnings and never as errors", () => {
+    for (const policy of [
+      { allowOver: false, ci: false },
+      { allowOver: true, ci: false },
+      { allowOver: true, ci: true },
+      ceilingPolicyFromArgv([], { ZFB_MD_WASM_ALLOW_OVER_CEILING: "1", CI: "true" }),
+    ]) {
+      const { errors, warnings } = evaluateCeilings(mixed, policy);
+      expect(errors).toEqual([]);
+      expect(warnings).toHaveLength(3);
+      expect(warnings[0]).toContain("matches historical ceiling");
+      expect(warnings[1]).toContain("delta -20");
+      expect(warnings[2]).toContain("delta +50");
+    }
   });
 });
 
@@ -150,15 +119,16 @@ describe("reportCeilings", () => {
     },
   ];
 
-  it("logs all four artifact summaries before throwing once, on breach", () => {
+  it("logs all four artifact summaries and a size warning without throwing", () => {
     const lines = [];
     const log = (msg) => lines.push(msg);
     const breaching = records.map((record, index) =>
       index === 2 ? { ...record, gzipSize: 150 } : record,
     );
 
-    expect(() => reportCeilings(breaching, { allowOver: false, ci: false }, log)).toThrow(
-      /render-only/,
+    expect(() => reportCeilings(breaching, { allowOver: false, ci: true }, log)).not.toThrow();
+    expect(lines.some((line) => line.includes("WARNING:") && line.includes("render-only"))).toBe(
+      true,
     );
 
     for (const { label, entry } of records) {

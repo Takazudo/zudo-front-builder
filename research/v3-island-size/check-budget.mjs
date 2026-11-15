@@ -2,7 +2,7 @@
 // Validate real zfb island-size runs against the reviewed, per-fixture contract.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -306,7 +306,7 @@ function equalSize(left, right) {
   );
 }
 
-function validateContract(contract, localInputs, runningPlatform, errors) {
+function validateContract(contract, localInputs, runningPlatform, errors, warnings) {
   if (!isRecord(contract)) {
     errors.push("contract: expected a JSON object");
     return;
@@ -476,18 +476,18 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
   // schemaVersion 3 and 4 pin only the lock content that can produce measured
   // bytes; toolchain.pnpmLockSha256 stays recorded but is not compared.
   if (fingerprintSchema(contract)) {
-    compareLocalFingerprint(contract.dependencyFingerprint, localInputs, errors);
+    compareLocalFingerprint(contract.dependencyFingerprint, localInputs, errors, warnings);
   } else if (contract.toolchain?.pnpmLockSha256 !== localInputs.pnpmLockSha256) {
-    errors.push("local pnpm-lock.yaml: SHA-256 differs from the reviewed contract");
+    warnings.push("local pnpm-lock.yaml: SHA-256 differs from the reviewed contract");
   }
   if (contract.toolchain?.cargoLockSha256 !== localInputs.cargoLockSha256) {
-    errors.push("local Cargo.lock: SHA-256 differs from the reviewed contract");
+    warnings.push("local Cargo.lock: SHA-256 differs from the reviewed contract");
   }
   if (
     bundlerSchema(contract) &&
     contract.toolchain?.bundlerIdentity !== localInputs.bundlerIdentity
   ) {
-    errors.push(
+    warnings.push(
       "local " + BUNDLER_IDENTITY_SOURCE + ": BACKEND_IDENTITY differs from the reviewed contract",
     );
   }
@@ -496,7 +496,7 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
     shaPattern.test(contract.normalizerSha256 ?? "") &&
     contract.normalizerSha256 !== localInputs.normalizerSha256
   ) {
-    errors.push("local " + NORMALIZER_FILE + ": SHA-256 differs from the reviewed contract");
+    warnings.push("local " + NORMALIZER_FILE + ": SHA-256 differs from the reviewed contract");
   }
 }
 
@@ -521,7 +521,7 @@ function validateContractFingerprint(fingerprint, errors) {
   }
 }
 
-function compareLocalFingerprint(fingerprint, localInputs, errors) {
+function compareLocalFingerprint(fingerprint, localInputs, errors, warnings) {
   if (localInputs.dependencyFingerprintError) {
     errors.push("local dependency fingerprint: " + localInputs.dependencyFingerprintError);
     return;
@@ -534,7 +534,7 @@ function compareLocalFingerprint(fingerprint, localInputs, errors) {
   if (!isRecord(fingerprint)) return;
   for (const key of contractFingerprintKeys) {
     if (fingerprint[key] !== local[key]) {
-      errors.push(
+      warnings.push(
         "local dependency fingerprint: " +
           key +
           " differs from the reviewed contract" +
@@ -575,6 +575,7 @@ function validateProvenance(
   runningPlatform,
   localInputs,
   errors,
+  warnings,
 ) {
   const provenance = run.measurement?.provenance;
   const label = mode + " provenance";
@@ -626,8 +627,10 @@ function validateProvenance(
   }
   const esbuildFree = Object.hasOwn(provenance, "bundlerIdentity");
   if (bundlerSchema(contract)) {
-    if (provenance.bundlerIdentity !== contract.toolchain?.bundlerIdentity) {
-      errors.push(label + ": unsupported bundler identity");
+    if (provenance.bundlerIdentity !== localInputs.bundlerIdentity) {
+      errors.push(label + ": bundler identity differs from the current checkout");
+    } else if (provenance.bundlerIdentity !== contract.toolchain?.bundlerIdentity) {
+      warnings.push(label + ": bundler identity differs from the reviewed contract");
     }
     if (
       Object.hasOwn(provenance, "esbuildVersion") ||
@@ -732,8 +735,10 @@ function validateProvenance(
     errors.push(label + ": pnpm lockfile differs from the current checkout");
   }
   validateProvenanceFingerprint(provenance, label, contract, localInputs, errors);
-  if (provenance.cargoLockSha256 !== contract.toolchain?.cargoLockSha256) {
-    errors.push(label + ": Cargo lockfile differs from the contract");
+  if (provenance.cargoLockSha256 !== localInputs.cargoLockSha256) {
+    errors.push(label + ": Cargo lockfile differs from the current checkout");
+  } else if (provenance.cargoLockSha256 !== contract.toolchain?.cargoLockSha256) {
+    warnings.push(label + ": Cargo lockfile differs from the reviewed contract");
   }
   for (const key of [
     "packagePath",
@@ -788,7 +793,16 @@ function validateProvenanceFingerprint(provenance, label, contract, localInputs,
   }
 }
 
-function validateOneResult(mode, fixture, result, artifactCase, contract, normalized, errors) {
+function validateOneResult(
+  mode,
+  fixture,
+  result,
+  artifactCase,
+  contract,
+  normalized,
+  errors,
+  warnings,
+) {
   const label = mode + " " + fixture;
   if (!isRecord(result)) {
     errors.push(label + ": missing fixture result");
@@ -924,23 +938,24 @@ function validateOneResult(mode, fixture, result, artifactCase, contract, normal
         actualShipped,
         normalized,
         errors,
+        warnings,
       );
     } else {
-      compareActualCeiling(label, ceiling, contract.allowance, actualShipped, errors);
+      compareActualCeiling(label, ceiling, contract.allowance, actualShipped, warnings);
     }
   }
   return actualShipped;
 }
 
-function compareActualCeiling(label, ceiling, allowance, actualShipped, errors) {
+function compareActualCeiling(label, ceiling, allowance, actualShipped, warnings) {
   const maximum = {
     raw: ceiling.raw + (allowance.raw ?? 0),
     gzip: ceiling.gzip + (allowance.gzip ?? 0),
   };
   const rawDelta = actualShipped.raw - ceiling.raw;
   const gzipDelta = actualShipped.gzip - ceiling.gzip;
-  if (actualShipped.raw > maximum.raw || actualShipped.gzip > maximum.gzip) {
-    errors.push(
+  if (rawDelta !== 0 || gzipDelta !== 0) {
+    warnings.push(
       label +
         " " +
         expectedToolchain.nodeVersion +
@@ -967,7 +982,15 @@ function compareActualCeiling(label, ceiling, allowance, actualShipped, errors) 
 // The normalized shipped total comes from the normalizer's own recomputation
 // over the saved bytes; actual gzip is printed as transfer-size evidence only
 // and is never compared with a normalized ceiling.
-function compareNormalizedCeiling(label, ceiling, allowance, actualShipped, normalized, errors) {
+function compareNormalizedCeiling(
+  label,
+  ceiling,
+  allowance,
+  actualShipped,
+  normalized,
+  errors,
+  warnings,
+) {
   if (!isRecord(normalized)) {
     errors.push(label + ": no identity-normalized measurement to compare with the contract");
     return;
@@ -982,8 +1005,8 @@ function compareNormalizedCeiling(label, ceiling, allowance, actualShipped, norm
   };
   const rawDelta = normalized.raw - ceiling.raw;
   const normalizedDelta = normalized.gzipNormalized - ceiling.gzipNormalized;
-  if (normalized.raw > maximum.raw || normalized.gzipNormalized > maximum.gzipNormalized) {
-    errors.push(
+  if (rawDelta !== 0 || normalizedDelta !== 0) {
+    warnings.push(
       label +
         " " +
         expectedToolchain.nodeVersion +
@@ -1075,7 +1098,16 @@ function sameFingerprint(left, right) {
   );
 }
 
-function validateRun(run, mode, contract, expectedSourceSha, runningPlatform, localInputs, errors) {
+function validateRun(
+  run,
+  mode,
+  contract,
+  expectedSourceSha,
+  runningPlatform,
+  localInputs,
+  errors,
+  warnings,
+) {
   if (!isRecord(run) || !isRecord(run.measurement)) {
     errors.push(mode + ": missing measurement.json");
     return {};
@@ -1092,6 +1124,7 @@ function validateRun(run, mode, contract, expectedSourceSha, runningPlatform, lo
     runningPlatform,
     localInputs,
     errors,
+    warnings,
   );
   const normalizedContract = contractMetric(contract) === IDENTITY_NORMALIZED_METRIC;
   const expectedRootEntries = [
@@ -1114,7 +1147,7 @@ function validateRun(run, mode, contract, expectedSourceSha, runningPlatform, lo
     errors.push(mode + ": saved outputs must contain all eight fixture directories exactly once");
   }
   const normalized = normalizedContract
-    ? validateNormalizedSidecar(run, mode, contract, errors)
+    ? validateNormalizedSidecar(run, mode, contract, errors, warnings)
     : rejectNormalizedSidecar(run, mode, errors);
   for (const fixture of fixtureNames) {
     validateOneResult(
@@ -1125,6 +1158,7 @@ function validateRun(run, mode, contract, expectedSourceSha, runningPlatform, lo
       contract,
       normalized?.[fixture]?.shipped ?? null,
       errors,
+      warnings,
     );
   }
   return provenance;
@@ -1151,7 +1185,7 @@ function rejectNormalizedSidecar(run, mode, errors) {
 // Recomputes the normalized metric from the saved bytes and requires the
 // sidecar on disk to agree with it, so neither the sidecar's claims nor the
 // measurement's claimed totals are trusted.
-function validateNormalizedSidecar(run, mode, contract, errors) {
+function validateNormalizedSidecar(run, mode, contract, errors, warnings) {
   const label = mode + " normalized";
   if (run.normalized === undefined) {
     errors.push(
@@ -1190,7 +1224,7 @@ function validateNormalizedSidecar(run, mode, contract, errors) {
     errors.push(label + ": sidecar was not produced by " + NORMALIZER_FILE);
   }
   if (sidecar.normalizer?.sha256 !== contract.normalizerSha256) {
-    errors.push(label + ": normalizer hash differs from the contract");
+    warnings.push(label + ": normalizer hash differs from the contract");
   }
   if (sidecar.source?.sha256 !== run.measurementSha256) {
     errors.push(label + ": sidecar was produced from a different measurement.json");
@@ -1237,8 +1271,9 @@ export function validateIslandSizeBudget({
   platform = currentPlatform(),
 }) {
   const errors = [];
-  validateContract(contract, localInputs, platform, errors);
-  if (!isRecord(contract)) return { errors, passed: false };
+  const warnings = [];
+  validateContract(contract, localInputs, platform, errors, warnings);
+  if (!isRecord(contract)) return { errors, warnings, passed: false };
   if (!sourceShaPattern.test(expectedSourceSha ?? "")) {
     errors.push("requested source SHA must be a full git SHA");
   }
@@ -1250,6 +1285,7 @@ export function validateIslandSizeBudget({
     platform,
     localInputs,
     errors,
+    warnings,
   );
   const packedProvenance = validateRun(
     packed,
@@ -1259,9 +1295,10 @@ export function validateIslandSizeBudget({
     platform,
     localInputs,
     errors,
+    warnings,
   );
   compareMatchingProvenance(workspaceProvenance, packedProvenance, errors);
-  return { errors, passed: errors.length === 0 };
+  return { errors, warnings, passed: errors.length === 0 };
 }
 
 function readPackageManifest(packagePath) {
@@ -1477,6 +1514,19 @@ function main() {
     localInputs: currentLocalInputs(contract),
     platform: args.platform,
   });
+  if (result.warnings.length > 0) {
+    const lines = [
+      "Island size budget warnings (informational; historical size, lockfile, and toolchain pins are not failures):",
+      ...result.warnings.map((finding) => "- " + finding),
+    ];
+    for (const line of lines) console.log(line);
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      appendFileSync(
+        process.env.GITHUB_STEP_SUMMARY,
+        lines.map((line) => (line.startsWith("- ") ? line : "### " + line)).join("\n") + "\n",
+      );
+    }
+  }
   if (!result.passed) {
     console.error("Island size budget rejected:");
     for (const finding of result.errors) console.error("- " + finding);

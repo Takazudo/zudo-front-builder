@@ -278,6 +278,31 @@ export function assertDiagnostics(example, result) {
   }
 }
 
+export function compareManifestIdentity(actual, expected) {
+  let saved;
+  let generated;
+  try {
+    saved = JSON.parse(actual);
+    generated = JSON.parse(expected);
+  } catch {
+    return { match: false, savedId: null, generatedId: null, identityDiffers: false };
+  }
+  const savedId = saved?.compiler?.sourceSha256 ?? null;
+  const generatedId = generated?.compiler?.sourceSha256 ?? null;
+  const strip = (value) => {
+    const copy = structuredClone(value);
+    if (copy?.compiler && Object.hasOwn(copy.compiler, "sourceSha256"))
+      copy.compiler.sourceSha256 = "";
+    return copy;
+  };
+  return {
+    match: json(strip(saved)) === json(strip(generated)),
+    savedId,
+    generatedId,
+    identityDiffers: savedId !== generatedId,
+  };
+}
+
 export function assertFresh(outputDir, assets) {
   const actual = existsSync(outputDir)
     ? walk(outputDir)
@@ -287,9 +312,17 @@ export function assertFresh(outputDir, assets) {
   const expected = [...assets.keys()].sort();
   if (json(actual) !== json(expected))
     fail("Stale wind preview asset inventory; regenerate assets");
-  for (const [path, bytes] of assets)
-    if (readFileSync(join(outputDir, path), "utf8") !== bytes)
-      fail(`Stale wind preview asset: ${path}; regenerate assets`);
+  let identity = null;
+  for (const [path, bytes] of assets) {
+    const onDisk = readFileSync(join(outputDir, path), "utf8");
+    if (path === "manifest.json") {
+      identity = compareManifestIdentity(onDisk, bytes);
+      if (!identity.match) fail(`Stale wind preview asset: ${path}; regenerate assets`);
+      continue;
+    }
+    if (onDisk !== bytes) fail(`Stale wind preview asset: ${path}; regenerate assets`);
+  }
+  return identity;
 }
 
 export function generateAssets({ root = REPO_ROOT, compiler, check = false, run = spawnSync }) {
@@ -373,8 +406,14 @@ export function generateAssets({ root = REPO_ROOT, compiler, check = false, run 
       }
     assets.set("manifest.json", json(manifest));
     const outputDir = join(root, "docs/public/wind-examples");
-    if (check) assertFresh(outputDir, assets);
-    else {
+    if (check) {
+      const identity = assertFresh(outputDir, assets);
+      console.log(`compiler.sourceSha256=${manifest.compiler.sourceSha256}`);
+      if (identity?.identityDiffers)
+        console.log(
+          `saved compiler.sourceSha256=${identity.savedId} (informational; preview bytes match, manifest not rewritten)`,
+        );
+    } else {
       rmSync(outputDir, { recursive: true, force: true });
       for (const [path, bytes] of assets) {
         mkdirSync(dirname(join(outputDir, path)), { recursive: true });

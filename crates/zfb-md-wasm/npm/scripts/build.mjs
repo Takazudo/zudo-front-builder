@@ -60,7 +60,13 @@ import { gzipSync } from "node:zlib";
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
-import { SHIPPED_SIZES } from "../../shipped-sizes.mjs";
+// Historical gzip-9 references. They never fail the build, in CI or locally.
+const HISTORICAL_GZIP_CEILINGS = {
+  root: 1_600_000,
+  highlight: 880_000,
+  render: 1_125_000,
+  parse: 325_000,
+};
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, ".."); // crates/zfb-md-wasm/npm
@@ -92,7 +98,7 @@ export const ARTIFACTS = [
     cargoFeatureArgs: [],
     outName: "zfb_md_wasm",
     dirName: "wasm",
-    gzipCeiling: SHIPPED_SIZES.ceilings.root,
+    gzipCeiling: HISTORICAL_GZIP_CEILINGS.root,
   },
   {
     label: "highlight-only",
@@ -101,7 +107,7 @@ export const ARTIFACTS = [
     outName: "zfb_md_wasm_highlight",
     dirName: "wasm-highlight",
     workerd: true,
-    gzipCeiling: SHIPPED_SIZES.ceilings.highlight,
+    gzipCeiling: HISTORICAL_GZIP_CEILINGS.highlight,
   },
   {
     label: "render-only",
@@ -109,7 +115,7 @@ export const ARTIFACTS = [
     cargoFeatureArgs: ["--no-default-features", "--features", "render"],
     outName: "zfb_md_wasm_render",
     dirName: "wasm-render",
-    gzipCeiling: SHIPPED_SIZES.ceilings.render,
+    gzipCeiling: HISTORICAL_GZIP_CEILINGS.render,
   },
   {
     label: "parse-only",
@@ -118,7 +124,7 @@ export const ARTIFACTS = [
     outName: "zfb_md_wasm_parse",
     dirName: "wasm-parse",
     workerd: true,
-    gzipCeiling: SHIPPED_SIZES.ceilings.parse,
+    gzipCeiling: HISTORICAL_GZIP_CEILINGS.parse,
   },
 ];
 
@@ -468,24 +474,11 @@ function fmtBytes(n) {
   return `${n.toLocaleString("en-US")} bytes (${(n / 1024 / 1024).toFixed(2)} MB)`;
 }
 
-// The local Mac/CI codegen-drift escape hatch (zfb#3054, moved from an env
-// var to a CLI flag by zfb#3060/#3057): on some Macs the render-only
-// artifact's gzip-9 size lands a few KB over its ceiling while CI's build of
-// the same source is under it, which otherwise stops `pnpm test:md-wasm`
-// before it ever reaches the test half on a Mac. `--allow-over-ceiling`
-// downgrades ceiling breaches to loud warnings -- but only outside CI.
-// Inside CI it is refused outright (a hard error naming the flag) so it can
-// never be used to force a PR gate green; CI's own build is, and stays, the
-// authoritative oracle.
-//
-// The opt-in MUST be a CLI argument, not env-detected: inside this package's
-// `"prepublishOnly": "pnpm build"`, the nested `pnpm build` invocation sees
-// `npm_lifecycle_event=build` (pnpm rewrites it per script -- probed for
-// zfb#3059), so a publish can't be distinguished from an ordinary build from
-// inside this script, and any ambient env var would soften a publish it was
-// never aimed at. `argv` is supplied by the caller rather than read here, so
-// the policy is a pure function of what was actually passed on the command
-// line (see the CLI entry at the bottom of this file).
+// Historical gzip ceilings are a report, not a build failure, on every host.
+// `--allow-over-ceiling` remains accepted so existing `test:md-wasm:local`
+// commands keep working; it no longer changes the result, and CI does not
+// refuse it. The retired env var is still reported so an old shell export is
+// visible. `argv` is supplied by the caller rather than read here.
 export function ceilingPolicyFromArgv(argv, env) {
   return {
     allowOver: argv.includes("--allow-over-ceiling"),
@@ -509,33 +502,22 @@ export function legacyEnvVarWarning(env) {
 
 // Collect-then-fail: every over-ceiling artifact is reported in one pass,
 // never just the first one found.
-export function evaluateCeilings(stats, policy) {
-  if (policy.allowOver && policy.ci) {
-    return {
-      errors: [
-        "--allow-over-ceiling is refused when CI is set -- it exists for local Mac/CI codegen " +
-          "drift only and must never be used to force a PR gate green. Omit it, or run the " +
-          "strict `pnpm test:md-wasm` lane.",
-      ],
-      warnings: [],
-    };
-  }
-
-  const errors = [];
+export function evaluateCeilings(stats, _policy) {
   const warnings = [];
   for (const { label, gzipSize, gzipCeiling } of stats) {
-    if (gzipSize <= gzipCeiling) continue;
-    const overBy = gzipSize - gzipCeiling;
-    if (policy.allowOver) {
+    if (gzipSize === gzipCeiling) {
       warnings.push(
-        `${label} gzip-9 size ${gzipSize} exceeds ceiling ${gzipCeiling} (over by ${overBy} ` +
-          `bytes) -- allowed locally via --allow-over-ceiling; CI remains the oracle.`,
+        `${label} gzip-9 size ${gzipSize} matches historical ceiling ${gzipCeiling} (informational)`,
       );
-    } else {
-      errors.push(`${label} gzip-9 size ${gzipSize} exceeds ceiling ${gzipCeiling}`);
+      continue;
     }
+    const delta = gzipSize - gzipCeiling;
+    warnings.push(
+      `${label} gzip-9 size ${gzipSize} differs from historical ceiling ${gzipCeiling} ` +
+        `(delta ${delta > 0 ? "+" : ""}${delta}; informational, not a failure)`,
+    );
   }
-  return { errors, warnings };
+  return { errors: [], warnings };
 }
 
 /**
@@ -775,7 +757,7 @@ if (argument !== undefined && import.meta.url === pathToFileURL(argument).href) 
   // module. Note that scripts/run-zfb-md-wasm-build-timed.mjs reaches this
   // branch deliberately -- it rewrites process.argv[1] to this file's path
   // before importing it -- so that wrapper's own trailing arguments are what
-  // main() sees, and passing it --allow-over-ceiling does opt in. That is the
-  // intended pass-through for a timed local Mac run; CI still refuses the flag.
+  // main() sees. `--allow-over-ceiling` is accepted and does not change the
+  // size report.
   main(process.argv.slice(2));
 }

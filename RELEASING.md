@@ -243,62 +243,33 @@ unchanged lane. This is the [five-lane contract](CLAUDE.md#five-lane-release-cha
 
 Print the proposal (current → new, categorized commits) for visibility.
 
-### A4. Version-stamped measurements in CI (before the bump reaches `main`)
+### A4. Artifact reports (not a rebaseline)
 
-Three gates move with the version string, so every release version is measured in CI first:
+A version bump does not require a measurement draft PR, a write-back of past size
+tables, or an island-size rebaseline.
 
-- **md-wasm** — the four `.wasm` files embed `ZFB_RELEASE_VERSION`; exact sizes can move with the
-  stamp. Never measure or refresh `shipped-sizes.json` from a Mac build
-  ([`LOCAL-VS-CI-SIZES.md`](crates/zfb-md-wasm/LOCAL-VS-CI-SIZES.md)). The rustc version moves
-  them too, so health.yml's `wasm-md` job and release.yml's `build-wasm-md` job both compile with
-  the exact version in `crates/zfb-md-wasm/rust-toolchain-pin`, not floating `stable` (v6.1.0
-  measured on 1.99.1 and built on 1.100.0 six hours later, failing its release run). Changing the
-  pin is its own reviewed change and needs a fresh measurement.
-- **Linux island size** — `research/v3-island-size/decision-linux-x64.json` pins the package
-  version; the release must record it with fresh CI evidence.
-- **Wind preview digest** — `docs/public/wind-examples/manifest.json`'s `compiler.sourceSha256`
-  covers `crates/**/*.{rs,toml,json,css}`, which the bump changes.
-
-Procedure:
-
-1. Record `main`'s SHA. On a disposable branch from it, apply [A5](#a5-bump-sync-lockfile) exactly
-   (version + lockfile bytes the bump commit will carry). Push it and open a **draft** PR to `main`.
-2. **md-wasm:** from the `wasm-md (default, default)` job's
-   `Enforce four-artifact gzip budgets and report metrics` step, copy all four CI-measured columns
-   (`finalWasm`, `gzip9`, `glue`, `glueGzip9`) for default, highlight, render and parse. Record
-   every mismatch and gzip warning. A missing metric, failed build or exports assert, or a ceiling
-   breach blocks the release until diagnosed.
-3. **Island size:** download the `health` job's `island-size-linux-x64` artifact (uploaded even on
-   failure) and note the run ID, job ID and probe head SHA. The step is expected to pass (the
-   metric normalizes the version token). If it failed, a size moved: stop for a reviewed decision.
-4. On the probe branch write the rehearsal commit:
-   - set `crates/zfb-md-wasm/shipped-sizes.json` `measuredOnVersion` and the measured columns
-     (keep ceilings), and check its `measuredWithRustc` equals `crates/zfb-md-wasm/rust-toolchain-pin`
-     and the `md-wasm Rust toolchain:` line in that job's log; run `node scripts/assert-md-wasm-size-docs.mjs --fix`, `pnpm format:mdx`,
-     then `node scripts/assert-md-wasm-size-docs.mjs`;
-   - run
-     `node scripts/rebaseline-island-size-linux.mjs --artifact <dir> --run-id <id> --job-id <id> --head-sha <probe-head> --reason release-bump --label "Release probe PR #<pr> run for v<version>"`.
-     It refuses a moved raw/`gzipNormalized` total, a fingerprint, lockfile, version or
-     `Cargo.lock` difference — those need their own reviewed transition (`--reason
-     fingerprint-helper`, `--reason cargo-producer-lock`) landed first. Run `pnpm exec vp fmt` on
-     the changed files;
-   - write the new Wind digest from
-     `node --input-type=module -e "import {compilerSourceDigest} from './docs/scripts/wind-preview-assets.mjs'; console.log(compilerSourceDigest(process.cwd()))"`
-     into the manifest. If `Check workspace wind preview assets` reports any other stale asset,
-     the compiler output changed: regenerate and review instead.
-   - Push and require a new `wasm-md (default)` run with zero budget errors and green
-     `Check workspace wind preview assets` and `Docs gate`. Gzip drift warnings within 64 bytes are
-     acceptable; exact-size errors and ceiling breaches are not. The ~40-minute `health` job need
-     not be awaited here: [A9](#a9-required-ci-on-the-source-sha) gates the bump commit.
-5. If `main` moved past the recorded SHA, redo the probe on the new source. Otherwise carry the
-   whole probe diff onto `main`'s working tree (`git diff <recorded-main> <probe-head> | git apply`),
-   close the probe PR **unmerged** and delete its branch. The Darwin arm64 island contract is not
-   part of this probe.
+- **md-wasm.** The four `.wasm` files still embed `ZFB_RELEASE_VERSION`. health.yml's
+  `wasm-md` job and release.yml's `build-wasm-md` job compile with the exact rustc in
+  `crates/zfb-md-wasm/rust-toolchain-pin` and confirm the selected compiler. A pin change
+  does not require editing `shipped-sizes.json`. The `Report four-artifact sizes` step
+  measures raw, gzip-9, glue, and tarball bytes from the files just built and prints them.
+  A difference from `shipped-sizes.json`, a historical ceiling, or an older toolchain is a
+  report. A missing artifact, a failed build, a failed export or resource check, a
+  dist/pack mismatch, or a `shipped-artifacts.json` bytes/sha256 mismatch still fails.
+  Exact bytes and digests for a published version come from that version's artifacts.
+  Do not refresh `shipped-sizes.json` from a Mac build.
+- **Linux island size.** `check-budget.mjs` still fails an incomplete measurement, a
+  hash that does not match this run's files, a wrong source SHA, or non-zero JavaScript
+  from `no-island`. A change in total size, including a decrease, or a difference from
+  the reviewed lockfile, fingerprint, or toolchain, is a warning. Do not edit
+  `decision-linux-x64.json` just because the package version changed.
+- **Wind preview.** A `compiler.sourceSha256` difference alone does not fail the asset
+  check and does not require a manifest write-back. A real CSS, HTML, file-list, or
+  diagnostic change still fails `--check` until the assets are regenerated and reviewed.
 
 ### A5. Bump, sync, lockfile
 
-Applied first on the probe branch and carried over; afterwards re-run on `main` as a check (no
-further diff):
+Apply on the release working tree:
 
 1. Set `version` in `packages/zfb/package.json` (no `v`).
 2. `node scripts/sync-platform-versions.mjs` — propagates to all lockstep packages and
@@ -412,7 +383,6 @@ pnpm --filter @takazudo/zfb test
 pnpm --filter docs check
 pnpm --filter docs build          # strict broken-link mode via the package script
 pnpm --filter docs check:html
-node scripts/assert-md-wasm-size-docs.mjs
 ```
 
 Any failure stops the release. With a `--lockfile-only` tree, either `CI=1 pnpm install` first or
@@ -425,20 +395,12 @@ touches `packages/zfb-runtime` router code, the owner also runs `pnpm test:webki
 
 ### A8. Commit and push (freezes the source SHA)
 
-One atomic commit: the lockstep `package.json` files, `pnpm-lock.yaml`, the md-wasm manifest and
-synced docs, the island-size contract/README/test pins, the Wind manifest and the five changelog
-pages:
+One atomic commit: the lockstep `package.json` files, `pnpm-lock.yaml`, and the five changelog
+pages. Do not edit historical size tables, `shipped-sizes.json`, or the island-size decision
+only to match the new version.
 
 ```sh
 git add packages/*/package.json crates/zfb-md-wasm/npm/package.json pnpm-lock.yaml \
-  crates/zfb-md-wasm/shipped-sizes.json crates/zfb-md-wasm/README.md crates/zfb-md-wasm/npm/README.md \
-  docs/src/content/docs/api/md-wasm.mdx docs/src/content/docs-ja/api/md-wasm.mdx \
-  docs/src/content/docs/guides/browser-markdown-preview.mdx \
-  docs/src/content/docs-ja/guides/browser-markdown-preview.mdx \
-  docs/src/content/docs/guides/syntax-highlighting.mdx \
-  docs/src/content/docs-ja/guides/syntax-highlighting.mdx \
-  research/v3-island-size/decision-linux-x64.json research/v3-island-size/README.md \
-  scripts/__tests__/island-size-budget.test.mjs docs/public/wind-examples/manifest.json \
   docs/src/content/docs/changelog/zfb/v<version>.mdx \
   docs/src/content/docs/changelog/zfb-runtime/v<version>.mdx \
   docs/src/content/docs/changelog/zfb-adapter-cloudflare/v<version>.mdx \
@@ -730,8 +692,9 @@ Its jobs (`scripts/release/coordinate-release.mjs`) re-run the gate before every
 re-sending identical inputs resumes and never duplicates:
 
 1. **gate** (read-only). It is `release-status.mjs` plus the candidate contract:
-   - **Candidate:** the eleven manifests, the five changelog lanes and the A4 `measuredOnVersion`
-     at the SHA. The candidate's own `release.yml` and `node-free-smoke.yml` must carry the
+   - **Candidate:** the eleven manifests and the five changelog lanes at the SHA.
+     A historical `shipped-sizes.json` `measuredOnVersion` is not part of the candidate
+     contract. The candidate's own `release.yml` and `node-free-smoke.yml` must carry the
      coordinator contract markers, so an older candidate is refused.
    - **CI:** required CI on the SHA.
    - **Darwin:** admission of the owner-Mac inputs.

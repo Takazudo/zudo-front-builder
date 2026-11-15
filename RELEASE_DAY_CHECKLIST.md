@@ -263,13 +263,11 @@ unmerged until its own accepted delivery closeout. Keep unrelated trackers open.
    repair. The corrected workflow must be in the successor's release commit.
 3. **Prepare the proposed stable v5.2.2 from a newly frozen base.** Recheck
    version availability and use a new disposable exact-version probe, not #4601.
-   Obtain fresh Linux measurements for all four version-stamped MD/WASM variants
-   (`finalWasm`, `gzip9`, `glue`, `glueGzip9`), exports, packing and existing
-   budgets; fresh Linux island-size evidence with actual run/job/SHA/lock
-   identities and the `--reason release-bump` helper; and the updated Wind
-   compiler-source digest, Wind assets and Docs gate. Preserve all raw and
-   normalized gzip ceilings. Carry the complete measured bump atomically and
-   satisfy the release procedure's final-commit gates. Reuse prior product
+   Keep the wasm export, packing, and digest checks. Size differences, old
+   ceilings, and an island-size total or toolchain difference are reports and
+   do not require a rebaseline or a size-table edit. A real Wind CSS or HTML
+   change still needs an asset update. Satisfy the release procedure's
+   final-commit gates. Reuse prior product
    validation only where its source, platform and fingerprints justify it; use
    the owner's established Mac for required native owner verification and
    release orchestration. CI Intel packaging is not native Intel acceptance.

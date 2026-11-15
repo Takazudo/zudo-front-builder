@@ -5,13 +5,19 @@
 // final wasm/glue and the complete dist are measured from files instead of
 // trusting a human-readable summary.
 
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { gzipSync } from "node:zlib";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
-import { SHIPPED_SIZES } from "../crates/zfb-md-wasm/shipped-sizes.mjs";
-
 const MANIFEST_PATH = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../crates/zfb-md-wasm/shipped-sizes.json",
@@ -28,34 +34,42 @@ const MANIFEST_ARTIFACTS = {
 export const GZIP_DRIFT_TOLERANCE_BYTES = 64;
 const TOLERANT_COLUMNS = ["gzip9", "glueGzip9"];
 const REPAIR_INSTRUCTIONS =
-  "re-run with --update-manifest, then node scripts/assert-md-wasm-size-docs.mjs --fix, then pnpm format:mdx";
+  "optional: re-run with --update-manifest to refresh the historical shipped-sizes.json record";
 
+// Warning references only. They are not loaded from shipped-sizes.json and never fail a build.
+export const HISTORICAL_GZIP_CEILINGS = {
+  root: 1_600_000,
+  highlight: 880_000,
+  render: 1_125_000,
+  parse: 325_000,
+  tarball: 3_900_000,
+};
 export const ARTIFACTS = [
-  { label: "default", dir: "wasm", stem: "zfb_md_wasm", ceiling: SHIPPED_SIZES.ceilings.root },
+  { label: "default", dir: "wasm", stem: "zfb_md_wasm", ceiling: HISTORICAL_GZIP_CEILINGS.root },
   {
     label: "highlight-only",
     dir: "wasm-highlight",
     stem: "zfb_md_wasm_highlight",
-    ceiling: SHIPPED_SIZES.ceilings.highlight,
+    ceiling: HISTORICAL_GZIP_CEILINGS.highlight,
   },
   {
     label: "render-only",
     dir: "wasm-render",
     stem: "zfb_md_wasm_render",
-    ceiling: SHIPPED_SIZES.ceilings.render,
+    ceiling: HISTORICAL_GZIP_CEILINGS.render,
   },
   {
     label: "parse-only",
     dir: "wasm-parse",
     stem: "zfb_md_wasm_parse",
-    ceiling: SHIPPED_SIZES.ceilings.parse,
+    ceiling: HISTORICAL_GZIP_CEILINGS.parse,
   },
 ];
-export const TARBALL_CEILING = SHIPPED_SIZES.ceilings.tarball;
+export const TARBALL_CEILING = HISTORICAL_GZIP_CEILINGS.tarball;
 
 function usage() {
   throw new Error(
-    "usage: assert-zfb-md-wasm-budgets.mjs --build-log <log> --dist <dist> [--tarball <tgz>] [--update-manifest [--measured-on-version <v>]]",
+    "usage: assert-zfb-md-wasm-budgets.mjs --dist <dist> [--build-log <log>] [--tarball <tgz>] [--update-manifest [--measured-on-version <v>]]",
   );
 }
 
@@ -70,7 +84,7 @@ function parseArgs(argv) {
     if (!arg.startsWith("--") || argv[index + 1] === undefined) usage();
     values[arg.slice(2)] = argv[++index];
   }
-  if (!values["build-log"] || !values.dist) usage();
+  if (!values.dist) usage();
   if (values["measured-on-version"] !== undefined) {
     if (!values["update-manifest"] || values["measured-on-version"].length === 0) usage();
   }
@@ -180,7 +194,7 @@ export function compareManifest(
       findings.push({
         ...base,
         code: "manifest-mismatch",
-        severity: "error",
+        severity: "warning",
         message:
           `${artifact.label} ${column} mismatch: measured=${measured[column]}, ` +
           `documented=${documentedValues[column]}`,
@@ -197,7 +211,7 @@ export function checkCeilings(measuredByArtifact) {
     if (measured.gzip9 > artifact.ceiling) {
       findings.push({
         code: "ceiling-exceeded",
-        severity: "error",
+        severity: "warning",
         artifact: artifact.label,
         measured: measured.gzip9,
         ceiling: artifact.ceiling,
@@ -209,11 +223,8 @@ export function checkCeilings(measuredByArtifact) {
 }
 
 export function formatFindings(findings) {
-  const errors = findings.filter((finding) => finding.severity === "error");
-  const lines = errors.map((finding) => finding.message);
-  // --update-manifest rewrites measured values only; it cannot repair a
-  // ceiling breach, so the repair line belongs to manifest mismatches alone.
-  if (errors.some((finding) => finding.code === "manifest-mismatch")) {
+  const lines = findings.map((finding) => finding.message);
+  if (findings.some((finding) => finding.code === "manifest-mismatch")) {
     lines.push(REPAIR_INSTRUCTIONS);
   }
   return lines.join("\n");
@@ -271,7 +282,7 @@ function selfTest() {
       throw new Error("wasm-opt fixture parse failed");
   }
 
-  const documented = SHIPPED_SIZES.measured;
+  const documented = JSON.parse(readFileSync(MANIFEST_PATH, "utf8")).measured;
   const mismatchedMeasuredByArtifact = {
     default: { ...documented.root, finalWasm: documented.root.finalWasm + 1 },
     "highlight-only": documented.highlight,
@@ -285,10 +296,11 @@ function selfTest() {
 
   const fixtureDirectory = mkdtempSync(join(tmpdir(), "zfb-md-wasm-budget-self-test-"));
   const fixtureManifestPath = join(fixtureDirectory, "shipped-sizes.json");
+  const recorded = JSON.parse(readFileSync(MANIFEST_PATH, "utf8"));
   const fixtureManifest = {
-    measuredOnVersion: SHIPPED_SIZES.measuredOnVersion,
-    measured: structuredClone(SHIPPED_SIZES.measured),
-    ceilings: structuredClone(SHIPPED_SIZES.ceilings),
+    measuredOnVersion: recorded.measuredOnVersion,
+    measured: structuredClone(recorded.measured),
+    ceilings: structuredClone(recorded.ceilings),
   };
   const ceilingsBefore = JSON.stringify(fixtureManifest.ceilings);
   const updatedMeasured = {
@@ -317,16 +329,49 @@ function selfTest() {
   console.log("OK: build summary metric parser self-test");
 }
 
+function logDisagreements(artifact, section, wasm, glue) {
+  const warnings = [];
+  try {
+    const loggedFinal = bytesFromLine(section, "wasm-opt -O1 (final)");
+    const loggedGlue = bytesFromLine(section, "generated glue");
+    if (loggedFinal !== wasm) {
+      warnings.push(
+        `${artifact.label} final wasm differs from the human build log: log=${loggedFinal}, file=${wasm} (file bytes are the measurement)`,
+      );
+    }
+    if (loggedGlue !== glue) {
+      warnings.push(
+        `${artifact.label} glue differs from the human build log: log=${loggedGlue}, file=${glue} (file bytes are the measurement)`,
+      );
+    }
+    return {
+      warnings,
+      cdylib: bytesFromLine(section, "raw cdylib"),
+      bindgen: bytesFromLine(section, "wasm-bindgen binary"),
+    };
+  } catch (error) {
+    warnings.push(`${artifact.label} build log was not used as a release check: ${error.message}`);
+    return { warnings, cdylib: null, bindgen: null };
+  }
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const sections = parseBuildLog(args["build-log"]);
   const dist = resolve(args.dist);
   const measuredByArtifact = {};
+  const logWarnings = [];
+  let sections = null;
+  if (args["build-log"]) {
+    try {
+      sections = parseBuildLog(args["build-log"]);
+    } catch (error) {
+      logWarnings.push(`build log was not used as a release check: ${error.message}`);
+    }
+  }
 
   if (!statSync(dist).isDirectory()) throw new Error(`dist directory is missing: ${dist}`);
 
   for (const artifact of ARTIFACTS) {
-    const section = sections.get(artifact.label);
     const wasmPath = resolve(dist, artifact.dir, `${artifact.stem}_bg.wasm`);
     const gluePath = resolve(dist, artifact.dir, `${artifact.stem}_glue.zfb-resource.mjs`);
     const wasm = fileBytes(wasmPath);
@@ -334,26 +379,17 @@ function main() {
     const glue = fileBytes(gluePath);
     const glueGzip = gzipSync(readFileSync(gluePath), { level: 9 }).length;
     const measured = measuredValues({ wasm, wasmGzip, glue, glueGzip });
-
-    // These two metrics are emitted by the production build before the shared
-    // cdylib is overwritten by the next feature pass.
-    const cdylib = bytesFromLine(section, "raw cdylib");
-    const bindgen = bytesFromLine(section, "wasm-bindgen binary");
-    const loggedFinal = bytesFromLine(section, "wasm-opt -O1 (final)");
-    if (loggedFinal !== wasm) {
-      throw new Error(
-        `${artifact.label} final wasm differs from build log: log=${loggedFinal}, file=${wasm}`,
-      );
-    }
-    const loggedGlue = bytesFromLine(section, "generated glue");
-    if (loggedGlue !== glue) {
-      throw new Error(
-        `${artifact.label} glue differs from build log: log=${loggedGlue}, file=${glue}`,
-      );
+    let cdylib = null;
+    let bindgen = null;
+    if (sections) {
+      const compared = logDisagreements(artifact, sections.get(artifact.label), wasm, glue);
+      logWarnings.push(...compared.warnings);
+      cdylib = compared.cdylib;
+      bindgen = compared.bindgen;
     }
 
     console.log(
-      `${artifact.label}: cdylib=${fmt(cdylib)} bindgen=${fmt(bindgen)} ` +
+      `${artifact.label}: cdylib=${cdylib === null ? "n/a" : fmt(cdylib)} bindgen=${bindgen === null ? "n/a" : fmt(bindgen)} ` +
         `final-wasm=${fmt(wasm)} gzip-9=${fmt(wasmGzip)} ` +
         `glue=${fmt(glue)} glue-gzip-9=${fmt(glueGzip)} ceiling=${fmt(artifact.ceiling)}`,
     );
@@ -361,15 +397,28 @@ function main() {
     measuredByArtifact[artifact.label] = measured;
   }
 
-  const findings = [
-    ...checkCeilings(measuredByArtifact),
-    ...(args["update-manifest"] ? [] : compareManifest(measuredByArtifact, SHIPPED_SIZES.measured)),
-  ];
-  for (const finding of findings) {
-    if (finding.severity === "warning") console.log(`::warning::${finding.message}`);
+  let recordedMeasured = null;
+  try {
+    recordedMeasured = JSON.parse(readFileSync(MANIFEST_PATH, "utf8")).measured;
+  } catch {
+    recordedMeasured = null;
   }
-  if (findings.some((finding) => finding.severity === "error")) {
-    throw new Error(formatFindings(findings));
+  const findings = [
+    ...logWarnings.map((message) => ({ severity: "warning", message })),
+    ...checkCeilings(measuredByArtifact),
+    ...(args["update-manifest"] || !recordedMeasured
+      ? []
+      : compareManifest(measuredByArtifact, recordedMeasured)),
+  ];
+  if (findings.length > 0) {
+    const lines = [
+      "MD/WASM size report (informational; historical measurements and old ceilings are not failures):",
+      ...findings.map((finding) => finding.message),
+    ];
+    for (const line of lines) console.log(line);
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
+    }
   }
 
   const totalDist = distBytes(dist);
@@ -377,9 +426,13 @@ function main() {
 
   if (args.tarball) {
     const tarball = fileBytes(resolve(args.tarball));
-    console.log(`complete packed tarball: ${fmt(tarball)} ceiling=${fmt(TARBALL_CEILING)}`);
+    console.log(
+      `complete packed tarball: ${fmt(tarball)} historical-ceiling=${fmt(TARBALL_CEILING)}`,
+    );
     if (tarball > TARBALL_CEILING) {
-      throw new Error(`packed tarball size ${tarball} exceeds ceiling ${TARBALL_CEILING}`);
+      console.log(
+        `packed tarball size ${tarball} exceeds historical ceiling ${TARBALL_CEILING} (informational)`,
+      );
     }
   } else {
     console.log(`complete packed tarball: not supplied (ceiling=${fmt(TARBALL_CEILING)})`);

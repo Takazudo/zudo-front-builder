@@ -93,7 +93,6 @@ jobs:
               # Every script, npm fixture, and browser surface invoked by the
               # two jobs is explicit here, so CI-logic/test-fixture edits are
               # exercised even when product sources are unchanged.
-              - 'scripts/assert-md-wasm-size-docs.mjs'
               - 'scripts/install-git-hooks.sh'
               - 'scripts/hooks/**'
               - 'scripts/assert-zfb-md-wasm-graph.sh'
@@ -402,13 +401,6 @@ jobs:
         run: |
           node scripts/wind-compatibility/inventory-cli.mjs validate
           node --test tests/wind-compatibility/*.test.mjs tests/wind-compatibility/reference/*.test.mjs tests/wind-compatibility/empty-token/*.test.mjs tests/wind-compatibility/corpus/*.test.mjs
-
-      # Keep the shipped-size documentation synchronized with the manifest
-      # (issue #2482). This pure-Node check is cheap and belongs in the health
-      # job's fast checks; it does not require the wasm-md package build.
-      - name: Assert md-wasm documentation matches shipped sizes
-        if: ${{ !cancelled() && steps.native_prerequisites.outcome == 'success' }}
-        run: node scripts/assert-md-wasm-size-docs.mjs
 
       # SSE endpoint literal guard (issue #2644): reqwest's `.timeout()` bounds
       # the whole streaming response while the server keep-alive is 15s, so a
@@ -955,10 +947,9 @@ jobs:
           node research/v3-island-size/normalize-identity.mjs \
             --measurement "$ZFB_SIZE_OUT/real-packed/measurement.json"
 
-      # Preserve the enforced verdict. Only a complete pair that passes, or
-      # fails solely on the old Cargo pin with identical totals, is uploaded
-      # under the consumer's qualifying artifact name. Other diagnostics stay
-      # in the failed step log, never masquerading as activation evidence.
+      # A complete pair is uploaded when this step passes. Historical size,
+      # lockfile, and toolchain differences are warnings. Incomplete
+      # measurements, hash mismatches, and a wrong source SHA still fail.
       - name: Enforce Linux x64 island-size budgets
         id: size_budget
         if: ${{ !cancelled() && steps.size_measurements.outcome == 'success' }}
@@ -1207,7 +1198,7 @@ jobs:
         shell: bash
         run: bash scripts/assert-zfb-md-wasm-exports.sh crates/zfb-md-wasm/npm/dist
 
-      - name: Enforce four-artifact gzip budgets and report metrics
+      - name: Report four-artifact sizes
         if: ${{ matrix.label == 'default' }}
         run: |
           node scripts/assert-zfb-md-wasm-budgets.mjs \

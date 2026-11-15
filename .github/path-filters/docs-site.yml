@@ -1,0 +1,33 @@
+# Docs site inputs for docs-checks.yml (#4728).
+#
+# The changed-files job reads this file from the PR base. A missing or unusable
+# file is a full docs check, never "no docs change". Ordinary crates/**,
+# packages/**, Cargo.toml, Cargo.lock, rust-toolchain.toml, product tests, and
+# release scripts are not listed: they must not start the docs site build.
+# Shared JS lockfile and package-manager config stay included.
+#
+# Confirmed generator inputs outside docs/**:
+# - docs/scripts/generate-wind-reference.mjs reads
+#   crates/zudo-wind/catalog/zudo-wind-catalog.v1.json
+# - docs/scripts/wind-compatibility-pages.mjs loadCompatibilityInputs reads
+#   tests/wind-compatibility/inventory.v1.json and profile.json, and imports
+#   scripts/wind-compatibility/inventory.mjs for WIND_SOURCE_SHA
+# The reviewed Wind source pin (crates/zudo-wind, Cargo.toml, Cargo.lock) stays
+# on the wind-previews job, separate from this site-build list.
+docs:
+  - "docs/**"
+  - "tests/docs-wind-preview/**"
+  - "scripts/__tests__/generate-wind-reference.test.mjs"
+  - "scripts/__tests__/docs-site-changes.test.mjs"
+  - "scripts/docs-site-changes.mjs"
+  - ".github/workflows/docs-checks.yml"
+  - ".github/workflows/docs-deploy.yml"
+  - ".github/path-filters/docs-site.yml"
+  - "package.json"
+  - "pnpm-lock.yaml"
+  - "pnpm-workspace.yaml"
+  - ".npmrc"
+  - "crates/zudo-wind/catalog/zudo-wind-catalog.v1.json"
+  - "tests/wind-compatibility/inventory.v1.json"
+  - "tests/wind-compatibility/profile.json"
+  - "scripts/wind-compatibility/inventory.mjs"

@@ -348,12 +348,13 @@ after its historical maximum. An empty lane starts at position 1, and its first-
 
 A `zfb-md-wasm` note must never call shipped artifacts "unchanged" without saying what that covers.
 `ZFB_RELEASE_VERSION` is stamped into each `.wasm`, so every release moves all four SHA-256 digests
-even when the compiled code and the byte sizes do not (#2885). Every file carrying a shipped-size
-table must keep the digest disclaimer that `scripts/assert-md-wasm-size-docs.mjs` asserts.
+even when the compiled code and the byte sizes do not (#2885). A page that shows a historical size
+table keeps the digest disclaimer: exact bytes and digests come from that version's artifacts.
+The table is not a current distributed size or a guaranteed capacity, and a release does not
+require refreshing it.
 
-Never refresh `shipped-sizes.json` (or its synced doc tables) from a Mac build — Mac and CI codegen
-produce different `finalWasm`/`gzip9` bytes for the same pin, and the manifest holds CI-measured
-values only. See `crates/zfb-md-wasm/LOCAL-VS-CI-SIZES.md` for the current gap and the local workflow.
+Do not refresh `shipped-sizes.json` from a Mac build. Mac and CI codegen produce different
+`finalWasm`/`gzip9` bytes for the same pin. The file is a historical record, not a gate.
 
 The GitHub Release body has five explicit package headings and independently extracts the body of
 the matching MDX source beneath each heading. Never reuse one lane's extracted notes for another.
@@ -408,7 +409,7 @@ A PR into `main` or `base/**` whose every changed file is prose listed in `.gith
 
 - **Required contexts still resolve.** A job skipped by its own `if:` reports success to the ruleset. The matrix `Build binary (<target>)` legs are the exception: a job-level skip happens before matrix expansion and would leave both per-target contexts pending, so those legs keep running with every step skipped.
 - **Fail closed.** Only an explicit docs-only result skips anything. A failed detector, an empty listing or one at the PR-files API's 3000-file cap, a base without the filter files, any other base branch, a `push` to `main` and `workflow_dispatch` all run everything, so `main` keeps full post-merge verification (including Wind full mode).
-- **The JS/format subset still runs.** Scripts and docs tests read Markdown, so a docs-only PR runs health's typecheck, `test:workspace`, `format:check`, Wind contract, md-wasm size-doc, SSE-literal and shell unit checks in `docs-checks.yml`'s `Docs-only checks (health JS subset)`, and the required `Docs gate` fails unless it passed. `scripts/__tests__/docs-only-ci-gate.test.mjs` keeps those commands in step with `health.yml` and the three detectors identical.
+- **The JS/format subset still runs.** Scripts and docs tests read Markdown, so a docs-only PR runs health's typecheck, `test:workspace`, `format:check`, Wind contract, SSE-literal and shell unit checks in `docs-checks.yml`'s `Docs-only checks (health JS subset)`, and the required `Docs gate` fails unless it passed. `scripts/__tests__/docs-only-ci-gate.test.mjs` keeps those commands in step with `health.yml` and the three detectors identical.
 - **Keep test inputs out of the list.** Markdown that a test or the binary reads stays non-docs: crate fixtures, `crates/zfb/templates/**`, `research/**` (`research/3242-zudo-wind-v1-spec.md` is an `include_str!` input) and `docs/` outside `src/content`. A single prose page that a heavy job reads goes in `docs-test-inputs.yml` (today `mdx-components.mdx`, built by `tests/sdk-alias-consumer`).
 
 ### The create-zfb showcase (#2279)
@@ -506,7 +507,7 @@ What upgrades when zfb ships a stable release, each with an explicit trigger —
 
 ### `b4push` — local pre-push pass (T4)
 
-`pnpm b4push` (`scripts/run-b4push.sh`) runs a **bounded** fast pass before pushing, cheap → expensive: shell-script syntax (`bash -n`), the offline `tests/unit/*.sh` unit tests (actually executed — one step per file), `cargo fmt --check`, `pnpm format:check`, `node scripts/assert-md-wasm-size-docs.mjs`, the SSE endpoint literal guard, `pnpm typecheck:workspace`, `pnpm test:workspace`, and `cargo clippy -D warnings` (warm tree). It prints a per-step duration summary. It is **not** the authoritative gate — `health.yml` is. b4push is the *fast subset*; the full Rust test suite is too heavy for a pre-push loop by default (V8 first-compile is 15–30 min).
+`pnpm b4push` (`scripts/run-b4push.sh`) runs a **bounded** fast pass before pushing, cheap → expensive: shell-script syntax (`bash -n`), the offline `tests/unit/*.sh` unit tests (actually executed — one step per file), `cargo fmt --check`, `pnpm format:check`, the SSE endpoint literal guard, `pnpm typecheck:workspace`, `pnpm test:workspace`, and `cargo clippy -D warnings` (warm tree). It prints a per-step duration summary. It is **not** the authoritative gate — `health.yml` is. b4push is the *fast subset*; the full Rust test suite is too heavy for a pre-push loop by default (V8 first-compile is 15–30 min).
 
 - Escapes: `B4PUSH_SKIP_CLIPPY=1`, `B4PUSH_SKIP_JS_TEST=1`.
 - Heavy steps use the machine-wide `heavy-guard` queue when available: set `HEAVY_GUARD=/path/to/heavy-guard.sh` to choose it explicitly; otherwise b4push checks `$HOME/.claude/scripts/heavy-guard.sh` and then `$HOME/.codex/scripts/heavy-guard.sh`. CI and machines without a guard run the same commands directly. Exit 75 means the guard could not acquire the queue and the command did not run; b4push reports contention and exits 75 when no other check failed. Guard execution errors and command failures remain failures. Only full Rust suites, doctests, the syntax asset regeneration, and the `zfb-md-extras` `test-utils` suite are queued; formatting, lint, typecheck, unit tests, no-V8 cargo check, and the generated-asset diff guard remain outside the queue.

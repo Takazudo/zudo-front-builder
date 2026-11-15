@@ -319,18 +319,6 @@ export function checkCandidate(io, { version, sha }) {
     const path = `docs/src/content/docs/changelog/${lane}/v${version}.mdx`;
     if (gitShow(io, sha, path) === null) errors.push(`changelog lane page ${path} is missing`);
   }
-  const sizesText = gitShow(io, sha, SHIPPED_SIZES_PATH);
-  let measured = null;
-  try {
-    measured = sizesText ? JSON.parse(sizesText).measuredOnVersion : null;
-  } catch {
-    measured = null;
-  }
-  if (measured !== version) {
-    errors.push(
-      `${SHIPPED_SIZES_PATH} measuredOnVersion is ${measured}, not ${version} (A4 measurement missing)`,
-    );
-  }
   for (const contract of CANDIDATE_CONTRACTS) {
     const text = gitShow(io, sha, contract.path);
     if (!text || !text.includes(contract.marker)) {

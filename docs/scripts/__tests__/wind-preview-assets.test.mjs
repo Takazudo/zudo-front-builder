@@ -8,6 +8,7 @@ import {
   assetUrl,
   assertDiagnostics,
   assertFresh,
+  compareManifestIdentity,
   exampleAssetPath,
   exampleSource,
   exampleInput,
@@ -385,15 +386,27 @@ test("mock compiler pins flags and deterministic provenance; stale CSS fails wit
     rmSync(root, { recursive: true, force: true });
   }
 });
-test("compiler changes require new provenance; published docs compiler cannot satisfy pin", () => {
+test("compiler source identity is recorded without failing freshness or rewriting assets", () => {
   const { root, run } = fixture();
   try {
     const options = { root, compiler: "/workspace/target/debug/zfb", run };
     generateAssets(options);
+    const manifestPath = join(root, "docs/public/wind-examples/manifest.json");
+    const cssPath = join(root, "docs/public/wind-examples/padding/all-sides.css");
+    const before = readFileSync(manifestPath, "utf8");
     writeFileSync(join(root, "crates/compiler/lib.rs"), "// changed compiler\n");
-    assert.throws(() => generateAssets({ ...options, check: true }), /manifest.json/);
-    generateAssets(options);
+    assert.doesNotThrow(() => generateAssets({ ...options, check: true }));
+    assert.equal(readFileSync(manifestPath, "utf8"), before);
     writeFileSync(join(root, "crates/compiler/reset.css"), "body { margin: 0; }\n");
+    assert.doesNotThrow(() => generateAssets({ ...options, check: true }));
+    assert.equal(readFileSync(manifestPath, "utf8"), before);
+    writeFileSync(cssPath, ".changed { display: none; }\n");
+    assert.throws(() => generateAssets({ ...options, check: true }), /Stale wind preview asset/);
+    assert.equal(readFileSync(cssPath, "utf8"), ".changed { display: none; }\n");
+    generateAssets(options);
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.examples[0].cssSha256 = "f".repeat(64);
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     assert.throws(() => generateAssets({ ...options, check: true }), /manifest.json/);
     generateAssets(options);
     mkdirSync(join(root, "crates/compiler/target"));
@@ -407,6 +420,24 @@ test("compiler changes require new provenance; published docs compiler cannot sa
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+test("sourceSha256 is the only manifest field that freshness ignores", () => {
+  const saved = {
+    schemaVersion: 1,
+    compiler: { version: "6.1.4", sourceSha256: "a".repeat(64) },
+    examples: [{ id: "padding", cssSha256: "c".repeat(64) }],
+  };
+  const identityOnly = structuredClone(saved);
+  identityOnly.compiler.sourceSha256 = "b".repeat(64);
+  const ignored = compareManifestIdentity(JSON.stringify(saved), JSON.stringify(identityOnly));
+  assert.equal(ignored.match, true);
+  assert.equal(ignored.identityDiffers, true);
+  const outputChanged = structuredClone(identityOnly);
+  outputChanged.examples[0].cssSha256 = "d".repeat(64);
+  assert.equal(
+    compareManifestIdentity(JSON.stringify(saved), JSON.stringify(outputChanged)).match,
+    false,
+  );
 });
 test("missing artifact fails freshness", () => {
   assert.throws(
@@ -423,6 +454,7 @@ test("required Docs gate fails closed for preview failures, cancellation and une
   assert.ok(gate);
   const script = gate
     .split("        run: |\n")[1]
+    .split("\n  # Downstream of Docs gate.")[0]
     .split("\n")
     .map((line) => line.replace(/^          /, ""))
     .join("\n");
@@ -461,26 +493,34 @@ test("required Docs gate fails closed for preview failures, cancellation and une
     assert.equal(evaluate(overrides), 1, JSON.stringify(overrides));
 });
 
-test("the required Docs gate changed-file closures cover content, assets, tests, and compiler inputs", () => {
+test("the docs site build and wind asset check use separate input closures", () => {
   const workflow = readFileSync(join(REPO_ROOT, ".github/workflows/docs-checks.yml"), "utf8");
-  const docsFilter = workflow.split("            docs:")[1]?.split("            wind_previews:")[0];
-  const windFilter = workflow.split("            wind_previews:")[1]?.split("\n\n  build:")[0];
-  assert.ok(docsFilter);
+  const siteRules = readFileSync(join(REPO_ROOT, ".github/path-filters/docs-site.yml"), "utf8");
+  const windFilter = workflow
+    .split("            wind_previews:")[1]
+    ?.split("\n\n      # Docs-only scope")[0];
   assert.ok(windFilter);
+  for (const path of ["crates/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]) {
+    assert.equal(
+      siteRules.includes(`- "${path}"`),
+      false,
+      `docs site list must not include ${path}`,
+    );
+  }
   for (const path of [
     "docs/**",
     "scripts/__tests__/generate-wind-reference.test.mjs",
     "tests/docs-wind-preview/**",
-    "crates/**",
-    "Cargo.toml",
-    "Cargo.lock",
-    "rust-toolchain.toml",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
     "package.json",
     ".npmrc",
+    "crates/zudo-wind/catalog/zudo-wind-catalog.v1.json",
+    "tests/wind-compatibility/inventory.v1.json",
+    "tests/wind-compatibility/profile.json",
+    "scripts/wind-compatibility/inventory.mjs",
   ])
-    assert.ok(docsFilter.includes(`- '${path}'`), `docs closure is missing ${path}`);
+    assert.ok(siteRules.includes(`- "${path}"`), `docs site list is missing ${path}`);
   for (const path of [
     "docs/wind-examples/**",
     "docs/public/wind-examples/**",

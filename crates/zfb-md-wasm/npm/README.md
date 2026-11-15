@@ -729,23 +729,15 @@ suite gates exact-match). Deliberate limitations of the browser build:
   zfb's fixture corpus; any grammar-level divergences are tracked in the
   crate's informational backend-divergence test.
 
-## Artifact size and locked ceilings
+## Historical artifact sizes
 
-### Maintainer repair workflow
+The table below is a historical measurement for the version it names. Exact
+bytes and digests for a published version come from that version's artifacts.
+Refreshing `shipped-sizes.json` is optional:
 
-These guarded size numbers use `crates/zfb-md-wasm/shipped-sizes.json` as their
-source of truth. After an intentional artifact change, use this verified
-three-step repair sequence:
+`node scripts/assert-zfb-md-wasm-budgets.mjs --dist crates/zfb-md-wasm/npm/dist --update-manifest`
 
-1. Re-run the four-artifact build and capture its summary:
-   `BUILD_LOG=/tmp/zfb-md-wasm-build.log; node crates/zfb-md-wasm/npm/scripts/build.mjs 2>&1 | tee "$BUILD_LOG"`.
-2. Run `node scripts/assert-zfb-md-wasm-budgets.mjs --build-log "$BUILD_LOG" --dist crates/zfb-md-wasm/npm/dist --update-manifest`.
-3. Run `node scripts/assert-md-wasm-size-docs.mjs --fix`, then `pnpm format:mdx`.
-   `gzip-9` and `glue gzip-9` are compared with a 64-byte tolerance because
-   they are compressor output (CI prints a warning inside the band), while
-   final wasm and glue remain byte-exact.
-
-These are the shipped **6.1.4** artifact rows — optimized final wasm after
+These are the historical **6.1.4** artifact rows — optimized final wasm after
 wasm-bindgen and wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue
 bytes/gzip:
 
@@ -757,7 +749,7 @@ bytes/gzip:
 | parse | 736,830 B | 301,493 B | 11,159 B | 3,797 B |
 
 The #2447 decision snapshot measured the split package at 3,638,607 B versus
-2,314,818 B for the root-plus-highlight package. Locked gzip-9 ceilings are
+2,314,818 B for the root-plus-highlight package. Historical reference ceilings are
 root 1,600,000 B, highlight 880,000 B, render 1,125,000 B, and parse
 325,000 B; the complete packed tarball ceiling is 3,900,000 B. All four ship
 inside their ceilings, with 64,314 B (root), 57,533 B (highlight), 9,124 B
@@ -766,9 +758,7 @@ permanent promises — re-measure against the version you actually install.
 The clean four-step production ceiling is 210 seconds; the selected #2447
 median was 155.015 s [153.496, 165.977].
 
-**Sizes are guarded; content digests are not.** The byte sizes above are held by
-`shipped-sizes.json` and asserted in CI, so they move only on a deliberate
-artifact change. SHA-256 digests are a different matter: every release stamps
+**Exact bytes and digests come from that version's artifacts.** The table above is a historical measurement for the version it names, not a current distributed size or a guaranteed capacity. SHA-256 digests are a different matter: every release stamps
 its own version string into each `.wasm` — the value `version()` returns — so
 all four digests change on **every** release, including a documentation-only
 patch whose compiled code is identical and whose byte sizes do not move at all.

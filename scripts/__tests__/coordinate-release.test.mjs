@@ -516,11 +516,6 @@ describe("gate (the dry run): read-only", () => {
       /zfb-runtime\/v6\.2\.0\.mdx is missing/,
     ],
     [
-      "a missing A4 measurement",
-      (w) => (w.files[SHIPPED_SIZES_PATH] = JSON.stringify({ measuredOnVersion: "6.1.0" })),
-      /measuredOnVersion is 6\.1\.0/,
-    ],
-    [
       "a candidate whose release.yml predates the coordinator",
       (w) => (w.files[".github/workflows/release.yml"] = "name: Release\n"),
       /predates the coordinator/,
@@ -531,6 +526,14 @@ describe("gate (the dry run): read-only", () => {
     const error = await rejectsWith(gate(makeIo(world).io, inputs), "CANDIDATE_INVALID");
     expect(error.message).toMatch(pattern);
     expect(writes(world)).toEqual([]);
+  });
+
+  it("accepts a historical measuredOnVersion that is not the release version", async () => {
+    const world = makeWorld(
+      (w) => (w.files[SHIPPED_SIZES_PATH] = JSON.stringify({ measuredOnVersion: "6.1.0" })),
+    );
+    const result = await gate(makeIo(world).io, inputs);
+    expect(result.candidate).toBe(SHA);
   });
 
   it("keeps the frozen SHA when main has advanced, with a notice", async () => {

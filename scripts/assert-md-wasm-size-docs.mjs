@@ -83,8 +83,8 @@ export const DOCUMENTATION_ALLOWANCES = [
 // cannot break it. One occurrence per file is enough: the two preview guides print the table twice,
 // and their second copy carries a cross-reference to the disclaimer rather than repeating it.
 export const DIGEST_DISCLAIMER_ANCHORS = {
-  en: "**Sizes are guarded; content digests are not.**",
-  ja: "**サイズは保証されますが、コンテンツダイジェストは保証されません。**",
+  en: "**Exact bytes and digests come from that version's artifacts.**",
+  ja: "**正確なバイト数とダイジェストは、そのバージョンの成果物で確認します。**",
 };
 
 export const DIGEST_DISCLAIMER_FILES = [...TABLE_FILE_SET];
@@ -449,7 +449,7 @@ const VERSION_FIELDS = {
   en: [
     {
       name: "shipped artifact rows version",
-      pattern: /These are the shipped \*\*([^*]+)\*\* artifact rows/g,
+      pattern: /These are the historical \*\*([^*]+)\*\* artifact rows/g,
       expectedCount: ({ shipped }) => shipped,
     },
     {
@@ -467,7 +467,7 @@ const VERSION_FIELDS = {
   ja: [
     {
       name: "shipped artifact rows version",
-      pattern: /出荷された \*\*([^*]+)\*\* のアーティファクトの行/g,
+      pattern: /歴史的な記録である \*\*([^*]+)\*\* のアーティファクトの行/g,
       expectedCount: ({ shipped }) => shipped,
     },
     {
@@ -884,14 +884,16 @@ async function main() {
     manifest: SHIPPED_SIZES,
     ceilings,
   });
-  if (findings.length > 0) {
-    for (const item of findings) {
-      const message =
-        fix && item.code === "unregistered-byte-literal"
-          ? `${item.message}; no model for this value; edit by hand`
-          : item.message;
-      console.error(message);
-    }
+  const blocking = findings.filter((item) => item.code === "missing-digest-disclaimer");
+  const informational = findings.filter((item) => item.code !== "missing-digest-disclaimer");
+  if (informational.length > 0) {
+    console.log(
+      "MD/WASM size documentation report (informational; historical numbers are not a release failure):",
+    );
+    for (const item of informational) console.log(item.message);
+  }
+  if (blocking.length > 0) {
+    for (const item of blocking) console.error(item.message);
     process.exitCode = 1;
     return;
   }

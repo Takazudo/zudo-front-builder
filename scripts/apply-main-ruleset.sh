@@ -35,14 +35,14 @@ set -euo pipefail
 #   - "Build docs site (docs-checks.yml)" is job-level path-gated behind
 #     docs-checks.yml's `changed-files (docs)` detector (#1336 → #2827), so it
 #     legitimately skips on non-docs PRs, and its name also collides with the
-#     `Build docs site` jobs in docs-pr-preview.yml / docs-deploy.yml; the
-#     workflow's unconditional `Docs gate` job (`if: always()`, fails closed on
-#     a failed/cancelled detector or build) is what is required instead.
+#     `Build docs site` job in docs-deploy.yml; the workflow's unconditional
+#     `Docs gate` job (`if: always()`, fails closed on a failed/cancelled
+#     detector or build) is what is required instead. The docs preview upload
+#     lives in docs-checks.yml and is not a required check.
 #   - "Smoke released (install.sh)" — only fires via workflow_run after a
 #     release tag, never on a normal PR; requiring it would block all PRs.
-#   - anything from docs-pr-preview.yml / docs-deploy.yml / actionlint.yml /
-#     security-audit.yml — all already path-filtered, tag-only, or
-#     schedule-only, so none of them run on every PR.
+#   - anything from docs-deploy.yml / actionlint.yml / security-audit.yml —
+#     path-filtered, tag-only, or schedule-only, so none of them run on every PR.
 #
 # Bypass: repo-admin (RepositoryRole actor_id=5, the built-in "admin" role —
 # there is no OrganizationAdmin equivalent on a user-owned repo) with
