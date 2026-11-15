@@ -1196,7 +1196,11 @@ describe("island shipped-size budget", () => {
     // compared, so a docs-only lock bump does not redden this check.
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.schemaVersion).toBeGreaterThanOrEqual(3);
-    expect(darwinContract.dependencyFingerprint.sha256).toMatch(/^[a-f0-9]{64}$/);
+    // Keep this off the `.sha256).toBe("` spelling. The Darwin rebaseline test
+    // unpins the first such literal, which is the ceiling pin below.
+    expect(darwinContract.dependencyFingerprint).toEqual(
+      expect.objectContaining({ sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+    );
     expect(
       pnpmLockHashForContract(
         lockText.replace("lockfileVersion:", "unexpectedLockfileVersion:"),
@@ -1243,6 +1247,9 @@ describe("island shipped-size budget", () => {
   it("records the reviewed Darwin arm64 ceilings with zero allowance", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
+    // Literal scripts/rebaseline-island-size-darwin.mjs rewrites. It records
+    // decision.json, not packages/zfb/package.json, so a version bump does not move it.
+    expect(darwinContract.toolchain.packageVersion).toBe("6.0.0");
     expect(darwinContract.schemaVersion).toBe(4);
     expect(darwinContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
@@ -1317,6 +1324,9 @@ describe("island shipped-size budget", () => {
       readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
+    // Literal scripts/rebaseline-island-size-linux.mjs rewrites. It records
+    // decision-linux-x64.json, not packages/zfb/package.json.
+    expect(linuxContract.toolchain.packageVersion).toBe("6.1.4");
     expect(linuxContract.schemaVersion).toBe(4);
     expect(linuxContract.dependencyFingerprint.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(linuxContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);

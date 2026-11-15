@@ -492,15 +492,17 @@ jobs:
   # Downstream of Docs gate. This job does not build the site. It publishes the
   # root artifact snapshotted before the subpath rebuild. A skipped or failed
   # preview does not change the Docs gate result.
+  #
+  # The if is one line on purpose. A folded `>-` block whose later lines are
+  # indented further keeps those newlines inside `${{ }}`. GitHub then does not
+  # evaluate the expression and skips the job, which is what happened on the
+  # ready run 43716196605. `ready_for_review` is named because that event is
+  # what turns a draft into a preview; the steps below re-read the live PR
+  # before any upload or comment.
   preview:
     name: Upload docs preview
     needs: [changed-files, docs-gate]
-    if: >-
-      ${{ needs.docs-gate.result == 'success' &&
-          needs.changed-files.outputs.docs == 'true' &&
-          github.event.pull_request.draft == false &&
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          github.event.pull_request.user.login != 'dependabot[bot]' }}
+    if: ${{ needs.docs-gate.result == 'success' && needs.changed-files.outputs.docs == 'true' && (github.event.action == 'ready_for_review' || github.event.pull_request.draft == false) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' }}
     concurrency:
       group: pr-preview-${{ github.event.pull_request.number }}
       cancel-in-progress: true

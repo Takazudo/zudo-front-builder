@@ -211,6 +211,8 @@ describe("docs-checks preview wiring", () => {
     expect(preview.needs).toEqual(["changed-files", "docs-gate"]);
     expect(preview.if).toContain("needs.docs-gate.result == 'success'");
     expect(preview.if).toContain("needs.changed-files.outputs.docs == 'true'");
+    expect(preview.if).not.toMatch(/\n/);
+    expect(preview.if).toContain("github.event.action == 'ready_for_review'");
     expect(preview.if).toContain("github.event.pull_request.draft == false");
     expect(preview.if).toContain(
       "github.event.pull_request.head.repo.full_name == github.repository",
