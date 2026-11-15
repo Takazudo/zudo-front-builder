@@ -1,0 +1,12 @@
+---
+title: v6.1.4
+sidebar_position: 61
+---
+
+# v6.1.4
+
+Released: 2026-11-15
+
+## Other Changes
+
+- The four `.wasm` artifacts are rebuilt with the same pinned rustc 1.100.0. `finalWasm`, glue, and glue-gzip match 6.1.3. highlight gzip-9 is 822467 bytes (822464 in 6.1.3) and parse gzip-9 is 301493 bytes (301490 in 6.1.3), a 3-byte move inside the 64-byte compressor-drift tolerance. The size tables in the package README show the new values. All four SHA-256 digests also move, because each artifact embeds `ZFB_RELEASE_VERSION`. Take the digests from the GitHub Release asset `zfb-md-wasm-6.1.4-shipped-artifacts.json` or the package export `@takazudo/zfb-md-wasm/shipped-artifacts.json` (406d7a7b5).
