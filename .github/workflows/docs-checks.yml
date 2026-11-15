@@ -493,16 +493,17 @@ jobs:
   # root artifact snapshotted before the subpath rebuild. A skipped or failed
   # preview does not change the Docs gate result.
   #
-  # The if is one line on purpose. A folded `>-` block whose later lines are
-  # indented further keeps those newlines inside `${{ }}`. GitHub then does not
-  # evaluate the expression and skips the job, which is what happened on the
-  # ready run 43716196605. `ready_for_review` is named because that event is
-  # what turns a draft into a preview; the steps below re-read the live PR
-  # before any upload or comment.
+  # `!cancelled()` is required. Without a status function GitHub wraps the if
+  # in `success()`, and `success()` is false when `docs-only-checks` was
+  # skipped. That job is skipped on every PR that is not docs-only, and
+  # docs-gate needs it, so the preview job was skipped after a green gate
+  # (runs 43716196605 and 43720237041). Draft, fork, and Dependabot checks
+  # happen in the steps below, against the live PR, immediately before upload
+  # and again before the comment.
   preview:
     name: Upload docs preview
     needs: [changed-files, docs-gate]
-    if: ${{ needs.docs-gate.result == 'success' && needs.changed-files.outputs.docs == 'true' && (github.event.action == 'ready_for_review' || github.event.pull_request.draft == false) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' }}
+    if: ${{ !cancelled() && needs.docs-gate.result == 'success' && needs.changed-files.outputs.docs == 'true' }}
     concurrency:
       group: pr-preview-${{ github.event.pull_request.number }}
       cancel-in-progress: true

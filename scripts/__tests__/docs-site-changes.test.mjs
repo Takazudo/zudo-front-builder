@@ -212,12 +212,18 @@ describe("docs-checks preview wiring", () => {
     expect(preview.if).toContain("needs.docs-gate.result == 'success'");
     expect(preview.if).toContain("needs.changed-files.outputs.docs == 'true'");
     expect(preview.if).not.toMatch(/\n/);
-    expect(preview.if).toContain("github.event.action == 'ready_for_review'");
-    expect(preview.if).toContain("github.event.pull_request.draft == false");
-    expect(preview.if).toContain(
-      "github.event.pull_request.head.repo.full_name == github.repository",
+    expect(preview.if).toContain("!cancelled()");
+    expect(preview.if).not.toContain("success()");
+    const confirm = preview.steps.find(
+      (step) => step.name === "Confirm the PR still points at this head",
     );
-    expect(preview.if).toContain("github.event.pull_request.user.login != 'dependabot[bot]'");
+    const comment = preview.steps.find((step) => step.name === "Upsert sticky PR preview comment");
+    for (const step of [confirm, comment]) {
+      expect(step.with.script).toContain("data.draft === false");
+      expect(step.with.script).toContain("data.head.repo?.full_name === process.env.REPO");
+      expect(step.with.script).toContain('data.user.login !== "dependabot[bot]"');
+      expect(step.with.script).toContain("data.head.sha === expected");
+    }
     expect(preview.concurrency.group).toBe("pr-preview-${{ github.event.pull_request.number }}");
     expect(preview.concurrency["cancel-in-progress"]).toBe(true);
     expect(JSON.stringify(build)).not.toContain("CLOUDFLARE_");
