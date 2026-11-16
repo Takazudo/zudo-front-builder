@@ -721,12 +721,27 @@ function validate(state) {
   });
 }
 
+function expectHistoricalContractPass(state) {
+  // The current lock can differ from a reviewed historical contract without
+  // invalidating that contract. Keep the informational warning exact and
+  // continue to reject every hard validation error.
+  const fingerprintDiffers =
+    state.localInputs.dependencyFingerprint.sha256 !== state.contract.dependencyFingerprint.sha256;
+  expect(validate(state)).toEqual({
+    errors: [],
+    warnings: fingerprintDiffers
+      ? ["local dependency fingerprint: sha256 differs from the reviewed contract"]
+      : [],
+    passed: true,
+  });
+}
+
 function assertHistoricalContractAndReviewedCargoGate(contract) {
   const historical = makeState(contract.platform, contract, contract.toolchain.packageVersion, {
     cargoLockSha256: contract.toolchain.cargoLockSha256,
     runnerSha256: contract.runnerSha256,
   });
-  expect(validate(historical)).toEqual({ errors: [], warnings: [], passed: true });
+  expectHistoricalContractPass(historical);
   // The historical #318 transition is proven from its frozen reviewed bytes,
   // never from the live lock: that proof says nothing about a later candidate.
   const lock = reviewedCargoLock();
@@ -1390,6 +1405,9 @@ describe("island shipped-size budget", () => {
     const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
     expect(live.schemaVersion).toBe(4);
     const contract = withCheckoutPins(live);
+    // This is a synthetic re-pin fixture, so bind it to this checkout's
+    // fingerprint. The reviewed on-disk contract remains unchanged.
+    contract.dependencyFingerprint = checkoutFingerprint();
     return makeState(contract.platform, contract, contract.toolchain.packageVersion);
   }
   function repinEvidence(state, patch = {}) {
@@ -1420,7 +1438,7 @@ describe("island shipped-size budget", () => {
 
   it("accepts a schemaVersion-4 contract written by the release re-pin helper", () => {
     const state = linuxV4State();
-    expect(validate(state)).toEqual({ errors: [], warnings: [], passed: true });
+    expectHistoricalContractPass(state);
     const before = structuredClone(state.contract);
     const { contract } = rebaselineContract(
       state.contract,
@@ -1437,7 +1455,7 @@ describe("island shipped-size budget", () => {
     expect(contract.dependencyFingerprint).toEqual(before.dependencyFingerprint);
     expect(contract.runnerSha256).toEqual(before.runnerSha256);
     state.contract = contract;
-    expect(validate(state)).toEqual({ errors: [], warnings: [], passed: true });
+    expectHistoricalContractPass(state);
 
     const runtime = linuxV4State();
     expect(
