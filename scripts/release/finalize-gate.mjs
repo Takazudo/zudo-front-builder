@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { policyForRelease } from "./source-publication-policy.mjs";
 // finalize-gate.mjs — admission for release.yml's finalization-only recovery
 // (`finalize_only=true`, #4690). Finalization never builds or publishes a
 // package; it only reconciles dist-tags, the MD/WASM digest asset, provenance
@@ -93,6 +94,7 @@ export async function main(argv, { gh = execGh, env = process.env, request } = {
   const npm = await collectStates({
     version,
     sourceCommit: opts["source-commit"],
+    packages: policyForRelease(opts["source-commit"], { gh, repo }).packages.map((p) => p.name),
     verdict: admission,
     ...(request ? { request } : {}),
     ...(env.ZFB_NPM_REGISTRY ? { registry: env.ZFB_NPM_REGISTRY } : {}),
@@ -117,7 +119,7 @@ export async function main(argv, { gh = execGh, env = process.env, request } = {
       .join(""),
   );
   process.stdout.write(
-    `Finalization cleared for ${opts.tag}: all 11 packages present-verified, build assets complete.\n`,
+    `Finalization cleared for ${opts.tag}: all source-policy packages present-verified, build assets complete.\n`,
   );
   return 0;
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { policyForRelease } from "./release/source-publication-policy.mjs";
 //
 // check-provenance-preflight.mjs — pre-publish guard for the same npm trust
 // downgrade check-provenance-drift.mjs catches after the fact (issue #3134).
@@ -331,7 +332,11 @@ async function main(argv) {
     console.error(`provenance policy is invalid — failing closed: ${error.message}`);
     return 2;
   }
-  const localBuilt = args.packages ?? MODES[args.mode];
+  const localBuilt =
+    args.packages ??
+    (args.mode === "recovery-no-provenance"
+      ? policyForRelease(process.env.ZFB_RELEASE_SOURCE_COMMIT).names
+      : MODES[args.mode]);
   const results = await checkMode(args.mode, { version: args.version, packages: localBuilt });
   return report(
     applyPolicy(results, { mode: args.mode, version: args.version, policy, localBuilt }),

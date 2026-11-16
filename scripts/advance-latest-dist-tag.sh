@@ -42,19 +42,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Every published package. Must match PUBLISHED_PACKAGES in
 # retire-next-dist-tag.mjs (drift guard: scripts/__tests__/retire-next-dist-tag.test.mjs).
-PACKAGES=(
-  "@takazudo/zfb-darwin-arm64"
-  "@takazudo/zfb-darwin-x64"
-  "@takazudo/zfb-linux-arm64-gnu"
-  "@takazudo/zfb-linux-x64-gnu"
-  "@takazudo/zfb-win32-x64-msvc"
-  "@takazudo/zfb-slugify"
-  "@takazudo/zfb"
-  "@takazudo/zfb-runtime"
-  "@takazudo/zfb-adapter-cloudflare"
-  "create-zfb"
-  "@takazudo/zfb-md-wasm"
-)
+PACKAGES=()
+POLICY_NAMES="$(node "${SCRIPT_DIR}/release/source-publication-policy.mjs" "${ZFB_RELEASE_SOURCE_COMMIT:-}")" || exit 1
+while IFS= read -r name; do PACKAGES+=("$name"); done <<< "$POLICY_NAMES"
+
 
 PRERELEASE_CHANNEL_RE='-(next|beta|rc)\.'
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { policyForRelease } from "./release/source-publication-policy.mjs";
 /**
  * verify-npm-provenance-expectations.mjs — post-publish check that every
  * package version carries exactly the npm provenance the publish helper
@@ -195,6 +196,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   let rows;
   try {
     rows = parseExpectations(readFileSync(file, "utf8"));
+    const policy = policyForRelease(process.env.ZFB_RELEASE_SOURCE_COMMIT);
+    if (
+      JSON.stringify(rows.map((p) => p.name)) !== JSON.stringify(policy.names) ||
+      rows.some((p) => p.version !== process.env.ZFB_RELEASE_VERSION)
+    ) {
+      throw new Error("expectations differ from immutable source package set/order/version");
+    }
   } catch (error) {
     console.log(`::error::cannot read provenance expectations: ${error.message}`);
     process.exit(1);

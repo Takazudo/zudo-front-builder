@@ -1,3 +1,4 @@
+import { policyFromSourceFiles } from "../release/npm-publication-policy.mjs";
 // Tests for scripts/retire-next-dist-tag.mjs.
 //
 // Three layers:
@@ -226,6 +227,29 @@ const silent = () => {};
 const noWait = async () => {};
 
 describe("retireNextDistTag", () => {
+  it("source policy excludes suspended carrier from both cleanup writes", async () => {
+    const packages = policyFromSourceFiles({
+      policyText: JSON.stringify({
+        schema: "zfb-npm-publication-policy/v1",
+        suspended: ["@takazudo/zfb-linux-arm64-gnu"],
+      }),
+    }).names;
+    const tags = Object.fromEntries(
+      PUBLISHED_PACKAGES.map((name) => [
+        name,
+        { latest: "7.0.0", next: "6.0.0-next.1", "release-pending": "7.0.0" },
+      ]),
+    );
+    const { npm, calls } = makeNpm({ tags });
+    await retireNextDistTag({ packages, npm, wait: noWait, log: silent });
+    expect(calls).toHaveLength(20);
+    expect(calls.some((args) => args.includes("@takazudo/zfb-linux-arm64-gnu"))).toBe(false);
+    expect(tags["@takazudo/zfb-linux-arm64-gnu"]).toEqual({
+      latest: "7.0.0",
+      next: "6.0.0-next.1",
+      "release-pending": "7.0.0",
+    });
+  });
   it("removes only the packages whose 'next' is no longer ahead of 'latest'", async () => {
     const { npm, removed } = makeNpm({
       tags: {
@@ -583,11 +607,8 @@ describe("PUBLISHED_PACKAGES drift guard", () => {
     // here, `next` retires there. A package present in only one list is the
     // exact drift that froze `next` at 1.1.0-next.1 in the first place.
     const sh = readFileSync(join(REPO_ROOT, "scripts", "advance-latest-dist-tag.sh"), "utf8");
-    const block = /^PACKAGES=\(\n([\s\S]*?)^\)$/m.exec(sh);
-    expect(block).not.toBeNull();
-    const tagged = [...block[1].matchAll(/^\s*"([^"]+)"\s*$/gm)].map((m) => m[1]);
-
-    expect(tagged.length).toBeGreaterThan(0);
-    expect([...PUBLISHED_PACKAGES].sort()).toEqual([...tagged].sort());
+    expect(sh).toContain("release/source-publication-policy.mjs");
+    expect(sh).toContain("ZFB_RELEASE_SOURCE_COMMIT");
+    expect(sh).not.toContain('"@takazudo/zfb-linux-arm64-gnu"');
   });
 });

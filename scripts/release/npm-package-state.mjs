@@ -51,6 +51,8 @@ import {
   supportDeadline,
 } from "./publish-receipts.mjs";
 
+import { policyForRelease } from "./source-publication-policy.mjs";
+
 export const DEFAULT_REGISTRY = "https://registry.npmjs.org";
 export const SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1";
 
@@ -493,7 +495,9 @@ export async function main(
     version: opts.version,
     sourceCommit: opts.sourceCommit,
     verdict,
-    packages: opts.packages.length ? opts.packages : PUBLISHED_PACKAGES,
+    packages: opts.packages.length
+      ? opts.packages
+      : policyForRelease(opts.sourceCommit, { gh, repo }).packages.map((p) => p.name),
     registry,
     request: request ?? defaultRequest,
     receiptsLoader: tag ? () => loadReceipts({ tag, repo, gh }) : null,

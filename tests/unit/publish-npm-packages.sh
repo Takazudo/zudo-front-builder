@@ -288,7 +288,21 @@ chmod +x "$MOCK_BIN/npm" "$MOCK_BIN/pnpm"
 
 cat >"$MOCK_BIN/gh" <<'MOCK_GH'
 #!/bin/sh
-printf '%s\n' "$*" >>"$MOCK_GH_LOG"
+if [ "$1" = api ]; then
+  case "$2" in
+    *git/blobs/new-policy) printf '%s\n' '{"encoding":"base64","content":"eyJzY2hlbWEiOiJ6ZmItbnBtLXB1YmxpY2F0aW9uLXBvbGljeS92MSIsInN1c3BlbmRlZCI6WyJAdGFrYXp1ZG8vemZiLWxpbnV4LWFybTY0LWdudSJdfQ=="}'; exit 0 ;;
+    *git/trees/*)
+      if [ "${MOCK_NEW_POLICY:-}" = 1 ]; then
+        printf '%s\n' '{"truncated":false,"tree":[{"path":"packages/zfb-slugify/package.json","type":"blob"},{"path":"release/npm-publication-policy.json","type":"blob","mode":"100644","sha":"new-policy"}]}'
+        exit 0
+      fi
+      if [ -f packages/zfb-slugify/package.json ]; then
+        printf '{"truncated":false,"tree":[{"path":"packages/zfb-slugify/package.json","type":"blob"}]}\n'
+      else printf '{"truncated":false,"tree":[]}\n'; fi
+      exit 0 ;;
+  esac
+fi
+printf '%s\n' "$*" >>"${MOCK_GH_LOG:-/dev/null}"
 # The digest asset is reconciled, never clobbered: report an asset-less Release.
 if [ "$1" = release ] && [ "$2" = view ]; then printf '{"assets":[]}\n'; fi
 MOCK_GH
@@ -361,6 +375,7 @@ let local = String(localRaw ?? "").split(/[\s,]+/).map((d) => d.replace(/\/$/, "
 if (mode === "mac-local" && local.length === 0) local = ["packages/zfb-darwin-x64"];
 const packages = [];
 for (const dir of dirs) {
+  if (process.env.MOCK_NEW_POLICY === "1" && dir === "packages/zfb-linux-arm64-gnu") continue;
   if (!existsSync(join(dir, "package.json"))) continue;
   const { name, version } = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
   const file = `${name.replace(/^@/, "").replace("/", "-")}-${version}.tgz`;
@@ -1439,6 +1454,34 @@ else
   fail "publish: version mismatch rc=$TV2_RC out=$(tail -3 "$TV_OUT" | tr '\n' ' ')"
 fi
 rm -rf "$TV_BASE" "$TV_OUT" "$TV_LOG" "$TV_CALLS"
+
+# New-source policy paths: mocked registry writes only; no Linux arm64 publication/tag mutation.
+NP_LOG=$(mktemp)
+NP_OUT=$(mktemp)
+NP_TAGS=$(mktemp)
+NP_RC=0
+PATH="$MOCK_BIN:$PATH" MOCK_NEW_POLICY=1 DIST_TAG=latest MOCK_EXISTING="" \
+  MOCK_PUBLISH_LOG="$NP_LOG" MOCK_DISTTAG_LOG="$NP_TAGS" \
+  bash "$SCRIPT" all-provenance >"$NP_OUT" 2>&1 || NP_RC=$?
+if [ "$NP_RC" -eq 0 ] && [ "$(wc -l <"$NP_LOG" | tr -d ' ')" -eq 10 ] && ! grep -q 'zfb-linux-arm64-gnu' "$NP_LOG"; then
+  pass "new source policy: publishes exact active ten without suspended carrier"
+else fail "new source policy: rc=$NP_RC output=$(tail -3 "$NP_OUT" | tr '\n' ' ')"; fi
+NP_NAMES=$(printf '%s\n' $ALL_NAMES | grep -v '^@takazudo/zfb-linux-arm64-gnu$' | tr '\n' ' ')
+NP_RC=0
+PATH="$MOCK_BIN:$PATH" MOCK_NEW_POLICY=1 DIST_TAG=latest MOCK_ALL_NAMES="$NP_NAMES" \
+  MOCK_DISTTAG_LOG="$NP_TAGS" ZFB_NPM_PACKAGE_STATE_NODE="$MOCK_BIN/promote-state-node" \
+  bash "$PROMOTE_SCRIPT" "$V" >"$NP_OUT" 2>&1 || NP_RC=$?
+if [ "$NP_RC" -eq 0 ] && ! grep -q 'zfb-linux-arm64-gnu' "$NP_TAGS"; then
+  pass "new source policy: promotion never writes suspended carrier tag"
+else fail "new source policy promotion: rc=$NP_RC out=$(tail -3 "$NP_OUT" | tr '\n' ' ')"; fi
+NP_RC=0
+PATH="$MOCK_BIN:$PATH" MOCK_NEW_POLICY=1 DIST_TAG=latest MOCK_ALL_NAMES="$ALL_NAMES" \
+  MOCK_DISTTAG_LOG="$NP_TAGS" ZFB_NPM_PACKAGE_STATE_NODE="$MOCK_BIN/promote-state-node" \
+  bash "$PROMOTE_SCRIPT" "$V" >"$NP_OUT" 2>&1 || NP_RC=$?
+if [ "$NP_RC" -ne 0 ] && grep -q 'differ from immutable source policy' "$NP_OUT"; then
+  pass "new source policy: promotion rejects extra/unexpected state rows"
+else fail "new source policy: unexpected state rows admitted rc=$NP_RC"; fi
+rm -f "$NP_LOG" "$NP_OUT" "$NP_TAGS"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 

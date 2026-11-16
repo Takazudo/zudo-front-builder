@@ -378,6 +378,8 @@ jobs:
           RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
           ALLOW_DOWNGRADE: ${{ needs.release-context.outputs.allow_downgrade }}
           PUBLISH_MODE: ${{ needs.release-context.outputs.publish_mode }}
+          ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [[ "$PUBLISH_MODE" == "recovery-no-provenance" ]]; then
             MODE_ARGS=(--mode recovery-no-provenance)
@@ -1162,6 +1164,8 @@ jobs:
         shell: bash
         env:
           PUBLISH_MODE: ${{ needs.release-context.outputs.publish_mode }}
+          ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
+          GH_TOKEN: ${{ github.token }}
           IS_RECOVERY: ${{ needs.release-context.outputs.is_recovery }}
         run: |
           ARGS=(--mode "$PUBLISH_MODE" --out "$RUNNER_TEMP/npm-tarballs" --root .
@@ -1364,6 +1368,9 @@ jobs:
           EXPECTATIONS: ${{ runner.temp }}/npm-provenance-expectations.tsv
           NPM_PROVENANCE_VERIFY_ATTEMPTS: "9"
           RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
+          ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
+          ZFB_RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
         run: |
           set +e
           node scripts/verify-npm-provenance-expectations.mjs --expectations "$EXPECTATIONS" | tee "$RUNNER_TEMP/verify-provenance.log"
@@ -1419,6 +1426,7 @@ jobs:
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          GH_TOKEN: ${{ github.token }}
           ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
           ZFB_DARWIN_ADMISSION_VERDICT: ${{ runner.temp }}/darwin-admission/verdict.json
         run: bash scripts/promote-release-channel.sh "$RELEASE_VERSION"
@@ -1433,6 +1441,9 @@ jobs:
       - name: Sweep stale 'next' and 'release-pending' dist-tags
         if: ${{ always() && inputs.dry_run != true }}
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
         run: node scripts/retire-next-dist-tag.mjs
 
   # The MD/WASM digest manifest becomes a Release asset only after the published
@@ -1574,6 +1585,10 @@ jobs:
 
       - name: Verify npm provenance expectations
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
+          ZFB_RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
         run: |
           node scripts/verify-npm-provenance-expectations.mjs \
             --expectations "$RUNNER_TEMP/npm-provenance-expectations.tsv"
@@ -1586,6 +1601,7 @@ jobs:
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          GH_TOKEN: ${{ github.token }}
           ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
           ZFB_DARWIN_ADMISSION_VERDICT: ${{ runner.temp }}/darwin-admission/verdict.json
         run: bash scripts/promote-release-channel.sh "$RELEASE_VERSION"
@@ -1593,6 +1609,9 @@ jobs:
       - name: Sweep stale 'next' and 'release-pending' dist-tags
         if: ${{ always() && inputs.dry_run != true }}
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZFB_RELEASE_SOURCE_COMMIT: ${{ needs.release-context.outputs.source_commit }}
         run: node scripts/retire-next-dist-tag.mjs
 
   # Finalization's Release asset write, apart from the id-token job.

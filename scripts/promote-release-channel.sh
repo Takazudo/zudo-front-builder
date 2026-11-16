@@ -27,7 +27,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRERELEASE_CHANNEL_RE='-(next|beta|rc)\.'
-EXPECTED_PACKAGE_COUNT=11
+
 
 VERSION="${1:-}"
 if [[ -z "$VERSION" || $# -ne 1 ]]; then
@@ -49,6 +49,9 @@ if [[ ! "${ZFB_RELEASE_SOURCE_COMMIT:-}" =~ ^[0-9a-f]{40}$ ]]; then
   exit 1
 fi
 
+POLICY_NAMES="$(node "${SCRIPT_DIR}/release/source-publication-policy.mjs" "$ZFB_RELEASE_SOURCE_COMMIT")" || exit 1
+EXPECTED_PACKAGE_COUNT="$(printf '%s\n' "$POLICY_NAMES" | grep -c .)"
+
 TAG_ARGS=(--tag "$CHANNEL")
 if [[ "$CHANNEL" == next && "${ALSO_LATEST:-}" == "1" ]]; then
   TAG_ARGS+=(--tag latest)
@@ -63,6 +66,11 @@ STATE_RC=0
 STATES="$("${ZFB_NPM_PACKAGE_STATE_NODE:-node}" "${SCRIPT_DIR}/release/npm-package-state.mjs" "${STATE_ARGS[@]}")" || STATE_RC=$?
 printf '%s\n' "$STATES" | sed 's/^/  | /'
 
+ACTUAL_NAMES="$(printf '%s\n' "$STATES" | cut -f1)"
+if [[ "$ACTUAL_NAMES" != "$POLICY_NAMES" ]]; then
+  echo "::error::Channel promotion refused: state package names/order differ from immutable source policy."
+  exit 1
+fi
 TOTAL="$(printf '%s\n' "$STATES" | grep -c . || true)"
 VERIFIED="$(printf '%s\n' "$STATES" | awk -F '\t' '$2 == "present-verified"' | grep -c . || true)"
 if [[ "$STATE_RC" -ne 0 || "$TOTAL" -ne "$EXPECTED_PACKAGE_COUNT" || "$VERIFIED" -ne "$EXPECTED_PACKAGE_COUNT" ]]; then

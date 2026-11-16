@@ -267,6 +267,11 @@ describe("release-status (read-only, injected gh/registry)", () => {
     const gh = (args) => {
       calls.push(args);
       const joined = args.join(" ");
+      if (joined.includes(`git/trees/${source.commit}`))
+        return JSON.stringify({
+          truncated: false,
+          tree: [{ path: "packages/zfb-slugify/package.json", type: "blob" }],
+        });
       if (joined.includes(`git/ref/tags/${TAG}`)) {
         if (!tagRef) throw new GhError(args, { stderr: "gh: Not Found (HTTP 404)" });
         return JSON.stringify({ object: { type: "commit", sha: source.commit } });
