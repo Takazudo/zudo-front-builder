@@ -1,3 +1,4 @@
+import { PUBLISHED_PACKAGES } from "../retire-next-dist-tag.mjs";
 // Tests for scripts/verify-npm-provenance-expectations.mjs over an injected fake
 // `npm view`. Output shapes mirror the live registry: an attested version prints
 // a JSON object with provenance.predicateType; an unattested one prints nothing
@@ -293,11 +294,18 @@ describe("CLI exit codes", () => {
     writeFileSync(join(bin, "npm"), "#!/bin/sh\necho 'npm error code E404' >&2\nexit 1\n", {
       mode: 0o755,
     });
+    writeFileSync(
+      join(bin, "gh"),
+      `#!/bin/sh\necho '{"truncated":false,"tree":[{"path":"packages/zfb-slugify/package.json","type":"blob"}]}'\n`,
+      { mode: 0o755 },
+    );
     return spawnSync(process.execPath, [script, "--expectations", file], {
       encoding: "utf8",
       env: {
         ...process.env,
         PATH: `${bin}:${process.env.PATH}`,
+        ZFB_RELEASE_SOURCE_COMMIT: "a".repeat(40),
+        ZFB_RELEASE_VERSION: "1.0.0",
         NPM_PROVENANCE_VERIFY_ATTEMPTS: "1",
       },
     });
@@ -305,10 +313,12 @@ describe("CLI exit codes", () => {
 
   it("exits 3 when only processing rows are unresolved", () => {
     const r = run(
-      "@takazudo/a\t1.0.0\tattested\tprocessing\n@takazudo/b\t1.0.0\tattested\tpublish-accepted\n",
+      PUBLISHED_PACKAGES.map((name) => `${name}\t1.0.0\tattested\tprocessing\n`).join(""),
     );
     expect(r.status).toBe(3);
-    expect(r.stdout).toContain("PROCESSING_PACKAGES=@takazudo/a@1.0.0,@takazudo/b@1.0.0");
+    expect(r.stdout).toContain(
+      `PROCESSING_PACKAGES=${PUBLISHED_PACKAGES.map((name) => `${name}@1.0.0`).join(",")}`,
+    );
   });
 
   it("exits 1 when a processing row coexists with a real failure", () => {

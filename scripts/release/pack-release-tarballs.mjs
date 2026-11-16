@@ -35,6 +35,7 @@ import {
   verifyMdWasmArtifacts,
 } from "../verify-zfb-md-wasm-published-digests.mjs";
 import { isMain } from "./gh.mjs";
+import { policyForTree, assertPackageRows } from "./npm-publication-policy.mjs";
 import { darwinDigestProblems } from "./npm-package-state.mjs";
 
 export const PLATFORM = Object.freeze({
@@ -85,13 +86,14 @@ export function parseLocalBuilt(mode, raw) {
 
 /** Inventory in publication order; recovery of an older tag may lack slugify only. */
 export function inventory(root, mode) {
-  const dirs = [];
-  for (const dir of [...Object.keys(PLATFORM), ...WORKSPACE]) {
-    if (existsSync(join(root, dir, "package.json"))) dirs.push(dir);
-    else if (dir === "packages/zfb-slugify" && mode === "recovery-no-provenance") continue;
-    else
+  const dirs = policyForTree(root, mode).packages.map(({ dir, name }) => {
+    const path = join(root, dir, "package.json");
+    if (!existsSync(path))
       throw new Error(`publish target is missing expected package manifest: ${dir}/package.json`);
-  }
+    if (readJson(path).name !== name)
+      throw new Error(`publish target name differs from policy: ${dir}`);
+    return dir;
+  });
   return dirs;
 }
 
@@ -246,6 +248,7 @@ export function packRelease({
     error.problems = problems;
     throw error;
   }
+  assertPackageRows(packages, policyForTree(root, mode), version);
   if (shippedCopy) writeFileSync(join(out, "zfb-md-wasm-shipped-artifacts.json"), shippedCopy);
   const manifest = { schema: SCHEMA, mode, version, packages };
   writeFileSync(join(out, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);

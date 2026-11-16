@@ -16,6 +16,8 @@ import {
   wasmFiles,
 } from "./helpers/release-tarballs-fixture.mjs";
 
+import { policyFromSourceFiles } from "../release/npm-publication-policy.mjs";
+const legacyPolicy = policyFromSourceFiles();
 afterEach(cleanupTmp);
 const sets = [];
 afterEach(() => {
@@ -28,6 +30,7 @@ const fresh = () => {
 };
 const verify = (set, overrides = {}) =>
   verifyTarballs({
+    policy: legacyPolicy,
     dir: set.out,
     version: V,
     verdict: verdictFor(),
@@ -41,6 +44,39 @@ const pkgJson = (obj) => ({
 });
 
 describe("verify-release-tarballs", () => {
+  it("rejects omission, duplicate, unknown, order and source policy mismatch even with self-consistent manifests", () => {
+    const set = fresh();
+    const path = join(set.out, "manifest.json");
+    const rows = set.manifest.packages;
+    for (const packages of [
+      rows.slice(1),
+      [...rows, rows[0]],
+      rows.map((r, i) => (i ? r : { ...r, name: "unknown" })),
+      [rows[1], rows[0], ...rows.slice(2)],
+    ]) {
+      writeFileSync(path, JSON.stringify({ ...set.manifest, packages }));
+      expect(verify(set).join("\n")).toMatch(/source policy/);
+    }
+    writeFileSync(path, JSON.stringify(set.manifest));
+    const policy = policyFromSourceFiles({
+      policyText: JSON.stringify({
+        schema: "zfb-npm-publication-policy/v1",
+        suspended: ["@takazudo/zfb-linux-arm64-gnu"],
+      }),
+    });
+    expect(verify(set, { policy }).join("\n")).toMatch(/source policy/);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...set.manifest,
+        packages: rows.filter((r) => !policy.suspended.includes(r.name)),
+      }),
+    );
+    expect(verify(set, { policy })).toEqual([]);
+    expect(verify(set, { policy: undefined })).toEqual([
+      "immutable source publication policy is required",
+    ]);
+  });
   it("accepts an untouched pack output", () => {
     expect(verify(fresh())).toEqual([]);
   });
@@ -139,6 +175,8 @@ describe("verify-release-tarballs", () => {
     const set = fresh();
     const sink = { write: () => {} };
     const args = [
+      "--source-commit",
+      "a".repeat(40),
       "--dir",
       set.out,
       "--version",
@@ -148,8 +186,16 @@ describe("verify-release-tarballs", () => {
       "--md-wasm-manifest",
       set.buildManifestPath,
     ];
-    expect(main(args, { out: sink, err: sink })).toBe(0);
-    expect(main(["--dir", set.out, "--version", V], { out: sink, err: sink })).toBe(1);
-    expect(main(["--dir", set.out], { out: sink, err: sink })).toBe(2);
+    expect(main(args, { out: sink, err: sink, resolvePolicy: () => legacyPolicy })).toBe(0);
+    expect(
+      main(["--source-commit", "a".repeat(40), "--dir", set.out, "--version", V], {
+        out: sink,
+        err: sink,
+        resolvePolicy: () => legacyPolicy,
+      }),
+    ).toBe(1);
+    expect(
+      main(["--dir", set.out], { out: sink, err: sink, resolvePolicy: () => legacyPolicy }),
+    ).toBe(2);
   });
 });

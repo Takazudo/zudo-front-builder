@@ -651,13 +651,16 @@ describe("real pnpm-lock.yaml", () => {
     );
   });
 
-  it("--explain lists exactly the three roots plus the five platform link importers", () => {
+  it("--explain lists the real lock roots and active platform link importers", () => {
     const output = JSON.parse(
       execFileSync(process.execPath, [helperPath, "--explain"], { encoding: "utf8" }),
     );
     expect(output.sha256).toBe(realHash(realLock));
     expect(output.inventory.importers).toEqual(
-      [...SELECTED_IMPORTERS, ...PLATFORM_IMPORTERS].sort(),
+      [
+        ...SELECTED_IMPORTERS,
+        ...PLATFORM_IMPORTERS.filter((name) => name !== "packages/zfb-linux-arm64-gnu"),
+      ].sort(),
     );
   });
 });

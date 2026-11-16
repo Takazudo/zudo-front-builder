@@ -412,6 +412,11 @@ function makeFetch(world) {
     if (world.overrides.has(url)) return world.overrides.get(url)(url);
     const u = new URL(url);
     const path = `${u.origin}${u.pathname}`;
+    if (path === `${API}/git/trees/${COMMIT}`)
+      return json({
+        truncated: false,
+        tree: [{ path: "packages/zfb-slugify/package.json", type: "blob" }],
+      });
     if (path === `${API}/git/ref/tags/${TAG}`) return json(world.tagRef);
     const tagObject = /\/git\/tags\/([0-9a-f]+)$/.exec(path);
     if (tagObject)
@@ -625,6 +630,53 @@ function check(report, section, id) {
 }
 
 // ── tests ───────────────────────────────────────────────────────────────────
+
+describe("source publication policy", () => {
+  it("keeps legacy eleven but excludes suspended carrier only for a policy-bearing source", async () => {
+    const { report, calls } = await run((w) => {
+      w.overrides.set(`${API}/git/trees/${COMMIT}?recursive=1`, () =>
+        json({
+          truncated: false,
+          tree: [
+            { path: "packages/zfb-slugify/package.json", type: "blob" },
+            {
+              path: "release/npm-publication-policy.json",
+              type: "blob",
+              mode: "100644",
+              sha: "policy",
+            },
+          ],
+        }),
+      );
+      w.overrides.set(`${API}/git/blobs/policy`, () =>
+        json({
+          encoding: "base64",
+          content: Buffer.from(
+            JSON.stringify({
+              schema: "zfb-npm-publication-policy/v1",
+              suspended: ["@takazudo/zfb-linux-arm64-gnu"],
+            }),
+          ).toString("base64"),
+        }),
+      );
+    });
+    expect(check(report, "npm", "coverage").evidence.checked).toHaveLength(10);
+    expect(check(report, "npm", "package:@takazudo/zfb-linux-arm64-gnu")).toBeUndefined();
+    expect(
+      calls.some((c) => c.url.includes("/-/package/@takazudo%2Fzfb-linux-arm64-gnu/dist-tags")),
+    ).toBe(false);
+    expect(
+      report.sections.archives.checks.some((c) => c.id === "archive:aarch64-unknown-linux-gnu"),
+    ).toBe(true);
+  });
+  it("fails coverage with a structured report when source policy cannot be read", async () => {
+    const { report } = await run((w) =>
+      w.overrides.set(`${API}/git/trees/${COMMIT}?recursive=1`, () => json({}, 403)),
+    );
+    expect(check(report, "npm", "coverage").status).toBe(STATUS.FAILED);
+    expect(report.verdict).not.toBe(STATUS.VERIFIED);
+  });
+});
 
 describe("complete normal release", () => {
   it("verifies every section, all eleven packages and four WASM files", async () => {

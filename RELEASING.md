@@ -18,9 +18,40 @@ Related references, not substitutes:
 - [`research/npm-oidc-cutover.md`](research/npm-oidc-cutover.md) — the owner's npm trusted
   publisher setup, live-proof checklist and credential retirement runbook.
 
+## Next-release Linux arm64 npm suspension
+
+Beginning with the next newly authorized release, new npm distribution of
+`@takazudo/zfb-linux-arm64-gnu` is suspended. This is an npm platform compatibility
+change: apply the major-version judgment in A2; the implementation does not select
+a version or channel, bump versions, or publish a release.
+
+The immutable release SOURCE tree's `release/npm-publication-policy.json` selects
+the active npm package set. The current policy excludes only Linux arm64 (ten
+active packages). Older sources retain their original eleven-package contract,
+including v6.1.4; a newer CONTROL script must not mark an old release complete with
+ten packages. The historical pre-slugify recovery exception remains separate.
+Pack, publish, verification, status, finalize, promotion and cleanup must use this
+source-bound set, and must reject missing, duplicate or unexpected rows.
+
+Linux arm64 Rust sources, builds/tests, Release archives and the standalone CLI
+installer remain supported. Internal carrier manifest versions still synchronize
+to stamp these non-npm builds; this does not authorize npm publication. The next
+SDK omits the optional carrier dependency and refuses stale carriers for CLI/CSS.
+Pure JS imports remain available and CSS loads the native binding only on use.
+
+No existing npm versions, dist-tags or Release assets are changed. npm may still
+make previously accepted versions visible later: track that separately in #4711;
+this change neither cancels them nor automatically resumes distribution or rolls
+back tags. Active-package processing/missing/uncertain/integrity/provenance failures
+still block channel promotion under `release-pending`.
+
+Resumption requires resolution of the npm processing problem, confirmation of a
+consistent SDK/carrier tuple, necessary platform verification and an explicit owner
+decision. Historical package availability is not ongoing maintenance or safety assurance.
+
 ## Authority and stop conditions
 
-A release is a production action: it pushes to `main`, creates a tag, publishes eleven
+A release is a production action: it pushes to `main`, creates a tag, publishes the source-policy active set of
 immutable npm versions and moves public channels. Only the owner authorizes one, per release.
 Development integration, a merged PR or a green CI run never implies release authorization.
 
@@ -564,7 +595,7 @@ Exit 2: registry error, fail closed — retry later; never treat it as acknowled
 npm authentication is **OIDC trusted publishing only**: there is no `NPM_TOKEN` anywhere, and
 `scripts/npm-oidc-preflight.mjs` fails the publish job closed without the OIDC environment or with
 any stored npm credential. The trusted publisher is `Takazudo` / `zudo-front-builder` /
-`release.yml`, no environment, with **Allow npm dist-tag** enabled on each of the eleven packages
+`release.yml`, no environment, with **Allow npm dist-tag** enabled on each active package
 ([owner runbook](research/npm-oidc-cutover.md)).
 
 Publication is split across two jobs so the npm credential never meets package code:
@@ -585,7 +616,7 @@ Publication is split across two jobs so the npm credential never meets package c
 The normal publish mode is `mac-local` with
 `ZFB_LOCAL_BUILT_PACKAGES="packages/zfb-darwin-arm64 packages/zfb-darwin-x64"`: both Darwin carrier
 packages publish with `--provenance=false` (an Actions attestation would falsely claim an Actions
-build of bytes built on the Mac) and the nine others with `--provenance`. A package that is already
+build of bytes built on the Mac) and the remaining active packages with `--provenance`. A package that is already
 present keeps its observed provenance as its expectation, so a partial publish followed by a
 recovery still verifies. `scripts/verify-npm-provenance-expectations.mjs` then checks each package
 version carries exactly its recorded attestation state.
@@ -692,7 +723,7 @@ Its jobs (`scripts/release/coordinate-release.mjs`) re-run the gate before every
 re-sending identical inputs resumes and never duplicates:
 
 1. **gate** (read-only). It is `release-status.mjs` plus the candidate contract:
-   - **Candidate:** the eleven manifests and the five changelog lanes at the SHA.
+   - **Candidate:** the eleven internally versioned manifests (including the suspended carrier) and the five changelog lanes at the SHA.
      A historical `shipped-sizes.json` `measuredOnVersion` is not part of the candidate
      contract. The candidate's own `release.yml` and `node-free-smoke.yml` must carry the
      coordinator contract markers, so an older candidate is refused.
@@ -770,7 +801,7 @@ head branch `v<version>`.
 6. Every package is published under the transient `release-pending` dist-tag, never under
    `latest` or `next`. The `publish` job moves the channel tag (`latest` for a stable,
    `next` for a prerelease, plus `latest` with `ALSO_LATEST`) only after its provenance
-   verification passes for all eleven packages, through `scripts/promote-release-channel.sh`.
+   verification passes for all source-policy active packages, through `scripts/promote-release-channel.sh`.
    If npm keeps a package in pre-publication processing, the verifier exits 3, the run fails and
    no channel tag moves on any package. Go to
    [npm is still processing a package](#npm-is-still-processing-a-package).
@@ -882,7 +913,7 @@ patch through the normal path to restore provenance (#2623), and point affected 
 
 ### Finalize only: dist-tags, digest asset, verification
 
-When Step 0 recommends `dispatch-finalize` (all eleven packages `present-verified` and all Release
+When Step 0 recommends `dispatch-finalize` (all source-policy active packages `present-verified` and all Release
 assets present, but a post-publish step did not complete):
 
 ```sh
@@ -890,7 +921,7 @@ gh workflow run release.yml --ref main -f dry_run=false -f release_tag=v<version
 ```
 
 `finalize_only` needs `release_tag` and a dispatch from `main`. With `dry_run=true` it runs only the
-read-only gate (all eleven packages `present-verified`, the six hosted assets and ten Darwin inputs
+read-only gate (all source-policy active packages `present-verified`, the six hosted assets and ten Darwin inputs
 on the Release, provenance expectations) and skips the dist-tag changes, digest upload and smoke —
 useful as a check, never as finalization. With `dry_run=false`, no build, no publish: the
 `finalize` job (`id-token: write`) reconciles dist-tags (advance `latest` when
@@ -903,7 +934,7 @@ missing it stops `blocked`; use recovery instead.
 
 Finalize is also where a release that stopped on npm processing completes. The `finalize` job runs
 `scripts/promote-release-channel.sh` (the same promotion as the `publish` job): it refuses unless
-all eleven packages are `present-verified` for the source commit, then moves the channel tag on
+all source-policy active packages are `present-verified` for the source commit, then moves the channel tag on
 all packages together. The sweep (`retire-next-dist-tag.mjs`) then removes `next` where it is no
 longer ahead and `release-pending` where the channel tag has reached it. A newer `release-pending`
 is a later release in flight and is kept.

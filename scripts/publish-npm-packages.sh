@@ -231,14 +231,12 @@ tarball_field_by_dir() {
 validate_tarball_set() {
   local mode="$1" row dir want version="" i=0 file integrity actual
   local -a want_dirs=()
-  for dir in "${EXPECTED_DIRS[@]}"; do
-    if [[ "$dir" == "packages/zfb-slugify" && "$mode" == "recovery-no-provenance" ]] \
-      && ! printf '%s\n' "${TARBALL_ROWS[@]}" | awk -F '\t' '{ print $3 }' | grep -Fxq "$dir"; then
-      echo "ℹ target tree predates @takazudo/zfb-slugify; omitting it from this recovery publish."
-      continue
-    fi
-    want_dirs+=("$dir")
-  done
+  local policy_dirs
+  policy_dirs="$(ZFB_NPM_PUBLISH_MODE="$mode" node "${PUBLISH_SCRIPT_DIR}/release/source-publication-policy.mjs" "$ZFB_RELEASE_SOURCE_COMMIT" --dirs)" || return 1
+  while IFS= read -r dir; do want_dirs+=("$dir"); done <<< "$policy_dirs"
+  if [[ "$mode" == "recovery-no-provenance" ]] && ! printf '%s\n' "$policy_dirs" | grep -Fxq packages/zfb-slugify; then
+    echo "ℹ target tree predates @takazudo/zfb-slugify; omitting it from this recovery publish."
+  fi
   if [[ "${#TARBALL_ROWS[@]}" -ne "${#want_dirs[@]}" ]]; then
     echo "::error::publish target is missing expected package tarballs: manifest has ${#TARBALL_ROWS[@]} entries, expected ${#want_dirs[@]} (${want_dirs[*]})."
     return 1
@@ -282,7 +280,7 @@ verify_tarball_contents() {
     echo "::error::tarball manifest version ${version} is not the release version ${ZFB_RELEASE_VERSION}. Refusing to publish."
     return 1
   fi
-  local -a args=(--dir "$(tarballs_dir)" --version "${ZFB_RELEASE_VERSION:-$version}")
+  local -a args=(--dir "$(tarballs_dir)" --version "${ZFB_RELEASE_VERSION:-$version}" --source-commit "$ZFB_RELEASE_SOURCE_COMMIT" --mode "$mode")
   if [[ -n "${ZFB_DARWIN_ADMISSION_VERDICT:-}" ]]; then
     args+=(--admission "$ZFB_DARWIN_ADMISSION_VERDICT")
   fi

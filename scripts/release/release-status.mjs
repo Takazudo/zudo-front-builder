@@ -26,7 +26,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { admitDarwinArtifacts, sourceInputs } from "../admit-darwin-artifacts.mjs";
-import { PUBLISHED_PACKAGES } from "../retire-next-dist-tag.mjs";
+import { policyForRelease } from "./source-publication-policy.mjs";
 import { GhError, execGh, isMain, repoFromEnv } from "./gh.mjs";
 import { DEFAULT_REGISTRY, collectStates, defaultRequest } from "./npm-package-state.mjs";
 import { loadReceipts, resolveNpmToken, runMatchesTag } from "./publish-receipts.mjs";
@@ -206,9 +206,9 @@ function admitFromRelease({ tag, version, repo, gh, tagInfo, repoRoot, darwinNam
   }
 }
 
-async function readDistTags({ request, registry }) {
+async function readDistTags({ request, registry, packages }) {
   const tags = {};
-  for (const name of PUBLISHED_PACKAGES) {
+  for (const name of packages) {
     const path = name.startsWith("@") ? `@${encodeURIComponent(name.slice(1))}` : name;
     try {
       const response = await request(`${registry}/-/package/${path}/dist-tags`);
@@ -322,10 +322,14 @@ export async function collectStatus({
       darwinNames: expectedReleaseAssets(version).darwin,
     });
   }
+  const packages = sourceCommit
+    ? policyForRelease(sourceCommit, { gh, repo }).packages.map((p) => p.name)
+    : [];
   status.npm = sourceCommit
     ? await collectStates({
         version,
         sourceCommit,
+        packages,
         verdict: status.admission?.admitted ? status.admission : null,
         registry,
         request,
@@ -335,7 +339,7 @@ export async function collectStatus({
         statusToken: npmToken,
       })
     : null;
-  const tags = await readDistTags({ request, registry });
+  const tags = await readDistTags({ request, registry, packages });
   status.distTags = { packages: tags, ...distTagsSettled(version, tags) };
   try {
     status.runs = readRuns({ tag, repo, gh });

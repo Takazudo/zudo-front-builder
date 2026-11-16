@@ -138,6 +138,22 @@ const pack = (root, opts = {}) => {
 };
 
 describe("pack-release-tarballs", () => {
+  it("packs only ten active packages from the source policy, preserving arm64 build files", () => {
+    const root = tree();
+    mkdirSync(join(root, "release"));
+    writeFileSync(
+      join(root, "release/npm-publication-policy.json"),
+      JSON.stringify({
+        schema: "zfb-npm-publication-policy/v1",
+        suspended: ["@takazudo/zfb-linux-arm64-gnu"],
+      }),
+    );
+    const { manifest, calls } = pack(root);
+    expect(manifest.packages).toHaveLength(10);
+    expect(manifest.packages.map((p) => p.name)).not.toContain("@takazudo/zfb-linux-arm64-gnu");
+    expect(calls.some((c) => c.cwd === "packages/zfb-linux-arm64-gnu")).toBe(false);
+    expect(readFileSync(join(root, "packages/zfb-linux-arm64-gnu/zfb"))).toBeTruthy();
+  });
   it("packs all 11 in publication order with integrity and provenance decisions", () => {
     const { manifest, out, calls } = pack(tree());
     expect(manifest.schema).toBe("zfb-npm-tarballs/v1");

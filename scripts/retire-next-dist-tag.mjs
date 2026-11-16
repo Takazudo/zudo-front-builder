@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { policyForRelease } from "./release/source-publication-policy.mjs";
 /**
  * retire-next-dist-tag.mjs
  *
@@ -490,6 +491,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   const { results, pendingResults, failed } = await retireNextDistTag({
     dryRun,
+    packages: policyForRelease(process.env.ZFB_RELEASE_SOURCE_COMMIT).names,
   });
   const count = (list, action) =>
     list.filter((r) => r.action === action || (action === "retired" && r.dryRun)).length;

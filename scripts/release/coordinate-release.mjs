@@ -256,7 +256,8 @@ export function decidePlan(status, { sha, tag }) {
   if (status.admission?.admitted !== true) problems.push("Darwin admission is not admitted");
   if (status.assets?.conflicting?.length) problems.push("Release assets conflict");
   const npmSummary = status.npm?.summary ?? {};
-  const notAbsent = PUBLISHED_PACKAGES.length - (npmSummary.absent?.length ?? 0);
+  const notAbsent =
+    (status.npm?.packages?.length ?? PUBLISHED_PACKAGES.length) - (npmSummary.absent?.length ?? 0);
   if (notAbsent !== 0) problems.push(`${notAbsent} package(s) are not absent on npm`);
   if (problems.length) {
     return {

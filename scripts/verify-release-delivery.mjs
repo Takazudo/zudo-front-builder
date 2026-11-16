@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { policyFromSourceFiles } from "./release/npm-publication-policy.mjs";
 /**
  * verify-release-delivery.mjs — read-only audit of one published zfb release.
  *
@@ -1632,7 +1633,7 @@ function finishPackage(pkg) {
 
 async function verifyNpm(ctx) {
   const section = new Section("npm");
-  const packages = await mapLimit(PUBLISHED_PACKAGES, ctx.concurrency, (name) =>
+  const packages = await mapLimit(ctx.publicationPackages, ctx.concurrency, (name) =>
     verifyNpmPackage(ctx, name),
   );
   for (const pkg of packages) {
@@ -1646,10 +1647,18 @@ async function verifyNpm(ctx) {
       failing.length ? { reason: failing.join("; ") } : {},
     );
   }
-  section.add("coverage", PUBLISHED_PACKAGES.length === 11 ? STATUS.VERIFIED : STATUS.FAILED, {
-    expected: PUBLISHED_PACKAGES,
-    checked: packages.map((pkg) => pkg.name),
-  });
+  section.add(
+    "coverage",
+    !ctx.publicationPolicyError &&
+      JSON.stringify(packages.map((p) => p.name)) === JSON.stringify(ctx.publicationPackages)
+      ? STATUS.VERIFIED
+      : STATUS.FAILED,
+    {
+      expected: ctx.publicationPackages,
+      error: ctx.publicationPolicyError,
+      checked: packages.map((pkg) => pkg.name),
+    },
+  );
   return section;
 }
 
@@ -2102,7 +2111,7 @@ async function observeChannels(ctx) {
       });
     } else record("github-latest", expect.githubLatest, undefined, false, {}, error);
   }
-  const tags = await mapLimit(PUBLISHED_PACKAGES, ctx.concurrency, async (name) => {
+  const tags = await mapLimit(ctx.publicationPackages, ctx.concurrency, async (name) => {
     try {
       return {
         name,
@@ -2231,6 +2240,33 @@ export async function verifyReleaseDelivery(options, deps = {}) {
   };
   try {
     const identity = await verifyIdentity(ctx);
+    ctx.publicationPackages = [];
+    try {
+      if (!ctx.commit) throw new Error("release source commit is unresolved");
+      const sourceTree = await http.getJson(
+        `${GITHUB_API}/repos/${repo}/git/trees/${ctx.commit}?recursive=1`,
+      );
+      if (sourceTree.truncated || !Array.isArray(sourceTree.tree))
+        throw new Error("incomplete publication policy source tree");
+      const policyEntry = sourceTree.tree.find(
+        (e) => e.path === "release/npm-publication-policy.json",
+      );
+      let policyText = null;
+      if (policyEntry) {
+        if (policyEntry.type !== "blob" || policyEntry.mode !== "100644")
+          throw new Error("invalid publication policy source file");
+        const blob = await http.getJson(`${GITHUB_API}/repos/${repo}/git/blobs/${policyEntry.sha}`);
+        if (blob.encoding !== "base64") throw new Error("invalid publication policy encoding");
+        policyText = Buffer.from(blob.content, "base64").toString("utf8");
+      }
+      ctx.publicationPackages = policyFromSourceFiles({
+        policyText,
+        hasSlugify: sourceTree.tree.some((e) => e.path === "packages/zfb-slugify/package.json"),
+        mode: "recovery-no-provenance",
+      }).names;
+    } catch (error) {
+      ctx.publicationPolicyError = error.message;
+    }
     const workflow = await verifyReleaseWorkflow(ctx);
     const archives = await verifyArchives(ctx);
     ctx.archiveIdentity = archiveIdentityByTarget(archives);

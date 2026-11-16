@@ -70,6 +70,11 @@ function loadBinding(): Binding {
   if (binding) return binding;
   const platform = process.platform;
   const arch = process.arch;
+  if (platform === "linux" && arch === "arm64") {
+    throw new CssCompileError(
+      "New Linux arm64 npm CLI/CSS distribution is suspended. Use the complete historical 6.0.1 package set (including @takazudo/zfb and its matching carriers), or the Linux arm64 standalone installer for CLI use. Do not combine this SDK with an older carrier. Historical availability is not a maintenance or safety guarantee.",
+    );
+  }
   if (platform === "linux") {
     const report = process.report?.getReport() as { header?: { glibcVersionRuntime?: string } };
     let musl = false;
