@@ -15,7 +15,12 @@ import {
   parseArgs,
   provenanceIdentity,
 } from "../release/npm-package-state.mjs";
-import { parseReceipts, resolveNpmToken, supportDeadline } from "../release/publish-receipts.mjs";
+import {
+  loadReceipts,
+  parseReceipts,
+  resolveNpmToken,
+  supportDeadline,
+} from "../release/publish-receipts.mjs";
 import { scriptsDir } from "./helpers/darwin-fixture.mjs";
 
 const REG = "https://registry.test";
@@ -695,6 +700,62 @@ describe("parseReceipts / supportDeadline", () => {
     );
     expect(map.get("a@1.0.0")).toEqual({ expected: "none", outcome: "processing" });
     expect(map.get("b@1.0.0").outcome).toBe("publish-attempted");
+  });
+  it("prefers the acknowledged publish time and falls back for legacy or malformed rows", () => {
+    const timestamp = "2026-11-13T04:00:00Z";
+    const fallback = "2026-11-13T04:21:00Z";
+    const gh = (args) => {
+      if (args[0] === "run" && args[1] === "list")
+        return JSON.stringify([{ databaseId: 1, headBranch: "v1.0.0", createdAt: fallback }]);
+      if (args[0] === "api")
+        return JSON.stringify({
+          artifacts: [{ name: "npm-publish-receipts", created_at: fallback }],
+        });
+      const dir = args[args.indexOf("--dir") + 1];
+      writeFileSync(
+        join(dir, "receipts.tsv"),
+        [
+          `fresh\t1.0.0\tnone\tpublish-accepted\t${timestamp}`,
+          "legacy\t1.0.0\tnone\tpublish-accepted",
+          "invalid\t1.0.0\tnone\tpublish-accepted\t2026-02-30T04:00:00Z",
+          `processing\t1.0.0\tnone\tprocessing\t${timestamp}`,
+        ].join("\n"),
+      );
+      return "";
+    };
+    const rows = loadReceipts({ tag: "v1.0.0", repo: "owner/repo", gh });
+    expect(rows.get("fresh@1.0.0").acceptedAt).toBe(timestamp);
+    expect(supportDeadline(rows.get("fresh@1.0.0").acceptedAt)).toBe("2026-11-14T04:00:00.000Z");
+    for (const name of ["legacy", "invalid", "processing"]) {
+      expect(rows.get(`${name}@1.0.0`).acceptedAt).toBe(fallback);
+    }
+  });
+  it("recovers the original acceptance time behind a newer E409 receipt", () => {
+    const original = "2026-11-13T04:00:00Z";
+    const later = "2026-11-14T04:21:00Z";
+    const gh = (args) => {
+      if (args[0] === "run" && args[1] === "list")
+        return JSON.stringify([
+          { databaseId: 2, headBranch: "v1.0.0", createdAt: later },
+          { databaseId: 1, headBranch: "v1.0.0", createdAt: original },
+        ]);
+      if (args[0] === "api")
+        return JSON.stringify({ artifacts: [{ name: "npm-publish-receipts", created_at: later }] });
+      const dir = args[args.indexOf("--dir") + 1];
+      writeFileSync(
+        join(dir, "receipts.tsv"),
+        args[2] === "2"
+          ? "a\t1.0.0\tnone\tprocessing\n"
+          : `a\t1.0.0\tattested\tpublish-accepted\t${original}\n`,
+      );
+      return "";
+    };
+    expect(loadReceipts({ tag: "v1.0.0", repo: "owner/repo", gh }).get("a@1.0.0")).toEqual({
+      expected: "none",
+      outcome: "processing",
+      acceptedAt: original,
+      runId: 2,
+    });
   });
   it("is null for an unknown time", () => {
     expect(supportDeadline(null)).toBeNull();
