@@ -29,19 +29,12 @@ import { parseTarGz } from "../admit-darwin-artifacts.mjs";
 import { isMain } from "./gh.mjs";
 import { PLATFORM, SCHEMA, inspectTarball } from "./pack-release-tarballs.mjs";
 
-export const KNOWN_PACKAGES = Object.freeze({
-  "packages/zfb-darwin-arm64": "@takazudo/zfb-darwin-arm64",
-  "packages/zfb-darwin-x64": "@takazudo/zfb-darwin-x64",
-  "packages/zfb-linux-arm64-gnu": "@takazudo/zfb-linux-arm64-gnu",
-  "packages/zfb-linux-x64-gnu": "@takazudo/zfb-linux-x64-gnu",
-  "packages/zfb-win32-x64-msvc": "@takazudo/zfb-win32-x64-msvc",
-  "packages/zfb-slugify": "@takazudo/zfb-slugify",
-  "packages/zfb": "@takazudo/zfb",
-  "packages/zfb-runtime": "@takazudo/zfb-runtime",
-  "packages/zfb-adapter-cloudflare": "@takazudo/zfb-adapter-cloudflare",
-  "packages/create-zfb": "create-zfb",
-  "crates/zfb-md-wasm/npm": "@takazudo/zfb-md-wasm",
-});
+import {
+  KNOWN_PACKAGE_DIRS,
+  assertPackageRows,
+  policyForSource,
+} from "./npm-publication-policy.mjs";
+export const KNOWN_PACKAGES = KNOWN_PACKAGE_DIRS;
 
 const integrityOf = (bytes) => `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
 
@@ -58,10 +51,19 @@ export function verifyTarballs({
   verdict,
   mdWasmManifest,
   allowMissingMdWasmManifest,
+  policy,
 }) {
   const problems = [];
   const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
   if (manifest.schema !== SCHEMA) return [`manifest schema is ${manifest.schema}`];
+  if (!policy) return ["immutable source publication policy is required"];
+  try {
+    assertPackageRows(manifest.packages, policy, version);
+  } catch (error) {
+    problems.push(error.message);
+  }
+  if (manifest.version !== version)
+    problems.push("manifest release version differs from expected version");
   if (!mdWasmManifest && !allowMissingMdWasmManifest) {
     problems.push("no build-wasm-md manifest to compare the packed MD/WASM manifest against");
   }
@@ -86,6 +88,16 @@ export function verifyTarballs({
   let hasCss = false;
   try {
     hasCss = zfbRow ? packedExportsCss(bytesOf.get(zfbRow)) : false;
+    if (zfbRow) {
+      const entry = parseTarGz(bytesOf.get(zfbRow)).find((e) => e.name === "package/package.json");
+      const sdk = JSON.parse(entry.data.toString("utf8"));
+      for (const name of policy.suspended) {
+        for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+          if (Object.hasOwn(sdk[field] ?? {}, name))
+            problems.push(`packed SDK ${field} includes suspended ${name}`);
+        }
+      }
+    }
   } catch (error) {
     problems.push(`@takazudo/zfb: unreadable packed package.json: ${error.message}`);
   }
@@ -107,13 +119,23 @@ export function verifyTarballs({
   return problems;
 }
 
-export function main(argv, { out = process.stdout, err = process.stderr } = {}) {
+export function main(
+  argv,
+  { out = process.stdout, err = process.stderr, resolvePolicy = policyForSource } = {},
+) {
   const opts = {};
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--allow-missing-md-wasm-manifest") opts.allowMissing = true;
     else if (
-      ["--dir", "--version", "--admission", "--md-wasm-manifest"].includes(arg) &&
+      [
+        "--dir",
+        "--version",
+        "--admission",
+        "--md-wasm-manifest",
+        "--source-commit",
+        "--mode",
+      ].includes(arg) &&
       argv[i + 1]
     ) {
       opts[arg.slice(2)] = argv[++i];
@@ -122,7 +144,7 @@ export function main(argv, { out = process.stdout, err = process.stderr } = {}) 
       return 2;
     }
   }
-  if (!opts.dir || !opts.version) {
+  if (!opts.dir || !opts.version || !/^[0-9a-f]{40}$/.test(opts["source-commit"] ?? "")) {
     err.write(
       "usage: verify-release-tarballs.mjs --dir DIR --version V --admission FILE [--md-wasm-manifest FILE | --allow-missing-md-wasm-manifest]\n",
     );
@@ -131,6 +153,7 @@ export function main(argv, { out = process.stdout, err = process.stderr } = {}) 
   let problems;
   try {
     problems = verifyTarballs({
+      policy: resolvePolicy(opts["source-commit"], { mode: opts.mode }),
       dir: opts.dir,
       version: opts.version,
       verdict: opts.admission ? JSON.parse(readFileSync(opts.admission, "utf8")) : null,
