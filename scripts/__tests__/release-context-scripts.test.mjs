@@ -2,12 +2,13 @@
 // verification (tag peel = checkout, version, published Release, target
 // commitish, source tree / control SHA outputs). `gh` is a PATH stub; every
 // child process is awaited, so this suite runs in scripts-subprocess.
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { installFakeGh } from "./helpers/fake-gh.mjs";
+import { gitFixtureSync } from "./helpers/git-fixture.mjs";
 import { scriptsDir } from "./helpers/darwin-fixture.mjs";
 
 const resolver = join(scriptsDir, "release", "resolve-release-context.sh");
@@ -120,12 +121,7 @@ describe("verify-release-source.sh", () => {
   let fakeBin;
   let tagCommit;
   let headCommit;
-  const git = (...args) =>
-    execFileSync(
-      "git",
-      ["-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", ...args],
-      { encoding: "utf8" },
-    ).trim();
+  const git = (...args) => gitFixtureSync(repo, ...args);
 
   beforeAll(() => {
     fakeBin = installFakeGh();

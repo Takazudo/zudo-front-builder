@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { assetNames } from "../darwin-artifact-contract.mjs";
 import { installFakeGh } from "./helpers/fake-gh.mjs";
+import { gitFixtureAsync } from "./helpers/git-fixture.mjs";
 import {
   ARM,
   VERSION,
@@ -84,18 +85,7 @@ describe("build-darwin-local.sh refusals (--check-only, no build)", () => {
       join(repo, "packages", "zfb", "package.json"),
       JSON.stringify({ version: VERSION }),
     );
-    const git = async (...args) =>
-      (
-        await runAsync("git", [
-          "-C",
-          repo,
-          "-c",
-          "user.email=t@example.invalid",
-          "-c",
-          "user.name=t",
-          ...args,
-        ])
-      ).stdout.trim();
+    const git = (...args) => gitFixtureAsync(repo, ...args);
     await git("init", "-q");
     await git("add", ".");
     await git("commit", "-q", "-m", "release");

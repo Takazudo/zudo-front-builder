@@ -1,11 +1,11 @@
 // Shared fixtures for the Darwin admission suites: fake thin Mach-O images,
 // hand-built ustar archives and receipts produced by the real receipt writer.
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
+import { gitFixtureSync } from "./git-fixture.mjs";
 import { MH_DYLIB, MH_EXECUTE, sourceInputs } from "../../admit-darwin-artifacts.mjs";
 import {
   DARWIN_TARGETS,
@@ -76,35 +76,21 @@ export function makeTarGz(entries) {
 // content, message, identity and timestamp), which a fast CI runner hits.
 export function createSource({ label = "source" } = {}) {
   const repo = mkdtempSync(join(tmpdir(), "zfb-admit-src-"));
-  writeFileSync(join(repo, "Cargo.lock"), "# lock\n");
-  writeFileSync(join(repo, "rust-toolchain.toml"), '[toolchain]\nchannel = "stable"\n');
-  writeFileSync(join(repo, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
-  const git = (...args) =>
-    execFileSync(
-      "git",
-      [
-        "-C",
-        repo,
-        "-c",
-        "user.email=t@example.invalid",
-        "-c",
-        "user.name=t",
-        // A host's global commit signing (e.g. a 1Password SSH signer) must not
-        // decide whether a throwaway fixture commit can be written.
-        "-c",
-        "commit.gpgsign=false",
-        ...args,
-      ],
-      {
-        encoding: "utf8",
-      },
-    ).trim();
-  git("init", "-q");
-  git("add", ".");
-  git("commit", "-q", "-m", label);
-  const commit = git("rev-parse", "HEAD");
-  const tree = git("rev-parse", "HEAD^{tree}");
-  return { repo, commit, tree, inputs: sourceInputs(repo, commit, tree).inputs };
+  const git = (...args) => gitFixtureSync(repo, ...args);
+  try {
+    writeFileSync(join(repo, "Cargo.lock"), "# lock\n");
+    writeFileSync(join(repo, "rust-toolchain.toml"), '[toolchain]\nchannel = "stable"\n');
+    writeFileSync(join(repo, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    git("init", "-q");
+    git("add", ".");
+    git("commit", "-q", "-m", label);
+    const commit = git("rev-parse", "HEAD");
+    const tree = git("rev-parse", "HEAD^{tree}");
+    return { repo, commit, tree, inputs: sourceInputs(repo, commit, tree).inputs };
+  } catch (error) {
+    rmSync(repo, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 export function writeChecksum(dir, name) {
