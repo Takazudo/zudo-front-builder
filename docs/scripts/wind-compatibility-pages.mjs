@@ -220,10 +220,13 @@ function localizedNote(value, locale, field) {
 // splits as interpolation (crates/zudo-wind/src/extract/*); the utility catalog is unchanged.
 // #4658 extraction only: standalone script templates retain class context across interpolation,
 // including attribute-position expressions and escaped backslashes; the utility catalog is unchanged.
+// #4730 maintenance: the selected serde/serde_json and ignore/globset patches change
+// lock records reachable from zudo-wind. The 99 non-lock inputs and reviewed support
+// pin remain unchanged; refresh this closure digest after Wind checks pass.
 // Rust 1.100.0 clippy (needless_bool): the JSX attribute-name check in
 // crates/zudo-wind/src/extract/script.rs returns its condition directly; behavior and catalog unchanged.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "28856b8f0be4e57e6778e4acef89b167b05ff321eb6d1bf91c5a924fd6866e3e";
+  "fd51df5bfd39e32fcd10163d5a5b612edf691a02f6afb5104cf14cba67f101a2";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];

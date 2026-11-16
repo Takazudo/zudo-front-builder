@@ -8,10 +8,10 @@
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gitFixtureSync } from "./helpers/git-fixture.mjs";
 import {
   DEFAULT_POLICY_REF,
   POLICY_PATH,
@@ -468,14 +468,7 @@ describe("owner provenance policy (release/provenance-policy.json, #4690)", () =
 
   describe("read only from origin/main, never a working tree or the release commit", () => {
     let repo;
-    const git = (...args) =>
-      execFileSync(
-        "git",
-        ["-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", ...args],
-        {
-          encoding: "utf8",
-        },
-      ).trim();
+    const git = (...args) => gitFixtureSync(repo, ...args);
     const commitPolicy = (body, message) => {
       mkdirSync(join(repo, "release"), { recursive: true });
       writeFileSync(join(repo, POLICY_PATH), JSON.stringify(body));

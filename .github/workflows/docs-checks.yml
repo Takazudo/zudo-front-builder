@@ -92,17 +92,21 @@ jobs:
       wind_previews: ${{ steps.filter.outputs.wind_previews }}
       docs_only: ${{ steps.scope.outputs.docs_only }}
     steps:
-      # pull_request-only workflow. The sparse base-commit checkout provides the
-      # shared docs-only filter files plus the docs-site rule and classifier.
-      # health.yml's copy also runs on push and still checks out only the
-      # docs-only filters.
+      # The classifier and rules come from the base commit. Install its pinned
+      # yaml parser from the same commit before executing the classifier.
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
-          sparse-checkout: |
-            .github/path-filters
-            scripts
           persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile --filter zudo-front-builder --ignore-scripts
 
       # Rules and the classifier come from the base commit. The first PR that
       # adds either file cannot see it there, so it takes the full check.

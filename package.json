@@ -54,13 +54,13 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
-    "@takazudo/mdx-formatter": "1.3.0",
-    "html-validate": "11.21.0",
-    "lefthook": "^2.1.6",
+    "@takazudo/mdx-formatter": "1.3.1",
+    "html-validate": "11.21.1",
+    "lefthook": "^2.2.2",
     "rolldown": "1.2.13",
     "sigstore": "4.1.1",
     "wrangler": "4.85.0",
-    "ws": "^8.18.0",
+    "ws": "^8.23.0",
     "vite-plus": "catalog:",
     "yaml": "2.9.0"
   }

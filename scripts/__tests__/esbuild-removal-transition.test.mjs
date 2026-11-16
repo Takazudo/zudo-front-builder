@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vite-plus/test";
 import {
   parseCargoLock,
@@ -74,10 +73,6 @@ describe("exact esbuild-removal lock move (#4635)", () => {
       TOKIO_SECURITY_TRANSITION.newLockSha256,
     );
     expect(oldText).toBe(tokioSecurityLock().newText);
-  });
-  it("matches the committed Cargo.lock byte for byte", () => {
-    const live = readFileSync(new URL("../../Cargo.lock", import.meta.url), "utf8");
-    expect(live).toBe(newText);
   });
   it("records the complete added/changed/removed inventory with record hashes", () => {
     const { before, after, inventory } = recomputedInventory();
