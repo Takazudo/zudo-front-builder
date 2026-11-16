@@ -289,13 +289,13 @@ code, where a missing tag fails loudly.
 **Explicit exception: `release-pending` is a transient holding tag.** Every publish
 (`scripts/publish-npm-packages.sh`) uses it, so a package that npm keeps in pre-publication
 processing can never leave a half-moved channel. `scripts/promote-release-channel.sh` moves
-`latest`/`next` on all eleven packages together only after every package is `present-verified`;
+`latest`/`next` on all source-policy active packages together only after every package is `present-verified`;
 the retire sweep (`scripts/retire-next-dist-tag.mjs`) then removes `release-pending`. It never counts as a
 channel, and nothing may install from it. A newer `release-pending` is a release in flight and the
 sweep keeps it.
 
 npm sets `latest` automatically on a package's first-ever publish (no tag move needed). Keep that
-in mind when adding a 12th package.
+in mind when adding a new active package.
 
 This exists because it already went wrong once: zfb graduated at `1.0.0`, shipped
 `1.1.0-next.1` on 2026-07-31, and never touched `next` again — so `@takazudo/zfb@next`
@@ -304,20 +304,18 @@ consumers and dependency-bumping tooling. `release.yml` had only the forward hal
 of the invariant (advance `latest` during prerelease); the retirement script is the
 missing reverse half.
 
-**When adding a publishable package**, add it to BOTH the `PACKAGES` array in
-`advance-latest-dist-tag.sh` (called by `promote-release-channel.sh`) and `PUBLISHED_PACKAGES` in
-`retire-next-dist-tag.mjs`. The drift guard in
-`scripts/__tests__/retire-next-dist-tag.test.mjs` fails the T1 gate if those two
-lists disagree with each other or with the workspace's set of non-private packages.
-`promote-release-channel.sh` expects 11 present-verified packages (`EXPECTED_PACKAGE_COUNT`), so
-update that count too.
+**When changing npm publication scope**, update the data-only SOURCE publication
+policy and its strict known-package contract, then test every release consumer.
+The active set is separate from buildable platforms and from historical sources.
+Do not replace this with a fixed count or infer completeness from a manifest's
+self-reported rows. Legacy releases keep their original expected set.
 
 `drift-net.yml` deliberately smokes **`latest` only**. A scheduled leg on `next`
 would go red every week whenever the tag is correctly absent.
 
 ## Five-lane release changelog contract
 
-All eleven published npm packages keep one lockstep version and the existing single GitHub Release,
+All active published npm packages keep one lockstep version and the existing single GitHub Release,
 tag, binary/npm publication, and Homebrew topology. Each future release nevertheless authors
 exactly five default-locale-only English MDX notes:
 
@@ -514,3 +512,14 @@ What upgrades when zfb ships a stable release, each with an explicit trigger —
 - Heavy opt-in: `B4PUSH_FULL=1 pnpm b4push` additionally runs the **required health.yml Rust parity set** (#1332): `cargo nextest run --workspace` (or `cargo test --workspace` when nextest is absent) on nextest's **default** profile (`retries = 0`, unlike CI's `--profile ci`); `cargo test --workspace --doc` (nextest branch only); the `zfb-md-extras` `test-utils`-gated suite plus its scoped `cargo clippy`; and `cargo check --no-default-features -p zfb --tests`. The islands, cross-pipeline and command-layer suites that b4push once ran as esbuild env-gates are no longer `#[ignore]`d, so the workspace test run covers them (#4635). Utility CSS uses the in-process zudo-wind engine and needs no external CLI binary. The optional path-gated `wasm-md` matrix and browser job are not part of b4push.
 - On heavy-guard `ENV_SUSPECT`, rerun that command once. If it is still red without an assertion, type, or lint error, defer that command to CI under a `deferred-verification` issue and report it as deferred, not passed. Fix real failures; do not weaken tests or tune the suite to fit one machine.
 - It is **not** wired into the git `pre-push` hook (that hook only enforces the worktree-push policy above) — the manager runs it when useful for an integration/fixing round, not before every child-topic push or merge.
+
+### Next-release npm platform scope
+
+The next authorized release suspends new `@takazudo/zfb-linux-arm64-gnu` npm
+publication only. Use the immutable SOURCE publication policy rather than a fixed
+package count; old sources (including v6.1.4) retain their original contract.
+Linux arm64 build/test/archive/standalone installer support and internal version
+stamping remain. See [RELEASING.md](RELEASING.md#next-release-linux-arm64-npm-suspension)
+for the compatibility/major decision and explicit resumption criteria. No version
+or channel is selected by this implementation. Existing processing versions may
+still become public later (#4711); no registry rollback or cancellation is implied.

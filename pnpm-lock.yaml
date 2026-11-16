@@ -353,9 +353,6 @@ importers:
       '@takazudo/zfb-darwin-x64':
         specifier: workspace:6.1.4
         version: link:../zfb-darwin-x64
-      '@takazudo/zfb-linux-arm64-gnu':
-        specifier: workspace:6.1.4
-        version: link:../zfb-linux-arm64-gnu
       '@takazudo/zfb-linux-x64-gnu':
         specifier: workspace:6.1.4
         version: link:../zfb-linux-x64-gnu

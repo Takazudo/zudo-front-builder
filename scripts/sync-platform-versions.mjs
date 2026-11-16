@@ -21,6 +21,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { policyForTree } from "./release/npm-publication-policy.mjs";
 
 const PLATFORMS = [
   "darwin-arm64",
@@ -106,6 +107,11 @@ function main() {
   // 2. Rewrite packages/zfb/package.json optionalDependencies entries matching the prefix.
   // (version field itself is the source — do NOT modify it.)
   const optionalDeps = zfbPkg.optionalDependencies;
+  // Internal Linux arm64 carrier versions still stamp non-npm builds.
+  // Its npm dependency must never be restored by a subsequent version sync.
+  if (optionalDeps) {
+    for (const name of policyForTree(repoRoot).suspended) delete optionalDeps[name];
+  }
   if (optionalDeps && typeof optionalDeps === "object") {
     process.stdout.write(`  packages/zfb/package.json optionalDependencies:\n`);
     for (const key of Object.keys(optionalDeps)) {

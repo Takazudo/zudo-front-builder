@@ -55,7 +55,7 @@ track the latest prerelease and are never left pointing at a stale release.
 
 **Self-disabling condition**: `scripts/release/resolve-also-latest.mjs`
 decides, in the `publish` and `finalize` jobs, before each `*-next.*` dist-tag
-step. It advances `latest` alongside `next` for all 11 packages only when
+step. It advances `latest` alongside `next` for all source-policy active packages only when
 `@takazudo/zfb` has no `latest` — proven by a definitive 404 (first publish) —
 or its `latest` is itself a prerelease. Any other registry failure (5xx, auth,
 network, malformed body) fails closed (exit 2) and is never read as "first
@@ -323,3 +323,14 @@ commits + pushes `"zfb X.Y.Z"`.
 **Note:** No seed commit is needed for the first release — running the command
 above on the first real `vX.Y.Z` tag will both create `Formula/zfb.rb` and push
 it to the tap for the first time.
+
+### Next-release npm platform scope
+
+The next authorized release suspends new `@takazudo/zfb-linux-arm64-gnu` npm
+publication only. Use the immutable SOURCE publication policy rather than a fixed
+package count; old sources (including v6.1.4) retain their original contract.
+Linux arm64 build/test/archive/standalone installer support and internal version
+stamping remain. See [RELEASING.md](RELEASING.md#next-release-linux-arm64-npm-suspension)
+for the compatibility/major decision and explicit resumption criteria. No version
+or channel is selected by this implementation. Existing processing versions may
+still become public later (#4711); no registry rollback or cancellation is implied.
