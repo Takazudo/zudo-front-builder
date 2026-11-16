@@ -846,7 +846,10 @@ export function classifyDeliveryPath(run, grouped) {
     return "dry-run";
   }
   if (ran(publish, "Publish to npm (recovery — no provenance)")) return "recovery";
-  if (grouped.has("Finalize published release")) return "finalize";
+  // GitHub lists the unused finalize job as completed/skipped on normal runs.
+  // Only an attempted (including pending or failed) finalization changes the path.
+  const finalize = grouped.get("Finalize published release")?.history ?? [];
+  if (finalize.some((job) => job.conclusion !== "skipped")) return "finalize";
   // #4701: release-coordinator.yml dispatches release.yml AT the tag ref
   // (head_branch = the v* tag, control = source); a dispatch from main is a
   // recovery/manual run and stays unsupported here.
