@@ -1,0 +1,20 @@
+---
+title: v7.0.0
+sidebar_position: 176
+---
+
+# v7.0.0
+
+Released: 2026-11-17
+
+## Breaking Changes
+
+- Suspend new Linux arm64 npm CLI/CSS distribution and remove its SDK optional dependency. Linux arm64 npm consumers receive an explicit suspension message instead of loading an old carrier. Rust builds, GitHub Release archives and standalone CLI installation remain supported. (ac6f061bd)
+
+## Bug Fixes
+
+- Bind publication, verification and channel operations to the immutable release source: future releases publish ten active packages while historical sources keep their original contract. (61b34aae9, e45c46aee)
+
+## Other Changes
+
+- Update compatible Rust CLI, serialization, macro and file-discovery dependencies. (a5944eca2, bc9173310, 935a5331d)
