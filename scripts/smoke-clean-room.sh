@@ -118,18 +118,41 @@ while :; do
 done
 VERSION=${EXPECTED_VERSION:-$RESOLVED}
 
-# Wait until EVERY platform's optionalDependency tarball is available, not
-# only the tarball for the current runner. npm may silently skip an unavailable
-# optionalDependency, leaving that platform with a broken `zfb` launcher.
-# Each platform's metadata lookup yields its exact URL; an uncached ranged
-# curl request probes that URL from this runner regardless of its OS.
-PLATFORM_PACKAGES=(
-  "@takazudo/zfb-darwin-arm64"
-  "@takazudo/zfb-darwin-x64"
-  "@takazudo/zfb-linux-arm64-gnu"
-  "@takazudo/zfb-linux-x64-gnu"
-  "@takazudo/zfb-win32-x64-msvc"
-)
+# Bind the expected npm carriers to the exact version's immutable release source.
+# Never use the current checkout's policy for a historical or scheduled smoke.
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if ! platform_names=$(node --input-type=module - "$SCRIPT_DIR" "$VERSION" <<'JS'
+import { pathToFileURL } from 'node:url';
+const [dir, version] = process.argv.slice(2);
+const { execGh, repoFromEnv } = await import(pathToFileURL(`${dir}/release/gh.mjs`));
+const { policyForRelease } = await import(pathToFileURL(`${dir}/release/source-publication-policy.mjs`));
+const repo = repoFromEnv();
+const commit = JSON.parse(execGh(['api', `repos/${repo}/commits/${encodeURIComponent(`refs/tags/v${version}`)}`]));
+if (!/^[0-9a-f]{40}$/.test(commit.sha ?? '')) throw new Error('Release tag did not resolve to an immutable source SHA');
+const expected = process.env.ZFB_RELEASE_SOURCE_COMMIT;
+if (expected && (!/^[0-9a-f]{40}$/.test(expected) || expected !== commit.sha)) {
+  throw new Error('Release tag source differs from ZFB_RELEASE_SOURCE_COMMIT');
+}
+const sourceManifest = JSON.parse(execGh(['api', `repos/${repo}/contents/packages/zfb/package.json?ref=${commit.sha}`]));
+if (sourceManifest.encoding !== 'base64') throw new Error('Source SDK manifest encoding is invalid');
+const sdk = JSON.parse(Buffer.from(sourceManifest.content, 'base64').toString('utf8'));
+if (sdk.version !== version) throw new Error(`Source SDK version ${sdk.version} differs from resolved ${version}`);
+const policy = policyForRelease(commit.sha, { repo });
+const carriers = policy.packages.filter(({ dir }) => /^packages\/zfb-(darwin|linux|win32)-/.test(dir));
+if (!carriers.length) throw new Error('Source policy has no npm platform carriers');
+console.error(`Clean-room source: ${commit.sha}; version: ${version}; active npm carriers: ${carriers.length}`);
+for (const { name } of carriers) console.log(name);
+JS
+); then
+  echo "::error::Cannot establish source-bound clean-room npm carrier policy." >&2
+  exit 1
+fi
+PLATFORM_PACKAGES=()
+while IFS= read -r pkg; do PLATFORM_PACKAGES+=("$pkg"); done <<< "$platform_names"
+
+# Every active npm carrier must be available, even on a different runner OS.
+# A suspended carrier is outside this source's npm contract, not a verified row.
+# Metadata yields the exact URL; cache-free ranged curl probes its availability.
 for pkg in "${PLATFORM_PACKAGES[@]}"; do
   echo "Waiting for ${pkg}@${VERSION} tarball to be fetchable..."
   metadata_url=""

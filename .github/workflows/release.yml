@@ -1674,6 +1674,7 @@ jobs:
     with:
       dist_tag: ${{ needs.publish.outputs.dist_tag || needs.finalize.outputs.dist_tag }}
       expected_version: ${{ needs.release-context.outputs.release_version }}
+      expected_source: ${{ needs.release-context.outputs.source_commit }}
       runner: ubuntu-latest
 
   notify:

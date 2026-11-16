@@ -196,10 +196,27 @@ async function runNpm(args) {
   return stdout;
 }
 
+// npm 12 emits object-valued `view` fields as a one-element array; npm 11
+// emits the object itself. Anything else is unreadable evidence, never absence.
+export function parseDistTags(stdout) {
+  const parsed = JSON.parse(stdout);
+  const tags = Array.isArray(parsed) && parsed.length === 1 ? parsed[0] : parsed;
+  if (
+    !tags ||
+    typeof tags !== "object" ||
+    Array.isArray(tags) ||
+    Object.values(tags).some((value) => typeof value !== "string" || !value.trim())
+  ) {
+    throw new Error(
+      "npm dist-tags response must be an object or one-element object array with string values",
+    );
+  }
+  return tags;
+}
+
 async function readDistTags(pkg, npm) {
   const stdout = await npm(["view", pkg, "dist-tags", "--json", "--prefer-online"]);
-  const trimmed = stdout.trim();
-  return trimmed === "" ? {} : JSON.parse(trimmed);
+  return parseDistTags(stdout);
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

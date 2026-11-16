@@ -26,6 +26,12 @@ function scenario({
   versionAdvanceSeconds = "0",
   metadataAdvanceSeconds = "0",
   curlAdvanceSeconds = "0",
+  suspended = false,
+  sourceCommit = "",
+  sourceVersion = "2.20.3",
+  policyFailure = false,
+  malformedPolicy = false,
+  missingPackage = "",
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "zfb-smoke-identity-"));
   fixtures.push(dir);
@@ -51,6 +57,21 @@ advance_clock() {
   fi
 }
 case "$name" in
+  gh)
+    case "$2" in
+      */commits/*) printf '{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\\n' ;;
+      */contents/packages/zfb/package.json*) printf '{"encoding":"base64","content":"%s"}\\n' "$STUB_SDK_MANIFEST" ;;
+      */git/trees/*)
+        if [[ "$STUB_POLICY_FAILURE" == true ]]; then exit 1; fi
+        if [[ "$STUB_SUSPENDED" == true ]]; then
+          printf '{"tree":[{"path":"packages/zfb-slugify/package.json","type":"blob"},{"path":"release/npm-publication-policy.json","type":"blob","mode":"100644","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}\\n'
+        else
+          printf '{"tree":[{"path":"packages/zfb-slugify/package.json","type":"blob"}]}\\n'
+        fi ;;
+      */git/blobs/*) printf '{"encoding":"base64","content":"%s"}\\n' "$STUB_POLICY_BLOB" ;;
+      *) exit 1 ;;
+    esac
+    ;;
   npm)
     if [[ "$1" == view && "$3" == version ]]; then
       count=$(cat "$STUB_COUNT")
@@ -65,6 +86,7 @@ case "$name" in
         *) printf '%s\\n' "$response" ;;
       esac
     elif [[ "$1" == view && "$3" == dist.tarball ]]; then
+      if [[ -n "$STUB_MISSING_PACKAGE" && "$2" == "$STUB_MISSING_PACKAGE@"* ]]; then exit 1; fi
       count=$(cat "$STUB_METADATA_COUNT")
       count=$((count + 1))
       echo "$count" > "$STUB_METADATA_COUNT"
@@ -113,7 +135,7 @@ case "$name" in
     ;;
 esac
 `;
-  for (const name of ["npm", "curl", "now", "npx", "pnpm", "sleep"]) {
+  for (const name of ["npm", "curl", "now", "npx", "pnpm", "sleep", "gh"]) {
     writeFileSync(join(bin, name), stub, { mode: 0o755 });
   }
   const log = join(dir, "log");
@@ -138,6 +160,19 @@ esac
       EXPECTED_VERSION: expected,
       SMOKE_PROPAGATION_DEADLINE_SECONDS: deadlineSeconds,
       SMOKE_NOW_CMD: join(bin, "now"),
+      ZFB_RELEASE_SOURCE_COMMIT: sourceCommit,
+      STUB_SUSPENDED: String(suspended),
+      STUB_POLICY_FAILURE: String(policyFailure),
+      STUB_MISSING_PACKAGE: missingPackage,
+      STUB_SDK_MANIFEST: Buffer.from(JSON.stringify({ version: sourceVersion })).toString("base64"),
+      STUB_POLICY_BLOB: Buffer.from(
+        malformedPolicy
+          ? "{}"
+          : JSON.stringify({
+              schema: "zfb-npm-publication-policy/v1",
+              suspended: ["@takazudo/zfb-linux-arm64-gnu"],
+            }),
+      ).toString("base64"),
       STUB_LOG: log,
       STUB_COUNT: count,
       STUB_METADATA_COUNT: metadataCount,
@@ -169,6 +204,65 @@ afterEach(() => {
 });
 
 describe("real clean-room script with offline registry and CLI stubs", () => {
+  it("accepts absent suspended Linux arm64 under the new source policy", () => {
+    const run = scenario({
+      suspended: true,
+      responses: ["7.0.0"],
+      expected: "7.0.0",
+      installed: "7.0.0",
+      sourceVersion: "7.0.0",
+      sourceCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      missingPackage: "@takazudo/zfb-linux-arm64-gnu",
+    });
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.log).not.toContain("npm view @takazudo/zfb-linux-arm64-gnu");
+    expect(run.metadataCount).toBe(4);
+    expect(run.curlCount).toBe(4);
+    expect(run.log).toContain("npx --yes create-zfb@7.0.0 smoke-site");
+  });
+
+  it("still fails an active missing carrier under the new policy", () => {
+    const run = scenario({
+      suspended: true,
+      missingPackage: "@takazudo/zfb-linux-x64-gnu",
+      deadlineSeconds: "10",
+    });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("@takazudo/zfb-linux-x64-gnu@2.20.3 metadata unavailable");
+    expect(run.log).not.toContain("npx ");
+  });
+
+  it("preserves the old source's required Linux arm64 carrier", () => {
+    const run = scenario({
+      missingPackage: "@takazudo/zfb-linux-arm64-gnu",
+      deadlineSeconds: "10",
+    });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("@takazudo/zfb-linux-arm64-gnu@2.20.3 metadata unavailable");
+  });
+
+  it("binds scheduled resolution to the version tag, never current main", () => {
+    const run = scenario({ suspended: true, responses: ["2.20.3", "2.20.4"] });
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.log).toContain("commits/refs%2Ftags%2Fv2.20.3");
+    expect(run.log).toContain("?ref=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(run.log).not.toContain("main");
+    expect(run.count).toBe(1);
+  });
+
+  it.each([
+    { sourceCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+    { sourceVersion: "2.20.2" },
+    { policyFailure: true },
+    { suspended: true, malformedPolicy: true },
+  ])("rejects source/policy failure before platform probes: %j", (options) => {
+    const run = scenario(options);
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("Cannot establish source-bound");
+    expect(run.metadataCount).toBe(0);
+    expect(run.log).not.toContain("npx ");
+  });
+
   it("waits for the intended release, then pins all probes and npx", () => {
     const run = scenario({ responses: ["2.20.2", "2.20.3", "2.20.4"], expected: "2.20.3" });
     expect(run.status).toBe(0);

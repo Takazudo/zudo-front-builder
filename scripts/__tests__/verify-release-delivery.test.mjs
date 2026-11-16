@@ -1089,6 +1089,59 @@ describe("workflow jobs, steps and attempts", () => {
     expect(check(report, "workflow", "delivery-path").status).toBe(STATUS.INCOMPLETE);
   });
 
+  it("keeps a normal run normal when its unused finalize job is skipped", async () => {
+    const { report } = await run((w) => {
+      w.releaseJobs.push({
+        id: 9301,
+        name: "Finalize published release",
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "skipped",
+        steps: [],
+      });
+    });
+    expect(report.release.deliveryPath).toBe("normal");
+    expect(report.verdict).toBe(STATUS.VERIFIED);
+  });
+
+  it("does not turn a failed normal run green when its finalize job is skipped", async () => {
+    const { report } = await run((w) => {
+      w.releaseRun.conclusion = "failure";
+      w.releaseJobs.find((j) => j.name.startsWith("smoke-clean-room")).conclusion = "failure";
+      w.releaseJobs.push({
+        id: 9301,
+        name: "Finalize published release",
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "skipped",
+        steps: [],
+      });
+    });
+    expect(report.release.deliveryPath).toBe("normal");
+    expect(check(report, "workflow", "release-run").status).toBe(STATUS.FAILED);
+    expect(check(report, "workflow", "job:smoke-clean-room").status).toBe(STATUS.FAILED);
+    expect(report.verdict).toBe(STATUS.FAILED);
+  });
+
+  it.each(["failure", "cancelled", null])(
+    "still classifies attempted finalize (%s) as unsupported",
+    async (conclusion) => {
+      const { report } = await run((w) => {
+        w.releaseJobs.push({
+          id: 9301,
+          name: "Finalize published release",
+          run_attempt: 1,
+          status: conclusion === null ? "in_progress" : "completed",
+          conclusion,
+          steps: [],
+        });
+      });
+      expect(report.release.deliveryPath).toBe("finalize");
+      expect(check(report, "workflow", "delivery-path").status).toBe(STATUS.INCOMPLETE);
+      expect(report.verdict).not.toBe(STATUS.VERIFIED);
+    },
+  );
+
   it("classifies a finalize-only run as unsupported, not normal", async () => {
     const { report } = await run((w) => {
       w.releaseJobs.push({

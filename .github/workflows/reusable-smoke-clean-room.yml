@@ -20,6 +20,22 @@
 name: Reusable — Clean-room smoke
 
 on:
+  workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: "Channel to resolve (the exact version must still match)"
+        required: true
+        type: choice
+        options: [latest, next]
+        default: latest
+      expected_version:
+        description: "Exact published version to validate"
+        required: true
+        type: string
+      expected_source:
+        description: "Immutable release source SHA; must equal the version tag"
+        required: true
+        type: string
   workflow_call:
     inputs:
       dist_tag:
@@ -31,6 +47,11 @@ on:
         required: false
         type: string
         default: ""
+      expected_source:
+        description: "Immutable release source SHA (resolved from the version tag when omitted)"
+        required: false
+        type: string
+        default: ""
       runner:
         description: "Runner label to execute the smoke on, e.g. ubuntu-latest or a pinned macos-* version."
         required: false
@@ -39,8 +60,8 @@ on:
 
 jobs:
   smoke-clean-room:
-    name: Clean-room smoke (${{ inputs.runner }}, dist_tag=${{ inputs.dist_tag }})
-    runs-on: ${{ inputs.runner }}
+    name: Clean-room smoke (${{ inputs.runner || 'ubuntu-latest' }}, dist_tag=${{ inputs.dist_tag }})
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     # With the script's 900s shared deadline, this 25-minute timeout allows
     # 10 minutes total for runner setup, scaffolding, install, and build.
     timeout-minutes: 25
@@ -66,4 +87,6 @@ jobs:
         env:
           DIST_TAG: ${{ inputs.dist_tag }}
           EXPECTED_VERSION: ${{ inputs.expected_version }}
+          ZFB_RELEASE_SOURCE_COMMIT: ${{ inputs.expected_source }}
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/smoke-clean-room.sh

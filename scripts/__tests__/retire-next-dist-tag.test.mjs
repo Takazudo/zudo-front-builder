@@ -27,11 +27,50 @@ import {
   decideReleasePendingAction,
   isTerminalNpmError,
   parseSemver,
+  parseDistTags,
   preflightRefusalLines,
   retireNextDistTag,
 } from "../retire-next-dist-tag.mjs";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+describe("npm dist-tags JSON shape", () => {
+  it("normalizes npm 11 objects and npm 12 single-object arrays", () => {
+    const tags = { latest: "7.0.0", "release-pending": "7.0.0" };
+    expect(parseDistTags(JSON.stringify(tags))).toEqual(tags);
+    expect(parseDistTags(JSON.stringify([tags]))).toEqual(tags);
+    expect(parseDistTags("{}")).toEqual({});
+    expect(parseDistTags("[{}]")).toEqual({});
+  });
+  it.each([
+    "",
+    "[]",
+    "[{},{}]",
+    "[[]]",
+    "null",
+    "[null]",
+    "1",
+    '"tags"',
+    '{"latest":7}',
+    '{"release-pending":""}',
+    "not-json",
+  ])("refuses malformed or ambiguous evidence %s", async (raw) => {
+    expect(() => parseDistTags(raw)).toThrow();
+    const calls = [];
+    const report = await retireNextDistTag({
+      packages: ["@takazudo/zfb"],
+      npm: async (args) => {
+        calls.push(args);
+        return raw;
+      },
+      wait: async () => {},
+      log: () => {},
+    });
+    expect(report.failed).toBe(1);
+    expect(report.pendingResults[0].action).toBe("error");
+    expect(calls.every((args) => args[0] === "view")).toBe(true);
+  });
+});
 
 describe("parseSemver", () => {
   it("splits a prerelease version into its precedence-relevant parts", () => {
@@ -227,6 +266,30 @@ const silent = () => {};
 const noWait = async () => {};
 
 describe("retireNextDistTag", () => {
+  it("removes and confirms both stale tags with npm 12 array-shaped reads", async () => {
+    const fake = makeNpm({
+      tags: {
+        "@takazudo/zfb": { latest: "7.0.0", next: "6.0.0-next.1", "release-pending": "7.0.0" },
+      },
+    });
+    const npm = async (args) => {
+      const result = await fake.npm(args);
+      return args[0] === "view" ? JSON.stringify([JSON.parse(result)]) : result;
+    };
+    const report = await retireNextDistTag({
+      packages: ["@takazudo/zfb"],
+      npm,
+      wait: noWait,
+      log: silent,
+    });
+    expect(report.failed).toBe(0);
+    expect(report.results[0].action).toBe("retired");
+    expect(report.pendingResults[0].action).toBe("retired");
+    expect(fake.calls).toEqual([
+      ["dist-tag", "rm", "@takazudo/zfb", "next"],
+      ["dist-tag", "rm", "@takazudo/zfb", "release-pending"],
+    ]);
+  });
   it("source policy excludes suspended carrier from both cleanup writes", async () => {
     const packages = policyFromSourceFiles({
       policyText: JSON.stringify({
