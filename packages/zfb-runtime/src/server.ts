@@ -12,6 +12,8 @@
 // `createPageRouter` from here.
 
 export { createPageRouter } from "./router.js";
+export { stablePaths } from "./stable-paths.js";
+export type { StablePathScalar, StablePathParameter, StablePathsEntry } from "./stable-paths.js";
 export type {
   CreatePageRouterOptions,
   PageDefinition,
