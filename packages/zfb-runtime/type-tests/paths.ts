@@ -43,6 +43,37 @@ createPageRouter({
 // @ts-expect-error The lightweight public entry preserves readonly membership.
 directSnapshot.push({ params: { slug: "other" } });
 
+interface InterfaceParams {
+  slug: string;
+}
+interface InterfaceProps {
+  title: string;
+}
+const interfaceParams: InterfaceParams = { slug: "typed" };
+const interfaceProps: InterfaceProps = { title: "hello" };
+const interfaceSnapshot = directStablePaths([{ params: interfaceParams, props: interfaceProps }]);
+const interfaceTitle: string = interfaceSnapshot[0]!.props!.title;
+interfaceSnapshot[0]!.props!.title = "still mutable";
+class OpaqueProps {
+  title = "opaque";
+}
+const opaqueProps = new OpaqueProps();
+const opaqueSnapshot = directStablePaths([{ params: interfaceParams, props: opaqueProps }]);
+const retainedProps: OpaqueProps = opaqueSnapshot[0]!.props!;
+interface OptionalParams {
+  slug?: string | readonly (string | number)[];
+  page?: number;
+}
+const heterogeneousEntries: readonly { params: OptionalParams; props?: InterfaceProps }[] = [
+  { params: {} },
+  { params: { slug: [] } },
+  { params: { slug: ["a", 42], page: 2 }, props: interfaceProps },
+];
+directStablePaths(heterogeneousEntries);
+directStablePaths([]);
+void interfaceTitle;
+void retainedProps;
+
 const props = { title: "hello", params: { mutable: true } };
 const snapshot = stablePaths([{ params: { slug: ["a", 42] as const }, props }] as const);
 const synchronous: PageModule<readonly StablePathsEntry[]> = {

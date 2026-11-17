@@ -2,7 +2,7 @@
 export type StablePathScalar = string | number;
 export type StablePathParameter = StablePathScalar | readonly StablePathScalar[];
 
-export interface StablePathsEntry<Props extends Record<string, unknown> = Record<string, unknown>> {
+export interface StablePathsEntry<Props = unknown> {
   readonly params: Readonly<Record<string, StablePathParameter>>;
   readonly props?: Props;
 }
@@ -84,8 +84,11 @@ function copyArray<T>(
  * and each new router (including a dev reload) starts a fresh validation memo.
  * This does not cache rendering, getStaticProps, or no-paths SSR requests.
  */
-export function stablePaths<Props extends Record<string, unknown> = Record<string, unknown>>(
-  entries: readonly StablePathsEntry<Props>[],
+export function stablePaths<
+  Params extends { readonly [K in keyof Params]: StablePathParameter },
+  Props = unknown,
+>(
+  entries: readonly { readonly params: Params; readonly props?: Props }[],
 ): readonly StablePathsEntry<Props>[] {
   const owned = copyArray(entries, "entries", (entry, at): StablePathsEntry<Props> => {
     plainObject(entry, at);
