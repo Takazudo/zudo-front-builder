@@ -1460,6 +1460,17 @@ mod tests {
             "the second snapshot uses the compiled entry"
         );
         assert_eq!(
+            cache.counter_snapshot(),
+            crate::mdx_jsx_emit::CacheCounterSnapshot {
+                compiles: 1,
+                misses: 1,
+                hits: 1,
+                admissions: 1,
+                capacity_clears: 0,
+                explicit_clears: 0,
+            }
+        );
+        assert_eq!(
             serde_json::to_string(&first).unwrap(),
             serde_json::to_string(&second).unwrap()
         );

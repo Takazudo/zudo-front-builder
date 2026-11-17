@@ -3669,12 +3669,38 @@ pub struct MdxModuleCache {
     policy: CachePolicy,
     #[cfg(test)]
     compiles: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    counters: CacheCounters,
 }
 
 impl Default for MdxModuleCache {
     fn default() -> Self {
         Self::with_policy(CachePolicy::ClearOnOverflow)
     }
+}
+
+/// Cumulative test-only observations at the real cache/compile boundaries.
+/// clear() deliberately does not reset these counters. Read snapshots after
+/// callers have joined; individual atomic loads are not a transactional view.
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct CacheCounters {
+    hits: std::sync::atomic::AtomicUsize,
+    misses: std::sync::atomic::AtomicUsize,
+    admissions: std::sync::atomic::AtomicUsize,
+    capacity_clears: std::sync::atomic::AtomicUsize,
+    explicit_clears: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct CacheCounterSnapshot {
+    pub(crate) compiles: usize,
+    pub(crate) hits: usize,
+    pub(crate) misses: usize,
+    pub(crate) admissions: usize,
+    pub(crate) capacity_clears: usize,
+    pub(crate) explicit_clears: usize,
 }
 
 /// Process-wide cache instance backing [`MdxModuleCache::process_global`].
@@ -3707,6 +3733,8 @@ impl MdxModuleCache {
             policy,
             #[cfg(test)]
             compiles: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            counters: CacheCounters::default(),
         }
     }
 
@@ -3750,6 +3778,10 @@ impl MdxModuleCache {
         state.retained_bytes = 0;
         // An in-flight miss must not repopulate a deliberately cleared cache.
         state.epoch = state.epoch.checked_add(1).expect("cache epoch exhausted");
+        #[cfg(test)]
+        self.counters
+            .explicit_clears
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Conservative retained payload accounting. HashMap bucket allocation is
@@ -3764,6 +3796,19 @@ impl MdxModuleCache {
         self.compiles.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    #[cfg(test)]
+    pub(crate) fn counter_snapshot(&self) -> CacheCounterSnapshot {
+        use std::sync::atomic::Ordering::Relaxed;
+        CacheCounterSnapshot {
+            compiles: self.compile_count(),
+            hits: self.counters.hits.load(Relaxed),
+            misses: self.counters.misses.load(Relaxed),
+            admissions: self.counters.admissions.load(Relaxed),
+            capacity_clears: self.counters.capacity_clears.load(Relaxed),
+            explicit_clears: self.counters.explicit_clears.load(Relaxed),
+        }
+    }
+
     fn admit(&self, key: String, entry: CachedMdxModule, epoch: u64) {
         let mut state = self.lock();
         if state.epoch != epoch {
@@ -3774,6 +3819,10 @@ impl MdxModuleCache {
                 if state.entries.len() >= MDX_MODULE_CACHE_CAP {
                     state.entries.clear();
                     state.retained_bytes = 0;
+                    #[cfg(test)]
+                    self.counters
+                        .capacity_clears
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             }
             CachePolicy::Retain { entries, bytes } => {
@@ -3794,6 +3843,10 @@ impl MdxModuleCache {
             state.retained_bytes = state.retained_bytes.saturating_sub(old.retained_bytes);
         }
         state.retained_bytes = state.retained_bytes.saturating_add(retained_bytes);
+        #[cfg(test)]
+        self.counters
+            .admissions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Lock-or-recover after a prior writer panic.
@@ -4054,6 +4107,10 @@ pub fn compile_mdx_to_jsx_module_cached_with_deps(
             // reverse dep→entries graph to update. The empty manifest
             // of a plain pipeline validates trivially.
             if hit.dependencies.still_valid() {
+                #[cfg(test)]
+                c.counters
+                    .hits
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // Diagnostics replay (zfb#939/#944) + side-channel replay
                 // (#977): re-inject the stored broken-link + markdown
                 // diagnostics and the cross-file link/heading channels so
@@ -4131,6 +4188,9 @@ pub fn compile_mdx_to_jsx_module_cached_with_deps(
     #[cfg(test)]
     if let Some(c) = cache_for_lookup {
         c.compiles
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        c.counters
+            .misses
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     let (jsx_source, headings) = mdx_to_jsx_module_inner(input, opts, pipeline.as_deref_mut())?;
@@ -6171,9 +6231,30 @@ mod tests {
     #[test]
     fn build_cache_two_large_scans_count_real_compiles_with_legacy_negative_control() {
         let n = MDX_MODULE_CACHE_CAP + 17;
+        assert_eq!((n, MDX_MODULE_CACHE_CAP), (4113, 4096));
         for (cache, expected) in [
-            (MdxModuleCache::for_build(), 2 * n - MDX_MODULE_CACHE_CAP),
-            (MdxModuleCache::new(), 2 * n),
+            (
+                MdxModuleCache::for_build(),
+                CacheCounterSnapshot {
+                    compiles: 4130,
+                    misses: 4130,
+                    hits: 4096,
+                    admissions: 4096,
+                    capacity_clears: 0,
+                    explicit_clears: 0,
+                },
+            ),
+            (
+                MdxModuleCache::new(),
+                CacheCounterSnapshot {
+                    compiles: 8226,
+                    misses: 8226,
+                    hits: 0,
+                    admissions: 8226,
+                    capacity_clears: 2,
+                    explicit_clears: 0,
+                },
+            ),
         ] {
             for _ in 0..2 {
                 for i in 0..n {
@@ -6186,16 +6267,49 @@ mod tests {
                     .unwrap();
                 }
             }
-            assert_eq!(
-                cache.compiles.load(std::sync::atomic::Ordering::Relaxed),
-                expected
-            );
+            assert_eq!(cache.counter_snapshot(), expected);
+
             assert!(cache.len() <= MDX_MODULE_CACHE_CAP);
             if matches!(cache.policy, CachePolicy::Retain { .. }) {
                 assert_eq!(cache.len(), MDX_MODULE_CACHE_CAP);
                 assert!(cache.retained_payload_bytes() <= BUILD_MDX_MODULE_CACHE_BYTES);
             }
         }
+    }
+
+    cache_policy_test!(
+        explicit_clear_counters_are_distinct_and_cumulative,
+        explicit_clear_counters_are_distinct_and_cumulative_case
+    );
+    fn explicit_clear_counters_are_distinct_and_cumulative_case(cache: MdxModuleCache) {
+        let path = Path::new("/counter/page.mdx");
+        for _ in 0..2 {
+            compile_mdx_to_jsx_module_cached("same source", path, Some(&cache), None).unwrap();
+        }
+        cache.clear();
+        assert_eq!(
+            cache.counter_snapshot(),
+            CacheCounterSnapshot {
+                compiles: 1,
+                misses: 1,
+                hits: 1,
+                admissions: 1,
+                capacity_clears: 0,
+                explicit_clears: 1,
+            }
+        );
+        compile_mdx_to_jsx_module_cached("same source", path, Some(&cache), None).unwrap();
+        assert_eq!(
+            cache.counter_snapshot(),
+            CacheCounterSnapshot {
+                compiles: 2,
+                misses: 2,
+                hits: 1,
+                admissions: 2,
+                capacity_clears: 0,
+                explicit_clears: 1,
+            }
+        );
     }
 
     fn retained_test_entry(jsx_capacity: usize) -> CachedMdxModule {
