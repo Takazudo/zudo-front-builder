@@ -46,6 +46,10 @@
       "types": "./src/server.ts",
       "default": "./src/server.ts"
     },
+    "./stable-paths": {
+      "types": "./src/paths.ts",
+      "default": "./src/paths.ts"
+    },
     "./snapshot": {
       "types": "./src/snapshot.ts",
       "default": "./src/snapshot.ts"
@@ -74,6 +78,10 @@
         "types": "./dist/server.d.ts",
         "default": "./dist/server.js"
       },
+      "./stable-paths": {
+        "types": "./dist/paths.d.ts",
+        "default": "./dist/paths.js"
+      },
       "./snapshot": {
         "types": "./dist/snapshot.d.ts",
         "default": "./dist/snapshot.js"
@@ -93,7 +101,7 @@
     "prepublishOnly": "pnpm build && pnpm test",
     "test": "vp test run",
     "test:watch": "vp test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.type-tests.json"
   },
   "dependencies": {
     "hono": "^4.12.25"

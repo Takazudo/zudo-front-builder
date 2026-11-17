@@ -273,6 +273,9 @@ pub struct ResolveMarkdownLinksRoute {
 /// wiring is visible at the call site.
 #[derive(Debug, Clone)]
 pub struct BundlerInput {
+    /// Explicit build-owned MDX cache. None retains the process-global dev
+    /// cache; cloning this input shares the same build cache with SSR passes.
+    pub mdx_module_cache: Option<std::sync::Arc<MdxModuleCache>>,
     /// Project root. All other paths are interpreted relative to this if
     /// they are relative; absolute paths pass through.
     pub project_root: PathBuf,
@@ -753,6 +756,7 @@ impl BundlerInput {
         content_snapshot_json: Option<String>,
     ) -> Self {
         Self {
+            mdx_module_cache: None,
             project_root,
             authored_css_paths: BTreeSet::new(),
             pages_dir: PathBuf::from("pages"),
@@ -4722,6 +4726,10 @@ pub fn bundle_with_session(
     // sourcemaps directly from mode in both islands/client emitters.
     .with_output_semantics(input.mode.is_prod(), !input.mode.is_prod());
     let mat_ctx = MaterialiseCtx {
+        mdx_module_cache: input
+            .mdx_module_cache
+            .as_deref()
+            .unwrap_or_else(|| MdxModuleCache::process_global()),
         pipeline_spec: effective_spec,
         copy_mode,
         emit_render_artifacts: input.emit_render_artifacts,
@@ -10255,6 +10263,7 @@ impl GlobMatchQueue {
 /// `bundle_exclude` / `writer` locals); `'s` is the [`ShadowSession`]
 /// borrow inside the writer (invariant, so it cannot be folded into `'a`).
 struct MaterialiseCtx<'a, 's> {
+    mdx_module_cache: &'a MdxModuleCache,
     /// Effective pipeline knob set shared by all MDX compile calls —
     /// `input.pipeline_spec` with `resolve_source_map` rewritten from
     /// `input.resolve_markdown_links` (see [`bundle`]). Both walkers
@@ -10657,7 +10666,7 @@ fn materialise_shadow(
             let compiled = compile_mdx_to_jsx_module_cached(
                 &md_body,
                 from,
-                Some(MdxModuleCache::process_global()),
+                Some(ctx.mdx_module_cache),
                 Some(&mut pipeline),
             )
             .with_context(|| format!("compile md page {}", from.display()))?;
@@ -11402,11 +11411,11 @@ fn materialise_mdx_with_skip(
         pipeline.set_resolve_links_source_file(from.to_path_buf());
     }
 
-    // Process-global compile cache (zfb#905) + dep-path signal (zfb#1148).
+    // Resolved compile cache + dep-path signal (zfb#1148).
     let (compiled, recorded_deps) = compile_mdx_to_jsx_module_cached_with_deps(
         body,
         from,
-        Some(MdxModuleCache::process_global()),
+        Some(ctx.mdx_module_cache),
         Some(pipeline),
     )
     .with_context(|| format!("compile mdx {}", from.display()))?;
@@ -19060,6 +19069,7 @@ mod tests {
         fs::create_dir_all(root.join("layouts")).unwrap();
         BundlerInput {
             project_root: root.clone(),
+            mdx_module_cache: None,
             authored_css_paths: BTreeSet::new(),
             pages_dir: PathBuf::from("pages"),
             injected_pages_root: None,
@@ -20463,6 +20473,7 @@ mod tests {
         let writer = ShadowWriter::new(shadow_root, Some(session), false, fingerprint)
             .expect("session writer construction");
         let ctx = MaterialiseCtx {
+            mdx_module_cache: MdxModuleCache::process_global(),
             pipeline_spec: spec,
             copy_mode: false,
             emit_render_artifacts: false,
@@ -20533,6 +20544,7 @@ mod tests {
         let writer = ShadowWriter::new(shadow_root, Some(session), false, fingerprint)
             .expect("session writer construction");
         let ctx = MaterialiseCtx {
+            mdx_module_cache: MdxModuleCache::process_global(),
             pipeline_spec: spec,
             copy_mode: false,
             emit_render_artifacts: false,
@@ -22242,6 +22254,7 @@ mod tests {
         let exclude = no_bundle_exclude();
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
         let ctx = MaterialiseCtx {
+            mdx_module_cache: MdxModuleCache::process_global(),
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: true,
             emit_render_artifacts: false,
@@ -22294,6 +22307,7 @@ mod tests {
         let exclude = no_bundle_exclude();
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
         let ctx = MaterialiseCtx {
+            mdx_module_cache: MdxModuleCache::process_global(),
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: true,
             emit_render_artifacts: false,
@@ -22353,6 +22367,7 @@ mod tests {
         let exclude = no_bundle_exclude();
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
         let ctx = MaterialiseCtx {
+            mdx_module_cache: MdxModuleCache::process_global(),
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: true,
             emit_render_artifacts: false,
@@ -22410,6 +22425,7 @@ mod tests {
         let exclude = no_bundle_exclude();
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
         let ctx = MaterialiseCtx {
+            mdx_module_cache: MdxModuleCache::process_global(),
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: true,
             emit_render_artifacts: false,
@@ -22688,6 +22704,7 @@ mod tests {
         let exclude = no_bundle_exclude();
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
         let ctx = MaterialiseCtx {
+            mdx_module_cache: MdxModuleCache::process_global(),
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: true,
             emit_render_artifacts: false,
@@ -22743,6 +22760,7 @@ mod tests {
         let exclude = no_bundle_exclude();
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
         let ctx = MaterialiseCtx {
+            mdx_module_cache: MdxModuleCache::process_global(),
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: true,
             emit_render_artifacts: false,
@@ -23089,6 +23107,7 @@ mod tests {
             let exclude = no_bundle_exclude();
             let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
             let ctx = MaterialiseCtx {
+                mdx_module_cache: MdxModuleCache::process_global(),
                 pipeline_spec: zfb_content::PipelineSpec::default(),
                 copy_mode: true,
                 emit_render_artifacts: false,
@@ -24291,6 +24310,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn materialisation_uses_the_explicit_build_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("content/blog")).unwrap();
+        std::fs::write(root.join("pages/index.mdx"), "## Direct page\n").unwrap();
+        std::fs::write(root.join("content/blog/entry.mdx"), "## Collection entry\n").unwrap();
+        let cache = std::sync::Arc::new(MdxModuleCache::for_build());
+        let mut input = mock_ssr_input(root);
+        input.mdx_module_cache = Some(cache.clone());
+        assert!(cache.is_empty());
+        bundle(input.clone()).unwrap();
+        assert_eq!(
+            cache.len(),
+            2,
+            "both direct and collection MDX use the supplied cache"
+        );
+        bundle(input).unwrap();
+        assert_eq!(
+            cache.len(),
+            2,
+            "a second materialisation shares the same entries"
+        );
+        let default = mock_ssr_input(root);
+        assert!(
+            default.mdx_module_cache.is_none(),
+            "default/dev remains process-global"
+        );
+    }
+
     // ── Issue #1668 part 1: SSR shadow workspace layout re-root ─────────────
 
     /// A mock-subprocess SSR input for `project_root` — skips the esbuild
@@ -25053,6 +25103,7 @@ mod tests {
 
         let input = BundlerInput {
             project_root: root.clone(),
+            mdx_module_cache: None,
             authored_css_paths: BTreeSet::new(),
             pages_dir: PathBuf::from("pages"),
             injected_pages_root: None,
@@ -27922,6 +27973,7 @@ mod tests {
             let writer =
                 ShadowWriter::new(work.clone(), Some(&mut session), false, fingerprint).unwrap();
             let ctx = MaterialiseCtx {
+                mdx_module_cache: MdxModuleCache::process_global(),
                 pipeline_spec: zfb_content::PipelineSpec::default(),
                 copy_mode: false,
                 emit_render_artifacts: false,
@@ -27955,6 +28007,7 @@ mod tests {
             let writer =
                 ShadowWriter::new(work.clone(), Some(&mut session), false, fingerprint).unwrap();
             let ctx = MaterialiseCtx {
+                mdx_module_cache: MdxModuleCache::process_global(),
                 pipeline_spec: zfb_content::PipelineSpec::default(),
                 copy_mode: false,
                 emit_render_artifacts: false,
@@ -28688,6 +28741,7 @@ mod tests {
         exclude: &'a BundleExcludeMatcher,
     ) -> MaterialiseCtx<'a, 'static> {
         MaterialiseCtx {
+            mdx_module_cache: MdxModuleCache::process_global(),
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: false,
             emit_render_artifacts: false,

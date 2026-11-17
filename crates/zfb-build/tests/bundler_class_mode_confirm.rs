@@ -96,6 +96,7 @@ fn bundler_class_mode_project_ties_emission_and_css_injection() {
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
         project_root: root.clone(),
+        mdx_module_cache: None,
         authored_css_paths: Default::default(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,

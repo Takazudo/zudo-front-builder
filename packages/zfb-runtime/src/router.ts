@@ -43,6 +43,8 @@ import { setContentSnapshot } from "@takazudo/zfb/content";
 
 import { renderToString } from "@takazudo/zfb/zudo-react/server";
 import type { ContentSnapshot } from "./snapshot.js";
+import { isStablePaths } from "./stable-paths.js";
+import { isPathsEntry, type PathsEntry } from "./paths-entry.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -85,20 +87,26 @@ export interface PageHeading {
  *   **Evaluated once per router instance** — the result is memoised and
  *   shared across the `/__paths__` handler and all per-page render
  *   requests. This matches the build-time-enumerator contract: every
- *   entry rendered within a single build sees the same paths() snapshot.
+ *   entry rendered within a single build sees the same returned array. Ordinary
+ *   arrays remain mutable and are validated on each request; `stablePaths()`
+ *   explicitly captures an owned snapshot eligible for validation reuse.
  *   Dev mode is safe because each file-save triggers a fresh bundle,
  *   which creates a new router instance with a clean memo.
  * - `getStaticProps`: optional async function for static routes that need
  *   to fetch data at build/render time. Called once per request (before
  *   `default`). Must return `{ props: Record<string, unknown> }`. The
  *   returned `props` are spread into the `default` component's props.
+ *
+ * `Paths` defaults to the legacy mutable array type. Annotated stable modules
+ * can opt in with `PageModule<readonly StablePathsEntry[]>`; modules passed
+ * directly to `createPageRouter` may instead infer their readonly return type.
  */
-export interface PageModule {
+export interface PageModule<Paths extends readonly unknown[] = unknown[]> {
   readonly default: (props: Record<string, unknown>) => unknown;
   readonly prerender?: boolean;
   readonly contentType?: string;
   readonly headings?: readonly PageHeading[];
-  readonly paths?: () => unknown[] | Promise<unknown[]>;
+  readonly paths?: () => Paths | Promise<Paths>;
   readonly getStaticProps?: () => Promise<{ props: Record<string, unknown> }>;
 }
 
@@ -110,15 +118,15 @@ export interface PageModule {
  * splitting if it wants to — today the bundler emits everything as one
  * ESM file and the thunk simply returns the already-loaded module.
  */
-export interface PageDefinition {
+export interface PageDefinition<Paths extends readonly unknown[] = unknown[]> {
   readonly route: string;
-  readonly module: () => Promise<PageModule>;
+  readonly module: () => Promise<PageModule<Paths>>;
 }
 
 /** Options accepted by [`createPageRouter`]. */
-export interface CreatePageRouterOptions {
+export interface CreatePageRouterOptions<Paths extends readonly unknown[] = unknown[]> {
   /** Pages to register. Order does not affect routing — Hono dispatches by path. */
-  readonly pages: readonly PageDefinition[];
+  readonly pages: readonly PageDefinition<Paths>[];
   /**
    * In-memory content snapshot. Embedded into the bundle by T3; the
    * router hands it to `zfb/content` so user pages reading content via
@@ -195,20 +203,20 @@ function ensureHtml5Doctype(body: string, contentType: string): string {
  * does not permanently poison the cache — the next request retries.
  */
 async function getOrEvalPaths(
-  memo: Map<string, Promise<unknown[]>>,
+  memo: Map<string, Promise<readonly unknown[]>>,
   routeKey: string,
-  pathsFn: () => unknown[] | Promise<unknown[]>,
-): Promise<unknown[]> {
+  pathsFn: () => readonly unknown[] | Promise<readonly unknown[]>,
+): Promise<readonly unknown[]> {
   const existing = memo.get(routeKey);
   if (existing !== undefined) {
     return existing;
   }
   const promise = Promise.resolve(pathsFn()).then(
-    (v) => v as unknown[],
+    (v) => v as readonly unknown[],
     (err) => {
       // Evict on rejection so the next request retries.
       memo.delete(routeKey);
-      return Promise.reject(err) as Promise<unknown[]>;
+      return Promise.reject(err) as Promise<readonly unknown[]>;
     },
   );
   memo.set(routeKey, promise);
@@ -249,7 +257,7 @@ async function getOrEvalPaths(
  * Worker entry point can `export default { fetch: createPageRouter(...) }`
  * directly.
  */
-export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
+export function createPageRouter(opts: CreatePageRouterOptions<readonly unknown[]>): PageRouter {
   setContentSnapshot(opts.contentSnapshot);
 
   const app = new Hono();
@@ -257,7 +265,7 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
   // Build a lookup map: Hono route pattern → PageDefinition, for the
   // `__paths__` synthetic endpoint below. The map is keyed on the `route`
   // string exactly as the caller supplied it (e.g. "/blog/:slug").
-  const pagesByRoute = new Map<string, PageDefinition>();
+  const pagesByRoute = new Map<string, PageDefinition<readonly unknown[]>>();
   for (const page of opts.pages) {
     pagesByRoute.set(page.route, page);
   }
@@ -276,7 +284,11 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
   // (dev.rs reload_renderer), so stale paths() results never persist
   // across a file-save cycle. Watch-time invalidation is explicitly
   // out of scope per issue #507.
-  const pathsMemo = new Map<string, Promise<unknown[]>>();
+  const pathsMemo = new Map<string, Promise<readonly unknown[]>>();
+  // Weak, generation-local success memo. Only explicit owned snapshots qualify;
+  // ordinary arrays retain per-request validation even in production. Neither
+  // this set nor the private brand retains snapshots after their router dies.
+  const validatedPaths = new WeakSet<object>();
 
   // Sanity check: a user-authored route under `/__paths__/...` has its
   // GET/HEAD responses hidden by the synthetic endpoint registered below.
@@ -336,7 +348,7 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
       );
     }
 
-    let result: unknown[];
+    let result: readonly unknown[];
     try {
       result = await getOrEvalPaths(pathsMemo, routeKey, mod.paths);
     } catch (err) {
@@ -423,14 +435,17 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
         // Validate each entry's shape per-entry rather than using a bare
         // cast — matches the strictness the Rust pipeline applies on the
         // same wire format. Any malformed entry surfaces as a 500.
-        for (const entry of pathsResult) {
-          if (!isPathsEntry(entry)) {
-            return c.body(
-              `[zfb-runtime] paths() for "${page.route}" returned an entry without a valid params object`,
-              500,
-              { "Content-Type": "text/plain; charset=utf-8" },
-            );
+        if (!validatedPaths.has(pathsResult)) {
+          for (const entry of pathsResult) {
+            if (!isPathsEntry(entry)) {
+              return c.body(
+                `[zfb-runtime] paths() for "${page.route}" returned an entry without a valid params object`,
+                500,
+                { "Content-Type": "text/plain; charset=utf-8" },
+              );
+            }
           }
+          if (isStablePaths(pathsResult)) validatedPaths.add(pathsResult);
         }
 
         // Find the entry whose params match the URL params for this
@@ -654,28 +669,6 @@ async function locateRenderFailure(
     else delete flags[SITE_CAPTURE];
   }
   return first;
-}
-
-/**
- * Shape of one entry produced by a page's `paths()` export. The
- * `params` object is required (every entry needs to identify the URL
- * it represents); `props` is optional (the page may render purely from
- * the URL params).
- */
-interface PathsEntry {
-  readonly params: Record<string, unknown>;
-  readonly props?: Record<string, unknown>;
-}
-
-/**
- * Type guard for one `paths()` entry. Mirrors the strictness of the
- * Rust pipeline's `paths()` resolver — every entry must be a non-null
- * object whose `params` is itself a non-null object.
- */
-function isPathsEntry(x: unknown): x is PathsEntry {
-  if (typeof x !== "object" || x === null) return false;
-  const params = (x as { params?: unknown }).params;
-  return typeof params === "object" && params !== null;
 }
 
 /**

@@ -7197,15 +7197,17 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // `skip_serializing_if` elides, so the JSON embedded in the worker
     // bundle is byte-identical to the flag-off build. One collection
     // walk, no bundle-byte drift.
+    let mdx_module_cache = std::sync::Arc::new(zfb_content::MdxModuleCache::for_build());
     let phase_started = build_phase_start("content-snapshot", runner.timing_enabled());
     let mut render_metadata = crate::commands::render_artifact::RenderMetadataIndex::default();
     let content_snapshot_json = {
-        let mut snapshot = build_content_snapshot(
+        let mut snapshot = build_content_snapshot_with_cache(
             project_root,
             config,
             zfb_content::SnapshotOptions {
                 render_metadata: config.emit_render_artifacts,
             },
+            &mdx_module_cache,
         );
         if config.emit_render_artifacts {
             if let Some(snap) = snapshot.as_mut() {
@@ -7216,6 +7218,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
                 project_root,
                 config,
                 routes,
+                &mdx_module_cache,
             );
         }
         snapshot.as_ref().and_then(serialize_content_snapshot)
@@ -7360,7 +7363,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         runner.timing_enabled(),
     );
     let crate::commands::bundler_input::AssembledBundlerInput {
-        bundler_input,
+        mut bundler_input,
         _node_modules_handle: _embedded_nm_handle,
     } = crate::commands::bundler_input::assemble_bundler_input(
         project_root,
@@ -7402,6 +7405,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // tempdir handle (`_embedded_nm_handle`) lives in this function's scope
     // and is NOT cloned — the cloned `node_modules_dir` `PathBuf` references
     // the path that handle keeps alive.
+    bundler_input.mdx_module_cache = Some(std::sync::Arc::clone(&mdx_module_cache));
     let bundler_input_for_runtime = bundler_input.clone();
     let bundler_out = runner
         .bundle(bundler_input)
@@ -8227,6 +8231,20 @@ pub(crate) fn build_content_snapshot(
     config: &Config,
     options: zfb_content::SnapshotOptions,
 ) -> Option<zfb_content::ContentSnapshot> {
+    build_content_snapshot_with_cache(
+        project_root,
+        config,
+        options,
+        zfb_content::MdxModuleCache::process_global(),
+    )
+}
+
+fn build_content_snapshot_with_cache(
+    project_root: &Path,
+    config: &Config,
+    options: zfb_content::SnapshotOptions,
+    cache: &zfb_content::MdxModuleCache,
+) -> Option<zfb_content::ContentSnapshot> {
     if config.collections.is_empty() {
         return None;
     }
@@ -8256,7 +8274,12 @@ pub(crate) fn build_content_snapshot(
         spec.resolve_source_map = build_resolve_source_map_for_snapshot(project_root, config);
         spec
     };
-    match zfb_content::build_snapshot_with_options(&collections, &snapshot_config, options) {
+    match zfb_content::build_snapshot_with_options_and_cache(
+        &collections,
+        &snapshot_config,
+        options,
+        cache,
+    ) {
         Ok(snap) => Some(snap),
         Err(e) => {
             warn_build(
@@ -8289,7 +8312,7 @@ pub(crate) fn build_content_snapshot(
 /// inside the compiled JSX, and the specifier's `#<hash8>` is a hash OF
 /// that JSX. A pipeline shaped differently from the bundler's would mint
 /// a different specifier and the writer's join would miss on every page.
-/// Matching it also makes the compile a hit on the shared process-global
+/// Matching it also makes the compile a hit on the shared build-owned
 /// MDX cache rather than a second full compile.
 ///
 /// Failures are per-page warnings: a page with no metadata simply gets no
@@ -8300,6 +8323,7 @@ fn extend_render_metadata_with_direct_pages(
     project_root: &Path,
     config: &Config,
     routes: &[zfb_router::Route],
+    cache: &zfb_content::MdxModuleCache,
 ) {
     let mut sources: Vec<&Path> = routes
         .iter()
@@ -8342,7 +8366,6 @@ fn extend_render_metadata_with_direct_pages(
             return;
         }
     };
-    let cache = zfb_content::mdx_jsx_emit::MdxModuleCache::process_global();
 
     for source in sources {
         let raw = match std::fs::read_to_string(source) {
@@ -10604,6 +10627,83 @@ mod tests {
             calls[0].1.emitted_wasm_assets,
             vec![PathBuf::from("answer-1234abcd.wasm")],
             "the runtime bundle's bundle-relative Wasm assets must reach the adapter"
+        );
+    }
+
+    #[test]
+    fn build_owned_cache_connects_snapshot_direct_metadata_and_both_bundle_passes() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        make_runtime(root);
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("content/blog")).unwrap();
+        std::fs::write(root.join("pages/index.md"), "## Direct heading\n").unwrap();
+        std::fs::write(
+            root.join("pages/api.tsx"),
+            "export const prerender = false;\nexport default function() { return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("content/blog/entry.md"),
+            "## Collection heading\n",
+        )
+        .unwrap();
+        let cfg = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            emit_render_artifacts: true,
+            collections: vec![crate::config::CollectionDef {
+                name: "blog".into(),
+                path: PathBuf::from("content/blog"),
+                schema: None,
+                include: None,
+                exclude: None,
+                id_strip_suffix: None,
+                allow_outside_root: false,
+            }],
+            ..Config::default()
+        };
+        let routes = vec![
+            static_route(vec![], root.join("pages/index.md").to_str().unwrap()),
+            static_route(vec!["api"], root.join("pages/api.tsx").to_str().unwrap()),
+        ];
+        let runner = FakeRunner::new(root.join(".zfb-build/bundle.mjs"));
+        let adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root: root,
+            scratch: &default_layout(root),
+            build_pages_root: &root.join("pages"),
+            user_pages_dir: &root.join("pages"),
+            package_route_entrypoints: &[],
+            outdir: &root.join("dist"),
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &adapter,
+            plugin_alias_entries: vec![],
+            plugin_virtual_modules: vec![],
+            minify_html: false,
+        })
+        .unwrap();
+        let calls = runner.bundle_calls.borrow();
+        assert_eq!(calls.len(), 2, "normal and runtime-only bundles");
+        let first = calls[0].mdx_module_cache.as_ref().expect("owned cache");
+        let second = calls[1]
+            .mdx_module_cache
+            .as_ref()
+            .expect("same owned cache");
+        assert!(std::sync::Arc::ptr_eq(first, second));
+        assert_eq!(
+            first.len(),
+            2,
+            "snapshot and direct-page metadata populated the cache before fake bundling"
+        );
+        assert!(first.retained_payload_bytes() > 0);
+        let weak = std::sync::Arc::downgrade(first);
+        drop(calls);
+        runner.bundle_calls.borrow_mut().clear();
+        assert!(
+            weak.upgrade().is_none(),
+            "run_build leaves no cache in process-global storage"
         );
     }
 

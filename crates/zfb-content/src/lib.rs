@@ -30,8 +30,8 @@ pub mod tsx_frontmatter;
 
 pub use content_bridge::{
     build_snapshot, build_snapshot_with_config, build_snapshot_with_options,
-    debug_snapshot_enabled, BridgeError, CollectionConfig, ContentSnapshot, EntrySnapshot,
-    SnapshotOptions,
+    build_snapshot_with_options_and_cache, debug_snapshot_enabled, BridgeError, CollectionConfig,
+    ContentSnapshot, EntrySnapshot, SnapshotOptions,
 };
 
 pub use pipeline_spec::{CodeHighlightMode, PipelineSpec, PipelineSpecError};
