@@ -147,6 +147,7 @@ fn embedded_extraction_resolves_owned_runtime_and_hono_with_no_consumer_node_mod
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
         project_root: root.clone(),
+        mdx_module_cache: None,
         authored_css_paths: Default::default(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,

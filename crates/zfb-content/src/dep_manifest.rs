@@ -104,6 +104,26 @@ impl DependencyManifest {
         self.entries.keys().map(PathBuf::from).collect()
     }
 
+    /// Conservative bound for retained tree nodes and nested strings. A node
+    /// has up to eleven slots and twelve edges; charging one full node per
+    /// live entry also covers sparse nodes and tree metadata. This deliberately
+    /// overcounts, rather than treating serialized bytes as retained memory.
+    pub(crate) fn retained_payload_bytes(&self) -> usize {
+        let node = std::mem::size_of::<(String, ReadOutcome)>()
+            .saturating_mul(11)
+            .saturating_add(std::mem::size_of::<usize>().saturating_mul(16));
+        self.entries.iter().fold(0usize, |bytes, (path, outcome)| {
+            let digest = match outcome {
+                ReadOutcome::Content { sha256 } => sha256.capacity(),
+                ReadOutcome::Missing | ReadOutcome::Error => 0,
+            };
+            bytes
+                .saturating_add(node)
+                .saturating_add(path.capacity())
+                .saturating_add(digest)
+        })
+    }
+
     /// True when every recorded dependency re-validates against the
     /// current filesystem state — the gate a cache hit must pass. See
     /// the module docs for the per-outcome rules.
