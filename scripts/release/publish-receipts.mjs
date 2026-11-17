@@ -1,6 +1,6 @@
 // publish-receipts.mjs — what npm was told to publish, recorded by release.yml
 // in the `npm-publish-receipts` artifact (TSV: name, version, attested|none,
-// outcome), and the optional npm credential for the version-status API.
+// outcome, optional acceptedAt), and the optional npm credential for the version-status API.
 //
 // Outcomes: already-present | publish-accepted (npm printed `+ name@version`) |
 // processing (E409 "previously staged") | publish-attempted (legacy). The
@@ -33,9 +33,22 @@ export function parseReceipts(text) {
   const entries = new Map();
   for (const line of String(text).split("\n")) {
     if (!line.trim() || line.startsWith("#")) continue;
-    const [name, version, expected, outcome] = line.split("\t").map((cell) => cell.trim());
+    const [name, version, expected, outcome, acceptedAt] = line
+      .split("\t")
+      .map((cell) => cell.trim());
     if (!name || !version || !outcome) continue;
-    entries.set(`${name}@${version}`, { expected: expected || "none", outcome });
+    const entry = { expected: expected || "none", outcome };
+    // Only fresh acknowledged publishes know their acceptance time. Never use
+    // the observation time of an E409 as its original acceptance time.
+    if (
+      outcome === "publish-accepted" &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(acceptedAt ?? "") &&
+      Number.isFinite(Date.parse(acceptedAt)) &&
+      new Date(acceptedAt).toISOString().replace(".000Z", "Z") === acceptedAt
+    ) {
+      entry.acceptedAt = acceptedAt;
+    }
+    entries.set(`${name}@${version}`, entry);
   }
   return entries;
 }
@@ -48,8 +61,10 @@ function filesUnder(dir) {
 
 /**
  * Receipts of every release.yml run for `tag` that uploaded the artifact,
- * newest run first; the first run to name a package wins. Each entry carries
- * `acceptedAt`: the artifact's created_at, else the run's start time. A run
+ * newest run first; the first run to name a package supplies its state. A precise
+ * acceptance time from an older run survives a later E409 observation. Each entry carries
+ * `acceptedAt`: the row timestamp, falling back for legacy receipts to the
+ * artifact's created_at, else the run's start time. A run
  * with no (or an expired) artifact is skipped; a gh failure throws.
  */
 export function loadReceipts({ tag, repo, gh }) {
@@ -71,6 +86,7 @@ export function loadReceipts({ tag, repo, gh }) {
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
     .slice(0, 10);
   const merged = new Map();
+  const preciseTimes = new Set();
   for (const run of runs) {
     const listing = JSON.parse(
       gh(["api", `repos/${repo}/actions/runs/${run.databaseId}/artifacts?per_page=100`]),
@@ -95,7 +111,18 @@ export function loadReceipts({ tag, repo, gh }) {
       const acceptedAt = artifact.created_at ?? run.startedAt ?? run.createdAt ?? null;
       for (const file of filesUnder(dir)) {
         for (const [key, entry] of parseReceipts(readFileSync(file, "utf8"))) {
-          if (!merged.has(key)) merged.set(key, { ...entry, acceptedAt, runId: run.databaseId });
+          if (!merged.has(key)) {
+            merged.set(key, {
+              ...entry,
+              acceptedAt: entry.acceptedAt ?? acceptedAt,
+              runId: run.databaseId,
+            });
+            if (entry.acceptedAt) preciseTimes.add(key);
+          } else if (!preciseTimes.has(key) && entry.acceptedAt) {
+            // A later E409 does not restart the original acceptance clock.
+            merged.get(key).acceptedAt = entry.acceptedAt;
+            preciseTimes.add(key);
+          }
         }
       }
     } finally {

@@ -112,6 +112,8 @@
 #                     when set, receives one TSV line per package:
 #                     `<name>\t<version>\t<attested|none>\t<outcome>`; read by
 #                     scripts/verify-npm-provenance-expectations.mjs after publish.
+#                     Fresh publish-accepted rows append a fifth UTC acceptedAt
+#                     column captured when npm returns success.
 #                     Outcomes: already-present, publish-accepted (npm printed
 #                     `+ name@version`), processing (E409 "previously staged":
 #                     accepted earlier, still in npm pre-publication processing).
@@ -475,9 +477,13 @@ provenance_flag() {
 }
 
 record_expectation() {
-  local name="$1" version="$2" expected="$3" outcome="$4"
+  local name="$1" version="$2" expected="$3" outcome="$4" accepted_at="${5:-}"
   if [[ -n "${ZFB_PROVENANCE_EXPECTATIONS_FILE:-}" ]]; then
-    printf '%s\t%s\t%s\t%s\n' "$name" "$version" "$expected" "$outcome" >>"$ZFB_PROVENANCE_EXPECTATIONS_FILE"
+    printf '%s\t%s\t%s\t%s' "$name" "$version" "$expected" "$outcome" >>"$ZFB_PROVENANCE_EXPECTATIONS_FILE"
+    if [[ -n "$accepted_at" ]]; then
+      printf '\t%s' "$accepted_at" >>"$ZFB_PROVENANCE_EXPECTATIONS_FILE"
+    fi
+    printf '\n' >>"$ZFB_PROVENANCE_EXPECTATIONS_FILE"
   fi
 }
 
@@ -500,10 +506,13 @@ assert_npm_oidc_only() {
 # `+ name@version`), processing (E409 "previously staged"), or already-present
 # (a conflict/lost ACK whose version is verified on the registry).
 PUBLISH_OUTCOME=""
+PUBLISH_ACCEPTED_AT=""
 classify_publish_result() {
   local name="$1" version="$2" status="$3" outfile="$4" integrity="${5:-}" result state kind
   PUBLISH_OUTCOME=""
+  PUBLISH_ACCEPTED_AT=""
   if [[ "$status" -eq 0 ]]; then
+    PUBLISH_ACCEPTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     PUBLISH_OUTCOME=publish-accepted
     echo "✓ published ${name}@${version}."
     return 0
@@ -590,7 +599,7 @@ publish_tarballs() {
       fi
     fi
     _run_and_classify "$name" "$version" "$integrity" _npm_publish_tarball "$file" "$(provenance_flag "$expected")"
-    record_expectation "$name" "$version" "$expected" "${PUBLISH_OUTCOME:-publish-accepted}"
+    record_expectation "$name" "$version" "$expected" "${PUBLISH_OUTCOME:-publish-accepted}" "$PUBLISH_ACCEPTED_AT"
     # An E409-staged version is not readable yet; the md-wasm-asset and
     # finalize-assets jobs re-verify its digests once npm finishes processing.
     if [[ "$dir" == "crates/zfb-md-wasm/npm" && "$PUBLISH_OUTCOME" != processing ]]; then

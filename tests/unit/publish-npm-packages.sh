@@ -496,7 +496,7 @@ DISTTAG_DIR=$(mktemp -d)
 : >"$PUB_LOG"
 : >"$ARGS_LOG"
 : >"$DISTTAG_LOG"
-if PATH="$MOCK_BIN:$PATH" \
+if HOLDING_OUTPUT=$(PATH="$MOCK_BIN:$PATH" \
    DIST_TAG=next \
    ALSO_LATEST=1 \
    MOCK_DISTTAG_DIR="$DISTTAG_DIR" \
@@ -504,7 +504,7 @@ if PATH="$MOCK_BIN:$PATH" \
    MOCK_ARGS_LOG="$ARGS_LOG" \
    MOCK_DISTTAG_LOG="$DISTTAG_LOG" \
    MOCK_EXISTING="" \
-   bash "$SCRIPT" all-provenance >/dev/null 2>&1; then
+   bash "$SCRIPT" all-provenance 2>&1); then
   PUBLISHES=$(grep -c 'publish' "$ARGS_LOG" || true)
   HELD=$(grep -c -- '--tag release-pending' "$ARGS_LOG" || true)
   if [ "$PUBLISHES" -eq 11 ] && [ "$HELD" -eq 11 ] && [ ! -s "$DISTTAG_LOG" ] \
@@ -515,6 +515,7 @@ if PATH="$MOCK_BIN:$PATH" \
   fi
 else
   fail "integration: holding-tag run exited non-zero"
+  printf '%s\n' "$HOLDING_OUTPUT"
 fi
 rm -rf "$DISTTAG_DIR"
 
@@ -806,6 +807,8 @@ assert_prov_mode() {
     want=attested
     for x in $PM_NONE; do [ "$x" = "$n" ] && want=none; done
     got=$(prov_of "$n")
+    timestamp=$(awk -F '\t' -v n="$n" '$1 == n { print $5 }' "$EXPECT_FILE")
+    printf '%s\n' "$timestamp" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' || PM_BAD="$PM_BAD $n(timestamp=$timestamp)"
     exp=$(awk -F '\t' -v n="$n" '$1 == n { print $3 }' "$EXPECT_FILE")
     if [ "$got" != "$want" ] || [ "$exp" != "$want" ]; then
       PM_BAD="$PM_BAD $n(flag=$got,map=$exp,want=$want)"
@@ -834,6 +837,11 @@ if [ "$(grep -c "	attested	already-present$" "$EXPECT_FILE")" -eq 11 ]; then
 else
   fail "provenance: already-present expectation map: $(tr '\n' '|' <"$EXPECT_FILE")"
 fi
+
+# Acceptance time belongs only to a fresh successful publish, never an E409
+# observation or an already-present package.
+assert_exit 'receipts: fresh acceptance timestamp is recorded and cleared for staged results' 0 \
+  'set -e; classify_publish_result foo 1.2.3 0 /dev/null >/dev/null; [[ "$PUBLISH_ACCEPTED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; saved="$PUBLISH_ACCEPTED_AT"; f=$(mktemp); ZFB_PROVENANCE_EXPECTATIONS_FILE="$f"; record_expectation foo 1.2.3 none publish-accepted "$saved"; [ "$(cut -f5 "$f")" = "$saved" ]; err=$(mktemp); echo "E409 Cannot publish over previously staged version" >"$err"; classify_publish_result foo 1.2.3 1 "$err" >/dev/null; [ -z "$PUBLISH_ACCEPTED_AT" ]; rm -f "$f" "$err"'
 
 # Mixed state (#4690 M2): a normal publish attested five packages and then
 # failed; a recovery run (all --provenance=false) resumes it. The already-present
