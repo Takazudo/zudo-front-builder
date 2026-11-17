@@ -96,13 +96,17 @@ export interface PageHeading {
  *   to fetch data at build/render time. Called once per request (before
  *   `default`). Must return `{ props: Record<string, unknown> }`. The
  *   returned `props` are spread into the `default` component's props.
+ *
+ * `Paths` defaults to the legacy mutable array type. Annotated stable modules
+ * can opt in with `PageModule<readonly StablePathsEntry[]>`; modules passed
+ * directly to `createPageRouter` may instead infer their readonly return type.
  */
-export interface PageModule {
+export interface PageModule<Paths extends readonly unknown[] = unknown[]> {
   readonly default: (props: Record<string, unknown>) => unknown;
   readonly prerender?: boolean;
   readonly contentType?: string;
   readonly headings?: readonly PageHeading[];
-  readonly paths?: () => readonly unknown[] | Promise<readonly unknown[]>;
+  readonly paths?: () => Paths | Promise<Paths>;
   readonly getStaticProps?: () => Promise<{ props: Record<string, unknown> }>;
 }
 
@@ -114,15 +118,15 @@ export interface PageModule {
  * splitting if it wants to — today the bundler emits everything as one
  * ESM file and the thunk simply returns the already-loaded module.
  */
-export interface PageDefinition {
+export interface PageDefinition<Paths extends readonly unknown[] = unknown[]> {
   readonly route: string;
-  readonly module: () => Promise<PageModule>;
+  readonly module: () => Promise<PageModule<Paths>>;
 }
 
 /** Options accepted by [`createPageRouter`]. */
-export interface CreatePageRouterOptions {
+export interface CreatePageRouterOptions<Paths extends readonly unknown[] = unknown[]> {
   /** Pages to register. Order does not affect routing — Hono dispatches by path. */
-  readonly pages: readonly PageDefinition[];
+  readonly pages: readonly PageDefinition<Paths>[];
   /**
    * In-memory content snapshot. Embedded into the bundle by T3; the
    * router hands it to `zfb/content` so user pages reading content via
@@ -253,7 +257,7 @@ async function getOrEvalPaths(
  * Worker entry point can `export default { fetch: createPageRouter(...) }`
  * directly.
  */
-export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
+export function createPageRouter(opts: CreatePageRouterOptions<readonly unknown[]>): PageRouter {
   setContentSnapshot(opts.contentSnapshot);
 
   const app = new Hono();
@@ -261,7 +265,7 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
   // Build a lookup map: Hono route pattern → PageDefinition, for the
   // `__paths__` synthetic endpoint below. The map is keyed on the `route`
   // string exactly as the caller supplied it (e.g. "/blog/:slug").
-  const pagesByRoute = new Map<string, PageDefinition>();
+  const pagesByRoute = new Map<string, PageDefinition<readonly unknown[]>>();
   for (const page of opts.pages) {
     pagesByRoute.set(page.route, page);
   }

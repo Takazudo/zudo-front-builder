@@ -15,7 +15,7 @@ afterEach(() => {
   vi.mocked(isPathsEntry).mockClear();
 });
 
-function router(module: PageModule, route = "/posts/:slug") {
+function router(module: PageModule<readonly unknown[]>, route = "/posts/:slug") {
   const fetch = createPageRouter({
     pages: [{ route, module: async () => module }],
     contentSnapshot: { collections: {} },
