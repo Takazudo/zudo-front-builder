@@ -3510,23 +3510,25 @@ fn collection_and_slug(file_path: &Path) -> (String, String) {
     (collection, slug)
 }
 
-/// Maximum number of entries the [`MdxModuleCache`] retains before
-/// evicting the entire map.
-///
-/// **Policy: clear-all on overflow.** When an insertion would push the
-/// entry count past this threshold the whole map is cleared first, then
-/// the new entry is inserted.  This is the mechanically-safest bounded
-/// policy: it is O(1) to decide, requires no ordering structure, and is
-/// trivially correct — after a clear the invariant `len ≤ CAP` holds
-/// again.  The trade-off is a one-time cold-compile burst when the cap
-/// is hit, which is preferable to unbounded memory growth in a long
-/// `zfb dev` session.
-///
-/// 4 096 entries: a compiled `CompiledMdx` is roughly 2–8 KiB of JSX
-/// source.  At the generous end that is ~32 MiB for the whole map —
-/// well within a normal dev-server budget — while still bounding
-/// worst-case accumulation from edit churn across a large content tree.
+/// Entry cap shared by both cache policies. Default/dev caches clear all on
+/// overflow; a build cache retains admitted entries and also enforces a
+/// separate finite retained-payload byte budget.
 const MDX_MODULE_CACHE_CAP: usize = 4_096;
+/// Accounted retained payload, not allocator overhead or process RSS.
+const BUILD_MDX_MODULE_CACHE_BYTES: usize = 32 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+enum CachePolicy {
+    ClearOnOverflow,
+    Retain { entries: usize, bytes: usize },
+}
+
+#[derive(Debug, Default)]
+struct CacheState {
+    entries: HashMap<String, CachedMdxModule>,
+    retained_bytes: usize,
+    epoch: u64,
+}
 
 /// One cache slot: the compiled output plus the broken-link
 /// diagnostics that compile produced (zfb#939) plus the markdown
@@ -3561,6 +3563,83 @@ struct CachedMdxModule {
     /// at most one for a single compile. Empty for unarmed pipelines.
     file_headings: Vec<FileHeadings>,
     dependencies: DependencyManifest,
+    retained_bytes: usize,
+}
+
+// Include spare container capacity and every nested owned allocation. Count
+// inline slot storage too; HashMap buckets themselves have a separate entry cap.
+#[allow(clippy::ptr_arg)] // Spare capacity is part of the retained payload.
+fn vec_storage<T>(values: &Vec<T>) -> usize {
+    values.capacity().saturating_mul(std::mem::size_of::<T>())
+}
+
+impl CachedMdxModule {
+    #[allow(clippy::ptr_arg)] // Include spare key capacity, not only its length.
+    fn payload_bytes(&self, key: &String) -> usize {
+        let mut bytes = std::mem::size_of::<(String, Self)>().saturating_add(key.capacity());
+        macro_rules! add {
+            ($value:expr) => {
+                bytes = bytes.saturating_add($value);
+            };
+        }
+        add!(self.compiled.jsx_source.capacity());
+        add!(self.compiled.content_hash.capacity());
+        add!(self.compiled.specifier.capacity());
+        add!(vec_storage(&self.compiled.headings));
+        for h in &self.compiled.headings {
+            add!(h.text.capacity());
+            add!(h.slug.capacity());
+        }
+        add!(vec_storage(&self.broken_links));
+        for d in &self.broken_links {
+            add!(d.url.capacity());
+        }
+        add!(vec_storage(&self.markdown_diagnostics));
+        for d in &self.markdown_diagnostics {
+            let location = match d {
+                MarkdownDiagnostic::BrokenLink { url, location, .. } => {
+                    add!(url.capacity());
+                    location
+                }
+                MarkdownDiagnostic::Generic {
+                    code,
+                    message,
+                    location,
+                    ..
+                } => {
+                    add!(code.as_ref().map_or(0, String::capacity));
+                    add!(message.capacity());
+                    location
+                }
+            };
+            add!(location
+                .as_ref()
+                .and_then(|l| l.path.as_ref())
+                .map_or(0, PathBuf::capacity));
+        }
+        add!(vec_storage(&self.cross_file_links));
+        for link in &self.cross_file_links {
+            add!(link.source_path.capacity());
+            add!(link.target_path.capacity());
+            add!(link.fragment.capacity());
+            add!(link.raw_href.capacity());
+        }
+        add!(vec_storage(&self.file_headings));
+        for file in &self.file_headings {
+            add!(file.source_path.capacity());
+            add!(vec_storage(&file.headings));
+            for h in &file.headings {
+                add!(h.id.capacity());
+                add!(h.text.capacity());
+            }
+            add!(vec_storage(&file.anchor_ids));
+            for id in &file.anchor_ids {
+                add!(id.capacity());
+            }
+        }
+        add!(self.dependencies.retained_payload_bytes());
+        bytes
+    }
 }
 
 /// In-memory cache of compiled MDX modules, keyed by the SHA-256 of the
@@ -3584,9 +3663,18 @@ struct CachedMdxModule {
 /// a fingerprint (manually mutated / carrying filesystem-reading
 /// feature plugins — see [`Pipeline::config_fingerprint`]) bypass the
 /// cache entirely.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MdxModuleCache {
-    inner: Mutex<HashMap<String, CachedMdxModule>>,
+    inner: Mutex<CacheState>,
+    policy: CachePolicy,
+    #[cfg(test)]
+    compiles: std::sync::atomic::AtomicUsize,
+}
+
+impl Default for MdxModuleCache {
+    fn default() -> Self {
+        Self::with_policy(CachePolicy::ClearOnOverflow)
+    }
 }
 
 /// Process-wide cache instance backing [`MdxModuleCache::process_global`].
@@ -3600,6 +3688,28 @@ impl MdxModuleCache {
         Self::default()
     }
 
+    /// Construct a cache owned by one production build, limited to 4,096
+    /// entries and 32 MiB of conservatively accounted retained payload.
+    /// At capacity it keeps admitted entries and declines new ones, allowing
+    /// later passes to reuse the first scan in a larger content tree. The byte
+    /// budget includes nested capacities; it is not an allocator/RSS bound.
+    #[must_use]
+    pub fn for_build() -> Self {
+        Self::with_policy(CachePolicy::Retain {
+            entries: MDX_MODULE_CACHE_CAP,
+            bytes: BUILD_MDX_MODULE_CACHE_BYTES,
+        })
+    }
+
+    fn with_policy(policy: CachePolicy) -> Self {
+        Self {
+            inner: Mutex::new(CacheState::default()),
+            policy,
+            #[cfg(test)]
+            compiles: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
     /// The process-wide shared cache.
     ///
     /// The bundler's three MDX compile sites and the content-snapshot
@@ -3609,8 +3719,7 @@ impl MdxModuleCache {
     /// later tick from memory. The map is bounded at
     /// [`MDX_MODULE_CACHE_CAP`] entries: when an insertion would exceed
     /// the cap the entire map is cleared first (clear-on-overflow
-    /// policy), so memory is always bounded even across a long edit
-    /// session with high churn.
+    /// policy), bounding the entry count across a long edit session.
     ///
     /// Safe to share between configs because every entry is keyed by
     /// the pipeline config fingerprint (see the type-level docs);
@@ -3624,23 +3733,71 @@ impl MdxModuleCache {
     /// Number of cached entries (mainly useful from tests).
     #[must_use]
     pub fn len(&self) -> usize {
-        self.lock().len()
+        self.lock().entries.len()
     }
 
     /// True when the cache holds no entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.lock().is_empty()
+        self.lock().entries.is_empty()
     }
 
-    /// Drop all cached entries.
+    /// Drop all cached entries and prevent older in-flight misses from
+    /// admitting their results after the clear.
     pub fn clear(&self) {
-        self.lock().clear();
+        let mut state = self.lock();
+        state.entries.clear();
+        state.retained_bytes = 0;
+        // An in-flight miss must not repopulate a deliberately cleared cache.
+        state.epoch = state.epoch.checked_add(1).expect("cache epoch exhausted");
     }
 
-    /// Lock-or-recover: a poisoned mutex still yields a valid guard via
-    /// `into_inner`, so cache reads do not panic on a prior writer crash.
-    fn lock(&self) -> MutexGuard<'_, HashMap<String, CachedMdxModule>> {
+    /// Conservative retained payload accounting. HashMap bucket allocation is
+    /// bounded separately by the entry cap; this value is not process RSS.
+    #[must_use]
+    pub fn retained_payload_bytes(&self) -> usize {
+        self.lock().retained_bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compile_count(&self) -> usize {
+        self.compiles.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn admit(&self, key: String, entry: CachedMdxModule, epoch: u64) {
+        let mut state = self.lock();
+        if state.epoch != epoch {
+            return;
+        }
+        match self.policy {
+            CachePolicy::ClearOnOverflow => {
+                if state.entries.len() >= MDX_MODULE_CACHE_CAP {
+                    state.entries.clear();
+                    state.retained_bytes = 0;
+                }
+            }
+            CachePolicy::Retain { entries, bytes } => {
+                // Remove a stale same-key resident even if its replacement is
+                // too large. Replacement is not a new-key capacity decision.
+                if let Some(old) = state.entries.remove(&key) {
+                    state.retained_bytes = state.retained_bytes.saturating_sub(old.retained_bytes);
+                }
+                if state.entries.len() >= entries
+                    || entry.retained_bytes > bytes.saturating_sub(state.retained_bytes)
+                {
+                    return;
+                }
+            }
+        }
+        let retained_bytes = entry.retained_bytes;
+        if let Some(old) = state.entries.insert(key, entry) {
+            state.retained_bytes = state.retained_bytes.saturating_sub(old.retained_bytes);
+        }
+        state.retained_bytes = state.retained_bytes.saturating_add(retained_bytes);
+    }
+
+    /// Lock-or-recover after a prior writer panic.
+    fn lock(&self) -> MutexGuard<'_, CacheState> {
         match self.inner.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
@@ -3880,11 +4037,12 @@ pub fn compile_mdx_to_jsx_module_cached_with_deps(
         _ => None,
     };
 
+    let admission_epoch = cache_for_lookup.map(|c| c.lock().epoch);
     if let (Some(c), Some(key)) = (cache_for_lookup, cache_key.as_ref()) {
         // Clone out of the lock before validating: dependency
         // validation does filesystem reads (one re-hash per recorded
         // dep) and must not serialise other cache users behind it.
-        let hit = c.lock().get(key).cloned();
+        let hit = c.lock().entries.get(key).cloned();
         if let Some(hit) = hit {
             // Dependency-manifest validation (zfb#942): a hit is
             // honoured only while every external file the original
@@ -3970,6 +4128,11 @@ pub fn compile_mdx_to_jsx_module_cached_with_deps(
         // Per-file BuildContext basis (zfb#944): consumed only by
         // pipelines that armed context roots; inert otherwise.
         .with_source_path(file_path);
+    #[cfg(test)]
+    if let Some(c) = cache_for_lookup {
+        c.compiles
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     let (jsx_source, headings) = mdx_to_jsx_module_inner(input, opts, pipeline.as_deref_mut())?;
     let content_hash = hash_8(&jsx_source);
     let specifier = format!("mdx://{collection}/{slug}#{content_hash}");
@@ -4024,25 +4187,17 @@ pub fn compile_mdx_to_jsx_module_cached_with_deps(
         // skip the insert and let every later call recompile until the
         // read stops erroring.
         if dependencies.is_storable() {
-            let mut guard = c.lock();
-            // Clear-on-overflow: if inserting this entry would push the map
-            // past the cap, evict everything first.  Simple and correct —
-            // the next hit on any previously-cached key will re-compile once,
-            // then re-populate.
-            if guard.len() >= MDX_MODULE_CACHE_CAP {
-                guard.clear();
-            }
-            guard.insert(
-                key,
-                CachedMdxModule {
-                    compiled: compiled.clone(),
-                    broken_links,
-                    markdown_diagnostics,
-                    cross_file_links,
-                    file_headings,
-                    dependencies,
-                },
-            );
+            let mut entry = CachedMdxModule {
+                compiled: compiled.clone(),
+                broken_links,
+                markdown_diagnostics,
+                cross_file_links,
+                file_headings,
+                dependencies,
+                retained_bytes: 0,
+            };
+            entry.retained_bytes = entry.payload_bytes(&key);
+            c.admit(key, entry, admission_epoch.expect("cache lookup epoch"));
         }
     }
 
@@ -4253,6 +4408,18 @@ fn opening_tag_attribute_tokens<'a>(
 
 #[cfg(test)]
 mod tests {
+    // Exercise the identical regression body under both cache policies while
+    // keeping its original test name and avoiding duplicate assertion code.
+    macro_rules! cache_policy_test {
+        ($name:ident, $case:ident) => {
+            #[test]
+            fn $name() {
+                $case(MdxModuleCache::new());
+                $case(MdxModuleCache::for_build());
+            }
+        };
+    }
+
     use super::*;
 
     #[test]
@@ -4586,9 +4753,11 @@ mod tests {
     // zfb#905: a config-built pipeline must actually USE the cache. The
     // sentinel poke makes a true hit observable — an accidental
     // recompile would return real JSX, not the sentinel.
-    #[test]
-    fn cache_hit_serves_cached_entry_for_equal_pipeline_config() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        cache_hit_serves_cached_entry_for_equal_pipeline_config,
+        cache_hit_serves_cached_entry_for_equal_pipeline_config_case
+    );
+    fn cache_hit_serves_cached_entry_for_equal_pipeline_config_case(cache: MdxModuleCache) {
         let src = "# heading\n\n```rs\nfn x() {}\n```\n";
         let path = Path::new("/virtual/blog/post.mdx");
 
@@ -4597,7 +4766,7 @@ mod tests {
             .expect("compile 1");
         assert_eq!(cache.len(), 1, "pipeline'd compile must populate the cache");
 
-        for entry in cache.lock().values_mut() {
+        for entry in cache.lock().entries.values_mut() {
             entry.compiled.jsx_source = "__SENTINEL__".to_string();
         }
 
@@ -4665,19 +4834,23 @@ mod tests {
         );
     }
 
-    /// #2423: the render-artifact metadata channel must resolve on a
-    /// compile-cache HIT, where the mdast walk that allocates heading
-    /// slugs never runs. `CompiledMdx::headings` is therefore stored with
-    /// the entry and replayed, exactly like `jsx_source`.
-    ///
-    /// Same sentinel poke as the test above, applied to `headings`: a hit
-    /// returns the poked list, while a silent recompile would return the
-    /// document's real headings. Without the store/replay the second call
-    /// would hand back an EMPTY list — which the final assertion pins, so
-    /// this cannot pass vacuously on a document that has no headings.
-    #[test]
-    fn cache_hit_replays_stored_headings_for_the_render_metadata_channel() {
-        let cache = MdxModuleCache::new();
+    // #2423: the render-artifact metadata channel must resolve on a
+    // compile-cache HIT, where the mdast walk that allocates heading
+    // slugs never runs. `CompiledMdx::headings` is therefore stored with
+    // the entry and replayed, exactly like `jsx_source`.
+    //
+    // Same sentinel poke as the test above, applied to `headings`: a hit
+    // returns the poked list, while a silent recompile would return the
+    // document's real headings. Without the store/replay the second call
+    // would hand back an EMPTY list — which the final assertion pins, so
+    // this cannot pass vacuously on a document that has no headings.
+    cache_policy_test!(
+        cache_hit_replays_stored_headings_for_the_render_metadata_channel,
+        cache_hit_replays_stored_headings_for_the_render_metadata_channel_case
+    );
+    fn cache_hit_replays_stored_headings_for_the_render_metadata_channel_case(
+        cache: MdxModuleCache,
+    ) {
         let src = "## Alpha\n\ntext\n\n### Beta\n";
         let path = Path::new("/virtual/blog/post.mdx");
 
@@ -4699,7 +4872,7 @@ mod tests {
             text: "__SENTINEL__".to_string(),
             slug: "__sentinel__".to_string(),
         };
-        for entry in cache.lock().values_mut() {
+        for entry in cache.lock().entries.values_mut() {
             entry.compiled.headings = vec![sentinel.clone()];
         }
 
@@ -4714,7 +4887,7 @@ mod tests {
         assert!(
             !second.headings.is_empty(),
             "the replayed list must be non-empty — an unstored channel would \
-             hand the writer an empty headings array on every cache hit",
+         hand the writer an empty headings array on every cache hit",
         );
     }
 
@@ -4722,9 +4895,11 @@ mod tests {
     // cache (pre-#939 it invalidated the fingerprint and bypassed).
     // Same sentinel poke as above — a true hit returns the sentinel,
     // an accidental recompile would return real JSX.
-    #[test]
-    fn resolve_links_recompile_is_served_from_the_cache() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        resolve_links_recompile_is_served_from_the_cache,
+        resolve_links_recompile_is_served_from_the_cache_case
+    );
+    fn resolve_links_recompile_is_served_from_the_cache_case(cache: MdxModuleCache) {
         let src = "[good](./other.mdx)\n";
         let path = Path::new("/content/docs/index.mdx");
         let mut map = HashMap::new();
@@ -4745,7 +4920,7 @@ mod tests {
             "resolve-links pipeline must populate the cache"
         );
 
-        for entry in cache.lock().values_mut() {
+        for entry in cache.lock().entries.values_mut() {
             entry.compiled.jsx_source = "__SENTINEL__".to_string();
         }
 
@@ -4803,7 +4978,7 @@ mod tests {
     }
 
     fn poke_sentinel(cache: &MdxModuleCache) {
-        for entry in cache.lock().values_mut() {
+        for entry in cache.lock().entries.values_mut() {
             entry.compiled.jsx_source = "__SENTINEL__".to_string();
         }
     }
@@ -4811,9 +4986,11 @@ mod tests {
     // zfb#942: an unchanged recorded dep keeps the entry a true hit; an
     // edited dep is a miss; the recompile re-records the manifest so
     // the edited state caches again.
-    #[test]
-    fn dep_edit_invalidates_then_recompile_recaches() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        dep_edit_invalidates_then_recompile_recaches,
+        dep_edit_invalidates_then_recompile_recaches_case
+    );
+    fn dep_edit_invalidates_then_recompile_recaches_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let dep = dir.path().join("include.md");
         std::fs::write(&dep, "v1").expect("write dep");
@@ -4864,9 +5041,11 @@ mod tests {
     // zfb#942: a read that found the file MISSING is recorded too — the
     // entry stays valid while the file stays absent and invalidates the
     // moment the file is created.
-    #[test]
-    fn missing_dep_created_later_invalidates_entry() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        missing_dep_created_later_invalidates_entry,
+        missing_dep_created_later_invalidates_entry_case
+    );
+    fn missing_dep_created_later_invalidates_entry_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let dep = dir.path().join("not-yet.md");
         let src = "missing include\n";
@@ -4899,9 +5078,11 @@ mod tests {
 
     // zfb#942: deleting a recorded dep is a miss; the recompile records
     // the now-missing state, which then validates while it stays gone.
-    #[test]
-    fn deleted_dep_invalidates_entry() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        deleted_dep_invalidates_entry,
+        deleted_dep_invalidates_entry_case
+    );
+    fn deleted_dep_invalidates_entry_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let dep = dir.path().join("include.md");
         std::fs::write(&dep, "v1").expect("write dep");
@@ -4937,9 +5118,11 @@ mod tests {
     // zfb#942: a read that errored (non-NotFound — permissions, I/O, …)
     // can never be re-validated, so the entry is not stored at all and
     // every call recompiles.
-    #[test]
-    fn read_error_prevents_caching() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        read_error_prevents_caching,
+        read_error_prevents_caching_case
+    );
+    fn read_error_prevents_caching_case(cache: MdxModuleCache) {
         let src = "# page\n";
         let path = Path::new("/content/docs/page.mdx");
         let explicit = vec![(
@@ -4971,9 +5154,11 @@ mod tests {
     // (transclude's `./include.md`) reads different files for identical
     // bodies in different dirs, and manifest validation alone cannot
     // catch that aliasing. Same-directory bodies keep deduping.
-    #[test]
-    fn recorder_pipelines_key_entries_per_source_dir() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        recorder_pipelines_key_entries_per_source_dir,
+        recorder_pipelines_key_entries_per_source_dir_case
+    );
+    fn recorder_pipelines_key_entries_per_source_dir_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let dep = dir.path().join("include.md");
         std::fs::write(&dep, "v1").expect("write dep");
@@ -5027,9 +5212,11 @@ mod tests {
     // (e.g. left by an aborted earlier compile on the same pipeline)
     // are cleared at compile start — they must not poison this entry's
     // manifest.
-    #[test]
-    fn stale_recorder_reads_do_not_leak_into_manifest() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        stale_recorder_reads_do_not_leak_into_manifest,
+        stale_recorder_reads_do_not_leak_into_manifest_case
+    );
+    fn stale_recorder_reads_do_not_leak_into_manifest_case(cache: MdxModuleCache) {
         let src = "# page\n";
         let path = Path::new("/content/docs/page.mdx");
 
@@ -5091,9 +5278,11 @@ mod tests {
     // Acceptance: two files where one transcludes a shared snippet —
     // editing the snippet recompiles the transcluder and NOT the
     // unrelated file.
-    #[test]
-    fn transclude_snippet_edit_recompiles_dependent_not_unrelated_file() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        transclude_snippet_edit_recompiles_dependent_not_unrelated_file,
+        transclude_snippet_edit_recompiles_dependent_not_unrelated_file_case
+    );
+    fn transclude_snippet_edit_recompiles_dependent_not_unrelated_file_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         std::fs::write(root.join("snippet.md"), "Shared snippet v1.\n").expect("write snippet");
@@ -5151,9 +5340,11 @@ mod tests {
     // Acceptance: a missing include that is later created invalidates the
     // cached entry (and its cannot-read diagnostic replays on hits while
     // the include stays absent).
-    #[test]
-    fn missing_include_created_later_invalidates_real_transclude_entry() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        missing_include_created_later_invalidates_real_transclude_entry,
+        missing_include_created_later_invalidates_real_transclude_entry_case
+    );
+    fn missing_include_created_later_invalidates_real_transclude_entry_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         let body = ":::include{file=\"./not-yet.md\"}\n";
@@ -5167,11 +5358,11 @@ mod tests {
         assert_eq!(cache.len(), 1, "a Missing include is storable");
         let fresh_diags = p1.take_markdown_diagnostics();
         assert!(
-            fresh_diags
-                .iter()
-                .any(|d| matches!(d, MarkdownDiagnostic::Generic { message, .. } if message.contains("cannot read"))),
-            "fresh compile must report the unreadable include: {fresh_diags:?}"
-        );
+        fresh_diags
+            .iter()
+            .any(|d| matches!(d, MarkdownDiagnostic::Generic { message, .. } if message.contains("cannot read"))),
+        "fresh compile must report the unreadable include: {fresh_diags:?}"
+    );
 
         poke_sentinel(&cache);
         let mut p2 = fs_features_pipeline(feats.clone(), root);
@@ -5207,9 +5398,11 @@ mod tests {
     }
 
     // Acceptance: an image dimension change invalidates its dependents.
-    #[test]
-    fn image_dimension_change_invalidates_real_image_dimensions_entry() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        image_dimension_change_invalidates_real_image_dimensions_entry,
+        image_dimension_change_invalidates_real_image_dimensions_entry_case
+    );
+    fn image_dimension_change_invalidates_real_image_dimensions_entry_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         std::fs::write(root.join("img.png"), png_bytes(100, 50)).expect("write png");
@@ -5254,9 +5447,11 @@ mod tests {
     }
 
     // Acceptance: a broken-link finding replays on a cache hit.
-    #[test]
-    fn broken_link_finding_replays_on_real_link_validation_hit() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        broken_link_finding_replays_on_real_link_validation_hit,
+        broken_link_finding_replays_on_real_link_validation_hit_case
+    );
+    fn broken_link_finding_replays_on_real_link_validation_hit_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         let body = "[missing](./missing.md)\n";
@@ -5297,9 +5492,11 @@ mod tests {
 
     // zfb#944: a valid link target going away must invalidate — the
     // existence probe is recorded as a full-content dependency.
-    #[test]
-    fn deleted_link_target_invalidates_real_link_validation_entry() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        deleted_link_target_invalidates_real_link_validation_entry,
+        deleted_link_target_invalidates_real_link_validation_entry_case
+    );
+    fn deleted_link_target_invalidates_real_link_validation_entry_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         std::fs::write(root.join("other.md"), "# Other\n").expect("write target");
@@ -5338,9 +5535,11 @@ mod tests {
     // bodies in ONE directory must not share an entry (transclude's
     // cycle detection and linkValidation's diagnostic locations observe
     // the source path itself, so per-file output/diagnostics can differ).
-    #[test]
-    fn context_armed_pipelines_key_entries_per_source_path() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        context_armed_pipelines_key_entries_per_source_path,
+        context_armed_pipelines_key_entries_per_source_path_case
+    );
+    fn context_armed_pipelines_key_entries_per_source_path_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         std::fs::write(root.join("snippet.md"), "shared\n").expect("write snippet");
@@ -5361,16 +5560,18 @@ mod tests {
             cache.len(),
             2,
             "identical same-dir bodies must occupy distinct entries when \
-             context threading is armed"
+         context threading is armed"
         );
     }
 
     // zfb#905: identical bodies at different paths share the compiled
     // JSX but each call gets a specifier derived from ITS OWN path — a
     // hit must never leak another file's collection/slug.
-    #[test]
-    fn cache_hit_rederives_specifier_from_current_path() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        cache_hit_rederives_specifier_from_current_path,
+        cache_hit_rederives_specifier_from_current_path_case
+    );
+    fn cache_hit_rederives_specifier_from_current_path_case(cache: MdxModuleCache) {
         let src = "shared body\n";
 
         let mut p1 = full_config_pipeline(None);
@@ -5404,9 +5605,11 @@ mod tests {
     // zfb#905: the no-pipeline path and a pipeline'd path emit different
     // JSX for the same input (heading-links anchors etc.), so the two
     // must occupy distinct cache entries.
-    #[test]
-    fn no_pipeline_and_pipeline_entries_do_not_alias() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        no_pipeline_and_pipeline_entries_do_not_alias,
+        no_pipeline_and_pipeline_entries_do_not_alias_case
+    );
+    fn no_pipeline_and_pipeline_entries_do_not_alias_case(cache: MdxModuleCache) {
         let src = "## Intro\n\nhi\n";
         let path = Path::new("/virtual/blog/intro.mdx");
 
@@ -5430,9 +5633,11 @@ mod tests {
     // zfb#905: GFM construct flags are part of the fingerprint — the
     // canonical stale-JSX hazard is `~~strike~~` compiled under ALL_ON
     // being served to an ALL_OFF pipeline (or vice versa).
-    #[test]
-    fn gfm_config_split_compiles_distinct_entries() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        gfm_config_split_compiles_distinct_entries,
+        gfm_config_split_compiles_distinct_entries_case
+    );
+    fn gfm_config_split_compiles_distinct_entries_case(cache: MdxModuleCache) {
         let src = "plain ~~gone~~ here\n";
         let path = Path::new("/virtual/blog/strike.mdx");
 
@@ -5936,6 +6141,385 @@ mod tests {
         );
     }
 
+    cache_policy_test!(
+        cached_specifiers_remain_path_derived,
+        cached_specifiers_remain_path_derived_case
+    );
+    fn cached_specifiers_remain_path_derived_case(cache: MdxModuleCache) {
+        let first = compile_mdx_to_jsx_module_cached(
+            "## Shared heading",
+            Path::new("/content/first/a.mdx"),
+            Some(&cache),
+            None,
+        )
+        .unwrap();
+        let second = compile_mdx_to_jsx_module_cached(
+            "## Shared heading",
+            Path::new("/content/second/b.mdx"),
+            Some(&cache),
+            None,
+        )
+        .unwrap();
+        assert_eq!(cache.compile_count(), 1);
+        assert_eq!(first.jsx_source, second.jsx_source);
+        assert_eq!(first.headings, second.headings);
+        assert_eq!(first.content_hash, second.content_hash);
+        assert!(first.specifier.starts_with("mdx://first/a#"));
+        assert!(second.specifier.starts_with("mdx://second/b#"));
+    }
+
+    #[test]
+    fn build_cache_two_large_scans_count_real_compiles_with_legacy_negative_control() {
+        let n = MDX_MODULE_CACHE_CAP + 17;
+        for (cache, expected) in [
+            (MdxModuleCache::for_build(), 2 * n - MDX_MODULE_CACHE_CAP),
+            (MdxModuleCache::new(), 2 * n),
+        ] {
+            for _ in 0..2 {
+                for i in 0..n {
+                    compile_mdx_to_jsx_module_cached(
+                        &format!("word{i}\n"),
+                        Path::new("/virtual/blog/scan.mdx"),
+                        Some(&cache),
+                        None,
+                    )
+                    .unwrap();
+                }
+            }
+            assert_eq!(
+                cache.compiles.load(std::sync::atomic::Ordering::Relaxed),
+                expected
+            );
+            assert!(cache.len() <= MDX_MODULE_CACHE_CAP);
+            if matches!(cache.policy, CachePolicy::Retain { .. }) {
+                assert_eq!(cache.len(), MDX_MODULE_CACHE_CAP);
+                assert!(cache.retained_payload_bytes() <= BUILD_MDX_MODULE_CACHE_BYTES);
+            }
+        }
+    }
+
+    fn retained_test_entry(jsx_capacity: usize) -> CachedMdxModule {
+        let mut jsx_source = String::with_capacity(jsx_capacity);
+        jsx_source.push('x');
+        CachedMdxModule {
+            compiled: CompiledMdx {
+                jsx_source,
+                content_hash: "hash".into(),
+                specifier: "mdx://x/y#hash".into(),
+                headings: vec![],
+            },
+            broken_links: vec![],
+            markdown_diagnostics: vec![],
+            cross_file_links: vec![],
+            file_headings: vec![],
+            dependencies: DependencyManifest::default(),
+            retained_bytes: 0,
+        }
+    }
+
+    fn admit_test_entry(cache: &MdxModuleCache, key: &str, mut entry: CachedMdxModule) {
+        let key = key.to_string();
+        entry.retained_bytes = entry.payload_bytes(&key);
+        let epoch = cache.lock().epoch;
+        cache.admit(key, entry, epoch);
+    }
+
+    #[test]
+    fn build_budget_replacement_and_giant_entry_admission_are_accounted() {
+        let cache = MdxModuleCache::with_policy(CachePolicy::Retain {
+            entries: 2,
+            bytes: 4096,
+        });
+        admit_test_entry(&cache, "first", retained_test_entry(100));
+        let small = cache.retained_payload_bytes();
+        assert!(small > 100);
+        admit_test_entry(&cache, "first", retained_test_entry(1000));
+        assert_eq!(cache.len(), 1);
+        assert!(cache.retained_payload_bytes() > small);
+        admit_test_entry(&cache, "second", retained_test_entry(100));
+        let full_bytes = cache.retained_payload_bytes();
+        admit_test_entry(&cache, "third", retained_test_entry(100));
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.retained_payload_bytes(), full_bytes);
+        // At the entry cap, an affordable replacement is still admitted.
+        admit_test_entry(&cache, "first", retained_test_entry(100));
+        assert!(cache.retained_payload_bytes() < full_bytes);
+        // A giant replacement removes the obsolete resident, but succeeds at
+        // the compiler API level (admission alone is declined).
+        admit_test_entry(&cache, "first", retained_test_entry(8192));
+        assert_eq!(cache.len(), 1);
+        let resident = cache.retained_payload_bytes();
+        admit_test_entry(&cache, "giant", retained_test_entry(8192));
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.retained_payload_bytes(), resident);
+        cache.clear();
+        assert_eq!(cache.retained_payload_bytes(), 0);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn oversized_dependency_replacement_compiles_but_removes_stale_resident() {
+        let cache = MdxModuleCache::with_policy(CachePolicy::Retain {
+            entries: 10,
+            bytes: 16_384,
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let dep = root.join("snippet.md");
+        let path = root.join("page.mdx");
+        let body = ":::include{file=\"./snippet.md\"}\n";
+        std::fs::write(&dep, "small snippet").unwrap();
+        let mut p = fs_features_pipeline(serde_json::json!({ "transclude": {} }), root);
+        compile_mdx_to_jsx_module_cached(body, &path, Some(&cache), Some(&mut p)).unwrap();
+        assert_eq!(cache.len(), 1);
+        std::fs::write(&dep, "large snippet ".repeat(2000)).unwrap();
+        for _ in 0..2 {
+            let mut p = fs_features_pipeline(serde_json::json!({ "transclude": {} }), root);
+            let result =
+                compile_mdx_to_jsx_module_cached(body, &path, Some(&cache), Some(&mut p)).unwrap();
+            assert!(
+                result.jsx_source.len() > 16_384,
+                "oversized output is still served"
+            );
+            assert!(cache.is_empty(), "stale same-key resident must be removed");
+            assert_eq!(cache.retained_payload_bytes(), 0);
+        }
+        assert_eq!(
+            cache.compile_count(),
+            3,
+            "oversized outputs are recompiled on retry"
+        );
+    }
+
+    #[test]
+    fn concurrent_build_caches_do_not_share_entries() {
+        let caches: Vec<_> = (0..2)
+            .map(|_| std::sync::Arc::new(MdxModuleCache::for_build()))
+            .collect();
+        let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let threads: Vec<_> = caches
+            .iter()
+            .map(|cache| {
+                let cache = cache.clone();
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    compile_mdx_to_jsx_module_cached(
+                        "same source",
+                        Path::new("/build/page.mdx"),
+                        Some(&cache),
+                        None,
+                    )
+                    .unwrap();
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        for cache in &caches {
+            assert_eq!(cache.compile_count(), 1);
+            assert_eq!(cache.len(), 1);
+        }
+        caches[0].clear();
+        assert_eq!(
+            caches[1].len(),
+            1,
+            "clearing one build cannot evict another build"
+        );
+    }
+
+    #[test]
+    fn build_byte_budget_declines_new_keys_before_entry_cap() {
+        let cache = MdxModuleCache::with_policy(CachePolicy::Retain {
+            entries: 20,
+            bytes: 1500,
+        });
+        admit_test_entry(&cache, "first", retained_test_entry(800));
+        assert_eq!(cache.len(), 1);
+        let before = cache.retained_payload_bytes();
+        admit_test_entry(&cache, "second", retained_test_entry(800));
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.retained_payload_bytes(), before);
+    }
+
+    #[test]
+    fn build_payload_counts_nested_capacity_not_serialized_length() {
+        let key = String::with_capacity(1000);
+        let mut entry = retained_test_entry(100);
+        let before = entry.payload_bytes(&key);
+        entry.compiled.headings = Vec::with_capacity(4);
+        entry.compiled.headings.push(HeadingEntry {
+            depth: 2,
+            text: String::with_capacity(5000),
+            slug: String::with_capacity(1000),
+        });
+        entry
+            .markdown_diagnostics
+            .push(MarkdownDiagnostic::Generic {
+                code: Some(String::with_capacity(800)),
+                severity: zfb_md_ast::diagnostics::DiagnosticSeverity::Warning,
+                message: String::with_capacity(9000),
+                location: Some(zfb_md_ast::diagnostics::SourceLocation::from_path(
+                    PathBuf::from("/retained/source.md"),
+                )),
+            });
+        entry.file_headings.push(FileHeadings {
+            source_path: PathBuf::from("/retained/heading.md"),
+            headings: vec![zfb_md_ast::heading_registry::HeadingEntry {
+                id: String::with_capacity(1000),
+                text: String::with_capacity(2000),
+                depth: 2,
+            }],
+            anchor_ids: vec![String::with_capacity(3000)],
+        });
+        entry.cross_file_links.push(CrossFileLinkCandidate {
+            source_path: PathBuf::from("/source.md"),
+            target_path: PathBuf::from("/target.md"),
+            fragment: String::with_capacity(4000),
+            raw_href: String::with_capacity(5000),
+            occurrence_index: 0,
+            severity: zfb_md_ast::diagnostics::DiagnosticSeverity::Warning,
+        });
+        entry.broken_links.push(BrokenLinkDiagnostic {
+            url: String::with_capacity(6000),
+        });
+        let mut reads = std::collections::BTreeMap::new();
+        reads.insert(
+            PathBuf::from("/dep.md"),
+            zfb_md_ast::ReadOutcome::Content {
+                sha256: String::with_capacity(7000),
+            },
+        );
+        entry.dependencies = DependencyManifest::from_recorded_reads(reads);
+        assert!(entry.payload_bytes(&key) >= before + 43_800);
+    }
+
+    #[test]
+    fn concurrent_build_admission_respects_entry_and_byte_bounds() {
+        for (entries, bytes) in [(3, 32_000), (20, 2500)] {
+            let cache = std::sync::Arc::new(MdxModuleCache::with_policy(CachePolicy::Retain {
+                entries,
+                bytes,
+            }));
+            let start = std::sync::Arc::new(std::sync::Barrier::new(12));
+            let threads: Vec<_> = (0..12)
+                .map(|i| {
+                    let cache = cache.clone();
+                    let start = start.clone();
+                    std::thread::spawn(move || {
+                        start.wait();
+                        compile_mdx_to_jsx_module_cached(
+                            &format!("word{i}"),
+                            Path::new("/concurrent/page.mdx"),
+                            Some(&cache),
+                            None,
+                        )
+                        .unwrap();
+                    })
+                })
+                .collect();
+            for thread in threads {
+                thread.join().unwrap();
+            }
+            assert!(cache.len() <= entries);
+            assert!(cache.retained_payload_bytes() <= bytes);
+            let state = cache.lock();
+            assert_eq!(
+                state.retained_bytes,
+                state
+                    .entries
+                    .values()
+                    .map(|e| e.retained_bytes)
+                    .sum::<usize>()
+            );
+        }
+    }
+
+    struct ClearDuringCompile {
+        started: std::sync::Arc<std::sync::Barrier>,
+        cleared: std::sync::Arc<std::sync::Barrier>,
+        visited: bool,
+    }
+
+    impl crate::pipeline::MdastVisitor for ClearDuringCompile {
+        fn visit(&mut self, _node: &mut MdastNode) {
+            if !self.visited {
+                self.visited = true;
+                self.started.wait();
+                self.cleared.wait();
+            }
+        }
+    }
+
+    #[test]
+    fn forced_clear_blocks_old_in_flight_compile_admission() {
+        for cache in [MdxModuleCache::new(), MdxModuleCache::for_build()] {
+            let cache = std::sync::Arc::new(cache);
+            let started = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let cleared = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let thread = {
+                let cache = cache.clone();
+                let started = started.clone();
+                let cleared = cleared.clone();
+                std::thread::spawn(move || {
+                    let mut p = full_config_pipeline(None);
+                    p.push_mdast_visitor_preserving_fingerprint_for_tests(Box::new(
+                        ClearDuringCompile {
+                            started,
+                            cleared,
+                            visited: false,
+                        },
+                    ));
+                    compile_mdx_to_jsx_module_cached(
+                        "# heading",
+                        Path::new("/clear/page.mdx"),
+                        Some(&cache),
+                        Some(&mut p),
+                    )
+                    .unwrap()
+                })
+            };
+            started.wait();
+            cache.clear();
+            cleared.wait();
+            assert!(!thread.join().unwrap().jsx_source.is_empty());
+            assert!(cache.is_empty());
+            assert_eq!(cache.retained_payload_bytes(), 0);
+            compile_mdx_to_jsx_module_cached(
+                "# heading",
+                Path::new("/clear/page.mdx"),
+                Some(&cache),
+                None,
+            )
+            .unwrap();
+            assert_eq!(cache.len(), 1, "post-clear work may be admitted");
+        }
+    }
+
+    #[test]
+    fn build_cache_isolation_drop_and_failed_compile_retry() {
+        let first = std::sync::Arc::new(MdxModuleCache::for_build());
+        let second = MdxModuleCache::for_build();
+        let weak = std::sync::Arc::downgrade(&first);
+        let path = Path::new("/build/page.mdx");
+        compile_mdx_to_jsx_module_cached("# valid", path, Some(&first), None).unwrap();
+        assert!(second.is_empty());
+        for _ in 0..2 {
+            assert!(
+                compile_mdx_to_jsx_module_cached("<Note attr={\n", path, Some(&first), None)
+                    .is_err()
+            );
+        }
+        assert_eq!(first.len(), 1, "failures never consume a slot");
+        assert_eq!(first.compiles.load(std::sync::atomic::Ordering::Relaxed), 3);
+        drop(first);
+        assert!(
+            weak.upgrade().is_none(),
+            "the owned cache is released at build scope end"
+        );
+    }
+
     // ── zfb#954: same-file anchor validation ─────────────────────────────────
 
     // zfb#954: a valid same-file anchor passes; an invalid one is BrokenLink.
@@ -5968,14 +6552,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn declared_anchor_verdict_and_cache_identity() {
+    cache_policy_test!(
+        declared_anchor_verdict_and_cache_identity,
+        declared_anchor_verdict_and_cache_identity_case
+    );
+    fn declared_anchor_verdict_and_cache_identity_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         let body = "<EvidenceAnchor id=\"declared\" />\n\n[ok](#declared) [bad](#missing)\n";
         let path = root.join("page.mdx");
         std::fs::write(&path, body).expect("write page");
-        let cache = MdxModuleCache::new();
         let declared = serde_json::json!({"linkValidation": {
             "anchorComponents": {"EvidenceAnchor": "id"}, "failOnBroken": true
         }});
@@ -6116,9 +6702,11 @@ mod tests {
     }
 
     // zfb#954: same-file anchor verdict replays correctly on a cache hit.
-    #[test]
-    fn armed_same_file_anchor_verdict_replays_on_cache_hit() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        armed_same_file_anchor_verdict_replays_on_cache_hit,
+        armed_same_file_anchor_verdict_replays_on_cache_hit_case
+    );
+    fn armed_same_file_anchor_verdict_replays_on_cache_hit_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         let body = "## Setup\n\n[bad](#nope)\n";
@@ -6156,9 +6744,11 @@ mod tests {
 
     // #977 acceptance: a cache-hit compile replays IDENTICAL candidates +
     // headings as a fresh compile of the same input.
-    #[test]
-    fn cross_file_channels_replay_identically_on_cache_hit() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        cross_file_channels_replay_identically_on_cache_hit,
+        cross_file_channels_replay_identically_on_cache_hit_case
+    );
+    fn cross_file_channels_replay_identically_on_cache_hit_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         std::fs::write(root.join("other.md"), "## Target\n").expect("write target");
@@ -6224,9 +6814,11 @@ mod tests {
     // #2338: resolveMarkdownLinks rewrites the rendered href into URL space,
     // but its trusted source target + fragment must still enter (and replay
     // through) the build-wide cross-file validation channel.
-    #[test]
-    fn resolved_fragment_candidate_replays_identically_on_cache_hit() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        resolved_fragment_candidate_replays_identically_on_cache_hit,
+        resolved_fragment_candidate_replays_identically_on_cache_hit_case
+    );
+    fn resolved_fragment_candidate_replays_identically_on_cache_hit_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         let target = root.join("other.md");
@@ -6275,9 +6867,11 @@ mod tests {
     // pipeline (the snapshot-walker pattern: it never drains) must store
     // disjoint per-entry slices; a later hit on either entry replays only
     // that file's channel data, never the other's.
-    #[test]
-    fn channels_slice_per_compile_without_cross_file_leak() {
-        let cache = MdxModuleCache::new();
+    cache_policy_test!(
+        channels_slice_per_compile_without_cross_file_leak,
+        channels_slice_per_compile_without_cross_file_leak_case
+    );
+    fn channels_slice_per_compile_without_cross_file_leak_case(cache: MdxModuleCache) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         std::fs::write(root.join("other.md"), "plain target\n").expect("write target");

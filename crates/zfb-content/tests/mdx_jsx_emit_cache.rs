@@ -16,6 +16,16 @@ use zfb_content::{
     MdxModuleCache, MdxModuleSpecifier, SpecifierError,
 };
 
+macro_rules! cache_policy_test {
+    ($name:ident, $case:ident) => {
+        #[test]
+        fn $name() {
+            $case(MdxModuleCache::new());
+            $case(MdxModuleCache::for_build());
+        }
+    };
+}
+
 fn fixture_path(slug: &str) -> PathBuf {
     // Use a synthetic absolute path so the helper extracts a stable
     // collection ("blog") and slug from the conventional layout. We
@@ -121,9 +131,11 @@ fn parse_specifier_rejects_bad_inputs() {
     ));
 }
 
-#[test]
-fn cache_opt_in_dedupes_identical_input() {
-    let cache = MdxModuleCache::new();
+cache_policy_test!(
+    cache_opt_in_dedupes_identical_input,
+    cache_opt_in_dedupes_identical_input_case
+);
+fn cache_opt_in_dedupes_identical_input_case(cache: MdxModuleCache) {
     assert!(cache.is_empty());
 
     let src = "# cached\n\nbody\n";
@@ -142,8 +154,11 @@ fn cache_opt_in_dedupes_identical_input() {
     assert_ne!(other.content_hash, first.content_hash);
 }
 
-#[test]
-fn cache_opt_out_recompiles_every_call() {
+cache_policy_test!(
+    cache_opt_out_recompiles_every_call,
+    cache_opt_out_recompiles_every_call_case
+);
+fn cache_opt_out_recompiles_every_call_case(cache: MdxModuleCache) {
     // Without a cache, every call should be a fresh compilation. We
     // can't observe "freshness" directly, but we can confirm the API
     // shape: passing None doesn't error and returns a value identical
@@ -151,7 +166,6 @@ fn cache_opt_out_recompiles_every_call() {
     let src = "hello\n";
     let path = fixture_path("p1");
 
-    let cache = MdxModuleCache::new();
     let cached_first = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), None).unwrap();
     let uncached = compile_mdx_to_jsx_module_cached(src, &path, None, None).unwrap();
     let convenience = compile_mdx_to_jsx_module(src, &path).unwrap();
@@ -160,14 +174,16 @@ fn cache_opt_out_recompiles_every_call() {
     assert_eq!(uncached, convenience);
 }
 
-#[test]
-fn config_built_pipeline_uses_the_cache() {
+cache_policy_test!(
+    config_built_pipeline_uses_the_cache,
+    config_built_pipeline_uses_the_cache_case
+);
+fn config_built_pipeline_uses_the_cache_case(cache: MdxModuleCache) {
     // zfb#905 contract (replaces the pre-#905 "pipeline bypasses the
     // cache" pin): a pipeline built from config carries a fingerprint
     // that joins the cache key, so `Some(&cache) + Some(&mut pipeline)`
     // caches — and a SECOND pipeline built from the SAME config hits
     // the entry the first one wrote.
-    let cache = MdxModuleCache::new();
     assert!(cache.is_empty(), "precondition: empty cache");
 
     let src = "# heading\n\nbody\n";
@@ -194,8 +210,11 @@ fn config_built_pipeline_uses_the_cache() {
     assert_eq!(first, second, "cached value must match the original");
 }
 
-#[test]
-fn manually_mutated_pipeline_bypasses_cache() {
+cache_policy_test!(
+    manually_mutated_pipeline_bypasses_cache,
+    manually_mutated_pipeline_bypasses_cache_case
+);
+fn manually_mutated_pipeline_bypasses_cache_case(cache: MdxModuleCache) {
     // zfb#905 contract: appending a raw trait-object visitor after
     // construction invalidates the config fingerprint — the cache can
     // no longer tell this pipeline apart from any other manual wiring,
@@ -206,7 +225,6 @@ fn manually_mutated_pipeline_bypasses_cache() {
         fn visit(&mut self, _node: &mut zfb_content::pipeline::HastNode) {}
     }
 
-    let cache = MdxModuleCache::new();
     let mut pipeline = Pipeline::with_defaults();
     assert!(
         pipeline.config_fingerprint().is_some(),
@@ -244,15 +262,17 @@ fn manually_mutated_pipeline_bypasses_cache() {
     );
 }
 
-#[test]
-fn different_pipeline_configs_do_not_alias_one_entry() {
+cache_policy_test!(
+    different_pipeline_configs_do_not_alias_one_entry,
+    different_pipeline_configs_do_not_alias_one_entry_case
+);
+fn different_pipeline_configs_do_not_alias_one_entry_case(cache: MdxModuleCache) {
     // zfb#905 acceptance: same input compiled under two different
     // configs must produce two distinct cache entries with distinct
     // JSX — a shared entry would serve stale strikethrough markup to
     // whichever config compiled second.
     use zfb_content::pipeline::ResolvedGfmConstructs;
 
-    let cache = MdxModuleCache::new();
     let src = "plain ~~gone~~ here\n";
     let path = fixture_path("gfm-split");
 
@@ -266,9 +286,11 @@ fn different_pipeline_configs_do_not_alias_one_entry() {
     assert_ne!(on.jsx_source, off.jsx_source, "two configs → two outputs");
 }
 
-#[test]
-fn cache_clear_drops_all_entries() {
-    let cache = MdxModuleCache::new();
+cache_policy_test!(
+    cache_clear_drops_all_entries,
+    cache_clear_drops_all_entries_case
+);
+fn cache_clear_drops_all_entries_case(cache: MdxModuleCache) {
     compile_mdx_to_jsx_module_cached("a\n", &fixture_path("a"), Some(&cache), None).unwrap();
     compile_mdx_to_jsx_module_cached("b\n", &fixture_path("b"), Some(&cache), None).unwrap();
     assert_eq!(cache.len(), 2);
@@ -299,13 +321,15 @@ fn resolve_links_pipeline(entries: &[(&str, &str)]) -> Pipeline {
     pipeline
 }
 
-#[test]
-fn resolve_links_unchanged_file_recompile_is_a_cache_hit() {
+cache_policy_test!(
+    resolve_links_unchanged_file_recompile_is_a_cache_hit,
+    resolve_links_unchanged_file_recompile_is_a_cache_hit_case
+);
+fn resolve_links_unchanged_file_recompile_is_a_cache_hit_case(cache: MdxModuleCache) {
     // zfb#939 acceptance: with resolveMarkdownLinks wired, recompiling
     // an unchanged file under an identically-configured pipeline (the
     // dev-tick shape: fresh pipeline per tick, same config + map) is a
     // cache hit, not a recompile-and-overwrite.
-    let cache = MdxModuleCache::new();
     let src = "[good](./other.mdx)\n";
     let path = PathBuf::from("/content/docs/index.mdx");
 
@@ -334,14 +358,16 @@ fn resolve_links_unchanged_file_recompile_is_a_cache_hit() {
     assert_eq!(first, second, "cached value must match the original");
 }
 
-#[test]
-fn resolve_links_broken_link_diagnostics_replay_on_cache_hit() {
+cache_policy_test!(
+    resolve_links_broken_link_diagnostics_replay_on_cache_hit,
+    resolve_links_broken_link_diagnostics_replay_on_cache_hit_case
+);
+fn resolve_links_broken_link_diagnostics_replay_on_cache_hit_case(cache: MdxModuleCache) {
     // zfb#939 acceptance (explicit): diagnostics are a side channel —
     // call sites compile, then drain `take_broken_links`. On a hit the
     // plugin never runs, so the cache must replay the stored vec or
     // the bundler's onBrokenLinks policy silently stops firing for
     // every cached file.
-    let cache = MdxModuleCache::new();
     let src = "[good](./other.mdx)\n\n[broken](./missing.mdx)\n";
     let path = PathBuf::from("/content/docs/index.mdx");
     let map: &[(&str, &str)] = &[("/content/docs/other.mdx", "/docs/other/")];
@@ -372,13 +398,15 @@ fn resolve_links_broken_link_diagnostics_replay_on_cache_hit() {
     );
 }
 
-#[test]
-fn resolve_links_source_map_change_invalidates_the_entry() {
+cache_policy_test!(
+    resolve_links_source_map_change_invalidates_the_entry,
+    resolve_links_source_map_change_invalidates_the_entry_case
+);
+fn resolve_links_source_map_change_invalidates_the_entry_case(cache: MdxModuleCache) {
     // zfb#939 acceptance: the map is rebuilt from the content tree each
     // tick — renaming/removing a file changes the digest, so the same
     // input recompiles under a new key instead of serving the stale
     // resolution.
-    let cache = MdxModuleCache::new();
     let src = "[link](./other.mdx)\n";
     let path = PathBuf::from("/content/docs/index.mdx");
 
@@ -419,13 +447,15 @@ fn resolve_links_source_map_change_invalidates_the_entry() {
     assert!(rerouted.jsx_source.contains("/v2/other/"));
 }
 
-#[test]
-fn resolve_links_source_dir_separates_cache_entries() {
+cache_policy_test!(
+    resolve_links_source_dir_separates_cache_entries,
+    resolve_links_source_dir_separates_cache_entries_case
+);
+fn resolve_links_source_dir_separates_cache_entries_case(cache: MdxModuleCache) {
     // zfb#939 acceptance: the per-file source_dir changes how relative
     // links resolve, so two files with identical BODIES but different
     // dirs must never share an entry — a shared one would hand file B
     // file A's resolved URLs.
-    let cache = MdxModuleCache::new();
     let src = "[link](./other.mdx)\n";
     let map: &[(&str, &str)] = &[
         ("/content/a/other.mdx", "/a-route/other/"),
@@ -479,13 +509,15 @@ fn resolve_links_source_dir_separates_cache_entries() {
     assert_eq!(hit, from_a);
 }
 
-#[test]
-fn resolve_links_unset_source_dir_does_not_alias_a_set_one() {
+cache_policy_test!(
+    resolve_links_unset_source_dir_does_not_alias_a_set_one,
+    resolve_links_unset_source_dir_does_not_alias_a_set_one_case
+);
+fn resolve_links_unset_source_dir_does_not_alias_a_set_one_case(cache: MdxModuleCache) {
     // With source_dir unset the plugin only performs direct map
     // lookups, so `./other.mdx` is broken; with the dir set it
     // resolves. The two compiles must key separately or whichever runs
     // second silently inherits the other's output.
-    let cache = MdxModuleCache::new();
     let src = "[link](./other.mdx)\n";
     let path = PathBuf::from("/content/docs/index.mdx");
     let map: &[(&str, &str)] = &[("/content/docs/other.mdx", "/docs/other/")];
@@ -513,8 +545,11 @@ fn resolve_links_unset_source_dir_does_not_alias_a_set_one() {
     assert!(with_dir.take_broken_links().is_empty());
 }
 
-#[test]
-fn resolve_links_index_and_non_index_in_same_dir_do_not_alias() {
+cache_policy_test!(
+    resolve_links_index_and_non_index_in_same_dir_do_not_alias,
+    resolve_links_index_and_non_index_in_same_dir_do_not_alias_case
+);
+fn resolve_links_index_and_non_index_in_same_dir_do_not_alias_case(cache: MdxModuleCache) {
     // zfb#1030: the URL-space fallback makes `section/index.mdx` and
     // `section/article.mdx` resolve the SAME body differently — the
     // dir-style `../other-article/` href misses in file space from both,
@@ -522,7 +557,6 @@ fn resolve_links_index_and_non_index_in_same_dir_do_not_alias() {
     // Identical bodies + identical source_dir must therefore still key
     // separately, or the index page would inherit the article's
     // fallback-resolved URL (and vice versa).
-    let cache = MdxModuleCache::new();
     let src = "[link](../other-article/)\n";
     let map: &[(&str, &str)] = &[(
         "/content/docs/section/other-article.mdx",

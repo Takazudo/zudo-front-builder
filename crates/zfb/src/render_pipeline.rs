@@ -2705,6 +2705,7 @@ export default function PostPage({ title, params }: Props) {
 
         let input = zfb_build::BundlerInput {
             project_root: project_root.to_path_buf(),
+            mdx_module_cache: None,
             authored_css_paths: std::collections::BTreeSet::new(),
             pages_dir: PathBuf::from("pages"),
             injected_pages_root: None,

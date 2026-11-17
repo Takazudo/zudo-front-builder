@@ -307,6 +307,7 @@ fn make_input(root: &std::path::Path, outdir_name: &str) -> BundlerInput {
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
         project_root: root.to_path_buf(),
+        mdx_module_cache: None,
         authored_css_paths: Default::default(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,

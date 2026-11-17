@@ -396,6 +396,25 @@ pub fn build_snapshot_with_options(
     pipeline_config: &PipelineSpec,
     options: SnapshotOptions,
 ) -> Result<ContentSnapshot, BridgeError> {
+    build_snapshot_with_options_and_cache(
+        collections,
+        pipeline_config,
+        options,
+        crate::mdx_jsx_emit::MdxModuleCache::process_global(),
+    )
+}
+
+/// Build a snapshot using an explicit compile cache shared with the build's
+/// other MDX consumers. Existing wrappers retain the process-global dev cache.
+///
+/// # Errors
+/// Same as [`build_snapshot_with_config`].
+pub fn build_snapshot_with_options_and_cache(
+    collections: &[CollectionConfig],
+    pipeline_config: &PipelineSpec,
+    options: SnapshotOptions,
+    cache: &crate::mdx_jsx_emit::MdxModuleCache,
+) -> Result<ContentSnapshot, BridgeError> {
     let mut out: BTreeMap<String, Vec<EntrySnapshot>> = BTreeMap::new();
 
     for cfg in collections {
@@ -427,9 +446,8 @@ pub fn build_snapshot_with_options(
             collection: cfg.name.clone(),
             source,
         })?;
-        // Process-global compile cache (zfb#905): unchanged entries are
-        // served from memory on re-walks (dev ticks rebuild the snapshot
-        // every tick) AND shared with the bundler's `materialise_*`
+        // The caller's compile cache serves unchanged entries on re-walks
+        // and is shared with the bundler's `materialise_*`
         // passes, which compile the same bodies through identically
         // configured pipelines. The cache keys on
         // (input, pipeline-config fingerprint, per-file context — the
@@ -440,7 +458,7 @@ pub fn build_snapshot_with_options(
         let entries: Vec<Entry<UntypedFrontmatter>> =
             walk_collection_with_cache_filter_and_options(
                 &cfg.root,
-                Some(crate::mdx_jsx_emit::MdxModuleCache::process_global()),
+                Some(cache),
                 Some(&mut pipeline),
                 &filter,
                 // The walker owns the markdown-only rule and the skip: with
@@ -1413,6 +1431,37 @@ mod tests {
         assert_ne!(
             snap.render_metadata_for(&docs_spec),
             snap.render_metadata_for(&notes_spec),
+        );
+    }
+
+    #[test]
+    fn snapshot_explicit_build_cache_is_populated_and_reused() {
+        let tmp = TmpDir::new("explicit-build-cache");
+        tmp.write("docs/intro.md", "## Build-owned heading\n");
+        let cfgs = [CollectionConfig::new("docs", tmp.path.join("docs"))];
+        let cache = crate::mdx_jsx_emit::MdxModuleCache::for_build();
+        let other = crate::mdx_jsx_emit::MdxModuleCache::for_build();
+        let options = SnapshotOptions {
+            render_metadata: true,
+        };
+        let first =
+            build_snapshot_with_options_and_cache(&cfgs, &PipelineSpec::default(), options, &cache)
+                .unwrap();
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.compile_count(), 1);
+        assert!(other.is_empty());
+        let second =
+            build_snapshot_with_options_and_cache(&cfgs, &PipelineSpec::default(), options, &cache)
+                .unwrap();
+        assert_eq!(cache.len(), 1);
+        assert_eq!(
+            cache.compile_count(),
+            1,
+            "the second snapshot uses the compiled entry"
+        );
+        assert_eq!(
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&second).unwrap()
         );
     }
 
