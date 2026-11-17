@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createPageRouter, stablePaths } from "../server.js";
+import { stablePaths as directStablePaths } from "@takazudo/zfb-runtime/stable-paths";
+import * as pathsApi from "@takazudo/zfb-runtime/stable-paths";
 import type { PageModule, StablePathsEntry } from "../server.js";
 import { isStablePaths } from "../stable-paths.js";
 import { isPathsEntry } from "../paths-entry.js";
@@ -28,6 +30,16 @@ function unchecked(entries: unknown) {
 }
 
 describe("stablePaths ownership", () => {
+  it("shares snapshot branding between the dedicated export and server router", async () => {
+    expect(Object.keys(pathsApi)).toEqual(["stablePaths"]);
+    expect(directStablePaths).toBe(stablePaths);
+    const snapshot = directStablePaths([{ params: { slug: "a" } }]);
+    const fetch = router({ paths: () => snapshot, default: () => "ok" });
+    expect((await fetch("/posts/a")).status).toBe(200);
+    expect((await fetch("/posts/a")).status).toBe(200);
+    expect(isPathsEntry).toHaveBeenCalledTimes(1);
+  });
+
   it("supports an empty owned snapshot without admitting later source additions", async () => {
     const source: StablePathsEntry[] = [];
     const snapshot = stablePaths(source);

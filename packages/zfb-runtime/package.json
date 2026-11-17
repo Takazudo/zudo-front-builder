@@ -46,6 +46,10 @@
       "types": "./src/server.ts",
       "default": "./src/server.ts"
     },
+    "./stable-paths": {
+      "types": "./src/paths.ts",
+      "default": "./src/paths.ts"
+    },
     "./snapshot": {
       "types": "./src/snapshot.ts",
       "default": "./src/snapshot.ts"
@@ -73,6 +77,10 @@
       "./server": {
         "types": "./dist/server.d.ts",
         "default": "./dist/server.js"
+      },
+      "./stable-paths": {
+        "types": "./dist/paths.d.ts",
+        "default": "./dist/paths.js"
       },
       "./snapshot": {
         "types": "./dist/snapshot.d.ts",

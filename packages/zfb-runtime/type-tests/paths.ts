@@ -1,11 +1,16 @@
 // Compile-only consumers: run by the package's normal typecheck script.
 import { createPageRouter, stablePaths } from "../src/server.js";
+import { stablePaths as directStablePaths } from "@takazudo/zfb-runtime/stable-paths";
+// @ts-expect-error Snapshot brand inspection is not part of the public entry.
+import { isStablePaths } from "@takazudo/zfb-runtime/stable-paths";
 import type {
   CreatePageRouterOptions,
   PageDefinition,
   PageModule,
   StablePathsEntry,
 } from "../src/server.js";
+
+void isStablePaths;
 
 // Existing bare public annotations must keep their mutable paths() return type,
 // including consumers that obtain a module through a definition/options object.
@@ -24,6 +29,19 @@ const optionsEntries: unknown[] = await (await legacyOptions.pages[0]!.module())
 optionsEntries.push({ params: { slug: "new" } });
 (await (await legacyOptions.pages[0]!.module()).paths!()).push({ params: { slug: "direct" } });
 createPageRouter(legacyOptions);
+
+const directSnapshot = directStablePaths([{ params: { slug: "direct" } }]);
+createPageRouter({
+  pages: [
+    {
+      route: "/direct/:slug",
+      module: async () => ({ paths: () => directSnapshot, default: () => "ok" }),
+    },
+  ],
+  contentSnapshot: { collections: {} },
+});
+// @ts-expect-error The lightweight public entry preserves readonly membership.
+directSnapshot.push({ params: { slug: "other" } });
 
 const props = { title: "hello", params: { mutable: true } };
 const snapshot = stablePaths([{ params: { slug: ["a", 42] as const }, props }] as const);
