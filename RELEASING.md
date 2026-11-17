@@ -830,8 +830,39 @@ trigger (`release` or `workflow_dispatch`). The installer run must be a `workflo
 dispatch at exactly the tag commit. Both Darwin carriers must carry **no**
 attestation and their packed `zfb` and `zfb-css.node` must equal the Release's Darwin archive
 binary and addon bytes, while every other package must be attested. Recovery, finalize and dry-run
-runs, and runs from before #4687 (`legacy-hosted-darwin`, `legacy-fast-mac`), are classified,
-never accepted — they cannot reach exit 0.
+runs cannot be the original publisher. Runs from before #4687 (`legacy-hosted-darwin`,
+`legacy-fast-mac`) remain unsupported.
+
+When original publication completed every mandatory delivery duty except clean-room consumption,
+select the later successful finalization-only run explicitly:
+
+```sh
+node scripts/verify-release-delivery.mjs --version <version> \
+  --release-run-id <original-publication-run-id> --finalize-run-id <finalizer-run-id> \
+  --installer-run-id <actual-installer-run-id> --expected-source "$SOURCE_SHA" \
+  --json <evidence-dir>/release-delivery-<version>-finalized.json
+```
+
+The original publisher remains the sole provenance authority (event, run and eligible attempts).
+The finalizer must be a successful `release.yml` dispatch from `main` for this tag, with its
+control SHA recorded separately from verified immutable source. Source resolution, source CI,
+Darwin admission, finalization gate/provenance/promotion/tag sweep, digest finalization and
+actual clean-room execution must succeed; build/publication branches must remain skipped.
+Verified-source output and actual clean-room source/version output, installed versions and
+build/content assertions are mandatory. Echoed inputs alone cannot prove delivery.
+
+The report retains the original failed run and jobs unchanged. `aggregateDelivery` names the
+selected consumption run and the only superseded original checks: failed clean-room consumption
+and its resulting overall run failure. Failed original builds, source checks, packing, publication,
+asset or digest uploads remain failures. Recovery publication and missing-original-artifact recovery
+are outside this mode. Latest relevant attempts govern; historical successes cannot hide later
+failures. Missing mandatory logs remain incomplete evidence. Without the argument, normal/tag-dispatch
+acceptance and failure rules are unchanged.
+
+The separately selected installer must execute successfully and retain exact source/version,
+checksum and smoke assertions. A green workflow with a skipped installer does not qualify. A
+correctly bound installer may precede finalization; no after-finalizer ordering is required.
+This audit performs only GETs and does not authorize dispatch, publication or channel changes.
 
 Per-package npm identity can be checked independently:
 
@@ -929,7 +960,8 @@ useful as a check, never as finalization. With `dry_run=false`, no build, no pub
 verifies the per-package provenance expectations (observed state of each present package); the
 separate `finalize-assets` job (`contents: write`, no `id-token`) uploads the md-wasm digest asset if
 missing; then the smoke and notify run. The run is named `Release v<version> (finalize only)`. It is
-idempotent. If build assets are
+idempotent. After it completes, use A14 with the original publisher ID and explicit
+`--finalize-run-id`; never replace the publisher ID with this control run. If build assets are
 missing it stops `blocked`; use recovery instead.
 
 Finalize is also where a release that stopped on npm processing completes. The `finalize` job runs
