@@ -12,6 +12,7 @@ import { policyFromSourceFiles } from "./release/npm-publication-policy.mjs";
  *
  * Optional:
  *   --repo OWNER/NAME          GitHub repository (default Takazudo/zudo-front-builder)
+ *   --finalize-run-id ID      Explicit finalization-only consumption evidence
  *   --expected-source SHA      Also require the tag to resolve to this commit
  *   --expect-github-latest     Require GitHub "Latest" to be this release
  *   --expect-npm-latest        Require the `latest` dist-tag of all eleven packages to be this version
@@ -816,6 +817,8 @@ function checkRequiredJob(section, grouped, spec, prefix) {
     const step = findStep(job, name);
     steps[name] = step ? `${step.status}/${step.conclusion}` : "absent";
     if (!step) problems.push(`required step "${name}" is absent`);
+    else if (step.status !== "completed")
+      problems.push(`required step "${name}" is ${step.status}`);
     else if (step.conclusion === "skipped") problems.push(`required step "${name}" was skipped`);
     else if (step.conclusion !== "success")
       problems.push(`required step "${name}" concluded ${step.conclusion}`);
@@ -1076,6 +1079,167 @@ async function verifyReleaseWorkflow(ctx) {
  * `zfb` entry and of the CSS addon asset (checked against its .sha256 file).
  * Stored on ctx for the npm carrier comparison.
  */
+// A finalizer is a separate control execution, never a provenance publisher.
+async function verifyFinalizer(ctx) {
+  const section = new Section("finalizer");
+  const { http, repo, tag, commit, version } = ctx;
+  let run, grouped;
+  try {
+    run = await http.getJson(`${GITHUB_API}/repos/${repo}/actions/runs/${ctx.finalizeRunId}`);
+    grouped = effectiveJobs(await listAllJobs(http, repo, run.id));
+  } catch (error) {
+    section.error("run", error, {}, { missingIsFailure: false });
+    return section;
+  }
+  const attempts = [];
+  for (let attempt = 1; attempt < Math.min(run.run_attempt ?? 1, LIMITS.attempts); attempt++) {
+    try {
+      const prior = await http.getJson(
+        `${GITHUB_API}/repos/${repo}/actions/runs/${run.id}/attempts/${attempt}`,
+      );
+      attempts.push({ attempt, status: prior.status, conclusion: prior.conclusion });
+    } catch (error) {
+      attempts.push({ attempt, error: errorRecord(error) });
+    }
+  }
+  attempts.push({ attempt: run.run_attempt ?? 1, status: run.status, conclusion: run.conclusion });
+  section.add("attempts", STATUS.OBSERVED, { attempts });
+  ctx.finalizeRun = run;
+  ctx.finalizeJobs = grouped;
+  const evidence = {
+    ...jobSummary(run),
+    controlSha: run.head_sha,
+    sourceSha: commit,
+    event: run.event,
+    path: run.path,
+    head_branch: run.head_branch,
+  };
+  if (
+    String(run.id) !== ctx.finalizeRunId ||
+    run.repository?.full_name?.toLowerCase() !== repo.toLowerCase() ||
+    run.path !== RELEASE_WORKFLOW_PATH ||
+    run.event !== "workflow_dispatch" ||
+    run.head_branch !== "main" ||
+    !/^[0-9a-f]{40}$/.test(run.head_sha ?? "") ||
+    run.display_title !== `Release ${tag} (finalize only)` ||
+    classifyDeliveryPath(run, grouped) !== "finalize"
+  ) {
+    section.failed(
+      "run",
+      "not an explicit finalization-only dispatch for this repository and tag",
+      evidence,
+    );
+  } else if (run.status !== "completed")
+    section.incomplete("run", `run is ${run.status}`, evidence);
+  else if (run.conclusion !== "success")
+    section.failed("run", `run concluded ${run.conclusion}`, evidence);
+  else section.verified("run", evidence);
+  const specs = [
+    ...RELEASE_REQUIRED_JOBS.filter((s) =>
+      ["release-context", "source-ci", "admit-darwin", "smoke-clean-room"].includes(s.id),
+    ),
+    {
+      id: "finalize",
+      name: "Finalize published release",
+      success: [
+        "Finalization gate (all packages present-verified, build assets complete)",
+        "Verify npm provenance expectations",
+        "Promote channel dist-tag (all packages verified)",
+        "Sweep stale 'next' and 'release-pending' dist-tags",
+      ],
+      skipped: ["DRY RUN — skip finalization writes"],
+    },
+    {
+      id: "finalize-assets",
+      name: "Finalize MD/WASM digest asset",
+      success: ["Verify published @takazudo/zfb-md-wasm and upload digest asset"],
+    },
+  ];
+  for (const spec of specs) {
+    const job = checkRequiredJob(section, grouped, spec, "job");
+    if (job && (job.run_attempt ?? 1) > (run.run_attempt ?? 1))
+      section.failed(`attempt:${spec.id}`, "job attempt exceeds run attempt");
+  }
+  // A job-level false condition precedes matrix expansion in Actions. The
+  // resulting single literal-name job is evidence of the skipped build branch,
+  // not three missing platform executions. Never allow it beside executed legs.
+  const collapsedName = "Build ${{ matrix.settings.target }}";
+  const collapsed = grouped.get(collapsedName);
+  const buildSpecs = RELEASE_REQUIRED_JOBS.filter((s) => s.id.startsWith("build:"));
+  const skippedSpecs = RELEASE_REQUIRED_JOBS.filter(
+    (s) =>
+      ![
+        "release-context",
+        "source-ci",
+        "admit-darwin",
+        "smoke-clean-room",
+        "provenance-preflight",
+      ].includes(s.id) && !s.id.startsWith("build:"),
+  );
+  if (collapsed) {
+    skippedSpecs.push({ id: "build:collapsed", name: collapsedName });
+    if (buildSpecs.some((s) => grouped.has(s.name)))
+      section.failed(
+        "build-matrix-shape",
+        "collapsed build placeholder coexists with expanded build jobs",
+      );
+  } else skippedSpecs.push(...buildSpecs);
+  for (const spec of skippedSpecs) {
+    const entry = grouped.get(spec.name);
+    if (
+      !entry ||
+      entry.duplicates !== 1 ||
+      entry.history.some((j) => j.status !== "completed" || j.conclusion !== "skipped")
+    )
+      section.failed(
+        `skipped:${spec.id}`,
+        "finalization-only build/publication branch must exist and remain skipped",
+      );
+    else section.verified(`skipped:${spec.id}`, { history: entry.history.map(jobSummary) });
+  }
+  // This job checks out control scripts even in finalization mode, while its
+  // actual downgrade-admission step is guarded off. It performs no publication.
+  const preflight = checkRequiredJob(
+    section,
+    grouped,
+    {
+      id: "provenance-preflight",
+      name: "Provenance downgrade preflight",
+      skipped: ["Provenance downgrade preflight"],
+    },
+    "job",
+  );
+  if (findStep(preflight, "Provenance downgrade preflight")?.conclusion !== "skipped")
+    section.failed("preflight-mode", "finalization-only must skip the downgrade preflight step");
+  const sourceJob = grouped.get("Resolve and verify release source")?.effective;
+  if (sourceJob)
+    try {
+      const lines = await readJobLog(ctx, repo, sourceJob);
+      const { found, missing } = logEvidence(lines, {
+        resolved: `Resolved source ref: ${tag} (release ${tag}) [finalize only]`,
+        verified: new RegExp(
+          `^Verified source ${commit} \\(tree [0-9a-f]{40}\\) for ${escapeRegExp(tag)} \\| control ${run.head_sha} \\| ${escapeRegExp(repo)}/\\.github/workflows/release\\.yml@refs/heads/main$`,
+        ),
+      });
+      if (missing.length)
+        section.failed(
+          "source-binding",
+          `missing verified source/control evidence: ${missing.join(", ")}`,
+          { found },
+        );
+      else
+        section.verified("source-binding", {
+          found,
+          source: commit,
+          control: run.head_sha,
+          version,
+        });
+    } catch (error) {
+      section.error("source-binding", error, {}, { missingIsFailure: false });
+    }
+  return section;
+}
+
 async function readOwnerMacIdentity(ctx, target, archiveBytes, assets, evidence) {
   const problems = [];
   const identity = {};
@@ -1734,8 +1898,9 @@ async function readJobLog(ctx, repo, job) {
 async function verifyConsumption(ctx) {
   const section = new Section("consumption");
   const { http, repo, version, tag } = ctx;
-  const smoke = ctx.releaseJobs
-    ? [...ctx.releaseJobs.entries()].find(([name]) => name.startsWith("smoke-clean-room / "))?.[1]
+  const consumptionJobs = ctx.finalizeRunId ? ctx.finalizeJobs : ctx.releaseJobs;
+  const smoke = consumptionJobs
+    ? [...consumptionJobs.entries()].find(([name]) => name.startsWith("smoke-clean-room / "))?.[1]
         ?.effective
     : undefined;
   if (!smoke)
@@ -1762,7 +1927,17 @@ async function verifyConsumption(ctx) {
       try {
         const lines = await readJobLog(ctx, repo, smoke);
         const { found, missing } = logEvidence(lines, {
-          reusableWorkflowAtTag: `reusable-smoke-clean-room.yml@refs/tags/${tag} (${ctx.commit})`,
+          reusableWorkflowAtTag: ctx.finalizeRunId
+            ? `${repo}/.github/workflows/reusable-smoke-clean-room.yml@refs/heads/main (${ctx.finalizeRun?.head_sha})`
+            : `reusable-smoke-clean-room.yml@refs/tags/${tag} (${ctx.commit})`,
+          ...(ctx.finalizeRunId
+            ? {
+                expectedSourceInput: new RegExp(`^\\s*expected_source: ${ctx.commit}$`),
+                exercisedSource: `Clean-room source: ${ctx.commit}; version: ${version}; active npm carriers:`,
+                content: "[PASS] dist/index.html contains expected content",
+                seedContent: "[PASS] dist/index.html lists the seed post",
+              }
+            : {}),
           expectedVersionInput: new RegExp(`^\\s*expected_version: ${escapeRegExp(version)}$`),
           registryResolved: new RegExp(
             `Registry resolved create-zfb@\\S+ -> ${escapeRegExp(version)}$`,
@@ -2229,6 +2404,7 @@ export async function verifyReleaseDelivery(options, deps = {}) {
     tag: `v${version}`,
     releaseRunId: String(options.releaseRunId),
     installerRunId: String(options.installerRunId),
+    finalizeRunId: options.finalizeRunId === undefined ? undefined : String(options.finalizeRunId),
     expectedSource: options.expectedSource,
     expect: {
       githubLatest: Boolean(options.expectGithubLatest),
@@ -2271,17 +2447,66 @@ export async function verifyReleaseDelivery(options, deps = {}) {
       ctx.publicationPolicyError = error.message;
     }
     const workflow = await verifyReleaseWorkflow(ctx);
+    const finalizer = ctx.finalizeRunId ? await verifyFinalizer(ctx) : undefined;
     const archives = await verifyArchives(ctx);
     ctx.archiveIdentity = archiveIdentityByTarget(archives);
     const npm = await verifyNpm(ctx);
     const wasm = await verifyWasm(ctx);
     const consumption = await verifyConsumption(ctx);
     const channels = await observeChannels(ctx);
-    const sections = { identity, workflow, archives, npm, wasm, consumption, channels };
+    const sections = {
+      identity,
+      workflow,
+      ...(finalizer ? { finalizer } : {}),
+      archives,
+      npm,
+      wasm,
+      consumption,
+      channels,
+    };
     const sectionJson = Object.fromEntries(
       Object.entries(sections).map(([key, value]) => [key, value.toJSON()]),
     );
-    const verdict = combineStatus(Object.values(sectionJson).map((section) => section.status));
+    const superseded = new Set();
+    const originalSmoke = ctx.releaseJobs
+      ? [...ctx.releaseJobs.values()].find((e) =>
+          e.effective.name.startsWith("smoke-clean-room / "),
+        )?.effective
+      : undefined;
+    if (
+      finalizer?.toJSON().status === STATUS.VERIFIED &&
+      consumption.toJSON().status === STATUS.VERIFIED &&
+      SUPPORTED_DELIVERY_PATHS.has(ctx.deliveryPath) &&
+      ctx.releaseRun?.status === "completed" &&
+      ctx.releaseRun?.conclusion === "failure" &&
+      workflow.toJSON().checks.find((c) => c.id === "release-run")?.reason ===
+        "latest attempt concluded failure" &&
+      originalSmoke?.status === "completed" &&
+      originalSmoke.conclusion === "failure" &&
+      findStep(originalSmoke, "Run clean-room smoke (scaffold + build + assert)")?.conclusion ===
+        "failure"
+    ) {
+      // Preserve the historical failures verbatim, but reconcile only these two duties.
+      superseded.add("release-run");
+      superseded.add("job:smoke-clean-room");
+    }
+    const verdict = combineStatus(
+      Object.entries(sectionJson).flatMap(([name, section]) =>
+        section.checks
+          .filter(
+            (c) => !(name === "workflow" && superseded.has(c.id) && c.status === STATUS.FAILED),
+          )
+          .map((c) => c.status),
+      ),
+    );
+    const aggregateDelivery = {
+      verdict,
+      consumptionRunId: ctx.finalizeRunId ?? ctx.releaseRunId,
+      originalRunId: ctx.releaseRunId,
+      finalizerRunId: ctx.finalizeRunId ?? null,
+      supersededOriginalChecks: [...superseded],
+      rule: "only original clean-room failure and its resulting overall run failure",
+    };
     const final = verdict === STATUS.NOT_APPLICABLE ? STATUS.INCOMPLETE : verdict;
     const unverified = [];
     for (const [key, section] of Object.entries(sectionJson)) {
@@ -2306,6 +2531,7 @@ export async function verifyReleaseDelivery(options, deps = {}) {
         version,
         tag: ctx.tag,
         releaseRunId: ctx.releaseRunId,
+        finalizeRunId: ctx.finalizeRunId ?? null,
         installerRunId: ctx.installerRunId,
         expectedSource: ctx.expectedSource ?? null,
         expectations: ctx.expect,
@@ -2316,6 +2542,7 @@ export async function verifyReleaseDelivery(options, deps = {}) {
         releaseId: ctx.release?.id ?? null,
         deliveryPath: ctx.deliveryPath ?? null,
       },
+      aggregateDelivery,
       verdict: final,
       exitCode: EXIT[final],
       sections: sectionJson,
@@ -2324,7 +2551,7 @@ export async function verifyReleaseDelivery(options, deps = {}) {
         "Foreign-platform binaries are hashed and inspected, never executed.",
         "The installer run is the explicitly selected run; GitHub's API does not name the Release run that triggered a workflow_run.",
         "Mutable channels (GitHub Latest, npm dist-tags, Homebrew) are observations unless an --expect-* flag was given.",
-        "Only the normal release path is supported (owner-Mac Darwin carriers without provenance, every other package attested); dry-run, recovery, finalize, legacy and manual paths are classified, never accepted.",
+        "Original publication must use the normal or tag-dispatch path. An explicitly selected finalization-only run can satisfy only failed original clean-room consumption; it never supplies publication provenance or replaces mandatory original artifacts.",
       ],
       requestCount: http.requests?.length ?? null,
     };
@@ -2359,7 +2586,7 @@ export function summarize(report) {
 }
 
 const USAGE =
-  "usage: verify-release-delivery.mjs --version X.Y.Z --release-run-id ID --installer-run-id ID [--json PATH] [--repo OWNER/NAME] [--expected-source SHA] [--expect-github-latest] [--expect-npm-latest] [--expect-homebrew] [--timeout-ms N] [--retries N] [--concurrency N]";
+  "usage: verify-release-delivery.mjs --version X.Y.Z --release-run-id ID --installer-run-id ID [--finalize-run-id ID] [--json PATH] [--repo OWNER/NAME] [--expected-source SHA] [--expect-github-latest] [--expect-npm-latest] [--expect-homebrew] [--timeout-ms N] [--retries N] [--concurrency N]";
 
 export function parseArgs(argv) {
   const options = {};
@@ -2372,6 +2599,7 @@ export function parseArgs(argv) {
     "--version": "version",
     "--release-run-id": "releaseRunId",
     "--installer-run-id": "installerRunId",
+    "--finalize-run-id": "finalizeRunId",
     "--json": "json",
     "--repo": "repo",
     "--expected-source": "expectedSource",
@@ -2395,7 +2623,11 @@ export function parseArgs(argv) {
       throw new Error(`missing --${required.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`);
   }
   if (!SEMVER_RE.test(options.version)) throw new Error(`invalid version ${options.version}`);
-  for (const key of ["releaseRunId", "installerRunId"]) {
+  for (const key of [
+    "releaseRunId",
+    "installerRunId",
+    ...(options.finalizeRunId === undefined ? [] : ["finalizeRunId"]),
+  ]) {
     if (!/^[1-9]\d*$/.test(options[key])) throw new Error(`${key} must be a numeric run ID`);
   }
   if (options.repo && !/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(options.repo))

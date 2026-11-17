@@ -438,12 +438,19 @@ function makeFetch(world) {
     const run = /\/actions\/runs\/(\d+)$/.exec(path);
     if (run) {
       if (run[1] === String(RELEASE_RUN)) return json(world.releaseRun);
+      if (world.finalizeRun && run[1] === String(world.finalizeRun.id))
+        return json(world.finalizeRun);
       if (run[1] === String(INSTALLER_RUN)) return json(world.installerRun);
       return json({ message: "Not Found" }, 404);
     }
     const jobs = /\/actions\/runs\/(\d+)\/jobs$/.exec(path);
     if (jobs) {
-      const all = jobs[1] === String(RELEASE_RUN) ? world.releaseJobs : world.installerJobs;
+      const all =
+        jobs[1] === String(RELEASE_RUN)
+          ? world.releaseJobs
+          : world.finalizeRun && jobs[1] === String(world.finalizeRun.id)
+            ? world.finalizeJobs
+            : world.installerJobs;
       const page = Number(u.searchParams.get("page") ?? 1);
       const size = world.jobsPageSize;
       return json({
@@ -1963,4 +1970,302 @@ describe("Homebrew formula binding (--expect-homebrew)", () => {
     expect(brew(report).evidence.matchesThisReleaseArchives).toBe(false);
     expect(report.verdict).toBe(STATUS.VERIFIED);
   });
+});
+
+const FINALIZER_RUN = 42182000000;
+const CONTROL = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+function withFinalizer(w) {
+  w.releaseRun.conclusion = "failure";
+  const smoke = w.releaseJobs.find((j) => j.name.startsWith("smoke-clean-room / "));
+  smoke.conclusion = "failure";
+  smoke.steps[0].conclusion = "failure";
+  w.finalizeRun = {
+    ...w.releaseRun,
+    id: FINALIZER_RUN,
+    event: "workflow_dispatch",
+    head_branch: "main",
+    head_sha: CONTROL,
+    conclusion: "success",
+    display_title: `Release ${TAG} (finalize only)`,
+  };
+  w.finalizeJobs = releaseJobs().map((j) => ({ ...j, id: j.id + 10000 }));
+  const active = [
+    "Resolve and verify release source",
+    "Verify source commit required CI",
+    "Admit owner-Mac Darwin artifacts",
+  ];
+  for (const j of w.finalizeJobs)
+    if (!active.includes(j.name) && !j.name.startsWith("smoke-clean-room / ")) {
+      j.conclusion = "skipped";
+      j.steps = [];
+    }
+  const preflight = w.finalizeJobs.find((j) => j.name === "Provenance downgrade preflight");
+  preflight.conclusion = "success";
+  preflight.steps = [step("Provenance downgrade preflight", "skipped")];
+  // Actions skips this job before expanding its matrix.
+  const build = w.finalizeJobs.find(
+    (j) => j.name.startsWith("Build ") && !j.name.includes("npm package"),
+  );
+  w.finalizeJobs = w.finalizeJobs.filter(
+    (j) => !j.name.startsWith("Build ") || j.name.includes("npm package"),
+  );
+  w.finalizeJobs.push({ ...build, name: "Build ${{ matrix.settings.target }}" });
+  const makeJob = (id, name, names) => ({
+    id,
+    name,
+    status: "completed",
+    conclusion: "success",
+    run_attempt: 1,
+    steps: names.map((n) => step(n)),
+  });
+  w.finalizeJobs.push(
+    makeJob(12000, "Finalize published release", [
+      "Finalization gate (all packages present-verified, build assets complete)",
+      "Verify npm provenance expectations",
+      "Promote channel dist-tag (all packages verified)",
+      "Sweep stale 'next' and 'release-pending' dist-tags",
+    ]),
+    makeJob(12001, "Finalize MD/WASM digest asset", [
+      "Verify published @takazudo/zfb-md-wasm and upload digest asset",
+    ]),
+  );
+  w.logs[w.finalizeJobs[0].id] =
+    `Resolved source ref: ${TAG} (release ${TAG}) [finalize only]\nVerified source ${COMMIT} (tree ${CONTROL}) for ${TAG} | control ${CONTROL} | ${REPO}/.github/workflows/release.yml@refs/heads/main`;
+  const finalSmoke = w.finalizeJobs.find((j) => j.name.startsWith("smoke-clean-room / "));
+  w.logs[finalSmoke.id] =
+    CLEAN_ROOM_LOG.replace(
+      `reusable-smoke-clean-room.yml@refs/tags/${TAG} (${COMMIT})`,
+      `reusable-smoke-clean-room.yml@refs/heads/main (${CONTROL})`,
+    ) +
+    `\nexpected_source: ${COMMIT}\nClean-room source: ${COMMIT}; version: ${VERSION}; active npm carriers: 5\n[PASS] dist/index.html contains expected content (basic-blog)\n[PASS] dist/index.html lists the seed post (Hello, zfb)`;
+}
+
+describe("explicit finalizer evidence", () => {
+  it("reconciles only consumption while preserving failed original history and GET-only requests", async () => {
+    const { report, calls } = await run(withFinalizer, { finalizeRunId: FINALIZER_RUN });
+    expect(report.verdict).toBe(STATUS.VERIFIED);
+    expect(report.sections.workflow.status).toBe(STATUS.FAILED);
+    expect(report.aggregateDelivery.supersededOriginalChecks).toEqual([
+      "release-run",
+      "job:smoke-clean-room",
+    ]);
+    expect(calls.every((c) => c.method === "GET")).toBe(true);
+  });
+  it("does not reconcile without explicit finalizer selection", async () => {
+    const { report } = await run(withFinalizer);
+    expect(report.exitCode).toBe(EXIT.failed);
+  });
+  for (const [label, mutate] of [
+    ["wrong repository", (w) => (w.finalizeRun.repository = { full_name: "other/repo" })],
+    ["wrong workflow", (w) => (w.finalizeRun.path = ".github/workflows/other.yml")],
+    ["wrong event", (w) => (w.finalizeRun.event = "release")],
+    ["wrong tag", (w) => (w.finalizeRun.display_title = "Release v0.0.0 (finalize only)")],
+    ["dry run", (w) => (w.finalizeRun.display_title += " (dry run)")],
+    ["failed finalizer", (w) => (w.finalizeRun.conclusion = "failure")],
+    ["cancelled finalizer", (w) => (w.finalizeRun.conclusion = "cancelled")],
+    ["pending finalizer", (w) => (w.finalizeRun.status = "in_progress")],
+    [
+      "publishing branch executed",
+      (w) => (w.finalizeJobs.find((j) => j.name === "publish").conclusion = "success"),
+    ],
+    [
+      "missing finalization",
+      (w) =>
+        (w.finalizeJobs = w.finalizeJobs.filter((j) => j.name !== "Finalize published release")),
+    ],
+    [
+      "skipped mandatory step",
+      (w) =>
+        (w.finalizeJobs.find((j) => j.name === "Finalize published release").steps[0].conclusion =
+          "skipped"),
+    ],
+    [
+      "original build failed",
+      (w) => (w.releaseJobs.find((j) => j.name.startsWith("Build ")).conclusion = "failure"),
+    ],
+    ["original wrong source", (w) => (w.releaseRun.head_sha = CONTROL)],
+    ["installer skipped", (w) => (w.installerJobs[0].conclusion = "skipped")],
+    ["source echo alone", (w) => (w.logs[w.finalizeJobs[0].id] = `SOURCE_COMMIT: ${COMMIT}`)],
+    [
+      "later failed attempt",
+      (w) => {
+        const j = w.finalizeJobs.find((j) => j.name === "Finalize published release");
+        w.finalizeRun.run_attempt = 2;
+        w.finalizeJobs.push({ ...j, id: 13000, run_attempt: 2, conclusion: "failure" });
+      },
+    ],
+  ])
+    it(`rejects ${label}`, async () => {
+      const { report } = await run(
+        (w) => {
+          withFinalizer(w);
+          mutate(w);
+        },
+        { finalizeRunId: FINALIZER_RUN },
+      );
+      expect(report.exitCode).not.toBe(EXIT.verified);
+    });
+  for (const [label, transform] of [
+    ["wrong source", (t) => t.replaceAll(COMMIT, CONTROL)],
+    ["wrong version", (t) => t.replaceAll(VERSION, "0.0.0")],
+    ["absent content proof", (t) => t.replaceAll("[PASS]", "[MISSING]")],
+  ])
+    it(`rejects clean-room ${label}`, async () => {
+      const { report } = await run(
+        (w) => {
+          withFinalizer(w);
+          const j = w.finalizeJobs.find((j) => j.name.startsWith("smoke-clean-room / "));
+          w.logs[j.id] = transform(w.logs[j.id]);
+        },
+        { finalizeRunId: FINALIZER_RUN },
+      );
+      expect(report.exitCode).toBe(EXIT.failed);
+    });
+  it("keeps unavailable mandatory source logs incomplete", async () => {
+    const { report } = await run(
+      (w) => {
+        withFinalizer(w);
+        delete w.logs[w.finalizeJobs[0].id];
+      },
+      { finalizeRunId: FINALIZER_RUN },
+    );
+    expect(report.sections.finalizer.status).toBe(STATUS.INCOMPLETE);
+    expect(report.exitCode).not.toBe(EXIT.verified);
+  });
+});
+
+describe("finalizer cannot replace publication authority", () => {
+  for (const name of [
+    "Resolve and verify release source",
+    "Verify source commit required CI",
+    "Admit owner-Mac Darwin artifacts",
+    "Pack npm tarballs",
+    "publish",
+    "Upload GitHub Release assets",
+    "Upload MD/WASM digest asset",
+  ])
+    it(`retains original ${name} failure`, async () => {
+      const { report } = await run(
+        (w) => {
+          withFinalizer(w);
+          w.releaseJobs.find((j) => j.name === name).conclusion = "failure";
+        },
+        { finalizeRunId: FINALIZER_RUN },
+      );
+      expect(report.exitCode).toBe(EXIT.failed);
+    });
+  it("rejects finalizer as original publisher", async () => {
+    const { report } = await run(withFinalizer, {
+      releaseRunId: FINALIZER_RUN,
+      finalizeRunId: FINALIZER_RUN,
+    });
+    expect(report.exitCode).not.toBe(EXIT.verified);
+  });
+  for (const [label, invocation] of [
+    ["finalizer", `${FINALIZER_RUN}/attempts/1`],
+    ["ineligible attempt", `${RELEASE_RUN}/attempts/9`],
+  ])
+    it(`rejects provenance attributed to ${label}`, async () => {
+      const { report } = await run(
+        (w) => {
+          withFinalizer(w);
+          w.statementTweak = (name, s) => {
+            s.predicate.runDetails.metadata.invocationId = `https://github.com/${REPO}/actions/runs/${invocation}`;
+          };
+        },
+        { finalizeRunId: FINALIZER_RUN },
+      );
+      expect(report.exitCode).toBe(EXIT.failed);
+    });
+  for (const code of [403, 404, 410])
+    it(`keeps HTTP ${code} finalizer consumption logs incomplete`, async () => {
+      const { report } = await run(
+        (w) => {
+          withFinalizer(w);
+          const j = w.finalizeJobs.find((j) => j.name.startsWith("smoke-clean-room / "));
+          w.overrides.set(
+            `${API}/actions/jobs/${j.id}/logs`,
+            () => new Response("unavailable", { status: code }),
+          );
+        },
+        { finalizeRunId: FINALIZER_RUN },
+      );
+      expect(check(report, "consumption", "release-clean-room").status).toBe(STATUS.INCOMPLETE);
+      expect(report.exitCode).not.toBe(EXIT.verified);
+    });
+  it("requires versioned installed runtime even with correct inputs", async () => {
+    const { report } = await run(
+      (w) => {
+        withFinalizer(w);
+        const j = w.finalizeJobs.find((j) => j.name.startsWith("smoke-clean-room / "));
+        w.logs[j.id] = w.logs[j.id].replace(
+          `+ @takazudo/zfb-runtime ${VERSION}`,
+          "+ @takazudo/zfb-runtime 0.0.0",
+        );
+      },
+      { finalizeRunId: FINALIZER_RUN },
+    );
+    expect(report.exitCode).toBe(EXIT.failed);
+  });
+});
+
+describe("finalizer Actions job-level guards", () => {
+  it("accepts all expanded build jobs only when each remains skipped", async () => {
+    const { report } = await run(
+      (w) => {
+        withFinalizer(w);
+        w.finalizeJobs = w.finalizeJobs.filter(
+          (j) => j.name !== "Build ${{ matrix.settings.target }}",
+        );
+        w.finalizeJobs.push(
+          ...releaseJobs()
+            .filter((j) => j.name.startsWith("Build ") && !j.name.includes("npm package"))
+            .map((j) => ({ ...j, id: j.id + 20000, conclusion: "skipped", steps: [] })),
+        );
+      },
+      { finalizeRunId: FINALIZER_RUN },
+    );
+    expect(report.exitCode).toBe(EXIT.verified);
+  });
+  for (const [name, mutate] of [
+    [
+      "executed collapsed build",
+      (w) =>
+        (w.finalizeJobs.find((j) => j.name === "Build ${{ matrix.settings.target }}").conclusion =
+          "success"),
+    ],
+    [
+      "missing collapsed build",
+      (w) =>
+        (w.finalizeJobs = w.finalizeJobs.filter(
+          (j) => j.name !== "Build ${{ matrix.settings.target }}",
+        )),
+    ],
+    [
+      "mixed expanded and collapsed builds",
+      (w) =>
+        w.finalizeJobs.push({
+          ...releaseJobs().find((j) => j.name.startsWith("Build ")),
+          id: 14000,
+          conclusion: "skipped",
+        }),
+    ],
+    [
+      "executed downgrade step",
+      (w) =>
+        (w.finalizeJobs.find(
+          (j) => j.name === "Provenance downgrade preflight",
+        ).steps[0].conclusion = "success"),
+    ],
+  ])
+    it(`rejects ${name}`, async () => {
+      const { report } = await run(
+        (w) => {
+          withFinalizer(w);
+          mutate(w);
+        },
+        { finalizeRunId: FINALIZER_RUN },
+      );
+      expect(report.exitCode).toBe(EXIT.failed);
+    });
 });
