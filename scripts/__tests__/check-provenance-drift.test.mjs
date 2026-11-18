@@ -13,7 +13,13 @@
 
 import { describe, expect, it } from "vite-plus/test";
 
-import { checkAll, classifyPackage, fetchPackument, report } from "../check-provenance-drift.mjs";
+import {
+  applyProvenancePolicy,
+  checkAll,
+  classifyPackage,
+  fetchPackument,
+  report,
+} from "../check-provenance-drift.mjs";
 
 /** Build a packument. `versions` maps version → {attested, time}. */
 function packument(latest, versions) {
@@ -248,6 +254,46 @@ describe("fetchPackument retry", () => {
     expect(h.calls).toHaveLength(3);
     // Backs off between attempts, but never sleeps after the final one.
     expect(h.sleeps).toEqual([1, 2]);
+  });
+});
+
+describe("applyProvenancePolicy", () => {
+  const darwin = {
+    name: "@takazudo/zfb-darwin-arm64",
+    status: "regression",
+    latest: "7.0.0",
+    priorAttested: "6.0.1",
+  };
+  const policy = {
+    schema: "zfb-provenance-policy/v1",
+    decisions: [
+      {
+        package: "@takazudo/zfb-darwin-arm64",
+        unattested_from_version: "6.1.1",
+        reason: "mac-local",
+        decided_by: "Takazudo",
+        issue: "https://github.com/Takazudo/zudo-front-builder/issues/4687",
+      },
+    ],
+  };
+
+  it("acknowledges a regression the owner policy covers", () => {
+    const [result] = applyProvenancePolicy([darwin], policy);
+    expect(result.status).toBe("acknowledged");
+    const lines = [];
+    expect(report([result], { log: (line) => lines.push(line) })).toBe(0);
+    expect(lines.some((line) => line.startsWith("  ACKNOWLEDGED "))).toBe(true);
+    expect(lines.some((line) => line.startsWith("::error"))).toBe(false);
+  });
+
+  it("keeps a regression below the acknowledged version, and an uncovered package", () => {
+    const early = applyProvenancePolicy([{ ...darwin, latest: "6.0.1" }], policy)[0];
+    expect(early.status).toBe("regression");
+    const other = applyProvenancePolicy(
+      [{ ...darwin, name: "@takazudo/zfb-linux-x64-gnu" }],
+      policy,
+    )[0];
+    expect(other.status).toBe("regression");
   });
 });
 

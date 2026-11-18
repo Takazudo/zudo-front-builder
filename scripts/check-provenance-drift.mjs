@@ -25,11 +25,16 @@
 // from issue #2625 — `@takazudo/zfb-darwin-x64` while its exact `latest` dist-tag
 // was `2.12.0` — expired at `2.13.0`: an attested release moved `latest` forward
 // and closed that gap. Keep this history so the policy transition remains
-// explicit; no exception remains.
+// explicit. The only later pass for an unattested latest is an owner decision
+// in release/provenance-policy.json, applied below.
 //
 // The resulting policy is:
 //   REGRESSION  — latest has no attestation, but an EARLIER-PUBLISHED version
-//                 did. This is a real trust downgrade for consumers. FAIL.
+//                 did, and release/provenance-policy.json does not cover that
+//                 package at this version. This is a real trust downgrade. FAIL.
+//   ACKNOWLEDGED — same registry shape, covered by the owner's committed
+//                 provenance policy at or after unattested_from_version (#4687).
+//                 Darwin mac-local publishes are this case. PASS.
 //   NEVER       — latest has no attestation and no earlier version did either.
 //                 This violates the all-published policy. FAIL.
 //   OK          — latest carries an attestation.
@@ -43,9 +48,16 @@
 //     attested would raise a downgrade against a stable release that pnpm
 //     itself would not flag.
 
-import { pathToFileURL } from "node:url";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { PUBLISHED_PACKAGES } from "./retire-next-dist-tag.mjs";
+import { compareSemver, PUBLISHED_PACKAGES } from "./retire-next-dist-tag.mjs";
+
+export const PROVENANCE_POLICY_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../release/provenance-policy.json",
+);
 
 const REGISTRY = "https://registry.npmjs.org";
 
@@ -169,6 +181,46 @@ function sleep(attempt) {
 }
 
 /**
+ * Read the owner policy committed next to this script. Missing file means no
+ * acknowledgements. A malformed file throws so the weekly check fails closed.
+ */
+export function loadProvenancePolicy(path = PROVENANCE_POLICY_PATH) {
+  let text;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  const policy = JSON.parse(text);
+  if (policy?.schema !== "zfb-provenance-policy/v1" || !Array.isArray(policy.decisions)) {
+    throw new Error(`${path}: invalid provenance policy`);
+  }
+  return policy;
+}
+
+/**
+ * Turn a regression into an acknowledgement when the owner's policy covers
+ * that package at a version no newer than `latest`. Other verdicts stay.
+ */
+export function applyProvenancePolicy(results, policy) {
+  if (!policy) return results;
+  return results.map((result) => {
+    if (result.status !== "regression") return result;
+    const decision = policy.decisions.find((item) => item.package === result.name);
+    if (!decision || typeof decision.unattested_from_version !== "string") return result;
+    let cmp;
+    try {
+      cmp = compareSemver(result.latest, decision.unattested_from_version);
+    } catch (error) {
+      return { ...result, status: "error", detail: error.message };
+    }
+    if (cmp < 0) return result;
+    return { ...result, status: "acknowledged", decision };
+  });
+}
+
+/**
  * Check every published package and return the verdicts.
  *
  * @returns {Promise<Array<ReturnType<typeof classifyPackage>>>}
@@ -191,6 +243,7 @@ export async function checkAll({ packages = PUBLISHED_PACKAGES, fetchOne = fetch
  */
 export function report(results, { log = console.log } = {}) {
   const regressions = results.filter((r) => r.status === "regression");
+  const acknowledged = results.filter((r) => r.status === "acknowledged");
   const errors = results.filter((r) => r.status === "error");
   const neverViolations = results.filter((r) => r.status === "never");
   const ok = results.filter((r) => r.status === "ok");
@@ -201,6 +254,12 @@ export function report(results, { log = console.log } = {}) {
   }
   for (const r of neverViolations) {
     log(`  NEVER      ${r.name}@${r.latest} (never attested — policy violation)`);
+  }
+  for (const r of acknowledged) {
+    const decision = r.decision;
+    log(
+      `  ACKNOWLEDGED ${r.name}@${r.latest} (earlier attested: ${r.priorAttested}) by release/provenance-policy.json: unattested_from_version=${decision.unattested_from_version} decided_by=${decision.decided_by} issue=${decision.issue}`,
+    );
   }
   for (const r of regressions) {
     log(`  REGRESSION ${r.name}@${r.latest} lost provenance (${r.priorAttested} had it)`);
@@ -235,8 +294,18 @@ export function report(results, { log = console.log } = {}) {
 
 // Only run when executed directly, so the test suite can import the pure parts.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const results = await checkAll();
-  // process.exitCode, not process.exit(): stdout is a pipe under GitHub Actions,
-  // and an immediate exit can truncate the ::error:: annotations just written.
-  process.exitCode = report(results);
+  let policy;
+  try {
+    policy = loadProvenancePolicy();
+  } catch (error) {
+    process.exitCode = report([
+      { name: "provenance-policy", status: "error", detail: error.message },
+    ]);
+  }
+  if (process.exitCode === undefined) {
+    const results = applyProvenancePolicy(await checkAll(), policy);
+    // process.exitCode, not process.exit(): stdout is a pipe under GitHub Actions,
+    // and an immediate exit can truncate the ::error:: annotations just written.
+    process.exitCode = report(results);
+  }
 }
