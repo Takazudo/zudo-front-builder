@@ -2,12 +2,13 @@
   "policyVersion": 1,
   "parser": "yaml@2.9.0",
   "helperSha256": "c1cec11ab7e7d0ea5d5a9548a871dfb886bc05ebbb2ff513d13332429632d787",
-  "sha256": "75d2a521c4affc5230b22e2ebda07b46cacf00ab2265417cf7d8b8480c1cf61c",
+  "sha256": "5d0286fd2877e7a1c894e2977ba70ecb1b29d31e883a105b449872efc8efb047",
   "inventory": {
     "importers": [
       "packages/zfb",
       "packages/zfb-darwin-arm64",
       "packages/zfb-darwin-x64",
+      "packages/zfb-linux-arm64-gnu",
       "packages/zfb-linux-x64-gnu",
       "packages/zfb-runtime",
       "packages/zfb-slugify",
@@ -491,7 +492,7 @@
     },
     "counts": {
       "importers": {
-        "reached": 7,
+        "reached": 8,
         "total": 13
       },
       "snapshots": {

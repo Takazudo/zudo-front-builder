@@ -657,10 +657,7 @@ describe("real pnpm-lock.yaml", () => {
     );
     expect(output.sha256).toBe(realHash(realLock));
     expect(output.inventory.importers).toEqual(
-      [
-        ...SELECTED_IMPORTERS,
-        ...PLATFORM_IMPORTERS.filter((name) => name !== "packages/zfb-linux-arm64-gnu"),
-      ].sort(),
+      [...SELECTED_IMPORTERS, ...PLATFORM_IMPORTERS].sort(),
     );
   });
 });

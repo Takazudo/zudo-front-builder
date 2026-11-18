@@ -1359,8 +1359,8 @@ describe("fingerprint-helper (#4198)", () => {
       helperSha256: newHelper,
       inventory: inventoryFile.inventory,
     });
-    // Three roots plus four active npm carrier links; Linux arm64 is no longer an SDK edge.
-    expect(inventoryFile.inventory.counts.importers.reached).toBe(7);
+    // Three roots plus the five npm carrier links, including Linux arm64.
+    expect(inventoryFile.inventory.counts.importers.reached).toBe(8);
     const readme = readFileSync(join(repo.root, "research/v3-island-size/README.md"), "utf8");
     expect(readme).toContain("fingerprint-helper re-pin");
     expect(readme).toContain("`" + newHelper + "`");
@@ -1372,7 +1372,7 @@ describe("fingerprint-helper (#4198)", () => {
       "sha256 (unchanged): " + repo.dependencyFingerprint.sha256,
       "policyVersion: 1",
       "parser: yaml@2.9.0",
-      "inventory (identical for both helpers): importers 7/",
+      "inventory (identical for both helpers): importers 8/",
       "no native run: helperSha256 is outside the hashed input and absent from run provenance (#4198)",
     ]) {
       expect(printed).toContain(fragment);
