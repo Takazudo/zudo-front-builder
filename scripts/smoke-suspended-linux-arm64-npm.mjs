@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 const require = createRequire(import.meta.url);
 const manifest = require("@takazudo/zfb/package.json");
-assert.equal(manifest.optionalDependencies?.["@takazudo/zfb-linux-arm64-gnu"], undefined);
+assert.equal(typeof manifest.optionalDependencies?.["@takazudo/zfb-linux-arm64-gnu"], "string");
 const sdk = dirname(require.resolve("@takazudo/zfb/package.json"));
 const stale = join(sdk, "node_modules/@takazudo/zfb-linux-arm64-gnu");
 mkdirSync(stale, { recursive: true });
@@ -26,10 +26,9 @@ const cli = spawnSync(
   ["--import", preload, join(sdk, "bin/zfb.mjs"), "--version"],
   { encoding: "utf8" },
 );
-assert.equal(cli.status, 1);
-assert.match(cli.stderr, /Linux arm64.*suspended/);
-assert.doesNotMatch(cli.stderr, /reinstall|optional dependencies/i);
-assert.equal(existsSync(marker), false);
+assert.equal(cli.status, 0);
+assert.doesNotMatch(cli.stderr, /suspended/);
+assert.equal(existsSync(marker), true);
 // When create-zfb is installed, prove that its inherited stderr explains the cause.
 try {
   const generator = dirname(require.resolve("create-zfb/package.json"));
@@ -41,8 +40,8 @@ try {
       env: { ...process.env, NODE_OPTIONS: `--import=${preload}` },
     },
   );
-  assert.equal(generated.status, 1);
-  assert.match(generated.stderr, /Linux arm64.*suspended/);
+  assert.equal(generated.status, 0);
+  assert.doesNotMatch(generated.stderr, /suspended/);
 } catch (error) {
   if (error.code !== "MODULE_NOT_FOUND" && error.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED")
     throw error;
@@ -51,7 +50,5 @@ Object.defineProperty(process, "platform", { value: "linux" });
 Object.defineProperty(process, "arch", { value: "arm64" });
 await import("@takazudo/zfb/paginate");
 const { compileCss } = await import("@takazudo/zfb/css");
-await assert.rejects(compileCss({ input: "input.css" }), /Linux arm64.*suspended/);
-console.log(
-  "passed: packed SDK simulated Linux arm64 lazy import, CLI stale-carrier refusal, CSS suspension",
-);
+await assert.rejects(compileCss({ input: "input.css" }), /Cannot load the packaged CSS compiler/);
+console.log("passed: packed SDK simulated Linux arm64 resolves the optional carrier");

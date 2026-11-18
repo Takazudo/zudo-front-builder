@@ -107,8 +107,8 @@ function main() {
   // 2. Rewrite packages/zfb/package.json optionalDependencies entries matching the prefix.
   // (version field itself is the source — do NOT modify it.)
   const optionalDeps = zfbPkg.optionalDependencies;
-  // Internal Linux arm64 carrier versions still stamp non-npm builds.
-  // Its npm dependency must never be restored by a subsequent version sync.
+  // A source policy that still lists a carrier removes it from the SDK.
+  // An empty suspended list keeps every optional dependency, including Linux arm64.
   if (optionalDeps) {
     for (const name of policyForTree(repoRoot).suspended) delete optionalDeps[name];
   }

@@ -1,4 +1,4 @@
 {
   "schema": "zfb-npm-publication-policy/v1",
-  "suspended": ["@takazudo/zfb-linux-arm64-gnu"]
+  "suspended": []
 }

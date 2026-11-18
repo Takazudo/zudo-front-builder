@@ -515,11 +515,8 @@ What upgrades when zfb ships a stable release, each with an explicit trigger —
 
 ### Next-release npm platform scope
 
-The next authorized release suspends new `@takazudo/zfb-linux-arm64-gnu` npm
-publication only. Use the immutable SOURCE publication policy rather than a fixed
-package count; old sources (including v6.1.4) retain their original contract.
-Linux arm64 build/test/archive/standalone installer support and internal version
-stamping remain. See [RELEASING.md](RELEASING.md#next-release-linux-arm64-npm-suspension)
-for the compatibility/major decision and explicit resumption criteria. No version
-or channel is selected by this implementation. Existing processing versions may
-still become public later (#4711); no registry rollback or cancellation is implied.
+`@takazudo/zfb-linux-arm64-gnu` is in the active npm set again. Use the immutable
+SOURCE publication policy rather than a fixed package count. A source that lists
+the carrier in `suspended` keeps the ten-package contract, including v7.0.0.
+Sources with no policy file, including v6.1.4, keep eleven. See
+[RELEASING.md](RELEASING.md#linux-arm64-npm-publication).

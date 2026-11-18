@@ -7,17 +7,17 @@ import { pathToFileURL } from "node:url";
 const root = resolve(import.meta.dirname, "../..");
 const simulated =
   'Object.defineProperty(process,"platform",{value:"linux"});Object.defineProperty(process,"arch",{value:"arm64"});';
-describe("Linux arm64 npm suspension", () => {
-  it("keeps CSS import lazy and rejects native use with a suspension cause", () => {
+describe("Linux arm64 npm carrier", () => {
+  it("keeps CSS import lazy and loads the matching carrier instead of a suspension message", () => {
     const url = pathToFileURL(join(root, "packages/zfb/src/css.ts")).href;
-    const code = `${simulated}const {compileCss}=await import(${JSON.stringify(url)});try{await compileCss({input:"input.css"});process.exit(2)}catch(e){if(!/Linux arm64.*suspended/.test(e.message))throw e;console.log(e.message)}`;
+    const code = `${simulated}const {compileCss}=await import(${JSON.stringify(url)});try{await compileCss({input:"input.css"});process.exit(2)}catch(e){if(/Linux arm64.*suspended/.test(e.message))throw e;if(!/Cannot load the packaged CSS compiler/.test(e.message))throw e;console.log(e.message)}`;
     const result = spawnSync(process.execPath, ["--input-type=module", "-e", code], {
       encoding: "utf8",
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).not.toMatch(/optional dependencies/i);
+    expect(result.stdout).toMatch(/zfb-linux-arm64-gnu/);
   });
-  it("repeated version sync removes suspended dependency while stamping non-npm carrier", () => {
+  it("repeated version sync keeps the resumed carrier and stamps its package version", () => {
     const room = mkdtempSync(join(tmpdir(), "zfb-sync-policy-"));
     try {
       const files = execFileSync(
@@ -44,9 +44,11 @@ describe("Linux arm64 npm suspension", () => {
       writeFileSync(sdkPath, JSON.stringify(sdk));
       for (let i = 0; i < 2; i++)
         execFileSync(process.execPath, [join(room, "scripts/sync-platform-versions.mjs")]);
-      expect(JSON.parse(readFileSync(sdkPath, "utf8")).optionalDependencies).not.toHaveProperty(
-        "@takazudo/zfb-linux-arm64-gnu",
-      );
+      expect(
+        JSON.parse(readFileSync(sdkPath, "utf8")).optionalDependencies[
+          "@takazudo/zfb-linux-arm64-gnu"
+        ],
+      ).toBe("workspace:99.0.0");
       expect(
         JSON.parse(readFileSync(join(room, "packages/zfb-linux-arm64-gnu/package.json"), "utf8"))
           .version,

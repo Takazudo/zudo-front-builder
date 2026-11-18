@@ -105,6 +105,7 @@
   "optionalDependencies": {
     "@takazudo/zfb-darwin-arm64": "workspace:7.0.0",
     "@takazudo/zfb-darwin-x64": "workspace:7.0.0",
+    "@takazudo/zfb-linux-arm64-gnu": "workspace:7.0.0",
     "@takazudo/zfb-linux-x64-gnu": "workspace:7.0.0",
     "@takazudo/zfb-win32-x64-msvc": "workspace:7.0.0"
   },

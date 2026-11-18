@@ -18,36 +18,26 @@ Related references, not substitutes:
 - [`research/npm-oidc-cutover.md`](research/npm-oidc-cutover.md) — the owner's npm trusted
   publisher setup, live-proof checklist and credential retirement runbook.
 
-## Next-release Linux arm64 npm suspension
+## Linux arm64 npm publication
 
-Beginning with the next newly authorized release, new npm distribution of
-`@takazudo/zfb-linux-arm64-gnu` is suspended. This is an npm platform compatibility
-change: apply the major-version judgment in A2; the implementation does not select
-a version or channel, bump versions, or publish a release.
+`@takazudo/zfb-linux-arm64-gnu` is in the active npm set again. npm finished
+processing 6.1.2, 6.1.3 and 6.1.4 on 2026-11-16; each is public and attested.
+The package `latest` tag is 6.1.3. `release-pending` still points at 6.1.4
+because that release never promoted it. v7.0.0 did not publish this package.
 
 The immutable release SOURCE tree's `release/npm-publication-policy.json` selects
-the active npm package set. The current policy excludes only Linux arm64 (ten
-active packages). Older sources retain their original eleven-package contract,
-including v6.1.4; a newer CONTROL script must not mark an old release complete with
-ten packages. The historical pre-slugify recovery exception remains separate.
-Pack, publish, verification, status, finalize, promotion and cleanup must use this
-source-bound set, and must reject missing, duplicate or unexpected rows.
+the active npm package set. The current policy has an empty `suspended` array, so
+the active set is the eleven known packages. A source whose policy lists
+`@takazudo/zfb-linux-arm64-gnu` keeps the ten-package contract, including v7.0.0.
+Sources with no policy file keep their original eleven-package contract, including
+v6.1.4. A newer CONTROL script must not rewrite an old release's expected set.
+The historical pre-slugify recovery exception remains separate. Pack, publish,
+verification, status, finalize, promotion and cleanup must use this source-bound
+set, and must reject missing, duplicate or unexpected rows.
 
-Linux arm64 Rust sources, builds/tests, Release archives and the standalone CLI
-installer remain supported. Internal carrier manifest versions still synchronize
-to stamp these non-npm builds; this does not authorize npm publication. The next
-SDK omits the optional carrier dependency and refuses stale carriers for CLI/CSS.
-Pure JS imports remain available and CSS loads the native binding only on use.
-
-No existing npm versions, dist-tags or Release assets are changed. npm may still
-make previously accepted versions visible later: track that separately in #4711;
-this change neither cancels them nor automatically resumes distribution or rolls
-back tags. Active-package processing/missing/uncertain/integrity/provenance failures
-still block channel promotion under `release-pending`.
-
-Resumption requires resolution of the npm processing problem, confirmation of a
-consistent SDK/carrier tuple, necessary platform verification and an explicit owner
-decision. Historical package availability is not ongoing maintenance or safety assurance.
+The allowed `suspended` values are `[]` and `["@takazudo/zfb-linux-arm64-gnu"]`.
+Any other value is an invalid policy. Linux arm64 Rust sources, builds/tests,
+Release archives and the standalone CLI installer stay supported either way.
 
 ## Authority and stop conditions
 

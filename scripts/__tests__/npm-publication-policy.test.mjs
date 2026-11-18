@@ -35,9 +35,16 @@ describe("immutable source npm publication policy", () => {
       }),
     ).toThrow(/slugify/);
   });
+  it("resumes the carrier when the source policy suspends nothing", () => {
+    const resumed = policyFromSourceFiles({
+      policyText: JSON.stringify({ schema: "zfb-npm-publication-policy/v1", suspended: [] }),
+    });
+    expect(resumed.suspended).toEqual([]);
+    expect(resumed.names).toHaveLength(11);
+    expect(resumed.names).toContain(SUSPENDED_PACKAGE);
+  });
   it.each([
     { schema: "bad", suspended: [SUSPENDED_PACKAGE] },
-    { schema: "zfb-npm-publication-policy/v1", suspended: [] },
     { schema: "zfb-npm-publication-policy/v1", suspended: [SUSPENDED_PACKAGE, SUSPENDED_PACKAGE] },
     { schema: "zfb-npm-publication-policy/v1", suspended: ["unknown"] },
   ])("rejects malformed or unexpected source policy %j", (data) => {

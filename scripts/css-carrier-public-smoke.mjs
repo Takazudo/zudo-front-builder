@@ -22,14 +22,6 @@ assert.equal(
   process.env.CSS_ADDON_SHA,
 );
 writeFileSync(join(room, "input.css"), ".carrier-authored { color: red; }");
-if (process.platform === "linux" && process.arch === "arm64") {
-  await assert.rejects(
-    compileCss({ cwd: room, input: "input.css", config: { wind: false } }),
-    /Linux arm64.*suspended/,
-  );
-  console.log("passed: Linux arm64 packed npm CSS suspension (raw addon tested separately)");
-  process.exit(0);
-}
 const result = await compileCss({ cwd: room, input: "input.css", config: { wind: false } });
 assert.match(result.css, /color:\s*red/);
 assert.deepEqual(result.diagnostics, []);

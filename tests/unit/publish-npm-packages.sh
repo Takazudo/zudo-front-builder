@@ -1473,7 +1473,7 @@ PATH="$MOCK_BIN:$PATH" MOCK_NEW_POLICY=1 DIST_TAG=latest MOCK_EXISTING="" \
   MOCK_PUBLISH_LOG="$NP_LOG" MOCK_DISTTAG_LOG="$NP_TAGS" \
   bash "$SCRIPT" all-provenance >"$NP_OUT" 2>&1 || NP_RC=$?
 if [ "$NP_RC" -eq 0 ] && [ "$(wc -l <"$NP_LOG" | tr -d ' ')" -eq 10 ] && ! grep -q 'zfb-linux-arm64-gnu' "$NP_LOG"; then
-  pass "new source policy: publishes exact active ten without suspended carrier"
+  pass "suspended source policy: publishes exact active ten without the listed carrier"
 else fail "new source policy: rc=$NP_RC output=$(tail -3 "$NP_OUT" | tr '\n' ' ')"; fi
 NP_NAMES=$(printf '%s\n' $ALL_NAMES | grep -v '^@takazudo/zfb-linux-arm64-gnu$' | tr '\n' ' ')
 NP_RC=0
@@ -1481,14 +1481,14 @@ PATH="$MOCK_BIN:$PATH" MOCK_NEW_POLICY=1 DIST_TAG=latest MOCK_ALL_NAMES="$NP_NAM
   MOCK_DISTTAG_DIR="$NP_DIR" MOCK_DISTTAG_LOG="$NP_TAGS" ZFB_NPM_PACKAGE_STATE_NODE="$MOCK_BIN/promote-state-node" \
   bash "$PROMOTE_SCRIPT" "$V" >"$NP_OUT" 2>&1 || NP_RC=$?
 if [ "$NP_RC" -eq 0 ] && ! grep -q 'zfb-linux-arm64-gnu' "$NP_TAGS"; then
-  pass "new source policy: promotion never writes suspended carrier tag"
+  pass "suspended source policy: promotion never writes the listed carrier tag"
 else fail "new source policy promotion: rc=$NP_RC out=$(tail -3 "$NP_OUT" | tr '\n' ' ')"; fi
 NP_RC=0
 PATH="$MOCK_BIN:$PATH" MOCK_NEW_POLICY=1 DIST_TAG=latest MOCK_ALL_NAMES="$ALL_NAMES" \
   MOCK_DISTTAG_DIR="$NP_DIR" MOCK_DISTTAG_LOG="$NP_TAGS" ZFB_NPM_PACKAGE_STATE_NODE="$MOCK_BIN/promote-state-node" \
   bash "$PROMOTE_SCRIPT" "$V" >"$NP_OUT" 2>&1 || NP_RC=$?
 if [ "$NP_RC" -ne 0 ] && grep -q 'differ from immutable source policy' "$NP_OUT"; then
-  pass "new source policy: promotion rejects extra/unexpected state rows"
+  pass "suspended source policy: promotion rejects extra/unexpected state rows"
 else fail "new source policy: unexpected state rows admitted rc=$NP_RC"; fi
 rm -f "$NP_LOG" "$NP_OUT" "$NP_TAGS"
 rm -rf "$NP_DIR"

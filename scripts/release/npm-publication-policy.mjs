@@ -24,10 +24,13 @@ export function policyFromSourceFiles({ policyText = null, hasSlugify = true, mo
   let suspended = [];
   if (policyText !== null) {
     const data = JSON.parse(policyText);
+    const suspendedList = JSON.stringify(data.suspended);
+    const allowed =
+      suspendedList === JSON.stringify([]) || suspendedList === JSON.stringify([SUSPENDED_PACKAGE]);
     if (
       data.schema !== "zfb-npm-publication-policy/v1" ||
       JSON.stringify(Object.keys(data).sort()) !== JSON.stringify(["schema", "suspended"]) ||
-      JSON.stringify(data.suspended) !== JSON.stringify([SUSPENDED_PACKAGE])
+      !allowed
     ) {
       throw new Error("invalid source npm publication policy");
     }

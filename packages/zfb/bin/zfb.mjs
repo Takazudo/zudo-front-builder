@@ -20,17 +20,12 @@ const require = createRequire(import.meta.url);
 const platformPackages = {
   "darwin-arm64": "@takazudo/zfb-darwin-arm64",
   "darwin-x64": "@takazudo/zfb-darwin-x64",
+  "linux-arm64": "@takazudo/zfb-linux-arm64-gnu",
   "linux-x64": "@takazudo/zfb-linux-x64-gnu",
   "win32-x64": "@takazudo/zfb-win32-x64-msvc",
 };
 
 const key = `${process.platform}-${process.arch}`;
-if (key === "linux-arm64") {
-  console.error(
-    "[zfb] New Linux arm64 npm CLI/CSS distribution is suspended. Use the complete historical 6.0.1 package set (including @takazudo/zfb and its matching carriers), or the Linux arm64 standalone installer for CLI use. Do not combine this SDK with an older carrier. Historical availability is not a maintenance or safety guarantee.",
-  );
-  process.exit(1);
-}
 const pkg = platformPackages[key];
 
 if (!pkg) {
