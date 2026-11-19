@@ -37,10 +37,15 @@ export const ENGINES = Object.freeze(["chromium", "firefox", "webkit"]);
 export const RECEIPT_SCHEMA = "zfb-playwright-linux-provisioning/v1";
 export const OFFICIAL_ARCHIVE = "https://archive.ubuntu.com/ubuntu/";
 export const OFFICIAL_SECURITY = "https://security.ubuntu.com/ubuntu/";
-// actions/runner-images configure-apt-sources.sh rewrites ubuntu.sources to this
-// list: azure.archive.ubuntu.com first, then the official archive and security hosts.
+// actions/runner-images configure-apt-sources.sh writes this list. Azure images
+// put azure.archive.ubuntu.com first. AWS images put us-east-2.ec2.archive.ubuntu.com
+// first (image 20261111.127.1). Upstream:
+// https://github.com/actions/runner-images/blob/f2f91839f985dcbde42542557c72de8d0c2970a6/images/ubuntu/scripts/build/configure-apt-sources.sh
+// Matching a source only makes that stanza eligible to rewrite. Retry URIs stay
+// OFFICIAL_ARCHIVE and OFFICIAL_SECURITY.
 export const RUNNER_MIRROR_LIST = "/etc/apt/apt-mirrors.txt";
-const OFFICIAL_URI = /^https?:\/\/(?:azure\.archive|archive|security)\.ubuntu\.com\/ubuntu\/?$/;
+const OFFICIAL_URI =
+  /^https?:\/\/(?:azure\.archive|archive|security|us-east-2\.ec2\.archive)\.ubuntu\.com\/ubuntu\/?$/;
 const PACKAGE_NAME = /^[a-z0-9][a-z0-9+.-]+(?::[a-z0-9]+)?$/;
 const INSECURE_OPTIONS = ["trusted", "allow-insecure", "allow-weak", "allow-downgrade-to-insecure"];
 // apt's boolean spellings (apt-pkg/contrib/strutl.cc StringToBool).

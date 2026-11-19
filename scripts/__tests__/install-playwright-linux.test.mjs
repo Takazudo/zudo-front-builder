@@ -29,6 +29,8 @@ Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 `;
 const RUNNER_MIRRORS =
   "http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://archive.ubuntu.com/ubuntu/\tpriority:2\nhttps://security.ubuntu.com/ubuntu/\tpriority:3\n";
+const AWS_MIRRORS =
+  "http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://archive.ubuntu.com/ubuntu/\tpriority:2\nhttps://security.ubuntu.com/ubuntu/\tpriority:3\n";
 const THIRD_PARTY =
   "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ noble main\n";
 
@@ -277,78 +279,132 @@ describe("Playwright dependency report", () => {
 });
 
 describe("official-archive route", () => {
-  it("reroutes the runner mirror stanzas, keeps their fields and drops other sources", () => {
-    const route = buildOfficialRoute({
-      sourcesList: "# Ubuntu sources have moved to /etc/apt/sources.list.d/ubuntu.sources\n",
-      parts: [
-        { name: "ubuntu.sources", content: RUNNER_SOURCES },
-        { name: "azure-cli.list", content: THIRD_PARTY },
-        { name: "ignored.save", content: "deb http://example.invalid/ x y\n" },
-      ],
-      mirrorList: RUNNER_MIRRORS,
-    });
-    expect(route.rewritten).toBe(2);
-    const ubuntu = route.parts.find((part) => part.name === "ubuntu.sources").content;
-    expect(ubuntu).toContain(
-      "Types: deb\nURIs: https://archive.ubuntu.com/ubuntu/\nSuites: noble noble-updates noble-backports\nComponents: main universe restricted multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg",
-    );
-    expect(ubuntu).toContain("URIs: https://security.ubuntu.com/ubuntu/\nSuites: noble-security\n");
-    expect(ubuntu).not.toContain("mirror+file");
-    expect(ubuntu.match(/Signed-By:/g)).toHaveLength(2);
-    // The retry contacts only Ubuntu's own hosts.
-    expect(route.parts.map((part) => part.name)).toEqual(["ubuntu.sources"]);
-    expect(route.sourcesList).toBe("");
-  });
-
-  it("splits a combined stanza so security suites stay on the security host", () => {
+  it("accepts the AWS EC2 mirror list and rewrites it to the fixed official hosts", () => {
     const route = buildOfficialRoute({
       sourcesList: null,
-      parts: [
-        {
-          name: "ubuntu.sources",
-          content:
-            "Types: deb\nURIs: http://azure.archive.ubuntu.com/ubuntu/\nSuites: resolute resolute-updates resolute-security\nComponents: main universe\nArchitectures: amd64\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n",
-        },
-      ],
-      mirrorList: null,
+      parts: [{ name: "ubuntu.sources", content: RUNNER_SOURCES }],
+      mirrorList: AWS_MIRRORS,
     });
-    const content = route.parts[0].content;
-    expect(content).toContain(
-      "URIs: https://archive.ubuntu.com/ubuntu/\nSuites: resolute resolute-updates\nComponents: main universe\nArchitectures: amd64\nSigned-By:",
+    expect(route.rewritten).toBe(2);
+    const ubuntu = route.parts[0].content;
+    expect(ubuntu).toContain(
+      "URIs: https://archive.ubuntu.com/ubuntu/\nSuites: noble noble-updates",
     );
-    expect(content).toContain(
-      "URIs: https://security.ubuntu.com/ubuntu/\nSuites: resolute-security\nComponents: main universe\nArchitectures: amd64\nSigned-By:",
-    );
+    expect(ubuntu).toContain("URIs: https://security.ubuntu.com/ubuntu/\nSuites: noble-security\n");
+    expect(ubuntu).not.toContain("ec2.archive");
+    expect(ubuntu).not.toContain("mirror+file");
   });
 
-  it("rewrites legacy one-line sources and keeps their options", () => {
+  it.each([
+    ["Azure", RUNNER_MIRRORS],
+    ["AWS", AWS_MIRRORS],
+  ])(
+    "reroutes the %s runner mirror stanzas, keeps their fields and drops other sources",
+    (_name, mirrorList) => {
+      const route = buildOfficialRoute({
+        sourcesList: "# Ubuntu sources have moved to /etc/apt/sources.list.d/ubuntu.sources\n",
+        parts: [
+          { name: "ubuntu.sources", content: RUNNER_SOURCES },
+          { name: "azure-cli.list", content: THIRD_PARTY },
+          { name: "ignored.save", content: "deb http://example.invalid/ x y\n" },
+        ],
+        mirrorList,
+      });
+      expect(route.rewritten).toBe(2);
+      const ubuntu = route.parts.find((part) => part.name === "ubuntu.sources").content;
+      expect(ubuntu).toContain(
+        "Types: deb\nURIs: https://archive.ubuntu.com/ubuntu/\nSuites: noble noble-updates noble-backports\nComponents: main universe restricted multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg",
+      );
+      expect(ubuntu).toContain(
+        "URIs: https://security.ubuntu.com/ubuntu/\nSuites: noble-security\n",
+      );
+      expect(ubuntu).not.toContain("mirror+file");
+      expect(ubuntu.match(/Signed-By:/g)).toHaveLength(2);
+      // The retry contacts only Ubuntu's own hosts.
+      expect(route.parts.map((part) => part.name)).toEqual(["ubuntu.sources"]);
+      expect(route.sourcesList).toBe("");
+    },
+  );
+
+  it.each([
+    ["Azure", "http://azure.archive.ubuntu.com/ubuntu/"],
+    ["AWS", "http://us-east-2.ec2.archive.ubuntu.com/ubuntu"],
+  ])(
+    "splits a direct %s deb822 stanza so security suites stay on the security host",
+    (_name, uri) => {
+      const route = buildOfficialRoute({
+        sourcesList: null,
+        parts: [
+          {
+            name: "ubuntu.sources",
+            content: `Types: deb\nURIs: ${uri}\nSuites: resolute resolute-updates resolute-security\nComponents: main universe\nArchitectures: amd64\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n`,
+          },
+        ],
+        mirrorList: null,
+      });
+      const content = route.parts[0].content;
+      expect(content).toContain(
+        "URIs: https://archive.ubuntu.com/ubuntu/\nSuites: resolute resolute-updates\nComponents: main universe\nArchitectures: amd64\nSigned-By:",
+      );
+      expect(content).toContain(
+        "URIs: https://security.ubuntu.com/ubuntu/\nSuites: resolute-security\nComponents: main universe\nArchitectures: amd64\nSigned-By:",
+      );
+    },
+  );
+
+  it.each([
+    ["Azure", RUNNER_MIRRORS],
+    ["AWS", AWS_MIRRORS],
+  ])(
+    "rewrites legacy one-line sources from the %s mirror list and keeps their options",
+    (_name, mirrorList) => {
+      const route = buildOfficialRoute({
+        sourcesList:
+          "deb [arch=amd64] mirror+file:/etc/apt/apt-mirrors.txt jammy main restricted\ndeb mirror+file:/etc/apt/apt-mirrors.txt jammy-security main\n# deb-src http://archive.ubuntu.com/ubuntu jammy main\n",
+        parts: [],
+        mirrorList,
+      });
+      expect(route.sourcesList).toBe(
+        "deb [arch=amd64] https://archive.ubuntu.com/ubuntu/ jammy main restricted\ndeb https://security.ubuntu.com/ubuntu/ jammy-security main\n",
+      );
+    },
+  );
+
+  it.each([
+    ["Azure", RUNNER_MIRRORS],
+    ["AWS", AWS_MIRRORS],
+  ])(
+    "accepts the triple-slash mirror spelling with the %s list and skips disabled stanzas",
+    (_name, mirrorList) => {
+      const route = buildOfficialRoute({
+        sourcesList: null,
+        parts: [
+          {
+            name: "ubuntu.sources",
+            content:
+              "Types: deb\nURIs: mirror+file:///etc/apt/apt-mirrors.txt\nSuites: noble\nComponents: main\n\nTypes: deb\nURIs: http://archive.ubuntu.com/ubuntu/\nSuites: noble-proposed\nComponents: main\nEnabled: false\n",
+          },
+        ],
+        mirrorList,
+      });
+      expect(route.rewritten).toBe(1);
+      expect(route.parts[0].content).toBe(
+        "Types: deb\nURIs: https://archive.ubuntu.com/ubuntu/\nSuites: noble\nComponents: main\n",
+      );
+    },
+  );
+
+  it("rewrites a direct AWS one-line source and keeps its options", () => {
     const route = buildOfficialRoute({
       sourcesList:
-        "deb [arch=amd64] mirror+file:/etc/apt/apt-mirrors.txt jammy main restricted\ndeb mirror+file:/etc/apt/apt-mirrors.txt jammy-security main\n# deb-src http://archive.ubuntu.com/ubuntu jammy main\n",
+        "deb [arch=amd64] http://us-east-2.ec2.archive.ubuntu.com/ubuntu/ jammy main restricted\ndeb https://us-east-2.ec2.archive.ubuntu.com/ubuntu jammy-security main\n",
       parts: [],
-      mirrorList: RUNNER_MIRRORS,
+      mirrorList: null,
     });
     expect(route.sourcesList).toBe(
       "deb [arch=amd64] https://archive.ubuntu.com/ubuntu/ jammy main restricted\ndeb https://security.ubuntu.com/ubuntu/ jammy-security main\n",
     );
-  });
-
-  it("accepts the triple-slash mirror spelling and skips disabled stanzas", () => {
-    const route = buildOfficialRoute({
-      sourcesList: null,
-      parts: [
-        {
-          name: "ubuntu.sources",
-          content:
-            "Types: deb\nURIs: mirror+file:///etc/apt/apt-mirrors.txt\nSuites: noble\nComponents: main\n\nTypes: deb\nURIs: http://archive.ubuntu.com/ubuntu/\nSuites: noble-proposed\nComponents: main\nEnabled: false\n",
-        },
-      ],
-      mirrorList: RUNNER_MIRRORS,
-    });
-    expect(route.rewritten).toBe(1);
-    expect(route.parts[0].content).toBe(
-      "Types: deb\nURIs: https://archive.ubuntu.com/ubuntu/\nSuites: noble\nComponents: main\n",
-    );
+    expect(route.sourcesList).not.toContain("ec2.archive");
   });
 
   it.each([
@@ -358,6 +414,33 @@ describe("official-archive route", () => {
       /non-official mirror/,
     ],
     ["a missing mirror list", { mirrorList: null }, /missing/],
+    [
+      "an otherwise valid AWS list that also names an unrelated mirror",
+      {
+        mirrorList: `${AWS_MIRRORS}http://mirror.example.invalid/ubuntu/\tpriority:9\n`,
+      },
+      /non-official mirror/,
+    ],
+    [
+      "an EC2 hostname lookalike",
+      { mirrorList: "http://us-east-2.ec2.archive.ubuntu.com.evil/ubuntu/\n" },
+      /non-official mirror/,
+    ],
+    [
+      "another EC2 region",
+      { mirrorList: "http://us-east-1.ec2.archive.ubuntu.com/ubuntu/\n" },
+      /non-official mirror/,
+    ],
+    [
+      "user-info on the AWS host",
+      { mirrorList: "http://user:pass@us-east-2.ec2.archive.ubuntu.com/ubuntu/\n" },
+      /non-official mirror/,
+    ],
+    [
+      "a wrong path on the AWS host",
+      { mirrorList: "http://us-east-2.ec2.archive.ubuntu.com/debian/\n" },
+      /non-official mirror/,
+    ],
   ])("refuses %s", (_name, override, pattern) => {
     expect(() =>
       buildOfficialRoute({
@@ -391,6 +474,27 @@ describe("official-archive route", () => {
             name: "u.sources",
             content:
               "Types: deb\nURIs: http://archive.ubuntu.com/ubuntu/\nSuites: noble\nComponents: main\nTrusted: on\n",
+          },
+        ],
+        mirrorList: null,
+      }),
+    ).toThrow(/disables authentication/);
+    expect(() =>
+      buildOfficialRoute({
+        sourcesList:
+          "deb [trusted=yes] http://us-east-2.ec2.archive.ubuntu.com/ubuntu/ noble main\n",
+        parts: [],
+        mirrorList: null,
+      }),
+    ).toThrow(/disables authentication/);
+    expect(() =>
+      buildOfficialRoute({
+        sourcesList: null,
+        parts: [
+          {
+            name: "aws.sources",
+            content:
+              "Types: deb\nURIs: https://us-east-2.ec2.archive.ubuntu.com/ubuntu/\nSuites: noble\nComponents: main\nAllow-Insecure: yes\n",
           },
         ],
         mirrorList: null,
@@ -551,69 +655,76 @@ describe("provisioning flow", () => {
     expect(timeoutSeconds(fake.calls[1])).toBeLessThanOrEqual(240);
   });
 
-  it("retries once on the official archive after a slow download reaches its deadline", async () => {
-    const fake = fakeDeps({
-      files: runnerFiles,
-      processes: [[{ pid: 41, args: "/usr/lib/apt/methods/http" }], []],
-      script: {
-        dryRun: [missing("libnss3"), missing("libnss3"), missing("libnss3"), satisfied],
-        update: [success, success],
-        download: [{ exitCode: 124, durationMs: 230_000, tail: "Get:15 ... [8998 kB]" }, success],
-        aptConfig: [effectiveRoute],
-        install: [success],
-        browsers: [success],
-        launch: [success],
-      },
-    });
-    const { receipt, exitCode } = await provision(options(), fake.deps);
-    expect(exitCode).toBe(0);
-    expect(kinds(fake)).toEqual([
-      "dryRun",
-      "update",
-      "dryRun",
-      "download",
-      "aptConfig",
-      "update",
-      "dryRun",
-      "download",
-      "install",
-      "dryRun",
-      "browsers",
-      "launch",
-    ]);
-    const firstDownloadEnd = fake.calls[3].at + 230_000;
-    expect(fake.calls[4].at).toBeGreaterThan(firstDownloadEnd);
-    expect(fake.calls[4].spec.env.APT_CONFIG).toBe("/tmp/zfb-apt-route-test/apt.conf");
-    const aptConfig = "APT_CONFIG=/tmp/zfb-apt-route-test/apt.conf";
-    for (const call of fake.calls.slice(5, 10)) {
-      if (call.kind === "dryRun")
-        expect(call.spec.env.APT_CONFIG).toBe("/tmp/zfb-apt-route-test/apt.conf");
-      else expect(call.spec.args).toContain(aptConfig);
-    }
-    expect(fake.calls[0].spec.env.APT_CONFIG).toBeUndefined();
-    expect(fake.written.get("/tmp/zfb-apt-route-test/sources.list.d/ubuntu.sources")).toContain(
-      "URIs: https://archive.ubuntu.com/ubuntu/",
-    );
-    expect(fake.written.has("/tmp/zfb-apt-route-test/sources.list.d/azure-cli.list")).toBe(false);
-    expect(fake.written.get("/tmp/zfb-apt-route-test/apt.conf")).toContain(
-      'Dir::State::Lists "/tmp/zfb-apt-route-test/lists";',
-    );
-    expect(receipt.firstTransportFailure).toEqual({
-      attempt: 1,
-      route: "runner-default",
-      error: "package download reached the acquisition deadline",
-    });
-    const downloads = receipt.phases.filter((phase) => phase.stage === "acquire:download");
-    expect(downloads).toMatchObject([
-      { attempt: 1, route: "runner-default", exitCode: 124, outputTail: "Get:15 ... [8998 kB]" },
-      { attempt: 2, route: "official-archive", exitCode: 0 },
-    ]);
-    expect(receipt.dependencies.route).toBe("official-archive");
-    expect(receipt.phases.find((phase) => phase.stage === "acquire:route-config")).toMatchObject({
-      exitCode: 0,
-      note: "effective",
-    });
-  });
+  it.each([
+    ["Azure", RUNNER_MIRRORS],
+    ["AWS", AWS_MIRRORS],
+  ])(
+    "retries once on the official archive after a slow download reaches its deadline (%s)",
+    async (_name, mirrors) => {
+      const fake = fakeDeps({
+        files: { ...runnerFiles, "/etc/apt/apt-mirrors.txt": mirrors },
+        processes: [[{ pid: 41, args: "/usr/lib/apt/methods/http" }], []],
+        script: {
+          dryRun: [missing("libnss3"), missing("libnss3"), missing("libnss3"), satisfied],
+          update: [success, success],
+          download: [{ exitCode: 124, durationMs: 230_000, tail: "Get:15 ... [8998 kB]" }, success],
+          aptConfig: [effectiveRoute],
+          install: [success],
+          browsers: [success],
+          launch: [success],
+        },
+      });
+      const { receipt, exitCode } = await provision(options(), fake.deps);
+      expect(exitCode).toBe(0);
+      expect(kinds(fake)).toEqual([
+        "dryRun",
+        "update",
+        "dryRun",
+        "download",
+        "aptConfig",
+        "update",
+        "dryRun",
+        "download",
+        "install",
+        "dryRun",
+        "browsers",
+        "launch",
+      ]);
+      const firstDownloadEnd = fake.calls[3].at + 230_000;
+      expect(fake.calls[4].at).toBeGreaterThan(firstDownloadEnd);
+      expect(fake.calls[4].spec.env.APT_CONFIG).toBe("/tmp/zfb-apt-route-test/apt.conf");
+      const aptConfig = "APT_CONFIG=/tmp/zfb-apt-route-test/apt.conf";
+      for (const call of fake.calls.slice(5, 10)) {
+        if (call.kind === "dryRun")
+          expect(call.spec.env.APT_CONFIG).toBe("/tmp/zfb-apt-route-test/apt.conf");
+        else expect(call.spec.args).toContain(aptConfig);
+      }
+      expect(fake.calls[0].spec.env.APT_CONFIG).toBeUndefined();
+      const rewritten = fake.written.get("/tmp/zfb-apt-route-test/sources.list.d/ubuntu.sources");
+      expect(rewritten).toContain("URIs: https://archive.ubuntu.com/ubuntu/");
+      expect(rewritten).not.toContain("ec2.archive");
+      expect(rewritten).not.toContain("azure.archive");
+      expect(fake.written.has("/tmp/zfb-apt-route-test/sources.list.d/azure-cli.list")).toBe(false);
+      expect(fake.written.get("/tmp/zfb-apt-route-test/apt.conf")).toContain(
+        'Dir::State::Lists "/tmp/zfb-apt-route-test/lists";',
+      );
+      expect(receipt.firstTransportFailure).toEqual({
+        attempt: 1,
+        route: "runner-default",
+        error: "package download reached the acquisition deadline",
+      });
+      const downloads = receipt.phases.filter((phase) => phase.stage === "acquire:download");
+      expect(downloads).toMatchObject([
+        { attempt: 1, route: "runner-default", exitCode: 124, outputTail: "Get:15 ... [8998 kB]" },
+        { attempt: 2, route: "official-archive", exitCode: 0 },
+      ]);
+      expect(receipt.dependencies.route).toBe("official-archive");
+      expect(receipt.phases.find((phase) => phase.stage === "acquire:route-config")).toMatchObject({
+        exitCode: 0,
+        note: "effective",
+      });
+    },
+  );
 
   it("does not retry when local APT configuration overrides the official route", async () => {
     const fake = fakeDeps({
