@@ -1,13 +1,11 @@
 import { getIndex } from "../../lib/content";
 
 export function paths() {
-  return getIndex().articles.map((article) => ({
-    params: { slug: article.slug },
-    props: { slug: article.slug },
-  }));
+  return getIndex().articles.map((entry) => ({ params: { slug: entry.slug } }));
 }
 
-export default function ArticlePage({ slug }: { slug: string }) {
+export default function ArticlePage({ params }: { params: { slug: string } }) {
+  const slug = params.slug;
   const article = getIndex().bySlug.get(slug);
   if (!article) {
     return (
