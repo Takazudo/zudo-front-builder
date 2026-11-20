@@ -1,0 +1,53 @@
+{
+  "$id": "dev-browser-observe.record.v1",
+  "title": "One line of <out>/<label>/records.jsonl",
+  "type": "object",
+  "required": ["seq", "at", "type"],
+  "properties": {
+    "seq": { "type": "integer", "minimum": 0 },
+    "at": { "type": "string" },
+    "type": {
+      "enum": [
+        "run-start",
+        "identity",
+        "server-ready",
+        "browser-ready",
+        "scenario-start",
+        "precheck",
+        "attempt",
+        "late-token",
+        "supplemental",
+        "cleanup",
+        "batch-end",
+        "calibration",
+        "server-stop",
+        "controller-error",
+        "run-end"
+      ]
+    },
+    "label": { "enum": ["measured", "supplemental", "cleanup", "calibration", "not-success"] },
+    "outcome": {
+      "enum": [
+        "success",
+        "timeout",
+        "stale",
+        "precondition-failed",
+        "arm-error",
+        "prepare-error",
+        "write-error",
+        "server-exit",
+        "resource-limit",
+        "supplemental-failed",
+        "restoration-failed",
+        "identity-rejected",
+        "ready-failed",
+        "not-implemented"
+      ]
+    },
+    "latencyMs": { "type": "number" },
+    "endpoint": { "const": "predicate confirmed + 2 rAF + binding delivery" },
+    "mechanism": {
+      "enum": ["native-full-reload", "in-document-update", "server-restart", "unclassified"]
+    }
+  }
+}

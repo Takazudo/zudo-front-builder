@@ -1,0 +1,173 @@
+{
+  "$id": "dev-browser-observe.profile.v1",
+  "title": "dev-browser-observe run profile",
+  "type": "object",
+  "required": [
+    "schema",
+    "mode",
+    "productSha",
+    "buildReceipt",
+    "fixture",
+    "pins",
+    "server",
+    "browser",
+    "timeouts",
+    "limits",
+    "scenarios",
+    "outDir"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "dev-browser-observe.profile.v1" },
+    "description": { "type": "string" },
+    "mode": { "enum": ["source-built", "fixed-distribution"] },
+    "productSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "productDirtyIdentity": { "type": ["string", "null"] },
+    "buildReceipt": { "type": "string", "minLength": 1 },
+    "fixture": {
+      "type": "object",
+      "required": ["dir", "placement", "adapter"],
+      "additionalProperties": false,
+      "properties": {
+        "dir": { "type": "string" },
+        "placement": { "enum": ["internal", "external"] },
+        "adapter": { "type": "string", "minLength": 1 }
+      }
+    },
+    "pins": {
+      "type": "object",
+      "required": ["harnessTreeSha256", "fixtureTreeSha256", "observerSha256", "adapterSha256"],
+      "additionalProperties": false,
+      "properties": {
+        "harnessTreeSha256": { "type": ["string", "null"] },
+        "fixtureTreeSha256": { "type": ["string", "null"] },
+        "observerSha256": { "type": ["string", "null"] },
+        "adapterSha256": { "type": ["string", "null"] }
+      }
+    },
+    "server": {
+      "type": "object",
+      "required": ["port", "host", "readyTimeoutMs"],
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "object",
+          "required": ["mode"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "enum": ["ephemeral", "fixed"] },
+            "port": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "host": { "type": "string" },
+        "readyTimeoutMs": { "type": "integer", "minimum": 1 },
+        "extraArgs": { "type": "array", "items": { "type": "string" } },
+        "env": { "type": "object" }
+      }
+    },
+    "browser": {
+      "type": "object",
+      "required": ["headless", "viewport", "deviceScaleFactor"],
+      "additionalProperties": false,
+      "properties": {
+        "headless": { "type": "boolean" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "viewport": {
+          "type": "object",
+          "required": ["width", "height"],
+          "additionalProperties": false,
+          "properties": {
+            "width": { "type": "integer", "minimum": 1 },
+            "height": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "deviceScaleFactor": { "type": "number", "minimum": 0.1 }
+      }
+    },
+    "timeouts": {
+      "type": "object",
+      "required": ["attemptMs", "supplementalMs", "restoreMs"],
+      "additionalProperties": false,
+      "properties": {
+        "attemptMs": { "type": "integer", "minimum": 1 },
+        "supplementalMs": { "type": "integer", "minimum": 1 },
+        "restoreMs": { "type": "integer", "minimum": 1 },
+        "stopTermMs": { "type": "integer", "minimum": 1 },
+        "stopKillMs": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": ["rssCeilingKiB", "wallCeilingMs"],
+      "additionalProperties": false,
+      "properties": {
+        "rssCeilingKiB": { "type": "integer", "minimum": 1 },
+        "wallCeilingMs": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repeats": { "type": "integer", "minimum": 1 },
+        "staleTimeoutMs": { "type": "integer", "minimum": 1 },
+        "cells": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "binding-round-trip",
+              "two-raf",
+              "synthetic-dom",
+              "synthetic-css",
+              "observer-init-after-navigation",
+              "stale-then-new-token",
+              "late-token",
+              "native-reload-survival"
+            ]
+          }
+        }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "ops"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "set": { "enum": ["workload", "negative-controls"] },
+          "ops": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["op"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string" },
+                "op": {
+                  "enum": [
+                    "edit-title",
+                    "edit-body",
+                    "edit-category",
+                    "edit-css",
+                    "delete-article",
+                    "stale-predicate"
+                  ]
+                },
+                "article": { "type": "string" },
+                "writeMode": { "enum": ["write", "rename"] },
+                "expect": { "enum": ["success", "timeout"] },
+                "targetPath": { "type": "string" },
+                "predicate": { "type": "object" },
+                "supplemental": { "type": "array", "items": { "type": "object" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "outDir": { "type": "string", "minLength": 1 },
+    "lockPath": { "type": "string" }
+  }
+}
