@@ -1057,3 +1057,48 @@ async fn trailing_slash_true_forwards_post_body_headers_and_head() {
     assert_eq!(d.last.lock().await.clone().unwrap().method, "HEAD");
     server.abort();
 }
+
+#[tokio::test]
+async fn trailing_slash_true_slash_url_yields_to_prerendered_and_plugin_owners() {
+    let canned = SsrResponse {
+        status: 200,
+        headers: vec![("content-type".into(), "text/plain; charset=utf-8".into())],
+        body: b"ssr".to_vec(),
+    };
+    let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
+    let set = multi_ssr_set(
+        &["/live/[slug]"],
+        dispatcher.clone() as Arc<dyn SsrDispatcher>,
+    )
+    .with_prerendered_patterns(vec!["/live/about".into()]);
+    let plugin_set = DevMiddlewareSet {
+        registrations: Arc::new(vec![PluginRegistration {
+            path: "/live/plugin".into(),
+            handler_id: "h1".into(),
+            plugin: "test".into(),
+        }]),
+        dispatcher: Arc::new(AlwaysRespondingPluginDispatcher) as Arc<dyn DevMiddlewareDispatcher>,
+    };
+    let (addr, _pages, server, _tmp) = boot_with_trailing_slash(
+        Some(set),
+        Some(plugin_set),
+        None,
+        zfb_server::ServerMode::Dev,
+        true,
+    )
+    .await;
+
+    // A prerendered sibling keeps its canonical slash URL: not dispatched to
+    // SSR (the empty test cache then answers 404).
+    let (status, dispatched) = probe(addr, &dispatcher, reqwest::Method::GET, "/live/about/").await;
+    assert_eq!((status, dispatched), (404, None));
+    // A plugin-owned slashless URL is not taken over by SSR via its slash form.
+    let (_, dispatched) = probe(addr, &dispatcher, reqwest::Method::GET, "/live/plugin/").await;
+    assert_eq!(dispatched, None);
+    // Other slugs still reach SSR.
+    assert_eq!(
+        probe(addr, &dispatcher, reqwest::Method::GET, "/live/first/").await,
+        (200, Some("/live/first/".to_string()))
+    );
+    server.abort();
+}

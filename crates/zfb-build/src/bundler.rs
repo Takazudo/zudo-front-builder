@@ -19724,6 +19724,7 @@ mod tests {
             emit_render_artifacts,
             mdx_components_import_spec: None,
             base_prefix: Some(""),
+            dev_trailing_slash_dispatch: false,
         };
         write_entry_module(&off, &[], &inputs(false)).unwrap();
         write_entry_module(&on, &[], &inputs(true)).unwrap();

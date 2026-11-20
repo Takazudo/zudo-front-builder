@@ -949,6 +949,7 @@ async fn dev_trailing_slash_urls_reach_request_time_ssr() {
     }
 
     for (path, marker) in [
+        ("/live/about/", "SLASH_LIVE_ABOUT_PRERENDERED"),
         ("/live/special/", "SLASH_LIVE_SPECIAL"),
         ("/live/special", "SLASH_LIVE_SPECIAL"),
         ("/docs/a/", "SLASH_DOCS:slug=a"),
@@ -992,6 +993,7 @@ async fn dev_trailing_slash_urls_reach_request_time_ssr() {
         "/docs",
         "/live/first//",
         "/live/v1.2/",
+        "/live/v1%2E2/",
         "/live/a%2F",
         "/unknown/",
     ] {

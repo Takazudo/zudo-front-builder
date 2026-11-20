@@ -88,6 +88,10 @@ pub struct SsrRouteRecord {
 pub struct SsrRouteSet {
     pub records: Arc<Vec<SsrRouteRecord>>,
     pub dispatcher: Arc<dyn SsrDispatcher>,
+    /// Patterns of the session's prerendered and static pages (#4750).
+    /// Consulted only for a slash URL admitted by its slashless key, so a
+    /// prerendered or static page keeps its canonical `/route/` URL.
+    pub prerendered_patterns: Arc<Vec<String>>,
 }
 
 impl SsrRouteSet {
@@ -96,7 +100,15 @@ impl SsrRouteSet {
         Self {
             records: Arc::new(records),
             dispatcher,
+            prerendered_patterns: Arc::new(Vec::new()),
         }
+    }
+
+    /// Attach the session's prerendered/static page patterns (#4750); see
+    /// [`Self::find_slash_match`].
+    pub fn with_prerendered_patterns(mut self, patterns: Vec<String>) -> Self {
+        self.prerendered_patterns = Arc::new(patterns);
+        self
     }
 
     pub fn is_empty(&self) -> bool {
@@ -114,6 +126,21 @@ impl SsrRouteSet {
         self.records
             .iter()
             .find(|rec| pattern_matches(&rec.pattern, url_path))
+    }
+
+    /// Match for a slash URL admitted by its slashless `key` (#4750). A
+    /// prerendered or static page whose pattern matches `key` owns that URL
+    /// (its `/route/` form is served from the page cache, as the deployed
+    /// static assets would be), so no SSR route is returned for it.
+    pub fn find_slash_match(&self, key: &str) -> Option<&SsrRouteRecord> {
+        if self
+            .prerendered_patterns
+            .iter()
+            .any(|pattern| pattern_matches(pattern, key))
+        {
+            return None;
+        }
+        self.find_match(key)
     }
 }
 
@@ -252,6 +279,28 @@ mod tests {
         assert!(s.find_match("/api/echo").is_some());
         assert!(s.find_match("/api/echo/extra").is_none());
         assert!(s.find_match("/api").is_none());
+    }
+
+    #[test]
+    fn slash_match_yields_to_prerendered_and_static_pages() {
+        let s = set(&["/[slug]", "/live/[slug]"])
+            .with_prerendered_patterns(vec!["/plain".into(), "/blog/[slug]".into()]);
+        assert!(s.find_slash_match("/plain").is_none());
+        assert!(s.find_slash_match("/blog/a").is_none());
+        assert_eq!(
+            s.find_slash_match("/other").map(|r| r.pattern.as_str()),
+            Some("/[slug]")
+        );
+        assert_eq!(
+            s.find_slash_match("/live/first")
+                .map(|r| r.pattern.as_str()),
+            Some("/live/[slug]")
+        );
+        // The strict matcher is unchanged.
+        assert_eq!(
+            s.find_match("/plain").map(|r| r.pattern.as_str()),
+            Some("/[slug]")
+        );
     }
 
     #[test]

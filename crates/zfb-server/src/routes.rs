@@ -1289,7 +1289,27 @@ async fn serve_page(
                 raw_path.as_deref().unwrap_or(&path_only),
                 state.trailing_slash,
             );
-            if set.find_match(admission).is_some() {
+            let matched = if admission == path_only {
+                set.find_match(&path_only).is_some()
+            } else {
+                // A slash URL admitted by its slashless key must not take a
+                // URL whose slashless form a plugin, embed handler or
+                // injected (prerendered) route owns.
+                let owned_elsewhere = state
+                    .plugins
+                    .as_ref()
+                    .is_some_and(|p| p.find_match(admission).is_some())
+                    || state
+                        .embed_handlers
+                        .as_ref()
+                        .is_some_and(|e| e.find_match(admission).is_some())
+                    || state
+                        .injected_routes
+                        .as_ref()
+                        .is_some_and(|i| i.find_match(admission).is_some());
+                !owned_elsewhere && set.find_slash_match(admission).is_some()
+            };
+            if matched {
                 // Issue #931: same Origin gate as the plugin leg above.
                 if let Some(resp) = origin_rejection(state, &method, &headers) {
                     return resp;
@@ -1762,8 +1782,9 @@ fn strip_prefix_from_full_uri(uri: &Uri, prefix: Option<&str>) -> Option<String>
 /// an eligible URL ending in one literal `/` is admitted by its slashless form,
 /// so `/live/first/` reaches the route that serves `/live/first`. Eligible means
 /// not the root, not ending in `//`, and a last segment with no `.` extension.
-/// The check runs on `raw_path`, so an encoded `%2F` is never treated as the
-/// trailing slash. Everything else, and every path when `trailing_slash` is
+/// The slash checks run on `raw_path`, so an encoded `%2F` is never treated as
+/// the trailing slash; the extension check runs on the decoded path, so `%2E`
+/// counts as a `.` exactly as the runtime's `decodeURI` sees it. Everything else, and every path when `trailing_slash` is
 /// false, is returned unchanged.
 ///
 /// Only admission uses this key. The dispatched [`SsrRequest::url_path`] keeps
@@ -1774,12 +1795,12 @@ fn ssr_admission_path<'a>(path_only: &'a str, raw_path: &str, trailing_slash: bo
         && raw_path.len() > 1
         && raw_path.ends_with('/')
         && !raw_path.ends_with("//")
-        && !raw_path[..raw_path.len() - 1]
+        && path_only.len() > 1
+        && path_only.ends_with('/')
+        && !path_only[..path_only.len() - 1]
             .rsplit('/')
             .next()
-            .is_some_and(|segment| segment.contains('.'))
-        && path_only.len() > 1
-        && path_only.ends_with('/');
+            .is_some_and(|segment| segment.contains('.'));
     if eligible {
         &path_only[..path_only.len() - 1]
     } else {
@@ -2485,6 +2506,8 @@ mod tests {
         // An encoded `%2F` decodes to `/` but is not a literal trailing slash.
         assert_eq!(key("/live/a/", "/live/a%2F", true), "/live/a/");
         assert_eq!(key("/live/a//", "/live/a%2F/", true), "/live/a/");
+        // An encoded dot is still an extension (the runtime decodes `%2E`).
+        assert_eq!(key("/live/v1.2/", "/live/v1%2E2/", true), "/live/v1.2/");
     }
 
     use super::*;

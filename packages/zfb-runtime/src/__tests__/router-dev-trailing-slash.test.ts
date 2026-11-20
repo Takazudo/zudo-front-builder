@@ -114,6 +114,8 @@ describe("createPageRouter devTrailingSlashDispatch", () => {
     expect((await dev(get("/live/first//"))).status).toBe(404);
     expect((await dev(get("/live//first/"))).status).toBe(404);
     expect((await dev(get("/live/v1.2/"))).status).toBe(404);
+    // `%2E` decodes to `.`, so it is an extension too (matches the Rust rule).
+    expect((await dev(get("/live/v1%2E2/"))).status).toBe(404);
     expect((await dev(get("/"))).status).toBe(404);
     // `%2F` stays encoded through Hono's decodeURI, so it is a param byte,
     // never an eligible trailing slash.
