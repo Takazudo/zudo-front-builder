@@ -120,6 +120,10 @@
   var navigationType = navEntry ? navEntry.type : "unknown";
   var outbox = [];
   var confirming = null;
+  // Token whose notification was sent from THIS document and not yet
+  // acknowledged. `delivered` is persisted only on the controller's ack, so a
+  // document replaced mid-delivery leaves the expectation armed for the next one.
+  var inFlight = null;
   var rafScheduled = false;
   var checkQueued = false;
 
@@ -158,16 +162,19 @@
         return;
       }
       outbox.shift();
+      var ret;
       try {
-        fn(item.payload);
+        ret = fn(item.payload);
       } catch (e) {
-        // Binding rejection is the controller's to record; nothing to retry here.
+        ret = null;
+        if (item.onFail) item.onFail();
       }
+      if (ret && typeof ret.then === "function") ret.then(item.onAck || null, item.onFail || null);
     }
   }
 
-  function send(name, payload) {
-    outbox.push({ name: name, payload: payload });
+  function send(name, payload, onAck, onFail) {
+    outbox.push({ name: name, payload: payload, onAck: onAck, onFail: onFail });
     flush();
   }
 
@@ -194,6 +201,7 @@
   function check() {
     var armed = readArmed();
     if (!armed || armed.delivered) return;
+    if (inFlight === armed.token) return;
     if (!document.documentElement) return;
     var r = engine.evaluate(armed.predicate, env());
     if (r.matched) confirm(armed.token);
@@ -212,20 +220,33 @@
           scheduleFrameLoop();
           return;
         }
-        cur.delivered = true;
-        writeArmed(cur);
+        inFlight = token;
         var active = document.activeElement;
-        send(BINDINGS.notify, {
-          token: token,
-          docUUID: docUUID,
-          navigationType: navigationType,
-          armedDocUUID: cur.armedDocUUID,
-          url: location.href,
-          scroll: { x: window.scrollX, y: window.scrollY },
-          activeElementId: active && active.id ? active.id : null,
-          activeElementTag: active ? active.tagName : null,
-          actual: r.actual === undefined ? null : r.actual,
-        });
+        send(
+          BINDINGS.notify,
+          {
+            token: token,
+            docUUID: docUUID,
+            navigationType: navigationType,
+            armedDocUUID: cur.armedDocUUID,
+            url: location.href,
+            scroll: { x: window.scrollX, y: window.scrollY },
+            activeElementId: active && active.id ? active.id : null,
+            activeElementTag: active ? active.tagName : null,
+            actual: r.actual === undefined ? null : r.actual,
+          },
+          function () {
+            var now = readArmed();
+            if (now && now.token === token) {
+              now.delivered = true;
+              writeArmed(now);
+            }
+          },
+          function () {
+            if (inFlight === token) inFlight = null;
+            scheduleFrameLoop();
+          },
+        );
       });
     });
   }

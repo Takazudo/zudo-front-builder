@@ -99,6 +99,8 @@ export class ObserverPage {
     this.pingWaiters = new Map();
     this.docInitWaiters = [];
     this.wsFrames = [];
+    this.resolved = new Set();
+    this.duplicates = [];
     this.attemptMark = { docInits: 0, navigations: 0, wsFrames: 0 };
     this.preMark = null;
     this.onStray = () => {};
@@ -128,20 +130,28 @@ export class ObserverPage {
     });
   }
 
+  /** Returns true so the observer persists `delivered` only after this ack. */
   onNotify(payload, t1) {
+    const received = { ...payload, receivedNs: String(t1) };
+    if (this.resolved.has(payload.token) || (!this.waiter && this.early.has(payload.token))) {
+      this.duplicates.push(received);
+      return true;
+    }
     if (this.waiter && payload.token === this.waiter.token) {
       const w = this.waiter;
       this.waiter = null;
       clearTimeout(w.timer);
+      this.resolved.add(payload.token);
       w.resolve({ kind: "notify", payload, t1 });
-      return;
+      return true;
     }
     if (!this.waiter && payload.token === this.armedToken) {
       this.early.set(payload.token, { payload, t1 });
-      return;
+      return true;
     }
-    if (this.waiter) this.waiter.onLate({ ...payload, receivedNs: String(t1) });
-    else this.onStray({ ...payload, receivedNs: String(t1) });
+    if (this.waiter) this.waiter.onLate(received);
+    else this.onStray(received);
+    return true;
   }
 
   onPing(payload, t1) {
@@ -180,10 +190,93 @@ export class ObserverPage {
   /** Pre-attempt navigation (never inside a measured attempt). */
   async prepare(path, timeoutMs = 30000) {
     await this.disarm();
-    await this.page.goto(this.url(path), { waitUntil: "load", timeout: timeoutMs });
+    const response = await this.page.goto(this.url(path), {
+      waitUntil: "load",
+      timeout: timeoutMs,
+    });
     const state = await this.page.evaluate(() => window.__dbo.state());
     if (state.armed) await this.page.evaluate(() => window.__dbo.disarm());
-    return state;
+    return { ...state, httpStatus: response ? response.status() : null };
+  }
+
+  /** After an aborted navigation, wait (bounded) for the document that replaced it; never reloads. */
+  async awaitResultingDocument(timeoutMs) {
+    const started = this.clock();
+    try {
+      await this.page.waitForLoadState("load", { timeout: timeoutMs });
+      const state = await this.page.evaluate(() => (window.__dbo ? window.__dbo.state() : null));
+      if (state?.armed) await this.page.evaluate(() => window.__dbo.disarm());
+      return {
+        ok: state !== null,
+        url: this.page.url(),
+        state,
+        waitedMs: nsToMs(this.clock() - started),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: String(error?.message ?? error),
+        waitedMs: nsToMs(this.clock() - started),
+      };
+    }
+  }
+
+  /** Read-only snapshot of the current document for a failed check's record. */
+  async failureSnapshot(predicate) {
+    try {
+      return await this.page.evaluate((p) => {
+        const st = window.__dbo ? window.__dbo.state() : null;
+        return {
+          url: location.href,
+          title: document.title,
+          readyState: document.readyState,
+          docUUID: st ? st.docUUID : null,
+          armed: st ? st.armed : null,
+          predicateNow: window.__dbo ? window.__dbo.evaluate(p) : null,
+          bodyExcerpt: (document.body ? document.body.innerText : "").slice(0, 600),
+        };
+      }, predicate);
+    } catch (error) {
+      return { error: String(error?.message ?? error) };
+    }
+  }
+
+  /**
+   * Cleanup settle: wait until nothing (livereload frame, main-frame
+   * navigation, new document) has happened for `quietMs`, measured from the
+   * restore write or the last such event, bounded by `boundMs`. Records
+   * whether the restore's own native update (page/css frame) was observed.
+   */
+  async settle({ mark, startNs, quietMs, boundMs, stepMs = 50 }) {
+    const begun = this.clock();
+    for (;;) {
+      const ev = this.since(mark, startNs);
+      const lastNs = [
+        startNs,
+        ...[...ev.wsFrames, ...ev.navigations, ...ev.docInits].map((x) => BigInt(x.ns)),
+      ].reduce((a, b) => (b > a ? b : a));
+      const now = this.clock();
+      const quietFor = nsToMs(now - lastNs);
+      const waitedMs = nsToMs(now - begun);
+      const nativeUpdateObserved = ev.wsFrames.some((f) => f.event === "page" || f.event === "css");
+      if (quietFor >= quietMs || waitedMs >= boundMs) {
+        return {
+          settled: quietFor >= quietMs,
+          reason:
+            quietFor >= quietMs
+              ? nativeUpdateObserved
+                ? "native-update-observed-then-quiet"
+                : "no-frame-for-quietMs"
+              : "bound-exceeded",
+          nativeUpdateObserved,
+          quietMs,
+          boundMs,
+          waitedMs,
+          ...ev,
+        };
+      }
+      await new Promise((r) => setTimeout(r, stepMs));
+    }
   }
 
   async arm(token, predicate) {
@@ -250,6 +343,7 @@ export class ObserverPage {
     const early = this.early.get(token);
     if (early) {
       this.early.delete(token);
+      this.resolved.add(token);
       return Promise.resolve({ kind: "notify", ...early });
     }
     return new Promise((resolve) => {
@@ -266,31 +360,85 @@ export class ObserverPage {
    * navigation, then an observer-armed wait up to `timeoutMs` with no reload,
    * re-navigation or HTTP polling. Already-true at first read counts as ok.
    */
+  /**
+   * Standardized warming rule for supplemental and restoration checks: one
+   * navigation, then an observer-armed wait up to `timeoutMs` with no reload
+   * or HTTP polling. If a native reload aborts the navigation, the resulting
+   * document is awaited (bounded) and, only if it is not the target, the
+   * target is navigated to once more. Every step is recorded.
+   */
   async navigateAndAwait(path, predicate, timeoutMs, tokenPrefix) {
     const navStart = this.clock();
-    const state = await this.prepare(path);
+    const m = this.mark();
+    const recovery = [];
+    let state = null;
+    for (let i = 0; state === null; i += 1) {
+      try {
+        state = await this.prepare(path);
+      } catch (error) {
+        const msg = String(error?.message ?? error);
+        const aborted = /ERR_ABORTED|interrupted by another navigation|frame was detached/i.test(
+          msg,
+        );
+        if (!aborted || i >= 1) {
+          return {
+            ok: false,
+            error: msg,
+            recovery,
+            evidence: this.since(m, navStart),
+            failure: await this.failureSnapshot(predicate),
+          };
+        }
+        const resulting = await this.awaitResultingDocument(timeoutMs);
+        const onTarget =
+          resulting.ok && new URL(resulting.url).pathname === new URL(this.url(path)).pathname;
+        recovery.push({
+          at: isoNow(),
+          abortedBy: msg.split("\n")[0],
+          resulting,
+          usedResultingDocument: onTarget,
+        });
+        if (onTarget) state = resulting.state;
+      }
+    }
     const token = `${tokenPrefix}-${Math.random().toString(16).slice(2, 10)}`;
     const armed = await this.arm(token, predicate);
+    const base = {
+      docUUID: state.docUUID,
+      httpStatus: state.httpStatus ?? null,
+      firstReadActual: armed.actual ?? null,
+      recovery,
+    };
     if (!armed.armed && armed.precondition) {
       this.armedToken = null;
       return {
         ok: true,
         firstReadMatched: true,
-        docUUID: state.docUUID,
+        ...base,
         sinceNavigationMs: nsToMs(this.clock() - navStart),
         actual: armed.actual,
+        evidence: this.since(m, navStart),
       };
     }
-    if (!armed.armed) return { ok: false, error: armed.error ?? "arm failed" };
+    if (!armed.armed)
+      return {
+        ok: false,
+        error: armed.error ?? "arm failed",
+        ...base,
+        evidence: this.since(m, navStart),
+      };
     const waited = await this.waitNotify(token, timeoutMs, (p) => this.onStray(p));
+    const failure = waited.kind === "notify" ? null : await this.failureSnapshot(predicate);
     if (waited.kind !== "notify") await this.disarm();
     this.armedToken = null;
     return {
       ok: waited.kind === "notify",
       firstReadMatched: false,
-      docUUID: state.docUUID,
+      ...base,
       sinceNavigationMs: nsToMs(this.clock() - navStart),
       notify: waited.payload ?? null,
+      evidence: this.since(m, navStart),
+      failure,
     };
   }
 
