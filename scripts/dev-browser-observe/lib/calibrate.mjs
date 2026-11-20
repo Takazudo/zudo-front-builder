@@ -63,11 +63,12 @@ export async function nativeReloadSurvival({
   quietMs,
 }) {
   const snap = fixtureOps.snapshot();
-  const target = fixtureOps.route("article", "b");
+  const slug = fixtureOps.calibrationArticle ?? "b";
+  const target = fixtureOps.route("article", slug);
   const state = await observer.prepare(target);
   const attempt = fixtureOps.prepareAttempt({
     op: "edit-body",
-    article: "b",
+    article: slug,
     writeMethod: "in-place",
   });
   const armed = await observer.arm(attempt.token, attempt.predicate);

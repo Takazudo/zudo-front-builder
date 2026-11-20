@@ -14,7 +14,16 @@
 
   function createPredicateEngine() {
     var STRING_OPS = ["equals", "notEquals", "includes", "excludes"];
-    var KINDS = ["text", "attribute", "count", "absent", "computed-style", "document-uuid-not"];
+    var KINDS = [
+      "text",
+      "attribute",
+      "count",
+      "absent",
+      "computed-style",
+      "document-uuid-not",
+      "attribute-list",
+      "all",
+    ];
 
     function stringOp(pred) {
       for (var i = 0; i < STRING_OPS.length; i++)
@@ -43,6 +52,20 @@
       var errors = [];
       if (!pred || typeof pred !== "object") return ["predicate must be an object"];
       if (KINDS.indexOf(pred.kind) === -1) errors.push("unknown kind: " + pred.kind);
+      if (pred.kind === "all") {
+        if (!Array.isArray(pred.of) || pred.of.length === 0) return ["all needs a non-empty of[]"];
+        for (var k = 0; k < pred.of.length; k++) {
+          var sub = validate(pred.of[k]);
+          for (var e = 0; e < sub.length; e++) errors.push("of[" + k + "]: " + sub[e]);
+        }
+        return errors;
+      }
+      if (pred.kind === "attribute-list") {
+        if (typeof pred.selector !== "string") errors.push("selector required");
+        if (typeof pred.name !== "string") errors.push("attribute name required");
+        if (!Array.isArray(pred.equals)) errors.push("attribute-list equals must be an array");
+        return errors;
+      }
       if (pred.kind !== "document-uuid-not" && typeof pred.selector !== "string")
         errors.push("selector required");
       if (
@@ -70,6 +93,26 @@
       if (errors.length) return { matched: false, error: errors.join("; ") };
       if (pred.kind === "document-uuid-not")
         return { matched: env.docUUID !== pred.value, actual: env.docUUID };
+      if (pred.kind === "all") {
+        var parts = [];
+        var all = true;
+        for (var i = 0; i < pred.of.length; i++) {
+          var r = evaluate(pred.of[i], env);
+          parts.push(r.actual === undefined ? null : r.actual);
+          if (!r.matched) all = false;
+        }
+        return { matched: all, actual: parts };
+      }
+      if (pred.kind === "attribute-list") {
+        var list = env.querySelectorAll(pred.selector);
+        var values = [];
+        for (var j = 0; j < (list ? list.length : 0); j++)
+          values.push(list[j].getAttribute(pred.name));
+        var same = values.length === pred.equals.length;
+        for (var q = 0; same && q < values.length; q++)
+          if (values[q] !== pred.equals[q]) same = false;
+        return { matched: same, actual: values };
+      }
       var els = env.querySelectorAll(pred.selector);
       var n = els ? els.length : 0;
       if (pred.kind === "count") return { matched: n === pred.equals, actual: n };
@@ -203,8 +246,30 @@
     if (!armed || armed.delivered) return;
     if (inFlight === armed.token) return;
     if (!document.documentElement) return;
+    if (armed.watch && armed.watch.length) noteWatch(armed);
     var r = engine.evaluate(armed.predicate, env());
     if (r.matched) confirm(armed.token);
+  }
+
+  // Intermediate tokens (burst writes): record the first time each is seen in
+  // its selector, persisted with the armed record so it survives reloads.
+  function noteWatch(armed) {
+    var changed = false;
+    armed.watchSeen = armed.watchSeen || {};
+    for (var i = 0; i < armed.watch.length; i++) {
+      var w = armed.watch[i];
+      var els = document.querySelectorAll(w.selector);
+      var text = "";
+      for (var j = 0; j < els.length; j++) text += " " + (els[j].textContent || "");
+      for (var k = 0; k < w.tokens.length; k++) {
+        var t = w.tokens[k];
+        if (!armed.watchSeen[t] && text.indexOf(t) !== -1) {
+          armed.watchSeen[t] = { docUUID: docUUID, atPerfMs: performance.now() };
+          changed = true;
+        }
+      }
+    }
+    if (changed) writeArmed(armed);
   }
 
   function confirm(token) {
@@ -234,6 +299,7 @@
             activeElementId: active && active.id ? active.id : null,
             activeElementTag: active ? active.tagName : null,
             actual: r.actual === undefined ? null : r.actual,
+            watchSeen: cur.watchSeen || null,
           },
           function () {
             var now = readArmed();
@@ -269,7 +335,7 @@
     evaluate: function (predicate) {
       return engine.evaluate(predicate, env());
     },
-    arm: function (token, predicate) {
+    arm: function (token, predicate, watch) {
       var errors = engine.validate(predicate);
       if (errors.length) return { armed: false, error: errors.join("; "), docUUID: docUUID };
       var pre = engine.evaluate(predicate, env());
@@ -280,7 +346,14 @@
           actual: pre.actual === undefined ? null : pre.actual,
           docUUID: docUUID,
         };
-      writeArmed({ token: token, predicate: predicate, armedDocUUID: docUUID, delivered: false });
+      writeArmed({
+        token: token,
+        predicate: predicate,
+        armedDocUUID: docUUID,
+        delivered: false,
+        watch: Array.isArray(watch) ? watch : null,
+        watchSeen: {},
+      });
       scheduleFrameLoop();
       return {
         armed: true,

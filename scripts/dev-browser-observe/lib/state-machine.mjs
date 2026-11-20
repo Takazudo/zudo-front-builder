@@ -1,3 +1,4 @@
+import { runSpecialMode } from "./special-modes.mjs";
 import { nsToMs } from "./util.mjs";
 
 export const OUTCOMES = [
@@ -9,6 +10,10 @@ export const OUTCOMES = [
   "prepare-error",
   "precondition-unstable",
   "controller-error",
+  "expected-negative-observed",
+  "expected-negative-mismatch",
+  "recovery-failed",
+  "final-state-mismatch",
   "write-error",
   "server-exit",
   "resource-limit",
@@ -18,7 +23,9 @@ export const OUTCOMES = [
 ];
 
 const ERROR_OUTCOMES = new Set(
-  OUTCOMES.filter((o) => !["success", "timeout", "stale"].includes(o)),
+  OUTCOMES.filter(
+    (o) => !["success", "timeout", "stale", "expected-negative-observed"].includes(o),
+  ),
 );
 
 /** Declared outcome for each negative-control injection (allowed only in set "negative-controls"). */
@@ -54,6 +61,7 @@ export function newAccounting(planned) {
     expectedErrors: 0,
     expectedTimeouts: 0,
     controlsNotFired: 0,
+    expectedNegativePasses: 0,
     restorationFailures: 0,
     supplementalFailures: 0,
     lastArmedUnknownOperation: null,
@@ -110,6 +118,7 @@ function count(acc, outcome) {
   if (outcome === "success") acc.success += 1;
   else if (outcome === "timeout") acc.timeout += 1;
   else if (outcome === "stale") acc.stale += 1;
+  else if (outcome === "expected-negative-observed") acc.expectedNegativePasses += 1;
   else if (ERROR_OUTCOMES.has(outcome)) acc.error += 1;
 }
 
@@ -330,14 +339,16 @@ export async function runBatch({ scenarios, deps }) {
         }
 
         let attempt;
+        let preparedState = null;
         try {
           attempt = fs.prepareAttempt(op);
           if (op.inject === "precondition-true") attempt.predicate = ALWAYS_TRUE_PREDICATE;
           if (op.inject === "write-error") {
             attempt.injectedFrom = attempt.write.path;
             attempt.write = { ...attempt.write, path: fs.missingSibling(attempt.write.path) };
+            if (attempt.writes) attempt.writes = [attempt.write, ...attempt.writes.slice(1)];
           }
-          await page.prepare(attempt.targetPath);
+          preparedState = await page.prepare(attempt.targetPath);
           page.markPre?.();
         } catch (error) {
           append({
@@ -374,12 +385,50 @@ export async function runBatch({ scenarios, deps }) {
           targetSha256Before: fs.hashOf
             ? fs.hashOf(attempt.injectedFrom ?? attempt.write.path)
             : null,
+          writeMethods: attempt.writes
+            ? attempt.writes.map((w) => w.method)
+            : [attempt.write.method],
+          declared: attempt.declared ?? null,
         };
+
+        if (attempt.mode && attempt.mode !== "standard") {
+          current.armedToken = attempt.token;
+          const special = await runSpecialMode(attempt.mode, {
+            attempt,
+            op,
+            recBase,
+            where,
+            page,
+            server,
+            fs,
+            clock,
+            timeouts,
+            limits,
+            preparedState,
+          });
+          current.writeDone = special.writeDone;
+          const rec = special.rec;
+          const outcome = special.outcome;
+          if (rec.expect === "classify" && (outcome === "timeout" || outcome === "stale"))
+            acc.expectedTimeouts += 1;
+          rec.sampleAfter = server.sampleResources();
+          append(rec);
+          count(acc, outcome);
+          if (outcome === "success" || outcome === "expected-negative-observed") {
+            acc.lastArmedUnknownOperation = null;
+            continue;
+          }
+          acc.lastArmedUnknownOperation = { ...where, token: attempt.token, writeCompleted: true };
+          acc.stoppedByClassifyTimeout =
+            rec.expect === "classify" && (outcome === "timeout" || outcome === "stale");
+          stop(outcome, where);
+          break outer;
+        }
 
         current.armedToken = attempt.token;
         let armed;
         try {
-          armed = await page.arm(attempt.token, attempt.predicate);
+          armed = await page.arm(attempt.token, attempt.predicate, attempt.watch ?? null);
         } catch (error) {
           armed = { armed: false, error: String(error?.message ?? error), threw: true };
         }
@@ -430,10 +479,23 @@ export async function runBatch({ scenarios, deps }) {
         }
 
         let t0;
+        let tLast = null;
+        let writeSteps = null;
         try {
-          t0 = fs.performWrite(attempt.write, () => clock.now());
+          if (attempt.writes && attempt.writes.length > 1 && fs.performWrites) {
+            const r = await fs.performWrites(attempt.writes, () => clock.now());
+            t0 = r.t0;
+            tLast = r.tLast;
+            writeSteps = r.steps;
+          } else t0 = fs.performWrite(attempt.write, () => clock.now());
           current.writeDone = true;
+          attempt.applied?.();
         } catch (error) {
+          if (error?.steps?.length) {
+            current.writeDone = true;
+            recBase.writeSteps = error.steps;
+            recBase.failedStep = error.failedStep;
+          }
           await page.disarm();
           acc.lastArmedUnknownOperation = {
             ...where,
@@ -524,7 +586,11 @@ export async function runBatch({ scenarios, deps }) {
           },
           injectKill,
         };
-        if (waited.kind === "notify" && !(waited.t1 > t0)) {
+        if (writeSteps) {
+          rec.writeSteps = writeSteps;
+          rec.tLastWriteNs = String(tLast);
+        }
+        if (waited.kind === "notify" && !(waited.t1 > (tLast ?? t0))) {
           outcome = "precondition-unstable";
           rec.unstable = {
             reason: "notify-not-after-t0",
@@ -538,8 +604,13 @@ export async function runBatch({ scenarios, deps }) {
           outcome = "success";
           rec.t1Ns = String(waited.t1);
           rec.latencyMs = nsToMs(waited.t1 - t0);
+          if (tLast !== null) {
+            rec.latencyFromFirstWriteMs = rec.latencyMs;
+            rec.latencyFromLastWriteMs = nsToMs(waited.t1 - tLast);
+          }
           rec.endpoint = "predicate confirmed + 2 rAF + binding delivery";
           rec.notify = waited.payload;
+          if (attempt.watch) rec.watchSeen = waited.payload?.watchSeen ?? {};
           rec.mechanism = classifyMechanism({
             preDocUUID,
             notifyDocUUID: waited.payload.docUUID,
@@ -565,7 +636,8 @@ export async function runBatch({ scenarios, deps }) {
             outcome = evidence.newDocuments > 0 ? "stale" : "timeout";
             rec.timeoutMs = timeouts.attemptMs;
           }
-          await page.disarm();
+          const disarmed = await page.disarm();
+          if (attempt.watch) rec.watchSeen = disarmed?.watchSeen ?? null;
           rec.observerDisarmed = true;
           rec.nativeWorkCancelled = false;
           acc.lastArmedUnknownOperation = { ...where, token: attempt.token, writeCompleted: true };

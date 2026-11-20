@@ -136,6 +136,7 @@ export class ObserverPage {
     this.pingWaiters = new Map();
     this.docInitWaiters = [];
     this.wsFrames = [];
+    this.requests = [];
     this.resolved = new Set();
     this.duplicates = [];
     this.attemptMark = { docInits: 0, navigations: 0, wsFrames: 0 };
@@ -158,6 +159,15 @@ export class ObserverPage {
     this.page.on("framenavigated", (frame) => {
       if (frame === this.page.mainFrame())
         this.navigations.push({ at: isoNow(), ns: String(this.clock()), url: frame.url() });
+    });
+    this.page.on("request", (req) => {
+      this.requests.push({
+        at: isoNow(),
+        ns: String(this.clock()),
+        url: req.url(),
+        resourceType: req.resourceType(),
+        navigation: req.isNavigationRequest(),
+      });
     });
     this.page.on("websocket", (ws) => {
       if (!isLivereloadSocket(ws.url())) return;
@@ -343,9 +353,12 @@ export class ObserverPage {
     }
   }
 
-  async arm(token, predicate) {
+  async arm(token, predicate, watch = null) {
     this.armedToken = token;
-    const res = await this.page.evaluate(([t, p]) => window.__dbo.arm(t, p), [token, predicate]);
+    const res = await this.page.evaluate(
+      ([t, p, w]) => window.__dbo.arm(t, p, w),
+      [token, predicate, watch],
+    );
     if (!res.armed) this.armedToken = null;
     return res;
   }
@@ -355,6 +368,7 @@ export class ObserverPage {
       docInits: this.docInits.length,
       navigations: this.navigations.length,
       wsFrames: this.wsFrames.length,
+      requests: this.requests.length,
     };
   }
 
@@ -363,6 +377,7 @@ export class ObserverPage {
     const docInits = this.docInits.slice(mark.docInits).map(rel);
     const navigations = this.navigations.slice(mark.navigations).map(rel);
     const wsFrames = this.wsFrames.slice(mark.wsFrames).map(rel);
+    const requests = this.requests.slice(mark.requests ?? this.requests.length).map(rel);
     return {
       mainFrameNavigations: navigations.length,
       newDocuments: docInits.length,
@@ -370,6 +385,7 @@ export class ObserverPage {
       docInits,
       navigations,
       wsFrames,
+      requests,
     };
   }
 
@@ -470,13 +486,15 @@ export class ObserverPage {
     };
     if (!armed.armed && armed.precondition) {
       this.armedToken = null;
+      const sinceNavigationMs = nsToMs(this.clock() - navStart);
       return {
         ok: true,
         firstReadMatched: true,
         ...base,
-        sinceNavigationMs: nsToMs(this.clock() - navStart),
+        sinceNavigationMs,
         actual: armed.actual,
         evidence: this.since(m, navStart),
+        page: await this.failureSnapshot(predicate),
       };
     }
     if (!armed.armed)
@@ -487,22 +505,82 @@ export class ObserverPage {
         evidence: this.since(m, navStart),
       };
     const waited = await this.waitNotify(token, timeoutMs, (p) => this.onStray(p));
+    const sinceNavigationMs = nsToMs(this.clock() - navStart);
     const failure = waited.kind === "notify" ? null : await this.failureSnapshot(predicate);
+    const page = failure ?? (await this.failureSnapshot(predicate));
     if (waited.kind !== "notify") await this.disarm();
     this.armedToken = null;
     return {
       ok: waited.kind === "notify",
       firstReadMatched: false,
       ...base,
-      sinceNavigationMs: nsToMs(this.clock() - navStart),
+      sinceNavigationMs,
       notify: waited.payload ?? null,
       evidence: this.since(m, navStart),
       failure,
+      page,
     };
   }
 
+  /** Read-only predicate evaluation in the current document (no arming). */
+  async evaluateNow(predicate) {
+    return this.page.evaluate(
+      (p) =>
+        window.__dbo ? window.__dbo.evaluate(p) : { matched: false, error: "observer missing" },
+      predicate,
+    );
+  }
+
   supplemental(check, timeoutMs) {
+    if (check.kind === "gone") return this.goneCheck(check);
     return this.navigateAndAwait(check.path, check.predicate, timeoutMs, "supp");
+  }
+
+  /** One fresh navigation and a read-only look at the result (status, title, excerpt, marker text). */
+  async observePage(path, { markerText = null } = {}) {
+    const navStart = this.clock();
+    try {
+      await this.disarm();
+      const response = await this.page.goto(this.url(path), { waitUntil: "load", timeout: 30000 });
+      const view = await this.page.evaluate((marker) => {
+        const text = document.body ? document.body.innerText : "";
+        return {
+          url: location.href,
+          title: document.title,
+          containsMarker: marker ? text.indexOf(marker) !== -1 : null,
+          bodyExcerpt: text.slice(0, 600),
+        };
+      }, markerText);
+      return {
+        ok: true,
+        path,
+        httpStatus: response ? response.status() : null,
+        sinceNavigationMs: nsToMs(this.clock() - navStart),
+        ...view,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        path,
+        error: String(error?.message ?? error),
+        sinceNavigationMs: nsToMs(this.clock() - navStart),
+      };
+    }
+  }
+
+  /**
+   * A removed URL must answer 404/410 AND must not still render the removed
+   * content: a 200 error page or a 200 last-good page is a failure.
+   */
+  async goneCheck(check) {
+    const view = await this.observePage(check.path, { markerText: check.absentText ?? null });
+    const statusOk = view.httpStatus === 404 || view.httpStatus === 410;
+    return {
+      ...view,
+      kind: "gone",
+      ok: view.ok && statusOk && view.containsMarker !== true,
+      statusOk,
+    };
   }
 
   liveCheck(check, timeoutMs) {
