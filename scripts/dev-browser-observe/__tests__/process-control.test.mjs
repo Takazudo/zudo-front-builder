@@ -395,6 +395,25 @@ describe("execute (identity gate)", () => {
     expect(msgs.join("\n")).toMatch(/label already used/);
   });
 
+  it("rejects the original-shape ts config when the stored original no longer matches its hash", () => {
+    const s = setup();
+    const p = JSON.parse(readFileSync(s.profilePath, "utf8"));
+    Object.assign(p.fixture, { placement: "external", trailingSlash: true, configFormat: "ts" });
+    writeFileSync(s.profilePath, JSON.stringify(p));
+    expect(
+      verifyIdentityOnly(s.profilePath).checks.find((c) => c.name === "config-provenance:original"),
+    ).toMatchObject({ ok: true });
+    const cfg = join(s.fixtureDir, "configs/original.zfb.config.ts.src");
+    chmodSync(cfg, 0o644);
+    writeFileSync(cfg, `${readFileSync(cfg, "utf8")}// tampered\n`);
+    expect(
+      verifyIdentityOnly(s.profilePath).checks.find((c) => c.name === "config-provenance:original"),
+    ).toMatchObject({
+      ok: false,
+      expected: "7839c840ae456b8b868463d2bc4cfb654ce490a5d80ace58cd71ab86c5c6f602",
+    });
+  });
+
   it("lock-contention-check: a second run exits 5 while hold-lock holds the lock", async () => {
     const s = setup();
     const r = await lockContentionCheck(s.profilePath, { holdMs: 30_000 });

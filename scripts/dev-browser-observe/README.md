@@ -213,6 +213,15 @@ The fixture is a zfb app with no `node_modules`. It has two Markdown articles,
 `internal`, or `external`, which is `../content/articles` with
 `allowOutsideRoot`, as in the original reproducer.
 
+`fixture.configFormat` selects the config file. `json` (the default) writes a
+generated `zfb.config.json`. `ts` writes `zfb.config.ts`, which is the
+byte-exact original (`configs/original.zfb.config.ts.src`, sha256
+`7839c840…f602`) when the profile matches its shape: `external` placement,
+`trailingSlash: true` and `wind: false`. `verify-identity` checks that file's
+hash. Any other `ts` combination gets a generated `defineConfig` file labelled
+`RECONSTRUCTED`. The receipt records `configFormat`, `configFile`,
+`configProvenance`, `configSha256` and `configOriginalSha256`.
+
 Helper adapters live in `fixtures/tiny-two-article/adapters/`; see the
 adapter README. `A0` is a reconstructed direct-read helper. `A1` is the exact
 original memoized helper, and `verify-identity` checks its hash. `A2` is A1

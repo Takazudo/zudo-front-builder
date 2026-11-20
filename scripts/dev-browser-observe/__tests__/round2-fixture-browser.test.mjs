@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -262,5 +262,52 @@ describe("native-reload-survival calibration cell", () => {
       quietMs: 1,
     });
     expect(res.ok).toBe(false);
+  });
+});
+
+describe("configFormat", () => {
+  const ORIGINAL_CONFIG_SHA256 = "7839c840ae456b8b868463d2bc4cfb654ce490a5d80ace58cd71ab86c5c6f602";
+  const mat = (opts) =>
+    materialize({ fixtureDir: FIXTURE, workDir: join(tmp(), "w"), adapter: "A1", ...opts });
+
+  it("ts in the original shape writes the byte-exact original zfb.config.ts", () => {
+    const m = mat({ placement: "external", trailingSlash: true, configFormat: "ts" });
+    expect(sha256File(join(m.appDir, "zfb.config.ts"))).toBe(ORIGINAL_CONFIG_SHA256);
+    expect(m).toMatchObject({
+      configFile: "zfb.config.ts",
+      configProvenance: "original-input",
+      configOriginalSha256: ORIGINAL_CONFIG_SHA256,
+      configSha256: ORIGINAL_CONFIG_SHA256,
+    });
+    expect(existsSync(join(m.appDir, "zfb.config.json"))).toBe(false);
+  });
+
+  it("ts in any other shape writes a generated defineConfig labelled reconstructed", () => {
+    for (const opts of [
+      { placement: "internal", trailingSlash: true },
+      { placement: "external", trailingSlash: false },
+    ]) {
+      const m = mat({ ...opts, configFormat: "ts" });
+      const text = readFileSync(join(m.appDir, "zfb.config.ts"), "utf8");
+      expect(m.configProvenance).toBe("reconstructed");
+      expect(text).toContain("RECONSTRUCTED by dev-browser-observe");
+      expect(text).toContain('import { defineConfig } from "@takazudo/zfb/config";');
+      expect(text).toContain(
+        opts.placement === "internal"
+          ? '"path": "content/articles"'
+          : '"path": "../content/articles"',
+      );
+      expect(text.includes('"trailingSlash": true')).toBe(opts.trailingSlash);
+    }
+  });
+
+  it("json stays the default", () => {
+    const m = mat({ placement: "external", trailingSlash: true });
+    expect(m).toMatchObject({
+      configFormat: "json",
+      configFile: "zfb.config.json",
+      configProvenance: "generated-json",
+    });
+    expect(existsSync(join(m.appDir, "zfb.config.ts"))).toBe(false);
   });
 });
