@@ -1,4 +1,5 @@
 import { createWriteStream } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { sample, sampleAsync } from "./mac-process-adapter.mjs";
 import {
   birthIdentity,
@@ -35,16 +36,18 @@ export function parseReadyUrl(text) {
 export class LineSplitter {
   constructor() {
     this.tail = "";
+    this.decoder = new StringDecoder("utf8");
   }
 
   push(chunk) {
-    const parts = (this.tail + chunk.toString()).split(/\r?\n/);
+    const text = typeof chunk === "string" ? chunk : this.decoder.write(chunk);
+    const parts = (this.tail + text).split(/\r?\n/);
     this.tail = parts.pop();
     return parts;
   }
 
   flush() {
-    const rest = this.tail;
+    const rest = this.tail + this.decoder.end();
     this.tail = "";
     return rest === "" ? [] : [rest];
   }

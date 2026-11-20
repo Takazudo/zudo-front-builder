@@ -27,7 +27,7 @@ import {
 } from "./identity.mjs";
 import { LockBusyError, acquireLock } from "./lock.mjs";
 import { hostIdentity, probeMac, sampledPeak } from "./mac-process-adapter.mjs";
-import { liveOwnedFromRegistry, stopOwned } from "./process-owner.mjs";
+import { liveOwnedFromRegistry, shouldRegisterOwned, stopOwned } from "./process-owner.mjs";
 import { LABEL_RE, loadProfile } from "./profile.mjs";
 import { Recorder } from "./recorder.mjs";
 import { startDevServer } from "./server.mjs";
@@ -55,6 +55,8 @@ export const EXIT = {
   serverNotReady: 7,
   controllerError: 8,
 };
+
+export const BROWSER_CLOSE_TIMEOUT_MS = 10000;
 
 export const RECEIPT_SCHEMA = "dev-browser-observe.receipt.v1";
 
@@ -199,7 +201,15 @@ export async function execute({
       stderr(`an owned server from an earlier batch is still alive: ${JSON.stringify(alive)}`);
       return EXIT.ownedServerAlive;
     }
-    mkdirSync(labelDir);
+    try {
+      mkdirSync(labelDir);
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        stderr(`label already used: ${labelDir} (created by another process; pick a new label)`);
+        return EXIT.usage;
+      }
+      throw error;
+    }
     return await executeLocked({ loaded, label, labelDir, command, stderr, hooks });
   } finally {
     await lock.release();
@@ -369,7 +379,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       ...server.handle.native,
     });
     server.handle.onNewOwned = (p) => {
-      if (p.pid !== server.handle.native?.pid)
+      if (shouldRegisterOwned(server.handle.native, p))
         appendJsonlSync(resolved.registryPath, { type: "owned", label, at: isoNow(), ...p });
     };
     receipt.server = {
@@ -407,7 +417,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     receipt.server.baseUrl = ready.baseUrl;
     receipt.server.readyMs = nsToMs(ready.readyNs - server.startedNs);
 
-    browserHandle = await launchOwnedBrowser(profile.browser);
+    browserHandle = await (hooks.launchOwnedBrowser ?? launchOwnedBrowser)(profile.browser);
     const observer = browserHandle.observer;
     observer.baseUrl = ready.baseUrl;
     observer.onStray = (payload) =>
@@ -482,10 +492,14 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     summaryExtra = { ...summaryExtra, stopReason: summaryExtra.stopReason ?? "controller-error" };
     return exitCode;
   } finally {
-    if (browserHandle) {
-      for (const e of await closeOwnedBrowser(browserHandle))
-        rec.append({ type: "controller-error", phase: e.step, error: e.error });
-    }
+    // Best-effort from here on: a failing record write must never skip the server stop or the summary.
+    const safeAppend = (r) => {
+      try {
+        rec.append(r);
+      } catch (error) {
+        stderr(`record write failed (${r.type}): ${error?.message ?? error}`);
+      }
+    };
     let stopReport = { absent: true, reason: "no-server-started" };
     if (server) {
       try {
@@ -501,15 +515,43 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           code: error?.code ?? null,
         };
       }
-      const logClose = await server.closeLog();
-      rec.append({ type: "server-stop", report: stopReport, exit: server.handle.exit, logClose });
-      appendJsonlSync(resolved.registryPath, {
-        type: "stopped",
-        label,
-        at: isoNow(),
-        pid: server.handle.native?.pid,
-        absent: stopReport.absent,
-      });
+      let logClose = null;
+      try {
+        logClose = await server.closeLog();
+      } catch (error) {
+        logClose = { error: String(error?.message ?? error) };
+      }
+      safeAppend({ type: "server-stop", report: stopReport, exit: server.handle.exit, logClose });
+      try {
+        appendJsonlSync(resolved.registryPath, {
+          type: "stopped",
+          label,
+          at: isoNow(),
+          pid: server.handle.native?.pid,
+          absent: stopReport.absent,
+        });
+      } catch (error) {
+        stderr(`registry write failed: ${error?.message ?? error}`);
+      }
+    }
+    if (browserHandle) {
+      try {
+        for (const e of await (hooks.closeOwnedBrowser ?? closeOwnedBrowser)(browserHandle, {
+          timeoutMs: BROWSER_CLOSE_TIMEOUT_MS,
+        }))
+          safeAppend({
+            type: "controller-error",
+            phase: e.step,
+            error: e.error,
+            timedOut: e.timedOut ?? false,
+          });
+      } catch (error) {
+        safeAppend({
+          type: "controller-error",
+          phase: "browser-close",
+          error: String(error?.message ?? error),
+        });
+      }
     }
     let stopFailure = null;
     if (server && (!stopReport.absent || stopReport.error)) {
@@ -527,27 +569,35 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       accounting.stopReason = accounting.stopReason ?? summaryExtra.stopReason;
       accounting.error += 1;
     }
-    const summary = {
-      ...summarize(rec.records, accounting),
-      accountingSource: summaryExtra.accountingFinal
-        ? "batch-result"
-        : live
-          ? "live-batch-accounting"
-          : "planned",
-      command,
-      label,
-      exitCode,
-      identityRejected: summaryExtra.identityRejected === true,
-      calibration: summaryExtra.calibration ?? null,
-      resourceSamples: { count: samples.length, peak: sampledPeak(samples) },
-      ownedServerAbsentAfterStop: Boolean(stopReport.absent),
-      stopFailure,
-      serverExit: server?.handle.exit ?? null,
-      wallMs: nsToMs(hrtimeNs() - startedNs),
-    };
-    writeJsonSync(summaryPath, summary);
-    writeJsonSync(receiptPath, receipt);
-    rec.append({ type: "run-end", exitCode });
+    try {
+      const summary = {
+        ...summarize(rec.records, accounting),
+        accountingSource: summaryExtra.accountingFinal
+          ? "batch-result"
+          : live
+            ? "live-batch-accounting"
+            : "planned",
+        command,
+        label,
+        exitCode,
+        identityRejected: summaryExtra.identityRejected === true,
+        calibration: summaryExtra.calibration ?? null,
+        resourceSamples: { count: samples.length, peak: sampledPeak(samples) },
+        ownedServerAbsentAfterStop: Boolean(stopReport.absent),
+        stopFailure,
+        serverExit: server?.handle.exit ?? null,
+        wallMs: nsToMs(hrtimeNs() - startedNs),
+      };
+      writeJsonSync(summaryPath, summary);
+    } catch (error) {
+      stderr(`summary write failed: ${error?.message ?? error}`);
+    }
+    try {
+      writeJsonSync(receiptPath, receipt);
+    } catch (error) {
+      stderr(`receipt write failed: ${error?.message ?? error}`);
+    }
+    safeAppend({ type: "run-end", exitCode });
     if (stopFailure) {
       stderr(
         "owned server processes were not verified absent after stop; the next batch will refuse to start",

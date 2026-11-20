@@ -185,9 +185,16 @@ export async function main(argv) {
     }
     case "hold-lock": {
       const ms =
-        args.ms === undefined ? 60000 : typeof args.ms === "string" ? Number(args.ms) : NaN;
-      if (!Number.isFinite(ms) || ms < 0) {
-        process.stderr.write("--ms needs a finite, non-negative number of milliseconds\n");
+        args.ms === undefined
+          ? 60000
+          : typeof args.ms === "string" && args.ms.trim() !== ""
+            ? Number(args.ms)
+            : NaN;
+      // setTimeout caps delays at 2^31-1 ms; larger values would fire immediately.
+      if (!Number.isFinite(ms) || ms < 0 || ms > 2147483647) {
+        process.stderr.write(
+          "--ms needs a finite number of milliseconds between 0 and 2147483647\n",
+        );
         return EXIT.usage;
       }
       return holdLock(need(args, "profile"), ms);

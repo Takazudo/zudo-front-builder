@@ -176,17 +176,25 @@ export async function runCalibration({
           measures: "controller evaluate -> change -> predicate + 2 rAF -> binding",
         };
       } else if (cell === "observer-init-after-navigation") {
-        const next = observer.nextDocInit();
+        const next = observer.nextDocInit(timeoutMs);
         const t0 = observer.clock();
         await observer.page.goto(observer.url(pagePath), { waitUntil: "commit" });
-        const { rec, t } = await next;
-        res = {
-          ok: true,
-          ms: nsToMs(t - t0),
-          docUUID: rec.docUUID,
-          measures: "goto start -> observer docInit binding",
-        };
-        await observer.page.waitForLoadState("load");
+        const got = await next;
+        res = got
+          ? {
+              ok: true,
+              ms: nsToMs(got.t - t0),
+              docUUID: got.rec.docUUID,
+              measures: "goto start -> observer docInit binding",
+            }
+          : {
+              ok: false,
+              timedOut: true,
+              timeoutMs,
+              ms: null,
+              measures: "goto start -> observer docInit binding",
+            };
+        await observer.page.waitForLoadState("load", { timeout: timeoutMs }).catch(() => null);
       } else if (cell === "stale-then-new-token") {
         await observer.prepare(pagePath);
         const stale = tok();

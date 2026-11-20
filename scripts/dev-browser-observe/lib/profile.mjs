@@ -7,6 +7,8 @@ import { sha256 } from "./util.mjs";
 
 export const LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
+const UNSPECIFIED_HOSTS = new Set(["", "0.0.0.0", "::", "[::]"]);
+
 const NEEDS_ARTICLE = new Set([
   "edit-title",
   "edit-body",
@@ -21,6 +23,10 @@ export function semanticErrors(profile) {
   const errors = [];
   if (profile.server?.port?.mode === "fixed" && !profile.server.port.port)
     errors.push("$.server.port.port required for fixed mode");
+  if (UNSPECIFIED_HOSTS.has(String(profile.server?.host ?? "").trim()))
+    errors.push(
+      `$.server.host must be an explicit address (got ${JSON.stringify(profile.server?.host)}): zfb prints a multi-line Local:/Network: banner for unspecified hosts, which the ready parser does not read`,
+    );
   for (const k of DIAGNOSTIC_ENV) {
     if (profile.server?.env && k in profile.server.env && profile.diagnostic !== true)
       errors.push(`$.server.env.${k} is only allowed in a profile with diagnostic: true`);
@@ -37,7 +43,10 @@ export function semanticErrors(profile) {
         errors.push(
           `$.scenarios[${s.id}].ops[${i}]: inject "restore-blocked" requires restoration.writeMethod "in-place" (a rename restore is not blocked by the target's mode)`,
         );
-      if (op.inject === "write-error" && !["in-place", "atomic-rename"].includes(op.writeMethod))
+      if (
+        op.inject === "write-error" &&
+        !["in-place", "atomic-rename"].includes(op.writeMethod ?? OP_WRITE_METHODS[op.op]?.[0])
+      )
         errors.push(
           `$.scenarios[${s.id}].ops[${i}]: inject "write-error" requires writeMethod "in-place" or "atomic-rename" (${op.writeMethod ?? "default"} would create the redirected path)`,
         );

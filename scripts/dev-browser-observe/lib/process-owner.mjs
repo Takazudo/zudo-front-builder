@@ -177,7 +177,13 @@ function remember(handle, p, source) {
 
 export function snapshotOwned(handle, psImpl) {
   if (!handle.native) return [];
-  const seen = ownedProcesses(psTable(psImpl), handle.native);
+  let seen = ownedProcesses(psTable(psImpl), handle.native);
+  if (handle.native.birthUnverifiable) {
+    const min = spawnSecondMs(handle.native);
+    seen = seen.filter(
+      (p) => p.pgid === handle.native.pgid && (parseLstart(p.lstart) ?? -1) >= min,
+    );
+  }
   for (const p of seen) remember(handle, p, "snapshot");
   return seen;
 }
@@ -367,6 +373,29 @@ export async function stopOwned(
 }
 
 /** Any recorded server identity that is still alive with the same birth. */
+/**
+ * Registry rows for owned processes: every descendant, and the root itself
+ * when its birth was unverifiable at spawn (its real birth is only known now).
+ */
+export function shouldRegisterOwned(native, p) {
+  return Boolean(native) && (p.pid !== native.pid || native.birthUnverifiable === true);
+}
+
+export function spawnSecondMs(native) {
+  return Math.floor(native.spawnWallMs / 1000) * 1000;
+}
+
+/**
+ * Registry rows still alive. A verified row matches by birth identity. A row
+ * whose birth was unverifiable at spawn matches by pid + pgid with a start at
+ * or after its spawn second.
+ */
 export function liveOwnedFromRegistry(entries, birthImpl = birthIdentity) {
-  return entries.filter((e) => sameBirth(e, birthImpl(e.pid)));
+  return entries.filter((e) => {
+    const now = birthImpl(e.pid);
+    if (!now) return false;
+    if (e.birthUnverifiable)
+      return now.pgid === e.pgid && (parseLstart(now.lstart) ?? -1) >= spawnSecondMs(e);
+    return sameBirth(e, now);
+  });
 }

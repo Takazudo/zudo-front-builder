@@ -71,18 +71,25 @@ export async function launchOwnedBrowser(
 }
 
 /** Close context and browser independently so a context failure never leaks Chromium. */
-export async function closeOwnedBrowser(handle) {
+export async function closeOwnedBrowser(handle, { timeoutMs = 10000 } = {}) {
   const errors = [];
-  try {
-    await handle.context.close();
-  } catch (error) {
-    errors.push({ step: "context.close", error: String(error?.message ?? error) });
-  }
-  try {
-    await handle.browser.close();
-  } catch (error) {
-    errors.push({ step: "browser.close", error: String(error?.message ?? error) });
-  }
+  const bounded = async (step, fn) => {
+    let timer = null;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    });
+    try {
+      const r = await Promise.race([fn().then(() => "done"), timeout]);
+      if (r === "timeout")
+        errors.push({ step, error: `timed out after ${timeoutMs} ms`, timedOut: true });
+    } catch (error) {
+      errors.push({ step, error: String(error?.message ?? error) });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  await bounded("context.close", () => handle.context.close());
+  await bounded("browser.close", () => handle.browser.close());
   return errors;
 }
 
@@ -200,8 +207,19 @@ export class ObserverPage {
     for (const w of waiters) w(rec, t);
   }
 
-  nextDocInit() {
-    return new Promise((resolve) => this.docInitWaiters.push((rec, t) => resolve({ rec, t })));
+  /** Next document init, or null after `timeoutMs` (the waiter is then removed). */
+  nextDocInit(timeoutMs = 30000) {
+    return new Promise((resolve) => {
+      const waiter = (rec, t) => {
+        clearTimeout(timer);
+        resolve({ rec, t });
+      };
+      const timer = setTimeout(() => {
+        this.docInitWaiters = this.docInitWaiters.filter((w) => w !== waiter);
+        resolve(null);
+      }, timeoutMs);
+      this.docInitWaiters.push(waiter);
+    });
   }
 
   url(path) {
@@ -401,11 +419,6 @@ export class ObserverPage {
     });
   }
 
-  /**
-   * Standardized warming rule for supplemental and restoration checks: one
-   * navigation, then an observer-armed wait up to `timeoutMs` with no reload,
-   * re-navigation or HTTP polling. Already-true at first read counts as ok.
-   */
   /**
    * Standardized warming rule for supplemental and restoration checks: one
    * navigation, then an observer-armed wait up to `timeoutMs` with no reload
