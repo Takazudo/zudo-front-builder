@@ -123,6 +123,7 @@ fn make_bundle_input(project: &Path, outdir_name: &str) -> BundlerInput {
         mdx_components_file: None,
         bundle_exclude: vec![],
         base_prefix: None,
+        dev_trailing_slash_dispatch: false,
     }
 }
 

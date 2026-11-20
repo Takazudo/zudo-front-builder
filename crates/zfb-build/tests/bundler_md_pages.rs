@@ -61,6 +61,7 @@ fn make_input(root: &std::path::Path) -> BundlerInput {
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
         base_prefix: None,
+        dev_trailing_slash_dispatch: false,
     }
 }
 

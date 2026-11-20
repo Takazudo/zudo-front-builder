@@ -175,6 +175,7 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
         base_prefix: None,
+        dev_trailing_slash_dispatch: false,
     };
 
     let out = bundle(input).expect("end-to-end bundle should succeed");
@@ -339,6 +340,7 @@ fn import_meta_glob_eager_is_expanded_before_esbuild() {
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
         base_prefix: None,
+        dev_trailing_slash_dispatch: false,
     };
 
     let out = bundle(input).expect("import.meta.glob end-to-end bundle should succeed");

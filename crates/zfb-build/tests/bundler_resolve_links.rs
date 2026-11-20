@@ -139,6 +139,7 @@ fn make_input_with_resolve(
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
         base_prefix: None,
+        dev_trailing_slash_dispatch: false,
     }
 }
 
@@ -189,6 +190,7 @@ fn make_input_without_resolve(root: &std::path::Path, outdir_name: &str) -> Bund
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
         base_prefix: None,
+        dev_trailing_slash_dispatch: false,
     }
 }
 

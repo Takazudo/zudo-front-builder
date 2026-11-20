@@ -455,6 +455,12 @@ pub(crate) fn assemble_bundler_input(
         .and_then(|p| p.disabled)
         .unwrap_or(false);
 
+    // #4750 — native `zfb dev` with `trailingSlash: true` lets an eligible
+    // `/route/` URL select its slashless SSR route. Development bundles only;
+    // `zfb build` and production Workers keep strict routing.
+    bundler_input.dev_trailing_slash_dispatch =
+        matches!(bundle_mode, BundleMode::Development) && config.trailing_slash;
+
     // Epic #2421 — arm the render-region sentinel markers.
     bundler_input.emit_render_artifacts = emit_render_artifacts_for_bundle(bundle_mode, config);
 

@@ -115,6 +115,7 @@ fn ssr_catchall_survives_worker_only_routes_filter() {
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
         base_prefix: None,
+        dev_trailing_slash_dispatch: false,
     };
 
     let out = bundle(input).expect("bundle should succeed");

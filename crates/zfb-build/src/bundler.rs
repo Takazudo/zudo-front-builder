@@ -732,6 +732,16 @@ pub struct BundlerInput {
     ///
     /// Default: `None`.
     pub base_prefix: Option<String>,
+    /// Native `zfb dev` trailing-slash route selection (#4750). When `true`
+    /// and [`Self::mode`] is [`BundleMode::Development`], the generated entry
+    /// passes `devTrailingSlashDispatch: true` to `createPageRouter`, so an
+    /// eligible `/route/` URL selects the same SSR route as `/route` while the
+    /// page still receives the original request. `zfb dev` sets it from
+    /// `trailingSlash: true`; `zfb build` never does, and a production bundle
+    /// ignores it.
+    ///
+    /// Default: `false`.
+    pub dev_trailing_slash_dispatch: bool,
 }
 
 impl BundlerInput {
@@ -794,6 +804,7 @@ impl BundlerInput {
             mdx_components_file: None,
             bundle_exclude: Vec::new(),
             base_prefix: None,
+            dev_trailing_slash_dispatch: false,
         }
     }
 }
@@ -6570,6 +6581,8 @@ pub fn bundle_with_session(
             // Emitted only when at least one client-script entry was discovered
             // (#978). `None` keeps zero-script builds byte-identical.
             base_prefix: input.base_prefix.as_deref(),
+            dev_trailing_slash_dispatch: input.dev_trailing_slash_dispatch
+                && matches!(input.mode, BundleMode::Development),
         },
     )
     .context("bundler: failed writing entry.mjs")?;
@@ -14539,6 +14552,9 @@ struct EntryModuleInputs<'a> {
     /// `clientScript(name)` can build base-prefixed stable URLs at SSR time.
     /// `None` → omit entirely (builds without client scripts stay byte-identical).
     base_prefix: Option<&'a str>,
+    /// Emit `devTrailingSlashDispatch: true` in the `createPageRouter` call
+    /// (#4750). Only ever `true` for a Development bundle.
+    dev_trailing_slash_dispatch: bool,
 }
 
 /// Generate the `entry.mjs` module that re-exports `routes`,
@@ -14907,6 +14923,9 @@ fn write_entry_module(
     src.push_str("const __zfb_router = createPageRouter({\n");
     src.push_str("  pages: __zfb_pages,\n");
     src.push_str("  contentSnapshot: __zfb_content_snapshot,\n");
+    if inputs.dev_trailing_slash_dispatch {
+        src.push_str("  devTrailingSlashDispatch: true,\n");
+    }
     src.push_str("});\n\n");
     src.push_str("export default {\n");
     src.push_str("  fetch: (request) => __zfb_router(request),\n");
@@ -19106,6 +19125,7 @@ mod tests {
             mdx_components_file: None,
             bundle_exclude: Vec::new(),
             base_prefix: None,
+            dev_trailing_slash_dispatch: false,
         }
     }
 
@@ -19225,6 +19245,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -19316,6 +19337,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -19393,6 +19415,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -19429,6 +19452,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -19477,6 +19501,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -19508,6 +19533,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -19556,6 +19582,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -19587,6 +19614,7 @@ mod tests {
                 emit_render_artifacts: true,
                 mdx_components_import_spec: None,
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -19683,6 +19711,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: Some("/foo"),
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -19730,6 +19759,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: Some(""),
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -19760,6 +19790,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -19873,6 +19904,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: Some("./mdx-components.tsx"),
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -19928,6 +19960,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: Some("./mdx-components.tsx"),
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -19963,6 +19996,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -20005,6 +20039,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: Some("./mdx-components.tsx"),
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -20268,6 +20303,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -24077,6 +24113,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -24106,6 +24143,7 @@ mod tests {
                 emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
+                dev_trailing_slash_dispatch: false,
             },
         )
         .unwrap();
@@ -25149,6 +25187,7 @@ mod tests {
             mdx_components_file: None,
             bundle_exclude: Vec::new(),
             base_prefix: None,
+            dev_trailing_slash_dispatch: false,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");

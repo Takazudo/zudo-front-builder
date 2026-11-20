@@ -776,3 +776,264 @@ async fn build_still_denies_network_at_ssg_time() {
         output.status,
     );
 }
+
+// ---------------------------------------------------------------------------
+// #4750: `trailingSlash: true` request-time SSR slash dispatch
+// ---------------------------------------------------------------------------
+
+/// Loopback server whose response body the test can change between requests,
+/// so a changed value in the page proves the handler ran for that request.
+struct MutableLoopbackServer {
+    addr: SocketAddr,
+    value: std::sync::Arc<std::sync::Mutex<String>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for MutableLoopbackServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl MutableLoopbackServer {
+    async fn spawn(initial: &str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mutable loopback listener");
+        let addr = listener.local_addr().expect("read mutable loopback port");
+        let value = std::sync::Arc::new(std::sync::Mutex::new(initial.to_string()));
+        let shared = value.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = match listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(_) => break,
+                };
+                let shared = shared.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let mut total = 0usize;
+                    loop {
+                        if total == buf.len() {
+                            buf.resize(buf.len() * 2, 0);
+                        }
+                        let n = match stream.read(&mut buf[total..]).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => n,
+                        };
+                        total += n;
+                        if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let body = shared.lock().unwrap().clone();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body,
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        Self { addr, value, task }
+    }
+
+    fn set(&self, value: &str) {
+        *self.value.lock().unwrap() = value.to_string();
+    }
+}
+
+fn stage_slash_fixture(root: &Path, loopback_port: u16, base: Option<&str>) {
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("embedded-host-request-time-slash");
+    copy_dir(&src, root).expect("copy embedded-host-request-time-slash fixture");
+    for rel in ["pages/live/[slug].tsx", "pages/request.tsx"] {
+        let path = root.join(rel);
+        let source = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+        fs::write(
+            &path,
+            source.replace("__LOOPBACK_PORT__", &loopback_port.to_string()),
+        )
+        .unwrap_or_else(|e| panic!("write {path:?}: {e}"));
+    }
+    if let Some(base) = base {
+        fs::write(
+            root.join("zfb.config.json"),
+            format!("{{ \"trailingSlash\": true, \"base\": \"{base}\" }}\n"),
+        )
+        .expect("write base config");
+    }
+}
+
+/// One request, no polling: (status, body).
+async fn fetch_once(client: &reqwest::Client, method: reqwest::Method, url: &str) -> (u16, String) {
+    let response = client
+        .request(method, url)
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("{url}: {e}"));
+    let status = response.status().as_u16();
+    (status, response.text().await.unwrap_or_default())
+}
+
+/// #4750: with `trailingSlash: true`, a real direct-V8 `zfb dev` serves the
+/// reported slash URLs (`/live/first/`, `/request/`) through the same SSR
+/// route, params and fresh request-time data as their slashless controls,
+/// and keeps genuine 404s.
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_trailing_slash_urls_reach_request_time_ssr() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+
+    let loopback = MutableLoopbackServer::spawn("v1").await;
+    let tmp = tempfile::tempdir().expect("create slash fixture tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize slash root");
+    stage_slash_fixture(&root, loopback.addr.port(), None);
+
+    let mut session = spawn_dev(&root);
+    let Some(port) = boot_dev_or_skip(&mut session).await else {
+        return;
+    };
+    eprintln!("[#4750] native dev slash scenario executing on port {port}");
+    let base_url = format!("http://localhost:{port}");
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("build reqwest client");
+
+    // Warm-up on the slashless control: a lazy session builds the SSR bundle
+    // on its first request.
+    poll_for_marker(
+        &client,
+        &base_url,
+        "/request",
+        "SLASH_REQUEST:value=v1",
+        &session,
+    )
+    .await;
+
+    let get = reqwest::Method::GET;
+    let expect_200 = |path: &str, (status, body): (u16, String), marker: &str| {
+        assert_eq!(
+            status, 200,
+            "GET {path}: expected 200 with {marker:?}, got {status}.\nbody:\n{body}",
+        );
+        assert!(
+            body.contains(marker),
+            "GET {path}: missing {marker:?}.\nbody:\n{body}",
+        );
+    };
+
+    for value in ["v1", "v2"] {
+        loopback.set(value);
+        for path in ["/live/first/", "/live/first", "/live/first/?q=1&q=2"] {
+            let marker = format!("SLASH_LIVE:slug=first|value={value}");
+            expect_200(
+                path,
+                fetch_once(&client, get.clone(), &format!("{base_url}{path}")).await,
+                &marker,
+            );
+        }
+        for path in ["/request/", "/request", "/request/?a=%20"] {
+            let marker = format!("SLASH_REQUEST:value={value}");
+            expect_200(
+                path,
+                fetch_once(&client, get.clone(), &format!("{base_url}{path}")).await,
+                &marker,
+            );
+        }
+    }
+
+    for (path, marker) in [
+        ("/live/special/", "SLASH_LIVE_SPECIAL"),
+        ("/live/special", "SLASH_LIVE_SPECIAL"),
+        ("/docs/a/", "SLASH_DOCS:slug=a"),
+        ("/docs/a", "SLASH_DOCS:slug=a"),
+        ("/docs/a/b/", "SLASH_DOCS:slug=a/b"),
+        ("/docs/a/b", "SLASH_DOCS:slug=a/b"),
+        ("/opt/", "SLASH_OPT:slug=<none>"),
+        ("/opt", "SLASH_OPT:slug=<none>"),
+        ("/opt/x/y/", "SLASH_OPT:slug=x/y"),
+        ("/opt/x/y", "SLASH_OPT:slug=x/y"),
+    ] {
+        expect_200(
+            path,
+            fetch_once(&client, get.clone(), &format!("{base_url}{path}")).await,
+            marker,
+        );
+    }
+
+    // Non-GET methods reach the same route.
+    expect_200(
+        "POST /request/",
+        fetch_once(
+            &client,
+            reqwest::Method::POST,
+            &format!("{base_url}/request/"),
+        )
+        .await,
+        "SLASH_REQUEST:value=v2",
+    );
+    let (head_status, _) = fetch_once(
+        &client,
+        reqwest::Method::HEAD,
+        &format!("{base_url}/live/first/"),
+    )
+    .await;
+    assert_eq!(head_status, 200, "HEAD /live/first/.\n{}", session.logs());
+
+    // Genuine 404s and normalization guards.
+    for path in [
+        "/docs/",
+        "/docs",
+        "/live/first//",
+        "/live/v1.2/",
+        "/live/a%2F",
+        "/unknown/",
+    ] {
+        let (status, body) = fetch_once(&client, get.clone(), &format!("{base_url}{path}")).await;
+        assert_eq!(status, 404, "GET {path} must stay a 404.\nbody:\n{body}");
+        assert!(
+            !body.contains("SLASH_"),
+            "GET {path} rendered a route.\nbody:\n{body}"
+        );
+    }
+    drop(session);
+
+    // Base prefix: the slash URL under `base` reaches the same route.
+    let base_tmp = tempfile::tempdir().expect("create base slash fixture tempdir");
+    let base_root = base_tmp
+        .path()
+        .canonicalize()
+        .expect("canonicalize base slash root");
+    stage_slash_fixture(&base_root, loopback.addr.port(), Some("/sub/"));
+    let mut base_session = spawn_dev(&base_root);
+    let Some(base_port) = boot_dev_or_skip(&mut base_session).await else {
+        panic!("base-prefix session skipped after the first session executed");
+    };
+    let prefixed = format!("http://localhost:{base_port}/sub");
+    poll_for_marker(
+        &client,
+        &prefixed,
+        "/request",
+        "SLASH_REQUEST:value=v2",
+        &base_session,
+    )
+    .await;
+    for (path, marker) in [
+        ("/live/first/", "SLASH_LIVE:slug=first|value=v2"),
+        ("/request/?x=1", "SLASH_REQUEST:value=v2"),
+        ("/opt/", "SLASH_OPT:slug=<none>"),
+    ] {
+        expect_200(
+            path,
+            fetch_once(&client, get.clone(), &format!("{prefixed}{path}")).await,
+            marker,
+        );
+    }
+    eprintln!("[#4750] native dev slash scenario completed");
+}

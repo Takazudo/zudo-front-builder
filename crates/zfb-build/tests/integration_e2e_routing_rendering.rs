@@ -361,6 +361,7 @@ fn build_bundle(fixture_root: &Path, dist: &Path, node_modules: &Path) -> Bundle
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
         base_prefix: None,
+        dev_trailing_slash_dispatch: false,
     };
 
     bundle(input).expect("bundle should succeed for fixture project")

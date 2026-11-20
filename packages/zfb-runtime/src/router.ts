@@ -39,6 +39,7 @@
 // that hand-build `pages` and therefore bypass the scanner.
 
 import { Hono } from "hono";
+import { getPath as honoDefaultGetPath } from "hono/utils/url";
 import { setContentSnapshot } from "@takazudo/zfb/content";
 
 import { renderToString } from "@takazudo/zfb/zudo-react/server";
@@ -144,6 +145,20 @@ export interface CreatePageRouterOptions<Paths extends readonly unknown[] = unkn
    * Useful for explicit injection in unit tests without global mutation.
    */
   readonly includeErrorStack?: boolean;
+  /**
+   * Native `zfb dev` only (#4750). When `true`, an eligible URL ending in one
+   * literal trailing slash selects the same route, with the same params, as its
+   * slashless form (see [`devTrailingSlashLookupPath`]). Only route selection
+   * changes: the handler still receives the original `Request`, so
+   * `request.url`, query, method, headers and body are untouched, and no
+   * redirect is issued.
+   *
+   * The dev server sets it through the generated entry when the project
+   * configures `trailingSlash: true`; `zfb build` and production Workers never
+   * set it, so their routing stays strict. Omitted or `false` keeps Hono's
+   * default strict path matching.
+   */
+  readonly devTrailingSlashDispatch?: boolean;
 }
 
 /**
@@ -260,7 +275,9 @@ async function getOrEvalPaths(
 export function createPageRouter(opts: CreatePageRouterOptions<readonly unknown[]>): PageRouter {
   setContentSnapshot(opts.contentSnapshot);
 
-  const app = new Hono();
+  const app = opts.devTrailingSlashDispatch
+    ? new Hono({ getPath: (request) => devTrailingSlashLookupPath(honoDefaultGetPath(request)) })
+    : new Hono();
 
   // Build a lookup map: Hono route pattern → PageDefinition, for the
   // `__paths__` synthetic endpoint below. The map is keyed on the `route`
@@ -716,4 +733,25 @@ function routeParamSpecs(route: string): RouteParamSpec[] {
 function routeShadowsPathsEndpoint(route: string): boolean {
   const segments = route.replace(/^\/+/, "").split("/");
   return segments[0] === "__paths__" && segments.slice(1).some((segment) => segment.length > 0);
+}
+
+/**
+ * Route-selection path for [`CreatePageRouterOptions.devTrailingSlashDispatch`]
+ * (#4750). `path` is Hono's default decoded lookup path. Removes exactly one
+ * trailing `/` when the path is not the root, does not end in `//`, is not under
+ * the synthetic `/__paths__/` endpoint, and its last segment has no `.`
+ * extension. Every other path is returned unchanged.
+ *
+ * Hono decodes with `decodeURI`, which never turns `%2F` into `/`, so an
+ * encoded slash cannot become an eligible trailing slash. The Rust dev server
+ * admits SSR requests with the same rule (`ssr_admission_path` in
+ * `crates/zfb-server/src/routes.rs`); keep the two in step.
+ */
+export function devTrailingSlashLookupPath(path: string): string {
+  if (path.length <= 1 || !path.endsWith("/") || path.endsWith("//")) return path;
+  if (path.startsWith("/__paths__/")) return path;
+  const stripped = path.slice(0, -1);
+  const lastSegment = stripped.slice(stripped.lastIndexOf("/") + 1);
+  if (lastSegment.includes(".")) return path;
+  return stripped;
 }

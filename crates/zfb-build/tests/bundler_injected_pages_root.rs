@@ -113,6 +113,7 @@ fn make_input(
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
         base_prefix: None,
+        dev_trailing_slash_dispatch: false,
     }
 }
 
