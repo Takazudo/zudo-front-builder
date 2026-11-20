@@ -29,6 +29,10 @@ export function semanticErrors(profile) {
     for (const [i, op] of (s.ops ?? []).entries()) {
       if (NEEDS_ARTICLE.has(op.op) && !op.article)
         errors.push(`$.scenarios[${s.id}].ops[${i}]: ${op.op} needs article`);
+      if (op.inject && s.set !== "negative-controls")
+        errors.push(
+          `$.scenarios[${s.id}].ops[${i}]: inject "${op.inject}" is only allowed in a scenario with set "negative-controls"`,
+        );
       const allowed = OP_WRITE_METHODS[op.op];
       if (allowed && op.writeMethod && !allowed.includes(op.writeMethod))
         errors.push(

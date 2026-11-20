@@ -1,6 +1,6 @@
 import { createWriteStream } from "node:fs";
 import { sample, sampleAsync } from "./mac-process-adapter.mjs";
-import { snapshotOwned, spawnOwned } from "./process-owner.mjs";
+import { birthIdentity, sameBirth, snapshotOwned, spawnOwned } from "./process-owner.mjs";
 import { hrtimeNs, isoNow, nsToMs, stripAnsi } from "./util.mjs";
 
 // crates/zfb/src/output.rs fmt_ready prints "→ ready on <url>" once routes are
@@ -39,6 +39,16 @@ export function serverEnv(baseEnv, overrides, diagnostic) {
   }
   const zfbEnv = Object.fromEntries(Object.entries(env).filter(([k]) => k.startsWith("ZFB_")));
   return { env, removedDiagnosticEnv: removed, zfbEnv };
+}
+
+/** Negative control: SIGKILL the owned native process after re-verifying its birth identity. */
+export function injectKillOwned(handle, killImpl = process.kill) {
+  const root = handle.native;
+  const now = handle.exit === null ? birthIdentity(root.pid) : null;
+  if (!sameBirth(root, now))
+    return { ok: false, reason: "birth-identity-mismatch-or-gone", expected: root, actual: now };
+  killImpl(root.pid, "SIGKILL");
+  return { ok: true, pid: root.pid, signal: "SIGKILL", at: isoNow(), birth: now };
 }
 
 export function startDevServer({
@@ -125,6 +135,7 @@ export function startDevServer({
       return sample(owned.map((p) => p.pid));
     },
     sampleResourcesAsync: () => sampleAsync([...(handle.known?.keys() ?? [])]),
+    injectKill: () => injectKillOwned(handle),
     logMark: () => lines.length,
     /** Server output lines since `mark`, each with ms relative to the attempt's t0 (server.log has them all). */
     logSince: (mark, t0) => {

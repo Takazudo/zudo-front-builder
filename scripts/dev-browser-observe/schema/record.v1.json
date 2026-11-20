@@ -28,7 +28,8 @@
         "calibration",
         "server-stop",
         "controller-error",
-        "run-end"
+        "run-end",
+        "inject"
       ]
     },
     "label": {

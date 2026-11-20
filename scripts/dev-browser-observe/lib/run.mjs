@@ -12,6 +12,10 @@ import {
   restoreSnapshot,
   snapshotSources,
   warmPaths,
+  hashOf,
+  missingSibling,
+  blockWrite,
+  unblockWrite,
 } from "./fixture.mjs";
 import {
   ancestorNodeModules,
@@ -384,6 +388,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
       restore: (s) => restoreSnapshot(s, { writeMethod: profile.restoration.writeMethod }),
       liveChecks: (s) => originalLiveChecks(m, s),
       warmPaths: (scenario) => warmPaths(m, scenario),
+      hashOf,
+      missingSibling,
+      blockWrite,
+      unblockWrite,
       route: m.route,
     };
 
@@ -405,7 +413,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
       exitCode =
         !stopped ||
         ((accounting.stoppedByExpectedControl || accounting.stoppedByClassifyTimeout) &&
-          accounting.error === 0)
+          accounting.error - accounting.expectedErrors === 0)
           ? EXIT.ok
           : EXIT.stopped;
     } else {

@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { OBSERVER_PATH } from "./lib/browser.mjs";
 import { adapterPath, loadFixture } from "./lib/fixture.mjs";
 import { currentPins, recordBuild } from "./lib/identity.mjs";
+import { holdLock, lockContentionCheck } from "./lib/lock-check.mjs";
 import { probeMac } from "./lib/mac-process-adapter.mjs";
 import { loadProfile } from "./lib/profile.mjs";
 import { EXIT, execute, notImplementedResult, verifyIdentityOnly } from "./lib/run.mjs";
@@ -40,6 +41,12 @@ Commands:
   verify-identity --profile <p.json>
                                Check identity only (no lock, server, browser or edits).
   probe-mac                    Print which ps fields work on this host (JSON).
+  hold-lock --profile <p.json> [--ms N]
+                               Hold the profile's batch lock (prints LOCKED) until
+                               N ms pass (default 60000) or stdin closes.
+  lock-contention-check --profile <p.json>
+                               Negative control: a hold-lock child holds the lock and
+                               a second \`run\` must exit 5 without a label dir.
   calibrate --profile <p.json> --label <unique>
                                Run calibration cells through the same observer.
   run --profile <p.json> --label <unique>
@@ -175,6 +182,13 @@ export async function main(argv) {
         harnessCapability: verdict.harnessCapability,
       });
       return verdict.ok ? EXIT.ok : EXIT.identityRejected;
+    }
+    case "hold-lock":
+      return holdLock(need(args, "profile"), Number(args.ms ?? 60000));
+    case "lock-contention-check": {
+      const r = await lockContentionCheck(need(args, "profile"));
+      print(r);
+      return r.ok ? EXIT.ok : EXIT.stopped;
     }
     case "probe-mac":
       print(probeMac());

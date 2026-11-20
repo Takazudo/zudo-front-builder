@@ -20,6 +20,25 @@ const ERROR_OUTCOMES = new Set(
   OUTCOMES.filter((o) => !["success", "timeout", "stale"].includes(o)),
 );
 
+/** Declared outcome for each negative-control injection (allowed only in set "negative-controls"). */
+export const INJECT_EXPECT = {
+  "kill-server-during-wait": "server-exit",
+  "write-error": "write-error",
+  "precondition-true": "precondition-failed",
+  "restore-blocked": "restoration-failed",
+};
+
+export const ALWAYS_TRUE_PREDICATE = { kind: "count", selector: "html", equals: 1 };
+
+function injectPass(kind, outcome, rec) {
+  if (INJECT_EXPECT[kind] !== outcome) return false;
+  if (kind === "kill-server-during-wait")
+    return rec.exit?.exitCode === null && rec.exit?.signalCode === "SIGKILL";
+  if (kind === "precondition-true")
+    return rec.targetSha256Before !== null && rec.targetSha256Before === rec.targetSha256After;
+  return true;
+}
+
 export function newAccounting(planned) {
   return {
     planned,
@@ -31,6 +50,7 @@ export function newAccounting(planned) {
     notAttempted: planned,
     lateTokens: 0,
     expectedControlPasses: 0,
+    expectedErrors: 0,
     restorationFailures: 0,
     supplementalFailures: 0,
     lastArmedUnknownOperation: null,
@@ -101,14 +121,40 @@ export async function runBatch({ scenarios, deps }) {
     stopped = true;
   };
 
-  const cleanup = async (snapshot, reason) => {
+  const cleanup = async (snapshot, reason, blocked = []) => {
+    const blocks = [];
+    for (const path of blocked) {
+      try {
+        blocks.push(fs.blockWrite(path));
+      } catch (error) {
+        blocks.push({ path, error: String(error?.message ?? error) });
+      }
+    }
+    if (blocks.length)
+      append({
+        type: "inject",
+        label: "cleanup",
+        inject: "restore-blocked",
+        step: "apply",
+        blocks,
+      });
+    const restoreNs = clock.now();
+    const mark = page.mark?.() ?? null;
     const restore = fs.restore(snapshot);
     const alive = server.isAlive();
     const live = [];
     let liveSkipped = null;
+    let settle = null;
     if (restore.mismatches.length > 0) liveSkipped = "hash-mismatch";
     else if (!alive.alive) liveSkipped = "server-not-alive";
     else {
+      if (page.settle && mark)
+        settle = await page.settle({
+          mark,
+          startNs: restoreNs,
+          quietMs: timeouts.quietMs ?? 1500,
+          boundMs: timeouts.restoreMs,
+        });
       for (const check of fs.liveChecks(snapshot)) {
         try {
           live.push({ ...check, ...(await page.liveCheck(check, timeouts.restoreMs)) });
@@ -121,7 +167,7 @@ export async function runBatch({ scenarios, deps }) {
     let quiet = null;
     if (ok && liveSkipped === null && page.quietWindow)
       quiet = await page.quietWindow(timeouts.quietMs ?? 1500);
-    append({
+    const cleanupRec = {
       type: "cleanup",
       label: "cleanup",
       measured: false,
@@ -131,19 +177,50 @@ export async function runBatch({ scenarios, deps }) {
       restorationWriteMethod: restore.writeMethod ?? null,
       actions: restore.actions ?? null,
       mismatches: restore.mismatches,
+      settle,
       quiet,
       live,
       liveSkipped,
-    });
+    };
+    if (blocked.length) {
+      cleanupRec.inject = { kind: "restore-blocked", expectedOutcome: "restoration-failed" };
+      cleanupRec.controlPass = !ok && restore.mismatches.length > 0;
+    }
+    append(cleanupRec);
+    if (blocks.length) {
+      const reverts = blocks
+        .filter((b) => !b.error)
+        .map((b) => {
+          try {
+            return fs.unblockWrite(b);
+          } catch (error) {
+            return { path: b.path, error: String(error?.message ?? error) };
+          }
+        });
+      append({
+        type: "inject",
+        label: "cleanup",
+        inject: "restore-blocked",
+        step: "revert-mode",
+        reverts,
+      });
+    }
     if (!ok) {
       acc.restorationFailures += 1;
       acc.error += 1;
+      if (cleanupRec.controlPass) {
+        acc.expectedErrors += 1;
+        acc.expectedControlPasses += 1;
+        acc.stoppedByExpectedControl = true;
+      }
     }
     return ok;
   };
 
+  let blockedForCleanup = [];
   outer: for (const scenario of scenarios) {
     activeSnapshot = fs.snapshot();
+    blockedForCleanup = [];
     append({
       type: "scenario-start",
       scenario: scenario.id,
@@ -222,6 +299,11 @@ export async function runBatch({ scenarios, deps }) {
       let attempt;
       try {
         attempt = fs.prepareAttempt(op);
+        if (op.inject === "precondition-true") attempt.predicate = ALWAYS_TRUE_PREDICATE;
+        if (op.inject === "write-error") {
+          attempt.injectedFrom = attempt.write.path;
+          attempt.write = { ...attempt.write, path: fs.missingSibling(attempt.write.path) };
+        }
         await page.prepare(attempt.targetPath);
         page.markPre?.();
       } catch (error) {
@@ -249,13 +331,36 @@ export async function runBatch({ scenarios, deps }) {
           to: attempt.write.to ?? null,
         },
         sampleBefore: sample,
+        inject: op.inject
+          ? {
+              kind: op.inject,
+              expectedOutcome: INJECT_EXPECT[op.inject],
+              injectedFrom: attempt.injectedFrom ?? null,
+            }
+          : null,
+        targetSha256Before: fs.hashOf
+          ? fs.hashOf(attempt.injectedFrom ?? attempt.write.path)
+          : null,
       };
 
       const armed = await page.arm(attempt.token, attempt.predicate);
       if (!armed.armed) {
         const outcome = armed.precondition ? "precondition-failed" : "arm-error";
-        append({ ...recBase, outcome, arm: armed, writePerformed: false });
+        const r = {
+          ...recBase,
+          outcome,
+          arm: armed,
+          writePerformed: false,
+          targetSha256After: fs.hashOf ? fs.hashOf(attempt.write.path) : null,
+        };
+        if (op.inject) r.controlPass = injectPass(op.inject, outcome, r);
+        append(r);
         count(acc, outcome);
+        if (r.controlPass) {
+          acc.expectedControlPasses += 1;
+          acc.expectedErrors += 1;
+          acc.stoppedByExpectedControl = true;
+        }
         stop(outcome, where);
         break outer;
       }
@@ -290,9 +395,15 @@ export async function runBatch({ scenarios, deps }) {
           token: attempt.token,
           writeCompleted: "unknown",
         };
+        const wr = { ...recBase, outcome: "write-error" };
+        if (op.inject) wr.controlPass = injectPass(op.inject, "write-error", wr);
+        if (wr.controlPass) {
+          acc.expectedControlPasses += 1;
+          acc.expectedErrors += 1;
+          acc.stoppedByExpectedControl = true;
+        }
         append({
-          ...recBase,
-          outcome: "write-error",
+          ...wr,
           error: String(error?.message ?? error),
           writePerformed: "unknown",
           observerDisarmed: true,
@@ -303,6 +414,9 @@ export async function runBatch({ scenarios, deps }) {
         break outer;
       }
 
+      let injectKill = null;
+      if (op.inject === "kill-server-during-wait") injectKill = server.injectKill();
+      if (op.inject === "restore-blocked") blockedForCleanup.push(attempt.write.path);
       const late = [];
       const waitSamples = { count: 0, peakSummedRssKiB: 0, everyMs: limits.sampleEveryMs ?? 1000 };
       let sampler = null;
@@ -357,6 +471,7 @@ export async function runBatch({ scenarios, deps }) {
           ...waitSamples,
           label: "sampled during the armed wait; not a lifetime peak",
         },
+        injectKill,
       };
       if (waited.kind === "notify") {
         outcome = "success";
@@ -399,6 +514,13 @@ export async function runBatch({ scenarios, deps }) {
         if (rec.controlPass) acc.expectedControlPasses += 1;
       }
       rec.outcome = outcome;
+      if (op.inject && op.inject !== "restore-blocked") {
+        rec.controlPass = injectPass(op.inject, outcome, rec);
+        if (rec.controlPass) {
+          acc.expectedControlPasses += 1;
+          acc.expectedErrors += ERROR_OUTCOMES.has(outcome) ? 1 : 0;
+        }
+      }
       rec.sampleAfter = server.sampleResources();
       append(rec);
       count(acc, outcome);
@@ -438,7 +560,7 @@ export async function runBatch({ scenarios, deps }) {
         }
       }
     }
-    const ok = await cleanup(activeSnapshot, "scenario-end");
+    const ok = await cleanup(activeSnapshot, "scenario-end", blockedForCleanup);
     activeSnapshot = null;
     if (!ok) {
       stop("restoration-failed", { scenario: scenario.id, op: null });
@@ -447,7 +569,7 @@ export async function runBatch({ scenarios, deps }) {
   }
 
   if (activeSnapshot) {
-    const ok = await cleanup(activeSnapshot, `after-stop:${acc.stopReason}`);
+    const ok = await cleanup(activeSnapshot, `after-stop:${acc.stopReason}`, blockedForCleanup);
     if (!ok && acc.stopReason !== "restoration-failed")
       acc.stopReason = `${acc.stopReason}+restoration-failed`;
   }

@@ -299,6 +299,15 @@
                 "to": {
                   "type": "string",
                   "minLength": 1
+                },
+                "inject": {
+                  "enum": [
+                    "kill-server-during-wait",
+                    "restore-blocked",
+                    "write-error",
+                    "precondition-true"
+                  ],
+                  "description": "Negative-control injection; only in set negative-controls. Declared outcomes: server-exit (SIGKILL), restoration-failed, write-error, precondition-failed (no write, hash-proven)."
                 }
               }
             }

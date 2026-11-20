@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   closeSync,
   constants,
   cpSync,
@@ -475,4 +476,29 @@ export function warmPaths(materialized, scenario) {
   if (scenario.warmOrder === "index-first") return [home, detail];
   if (scenario.warmOrder === "detail-first") return [detail, home];
   return [];
+}
+
+/** sha256 of a file, or null when it does not exist. */
+export function hashOf(path) {
+  return existsSync(path) ? sha256(readFileSync(path)) : null;
+}
+
+/** A sibling path that does not exist (the write-error injection target). */
+export function missingSibling(path) {
+  for (;;) {
+    const p = join(dirname(path), `.${basename(path)}.dbo-missing-${randomHex(4)}`);
+    if (!existsSync(p)) return p;
+  }
+}
+
+/** restore-blocked injection: make the file read-only so the restoration write fails. */
+export function blockWrite(path) {
+  const modeBefore = statSync(path).mode & 0o7777;
+  chmodSync(path, 0o444);
+  return { path, modeBefore, modeApplied: 0o444 };
+}
+
+export function unblockWrite(block) {
+  chmodSync(block.path, block.modeBefore);
+  return { path: block.path, modeRestored: statSync(block.path).mode & 0o7777 };
 }
