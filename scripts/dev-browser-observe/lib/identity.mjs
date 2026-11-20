@@ -230,7 +230,38 @@ export function recordBuild(opts) {
     triple: opts.triple ?? null,
     profile: opts.profile,
   });
-  const chosen = chooseVendorCandidate(candidates);
+  const targetDirChosen = chooseVendorCandidate(candidates);
+  let explicitVendor = null;
+  if (opts.vendorDir) {
+    const vendorDir = resolve(opts.vendorDir);
+    const tree = vendorTreeHash(vendorDir);
+    explicitVendor = {
+      source: "explicit",
+      vendorDir,
+      treeSha256: tree.sha256,
+      fileCount: tree.fileCount,
+    };
+  }
+  const chosen =
+    explicitVendor ?? (targetDirChosen ? { source: "target-dir", ...targetDirChosen } : null);
+  const exeSha = sha256(exeBytes);
+  const defaultBuildExe = join(
+    targetDir,
+    ...(opts.triple ? [opts.triple] : []),
+    profileDirName(opts.profile),
+    "zfb",
+  );
+  const buildExePath = opts.buildExe
+    ? resolve(opts.buildExe)
+    : existsSync(defaultBuildExe)
+      ? defaultBuildExe
+      : null;
+  const buildExe = buildExePath
+    ? existsSync(buildExePath)
+      ? { path: buildExePath, sha256: buildExePath === exe ? exeSha : sha256File(buildExePath) }
+      : { path: buildExePath, sha256: null, missing: true }
+    : null;
+  if (buildExe) buildExe.matchesExe = buildExe.sha256 === exeSha;
   const atSha = sourcePackagesAtSha(repo, sha);
   const working = dirty.dirty ? sourcePackagesWorkingTree(repo) : null;
   const expected = dirty.dirty ? working : atSha;
@@ -239,7 +270,13 @@ export function recordBuild(opts) {
   return {
     schema: BUILD_RECEIPT_SCHEMA,
     recordedAt: new Date().toISOString(),
-    exe: { path: exe, sha256: sha256(exeBytes), bytes: exeBytes.length },
+    exe: {
+      path: exe,
+      sha256: exeSha,
+      bytes: exeBytes.length,
+      role: buildExe && buildExe.path === exe ? "build-output" : "frozen-copy",
+    },
+    buildExe,
     source: {
       repo,
       sha,
@@ -271,6 +308,12 @@ export function recordBuild(opts) {
     },
     vendor: {
       chosen,
+      explicit: explicitVendor,
+      targetDirChosen,
+      explicitMatchesTargetDir:
+        explicitVendor && targetDirChosen
+          ? explicitVendor.treeSha256 === targetDirChosen.treeSha256
+          : null,
       candidates,
       expectedAtSha: { sha256: atSha.sha256, fileCount: atSha.fileCount },
       expectedWorkingTree: working

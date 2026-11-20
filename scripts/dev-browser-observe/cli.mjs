@@ -20,7 +20,12 @@ Commands:
   schema [name]                Print a JSON schema (${Object.keys(SCHEMA_FILES).join(", ")}).
                                Without a name, list the schema names.
   record-build                 Write a build receipt for a just-built zfb binary.
-      --exe <path>             The built executable (required).
+      --exe <path>             The executable runs will use (required); may be a
+                               frozen copy outside the target dir.
+      --vendor-dir <path>      Embedded vendor copy to bind (default: the newest
+                               target-dir build-script out/vendor).
+      --build-exe <path>       Original build output (default: <target-dir>/
+                               [<triple>/]<profile-dir>/zfb when present).
       --profile <name>         Cargo profile used (required: dev, release, ...).
       --out <path>             Receipt path; never overwritten (required).
       --repo <path>            Source checkout (default: this harness's checkout).
@@ -114,6 +119,8 @@ export async function main(argv) {
         profile: need(args, "profile"),
         repo: args.repo ?? process.cwd(),
         targetDir: args["target-dir"],
+        vendorDir: args["vendor-dir"],
+        buildExe: args["build-exe"],
         triple: args.triple,
         features: typeof args.features === "string" ? args.features.split(",").filter(Boolean) : [],
         noDefaultFeatures: Boolean(args["no-default-features"]),
