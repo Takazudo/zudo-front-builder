@@ -1,0 +1,48 @@
+{
+  "schema": "tiny-fixture.v1",
+  "name": "tiny-two-article",
+  "app": "app",
+  "articles": ["a", "b"],
+  "content": {
+    "source": "content/articles",
+    "collection": "articles",
+    "placements": {
+      "internal": { "dest": "app/content/articles", "configPath": "content/articles" },
+      "external": {
+        "dest": "external-content/articles",
+        "configPath": "../external-content/articles",
+        "allowOutsideRoot": true
+      }
+    }
+  },
+  "adapters": {
+    "target": "app/lib/content.ts",
+    "variants": {
+      "A0": {
+        "file": "adapters/A0/content.ts",
+        "label": "direct-read (reconstructed): rebuilds the index via getCollection on every call"
+      }
+    }
+  },
+  "config": { "wind": false },
+  "css": {
+    "managed": "app/styles/global.css",
+    "managedMechanism": "styles/global.css is zfb's managed global stylesheet; the dev server links it into every page and sends css events on change",
+    "customProperty": "--observe-css-marker",
+    "pageImport": "not-supported: plain .css imports from JS/TS modules are not emitted (docs/src/content/docs/architecture/styling.mdx)"
+  },
+  "routes": {
+    "home": "/",
+    "article": "/articles/{slug}",
+    "independent": "/independent"
+  },
+  "selectors": {
+    "articleTitle": "[data-article-title=\"{slug}\"]",
+    "articleCategory": "[data-article-category=\"{slug}\"]",
+    "articleBody": "[data-article-body=\"{slug}\"]",
+    "homeTitle": "[data-home-title=\"{slug}\"]",
+    "homeCategory": "[data-home-category=\"{slug}\"]",
+    "homeItem": "[data-home-item=\"{slug}\"]",
+    "independent": "[data-independent]"
+  }
+}

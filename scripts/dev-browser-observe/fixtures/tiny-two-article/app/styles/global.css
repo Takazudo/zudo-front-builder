@@ -1,0 +1,8 @@
+:root {
+  --observe-css-marker: css-v0;
+}
+
+body {
+  margin: 16px;
+  font-family: system-ui, sans-serif;
+}
