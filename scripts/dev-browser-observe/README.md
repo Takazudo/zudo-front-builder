@@ -262,6 +262,24 @@ batch.
   earlier cells' results are kept.
 - **`hold-lock`:** `--ms` requires a finite, non-negative number.
 
+## Round-7 hardening
+
+- **Unverifiable birth:** a root whose birth was unverifiable at spawn is
+  registered as an `owned` row once a snapshot sees its real birth. Registry
+  rows marked `birthUnverifiable` match the next-batch guard by pid + pgid +
+  start at or after the spawn second.
+- **Shutdown order:** the server is stopped first. The browser is then closed
+  with `context.close()` and `browser.close()` each bounded by 10 s; a timeout
+  is recorded. Record writes in shutdown are best-effort and reported on
+  stderr, so a failing write cannot skip the stop, the summary or the receipt.
+- **Calibration bound:** the `observer-init-after-navigation` cell is bounded
+  by `timeouts.attemptMs`.
+- **Profile and CLI validation:** `server.host` must be an explicit address,
+  because `0.0.0.0` and `::` print a multi-line banner. `hold-lock --ms`
+  accepts 0–2147483647. A label created concurrently exits 2.
+- **Stream decoding:** output is decoded with a per-stream UTF-8 decoder
+  before it is split into lines.
+
 ## Restoration and processes
 
 Exact source bytes are snapshotted before each scenario and restored after it

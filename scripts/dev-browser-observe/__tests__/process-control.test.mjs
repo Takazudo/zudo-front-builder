@@ -24,6 +24,8 @@ import {
   PidReuseError,
   birthIdentity,
   liveOwnedFromRegistry,
+  shouldRegisterOwned,
+  snapshotOwned,
   spawnOwned,
   stopOwned,
 } from "../lib/process-owner.mjs";
@@ -382,6 +384,26 @@ describe("round 5 #5: unverifiable spawn birth", () => {
   });
 });
 
+describe("round 7 #1: an unverifiable root is registered with its real birth", () => {
+  it("snapshot registers the root once ps shows it, and the registry row then guards the next batch", async () => {
+    const h = spawnOwned(NODE, ["-e", "setInterval(() => {}, 1000)"], { birthImpl: () => null });
+    children.push(h);
+    const registered = [];
+    h.onNewOwned = (p) => {
+      if (shouldRegisterOwned(h.native, p)) registered.push(p);
+    };
+    snapshotOwned(h);
+    expect(registered.map((p) => p.pid)).toEqual([h.native.pid]);
+    expect(registered[0].lstart).not.toBe("unavailable");
+    const spawnRow = { type: "spawn", ...h.native };
+    expect(liveOwnedFromRegistry([spawnRow])).toHaveLength(1);
+    expect(liveOwnedFromRegistry([{ type: "owned", ...registered[0] }])).toHaveLength(1);
+    process.kill(h.native.pid, "SIGKILL");
+    await h.exited;
+    expect(liveOwnedFromRegistry([spawnRow, { type: "owned", ...registered[0] }])).toHaveLength(0);
+  });
+});
+
 describe("round 5 #3: hold-lock exits after --ms even with stdin left open", () => {
   it("exits 0 on its own", async () => {
     const root = tmp();
@@ -697,6 +719,45 @@ describe("execute (identity gate)", () => {
       error: "birth identity mismatch",
       code: "PID_REUSE",
     });
+  });
+
+  it("round 7 #3: the server is stopped before the browser closes, and a failing record write skips neither stop nor summary", async () => {
+    const s = setup();
+    const exe = shellServer(s.root, `printf '→ ready on http://127.0.0.1:9\\n'; sleep 30`);
+    acceptedIdentity(s, exe);
+    const p = JSON.parse(readFileSync(s.profilePath, "utf8"));
+    p.server.readyTimeoutMs = 5000;
+    p.calibration.cells = [];
+    writeFileSync(s.profilePath, JSON.stringify(p));
+    const order = [];
+    const msgs = [];
+    const code = await execute({
+      profilePath: s.profilePath,
+      label: "C7",
+      command: "calibrate",
+      stderr: (m) => msgs.push(m),
+      hooks: {
+        launchOwnedBrowser: async () => ({
+          browser: { close: async () => order.push("browser.close") },
+          context: { close: async () => order.push("context.close") },
+          observer: {},
+          identity: { engine: "fake" },
+        }),
+        stopOwned: async (handle, opts) => {
+          order.push("server-stop");
+          chmodSync(join(s.outDir, "C7", "records.jsonl"), 0o444);
+          return stopOwned(handle, opts);
+        },
+      },
+    });
+    expect(order).toEqual(["server-stop", "context.close", "browser.close"]);
+    expect(code).toBe(EXIT.ok);
+    const summary = readJson(join(s.outDir, "C7", "summary.json"));
+    expect(summary).toMatchObject({ exitCode: EXIT.ok, ownedServerAbsentAfterStop: true });
+    expect(existsSync(join(s.outDir, "C7", "receipt.json"))).toBe(true);
+    expect(msgs.join("\n")).toMatch(/record write failed \(server-stop\)/);
+    expect(msgs.join("\n")).toMatch(/record write failed \(run-end\)/);
+    chmodSync(join(s.outDir, "C7", "records.jsonl"), 0o644);
   });
 
   it("round 5 #8: a lock failure that is not contention exits controllerError, not 5", async () => {
