@@ -156,6 +156,39 @@ batch.
   restores and confirms the original state live. With a memoizing adapter
   (A1) that body edit may legitimately not render, so calibrate with A0.
 
+## Round-3 controls
+
+- **Delivery ack:** the observer persists `delivered` only after the
+  controller's binding acknowledges the notification. If a document is replaced
+  mid-delivery, the expectation stays armed and the next document re-delivers.
+  The controller records repeats of an already-resolved token as `duplicates`,
+  never as late or success.
+- **Cleanup settle:** before live checks, cleanup waits until there has been no
+  livereload frame, main-frame navigation or new document for `quietMs`,
+  counted from the restore write or the last such event and bounded by
+  `restoreMs`. It records `settle` with `nativeUpdateObserved`.
+- **Live-check recovery:** when a native reload aborts a live-check navigation
+  (`ERR_ABORTED`), the harness waits for the resulting document. If that
+  document is not the target, it navigates once more, never reloading. The
+  attempt is recorded in `recovery`, and a second abort fails the check. A
+  failed check records `firstReadActual` and a read-only `failure` snapshot:
+  URL, title, `readyState`, armed state, the predicate now, and a body excerpt.
+- **Negative-control injections** (`inject`, only in `set: "negative-controls"`;
+  `profiles/neg-*.example.json`). Each one stops the batch. A run stopped only
+  by declared controls exits 0.
+
+  | Inject | Declared outcome |
+  | --- | --- |
+  | `kill-server-during-wait` | after the write, SIGKILL the birth-verified native process; `server-exit` with `exitCode: null` and `signalCode: "SIGKILL"`, no restart |
+  | `restore-blocked` | `chmod 0444` on the target before restoration; `restorationFailures: 1`; the mode is reverted in a recorded `inject` step |
+  | `write-error` | the write targets a never-existing sibling, so `in-place` refuses it; `write-error` before any DOM wait (no watcher event is caused) |
+  | `precondition-true` | an always-true predicate; `precondition-failed`, with no write proven by equal `targetSha256Before` and `targetSha256After` |
+
+- **Lock contention:** run `cli.mjs lock-contention-check --profile p.json`. A
+  `hold-lock` child holds the profile's lock while a second `run` must exit 5
+  without creating its label dir. The command prints JSON and exits 0 when that
+  holds.
+
 ## Restoration and processes
 
 Exact source bytes are snapshotted before each scenario and restored after it
