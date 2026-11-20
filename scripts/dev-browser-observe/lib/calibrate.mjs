@@ -88,8 +88,13 @@ export async function nativeReloadSurvival({
   const restore = fixtureOps.restore(snap);
   const live = [];
   if (restore.mismatches.length === 0) {
-    for (const check of fixtureOps.liveChecks(snap))
-      live.push({ ...check, ...(await observer.liveCheck(check, restoreMs)) });
+    for (const check of fixtureOps.liveChecks(snap)) {
+      try {
+        live.push({ ...check, ...(await observer.liveCheck(check, restoreMs)) });
+      } catch (error) {
+        live.push({ ...check, ok: false, error: String(error?.message ?? error) });
+      }
+    }
   }
   const restorationOk = restore.mismatches.length === 0 && live.every((l) => l.ok);
   const quiet = restorationOk ? await observer.quietWindow(quietMs) : null;

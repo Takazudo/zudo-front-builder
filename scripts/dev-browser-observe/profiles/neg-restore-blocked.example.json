@@ -1,6 +1,6 @@
 {
   "schema": "dev-browser-observe.profile.v1",
-  "description": "Negative control: inject restore-blocked. One injection per profile because every one stops the batch.",
+  "description": "Negative control: inject restore-blocked. The blocked restoration runs right after the injected op, so the second op is genuinely never reached; the file is then restored by one recorded unblocked retry.",
   "mode": "source-built",
   "diagnostic": false,
   "productSha": "0000000000000000000000000000000000000000",

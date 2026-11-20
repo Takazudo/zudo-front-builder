@@ -183,8 +183,15 @@ export async function main(argv) {
       });
       return verdict.ok ? EXIT.ok : EXIT.identityRejected;
     }
-    case "hold-lock":
-      return holdLock(need(args, "profile"), Number(args.ms ?? 60000));
+    case "hold-lock": {
+      const ms =
+        args.ms === undefined ? 60000 : typeof args.ms === "string" ? Number(args.ms) : NaN;
+      if (!Number.isFinite(ms) || ms < 0) {
+        process.stderr.write("--ms needs a finite, non-negative number of milliseconds\n");
+        return EXIT.usage;
+      }
+      return holdLock(need(args, "profile"), ms);
+    }
     case "lock-contention-check": {
       const r = await lockContentionCheck(need(args, "profile"));
       print(r);

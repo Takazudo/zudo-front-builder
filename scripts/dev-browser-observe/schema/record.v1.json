@@ -29,7 +29,8 @@
         "server-stop",
         "controller-error",
         "run-end",
-        "inject"
+        "inject",
+        "control-not-fired"
       ]
     },
     "label": {

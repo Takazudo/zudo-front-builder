@@ -53,6 +53,7 @@ export function newAccounting(planned) {
     expectedControlPasses: 0,
     expectedErrors: 0,
     expectedTimeouts: 0,
+    controlsNotFired: 0,
     restorationFailures: 0,
     supplementalFailures: 0,
     lastArmedUnknownOperation: null,
@@ -136,7 +137,16 @@ export async function runBatch({ scenarios, deps }) {
     stopped = true;
   };
 
-  const cleanup = async (snapshot, reason, blocked = [], skippedBlocks = []) => {
+  let lastCleanupControlPass = null;
+  const notFired = (where, kind, detail) => {
+    acc.controlsNotFired += 1;
+    acc.error += 1;
+    acc.stoppedByExpectedControl = false;
+    append({ type: "control-not-fired", label: "not-success", ...where, inject: kind, detail });
+    stop("negative-control-not-fired", where);
+  };
+
+  const cleanup = async (snapshot, reason, blocked = [], { retry = false } = {}) => {
     const blocks = [];
     for (const path of blocked) {
       try {
@@ -196,11 +206,8 @@ export async function runBatch({ scenarios, deps }) {
       quiet,
       live,
       liveSkipped,
+      retry,
     };
-    if (skippedBlocks.length) {
-      cleanupRec.inject = { kind: "restore-blocked", applied: false, skippedPaths: skippedBlocks };
-      cleanupRec.controlNotCredited = `batch already stopped by ${acc.stopReason}; block not applied so the restore runs`;
-    }
     if (blocked.length) {
       cleanupRec.inject = { kind: "restore-blocked", expectedOutcome: "restoration-failed" };
       cleanupRec.controlPass = !ok && restore.mismatches.length > 0 && !stopped;
@@ -234,15 +241,18 @@ export async function runBatch({ scenarios, deps }) {
         acc.stoppedByExpectedControl = true;
       }
     }
+    if (blocked.length) lastCleanupControlPass = cleanupRec.controlPass === true;
+    if (blocks.length && !ok) {
+      // The blocked restore is the control; the work tree must not stay mutated, so retry once unblocked.
+      await cleanup(snapshot, `${reason}:retry-unblocked`, [], { retry: true });
+    }
     return ok;
   };
 
-  let blockedForCleanup = [];
   let current = { where: null, armedToken: null, writeDone: false, resolved: false };
   try {
     outer: for (const scenario of scenarios) {
       activeSnapshot = fs.snapshot();
-      blockedForCleanup = [];
       append({
         type: "scenario-start",
         scenario: scenario.id,
@@ -367,7 +377,12 @@ export async function runBatch({ scenarios, deps }) {
         };
 
         current.armedToken = attempt.token;
-        const armed = await page.arm(attempt.token, attempt.predicate);
+        let armed;
+        try {
+          armed = await page.arm(attempt.token, attempt.predicate);
+        } catch (error) {
+          armed = { armed: false, error: String(error?.message ?? error), threw: true };
+        }
         if (!armed.armed) {
           const outcome = armed.precondition ? "precondition-failed" : "arm-error";
           const r = {
@@ -385,7 +400,8 @@ export async function runBatch({ scenarios, deps }) {
             acc.expectedErrors += 1;
             acc.stoppedByExpectedControl = true;
           }
-          stop(outcome, where);
+          if (op.inject && r.controlPass !== true) notFired(where, op.inject, `outcome ${outcome}`);
+          else stop(outcome, where);
           break outer;
         }
         const preDocUUID = armed.docUUID;
@@ -439,13 +455,14 @@ export async function runBatch({ scenarios, deps }) {
             nativeWorkCancelled: false,
           });
           count(acc, "write-error");
-          stop("write-error", where);
+          if (op.inject && wr.controlPass !== true)
+            notFired(where, op.inject, "outcome write-error");
+          else stop("write-error", where);
           break outer;
         }
 
         let injectKill = null;
         if (op.inject === "kill-server-during-wait") injectKill = server.injectKill();
-        if (op.inject === "restore-blocked") blockedForCleanup.push(attempt.write.path);
         const late = [];
         const waitSamples = {
           count: 0,
@@ -573,6 +590,14 @@ export async function runBatch({ scenarios, deps }) {
         rec.sampleAfter = server.sampleResources();
         append(rec);
         count(acc, outcome);
+        if (op.inject && op.inject !== "restore-blocked" && rec.controlPass !== true) {
+          notFired(
+            where,
+            op.inject,
+            `outcome ${outcome}${rec.injectKill && !rec.injectKill.ok ? `; kill refused: ${rec.injectKill.reason}` : ""}`,
+          );
+          break outer;
+        }
         if (outcome !== "success") {
           acc.stoppedByExpectedControl = rec.controlPass === true;
           acc.stoppedByClassifyTimeout =
@@ -608,8 +633,18 @@ export async function runBatch({ scenarios, deps }) {
             break outer;
           }
         }
+        if (op.inject === "restore-blocked") {
+          // Apply the block now, right after the injected op, so no later op runs on a blocked file.
+          lastCleanupControlPass = null;
+          await cleanup(activeSnapshot, "inject:restore-blocked", [attempt.write.path]);
+          activeSnapshot = null;
+          if (lastCleanupControlPass) stop("restoration-failed", where);
+          else
+            notFired(where, "restore-blocked", "the blocked restoration did not fail as declared");
+          break outer;
+        }
       }
-      const ok = await cleanup(activeSnapshot, "scenario-end", blockedForCleanup);
+      const ok = await cleanup(activeSnapshot, "scenario-end");
       activeSnapshot = null;
       if (!ok) {
         stop("restoration-failed", { scenario: scenario.id, op: null });
@@ -643,8 +678,7 @@ export async function runBatch({ scenarios, deps }) {
   if (activeSnapshot) {
     let ok = false;
     try {
-      // A batch stopped for another reason must actually restore, so no restore-blocked chmod here.
-      ok = await cleanup(activeSnapshot, `after-stop:${acc.stopReason}`, [], blockedForCleanup);
+      ok = await cleanup(activeSnapshot, `after-stop:${acc.stopReason}`);
     } catch (error) {
       append({
         type: "cleanup",
