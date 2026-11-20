@@ -50,7 +50,7 @@ function fakeDocument(storage, { items = 0, ack }) {
     location: { href: "http://x/" },
     scrollX: 0,
     scrollY: 0,
-    performance: { getEntriesByType: () => [{ type: "reload" }] },
+    performance: { getEntriesByType: () => [{ type: "reload" }], now: () => 1 },
     MutationObserver: class {
       observe() {}
     },
@@ -116,6 +116,25 @@ describe("observer delivery is persisted only on the controller's ack (run-006 r
     await doc.frames(12);
     expect(doc.calls.length).toBe(2);
     expect(armedRecord(storage).delivered).toBe(true);
+  });
+});
+
+describe("watch tokens (burst) are recorded across documents", () => {
+  it("records intermediate tokens seen before the final predicate, persisted through a reload", async () => {
+    const storage = new Map();
+    const doc1 = fakeDocument(storage, { items: 0, ack: () => Promise.resolve(true) });
+    doc1.state.items.push({ textContent: "Title t1" });
+    expect(
+      doc1.win.__dbo.arm("t3", { kind: "count", selector: "[data-home-item]", equals: 3 }, [
+        { selector: "[data-home-item]", tokens: ["t1", "t2"] },
+      ]),
+    ).toMatchObject({ armed: true });
+    await doc1.frames(3);
+    const doc2 = fakeDocument(storage, { items: 0, ack: () => Promise.resolve(true) });
+    doc2.state.items.push({ textContent: "Title t2" }, {}, {});
+    await doc2.frames(6);
+    expect(doc2.calls).toHaveLength(1);
+    expect(Object.keys(doc2.calls[0].watchSeen).sort()).toEqual(["t1", "t2"]);
   });
 });
 
