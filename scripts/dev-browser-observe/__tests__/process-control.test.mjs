@@ -11,7 +11,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { OBSERVER_PATH } from "../lib/browser.mjs";
-import { fixtureTreeHash, currentPins, BUILD_RECEIPT_SCHEMA } from "../lib/identity.mjs";
+import {
+  fixtureTreeHash,
+  currentPins,
+  BUILD_RECEIPT_SCHEMA,
+  sourcePackagesAtSha,
+} from "../lib/identity.mjs";
 import { LockBusyError, acquireLock } from "../lib/lock.mjs";
 import { sample } from "../lib/mac-process-adapter.mjs";
 import {
@@ -25,7 +30,15 @@ import { EXIT, execute, verifyIdentityOnly } from "../lib/run.mjs";
 import { injectKillOwned } from "../lib/server.mjs";
 import { lockContentionCheck } from "../lib/lock-check.mjs";
 import { runBatch } from "../lib/state-machine.mjs";
-import { HARNESS_DIR, delay, readJson, readJsonl } from "../lib/util.mjs";
+import {
+  HARNESS_DIR,
+  delay,
+  gitHead,
+  gitToplevel,
+  readJson,
+  readJsonl,
+  sha256File,
+} from "../lib/util.mjs";
 import { deps, fakeFs, fakePage } from "./fakes.mjs";
 
 const FIXTURE = join(HARNESS_DIR, "fixtures", "tiny-two-article");
@@ -251,6 +264,42 @@ describe("kill-server-during-wait injection on a real child", () => {
   });
 });
 
+describe("pgid scan after the root died (round 4 #5)", () => {
+  it("finds, signals and verifies a grandchild that no snapshot ever captured", async () => {
+    const h = own([
+      "-e",
+      `const c = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); console.log('GC', c.pid); setInterval(() => {}, 1000)`,
+    ]);
+    const gcPid = await new Promise((resolve) =>
+      h.child.stdout.on("data", (d) => {
+        const m = String(d).match(/GC (\d+)/);
+        if (m) resolve(Number(m[1]));
+      }),
+    );
+    expect([...h.known.keys()]).toEqual([h.native.pid]);
+    process.kill(h.native.pid, "SIGKILL");
+    await h.exited;
+    const alive = (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    expect(alive(gcPid)).toBe(true);
+    const registered = [];
+    h.onNewOwned = (p) => registered.push(p);
+    const report = await stopOwned(h, { intWaitMs: 2000, termWaitMs: 1000, killWaitMs: 1000 });
+    expect(report.rootAlive).toBe(false);
+    expect(report.pgidScans[0].found).toContain(gcPid);
+    expect(registered.map((p) => [p.pid, p.source])).toEqual([[gcPid, "pgid-scan"]]);
+    expect(report.endings.find((e) => e.pid === gcPid)).toMatchObject({ endedAfter: "SIGINT" });
+    expect(report.absent).toBe(true);
+    expect(alive(gcPid)).toBe(false);
+  });
+});
+
 describe("lock", () => {
   it("a second nonblocking acquirer fails while the first holds the lock", async () => {
     const path = join(tmp(), "x.lock");
@@ -424,6 +473,54 @@ describe("execute (identity gate)", () => {
       holder: { exit: { code: 0 } },
     });
     expect(r.secondRun.stderr).toMatch(/holds/);
+  });
+
+  it("a materialize failure after accepted identity still writes receipt, summary and run-end (round 4 #10)", async () => {
+    const s = setup();
+    const repo = gitToplevel(HARNESS_DIR);
+    const sha = gitHead(repo);
+    const exe = join(s.root, "fake-zfb");
+    writeFileSync(
+      join(s.root, "build-receipt.json"),
+      JSON.stringify({
+        schema: BUILD_RECEIPT_SCHEMA,
+        exe: { path: exe, sha256: sha256File(exe), bytes: 1 },
+        source: { repo, sha, dirty: false, dirtyIdentitySha256: null },
+        vendor: { chosen: { treeSha256: sourcePackagesAtSha(repo, sha).sha256 } },
+        embeddedBytes: { checked: 1, missing: [] },
+      }),
+    );
+    rmSync(join(s.fixtureDir, "content"), { recursive: true });
+    const p = JSON.parse(readFileSync(s.profilePath, "utf8"));
+    p.productSha = sha;
+    p.pins = currentPins({
+      fixtureDir: s.fixtureDir,
+      observerPath: OBSERVER_PATH,
+      adapterPath: join(s.fixtureDir, "adapters/A0/content.ts.adapter"),
+    });
+    writeFileSync(s.profilePath, JSON.stringify(p));
+    const code = await execute({
+      profilePath: s.profilePath,
+      label: "M1",
+      command: "run",
+      stderr: () => {},
+    });
+    expect(code).toBe(EXIT.controllerError);
+    const records = readJsonl(join(s.outDir, "M1", "records.jsonl"));
+    expect(records.find((r) => r.type === "identity").ok).toBe(true);
+    expect(records.find((r) => r.type === "controller-error")).toMatchObject({
+      phase: "materialize",
+      outcome: "materialize-error",
+    });
+    expect(records.at(-1)).toMatchObject({ type: "run-end", exitCode: EXIT.controllerError });
+    expect(records.map((r) => r.type)).not.toContain("server-ready");
+    const summary = readJson(join(s.outDir, "M1", "summary.json"));
+    expect(summary).toMatchObject({
+      accountingSource: "planned",
+      ownedServerAbsentAfterStop: true,
+      accounting: { stopReason: "materialize-error", error: 1, attempted: 0 },
+    });
+    expect(existsSync(join(s.outDir, "M1", "receipt.json"))).toBe(true);
   });
 
   it("rejects fixed-distribution mode as not implemented", async () => {

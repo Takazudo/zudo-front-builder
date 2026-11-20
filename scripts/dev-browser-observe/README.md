@@ -189,6 +189,33 @@ batch.
   without creating its label dir. The command prints JSON and exits 0 when that
   holds.
 
+## Round-4 hardening
+
+- **Endpoint validity:** a delivery for the armed token that arrives before the
+  write is recorded as `precondition-unstable` (reason
+  `notified-before-write`) and no write happens. A notify with `t1 <= t0` is
+  rejected the same way (reason `notify-not-after-t0`). Neither is ever a
+  success.
+- **Always clean up:** a throwing page or observer call inside the batch
+  records `controller-error`, then cleanup and `batch-end` still run, and
+  `summary.json` uses the live batch accounting. Materialize failures are
+  recorded as `materialize-error`, with receipt, summary and `run-end` still
+  written.
+- **Exit disposition:** a batch exits 0 only if it never stopped, or stopped
+  solely on declared controls with no undeclared error, timeout or stale. A
+  `restore-blocked` cleanup is credited only when nothing else had already
+  stopped the batch.
+- **Waits:** `disarm()` cancels a pending measured wait, so a later delivery
+  can never be routed to an earlier attempt's waiter.
+- **Descendants:** every newly seen owned process is appended to the registry
+  (`type: "owned"`), and the next-batch guard checks those entries too. Once
+  the root has died, stop also scans for the root's recorded process group,
+  accepting only members that started no earlier than the root. If the group
+  number has been taken over by a different leader, nothing is trusted.
+- **Profile constraints:** `restore-blocked` requires
+  `restoration.writeMethod: "in-place"`, and `write-error` requires
+  `in-place` or `atomic-rename`.
+
 ## Restoration and processes
 
 Exact source bytes are snapshotted before each scenario and restored after it
