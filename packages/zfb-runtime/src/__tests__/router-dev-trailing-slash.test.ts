@@ -37,9 +37,17 @@ function routers() {
   const pages = ROUTES.map((r) => echoPage(r, seen));
   return {
     seen,
-    dev: createPageRouter({ pages, contentSnapshot: snapshot, devTrailingSlashDispatch: true }),
+    dev: createPageRouter({
+      pages,
+      contentSnapshot: snapshot,
+      devTrailingSlashDispatch: true,
+    }),
     strict: createPageRouter({ pages, contentSnapshot: snapshot }),
-    off: createPageRouter({ pages, contentSnapshot: snapshot, devTrailingSlashDispatch: false }),
+    off: createPageRouter({
+      pages,
+      contentSnapshot: snapshot,
+      devTrailingSlashDispatch: false,
+    }),
   };
 }
 
