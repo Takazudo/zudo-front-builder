@@ -3009,6 +3009,38 @@ Every artifact stays under its ceiling, but default, render-only and parse-only 
 
 **Unchanged.** Production stays on `noyalib` / `noyalib-serde-yaml` `=0.0.58`; `Cargo.toml`, `Cargo.lock`, the harness label and `shipped-sizes.json` are unchanged. **Next trigger:** a merge or close of noyalib#521 (now observed as `release-pr-state-changed`), a newer published pair such as 0.0.61, a yank of either 0.0.58 crate, or a new advisory against 0.0.58.
 
+##### `noyalib 0.0.62` / `noyalib-serde-yaml 0.0.62` released differential evaluation (#4758) — KEEP
+
+**Verdict: KEEP — retain production noyalib / noyalib-serde-yaml =0.0.58; evaluated 0.0.62 is not adopted.** Triggered by the YAML candidate watch alert #4758 (run 44465601172, `CANDIDATE_DRIFT`). Evaluation evidence is on [#4759](https://github.com/Takazudo/zudo-front-builder/issues/4759#issuecomment-7034380312); the owner decision is on [#4758](https://github.com/Takazudo/zudo-front-builder/issues/4758#issuecomment-7038070121). The probe PR #4760 was closed unmerged.
+
+**Inputs.** `noyalib 0.0.62` (published 2026-11-17T07:56:43Z, checksum `1bcad14b3afdbfeeec7ab4e92732cb6e2524d6acd1ef220945c10625d58dc670`) and `noyalib-serde-yaml 0.0.62` (2026-11-17T17:37:55Z, `ac4590a443f252cb16fa1f7e16e8ee668c2a25ade6f85f8bd650a54de800b532`); both non-yanked, MIT OR Apache-2.0, MSRV 1.89.0. At evaluation time `noyalib 0.0.63` was core-only (no matching alias), so it was not frozen.
+
+**Behavior (Linux x86_64, rustc 1.97.0).** Every check passed: the differential harness 4/4 with the 18 baseline observations unchanged, resource budgets 5/5, error messages 2/2, `zfb-content` 1,135 tests, md-wasm API/AST pins 59/59 and CLI diagnostics 11/11. `cargo deny` was clean at both pins with identical license counts. The probe lock changed only the two pair records.
+
+**Size (measured, same CI toolchain: rustc 1.100.0, version stamp 7.1.0).** Candidate #4760 job 136166248746 against control #4761 job 136167712690. The control's highlight-only artifact is byte-identical, which confirms matching codegen.
+
+| Artifact | finalWasm Δ | gzip9 Δ |
+| --- | ---: | ---: |
+| default | +16,451 | +7,618 |
+| highlight-only | 0 | −2 |
+| render-only | +17,115 | +5,450 |
+| parse-only | +16,454 | +5,887 |
+| packed tarball | +22,351 | n/a |
+
+Every artifact stays under its historical ceiling. Since #4729 these sizes are informational, not gates. Under the older adoption threshold (≤1,024 B growth and no render-only growth), the pair would not qualify. Adopting would also have needed a #4730-style `REVIEWED_WIND_SOURCE_DIGEST` refresh, because that digest hashes `Cargo.toml` and `Cargo.lock`.
+
+**Decision.** The behavior checks succeeded and the growth is measured, but there is no advisory or functional need. On 2026-11-20 Takazudo chose to keep 0.0.58. The decision rests on the owner's judgment, not on a size gate.
+
+**Downstream contract.** `Cargo.toml`, `Cargo.lock`, the harness label and corpus, `shipped-sizes.json`, the detector and the YAML candidate baseline are unchanged.
+
+**Baseline refresh held (2026-11-20).** An authenticated detector run on the owner's Mac at `2026-11-20T19:58:02.992Z` (source `7712bfe0`) exited 10, `CANDIDATE_DRIFT`, with no operational error. The triage-severity deltas on the adopted pair were:
+
+- publish/tag/Release of 0.0.62 on both crates, covered by this KEEP;
+- `noyalib#521` OPEN → MERGED (2026-11-15T15:41:39Z);
+- publish/tag/Release of 0.0.63 on both crates. **`noyalib-serde-yaml 0.0.63`** was published at 2026-11-20T19:22:29Z (checksum `3fe1f06cc7c5b210f20f0046398b582d079ceb94973dfa0a75bda6d4ae0e311a`) and pins core `=0.0.63` with `std` and `compat-serde-yaml`, alongside `noyalib 0.0.63` (2026-11-19T23:26:39Z, `f132f5ea38d74a519b65995b2f7dc7714a8b34df53952eb744107af7c1645a87`). 0.0.63 is therefore a complete, unevaluated lockstep pair.
+
+There were no yanks, unyanks or archive changes. No advisory affects 0.0.58: RustSec and the repository advisories still cover only `<= 0.0.54`. Neither upstream repository had an open pull request. The other deltas were informational: branch churn on both repositories, saphyr branch churn, and serde-saphyr 2.2.0 and 3.0.0-rc.1. A full snapshot would absorb the unevaluated 0.0.63 trigger, so the baseline and `pendingReleasePr` (still `521`) are deliberately not refreshed, and the watch stays red on #4758. **Next trigger:** evaluate the 0.0.63 pair, then refresh the baseline in that recorded triage. Separately, watch for a yank of either 0.0.58 crate or a new advisory against 0.0.58.
+
 ##### `serde-saphyr 1.2.0` differential evaluation (#2788) — KEEP
 
 This evaluation deliberately used **serde-saphyr 1.2.0**, superseding the
