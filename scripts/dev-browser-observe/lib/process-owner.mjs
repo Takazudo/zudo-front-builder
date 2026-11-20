@@ -152,23 +152,33 @@ function knownMatches(handle, table) {
   return table.filter((p) => known.some((k) => sameBirth(k, p)));
 }
 
+export const STOP_SEQUENCE = ["SIGINT", "SIGTERM", "SIGKILL"];
+
 /**
- * Stop an owned group. While the root's birth identity still verifies, the
- * whole group gets SIGTERM; once the root is gone the pgid number could be
- * reused, so only individually re-verified known descendants are signalled.
- * After a bounded wait, verified survivors get SIGKILL and absence is checked.
+ * Stop an owned group: SIGINT (zfb's graceful ctrl_c path), then SIGTERM after
+ * `intWaitMs`, then SIGKILL after `termWaitMs`, then verify absence within
+ * `killWaitMs`. While the root's birth identity verifies, each signal goes to
+ * the whole group; once the root is gone the pgid number could be reused, so
+ * only individually re-verified known descendants are signalled. Each owned
+ * process records the last signal sent before it disappeared.
  */
 export async function stopOwned(
   handle,
   {
-    termWaitMs = 5000,
+    intWaitMs = 5000,
+    termWaitMs = 3000,
     killWaitMs = 3000,
     killImpl = process.kill,
     psImpl,
     birthImpl = birthIdentity,
   } = {},
 ) {
-  const report = { startedAt: isoNow(), steps: [] };
+  const report = {
+    startedAt: isoNow(),
+    sequence: STOP_SEQUENCE,
+    waits: { intWaitMs, termWaitMs, killWaitMs },
+    steps: [],
+  };
   const root = handle.native;
   if (!root)
     return {
@@ -177,6 +187,7 @@ export async function stopOwned(
       reason: "never-spawned",
       exit: handle.exit,
       remaining: [],
+      endings: [],
       finishedAt: isoNow(),
     };
   const rootNow = handle.exit === null ? birthImpl(root.pid) : null;
@@ -187,60 +198,60 @@ export async function stopOwned(
   const current = () => knownMatches(handle, psTable(psImpl));
   report.ownedBefore = current();
   report.rootAlive = rootAlive;
-  if (rootAlive) {
-    try {
-      killImpl(-root.pgid, "SIGTERM");
-      report.steps.push({ at: isoNow(), signal: "SIGTERM", target: `group:${root.pgid}` });
-    } catch (error) {
-      report.steps.push({
-        at: isoNow(),
-        signal: "SIGTERM",
-        target: `group:${root.pgid}`,
-        error: String(error.code ?? error),
-      });
-    }
-  } else {
+  const endings = new Map();
+  for (const k of handle.known?.values() ?? []) {
+    if (!report.ownedBefore.some((p) => sameBirth(k, p)))
+      endings.set(k.pid, { pid: k.pid, comm: k.comm, endedAfter: "before-stop" });
+  }
+  let lastSignal = "before-stop";
+  let left = report.ownedBefore;
+  const settle = () => {
+    left = current();
     for (const p of report.ownedBefore) {
+      if (!endings.has(p.pid) && !left.some((x) => sameBirth(p, x)))
+        endings.set(p.pid, {
+          pid: p.pid,
+          comm: p.comm,
+          endedAfter: lastSignal,
+          observedAt: isoNow(),
+        });
+    }
+  };
+  const waits = { SIGINT: intWaitMs, SIGTERM: termWaitMs, SIGKILL: killWaitMs };
+  for (const signal of STOP_SEQUENCE) {
+    settle();
+    if (left.length === 0 && (handle.exit !== null || !rootAlive)) break;
+    const groupOk = rootAlive && handle.exit === null;
+    const targets = groupOk
+      ? [{ target: -root.pgid, label: `group:${root.pgid}` }]
+      : left.map((p) => ({ target: p.pid, label: p.pid }));
+    for (const t of targets) {
       try {
-        killImpl(p.pid, "SIGTERM");
-        report.steps.push({ at: isoNow(), signal: "SIGTERM", target: p.pid });
+        killImpl(t.target, signal);
+        report.steps.push({ at: isoNow(), signal, target: t.label });
       } catch (error) {
         report.steps.push({
           at: isoNow(),
-          signal: "SIGTERM",
-          target: p.pid,
+          signal,
+          target: t.label,
           error: String(error.code ?? error),
         });
       }
     }
-  }
-  const deadline = Date.now() + termWaitMs;
-  let left = current();
-  while (Date.now() < deadline && (left.length > 0 || (rootAlive && handle.exit === null))) {
-    await delay(100);
-    left = current();
-  }
-  for (const s of left) {
-    try {
-      killImpl(s.pid, "SIGKILL");
-      report.steps.push({ at: isoNow(), signal: "SIGKILL", target: s.pid });
-    } catch (error) {
-      report.steps.push({
-        at: isoNow(),
-        signal: "SIGKILL",
-        target: s.pid,
-        error: String(error.code ?? error),
-      });
+    lastSignal = signal;
+    const deadline = Date.now() + waits[signal];
+    settle();
+    while (Date.now() < deadline && (left.length > 0 || (groupOk && handle.exit === null))) {
+      await delay(100);
+      settle();
     }
   }
-  const killDeadline = Date.now() + killWaitMs;
-  while (left.length > 0 && Date.now() < killDeadline) {
-    await delay(100);
-    left = current();
-  }
   await Promise.race([handle.exited, delay(1000)]);
+  settle();
+  if (root && handle.exit && endings.has(root.pid)) endings.get(root.pid).exit = handle.exit;
   report.remaining = left;
   report.absent = left.length === 0;
+  report.endings = [...endings.values()];
   report.exit = handle.exit;
   report.finishedAt = isoNow();
   return report;
