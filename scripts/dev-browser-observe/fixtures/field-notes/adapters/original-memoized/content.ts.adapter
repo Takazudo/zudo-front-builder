@@ -1,0 +1,66 @@
+import { getCollection, type CollectionEntry } from "@takazudo/zfb/content";
+import specification from "./spec.json";
+
+export const spec = specification;
+
+export type ArticleData = {
+  slug: string;
+  title: string;
+  description: string;
+  date: string;
+  category: string;
+  categoryLabel: string;
+  author: string;
+  readingMinutes: number;
+};
+
+export type Article = CollectionEntry<ArticleData>;
+
+type ArticleIndex = {
+  articles: Article[];
+  bySlug: Map<string, Article>;
+  categories: Map<string, Article[]>;
+  related: Map<string, Article[]>;
+};
+
+// getCollection maps the entire native snapshot on each call. Build one lazy
+// index per renderer module context so per-article lookups remain O(1).
+// Laziness also avoids reading the collection before the renderer installs it.
+let index: ArticleIndex | undefined;
+
+export function getIndex(): ArticleIndex {
+  if (index) return index;
+  const articles = getCollection<ArticleData>("articles").sort((a, b) =>
+    a.slug.localeCompare(b.slug, "en"),
+  );
+  const bySlug = new Map(articles.map((article) => [article.slug, article]));
+  const categories = new Map<string, Article[]>(
+    spec.categories.map((category) => [category.slug, []]),
+  );
+  for (const article of articles) {
+    if (article.data.slug !== article.slug) {
+      throw new Error(`Article slug mismatch: ${article.slug}`);
+    }
+    const category = categories.get(article.data.category);
+    if (!category) throw new Error(`Unknown article category: ${article.data.category}`);
+    category.push(article);
+  }
+  const related = new Map<string, Article[]>();
+  for (const category of categories.values()) {
+    category.forEach((article, position) => {
+      const next: Article[] = [];
+      for (let offset = 1; offset <= Math.min(3, category.length - 1); offset++) {
+        next.push(category[(position + offset) % category.length]!);
+      }
+      related.set(article.slug, next);
+    });
+  }
+  index = { articles, bySlug, categories, related };
+  return index;
+}
+
+export function articleAt(slug: string): Article {
+  const article = getIndex().bySlug.get(slug);
+  if (!article) throw new Error(`Unknown article: ${slug}`);
+  return article;
+}

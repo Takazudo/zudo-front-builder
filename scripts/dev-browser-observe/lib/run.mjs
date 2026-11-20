@@ -2,22 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { OBSERVER_PATH, closeOwnedBrowser, launchOwnedBrowser } from "./browser.mjs";
 import { runCalibration, CALIBRATION_CELLS } from "./calibrate.mjs";
-import {
-  adapterPath,
-  loadFixture,
-  materialize,
-  originalLiveChecks,
-  performWrite,
-  prepareAttempt,
-  restoreSnapshot,
-  snapshotSources,
-  warmPaths,
-  hashOf,
-  missingSibling,
-  originalConfigApplies,
-  blockWrite,
-  unblockWrite,
-} from "./fixture.mjs";
+import { kindFor } from "./fixture-kinds.mjs";
 import {
   ancestorNodeModules,
   collectIdentityFacts,
@@ -76,7 +61,7 @@ function plannedCount(profile) {
 /** Identity verification only: no lock, no server, no materialization, no edits. */
 export function verifyIdentityOnly(profilePath) {
   const { profile, resolved } = loadProfile(profilePath);
-  const manifest = loadFixture(resolved.fixtureDir);
+  const manifest = kindFor(profile).loadManifest(resolved.fixtureDir);
   let receipt = null;
   let receiptError = null;
   try {
@@ -95,20 +80,22 @@ export function verifyIdentityOnly(profilePath) {
 }
 
 function identityVerdict({ profile, resolved, manifest, receipt, extraAppDirs }) {
+  const kind = kindFor(profile);
+  const adapterFile = kind.adapterPath(resolved.fixtureDir, manifest, profile.fixture.adapter);
   const facts = collectIdentityFacts({
     receipt,
-    appDirs: [join(resolved.fixtureDir, manifest.app), ...extraAppDirs],
+    appDirs: [...kind.appDirs(resolved.fixtureDir, manifest, profile, resolved), ...extraAppDirs],
     pinInputs: {
       fixtureDir: resolved.fixtureDir,
       observerPath: OBSERVER_PATH,
-      adapterPath: adapterPath(resolved.fixtureDir, manifest, profile.fixture.adapter),
+      adapterPath: adapterFile,
     },
   });
   const verdict = evaluateIdentity(profile, receipt, facts);
-  const variant = manifest.adapters.variants[profile.fixture.adapter];
+  const variant = kind.adapterVariant(manifest, profile.fixture.adapter);
   const extra = [];
   if (variant?.sha256) {
-    const actual = sha256File(adapterPath(resolved.fixtureDir, manifest, profile.fixture.adapter));
+    const actual = sha256File(adapterFile);
     extra.push({
       name: `adapter-provenance:${profile.fixture.adapter}`,
       ok: actual === variant.sha256,
@@ -117,22 +104,7 @@ function identityVerdict({ profile, resolved, manifest, receipt, extraAppDirs })
       provenance: variant.provenance,
     });
   }
-  if (
-    originalConfigApplies(manifest, {
-      configFormat: profile.fixture.configFormat ?? "json",
-      placement: profile.fixture.placement,
-      trailingSlash: profile.fixture.trailingSlash === true,
-    })
-  ) {
-    const actual = sha256File(join(resolved.fixtureDir, manifest.configOriginal.file));
-    extra.push({
-      name: "config-provenance:original",
-      ok: actual === manifest.configOriginal.sha256,
-      expected: manifest.configOriginal.sha256,
-      actual,
-      provenance: manifest.configOriginal.provenance,
-    });
-  }
+  extra.push(...kind.extraChecks(profile, resolved, manifest));
   const gitTree = findGitWorkTree(resolved.outDir);
   extra.push({
     name: "outdir-outside-git-worktree",
@@ -156,8 +128,28 @@ export async function execute({
   command,
   stderr = (m) => process.stderr.write(`${m}\n`),
   hooks = {},
+  scenarios = null,
 }) {
   const loaded = loadProfile(profilePath);
+  const { profile, resolved } = loaded;
+  if (scenarios) {
+    const known = new Set(profile.scenarios.map((s) => s.id));
+    const unknown = scenarios.filter((id) => !known.has(id));
+    if (unknown.length > 0 || scenarios.length === 0) {
+      stderr(`unknown --scenario ${JSON.stringify(unknown)}; known: ${[...known].join(", ")}`);
+      return EXIT.usage;
+    }
+    loaded.scenarioSelection = scenarios;
+    loaded.profile = {
+      ...profile,
+      scenarios: profile.scenarios.filter((s) => scenarios.includes(s.id)),
+    };
+    return execute2({ loaded, label, command, stderr, hooks });
+  }
+  return execute2({ loaded, label, command, stderr, hooks });
+}
+
+async function execute2({ loaded, label, command, stderr, hooks }) {
   const { profile, resolved } = loaded;
   if (profile.mode === "fixed-distribution") {
     stderr(JSON.stringify(notImplementedResult(profile)));
@@ -227,9 +219,11 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     label,
     profilePath: loaded.path,
     profileSha256: loaded.sha256,
+    scenarioSelection: loaded.scenarioSelection ?? null,
   });
 
-  const manifest = loadFixture(resolved.fixtureDir);
+  const kind = kindFor(profile);
+  const manifest = kind.loadManifest(resolved.fixtureDir);
   let buildReceipt = null;
   try {
     buildReceipt = readJson(resolved.buildReceipt);
@@ -250,6 +244,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     identity: null,
     profile,
     profileSha256: loaded.sha256,
+    scenarioSelection: loaded.scenarioSelection ?? null,
     fixture: null,
     browser: null,
     server: null,
@@ -291,14 +286,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   const accountingRef = { current: null };
   try {
     try {
-      m = materialize({
-        fixtureDir: resolved.fixtureDir,
-        workDir: join(labelDir, "work"),
-        placement: profile.fixture.placement,
-        adapter: profile.fixture.adapter,
-        trailingSlash: profile.fixture.trailingSlash === true,
-        configFormat: profile.fixture.configFormat ?? "json",
-      });
+      m = kind.materialize({ profile, resolved, workDir: join(labelDir, "work") });
     } catch (error) {
       rec.append({
         type: "controller-error",
@@ -315,24 +303,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       ...findLocalTakazudoPackages(m.contentDir),
     ];
     receipt.fixture = {
-      name: manifest.name,
-      placement: profile.fixture.placement,
-      adapter: profile.fixture.adapter,
-      adapterLabel: manifest.adapters.variants[profile.fixture.adapter].label,
-      adapterProvenance: manifest.adapters.variants[profile.fixture.adapter].provenance ?? null,
-      adapterSourceSha256: manifest.adapters.variants[profile.fixture.adapter].sha256 ?? null,
-      trailingSlash: m.trailingSlash,
-      configFormat: m.configFormat,
-      configFile: m.configFile,
-      configProvenance: m.configProvenance,
-      configOriginalSha256: m.configOriginalSha256,
-      workDir: m.workDir,
-      appDir: m.appDir,
-      contentDir: m.contentDir,
-      configSha256: m.configSha256,
-      adapterSha256: m.adapterSha256,
-      materializedTreeSha256: m.materializedTreeSha256,
-      managedCss: manifest.css,
+      ...kind.receiptFixture(m, manifest, profile),
       localTakazudoPackages: local,
       ancestorNodeModules: ancestorNodeModules(m.appDir),
     };
@@ -432,19 +403,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       return s;
     };
 
-    const fixtureOps = {
-      prepareAttempt: (op) => prepareAttempt(m, op),
-      performWrite: (w, onT0) => performWrite(w, onT0),
-      snapshot: () => snapshotSources(m),
-      restore: (s) => restoreSnapshot(s, { writeMethod: profile.restoration.writeMethod }),
-      liveChecks: (s) => originalLiveChecks(m, s),
-      warmPaths: (scenario) => warmPaths(m, scenario),
-      hashOf,
-      missingSibling,
-      blockWrite,
-      unblockWrite,
-      route: m.route,
-    };
+    const fixtureOps = kind.ops(m, profile);
 
     if (command === "run") {
       const { accounting, stopped } = await runBatch({
@@ -472,7 +431,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         repeats: cal.repeats ?? 5,
         timeoutMs: profile.timeouts.attemptMs,
         staleTimeoutMs: cal.staleTimeoutMs ?? 2000,
-        pagePath: m.route("independent"),
+        pagePath: kind.calibrationPage(m),
         fixtureOps,
         restoreMs: profile.timeouts.restoreMs,
         quietMs: profile.timeouts.quietMs ?? 1500,

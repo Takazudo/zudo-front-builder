@@ -1,0 +1,46 @@
+{
+  "$id": "field-notes-fixture.v1",
+  "title": "dev-browser-observe Field Notes fixture manifest",
+  "type": "object",
+  "required": [
+    "schema",
+    "name",
+    "source",
+    "adapters",
+    "paths",
+    "layoutFooter",
+    "publicCss",
+    "managedCss"
+  ],
+  "properties": {
+    "schema": {
+      "const": "field-notes-fixture.v1"
+    },
+    "name": {
+      "type": "string"
+    },
+    "source": {
+      "type": "object",
+      "required": ["app", "helper", "content", "shared", "datasetSha256"]
+    },
+    "adapters": {
+      "type": "object",
+      "required": ["target", "variants"]
+    },
+    "paths": {
+      "type": "object",
+      "required": ["layout", "publicCss"]
+    },
+    "layoutFooter": {
+      "type": "string"
+    },
+    "publicCss": {
+      "type": "object",
+      "required": ["file", "customProperty"]
+    },
+    "managedCss": {
+      "type": "object",
+      "required": ["file", "target", "customProperty", "sha256"]
+    }
+  }
+}

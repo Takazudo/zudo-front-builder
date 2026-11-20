@@ -1,0 +1,311 @@
+{
+  "schema": "dev-browser-observe.profile.v1",
+  "description": "Original memoized helper: the same op families; content ops declare expect: classify because staleness is possible. One scenario per op family; run families individually with --scenario so a stop never hides another family. Fill productSha, buildReceipt, outDir, pins and fixture.source.dir.",
+  "mode": "source-built",
+  "diagnostic": false,
+  "productSha": "0000000000000000000000000000000000000000",
+  "productDirtyIdentity": null,
+  "buildReceipt": "/tmp/dev-browser-observe/build-receipt.json",
+  "fixture": {
+    "kind": "field-notes",
+    "dir": "../fixtures/field-notes",
+    "adapter": "original-memoized",
+    "managedCss": true,
+    "source": {
+      "dir": "/REPLACE/with/fieldnotes/src-100",
+      "appsZfbTreeSha256": "5e5580347095d9c5817faf3d4aa30529913e1a0c26a6b1b80905b5b01fa9ba36",
+      "contentTreeSha256": "22763056bd34e0a5dd6e4ac096e69de7e0278519235df88666124c801ea0b7a7",
+      "sharedTreeSha256": "f709ace99f2aad0d1c7c1d553c8693b66883f1055168855fb6807722b0cf226a",
+      "datasetSha256": "fcaa222e52caaedb411a4136f106d4ddb5eaa7334a3ef03f34ccd282f6bab58a"
+    }
+  },
+  "pins": {
+    "harnessTreeSha256": null,
+    "fixtureTreeSha256": null,
+    "observerSha256": null,
+    "adapterSha256": null
+  },
+  "server": {
+    "port": {
+      "mode": "ephemeral"
+    },
+    "host": "127.0.0.1",
+    "readyTimeoutMs": 180000
+  },
+  "browser": {
+    "headless": true,
+    "args": [
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows"
+    ],
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "deviceScaleFactor": 1
+  },
+  "timeouts": {
+    "attemptMs": 30000,
+    "supplementalMs": 30000,
+    "restoreMs": 60000,
+    "stopTermMs": 5000,
+    "stopKillMs": 3000,
+    "quietMs": 1500
+  },
+  "limits": {
+    "rssCeilingKiB": 4194304,
+    "wallCeilingMs": 1800000,
+    "sampleEveryMs": 1000
+  },
+  "calibration": {
+    "repeats": 3,
+    "staleTimeoutMs": 2000,
+    "cells": [
+      "binding-round-trip",
+      "two-raf",
+      "synthetic-dom",
+      "synthetic-css",
+      "observer-init-after-navigation",
+      "stale-then-new-token",
+      "late-token",
+      "reload-survival-controller-triggered",
+      "native-reload-survival"
+    ]
+  },
+  "restoration": {
+    "writeMethod": "in-place"
+  },
+  "scenarios": [
+    {
+      "id": "fn-edit-body",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "body-05",
+          "op": "edit-body",
+          "article": "article-00005",
+          "writeMethod": "in-place",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "fn-shared-component",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "footer",
+          "op": "edit-shared-component",
+          "writeMethod": "in-place",
+          "targetPath": "/"
+        }
+      ]
+    },
+    {
+      "id": "fn-managed-css",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "managed-css",
+          "op": "edit-managed-css",
+          "writeMethod": "in-place",
+          "targetPath": "/"
+        }
+      ]
+    },
+    {
+      "id": "fn-public-css",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "public-css",
+          "op": "edit-public-css",
+          "writeMethod": "in-place",
+          "targetPath": "/",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "fn-title-detail",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "title-05-detail",
+          "op": "edit-title",
+          "article": "article-00005",
+          "writeMethod": "in-place",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "fn-title-home",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "title-06-home",
+          "op": "edit-title",
+          "article": "article-00006",
+          "writeMethod": "in-place",
+          "targetPath": "/",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "fn-category",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "category-15",
+          "op": "edit-category",
+          "article": "article-00015",
+          "writeMethod": "in-place",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "fn-add-article",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "add-101",
+          "op": "add-article",
+          "writeMethod": "create",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "fn-delete-article",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "delete-42",
+          "op": "delete-article",
+          "article": "article-00042",
+          "writeMethod": "unlink",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "fn-rename-slug-change",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "rename-07",
+          "op": "rename-slug-change",
+          "article": "article-00007",
+          "writeMethod": "rename",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "fn-neg-rename-filename-only",
+      "set": "expected-negative",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "rename-filename-08",
+          "op": "rename-filename-only",
+          "article": "article-00008",
+          "writeMethod": "rename",
+          "expectState": ["error", "last-good"]
+        }
+      ]
+    },
+    {
+      "id": "fn-neg-invalid-frontmatter",
+      "set": "expected-negative",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "bad-yaml-09",
+          "op": "edit-invalid-frontmatter",
+          "article": "article-00009",
+          "writeMethod": "in-place",
+          "expectState": ["error", "last-good"]
+        }
+      ]
+    },
+    {
+      "id": "fn-hidden-edit",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "hidden-77",
+          "op": "hidden-edit",
+          "article": "article-00077",
+          "writeMethod": "in-place",
+          "targetPath": "/",
+          "observeMs": 3000,
+          "accessDelayMs": 1000,
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "fn-burst",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "burst-03",
+          "op": "burst",
+          "article": "article-00003",
+          "writeMethod": "in-place",
+          "count": 5,
+          "spacingMs": 50,
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "fn-rapid-title-category",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "rapid-04",
+          "op": "rapid-sequence",
+          "variant": "title-then-category",
+          "article": "article-00004",
+          "writeMethod": "in-place",
+          "spacingMs": 100,
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "fn-rapid-add-delete",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "rapid-add-delete",
+          "op": "rapid-sequence",
+          "variant": "add-then-delete",
+          "writeMethod": "create",
+          "spacingMs": 100
+        }
+      ]
+    }
+  ],
+  "outDir": "/tmp/dev-browser-observe"
+}

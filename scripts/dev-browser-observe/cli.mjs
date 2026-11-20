@@ -2,7 +2,8 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { OBSERVER_PATH } from "./lib/browser.mjs";
-import { adapterPath, loadFixture } from "./lib/fixture.mjs";
+import { fixtureKind, kindFor } from "./lib/fixture-kinds.mjs";
+import { sourceTreeHashes } from "./lib/fieldnotes.mjs";
 import { currentPins, recordBuild } from "./lib/identity.mjs";
 import { holdLock, lockContentionCheck } from "./lib/lock-check.mjs";
 import { probeMac } from "./lib/mac-process-adapter.mjs";
@@ -49,8 +50,10 @@ Commands:
                                a second \`run\` must exit 5 without a label dir.
   calibrate --profile <p.json> --label <unique>
                                Run calibration cells through the same observer.
-  run --profile <p.json> --label <unique>
-                               Run the profile's scenarios (fail-stop).
+  run --profile <p.json> --label <unique> [--scenario id[,id]]
+                               Run the profile's scenarios (fail-stop). --scenario runs
+                               only the named scenarios, in profile order; the selection
+                               is recorded in records.jsonl and receipt.json.
 
 Stop: SIGINT to the server group, SIGTERM after timeouts.stopTermMs, SIGKILL after
 timeouts.stopKillMs; the signal that ended each owned process is recorded.
@@ -158,14 +161,22 @@ export async function main(argv) {
     }
     case "pins": {
       const { profile, resolved } = loadProfile(need(args, "profile"));
-      const manifest = loadFixture(resolved.fixtureDir);
-      print(
-        currentPins({
-          fixtureDir: resolved.fixtureDir,
-          observerPath: OBSERVER_PATH,
-          adapterPath: adapterPath(resolved.fixtureDir, manifest, profile.fixture.adapter),
-        }),
-      );
+      const kind = kindFor(profile);
+      const manifest = kind.loadManifest(resolved.fixtureDir);
+      const pins = currentPins({
+        fixtureDir: resolved.fixtureDir,
+        observerPath: OBSERVER_PATH,
+        adapterPath: kind.adapterPath(resolved.fixtureDir, manifest, profile.fixture.adapter),
+      });
+      if (fixtureKind(profile) === "field-notes") {
+        print({
+          pins,
+          source: {
+            dir: profile.fixture.source.dir,
+            ...sourceTreeHashes(resolved.sourceDir, manifest),
+          },
+        });
+      } else print(pins);
       return EXIT.ok;
     }
     case "verify-identity": {
@@ -209,10 +220,24 @@ export async function main(argv) {
       return EXIT.ok;
     case "run":
     case "calibrate":
+      if (
+        args.scenario === true ||
+        (typeof args.scenario === "string" && args.scenario.trim() === "")
+      ) {
+        process.stderr.write("--scenario needs one or more scenario ids (comma-separated)\n");
+        return EXIT.usage;
+      }
       return execute({
         profilePath: need(args, "profile"),
         label: need(args, "label"),
         command: cmd,
+        scenarios:
+          typeof args.scenario === "string"
+            ? args.scenario
+                .split(",")
+                .map((x) => x.trim())
+                .filter(Boolean)
+            : null,
       });
     default:
       process.stderr.write(`unknown command ${cmd}\n${HELP}`);
