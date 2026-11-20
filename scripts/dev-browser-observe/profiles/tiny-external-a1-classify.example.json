@@ -1,6 +1,6 @@
 {
   "schema": "dev-browser-observe.profile.v1",
-  "description": "A1 classification in the original reproducer shape (trailingSlash, external ../content/articles). Each scenario differs only in warmOrder; a classify timeout stops the batch but exits 0.",
+  "description": "A1 classification in the original reproducer shape (zfb.config.ts byte-identical to the original, trailingSlash, external ../content/articles). A classify timeout stops the batch but exits 0.",
   "mode": "source-built",
   "diagnostic": false,
   "productSha": "0000000000000000000000000000000000000000",
@@ -10,7 +10,8 @@
     "dir": "../fixtures/tiny-two-article",
     "placement": "external",
     "adapter": "A1",
-    "trailingSlash": true
+    "trailingSlash": true,
+    "configFormat": "ts"
   },
   "pins": {
     "harnessTreeSha256": null,

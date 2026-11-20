@@ -74,5 +74,18 @@
     "home": "/",
     "article": "/articles/{slug}/",
     "independent": "/independent/"
+  },
+  "configOriginal": {
+    "file": "configs/original.zfb.config.ts.src",
+    "provenance": "original-input",
+    "source": "zfb-dev-benchmark/research/zfb-memoized-repro/app/zfb.config.ts",
+    "sha256": "7839c840ae456b8b868463d2bc4cfb654ce490a5d80ace58cd71ab86c5c6f602",
+    "appliesWhen": {
+      "configFormat": "ts",
+      "placement": "external",
+      "trailingSlash": true,
+      "wind": false
+    },
+    "storage": "Stored as .ts.src so the repo formatter never rewrites the byte-exact original; materialized to app/zfb.config.ts."
   }
 }

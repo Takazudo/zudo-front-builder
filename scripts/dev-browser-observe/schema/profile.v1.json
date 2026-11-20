@@ -62,6 +62,10 @@
         "trailingSlash": {
           "type": "boolean",
           "description": "Writes trailingSlash: true into zfb.config.json; routes and predicates use /articles/<slug>/. Default false."
+        },
+        "configFormat": {
+          "enum": ["json", "ts"],
+          "description": "json (default) writes zfb.config.json. ts writes zfb.config.ts: the byte-exact original when placement external + trailingSlash true + wind false, otherwise a generated defineConfig labelled reconstructed."
         }
       }
     },

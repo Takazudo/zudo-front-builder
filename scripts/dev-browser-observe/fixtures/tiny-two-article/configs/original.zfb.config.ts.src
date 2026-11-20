@@ -1,0 +1,10 @@
+import { defineConfig } from "@takazudo/zfb/config";
+
+export default defineConfig({
+  wind: false,
+  trailingSlash: true,
+  collections: [
+    { name: "articles", path: "../content/articles", allowOutsideRoot: true },
+  ],
+});
+

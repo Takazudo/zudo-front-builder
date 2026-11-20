@@ -14,6 +14,7 @@ import {
   warmPaths,
   hashOf,
   missingSibling,
+  originalConfigApplies,
   blockWrite,
   unblockWrite,
 } from "./fixture.mjs";
@@ -112,6 +113,22 @@ function identityVerdict({ profile, resolved, manifest, receipt, extraAppDirs })
       expected: variant.sha256,
       actual,
       provenance: variant.provenance,
+    });
+  }
+  if (
+    originalConfigApplies(manifest, {
+      configFormat: profile.fixture.configFormat ?? "json",
+      placement: profile.fixture.placement,
+      trailingSlash: profile.fixture.trailingSlash === true,
+    })
+  ) {
+    const actual = sha256File(join(resolved.fixtureDir, manifest.configOriginal.file));
+    extra.push({
+      name: "config-provenance:original",
+      ok: actual === manifest.configOriginal.sha256,
+      expected: manifest.configOriginal.sha256,
+      actual,
+      provenance: manifest.configOriginal.provenance,
     });
   }
   const gitTree = findGitWorkTree(resolved.outDir);
@@ -258,6 +275,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
     placement: profile.fixture.placement,
     adapter: profile.fixture.adapter,
     trailingSlash: profile.fixture.trailingSlash === true,
+    configFormat: profile.fixture.configFormat ?? "json",
   });
   const local = [
     ...findLocalTakazudoPackages(m.appDir),
@@ -271,6 +289,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
     adapterProvenance: manifest.adapters.variants[profile.fixture.adapter].provenance ?? null,
     adapterSourceSha256: manifest.adapters.variants[profile.fixture.adapter].sha256 ?? null,
     trailingSlash: m.trailingSlash,
+    configFormat: m.configFormat,
+    configFile: m.configFile,
+    configProvenance: m.configProvenance,
+    configOriginalSha256: m.configOriginalSha256,
     workDir: m.workDir,
     appDir: m.appDir,
     contentDir: m.contentDir,

@@ -50,8 +50,65 @@ export function routePath(manifest, key, { slug = "", trailingSlash = false } = 
   return table[key].replace("{slug}", slug);
 }
 
+/** True when the profile shape is exactly the one the original config file encodes. */
+export function originalConfigApplies(manifest, { configFormat, placement, trailingSlash }) {
+  const w = manifest.configOriginal?.appliesWhen;
+  if (!w) return false;
+  return (
+    configFormat === w.configFormat &&
+    placement === w.placement &&
+    trailingSlash === w.trailingSlash &&
+    manifest.config?.wind === w.wind
+  );
+}
+
+/**
+ * The config file to write: zfb.config.json, the byte-exact original
+ * zfb.config.ts when the shape matches, or a generated (reconstructed)
+ * defineConfig file.
+ */
+export function configFileFor(
+  fixtureDir,
+  manifest,
+  { configFormat = "json", placement, trailingSlash = false },
+) {
+  const config = zfbConfigFor(manifest, placement, { trailingSlash });
+  if (configFormat === "json") {
+    return {
+      name: "zfb.config.json",
+      bytes: Buffer.from(`${JSON.stringify(config, null, 2)}\n`),
+      provenance: "generated-json",
+    };
+  }
+  if (configFormat !== "ts") throw new Error(`unknown configFormat ${configFormat}`);
+  if (originalConfigApplies(manifest, { configFormat, placement, trailingSlash })) {
+    const bytes = readFileSync(join(fixtureDir, manifest.configOriginal.file));
+    return {
+      name: "zfb.config.ts",
+      bytes,
+      provenance: "original-input",
+      originalSha256: manifest.configOriginal.sha256,
+    };
+  }
+  const text = [
+    "// RECONSTRUCTED by dev-browser-observe: generated for a profile shape the original zfb.config.ts does not cover.",
+    'import { defineConfig } from "@takazudo/zfb/config";',
+    "",
+    `export default defineConfig(${JSON.stringify(config, null, 2)});`,
+    "",
+  ].join("\n");
+  return { name: "zfb.config.ts", bytes: Buffer.from(text), provenance: "reconstructed" };
+}
+
 /** Copy the fixture into a fresh work dir for one run; the source fixture is never edited. */
-export function materialize({ fixtureDir, workDir, placement, adapter, trailingSlash = false }) {
+export function materialize({
+  fixtureDir,
+  workDir,
+  placement,
+  adapter,
+  trailingSlash = false,
+  configFormat = "json",
+}) {
   const manifest = loadFixture(fixtureDir);
   if (existsSync(workDir)) throw new Error(`work dir already exists: ${workDir}`);
   mkdirSync(workDir, { recursive: true });
@@ -63,8 +120,12 @@ export function materialize({ fixtureDir, workDir, placement, adapter, trailingS
   const adapterTarget = join(workDir, manifest.adapters.target);
   mkdirSync(dirname(adapterTarget), { recursive: true });
   cpSync(adapterPath(fixtureDir, manifest, adapter), adapterTarget);
-  const config = `${JSON.stringify(zfbConfigFor(manifest, placement, { trailingSlash }), null, 2)}\n`;
-  writeFileSync(join(appDir, "zfb.config.json"), config);
+  const configFile = configFileFor(fixtureDir, manifest, {
+    configFormat,
+    placement,
+    trailingSlash,
+  });
+  writeFileSync(join(appDir, configFile.name), configFile.bytes);
   const articles = Object.fromEntries(
     manifest.articles.map((slug) => [slug, join(contentDir, `${slug}.md`)]),
   );
@@ -77,7 +138,11 @@ export function materialize({ fixtureDir, workDir, placement, adapter, trailingS
     contentDir,
     cssPath: join(workDir, manifest.css.managed),
     articles,
-    configSha256: sha256(config),
+    configFormat,
+    configFile: configFile.name,
+    configProvenance: configFile.provenance,
+    configOriginalSha256: configFile.originalSha256 ?? null,
+    configSha256: sha256(configFile.bytes),
     adapterSha256: sha256(readFileSync(adapterTarget)),
     materializedTreeSha256: treeHashDir(workDir, {
       filter: (_r, _k, name) => name !== ".zfb" && name !== "node_modules",
