@@ -9,7 +9,11 @@ import { HARNESS_DIR, randomHex } from "./util.mjs";
 const CLI = join(HARNESS_DIR, "cli.mjs");
 
 /** Hold the profile's batch lock until `ms` elapse or stdin closes. */
-export async function holdLock(profilePath, ms, { out = (m) => process.stdout.write(m) } = {}) {
+export async function holdLock(
+  profilePath,
+  ms,
+  { out = (m) => process.stdout.write(m), stdin = process.stdin } = {},
+) {
   const { resolved } = loadProfile(profilePath);
   const gitTree = findGitWorkTree(resolved.outDir);
   if (gitTree) {
@@ -21,17 +25,27 @@ export async function holdLock(profilePath, ms, { out = (m) => process.stdout.wr
   try {
     lock = await acquireLock(resolved.lockPath);
   } catch (error) {
-    out(`BUSY ${error instanceof LockBusyError ? resolved.lockPath : error}\n`);
-    return 5;
+    if (error instanceof LockBusyError) {
+      out(`BUSY ${resolved.lockPath}\n`);
+      return 5;
+    }
+    out(`ERROR ${error?.message ?? error}\n`);
+    return 8;
   }
   out(`LOCKED ${resolved.lockPath}\n`);
   await new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    process.stdin.once("end", () => {
+    const done = () => {
       clearTimeout(timer);
+      stdin.removeListener("end", done);
+      stdin.removeListener("close", done);
+      stdin.pause();
+      stdin.unref?.();
       resolve();
-    });
-    process.stdin.resume();
+    };
+    const timer = setTimeout(done, ms);
+    stdin.once("end", done);
+    stdin.once("close", done);
+    stdin.resume();
   });
   await lock.release();
   return 0;
@@ -67,7 +81,7 @@ export async function lockContentionCheck(profilePath, { holdMs = 60000 } = {}) 
   });
   const holder = runNode(["hold-lock", "--profile", profilePath, "--ms", String(holdMs)], {
     onLine: (text) => {
-      if (/^(LOCKED|BUSY)/m.test(text)) lockedResolve(text);
+      if (/^(LOCKED|BUSY|ERROR|REFUSED)/m.test(text)) lockedResolve(text);
     },
   });
   const holderState = await Promise.race([

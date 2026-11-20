@@ -156,11 +156,12 @@ export async function runCalibration({
       let res;
       if (cell === "binding-round-trip" || cell === "two-raf") {
         await observer.prepare(pagePath);
-        const p = await observer.ping(cell === "two-raf" ? "two-raf" : "direct");
+        const p = await observer.ping(cell === "two-raf" ? "two-raf" : "direct", timeoutMs);
         res = {
-          ok: true,
+          ok: p.ok,
           ms: p.ms,
-          docUUID: p.payload.docUUID,
+          timedOut: p.timedOut ?? false,
+          docUUID: p.payload?.docUUID ?? null,
           measures: cell === "two-raf" ? "command -> 2 rAF -> binding" : "command -> binding",
         };
       } else if (cell === "synthetic-dom" || cell === "synthetic-css") {

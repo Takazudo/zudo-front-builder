@@ -496,13 +496,24 @@ export class ObserverPage {
     return this.navigateAndAwait(check.path, check.predicate, timeoutMs, "restore");
   }
 
-  async ping(mode) {
+  /** Bounded ping: a missing binding delivery is a recorded timeout, never a hang. */
+  async ping(mode, timeoutMs = 10000) {
     const id = `${mode}-${Math.random().toString(16).slice(2, 10)}`;
+    let timer = null;
     const got = new Promise((resolve) => this.pingWaiters.set(id, resolve));
+    const timedOut = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs);
+    });
     const t0 = this.clock();
-    if (mode === "two-raf") await this.page.evaluate((x) => window.__dbo.pingAfterTwoRaf(x), id);
-    else await this.page.evaluate((x) => window.__dbo.ping(x), id);
-    const { t1, payload } = await got;
-    return { t0, t1, ms: nsToMs(t1 - t0), payload };
+    try {
+      if (mode === "two-raf") await this.page.evaluate((x) => window.__dbo.pingAfterTwoRaf(x), id);
+      else await this.page.evaluate((x) => window.__dbo.ping(x), id);
+      const r = await Promise.race([got, timedOut]);
+      if (r === null) return { ok: false, timedOut: true, timeoutMs, t0, ms: null, payload: null };
+      return { ok: true, t0, t1: r.t1, ms: nsToMs(r.t1 - t0), payload: r.payload };
+    } finally {
+      clearTimeout(timer);
+      this.pingWaiters.delete(id);
+    }
   }
 }

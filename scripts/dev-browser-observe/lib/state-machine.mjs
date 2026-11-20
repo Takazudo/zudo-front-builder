@@ -136,7 +136,7 @@ export async function runBatch({ scenarios, deps }) {
     stopped = true;
   };
 
-  const cleanup = async (snapshot, reason, blocked = []) => {
+  const cleanup = async (snapshot, reason, blocked = [], skippedBlocks = []) => {
     const blocks = [];
     for (const path of blocked) {
       try {
@@ -197,6 +197,10 @@ export async function runBatch({ scenarios, deps }) {
       live,
       liveSkipped,
     };
+    if (skippedBlocks.length) {
+      cleanupRec.inject = { kind: "restore-blocked", applied: false, skippedPaths: skippedBlocks };
+      cleanupRec.controlNotCredited = `batch already stopped by ${acc.stopReason}; block not applied so the restore runs`;
+    }
     if (blocked.length) {
       cleanupRec.inject = { kind: "restore-blocked", expectedOutcome: "restoration-failed" };
       cleanupRec.controlPass = !ok && restore.mismatches.length > 0 && !stopped;
@@ -639,7 +643,8 @@ export async function runBatch({ scenarios, deps }) {
   if (activeSnapshot) {
     let ok = false;
     try {
-      ok = await cleanup(activeSnapshot, `after-stop:${acc.stopReason}`, blockedForCleanup);
+      // A batch stopped for another reason must actually restore, so no restore-blocked chmod here.
+      ok = await cleanup(activeSnapshot, `after-stop:${acc.stopReason}`, [], blockedForCleanup);
     } catch (error) {
       append({
         type: "cleanup",

@@ -153,6 +153,7 @@ export async function execute({
   label,
   command,
   stderr = (m) => process.stderr.write(`${m}\n`),
+  hooks = {},
 }) {
   const loaded = loadProfile(profilePath);
   const { profile, resolved } = loaded;
@@ -182,12 +183,12 @@ export async function execute({
   try {
     lock = await acquireLock(resolved.lockPath);
   } catch (error) {
-    stderr(
-      error instanceof LockBusyError
-        ? `another dev-browser-observe batch holds ${resolved.lockPath}`
-        : String(error),
-    );
-    return EXIT.lockBusy;
+    if (error instanceof LockBusyError) {
+      stderr(`another dev-browser-observe batch holds ${resolved.lockPath}`);
+      return EXIT.lockBusy;
+    }
+    stderr(`lock acquisition failed (not contention): ${error?.stack ?? error}`);
+    return EXIT.controllerError;
   }
   try {
     const registry = readJsonl(resolved.registryPath).filter(
@@ -199,13 +200,13 @@ export async function execute({
       return EXIT.ownedServerAlive;
     }
     mkdirSync(labelDir);
-    return await executeLocked({ loaded, label, labelDir, command, stderr });
+    return await executeLocked({ loaded, label, labelDir, command, stderr, hooks });
   } finally {
     await lock.release();
   }
 }
 
-async function executeLocked({ loaded, label, labelDir, command, stderr }) {
+async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {} }) {
   const { profile, resolved } = loaded;
   const rec = new Recorder(join(labelDir, "records.jsonl"));
   const startedNs = hrtimeNs();
@@ -488,7 +489,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
     let stopReport = { absent: true, reason: "no-server-started" };
     if (server) {
       try {
-        stopReport = await stopOwned(server.handle, {
+        stopReport = await (hooks.stopOwned ?? stopOwned)(server.handle, {
           intWaitMs: profile.timeouts.stopTermMs ?? 5000,
           termWaitMs: profile.timeouts.stopKillMs ?? 3000,
           killWaitMs: 3000,
@@ -500,8 +501,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
           code: error?.code ?? null,
         };
       }
-      await new Promise((r) => server.log.end(r));
-      rec.append({ type: "server-stop", report: stopReport, exit: server.handle.exit });
+      const logClose = await server.closeLog();
+      rec.append({ type: "server-stop", report: stopReport, exit: server.handle.exit, logClose });
       appendJsonlSync(resolved.registryPath, {
         type: "stopped",
         label,
@@ -509,6 +510,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
         pid: server.handle.native?.pid,
         absent: stopReport.absent,
       });
+    }
+    let stopFailure = null;
+    if (server && (!stopReport.absent || stopReport.error)) {
+      stopFailure = {
+        absent: Boolean(stopReport.absent),
+        error: stopReport.error ?? null,
+        code: stopReport.code ?? null,
+        exitBefore: exitCode,
+      };
+      exitCode = EXIT.ownedServerAlive;
     }
     const live = summaryExtra.accountingFinal ?? accountingRef.current;
     const accounting = live ? { ...live } : { ...newAccounting(planned) };
@@ -530,14 +541,20 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
       calibration: summaryExtra.calibration ?? null,
       resourceSamples: { count: samples.length, peak: sampledPeak(samples) },
       ownedServerAbsentAfterStop: Boolean(stopReport.absent),
+      stopFailure,
       serverExit: server?.handle.exit ?? null,
       wallMs: nsToMs(hrtimeNs() - startedNs),
     };
     writeJsonSync(summaryPath, summary);
     writeJsonSync(receiptPath, receipt);
     rec.append({ type: "run-end", exitCode });
-    if (!stopReport.absent)
-      stderr("owned server processes survived stop; the next batch will refuse to start");
+    if (stopFailure) {
+      stderr(
+        "owned server processes were not verified absent after stop; the next batch will refuse to start",
+      );
+      // Returning from finally deliberately overrides the try block's exit code.
+      return exitCode; // eslint-disable-line no-unsafe-finally
+    }
   }
 }
 
