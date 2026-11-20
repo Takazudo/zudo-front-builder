@@ -4,8 +4,13 @@
   "type": "object",
   "required": ["seq", "at", "type"],
   "properties": {
-    "seq": { "type": "integer", "minimum": 0 },
-    "at": { "type": "string" },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "at": {
+      "type": "string"
+    },
     "type": {
       "enum": [
         "run-start",
@@ -25,7 +30,9 @@
         "run-end"
       ]
     },
-    "label": { "enum": ["measured", "supplemental", "cleanup", "calibration", "not-success"] },
+    "label": {
+      "enum": ["measured", "supplemental", "cleanup", "calibration", "not-success"]
+    },
     "outcome": {
       "enum": [
         "success",
@@ -44,8 +51,12 @@
         "not-implemented"
       ]
     },
-    "latencyMs": { "type": "number" },
-    "endpoint": { "const": "predicate confirmed + 2 rAF + binding delivery" },
+    "latencyMs": {
+      "type": "number"
+    },
+    "endpoint": {
+      "const": "predicate confirmed + 2 rAF + binding delivery"
+    },
     "mechanism": {
       "enum": ["native-full-reload", "in-document-update", "server-restart", "unclassified"]
     }

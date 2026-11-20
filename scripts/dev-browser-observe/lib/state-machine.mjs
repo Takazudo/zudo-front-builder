@@ -188,7 +188,11 @@ export async function runBatch({ scenarios, deps }) {
         token: attempt.token,
         targetPath: attempt.targetPath,
         predicate: attempt.predicate,
-        write: { kind: attempt.write.kind, path: attempt.write.path },
+        write: {
+          method: attempt.write.method,
+          path: attempt.write.path,
+          to: attempt.write.to ?? null,
+        },
         sampleBefore: sample,
       };
 
@@ -201,6 +205,7 @@ export async function runBatch({ scenarios, deps }) {
         break outer;
       }
       const preDocUUID = armed.docUUID;
+      const logMark = server.logMark?.() ?? null;
       const serverPidBefore = server.pid();
       page.markAttempt();
 
@@ -238,6 +243,7 @@ export async function runBatch({ scenarios, deps }) {
       ]);
       const evidence = page.collectAttempt();
       const serverPidAfter = server.pid();
+      const serverLog = logMark === null ? null : server.logSince(logMark, t0);
 
       let outcome;
       const rec = {
@@ -247,6 +253,8 @@ export async function runBatch({ scenarios, deps }) {
         serverPidBefore,
         serverPidAfter,
         evidence,
+        writeEvidence: attempt.write.evidence ?? null,
+        serverLog,
         lateTokensDuringAttempt: late.length,
       };
       if (waited.kind === "notify") {

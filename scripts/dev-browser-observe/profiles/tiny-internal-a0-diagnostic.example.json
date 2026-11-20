@@ -1,0 +1,98 @@
+{
+  "schema": "dev-browser-observe.profile.v1",
+  "description": "DIAGNOSTIC: ZFB_DEV_TIMING=1 so server.log carries watch/tick batch lines. Compares in-place with atomic-rename title edits in separate scenarios. Not a normal measurement profile.",
+  "mode": "source-built",
+  "diagnostic": true,
+  "productSha": "0000000000000000000000000000000000000000",
+  "productDirtyIdentity": null,
+  "buildReceipt": "/tmp/dev-browser-observe/build-receipt.json",
+  "fixture": {
+    "dir": "../fixtures/tiny-two-article",
+    "placement": "internal",
+    "adapter": "A0"
+  },
+  "pins": {
+    "harnessTreeSha256": null,
+    "fixtureTreeSha256": null,
+    "observerSha256": null,
+    "adapterSha256": null
+  },
+  "server": {
+    "port": {
+      "mode": "ephemeral"
+    },
+    "host": "127.0.0.1",
+    "readyTimeoutMs": 120000,
+    "env": {
+      "ZFB_DEV_TIMING": "1"
+    }
+  },
+  "browser": {
+    "headless": true,
+    "args": [
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows"
+    ],
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "deviceScaleFactor": 1
+  },
+  "timeouts": {
+    "attemptMs": 30000,
+    "supplementalMs": 30000,
+    "restoreMs": 30000,
+    "stopTermMs": 5000,
+    "stopKillMs": 3000
+  },
+  "limits": {
+    "rssCeilingKiB": 4194304,
+    "wallCeilingMs": 1800000
+  },
+  "calibration": {
+    "repeats": 5,
+    "staleTimeoutMs": 2000,
+    "cells": [
+      "binding-round-trip",
+      "two-raf",
+      "synthetic-dom",
+      "synthetic-css",
+      "observer-init-after-navigation",
+      "stale-then-new-token",
+      "late-token",
+      "native-reload-survival"
+    ]
+  },
+  "restoration": {
+    "writeMethod": "in-place"
+  },
+  "scenarios": [
+    {
+      "id": "diag-in-place",
+      "set": "workload",
+      "ops": [
+        {
+          "id": "title-a-in-place",
+          "op": "edit-title",
+          "article": "a",
+          "writeMethod": "in-place"
+        }
+      ]
+    },
+    {
+      "id": "diag-atomic-rename",
+      "set": "workload",
+      "ops": [
+        {
+          "id": "title-a-atomic-rename",
+          "op": "edit-title",
+          "article": "a",
+          "writeMethod": "atomic-rename"
+        }
+      ]
+    }
+  ],
+  "outDir": "/tmp/dev-browser-observe"
+}

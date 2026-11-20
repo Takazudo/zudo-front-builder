@@ -180,6 +180,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
     createdAt: isoNow(),
     productSha: profile.productSha,
     productDirtyIdentity: profile.productDirtyIdentity ?? null,
+    diagnostic: profile.diagnostic === true,
+    restorationWriteMethod: profile.restoration.writeMethod,
     harnessCapability: harnessCapability(),
     buildReceipt,
     identity: null,
@@ -277,6 +279,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
     host: profile.server.host,
     extraArgs: profile.server.extraArgs ?? [],
     env: profile.server.env ?? {},
+    diagnostic: profile.diagnostic === true,
     readyTimeoutMs: profile.server.readyTimeoutMs,
     logPath: join(labelDir, "server.log"),
   });
@@ -290,7 +293,11 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
     launcher: server.handle.launcher,
     native: server.handle.native,
     args: server.args,
+    cwd: m.appDir,
     envOverrides: server.envOverrides,
+    zfbEnv: server.zfbEnv,
+    removedDiagnosticEnv: server.removedDiagnosticEnv,
+    diagnostic: server.diagnostic,
   };
 
   let browserHandle = null;
@@ -349,7 +356,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
             prepareAttempt: (op) => prepareAttempt(m, op),
             performWrite: (w, onT0) => performWrite(w, onT0),
             snapshot: () => snapshotSources(m),
-            restore: (s) => restoreSnapshot(s),
+            restore: (s) => restoreSnapshot(s, { writeMethod: profile.restoration.writeMethod }),
             liveChecks: (s) => originalLiveChecks(m, s),
           },
           limits: profile.limits,

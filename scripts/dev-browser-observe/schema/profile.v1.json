@@ -5,6 +5,7 @@
   "required": [
     "schema",
     "mode",
+    "diagnostic",
     "productSha",
     "buildReceipt",
     "fixture",
@@ -13,25 +14,51 @@
     "browser",
     "timeouts",
     "limits",
+    "restoration",
     "scenarios",
     "outDir"
   ],
   "additionalProperties": false,
   "properties": {
-    "schema": { "const": "dev-browser-observe.profile.v1" },
-    "description": { "type": "string" },
-    "mode": { "enum": ["source-built", "fixed-distribution"] },
-    "productSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "productDirtyIdentity": { "type": ["string", "null"] },
-    "buildReceipt": { "type": "string", "minLength": 1 },
+    "schema": {
+      "const": "dev-browser-observe.profile.v1"
+    },
+    "description": {
+      "type": "string"
+    },
+    "mode": {
+      "enum": ["source-built", "fixed-distribution"]
+    },
+    "diagnostic": {
+      "type": "boolean",
+      "description": "true only for diagnostic profiles; required for ZFB_DEV_TIMING in server.env. Non-diagnostic runs strip it from the inherited env."
+    },
+    "productSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "productDirtyIdentity": {
+      "type": ["string", "null"]
+    },
+    "buildReceipt": {
+      "type": "string",
+      "minLength": 1
+    },
     "fixture": {
       "type": "object",
       "required": ["dir", "placement", "adapter"],
       "additionalProperties": false,
       "properties": {
-        "dir": { "type": "string" },
-        "placement": { "enum": ["internal", "external"] },
-        "adapter": { "type": "string", "minLength": 1 }
+        "dir": {
+          "type": "string"
+        },
+        "placement": {
+          "enum": ["internal", "external"]
+        },
+        "adapter": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "pins": {
@@ -39,10 +66,18 @@
       "required": ["harnessTreeSha256", "fixtureTreeSha256", "observerSha256", "adapterSha256"],
       "additionalProperties": false,
       "properties": {
-        "harnessTreeSha256": { "type": ["string", "null"] },
-        "fixtureTreeSha256": { "type": ["string", "null"] },
-        "observerSha256": { "type": ["string", "null"] },
-        "adapterSha256": { "type": ["string", "null"] }
+        "harnessTreeSha256": {
+          "type": ["string", "null"]
+        },
+        "fixtureTreeSha256": {
+          "type": ["string", "null"]
+        },
+        "observerSha256": {
+          "type": ["string", "null"]
+        },
+        "adapterSha256": {
+          "type": ["string", "null"]
+        }
       }
     },
     "server": {
@@ -55,14 +90,31 @@
           "required": ["mode"],
           "additionalProperties": false,
           "properties": {
-            "mode": { "enum": ["ephemeral", "fixed"] },
-            "port": { "type": "integer", "minimum": 1 }
+            "mode": {
+              "enum": ["ephemeral", "fixed"]
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         },
-        "host": { "type": "string" },
-        "readyTimeoutMs": { "type": "integer", "minimum": 1 },
-        "extraArgs": { "type": "array", "items": { "type": "string" } },
-        "env": { "type": "object" }
+        "host": {
+          "type": "string"
+        },
+        "readyTimeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "type": "object"
+        }
       }
     },
     "browser": {
@@ -70,18 +122,34 @@
       "required": ["headless", "viewport", "deviceScaleFactor"],
       "additionalProperties": false,
       "properties": {
-        "headless": { "type": "boolean" },
-        "args": { "type": "array", "items": { "type": "string" } },
+        "headless": {
+          "type": "boolean"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "viewport": {
           "type": "object",
           "required": ["width", "height"],
           "additionalProperties": false,
           "properties": {
-            "width": { "type": "integer", "minimum": 1 },
-            "height": { "type": "integer", "minimum": 1 }
+            "width": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         },
-        "deviceScaleFactor": { "type": "number", "minimum": 0.1 }
+        "deviceScaleFactor": {
+          "type": "number",
+          "minimum": 0.1
+        }
       }
     },
     "timeouts": {
@@ -89,11 +157,26 @@
       "required": ["attemptMs", "supplementalMs", "restoreMs"],
       "additionalProperties": false,
       "properties": {
-        "attemptMs": { "type": "integer", "minimum": 1 },
-        "supplementalMs": { "type": "integer", "minimum": 1 },
-        "restoreMs": { "type": "integer", "minimum": 1 },
-        "stopTermMs": { "type": "integer", "minimum": 1 },
-        "stopKillMs": { "type": "integer", "minimum": 1 }
+        "attemptMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "supplementalMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "restoreMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "stopTermMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "stopKillMs": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "limits": {
@@ -101,16 +184,28 @@
       "required": ["rssCeilingKiB", "wallCeilingMs"],
       "additionalProperties": false,
       "properties": {
-        "rssCeilingKiB": { "type": "integer", "minimum": 1 },
-        "wallCeilingMs": { "type": "integer", "minimum": 1 }
+        "rssCeilingKiB": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "wallCeilingMs": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "calibration": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "repeats": { "type": "integer", "minimum": 1 },
-        "staleTimeoutMs": { "type": "integer", "minimum": 1 },
+        "repeats": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "staleTimeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
         "cells": {
           "type": "array",
           "items": {
@@ -135,16 +230,23 @@
         "required": ["id", "ops"],
         "additionalProperties": false,
         "properties": {
-          "id": { "type": "string", "minLength": 1 },
-          "set": { "enum": ["workload", "negative-controls"] },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "set": {
+            "enum": ["workload", "negative-controls"]
+          },
           "ops": {
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["op"],
+              "required": ["op", "writeMethod"],
               "additionalProperties": false,
               "properties": {
-                "id": { "type": "string" },
+                "id": {
+                  "type": "string"
+                },
                 "op": {
                   "enum": [
                     "edit-title",
@@ -152,22 +254,59 @@
                     "edit-category",
                     "edit-css",
                     "delete-article",
+                    "create-article",
+                    "rename-article",
                     "stale-predicate"
                   ]
                 },
-                "article": { "type": "string" },
-                "writeMode": { "enum": ["write", "rename"] },
-                "expect": { "enum": ["success", "timeout"] },
-                "targetPath": { "type": "string" },
-                "predicate": { "type": "object" },
-                "supplemental": { "type": "array", "items": { "type": "object" } }
+                "article": {
+                  "type": "string"
+                },
+                "expect": {
+                  "enum": ["success", "timeout"]
+                },
+                "targetPath": {
+                  "type": "string"
+                },
+                "predicate": {
+                  "type": "object"
+                },
+                "supplemental": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "writeMethod": {
+                  "enum": ["in-place", "atomic-rename", "unlink", "create", "rename"]
+                },
+                "to": {
+                  "type": "string",
+                  "minLength": 1
+                }
               }
             }
           }
         }
       }
     },
-    "outDir": { "type": "string", "minLength": 1 },
-    "lockPath": { "type": "string" }
+    "outDir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lockPath": {
+      "type": "string"
+    },
+    "restoration": {
+      "type": "object",
+      "required": ["writeMethod"],
+      "additionalProperties": false,
+      "properties": {
+        "writeMethod": {
+          "enum": ["in-place", "atomic-rename"],
+          "description": "Method for restoring changed files; missing files are recreated with create and unexpected files removed with unlink."
+        }
+      }
+    }
   }
 }

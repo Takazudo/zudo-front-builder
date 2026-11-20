@@ -1,13 +1,18 @@
 import {
+  closeSync,
+  constants,
   cpSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { hrtimeNs, randomHex, readJson, sha256, treeHashDir, walkFiles } from "./util.mjs";
 
 export const FIXTURE_SCHEMA = "tiny-fixture.v1";
@@ -51,8 +56,6 @@ export function materialize({ fixtureDir, workDir, placement, adapter }) {
   cpSync(adapterPath(fixtureDir, manifest, adapter), adapterTarget);
   const config = `${JSON.stringify(zfbConfigFor(manifest, placement), null, 2)}\n`;
   writeFileSync(join(appDir, "zfb.config.json"), config);
-  const scratch = join(workDir, ".dbo-tmp");
-  mkdirSync(scratch);
   const articles = Object.fromEntries(
     manifest.articles.map((slug) => [slug, join(contentDir, `${slug}.md`)]),
   );
@@ -61,13 +64,12 @@ export function materialize({ fixtureDir, workDir, placement, adapter }) {
     workDir,
     appDir,
     contentDir,
-    scratchDir: scratch,
     cssPath: join(workDir, manifest.css.managed),
     articles,
     configSha256: sha256(config),
     adapterSha256: sha256(readFileSync(adapterTarget)),
     materializedTreeSha256: treeHashDir(workDir, {
-      filter: (_r, _k, name) => name !== ".dbo-tmp" && name !== ".zfb" && name !== "node_modules",
+      filter: (_r, _k, name) => name !== ".zfb" && name !== "node_modules",
     }).sha256,
   };
 }
@@ -109,6 +111,35 @@ export const TRANSFORMS = {
       "css marker",
     ),
 };
+
+// Which write methods each op may use; the first is the default when the profile omits one.
+export const OP_WRITE_METHODS = {
+  "edit-title": ["in-place", "atomic-rename"],
+  "edit-body": ["in-place", "atomic-rename"],
+  "edit-category": ["in-place", "atomic-rename"],
+  "edit-css": ["in-place", "atomic-rename"],
+  "stale-predicate": ["in-place", "atomic-rename"],
+  "delete-article": ["unlink"],
+  "create-article": ["create"],
+  "rename-article": ["rename"],
+};
+
+export const RESTORATION_WRITE_METHODS = ["in-place", "atomic-rename"];
+
+export function resolveWriteMethod(op) {
+  const allowed = OP_WRITE_METHODS[op.op];
+  if (!allowed) throw new Error(`unknown op ${op.op}`);
+  const method = op.writeMethod ?? allowed[0];
+  if (!allowed.includes(method))
+    throw new Error(
+      `op ${op.op} does not allow writeMethod ${method}; allowed: ${allowed.join(", ")}`,
+    );
+  return method;
+}
+
+export function renamedSlug(op) {
+  return op.to ?? `${op.article}-renamed`;
+}
 
 function sel(manifest, key, slug) {
   return manifest.selectors[key].replaceAll("{slug}", slug);
@@ -194,6 +225,26 @@ export function defaultsFor(manifest, op) {
         predicate: { kind: "absent", selector: sel(manifest, "homeItem", slug) },
         supplemental: [],
       };
+    case "create-article":
+      return {
+        targetPath: "/",
+        predicate: {
+          kind: "text",
+          selector: sel(manifest, "homeTitle", slug),
+          includes: "{token}",
+        },
+        supplemental: [],
+      };
+    case "rename-article":
+      return {
+        targetPath: "/",
+        predicate: {
+          kind: "count",
+          selector: sel(manifest, "homeItem", renamedSlug(op)),
+          equals: 1,
+        },
+        supplemental: [],
+      };
     default:
       throw new Error(`unknown op ${op.op}`);
   }
@@ -220,53 +271,105 @@ export function prepareAttempt(
   const predicate = substitute(op.predicate ?? d.predicate, vars);
   const supplemental = substitute(op.supplemental ?? d.supplemental, vars);
   const targetPath = op.targetPath ?? d.targetPath;
-  if (op.op === "delete-article") {
+  const method = resolveWriteMethod(op);
+  const base = { token, unwrittenToken, targetPath, predicate, supplemental };
+  const articlePath = (slug) => join(materialized.contentDir, `${slug}.md`);
+  if (method === "unlink") return { ...base, write: { method, path: articlePath(op.article) } };
+  if (method === "rename")
     return {
-      token,
-      unwrittenToken,
-      targetPath,
-      predicate,
-      supplemental,
-      write: { kind: "unlink", path: materialized.articles[op.article] },
+      ...base,
+      write: { method, path: articlePath(op.article), to: articlePath(renamedSlug(op)) },
     };
+  if (method === "create") {
+    const slug = op.article;
+    const bytes = `---\ntitle: Article ${slug.toUpperCase()} ${token}\ncategory: created\n---\n\nBody marker ${token} for article ${slug}.\n`;
+    return { ...base, write: { method, path: articlePath(slug), bytes: Buffer.from(bytes) } };
   }
   const path = op.op === "edit-css" ? materialized.cssPath : materialized.articles[op.article];
   if (!path) throw new Error(`op ${op.op} needs a known article`);
   const next = TRANSFORMS[op.op](readFileSync(path, "utf8"), token, op.article ?? "");
-  const kind = op.writeMode === "rename" ? "rename" : "writeFile";
-  return {
-    token,
-    unwrittenToken,
-    targetPath,
-    predicate,
-    supplemental,
-    write: { kind, path, bytes: Buffer.from(next), tmpDir: materialized.scratchDir },
-  };
+  return { ...base, write: { method, path, bytes: Buffer.from(next) } };
 }
 
+function inode(path) {
+  try {
+    return statSync(path).ino;
+  } catch {
+    return null;
+  }
+}
+
+/** A true in-place truncate-write: O_WRONLY|O_TRUNC on the existing inode, never O_CREAT. */
+function writeInPlace(path, bytes, onT0, fsImpl) {
+  const t0 = onT0();
+  const fd = fsImpl.openSync(path, constants.O_WRONLY | constants.O_TRUNC);
+  try {
+    fsImpl.writeSync(fd, bytes);
+  } finally {
+    fsImpl.closeSync(fd);
+  }
+  return t0;
+}
+
+export const REAL_FS = { openSync, writeSync, closeSync, renameSync, unlinkSync, writeFileSync };
+
 /**
- * Perform the real filesystem operation. `onT0` is invoked immediately before
- * the syscall (for rename, the temp file is written first and is not timed).
+ * Perform the real filesystem operation with the declared method. `onT0` is
+ * invoked immediately before the timed syscall. For atomic-rename the temp
+ * sibling is written first (untimed) in the target's own directory, exactly
+ * like an editor's atomic save. Evidence (inodes, temp path) is attached to
+ * `write.evidence`.
  */
-export function performWrite(write, onT0, fsImpl = { writeFileSync, renameSync, unlinkSync }) {
-  if (write.kind === "writeFile") {
-    const t0 = onT0();
-    fsImpl.writeFileSync(write.path, write.bytes);
-    return t0;
+export function performWrite(write, onT0, fsImpl = REAL_FS) {
+  const ev = { method: write.method, inodeBefore: inode(write.path) };
+  let t0;
+  switch (write.method) {
+    case "in-place":
+      if (ev.inodeBefore === null) throw new Error(`in-place target missing: ${write.path}`);
+      t0 = writeInPlace(write.path, write.bytes, onT0, fsImpl);
+      break;
+    case "atomic-rename": {
+      if (ev.inodeBefore === null) throw new Error(`atomic-rename target missing: ${write.path}`);
+      const tmp = join(dirname(write.path), `.${basename(write.path)}.dbo-${randomHex(4)}.tmp`);
+      ev.tempSibling = tmp;
+      fsImpl.writeFileSync(tmp, write.bytes, { flag: "wx" });
+      t0 = onT0();
+      fsImpl.renameSync(tmp, write.path);
+      break;
+    }
+    case "create": {
+      if (ev.inodeBefore !== null) throw new Error(`create target exists: ${write.path}`);
+      t0 = onT0();
+      const fd = fsImpl.openSync(
+        write.path,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      );
+      try {
+        fsImpl.writeSync(fd, write.bytes);
+      } finally {
+        fsImpl.closeSync(fd);
+      }
+      break;
+    }
+    case "unlink":
+      if (ev.inodeBefore === null) throw new Error(`unlink target missing: ${write.path}`);
+      t0 = onT0();
+      fsImpl.unlinkSync(write.path);
+      break;
+    case "rename":
+      if (ev.inodeBefore === null) throw new Error(`rename source missing: ${write.path}`);
+      if (existsSync(write.to)) throw new Error(`rename destination exists: ${write.to}`);
+      t0 = onT0();
+      fsImpl.renameSync(write.path, write.to);
+      ev.to = write.to;
+      ev.inodeAfterTo = inode(write.to);
+      break;
+    default:
+      throw new Error(`unknown write method ${write.method}`);
   }
-  if (write.kind === "rename") {
-    const tmp = join(write.tmpDir, `${randomHex(6)}.tmp`);
-    fsImpl.writeFileSync(tmp, write.bytes);
-    const t0 = onT0();
-    fsImpl.renameSync(tmp, write.path);
-    return t0;
-  }
-  if (write.kind === "unlink") {
-    const t0 = onT0();
-    fsImpl.unlinkSync(write.path);
-    return t0;
-  }
-  throw new Error(`unknown write kind ${write.kind}`);
+  ev.inodeAfter = inode(write.path);
+  write.evidence = ev;
+  return t0;
 }
 
 export function defaultT0() {
@@ -300,17 +403,47 @@ export function verifySnapshot(snapshot) {
   return mismatches;
 }
 
-/** Restore bytes for changed/missing files, then verify. Never deletes unexpected files. */
-export function restoreSnapshot(snapshot, fsImpl = { writeFileSync }) {
-  const restored = [];
+/**
+ * Restore the snapshot with an explicit method: changed files use
+ * `writeMethod` (in-place or atomic-rename), missing files are recreated with
+ * `create`, unexpected files in snapshot dirs are removed with `unlink`.
+ * Every action is returned with its method, then hashes are re-verified.
+ */
+export function restoreSnapshot(snapshot, { writeMethod = "in-place", fsImpl = REAL_FS } = {}) {
+  if (!RESTORATION_WRITE_METHODS.includes(writeMethod))
+    throw new Error(`restoration writeMethod ${writeMethod} not allowed`);
+  const actions = [];
+  const untimed = () => 0n;
   for (const [path, { bytes, sha256: want }] of Object.entries(snapshot.files)) {
-    const got = existsSync(path) ? sha256(readFileSync(path)) : null;
-    if (got !== want) {
-      fsImpl.writeFileSync(path, bytes);
-      restored.push(path);
+    const exists = existsSync(path);
+    const got = exists ? sha256(readFileSync(path)) : null;
+    if (got === want) continue;
+    const write = { method: exists ? writeMethod : "create", path, bytes };
+    try {
+      performWrite(write, untimed, fsImpl);
+      actions.push({ path, method: write.method, evidence: write.evidence });
+    } catch (error) {
+      actions.push({ path, method: write.method, error: String(error?.message ?? error) });
     }
   }
-  return { restored, mismatches: verifySnapshot(snapshot) };
+  for (const dir of snapshot.dirs) {
+    for (const f of walkFiles(dir)) {
+      if (f.abs in snapshot.files) continue;
+      const write = { method: "unlink", path: f.abs };
+      try {
+        performWrite(write, untimed, fsImpl);
+        actions.push({ path: f.abs, method: "unlink", evidence: write.evidence });
+      } catch (error) {
+        actions.push({ path: f.abs, method: "unlink", error: String(error?.message ?? error) });
+      }
+    }
+  }
+  return {
+    writeMethod,
+    restored: actions.map((a) => a.path),
+    actions,
+    mismatches: verifySnapshot(snapshot),
+  };
 }
 
 /** Live predicates that hold for the original snapshot (the article titles + css marker). */
@@ -328,6 +461,13 @@ export function originalLiveChecks(materialized, snapshot) {
       });
     }
   }
+  const articleCount = Object.keys(snapshot.files).filter(
+    (p) => p.startsWith(`${materialized.contentDir}/`) && p.endsWith(".md"),
+  ).length;
+  checks.push({
+    path: manifest.routes.home,
+    predicate: { kind: "count", selector: "[data-home-item]", equals: articleCount },
+  });
   const css = snapshot.files[materialized.cssPath]?.bytes.toString("utf8") ?? "";
   const marker = css.match(/--observe-css-marker: ([^;]*);/)?.[1];
   if (marker) {
