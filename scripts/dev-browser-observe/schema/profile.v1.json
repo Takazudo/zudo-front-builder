@@ -1,0 +1,353 @@
+{
+  "$id": "dev-browser-observe.profile.v1",
+  "title": "dev-browser-observe run profile",
+  "type": "object",
+  "required": [
+    "schema",
+    "mode",
+    "diagnostic",
+    "productSha",
+    "buildReceipt",
+    "fixture",
+    "pins",
+    "server",
+    "browser",
+    "timeouts",
+    "limits",
+    "restoration",
+    "scenarios",
+    "outDir"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "dev-browser-observe.profile.v1"
+    },
+    "description": {
+      "type": "string"
+    },
+    "mode": {
+      "enum": ["source-built", "fixed-distribution"]
+    },
+    "diagnostic": {
+      "type": "boolean",
+      "description": "true only for diagnostic profiles; required for ZFB_DEV_TIMING in server.env. Non-diagnostic runs strip it from the inherited env."
+    },
+    "productSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "productDirtyIdentity": {
+      "type": ["string", "null"]
+    },
+    "buildReceipt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fixture": {
+      "type": "object",
+      "required": ["dir", "placement", "adapter"],
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "type": "string"
+        },
+        "placement": {
+          "enum": ["internal", "external"]
+        },
+        "adapter": {
+          "type": "string",
+          "minLength": 1
+        },
+        "trailingSlash": {
+          "type": "boolean",
+          "description": "Writes trailingSlash: true into zfb.config.json; routes and predicates use /articles/<slug>/. Default false."
+        },
+        "configFormat": {
+          "enum": ["json", "ts"],
+          "description": "json (default) writes zfb.config.json. ts writes zfb.config.ts: the byte-exact original when placement external + trailingSlash true + wind false, otherwise a generated defineConfig labelled reconstructed."
+        }
+      }
+    },
+    "pins": {
+      "type": "object",
+      "required": ["harnessTreeSha256", "fixtureTreeSha256", "observerSha256", "adapterSha256"],
+      "additionalProperties": false,
+      "properties": {
+        "harnessTreeSha256": {
+          "type": ["string", "null"]
+        },
+        "fixtureTreeSha256": {
+          "type": ["string", "null"]
+        },
+        "observerSha256": {
+          "type": ["string", "null"]
+        },
+        "adapterSha256": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "server": {
+      "type": "object",
+      "required": ["port", "host", "readyTimeoutMs"],
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "object",
+          "required": ["mode"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "enum": ["ephemeral", "fixed"]
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!0\\.0\\.0\\.0$)(?!\\[?::\\]?$)\\S+$",
+          "description": "Explicit bind address (e.g. 127.0.0.1). Unspecified hosts (0.0.0.0, ::) are rejected because zfb then prints a multi-line Local:/Network: banner."
+        },
+        "readyTimeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "type": "object"
+        }
+      }
+    },
+    "browser": {
+      "type": "object",
+      "required": ["headless", "viewport", "deviceScaleFactor"],
+      "additionalProperties": false,
+      "properties": {
+        "headless": {
+          "type": "boolean"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "viewport": {
+          "type": "object",
+          "required": ["width", "height"],
+          "additionalProperties": false,
+          "properties": {
+            "width": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "deviceScaleFactor": {
+          "type": "number",
+          "minimum": 0.1
+        }
+      }
+    },
+    "timeouts": {
+      "type": "object",
+      "required": ["attemptMs", "supplementalMs", "restoreMs"],
+      "additionalProperties": false,
+      "properties": {
+        "attemptMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "supplementalMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "restoreMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "stopTermMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "stopKillMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "quietMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Post-restore quiet window after live confirmation (default 1500)."
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": ["rssCeilingKiB", "wallCeilingMs"],
+      "additionalProperties": false,
+      "properties": {
+        "rssCeilingKiB": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "wallCeilingMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sampleEveryMs": {
+          "type": "integer",
+          "minimum": 50,
+          "description": "Resource sampling period during the armed wait (default 1000)."
+        }
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repeats": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "staleTimeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cells": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "binding-round-trip",
+              "two-raf",
+              "synthetic-dom",
+              "synthetic-css",
+              "observer-init-after-navigation",
+              "stale-then-new-token",
+              "late-token",
+              "reload-survival-controller-triggered",
+              "native-reload-survival"
+            ]
+          }
+        }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "ops"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "set": {
+            "enum": ["workload", "negative-controls"]
+          },
+          "ops": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["op", "writeMethod"],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "op": {
+                  "enum": [
+                    "edit-title",
+                    "edit-body",
+                    "edit-category",
+                    "edit-css",
+                    "delete-article",
+                    "create-article",
+                    "rename-article",
+                    "stale-predicate"
+                  ]
+                },
+                "article": {
+                  "type": "string"
+                },
+                "expect": {
+                  "enum": ["success", "timeout", "classify"],
+                  "description": "success (default); timeout = declared negative control; classify = timeout/stale is a classification result: recorded as timeout, batch still stops, exit 0 with stoppedByClassifyTimeout."
+                },
+                "targetPath": {
+                  "type": "string"
+                },
+                "predicate": {
+                  "type": "object"
+                },
+                "supplemental": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "writeMethod": {
+                  "enum": ["in-place", "atomic-rename", "unlink", "create", "rename"]
+                },
+                "to": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "inject": {
+                  "enum": [
+                    "kill-server-during-wait",
+                    "restore-blocked",
+                    "write-error",
+                    "precondition-true"
+                  ],
+                  "description": "Negative-control injection; only in set negative-controls. Declared outcomes: server-exit (SIGKILL), restoration-failed, write-error, precondition-failed (no write, hash-proven)."
+                }
+              }
+            }
+          },
+          "warmOrder": {
+            "enum": ["index-first", "detail-first", "none"],
+            "description": "Unmeasured controller navigations at scenario start: index-first = / then detail, detail-first = detail then /, none = only the target page."
+          },
+          "warmDetail": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Article slug for the warm detail page (default a)."
+          }
+        }
+      }
+    },
+    "outDir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lockPath": {
+      "type": "string"
+    },
+    "restoration": {
+      "type": "object",
+      "required": ["writeMethod"],
+      "additionalProperties": false,
+      "properties": {
+        "writeMethod": {
+          "enum": ["in-place", "atomic-rename"],
+          "description": "Method for restoring changed files; missing files are recreated with create and unexpected files removed with unlink."
+        }
+      }
+    }
+  }
+}

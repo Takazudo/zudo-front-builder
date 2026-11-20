@@ -1,0 +1,91 @@
+{
+  "schema": "tiny-fixture.v1",
+  "name": "tiny-two-article",
+  "app": "app",
+  "articles": ["a", "b"],
+  "content": {
+    "source": "content/articles",
+    "collection": "articles",
+    "placements": {
+      "internal": {
+        "dest": "app/content/articles",
+        "configPath": "content/articles"
+      },
+      "external": {
+        "dest": "content/articles",
+        "configPath": "../content/articles",
+        "allowOutsideRoot": true,
+        "note": "matches the original reproducer: app/ beside content/articles"
+      }
+    }
+  },
+  "adapters": {
+    "target": "app/lib/content.ts",
+    "variants": {
+      "A0": {
+        "file": "adapters/A0/content.ts.adapter",
+        "provenance": "reconstructed",
+        "label": "direct-read (reconstructed): rebuilds the index via getCollection on every call"
+      },
+      "A1": {
+        "file": "adapters/A1/content.ts.adapter",
+        "provenance": "original-input",
+        "label": "original memoized helper, exact bytes",
+        "source": "zfb-dev-benchmark/research/zfb-memoized-repro/app/lib/content.ts",
+        "sha256": "10cb58dbc77234bc378397601c9b55b534c69b2a43c7e8b488bb32cbeebe38a6"
+      },
+      "A2": {
+        "file": "adapters/A2/content.ts.adapter",
+        "provenance": "derived-from-A1",
+        "label": "A1 plus one `void getContentSnapshot()?.collections.articles;` line before the cache check (and the import)"
+      },
+      "A3": {
+        "file": "adapters/A3/content.ts.adapter",
+        "provenance": "reconstructed-diagnostic",
+        "label": "A1 that rebuilds when getContentSnapshot()?.collections.articles identity differs from the cached one"
+      }
+    },
+    "storage": "Stored as content.ts.adapter so the repo formatter (printWidth 100) never rewrites the byte-exact original; materialized to app/lib/content.ts."
+  },
+  "config": {
+    "wind": false
+  },
+  "css": {
+    "managed": "app/styles/global.css",
+    "managedMechanism": "styles/global.css is zfb's managed global stylesheet; the dev server links it into every page and sends css events on change",
+    "customProperty": "--observe-css-marker",
+    "pageImport": "not-supported: plain .css imports from JS/TS modules are not emitted (docs/src/content/docs/architecture/styling.mdx)"
+  },
+  "routes": {
+    "home": "/",
+    "article": "/articles/{slug}",
+    "independent": "/independent"
+  },
+  "selectors": {
+    "articleTitle": "[data-article-title=\"{slug}\"]",
+    "articleCategory": "[data-article-category=\"{slug}\"]",
+    "articleBody": "[data-article-body=\"{slug}\"]",
+    "homeTitle": "[data-home-title=\"{slug}\"]",
+    "homeCategory": "[data-home-category=\"{slug}\"]",
+    "homeItem": "[data-home-item=\"{slug}\"]",
+    "independent": "[data-independent]"
+  },
+  "routesTrailingSlash": {
+    "home": "/",
+    "article": "/articles/{slug}/",
+    "independent": "/independent/"
+  },
+  "configOriginal": {
+    "file": "configs/original.zfb.config.ts.src",
+    "provenance": "original-input",
+    "source": "zfb-dev-benchmark/research/zfb-memoized-repro/app/zfb.config.ts",
+    "sha256": "7839c840ae456b8b868463d2bc4cfb654ce490a5d80ace58cd71ab86c5c6f602",
+    "appliesWhen": {
+      "configFormat": "ts",
+      "placement": "external",
+      "trailingSlash": true,
+      "wind": false
+    },
+    "storage": "Stored as .ts.src so the repo formatter never rewrites the byte-exact original; materialized to app/zfb.config.ts."
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "$id": "dev-browser-observe.build-receipt.v1",
+  "title": "dev-browser-observe build receipt (written by record-build)",
+  "type": "object",
+  "required": [
+    "schema",
+    "recordedAt",
+    "exe",
+    "source",
+    "cargoLockSha256",
+    "toolchain",
+    "build",
+    "vendor",
+    "embeddedBytes"
+  ],
+  "properties": {
+    "schema": { "const": "dev-browser-observe.build-receipt.v1" },
+    "recordedAt": { "type": "string" },
+    "exe": {
+      "type": "object",
+      "required": ["path", "sha256", "bytes"],
+      "properties": {
+        "path": { "type": "string" },
+        "sha256": { "type": "string" },
+        "bytes": { "type": "integer" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["repo", "sha", "dirty", "patchSha256", "untracked", "dirtyIdentitySha256"],
+      "properties": {
+        "repo": { "type": "string" },
+        "sha": { "type": "string" },
+        "dirty": { "type": "boolean" },
+        "patchSha256": { "type": "string" },
+        "patchBytes": { "type": "integer" },
+        "untracked": { "type": "array", "items": { "type": "string" } },
+        "dirtyIdentitySha256": { "type": ["string", "null"] }
+      }
+    },
+    "cargoLockSha256": { "type": ["string", "null"] },
+    "toolchain": { "type": "object" },
+    "build": {
+      "type": "object",
+      "required": ["triple", "profile", "features", "targetDir"],
+      "properties": {
+        "triple": { "type": ["string", "null"] },
+        "profile": { "type": "string" },
+        "features": { "type": "array", "items": { "type": "string" } },
+        "targetDir": { "type": "string" }
+      }
+    },
+    "vendor": {
+      "type": "object",
+      "required": ["chosen", "candidates", "expectedAtSha", "expectedBasis", "matchesExpected"],
+      "properties": {
+        "chosen": { "type": ["object", "null"] },
+        "candidates": { "type": "array", "items": { "type": "object" } },
+        "expectedAtSha": { "type": "object" },
+        "expectedBasis": { "enum": ["git-sha", "working-tree-at-record"] },
+        "matchesExpected": { "type": "boolean" }
+      }
+    },
+    "embeddedBytes": {
+      "type": "object",
+      "required": ["checked", "missing"],
+      "properties": {
+        "checked": { "type": "integer" },
+        "missing": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+import { getCollection, getContentSnapshot, type CollectionEntry } from "@takazudo/zfb/content";
+
+// A3 is a RECONSTRUCTED diagnostic, not an original input: A1 plus an identity
+// check on the content snapshot's articles slot that rebuilds the cache on change.
+
+type ArticleData = { title: string };
+type Article = CollectionEntry<ArticleData>;
+type ArticleIndex = { articles: Article[]; bySlug: Map<string, Article> };
+
+let cached: ArticleIndex | undefined;
+let cachedSlot: unknown;
+
+export function getIndex(): ArticleIndex {
+  const slot = getContentSnapshot()?.collections.articles;
+  if (cached && slot === cachedSlot) return cached;
+  cachedSlot = slot;
+  const articles = getCollection<ArticleData>("articles").sort((a, b) =>
+    a.slug.localeCompare(b.slug),
+  );
+  cached = { articles, bySlug: new Map(articles.map((article) => [article.slug, article])) };
+  return cached;
+}
+
