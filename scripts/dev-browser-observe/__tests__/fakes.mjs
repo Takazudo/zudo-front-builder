@@ -118,7 +118,7 @@ export function fakeFs({ failWrite = false, failRestore = false, clockForT1 } = 
         targetPath: `/articles/${op.article ?? "a"}`,
         predicate: { kind: "text", selector: "[x]", includes: token },
         supplemental: op.supplementalChecks ?? [],
-        write: { kind: "writeFile", path: `${op.article ?? "a"}.md`, bytes: token },
+        write: { method: "in-place", path: `${op.article ?? "a"}.md`, bytes: token },
       };
     },
     performWrite(w, onT0) {

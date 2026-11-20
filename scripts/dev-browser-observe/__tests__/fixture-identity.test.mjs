@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { constants, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   TRANSFORMS,
@@ -13,6 +13,7 @@ import {
   verifySnapshot,
   zfbConfigFor,
   loadFixture,
+  REAL_FS,
 } from "../lib/fixture.mjs";
 import {
   BUILD_RECEIPT_SCHEMA,
@@ -118,52 +119,135 @@ describe("tiny-two-article fixture", () => {
       predicate: { kind: "computed-style", property: "--observe-css-marker", includes: "tok-c" },
     });
     const del = prepareAttempt(m, { op: "delete-article", article: "b" });
-    expect(del.write.kind).toBe("unlink");
+    expect(del.write.method).toBe("unlink");
+    expect(prepareAttempt(m, { op: "edit-title", article: "a" }).write.method).toBe("in-place");
+    expect(() =>
+      prepareAttempt(m, { op: "edit-title", article: "a", writeMethod: "unlink" }),
+    ).toThrow(/does not allow writeMethod unlink/);
+    const ren = prepareAttempt(m, { op: "rename-article", article: "b", writeMethod: "rename" });
+    expect(ren.write.to.endsWith("b-renamed.md")).toBe(true);
+    expect(ren.predicate).toEqual({
+      kind: "count",
+      selector: '[data-home-item="b-renamed"]',
+      equals: 1,
+    });
   });
 
-  it("performs writes with t0 taken before the syscall, then restores and verifies bytes", () => {
-    const m = materialize({
+  const mat = () =>
+    materialize({
       fixtureDir: FIXTURE,
       workDir: join(tmp(), "w"),
       placement: "internal",
       adapter: "A0",
     });
-    const snap = snapshotSources(m);
+  const tracing = (calls) => ({
+    ...REAL_FS,
+    openSync: (p, f) => {
+      calls.push(
+        `open:${f & constants.O_CREAT ? "creat" : "nocreat"}:${f & constants.O_TRUNC ? "trunc" : ""}`,
+      );
+      return REAL_FS.openSync(p, f);
+    },
+    writeFileSync: (p, b, o) => {
+      calls.push(
+        `writeFile:${basename(p).startsWith(".") ? "temp-sibling" : "target"}:${dirname(p)}`,
+      );
+      return REAL_FS.writeFileSync(p, b, o);
+    },
+    renameSync: (x, y) => {
+      calls.push("rename");
+      return REAL_FS.renameSync(x, y);
+    },
+  });
+  const t0 = (calls) => () => {
+    calls.push("t0");
+    return 1n;
+  };
+
+  it("in-place is a truncate-write on the existing inode with t0 before open", () => {
+    const m = mat();
     const calls = [];
     const a = prepareAttempt(
       m,
-      { op: "edit-body", article: "a", writeMode: "rename" },
-      { token: "tok-r" },
+      { op: "edit-body", article: "a", writeMethod: "in-place" },
+      { token: "tok-i" },
     );
-    performWrite(
-      a.write,
-      () => {
-        calls.push("t0");
-        return 1n;
-      },
-      {
-        writeFileSync: (p, b) => {
-          calls.push(`write:${p.includes(".dbo-tmp") ? "tmp" : "target"}`);
-          writeFileSync(p, b);
-        },
-        renameSync: (x, y) => {
-          calls.push("rename");
-          return renameSync(x, y);
-        },
-      },
-    );
-    expect(calls).toEqual(["write:tmp", "t0", "rename"]);
-    expect(readFileSync(m.articles.a, "utf8")).toContain("tok-r");
-    expect(verifySnapshot(snap)).toHaveLength(1);
-    const r = restoreSnapshot(snap);
-    expect(r.restored).toEqual([m.articles.a]);
-    expect(r.mismatches).toEqual([]);
-    const live = originalLiveChecks(m, snap);
-    expect(live.map((c) => c.path)).toEqual(["/articles/a", "/articles/b", "/independent"]);
-    expect(live[0].predicate.equals).toBe("Article A");
+    performWrite(a.write, t0(calls), tracing(calls));
+    expect(calls).toEqual(["t0", "open:nocreat:trunc"]);
+    expect(a.write.evidence).toMatchObject({ method: "in-place" });
+    expect(a.write.evidence.inodeAfter).toBe(a.write.evidence.inodeBefore);
+    expect(readFileSync(m.articles.a, "utf8")).toContain("tok-i");
   });
 
-  it("reports an unexpected extra file as a restoration mismatch", () => {
+  it("atomic-rename writes a temp sibling in the target dir, then renames (new inode)", () => {
+    const m = mat();
+    const calls = [];
+    const a = prepareAttempt(
+      m,
+      { op: "edit-body", article: "a", writeMethod: "atomic-rename" },
+      { token: "tok-r" },
+    );
+    performWrite(a.write, t0(calls), tracing(calls));
+    expect(calls).toEqual([`writeFile:temp-sibling:${m.contentDir}`, "t0", "rename"]);
+    expect(dirname(a.write.evidence.tempSibling)).toBe(m.contentDir);
+    expect(a.write.evidence.inodeAfter).not.toBe(a.write.evidence.inodeBefore);
+    expect(readFileSync(m.articles.a, "utf8")).toContain("tok-r");
+  });
+
+  it("lifecycle methods refuse the wrong precondition", () => {
+    const m = mat();
+    const noop = () => 1n;
+    expect(() =>
+      performWrite(
+        { method: "in-place", path: join(m.contentDir, "zz.md"), bytes: Buffer.from("x") },
+        noop,
+      ),
+    ).toThrow(/in-place target missing/);
+    expect(() =>
+      performWrite({ method: "create", path: m.articles.a, bytes: Buffer.from("x") }, noop),
+    ).toThrow(/create target exists/);
+    expect(() =>
+      performWrite({ method: "rename", path: m.articles.a, to: m.articles.b }, noop),
+    ).toThrow(/destination exists/);
+    expect(() => performWrite({ method: "editor-save", path: m.articles.a }, noop)).toThrow(
+      /unknown write method/,
+    );
+  });
+
+  it("restores with explicit methods: in-place for changed, create for missing, unlink for extra", () => {
+    const m = mat();
+    const snap = snapshotSources(m);
+    performWrite(
+      prepareAttempt(m, { op: "edit-title", article: "a" }, { token: "t1" }).write,
+      () => 1n,
+    );
+    performWrite(prepareAttempt(m, { op: "rename-article", article: "b" }).write, () => 1n);
+    const r = restoreSnapshot(snap, { writeMethod: "in-place" });
+    expect(r.actions.map((x) => [basename(x.path), x.method])).toEqual([
+      ["a.md", "in-place"],
+      ["b.md", "create"],
+      ["b-renamed.md", "unlink"],
+    ]);
+    expect(r.mismatches).toEqual([]);
+    expect(r.writeMethod).toBe("in-place");
+    expect(() => restoreSnapshot(snap, { writeMethod: "unlink" })).toThrow(/not allowed/);
+    const live = originalLiveChecks(m, snap);
+    expect(live.map((c) => c.path)).toEqual(["/articles/a", "/articles/b", "/", "/independent"]);
+    expect(live[0].predicate.equals).toBe("Article A");
+    expect(live[2].predicate).toEqual({ kind: "count", selector: "[data-home-item]", equals: 2 });
+  });
+
+  it("restoration can use atomic-rename when the profile says so", () => {
+    const m = mat();
+    const snap = snapshotSources(m);
+    performWrite(prepareAttempt(m, { op: "edit-css" }, { token: "t2" }).write, () => 1n);
+    const r = restoreSnapshot(snap, { writeMethod: "atomic-rename" });
+    expect(r.actions).toHaveLength(1);
+    expect(r.actions[0]).toMatchObject({ method: "atomic-rename" });
+    expect(r.mismatches).toEqual([]);
+  });
+
+  it("removes an unexpected extra file with an explicit unlink", () => {
     const m = materialize({
       fixtureDir: FIXTURE,
       workDir: join(tmp(), "w"),
@@ -172,9 +256,12 @@ describe("tiny-two-article fixture", () => {
     });
     const snap = snapshotSources(m);
     writeFileSync(join(m.contentDir, "c.md"), "x");
-    expect(restoreSnapshot(snap).mismatches).toEqual([
+    expect(verifySnapshot(snap)).toEqual([
       { path: join(m.contentDir, "c.md"), want: null, got: "unexpected-file" },
     ]);
+    const r = restoreSnapshot(snap);
+    expect(r.actions).toMatchObject([{ path: join(m.contentDir, "c.md"), method: "unlink" }]);
+    expect(r.mismatches).toEqual([]);
   });
 });
 
@@ -252,6 +339,54 @@ describe("identity", () => {
     expect(
       chooseVendorCandidate([{ ...receipt.vendor.chosen, declaredVendorDir: null }]),
     ).toBeNull();
+  });
+
+  it("record-build binds an explicit frozen exe and vendor copy and records the original build exe", () => {
+    const repo = gitToplevel(HARNESS_DIR);
+    const root = tmp();
+    const working = sourcePackagesWorkingTree(repo);
+    const writeVendor = (dir) => {
+      for (const c of working.contents) {
+        const p = join(dir, c.path);
+        mkdirSync(join(p, ".."), { recursive: true });
+        writeFileSync(p, c.bytes);
+      }
+    };
+    const target = join(root, "target");
+    const outDir = join(target, "debug", "build", "zfb-feedface", "out");
+    writeVendor(join(outDir, "vendor"));
+    writeFileSync(
+      join(target, "debug", "build", "zfb-feedface", "output"),
+      `cargo:rustc-env=ZFB_VENDOR_DIR=${join(outDir, "vendor")}\n`,
+    );
+    const bytes = Buffer.concat(working.contents.map((c) => c.bytes));
+    writeFileSync(join(target, "debug", "zfb"), bytes);
+    const frozen = join(root, "frozen");
+    writeVendor(join(frozen, "vendor"));
+    writeFileSync(join(frozen, "zfb"), bytes);
+    const receipt = recordBuild({
+      exe: join(frozen, "zfb"),
+      vendorDir: join(frozen, "vendor"),
+      profile: "dev",
+      repo,
+      targetDir: target,
+      probe: {
+        rustc: () => ({ ok: true, stdout: "host: aarch64-apple-darwin\n" }),
+        cargo: () => ({ ok: true, stdout: "cargo" }),
+      },
+    });
+    expect(receipt.exe).toMatchObject({ path: join(frozen, "zfb"), role: "frozen-copy" });
+    expect(receipt.buildExe).toMatchObject({
+      path: join(target, "debug", "zfb"),
+      matchesExe: true,
+    });
+    expect(receipt.vendor.chosen).toMatchObject({
+      source: "explicit",
+      vendorDir: join(frozen, "vendor"),
+    });
+    expect(receipt.vendor.targetDirChosen.outDir).toBe(outDir);
+    expect(receipt.vendor.explicitMatchesTargetDir).toBe(true);
+    expect(receipt.embeddedBytes.missing).toEqual([]);
   });
 
   const goodProfile = {

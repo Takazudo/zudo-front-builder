@@ -5,7 +5,7 @@ import { HELP, parseArgs } from "../cli.mjs";
 import { parsePsTable, ownedProcesses } from "../lib/process-owner.mjs";
 import { semanticErrors } from "../lib/profile.mjs";
 import { SCHEMA_FILES, loadSchema, validate, validateAs } from "../lib/schema.mjs";
-import { parseReadyUrl, devArgs } from "../lib/server.mjs";
+import { parseReadyUrl, devArgs, serverEnv } from "../lib/server.mjs";
 import { distribution, nearestRank, summarize } from "../lib/stats.mjs";
 import { HARNESS_DIR } from "../lib/util.mjs";
 
@@ -21,6 +21,7 @@ describe("schemas", () => {
       "tiny-internal-a0.example.json",
       "tiny-external-a0.example.json",
       "tiny-negative-controls.example.json",
+      "tiny-internal-a0-diagnostic.example.json",
     ]) {
       expect(validateAs("profile", example(n))).toEqual([]);
       expect(semanticErrors(example(n))).toEqual([]);
@@ -34,6 +35,35 @@ describe("schemas", () => {
     expect(validateAs("profile", { ...p, productSha: "abc" })[0]).toMatch(/does not match/);
     const bad = { ...p, scenarios: [{ id: "x", ops: [{ op: "stale-predicate", article: "a" }] }] };
     expect(semanticErrors(bad)[0]).toMatch(/must declare expect/);
+  });
+
+  it("write methods are explicit and checked per op", () => {
+    const p = example("tiny-internal-a0.example.json");
+    const op = (o) => ({ ...p, scenarios: [{ id: "x", ops: [o] }] });
+    expect(validateAs("profile", op({ op: "edit-title", article: "a" }))).toContain(
+      "$.scenarios[0].ops[0]: missing writeMethod",
+    );
+    expect(
+      semanticErrors(op({ op: "edit-title", article: "a", writeMethod: "unlink" }))[0],
+    ).toMatch(/does not allow writeMethod unlink/);
+    expect(
+      semanticErrors(op({ op: "delete-article", article: "b", writeMethod: "unlink" })),
+    ).toEqual([]);
+    expect(validateAs("profile", { ...p, restoration: {} })).toContain(
+      "$.restoration: missing writeMethod",
+    );
+  });
+
+  it("ZFB_DEV_TIMING is allowed only in diagnostic profiles", () => {
+    const p = example("tiny-internal-a0.example.json");
+    const env = { ...p.server, env: { ZFB_DEV_TIMING: "1" } };
+    expect(semanticErrors({ ...p, server: env })[0]).toMatch(
+      /only allowed in a profile with diagnostic: true/,
+    );
+    expect(semanticErrors({ ...p, diagnostic: true, server: env })).toEqual([]);
+    const d = example("tiny-internal-a0-diagnostic.example.json");
+    expect(validateAs("profile", d)).toEqual([]);
+    expect(semanticErrors(d)).toEqual([]);
   });
 
   it("the fixture manifest validates against tiny-fixture.v1", () => {
@@ -115,6 +145,22 @@ describe("cli and parsers", () => {
       "--host",
       "127.0.0.1",
     ]);
+  });
+
+  it("strips an inherited ZFB_DEV_TIMING outside diagnostic runs and records ZFB_* env", () => {
+    const plain = serverEnv({ ZFB_DEV_TIMING: "1", PATH: "/bin" }, {}, false);
+    expect(plain.env.ZFB_DEV_TIMING).toBeUndefined();
+    expect(plain.removedDiagnosticEnv).toEqual(["ZFB_DEV_TIMING"]);
+    expect(plain.env.NO_COLOR).toBe("1");
+    const diag = serverEnv({ PATH: "/bin" }, { ZFB_DEV_TIMING: "1" }, true);
+    expect(diag.zfbEnv).toEqual({ ZFB_DEV_TIMING: "1" });
+    expect(diag.removedDiagnosticEnv).toEqual([]);
+  });
+
+  it("parses the localhost ready banner", () => {
+    expect(
+      parseReadyUrl("info listening on localhost:4321\n→ ready on http://localhost:4321\n"),
+    ).toBe("http://localhost:4321");
   });
 
   it("parses ps output and expands owned descendants", () => {
