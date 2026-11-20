@@ -25,6 +25,7 @@ import { defaultExclude, defineConfig } from "vite-plus";
 // names a suite, so the two cannot start overlapping and run it twice.
 const SUBPROCESS_SUITES = [
   "scripts/__tests__/admit-darwin-artifacts-cli.test.mjs",
+  "scripts/dev-browser-observe/__tests__/process-control.test.mjs",
   "scripts/__tests__/docs-dev-supervisor.test.mjs",
   "scripts/__tests__/harvest-supervisor-timelines.test.mjs",
   "scripts/__tests__/install-playwright-linux.test.mjs",
