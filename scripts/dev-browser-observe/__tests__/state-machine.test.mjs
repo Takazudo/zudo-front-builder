@@ -22,7 +22,7 @@ describe("runBatch fail-stop", () => {
         {
           kind: "notify",
           docUUID: "doc-2",
-          evidence: { mainFrameNavigations: 1, newDocuments: 1 },
+          evidence: { mainFrameNavigations: 1, newDocuments: 1, livereloadEvents: ["page"] },
           t1: 2_000_000_000n,
         },
         { kind: "notify", docUUID: "doc-1", t1: 2_100_000_000n },
@@ -302,43 +302,170 @@ describe("runBatch fail-stop", () => {
   });
 });
 
+describe("runBatch round-2 semantics", () => {
+  it("a navigation between the precondition check and t0 is precondition-unstable, with no write", async () => {
+    const page = fakePage({});
+    page.unstable = { mainFrameNavigations: 1, newDocuments: 1, wsFrames: [{ event: "page" }] };
+    const fs = fakeFs();
+    const d = deps({ page, fs });
+    const { accounting } = await runBatch({ scenarios: three, deps: d });
+    expect(accounting).toMatchObject({
+      stopReason: "precondition-unstable",
+      attempted: 1,
+      error: 1,
+      notAttempted: 2,
+    });
+    expect(fs.writes).toEqual([]);
+    expect(attempts(d.recorder.records)[0]).toMatchObject({
+      outcome: "precondition-unstable",
+      writePerformed: false,
+      observerDisarmed: true,
+    });
+  });
+
+  it("records the quiet window after each live-confirmed cleanup", async () => {
+    const page = fakePage({
+      behaviors: [
+        { kind: "notify", t1: 2_000_000_000n },
+        { kind: "notify", t1: 2_000_000_000n },
+        { kind: "notify", t1: 2_000_000_000n },
+      ],
+    });
+    const d = deps({ page });
+    await runBatch({ scenarios: three, deps: d });
+    const cleanup = d.recorder.records.find((r) => r.type === "cleanup");
+    expect(cleanup.quiet).toMatchObject({ quietMs: 5 });
+    expect(page.quietWindows).toEqual([5]);
+  });
+
+  it("a classify timeout is recorded as timeout, still stops, and flags stoppedByClassifyTimeout", async () => {
+    const scen = [
+      {
+        id: "c",
+        ops: [
+          { id: "t", op: "edit-title", article: "a", expect: "classify" },
+          { id: "n", op: "edit-body", article: "a" },
+        ],
+      },
+    ];
+    const d = deps({ page: fakePage({ behaviors: [{ kind: "timeout" }] }) });
+    const { accounting, stopped } = await runBatch({ scenarios: scen, deps: d });
+    expect(stopped).toBe(true);
+    expect(accounting).toMatchObject({
+      timeout: 1,
+      success: 0,
+      stoppedByClassifyTimeout: true,
+      stoppedByExpectedControl: false,
+      expectedControlPasses: 0,
+      notAttempted: 1,
+    });
+    expect(attempts(d.recorder.records)[0]).toMatchObject({
+      outcome: "timeout",
+      expect: "classify",
+    });
+    expect(attempts(d.recorder.records)[0].controlPass).toBeUndefined();
+  });
+
+  it("a classify success is an ordinary success and the batch continues", async () => {
+    const scen = [
+      {
+        id: "c",
+        ops: [
+          { id: "t", op: "edit-title", article: "a", expect: "classify" },
+          { id: "n", op: "edit-body", article: "a" },
+        ],
+      },
+    ];
+    const d = deps({
+      page: fakePage({
+        behaviors: [
+          { kind: "notify", t1: 2_000_000_000n },
+          { kind: "notify", t1: 2_000_000_000n },
+        ],
+      }),
+    });
+    const { accounting, stopped } = await runBatch({ scenarios: scen, deps: d });
+    expect(stopped).toBe(false);
+    expect(accounting.success).toBe(2);
+  });
+
+  it("trips the RSS ceiling during the armed wait and stops", async () => {
+    const server = fakeServer();
+    server.sampleResourcesAsync = async () => ({ summedRssKiB: server.rss });
+    const page = fakePage({
+      onWait: () => {
+        server.rss = 50_000;
+        return new Promise(() => {});
+      },
+    });
+    const d = deps({ page, server, limits: { rssCeilingKiB: 10_000, sampleEveryMs: 5 } });
+    d.timeouts.attemptMs = 10_000;
+    const { accounting } = await runBatch({ scenarios: three, deps: d });
+    expect(accounting).toMatchObject({
+      stopReason: "resource-limit",
+      attempted: 1,
+      notAttempted: 2,
+    });
+    const rec = attempts(d.recorder.records)[0];
+    expect(rec).toMatchObject({ outcome: "resource-limit", resource: { tripped: "rss" } });
+    expect(rec.waitSamples.count).toBeGreaterThan(0);
+    expect(accounting.lastArmedUnknownOperation).toMatchObject({ writeCompleted: true });
+  });
+
+  it("records unmeasured warm navigations before the first attempt", async () => {
+    const scen = [
+      { id: "w", warmOrder: "index-first", ops: [{ id: "t", op: "edit-title", article: "a" }] },
+    ];
+    const page = fakePage({ behaviors: [{ kind: "notify", t1: 2_000_000_000n }] });
+    const d = deps({ page });
+    await runBatch({ scenarios: scen, deps: d });
+    const warm = d.recorder.records.find((r) => r.type === "warm");
+    expect(warm).toMatchObject({ label: "unmeasured", warmOrder: "index-first", ok: true });
+    expect(warm.visits.map((v) => v.path)).toEqual(["/", "/articles/a"]);
+    expect(page.prepared.slice(0, 3)).toEqual(["/", "/articles/a", "/articles/a"]);
+  });
+});
+
 describe("classifyMechanism", () => {
-  it("uses server pid, document identity and navigations", () => {
+  const base = { preDocUUID: "a", serverPidBefore: 1, serverPidAfter: 1 };
+  it("uses server pid, document identity, navigations and livereload frames", () => {
     expect(
       classifyMechanism({
-        preDocUUID: "a",
+        ...base,
         notifyDocUUID: "a",
         mainFrameNavigations: 0,
-        serverPidBefore: 1,
         serverPidAfter: 2,
       }),
     ).toBe("server-restart");
     expect(
       classifyMechanism({
-        preDocUUID: "a",
+        ...base,
         notifyDocUUID: "b",
         mainFrameNavigations: 1,
-        serverPidBefore: 1,
-        serverPidAfter: 1,
+        livereloadEvents: ["page"],
       }),
     ).toBe("native-full-reload");
     expect(
       classifyMechanism({
-        preDocUUID: "a",
-        notifyDocUUID: "a",
-        mainFrameNavigations: 0,
-        serverPidBefore: 1,
-        serverPidAfter: 1,
+        ...base,
+        notifyDocUUID: "b",
+        mainFrameNavigations: 1,
+        livereloadEvents: [],
       }),
-    ).toBe("in-document-update");
+    ).toBe("full-reload-without-page-frame");
     expect(
       classifyMechanism({
-        preDocUUID: "a",
+        ...base,
         notifyDocUUID: "a",
-        mainFrameNavigations: 1,
-        serverPidBefore: 1,
-        serverPidAfter: 1,
+        mainFrameNavigations: 0,
+        livereloadEvents: ["css"],
       }),
-    ).toBe("unclassified");
+    ).toBe("css-replacement");
+    expect(classifyMechanism({ ...base, notifyDocUUID: "a", mainFrameNavigations: 0 })).toBe(
+      "in-document-update",
+    );
+    expect(classifyMechanism({ ...base, notifyDocUUID: "a", mainFrameNavigations: 1 })).toBe(
+      "unclassified",
+    );
   });
 });

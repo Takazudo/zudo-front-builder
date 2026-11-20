@@ -1,4 +1,12 @@
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,7 +21,7 @@ import {
   spawnOwned,
   stopOwned,
 } from "../lib/process-owner.mjs";
-import { EXIT, execute } from "../lib/run.mjs";
+import { EXIT, execute, verifyIdentityOnly } from "../lib/run.mjs";
 import { runBatch } from "../lib/state-machine.mjs";
 import { HARNESS_DIR, delay, readJson, readJsonl } from "../lib/util.mjs";
 import { deps, fakeFs, fakePage } from "./fakes.mjs";
@@ -117,18 +125,53 @@ describe("real child processes", () => {
       `require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); setInterval(() => {}, 1000)`,
     ]);
     await delay(300);
-    const report = await stopOwned(h, { termWaitMs: 3000, killWaitMs: 2000 });
+    const report = await stopOwned(h, { intWaitMs: 3000, termWaitMs: 2000, killWaitMs: 2000 });
     expect(report.rootAlive).toBe(true);
     expect(report.ownedBefore.length).toBeGreaterThanOrEqual(2);
     expect(report.absent).toBe(true);
-    expect(report.exit).toMatchObject({ exitCode: null, signalCode: "SIGTERM" });
+    expect(report.steps.map((s) => s.signal)).toEqual(["SIGINT"]);
+    expect(report.exit).toMatchObject({ exitCode: null, signalCode: "SIGINT" });
+    expect(report.endings.every((e) => e.endedAfter === "SIGINT")).toBe(true);
+    expect(report.endings.find((e) => e.pid === h.native.pid).exit).toMatchObject({
+      signalCode: "SIGINT",
+    });
   });
 
-  it("escalates to SIGKILL for a survivor that ignores SIGTERM", async () => {
-    const h = own(["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"]);
+  it("sends SIGTERM after stopTermMs when SIGINT is ignored", async () => {
+    const h = own(["-e", "process.on('SIGINT', () => {}); setInterval(() => {}, 1000)"]);
     await delay(300);
-    const report = await stopOwned(h, { termWaitMs: 400, killWaitMs: 2000 });
-    expect(report.steps.map((s) => s.signal)).toEqual(["SIGTERM", "SIGKILL"]);
+    const report = await stopOwned(h, { intWaitMs: 400, termWaitMs: 2000, killWaitMs: 2000 });
+    expect(report.steps.map((s) => s.signal)).toEqual(["SIGINT", "SIGTERM"]);
+    expect(report.exit).toMatchObject({ exitCode: null, signalCode: "SIGTERM" });
+    expect(report.endings.find((e) => e.pid === h.native.pid)).toMatchObject({
+      endedAfter: "SIGTERM",
+    });
+  });
+
+  it("records a graceful SIGINT exit code", async () => {
+    const h = own([
+      "-e",
+      "process.on('SIGINT', () => process.exit(0)); setInterval(() => {}, 1000)",
+    ]);
+    await delay(300);
+    const report = await stopOwned(h, { intWaitMs: 3000, termWaitMs: 1000, killWaitMs: 1000 });
+    expect(report.exit).toMatchObject({ exitCode: 0, signalCode: null });
+    expect(report.endings.find((e) => e.pid === h.native.pid)).toMatchObject({
+      endedAfter: "SIGINT",
+    });
+  });
+
+  it("escalates to SIGKILL for a survivor that ignores SIGINT and SIGTERM", async () => {
+    const h = own([
+      "-e",
+      "process.on('SIGINT', () => {}); process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)",
+    ]);
+    await delay(300);
+    const report = await stopOwned(h, { intWaitMs: 300, termWaitMs: 300, killWaitMs: 2000 });
+    expect(report.steps.map((s) => s.signal)).toEqual(["SIGINT", "SIGTERM", "SIGKILL"]);
+    expect(report.endings.find((e) => e.pid === h.native.pid)).toMatchObject({
+      endedAfter: "SIGKILL",
+    });
     expect(report.absent).toBe(true);
     expect(report.exit).toMatchObject({ exitCode: null, signalCode: "SIGKILL" });
   });
@@ -192,7 +235,7 @@ describe("execute (identity gate)", () => {
     const pins = currentPins({
       fixtureDir,
       observerPath: OBSERVER_PATH,
-      adapterPath: join(fixtureDir, "adapters/A0/content.ts"),
+      adapterPath: join(fixtureDir, "adapters/A0/content.ts.adapter"),
     });
     const profile = JSON.parse(
       readFileSync(join(HARNESS_DIR, "profiles", "tiny-internal-a0.example.json"), "utf8"),
@@ -246,6 +289,48 @@ describe("execute (identity gate)", () => {
     const receipt = readJson(join(s.outDir, "L1", "receipt.json"));
     expect(receipt.harnessCapability.sha).toMatch(/^[0-9a-f]{40}$/);
     expect(receipt.productSha).toBe("a".repeat(40));
+  });
+
+  it("refuses an outDir inside a git work tree before creating anything", async () => {
+    const s = setup();
+    const p = JSON.parse(readFileSync(s.profilePath, "utf8"));
+    const inside = join(HARNESS_DIR, "__tests__", "never-created-out");
+    p.outDir = inside;
+    writeFileSync(s.profilePath, JSON.stringify(p));
+    const msgs = [];
+    expect(
+      await execute({
+        profilePath: s.profilePath,
+        label: "G1",
+        command: "run",
+        stderr: (m) => msgs.push(m),
+      }),
+    ).toBe(EXIT.usage);
+    expect(msgs.join("\n")).toMatch(/inside the git work tree/);
+    expect(existsSync(inside)).toBe(false);
+    const v = verifyIdentityOnly(s.profilePath);
+    expect(v.checks.find((c) => c.name === "outdir-outside-git-worktree").ok).toBe(false);
+  });
+
+  it("rejects A1 when its bytes no longer match the original input hash", async () => {
+    const s = setup();
+    const p = JSON.parse(readFileSync(s.profilePath, "utf8"));
+    p.fixture.adapter = "A1";
+    const a1 = join(s.fixtureDir, "adapters/A1/content.ts.adapter");
+    chmodSync(a1, 0o644);
+    writeFileSync(a1, `${readFileSync(a1, "utf8")}// tampered\n`);
+    p.pins = currentPins({
+      fixtureDir: s.fixtureDir,
+      observerPath: OBSERVER_PATH,
+      adapterPath: a1,
+    });
+    writeFileSync(s.profilePath, JSON.stringify(p));
+    const v = verifyIdentityOnly(s.profilePath);
+    expect(v.checks.find((c) => c.name === "adapter-provenance:A1")).toMatchObject({
+      ok: false,
+      expected: "10cb58dbc77234bc378397601c9b55b534c69b2a43c7e8b488bb32cbeebe38a6",
+    });
+    expect(v.checks.find((c) => c.name === "pin:adapterSha256").ok).toBe(true);
   });
 
   it("refuses to reuse a label", async () => {

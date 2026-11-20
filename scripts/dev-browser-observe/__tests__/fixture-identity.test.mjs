@@ -48,7 +48,7 @@ describe("tiny-two-article fixture", () => {
     });
     expect(zfbConfigFor(manifest, "external").collections[0]).toEqual({
       name: "articles",
-      path: "../external-content/articles",
+      path: "../content/articles",
       allowOutsideRoot: true,
     });
     const ext = materialize({
@@ -57,7 +57,7 @@ describe("tiny-two-article fixture", () => {
       placement: "external",
       adapter: "A0",
     });
-    expect(ext.contentDir.endsWith("external-content/articles")).toBe(true);
+    expect(ext.contentDir.endsWith("/w/content/articles")).toBe(true);
     expect(readFileSync(join(ext.appDir, "lib", "content.ts"), "utf8")).toContain(
       'getCollection<ArticleData>("articles")',
     );

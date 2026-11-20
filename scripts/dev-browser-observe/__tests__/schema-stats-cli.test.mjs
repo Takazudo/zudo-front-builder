@@ -22,6 +22,7 @@ describe("schemas", () => {
       "tiny-external-a0.example.json",
       "tiny-negative-controls.example.json",
       "tiny-internal-a0-diagnostic.example.json",
+      "tiny-external-a1-classify.example.json",
     ]) {
       expect(validateAs("profile", example(n))).toEqual([]);
       expect(semanticErrors(example(n))).toEqual([]);

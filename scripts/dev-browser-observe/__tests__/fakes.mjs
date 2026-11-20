@@ -57,7 +57,9 @@ export function fakePage({
     prepared: [],
     armed: [],
     disarms: 0,
-    evidence: { mainFrameNavigations: 0, newDocuments: 0 },
+    evidence: { mainFrameNavigations: 0, newDocuments: 0, livereloadEvents: [] },
+    unstable: null,
+    quietWindows: [],
     async prepare(path) {
       p.prepared.push(path);
       return { docUUID: p.docUUID };
@@ -69,7 +71,16 @@ export function fakePage({
       return { armed: true, docUUID: p.docUUID };
     },
     markAttempt() {
-      p.evidence = { mainFrameNavigations: 0, newDocuments: 0 };
+      p.evidence = { mainFrameNavigations: 0, newDocuments: 0, livereloadEvents: [] };
+    },
+    markPre() {},
+    preWriteInstability() {
+      const u = typeof p.unstable === "function" ? p.unstable() : p.unstable;
+      return u ?? null;
+    },
+    async quietWindow(ms) {
+      p.quietWindows.push(ms);
+      return { quietMs: ms, mainFrameNavigations: 0, newDocuments: 0, livereloadEvents: [] };
     },
     collectAttempt() {
       return p.evidence;
@@ -140,6 +151,13 @@ export function fakeFs({ failWrite = false, failRestore = false, clockForT1 } = 
       Object.assign(files, snap);
       return { restored: Object.keys(snap), mismatches: [] };
     },
+    warmPaths(scenario) {
+      return scenario.warmOrder === "index-first"
+        ? ["/", "/articles/a"]
+        : scenario.warmOrder === "detail-first"
+          ? ["/articles/a", "/"]
+          : [];
+    },
     liveChecks() {
       return [{ path: "/articles/a", predicate: { kind: "text", selector: "[x]", equals: "v0" } }];
     },
@@ -162,6 +180,6 @@ export function deps({
     page,
     fs,
     limits,
-    timeouts: { attemptMs: 50, supplementalMs: 50, restoreMs: 50 },
+    timeouts: { attemptMs: 50, supplementalMs: 50, restoreMs: 50, quietMs: 5 },
   };
 }
