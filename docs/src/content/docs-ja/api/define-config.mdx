@@ -121,7 +121,7 @@ declare module "zfb/zudo-react/testing" {
 - `base?: string` — アセット URL 向けの公開 URL プレフィックス。サイトがサブパス配下にデプロイされる場合（例: `"/pj/my-site/"`）に使います。`site` とは別物です。`base` はアセット URL の前に付与され、`site` はメタデータで使う完全な正規オリジンです。
 - `copyPublicWithBase?: boolean` — `public/` のアセットを `base` サブパス配下へコピーするか（デフォルトの `true`）、`dist/` ルートへフラットにコピーするか（`false`）。デプロイ処理が `dist/` ツリー全体を base パスへ移動する場合（例: `cp -a dist/. deploy-root/pj/site/`）は、`dist/<base>/<base>/...` の二重ネストを避けるため `false` にします。[静的アセット — デプロイ時に再配置するパイプライン向けのフラットコピー](../architecture/static-assets.mdx)を参照してください。
 - `stripMdExt?: boolean` — MDX コンパイル時に内部リンクの href から `.md` / `.mdx` 拡張子を取り除き、末尾に `/` を付与します。デフォルト: `false`。
-- `trailingSlash?: boolean` — base パスの書き換え時に、拡張子なしの絶対 href に末尾の `/` を付与します。デフォルト: `false`。
+- `trailingSlash?: boolean` — base パスの書き換え時に、拡張子なしの絶対 href に末尾の `/` を付与します。デフォルト: `false`。`true` のとき、`zfb dev` は `prerender = false` のページを末尾スラッシュ付きの URL でも配信します（`/live/first/` は `/live/first` と同じルートとパラメータに解決され、リダイレクトはしません）。ルート、拡張子付き、連続スラッシュの URL は対象外で、`zfb build` の出力は厳密なルート照合のままです。
 - `markdown?: MarkdownConfig` — Markdown / MDX のパースオプション。フィールド:
   - `gfm?: GfmFlag` — GFM 構文の切り替え（打ち消し線、テーブル、オートリンクなど）。[GFM](../markdown-features/gfm.mdx)を参照してください。
   - `toc?: { heading?: string; maxDepth?: number }` — `heading`（デフォルト `"TOC"`）にマッチする最初の見出しの後に、`maxDepth` レベル（デフォルト `2`）までの目次を挿入します。`markdown.features.headingMarkerToc` と同じ基盤プラグインと設定形状を配線しており、[見出しマーカー TOC](../markdown-features/heading-marker-toc.mdx)で説明しています。

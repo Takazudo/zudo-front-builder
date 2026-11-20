@@ -4,7 +4,7 @@ export const prerender = false;
 export default function DocsPage({ params }: { params: { slug?: string } }) {
   return (
     <html lang="en">
-      <body>{`SLASH_DOCS:slug=${params.slug ?? "<none>"}`}</body>
+      <body>{`SLASH_DOCS:slug=${params.slug ?? "NONE"}`}</body>
     </html>
   );
 }

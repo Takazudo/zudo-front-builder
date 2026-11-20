@@ -6581,8 +6581,10 @@ pub fn bundle_with_session(
             // Emitted only when at least one client-script entry was discovered
             // (#978). `None` keeps zero-script builds byte-identical.
             base_prefix: input.base_prefix.as_deref(),
-            dev_trailing_slash_dispatch: input.dev_trailing_slash_dispatch
-                && matches!(input.mode, BundleMode::Development),
+            dev_trailing_slash_dispatch: entry_dev_trailing_slash_dispatch(
+                input.mode,
+                input.dev_trailing_slash_dispatch,
+            ),
         },
     )
     .context("bundler: failed writing entry.mjs")?;
@@ -14557,6 +14559,13 @@ struct EntryModuleInputs<'a> {
     dev_trailing_slash_dispatch: bool,
 }
 
+/// Whether the generated entry passes `devTrailingSlashDispatch: true` (#4750):
+/// only a Development bundle whose input requested it. A Production bundle
+/// never carries the option, whatever the input says.
+fn entry_dev_trailing_slash_dispatch(mode: BundleMode, requested: bool) -> bool {
+    requested && matches!(mode, BundleMode::Development)
+}
+
 /// Generate the `entry.mjs` module that re-exports `routes`,
 /// a Workers-style `default { fetch }` wrapper
 /// driven by `createPageRouter` from `@takazudo/zfb-runtime/server`. This is
@@ -19208,6 +19217,58 @@ mod tests {
         );
         assert_eq!(derive_route(Path::new("test.md")).as_deref(), Some("/test"));
         assert_eq!(derive_route(Path::new("d.ts")).as_deref(), Some("/d"));
+    }
+
+    #[test]
+    fn entry_module_dev_trailing_slash_dispatch_is_development_only() {
+        assert!(entry_dev_trailing_slash_dispatch(
+            BundleMode::Development,
+            true
+        ));
+        assert!(!entry_dev_trailing_slash_dispatch(
+            BundleMode::Development,
+            false
+        ));
+        assert!(!entry_dev_trailing_slash_dispatch(
+            BundleMode::Production,
+            true
+        ));
+        assert!(!entry_dev_trailing_slash_dispatch(
+            BundleMode::Production,
+            false
+        ));
+
+        let routes = vec![RouteEntry {
+            route: "/live/:slug".to_string(),
+            source_path: PathBuf::from("pages/live/[slug].tsx"),
+            entry_key: "/live/:slug".to_string(),
+            static_html: false,
+            rel_under_pages: PathBuf::from("live/[slug].tsx"),
+        }];
+        let render = |flag: bool| {
+            let tmp = tempfile::tempdir().unwrap();
+            write_entry_module(
+                tmp.path(),
+                &routes,
+                &EntryModuleInputs {
+                    content_snapshot_json: None,
+                    content_imports: &[],
+                    site: None,
+                    prefetch_disabled: false,
+                    emit_render_artifacts: false,
+                    mdx_components_import_spec: None,
+                    base_prefix: None,
+                    dev_trailing_slash_dispatch: flag,
+                },
+            )
+            .unwrap();
+            fs::read_to_string(tmp.path().join(SHADOW_ENTRY_FILENAME)).unwrap()
+        };
+        let off = render(false);
+        let on = render(true);
+        assert!(!off.contains("devTrailingSlashDispatch"), "{off}");
+        assert!(on.contains("  devTrailingSlashDispatch: true,\n"), "{on}");
+        assert_eq!(on.replace("  devTrailingSlashDispatch: true,\n", ""), off);
     }
 
     #[test]

@@ -955,8 +955,8 @@ async fn dev_trailing_slash_urls_reach_request_time_ssr() {
         ("/docs/a", "SLASH_DOCS:slug=a"),
         ("/docs/a/b/", "SLASH_DOCS:slug=a/b"),
         ("/docs/a/b", "SLASH_DOCS:slug=a/b"),
-        ("/opt/", "SLASH_OPT:slug=<none>"),
-        ("/opt", "SLASH_OPT:slug=<none>"),
+        ("/opt/", "SLASH_OPT:slug=NONE"),
+        ("/opt", "SLASH_OPT:slug=NONE"),
         ("/opt/x/y/", "SLASH_OPT:slug=x/y"),
         ("/opt/x/y", "SLASH_OPT:slug=x/y"),
     ] {
@@ -1027,7 +1027,7 @@ async fn dev_trailing_slash_urls_reach_request_time_ssr() {
     for (path, marker) in [
         ("/live/first/", "SLASH_LIVE:slug=first|value=v2"),
         ("/request/?x=1", "SLASH_REQUEST:value=v2"),
-        ("/opt/", "SLASH_OPT:slug=<none>"),
+        ("/opt/", "SLASH_OPT:slug=NONE"),
     ] {
         expect_200(
             path,

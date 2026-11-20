@@ -176,6 +176,12 @@ pub(crate) struct AssembledBundlerInput {
         Option<crate::render_pipeline::embedded_node_modules_cache::EmbeddedNodeModulesLease>,
 }
 
+/// #4750: `zfb dev` (Development) with `trailingSlash: true` routes an eligible
+/// `/route/` URL to its slashless SSR route. `zfb build` never does.
+fn dev_trailing_slash_dispatch_for_bundle(bundle_mode: BundleMode, config: &Config) -> bool {
+    matches!(bundle_mode, BundleMode::Development) && config.trailing_slash
+}
+
 /// Assemble a fully-configured [`BundlerInput`] from the project [`Config`].
 ///
 /// All ~25 fields are set here from the shared configuration; the two
@@ -459,7 +465,7 @@ pub(crate) fn assemble_bundler_input(
     // `/route/` URL select its slashless SSR route. Development bundles only;
     // `zfb build` and production Workers keep strict routing.
     bundler_input.dev_trailing_slash_dispatch =
-        matches!(bundle_mode, BundleMode::Development) && config.trailing_slash;
+        dev_trailing_slash_dispatch_for_bundle(bundle_mode, config);
 
     // Epic #2421 — arm the render-region sentinel markers.
     bundler_input.emit_render_artifacts = emit_render_artifacts_for_bundle(bundle_mode, config);
@@ -734,6 +740,26 @@ mod tests {
             emit_render_artifacts,
             ..Config::default()
         }
+    }
+
+    #[test]
+    fn trailing_slash_dispatch_is_dev_only_and_follows_the_config() {
+        let slash = Config {
+            trailing_slash: true,
+            ..Config::default()
+        };
+        assert!(dev_trailing_slash_dispatch_for_bundle(
+            BundleMode::Development,
+            &slash
+        ));
+        assert!(!dev_trailing_slash_dispatch_for_bundle(
+            BundleMode::Production,
+            &slash
+        ));
+        assert!(!dev_trailing_slash_dispatch_for_bundle(
+            BundleMode::Development,
+            &Config::default()
+        ));
     }
 
     #[test]
