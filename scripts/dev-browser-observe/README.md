@@ -11,15 +11,19 @@ JSON schema.
 ## Workflow
 
 1. Build the binary, then record it:
-   `cli.mjs record-build --exe target/debug/zfb --profile dev --out <dir>/build-receipt.json [--toolchain X] [--build-command "..."]`.
-   The receipt records the exe hash, the source SHA plus the `git diff HEAD`
-   and untracked-file identity, the `Cargo.lock` hash and the toolchain
-   (`rustc -vV`). It also records the target triple, profile, features, jobs,
-   flags and target dir. For the vendor tree, it records every
-   `target/<profile>/build/zfb-*/out/vendor` candidate. It chooses the one whose
-   build-script `output` names it in `ZFB_VENDOR_DIR` and is newest, then
-   hashes it. It also checks that every embedded source file's bytes occur in
-   the exe.
+   `cli.mjs record-build --exe <frozen>/zfb --vendor-dir <frozen>/vendor --target-dir <target> --profile dev --repo <checkout> --toolchain 1.99.1 --build-command "..." --out <dir>/build-receipt.json`.
+   `--exe` is the binary runs will use. It may be a frozen copy outside the
+   target dir; the receipt then also records the original build output
+   (`--build-exe`, which defaults to `<target-dir>/[<triple>/]<profile-dir>/zfb`)
+   and whether the two hashes match. `--vendor-dir` binds an explicit vendor
+   copy. Without it, the newest `target/<profile>/build/zfb-*/out/vendor` whose
+   build-script `output` names it in `ZFB_VENDOR_DIR` is used. Every target-dir
+   candidate is recorded either way. The receipt also records:
+   - the exe hash;
+   - the source SHA plus the `git diff HEAD` and untracked-file identity;
+   - the `Cargo.lock` hash and the toolchain (`rustc -vV`);
+   - the target triple, profile, features, jobs, flags and target dir;
+   - whether every embedded source file's bytes occur in the exe.
 2. Copy an example from `profiles/` and fill in `productSha`, `buildReceipt` and
    `outDir`. Paste the output of `cli.mjs pins --profile p.json` into `pins`. Put
    `outDir` outside any checkout, because a `node_modules/@takazudo/zfb*` in the
@@ -47,6 +51,38 @@ It also refuses while another batch holds the lock (exit 5) or while an owned
 server from an earlier batch is still alive (exit 6). The lock is a
 `flock(LOCK_EX|LOCK_NB)` that a perl child holds. Deleting the lock file
 releases nothing.
+
+## Write methods
+
+Every op declares `writeMethod`, and the profile declares
+`restoration.writeMethod`. The method changes what the watcher reports, so it
+is never implied. An atomic save produces a rename and an extra sibling event,
+while an in-place write produces one `Modified`.
+
+| Method | What happens | Ops |
+| --- | --- | --- |
+| `in-place` | `open(O_WRONLY\|O_TRUNC)` on the existing inode, never `O_CREAT` | content and CSS edits (default) |
+| `atomic-rename` | temp sibling `.<name>.dbo-<hex>.tmp` in the same dir, then `rename` | content and CSS edits |
+| `unlink` | `unlink` | `delete-article` |
+| `create` | `open(O_CREAT\|O_EXCL)` | `create-article` |
+| `rename` | `rename` to `<slug>-renamed.md` (or `to`) | `rename-article` |
+
+Each attempt records the method, the inode before and after, and any temp
+sibling. Restoration rewrites changed files with `restoration.writeMethod`
+(`in-place` or `atomic-rename`), recreates missing files with `create`, and
+removes extra files with `unlink`. Every restoration action is recorded with
+its method.
+
+## Diagnostic profiles
+
+`ZFB_DEV_TIMING` is allowed in `server.env` only when the profile sets
+`diagnostic: true`. Outside a diagnostic profile, the harness also strips an
+inherited `ZFB_DEV_TIMING` from the server's environment. The receipt records
+every effective `ZFB_*` variable and any variable that was removed. Every
+attempt record carries the server output lines printed from arming until the
+attempt ends, each with milliseconds relative to `t0`; `server.log` holds all
+lines. `profiles/tiny-internal-a0-diagnostic.example.json` compares an
+in-place title edit with an atomic-rename one.
 
 ## Measurement
 
@@ -109,7 +145,8 @@ The fixture is a zfb app with no `node_modules`. It has two Markdown articles,
 `internal`, or `external` with `allowOutsideRoot`.
 
 Helper adapters live in `fixtures/tiny-two-article/adapters/`. `A0` is a
-reconstructed direct-read helper. The managed CSS is `app/styles/global.css`,
+reconstructed direct-read helper. The home page, the detail render and the
+detail route's `paths()` all call the same `getIndex()` from `lib/content.ts`. The managed CSS is `app/styles/global.css`,
 which zfb links into every page; its custom property is
 `--observe-css-marker`. A plain `.css` import from a page is not supported
 because zfb does not emit those bytes.
