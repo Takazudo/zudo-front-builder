@@ -122,16 +122,18 @@ describe("#3 restore-blocked is credited only when nothing else stopped the batc
     });
     const { accounting, stopped } = await runBatch({ scenarios: scen, deps: d });
     const cleanup = d.recorder.records.find((r) => r.type === "cleanup");
+    // Round 5 #9: once another outcome stopped the batch, the block is not applied and the restore runs.
     expect(cleanup).toMatchObject({
-      ok: false,
-      controlPass: false,
-      controlNotCredited: "batch already stopped by timeout",
+      ok: true,
+      inject: { kind: "restore-blocked", applied: false },
+      controlNotCredited: "batch already stopped by timeout; block not applied so the restore runs",
     });
+    expect(d.recorder.records.some((r) => r.type === "inject")).toBe(false);
     expect(accounting).toMatchObject({
       stoppedByExpectedControl: false,
       expectedErrors: 0,
       timeout: 1,
-      restorationFailures: 1,
+      restorationFailures: 0,
     });
     expect(batchExitOk(accounting, stopped)).toBe(false);
   });

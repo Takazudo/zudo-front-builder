@@ -216,6 +216,32 @@ batch.
   `restoration.writeMethod: "in-place"`, and `write-error` requires
   `in-place` or `atomic-rename`.
 
+## Round-5 hardening
+
+- **Server output:** server output is read line by line, and readiness matches
+  only complete lines, so a URL split across chunks is never cut short. Once
+  ready, the harness stops scanning for readiness. It keeps at most 20,000
+  lines in memory, and `logSince` reports any `droppedBeforeMark`.
+- **`server.log`:** writes after close are counted and dropped, and stream
+  errors are recorded instead of thrown. `closeLog()` first waits, bounded, for
+  the child's pipes to close.
+- **Stop must verify absence:** absence requires the root's own exit event. If
+  absence is unverified or the stop throws, the exit is 6 and `summary.json`
+  records it as `stopFailure`.
+- **Unverifiable birth:** the birth identity is re-read after spawn with
+  bounded retries. If it is still unreadable it is recorded as
+  `birthUnverifiable`. Stop then signals, individually, only members of the
+  process group that started at or after the spawn second
+  (`mode: "unverifiable-birth-pgid-scope"`).
+- **Bounded waits:** armed-wait sampling covers only birth-matching live owned
+  PIDs. Calibration pings time out instead of hanging. `hold-lock --ms`
+  releases stdin and exits.
+- **Lock errors:** exit 5 means lock contention only; any other lock failure
+  is a controller error (exit 8).
+- **After-stop cleanup:** once another outcome has stopped the batch,
+  after-stop cleanup does not apply the `restore-blocked` chmod, and records
+  the skip.
+
 ## Restoration and processes
 
 Exact source bytes are snapshotted before each scenario and restored after it

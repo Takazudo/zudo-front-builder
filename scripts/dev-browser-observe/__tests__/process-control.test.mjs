@@ -7,6 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -27,7 +28,7 @@ import {
   stopOwned,
 } from "../lib/process-owner.mjs";
 import { EXIT, execute, verifyIdentityOnly } from "../lib/run.mjs";
-import { injectKillOwned } from "../lib/server.mjs";
+import { SERVER_LINES_KEPT, injectKillOwned, startDevServer } from "../lib/server.mjs";
 import { lockContentionCheck } from "../lib/lock-check.mjs";
 import { runBatch } from "../lib/state-machine.mjs";
 import {
@@ -300,6 +301,110 @@ describe("pgid scan after the root died (round 4 #5)", () => {
   });
 });
 
+function shellServer(dir, body) {
+  const exe = join(dir, "fake-zfb.sh");
+  writeFileSync(exe, `#!/bin/sh\n${body}\n`);
+  chmodSync(exe, 0o755);
+  return exe;
+}
+
+describe("round 5: dev-server stream handling on real processes", () => {
+  it("#4 a ready URL split across writes resolves to the complete URL", async () => {
+    const dir = tmp();
+    const exe = shellServer(
+      dir,
+      `printf 'info listening on 127.0.0.1:1234 (routes pending)\\n'; printf '→ ready on http://127.0.0.1:12'; sleep 0.3; printf '34\\n'; sleep 30`,
+    );
+    const server = startDevServer({
+      exe,
+      appDir: dir,
+      port: { mode: "ephemeral" },
+      readyTimeoutMs: 5000,
+      logPath: join(dir, "server.log"),
+    });
+    children.push(server.handle);
+    const ready = await server.ready;
+    expect(ready.baseUrl).toBe("http://127.0.0.1:1234");
+    await stopOwned(server.handle, { intWaitMs: 1000, termWaitMs: 1000, killWaitMs: 1000 });
+    await server.closeLog();
+  });
+
+  it("#1/#10 late output after stop never crashes, the log closes, and kept lines are capped", async () => {
+    const dir = tmp();
+    const exe = shellServer(
+      dir,
+      `trap '' INT; printf '→ ready on http://127.0.0.1:9\\n'; seq 1 ${SERVER_LINES_KEPT + 500}; while true; do echo tick; sleep 0.01; done`,
+    );
+    const server = startDevServer({
+      exe,
+      appDir: dir,
+      port: { mode: "ephemeral" },
+      readyTimeoutMs: 5000,
+      logPath: join(dir, "server.log"),
+    });
+    children.push(server.handle);
+    await server.ready;
+    const mark0 = 0;
+    await delay(300);
+    const report = await stopOwned(server.handle, {
+      intWaitMs: 300,
+      termWaitMs: 1000,
+      killWaitMs: 1000,
+    });
+    expect(report.absent).toBe(true);
+    const closed = await server.closeLog(2000);
+    expect(closed.errors).toEqual([]);
+    server.log.write("late line after close\n");
+    expect(server.log.droppedAfterEnd).toBeGreaterThanOrEqual(1);
+    const since = server.logSince(mark0, 0n);
+    expect(since.droppedBeforeMark).toBeGreaterThan(0);
+    expect(readFileSync(join(dir, "server.log"), "utf8")).toContain("ready on http://127.0.0.1:9");
+  });
+});
+
+describe("round 5 #5: unverifiable spawn birth", () => {
+  it("records the birth as unverifiable and still stops the process within the spawn-time pgid scope", async () => {
+    const h = spawnOwned(NODE, ["-e", "setInterval(() => {}, 1000)"], { birthImpl: () => null });
+    children.push(h);
+    expect(h.native).toMatchObject({
+      birthUnverifiable: true,
+      lstart: "unavailable",
+      birthAttempts: 5,
+    });
+    await delay(1100);
+    const report = await stopOwned(h, { intWaitMs: 2000, termWaitMs: 1000, killWaitMs: 1000 });
+    expect(report.mode).toBe("unverifiable-birth-pgid-scope");
+    expect(report.endings.find((e) => e.pid === h.native.pid)).toMatchObject({
+      endedAfter: "SIGINT",
+    });
+    expect(report.absent).toBe(true);
+    expect(h.exit).toMatchObject({ signalCode: "SIGINT" });
+  });
+});
+
+describe("round 5 #3: hold-lock exits after --ms even with stdin left open", () => {
+  it("exits 0 on its own", async () => {
+    const root = tmp();
+    const profile = JSON.parse(
+      readFileSync(join(HARNESS_DIR, "profiles", "tiny-internal-a0.example.json"), "utf8"),
+    );
+    Object.assign(profile, { outDir: join(root, "out"), buildReceipt: join(root, "none.json") });
+    profile.fixture.dir = FIXTURE;
+    writeFileSync(join(root, "p.json"), JSON.stringify(profile));
+    const child = spawn(
+      NODE,
+      [join(HARNESS_DIR, "cli.mjs"), "hold-lock", "--profile", join(root, "p.json"), "--ms", "300"],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    const exit = await Promise.race([
+      new Promise((r) => child.once("exit", (code) => r(code))),
+      delay(8000).then(() => "hung"),
+    ]);
+    if (exit === "hung") child.kill("SIGKILL");
+    expect(exit).toBe(0);
+  });
+});
+
 describe("lock", () => {
   it("a second nonblocking acquirer fails while the first holds the lock", async () => {
     const path = join(tmp(), "x.lock");
@@ -521,6 +626,94 @@ describe("execute (identity gate)", () => {
       accounting: { stopReason: "materialize-error", error: 1, attempted: 0 },
     });
     expect(existsSync(join(s.outDir, "M1", "receipt.json"))).toBe(true);
+  });
+
+  function acceptedIdentity(s, exe) {
+    const repo = gitToplevel(HARNESS_DIR);
+    const sha = gitHead(repo);
+    writeFileSync(
+      join(s.root, "build-receipt.json"),
+      JSON.stringify({
+        schema: BUILD_RECEIPT_SCHEMA,
+        exe: { path: exe, sha256: sha256File(exe), bytes: 1 },
+        source: { repo, sha, dirty: false, dirtyIdentitySha256: null },
+        vendor: { chosen: { treeSha256: sourcePackagesAtSha(repo, sha).sha256 } },
+        embeddedBytes: { checked: 1, missing: [] },
+      }),
+    );
+    const p = JSON.parse(readFileSync(s.profilePath, "utf8"));
+    p.productSha = sha;
+    p.server.readyTimeoutMs = 300;
+    writeFileSync(s.profilePath, JSON.stringify(p));
+  }
+
+  it("round 5 #2: a stop that cannot verify absence exits 6 and records stopFailure", async () => {
+    const s = setup();
+    const exe = shellServer(s.root, "sleep 30");
+    acceptedIdentity(s, exe);
+    const code = await execute({
+      profilePath: s.profilePath,
+      label: "S6",
+      command: "run",
+      stderr: () => {},
+      hooks: {
+        stopOwned: async (handle, opts) => {
+          const real = await stopOwned(handle, opts);
+          return { ...real, absent: false, simulated: "survivor" };
+        },
+      },
+    });
+    expect(code).toBe(EXIT.ownedServerAlive);
+    const summary = readJson(join(s.outDir, "S6", "summary.json"));
+    expect(summary).toMatchObject({
+      exitCode: EXIT.ownedServerAlive,
+      ownedServerAbsentAfterStop: false,
+      stopFailure: { absent: false, exitBefore: EXIT.serverNotReady },
+    });
+    expect(readJsonl(join(s.outDir, "S6", "records.jsonl")).at(-1)).toMatchObject({
+      type: "run-end",
+      exitCode: EXIT.ownedServerAlive,
+    });
+  });
+
+  it("round 5 #2: a throwing stop also exits 6", async () => {
+    const s = setup();
+    const exe = shellServer(s.root, "sleep 30");
+    acceptedIdentity(s, exe);
+    const code = await execute({
+      profilePath: s.profilePath,
+      label: "S7",
+      command: "run",
+      stderr: () => {},
+      hooks: {
+        stopOwned: async (handle, opts) => {
+          await stopOwned(handle, opts);
+          throw Object.assign(new Error("birth identity mismatch"), { code: "PID_REUSE" });
+        },
+      },
+    });
+    expect(code).toBe(EXIT.ownedServerAlive);
+    expect(readJson(join(s.outDir, "S7", "summary.json")).stopFailure).toMatchObject({
+      error: "birth identity mismatch",
+      code: "PID_REUSE",
+    });
+  });
+
+  it("round 5 #8: a lock failure that is not contention exits controllerError, not 5", async () => {
+    const s = setup();
+    const p = JSON.parse(readFileSync(s.profilePath, "utf8"));
+    p.lockPath = join(s.root, "no-such-dir", "x.lock");
+    writeFileSync(s.profilePath, JSON.stringify(p));
+    const msgs = [];
+    expect(
+      await execute({
+        profilePath: s.profilePath,
+        label: "L8",
+        command: "run",
+        stderr: (m) => msgs.push(m),
+      }),
+    ).toBe(EXIT.controllerError);
+    expect(msgs.join("\n")).toMatch(/not contention/);
   });
 
   it("rejects fixed-distribution mode as not implemented", async () => {
