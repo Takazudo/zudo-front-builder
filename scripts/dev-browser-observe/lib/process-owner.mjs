@@ -139,12 +139,40 @@ export function spawnOwned(cmd, args, { cwd, env, onStdout, onStderr } = {}) {
 }
 
 /** Record the owned process set seen now, so later stops can verify survivors by birth. */
+function remember(handle, p, source) {
+  handle.known ??= new Map();
+  if (handle.known.has(p.pid)) return;
+  const entry = { ...p, source };
+  handle.known.set(p.pid, entry);
+  handle.onNewOwned?.(entry);
+}
+
 export function snapshotOwned(handle, psImpl) {
   if (!handle.native) return [];
   const seen = ownedProcesses(psTable(psImpl), handle.native);
-  handle.known ??= new Map();
-  for (const p of seen) if (!handle.known.has(p.pid)) handle.known.set(p.pid, p);
+  for (const p of seen) remember(handle, p, "snapshot");
   return seen;
+}
+
+export function parseLstart(lstart) {
+  const t = Date.parse(lstart);
+  return Number.isNaN(t) ? null : t;
+}
+
+/**
+ * After the root died: members of the root's recorded process group that
+ * started no earlier than the root. If a live process now owns pid == pgid
+ * with a different birth, the group number was reused and nothing is trusted.
+ */
+export function pgidSurvivors(table, root) {
+  const rootStart = parseLstart(root.lstart);
+  const leader = table.find((p) => p.pid === root.pgid);
+  if (leader && !sameBirth(root, leader)) return { reused: true, found: [] };
+  if (rootStart === null) return { reused: false, found: [], reason: "root-lstart-unparseable" };
+  const found = table.filter(
+    (p) => p.pgid === root.pgid && p.pid !== root.pid && (parseLstart(p.lstart) ?? -1) >= rootStart,
+  );
+  return { reused: false, found };
 }
 
 function knownMatches(handle, table) {
@@ -195,7 +223,21 @@ export async function stopOwned(
     throw new PidReuseError(root, rootNow);
   const rootAlive = handle.exit === null && rootNow !== null;
   if (rootAlive) snapshotOwned(handle, psImpl);
-  const current = () => knownMatches(handle, psTable(psImpl));
+  report.pgidScans = [];
+  const current = () => {
+    const table = psTable(psImpl);
+    if (handle.exit !== null || !rootAlive) {
+      const scan = pgidSurvivors(table, root);
+      for (const p of scan.found) remember(handle, p, "pgid-scan");
+      if (scan.reused || scan.found.length)
+        report.pgidScans.push({
+          at: isoNow(),
+          reused: scan.reused,
+          found: scan.found.map((p) => p.pid),
+        });
+    }
+    return knownMatches(handle, table);
+  };
   report.ownedBefore = current();
   report.rootAlive = rootAlive;
   const endings = new Map();
@@ -207,7 +249,7 @@ export async function stopOwned(
   let left = report.ownedBefore;
   const settle = () => {
     left = current();
-    for (const p of report.ownedBefore) {
+    for (const p of handle.known?.values() ?? []) {
       if (!endings.has(p.pid) && !left.some((x) => sameBirth(p, x)))
         endings.set(p.pid, {
           pid: p.pid,
@@ -252,6 +294,7 @@ export async function stopOwned(
   report.remaining = left;
   report.absent = left.length === 0;
   report.endings = [...endings.values()];
+  report.known = [...(handle.known?.values() ?? [])];
   report.exit = handle.exit;
   report.finishedAt = isoNow();
   return report;

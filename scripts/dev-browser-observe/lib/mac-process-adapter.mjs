@@ -85,9 +85,13 @@ export function sample(pids, { runImpl = run, withThreads = true } = {}) {
   const hr = process.hrtime.bigint().toString();
   if (pids.length === 0)
     return { at, hrtimeNs: hr, processes: [], summedRssKiB: 0, label: SAMPLE_LABELS.rss };
-  const text =
-    safe(() => runImpl("ps", ["-o", "pid=,rss=,vsz=", "-p", pids.join(",")], { env: C_ENV() })) ??
-    "";
+  // ps -p exits 1 when any listed pid is gone; its stdout still has the live rows.
+  let text = "";
+  try {
+    text = runImpl("ps", ["-o", "pid=,rss=,vsz=", "-p", pids.join(",")], { env: C_ENV() });
+  } catch (error) {
+    text = error?.stdout?.toString?.() ?? "";
+  }
   const rows = parseSampleRows(text);
   const processes = pids.map((pid) => {
     const r = rows.find((x) => x.pid === pid);

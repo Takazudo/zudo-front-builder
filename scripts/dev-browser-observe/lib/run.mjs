@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { OBSERVER_PATH, launchOwnedBrowser } from "./browser.mjs";
+import { OBSERVER_PATH, closeOwnedBrowser, launchOwnedBrowser } from "./browser.mjs";
 import { runCalibration, CALIBRATION_CELLS } from "./calibrate.mjs";
 import {
   adapterPath,
@@ -31,7 +31,7 @@ import { liveOwnedFromRegistry, stopOwned } from "./process-owner.mjs";
 import { LABEL_RE, loadProfile } from "./profile.mjs";
 import { Recorder } from "./recorder.mjs";
 import { startDevServer } from "./server.mjs";
-import { newAccounting, runBatch } from "./state-machine.mjs";
+import { batchExitOk, newAccounting, runBatch } from "./state-machine.mjs";
 import { summarize } from "./stats.mjs";
 import {
   sha256File,
@@ -190,7 +190,9 @@ export async function execute({
     return EXIT.lockBusy;
   }
   try {
-    const registry = readJsonl(resolved.registryPath).filter((e) => e.type === "spawn");
+    const registry = readJsonl(resolved.registryPath).filter(
+      (e) => e.type === "spawn" || e.type === "owned",
+    );
     const alive = liveOwnedFromRegistry(registry);
     if (alive.length > 0) {
       stderr(`an owned server from an earlier batch is still alive: ${JSON.stringify(alive)}`);
@@ -269,101 +271,117 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
     return EXIT.identityRejected;
   }
 
-  const m = materialize({
-    fixtureDir: resolved.fixtureDir,
-    workDir: join(labelDir, "work"),
-    placement: profile.fixture.placement,
-    adapter: profile.fixture.adapter,
-    trailingSlash: profile.fixture.trailingSlash === true,
-    configFormat: profile.fixture.configFormat ?? "json",
-  });
-  const local = [
-    ...findLocalTakazudoPackages(m.appDir),
-    ...findLocalTakazudoPackages(m.contentDir),
-  ];
-  receipt.fixture = {
-    name: manifest.name,
-    placement: profile.fixture.placement,
-    adapter: profile.fixture.adapter,
-    adapterLabel: manifest.adapters.variants[profile.fixture.adapter].label,
-    adapterProvenance: manifest.adapters.variants[profile.fixture.adapter].provenance ?? null,
-    adapterSourceSha256: manifest.adapters.variants[profile.fixture.adapter].sha256 ?? null,
-    trailingSlash: m.trailingSlash,
-    configFormat: m.configFormat,
-    configFile: m.configFile,
-    configProvenance: m.configProvenance,
-    configOriginalSha256: m.configOriginalSha256,
-    workDir: m.workDir,
-    appDir: m.appDir,
-    contentDir: m.contentDir,
-    configSha256: m.configSha256,
-    adapterSha256: m.adapterSha256,
-    materializedTreeSha256: m.materializedTreeSha256,
-    managedCss: manifest.css,
-    localTakazudoPackages: local,
-    ancestorNodeModules: ancestorNodeModules(m.appDir),
-  };
-  if (local.length > 0) {
-    receipt.identity = {
-      ...verdict,
-      ok: false,
-      checks: [
-        ...verdict.checks,
-        { name: "no-local-takazudo-packages:materialized", ok: false, expected: [], actual: local },
-      ],
-    };
-    writeJsonSync(receiptPath, receipt);
-    rec.append({
-      type: "identity",
-      ok: false,
-      outcome: "identity-rejected",
-      checks: receipt.identity.checks,
-    });
-    writeJsonSync(summaryPath, {
-      ...summarize(rec.records, {
-        ...newAccounting(planned),
-        stopReason: "identity-rejected",
-        error: 1,
-      }),
-      identityRejected: true,
-    });
-    rec.append({ type: "run-end", exitCode: EXIT.identityRejected });
-    return EXIT.identityRejected;
-  }
-
-  const server = startDevServer({
-    exe: buildReceipt.exe.path,
-    appDir: m.appDir,
-    port: profile.server.port,
-    host: profile.server.host,
-    extraArgs: profile.server.extraArgs ?? [],
-    env: profile.server.env ?? {},
-    diagnostic: profile.diagnostic === true,
-    readyTimeoutMs: profile.server.readyTimeoutMs,
-    logPath: join(labelDir, "server.log"),
-  });
-  appendJsonlSync(resolved.registryPath, {
-    type: "spawn",
-    label,
-    at: isoNow(),
-    ...server.handle.native,
-  });
-  receipt.server = {
-    launcher: server.handle.launcher,
-    native: server.handle.native,
-    args: server.args,
-    cwd: m.appDir,
-    envOverrides: server.envOverrides,
-    zfbEnv: server.zfbEnv,
-    removedDiagnosticEnv: server.removedDiagnosticEnv,
-    diagnostic: server.diagnostic,
-  };
-
+  let m = null;
+  let server = null;
   let browserHandle = null;
   const samples = [];
   let exitCode = EXIT.ok;
   let summaryExtra = {};
+  const accountingRef = { current: null };
   try {
+    try {
+      m = materialize({
+        fixtureDir: resolved.fixtureDir,
+        workDir: join(labelDir, "work"),
+        placement: profile.fixture.placement,
+        adapter: profile.fixture.adapter,
+        trailingSlash: profile.fixture.trailingSlash === true,
+        configFormat: profile.fixture.configFormat ?? "json",
+      });
+    } catch (error) {
+      rec.append({
+        type: "controller-error",
+        phase: "materialize",
+        outcome: "materialize-error",
+        error: String(error?.stack ?? error),
+      });
+      summaryExtra = { stopReason: "materialize-error" };
+      exitCode = EXIT.controllerError;
+      return exitCode;
+    }
+    const local = [
+      ...findLocalTakazudoPackages(m.appDir),
+      ...findLocalTakazudoPackages(m.contentDir),
+    ];
+    receipt.fixture = {
+      name: manifest.name,
+      placement: profile.fixture.placement,
+      adapter: profile.fixture.adapter,
+      adapterLabel: manifest.adapters.variants[profile.fixture.adapter].label,
+      adapterProvenance: manifest.adapters.variants[profile.fixture.adapter].provenance ?? null,
+      adapterSourceSha256: manifest.adapters.variants[profile.fixture.adapter].sha256 ?? null,
+      trailingSlash: m.trailingSlash,
+      configFormat: m.configFormat,
+      configFile: m.configFile,
+      configProvenance: m.configProvenance,
+      configOriginalSha256: m.configOriginalSha256,
+      workDir: m.workDir,
+      appDir: m.appDir,
+      contentDir: m.contentDir,
+      configSha256: m.configSha256,
+      adapterSha256: m.adapterSha256,
+      materializedTreeSha256: m.materializedTreeSha256,
+      managedCss: manifest.css,
+      localTakazudoPackages: local,
+      ancestorNodeModules: ancestorNodeModules(m.appDir),
+    };
+    if (local.length > 0) {
+      receipt.identity = {
+        ...verdict,
+        ok: false,
+        checks: [
+          ...verdict.checks,
+          {
+            name: "no-local-takazudo-packages:materialized",
+            ok: false,
+            expected: [],
+            actual: local,
+          },
+        ],
+      };
+      rec.append({
+        type: "identity",
+        ok: false,
+        outcome: "identity-rejected",
+        checks: receipt.identity.checks,
+      });
+      summaryExtra = { stopReason: "identity-rejected", identityRejected: true };
+      exitCode = EXIT.identityRejected;
+      return exitCode;
+    }
+
+    server = startDevServer({
+      exe: buildReceipt.exe.path,
+      appDir: m.appDir,
+      port: profile.server.port,
+      host: profile.server.host,
+      extraArgs: profile.server.extraArgs ?? [],
+      env: profile.server.env ?? {},
+      diagnostic: profile.diagnostic === true,
+      readyTimeoutMs: profile.server.readyTimeoutMs,
+      logPath: join(labelDir, "server.log"),
+    });
+    appendJsonlSync(resolved.registryPath, {
+      type: "spawn",
+      label,
+      at: isoNow(),
+      ...server.handle.native,
+    });
+    server.handle.onNewOwned = (p) => {
+      if (p.pid !== server.handle.native?.pid)
+        appendJsonlSync(resolved.registryPath, { type: "owned", label, at: isoNow(), ...p });
+    };
+    receipt.server = {
+      launcher: server.handle.launcher,
+      native: server.handle.native,
+      args: server.args,
+      cwd: m.appDir,
+      envOverrides: server.envOverrides,
+      zfbEnv: server.zfbEnv,
+      removedDiagnosticEnv: server.removedDiagnosticEnv,
+      diagnostic: server.diagnostic,
+    };
+
     let ready;
     try {
       ready = await server.ready;
@@ -375,7 +393,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
         exit: server.handle.exit,
       });
       exitCode = EXIT.serverNotReady;
-      summaryExtra = { readyFailed: true };
+      summaryExtra = { stopReason: "ready-failed" };
       return exitCode;
     }
     rec.append({
@@ -429,15 +447,11 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
           limits: profile.limits,
           timeouts: profile.timeouts,
           startedNs,
+          accountingRef,
         },
       });
       summaryExtra = { accountingFinal: accounting };
-      exitCode =
-        !stopped ||
-        ((accounting.stoppedByExpectedControl || accounting.stoppedByClassifyTimeout) &&
-          accounting.error - accounting.expectedErrors === 0)
-          ? EXIT.ok
-          : EXIT.stopped;
+      exitCode = batchExitOk(accounting, stopped) ? EXIT.ok : EXIT.stopped;
     } else {
       const cal = profile.calibration ?? {};
       const results = await runCalibration({
@@ -458,63 +472,65 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
     }
     return exitCode;
   } catch (error) {
-    rec.append({ type: "controller-error", error: String(error?.stack ?? error) });
+    rec.append({
+      type: "controller-error",
+      outcome: "controller-error",
+      error: String(error?.stack ?? error),
+    });
     exitCode = EXIT.controllerError;
+    summaryExtra = { ...summaryExtra, stopReason: summaryExtra.stopReason ?? "controller-error" };
     return exitCode;
   } finally {
     if (browserHandle) {
+      for (const e of await closeOwnedBrowser(browserHandle))
+        rec.append({ type: "controller-error", phase: e.step, error: e.error });
+    }
+    let stopReport = { absent: true, reason: "no-server-started" };
+    if (server) {
       try {
-        await browserHandle.context.close();
-        await browserHandle.browser.close();
-      } catch (error) {
-        rec.append({
-          type: "controller-error",
-          phase: "browser-close",
-          error: String(error?.message ?? error),
+        stopReport = await stopOwned(server.handle, {
+          intWaitMs: profile.timeouts.stopTermMs ?? 5000,
+          termWaitMs: profile.timeouts.stopKillMs ?? 3000,
+          killWaitMs: 3000,
         });
+      } catch (error) {
+        stopReport = {
+          absent: false,
+          error: String(error?.message ?? error),
+          code: error?.code ?? null,
+        };
       }
-    }
-    let stopReport;
-    try {
-      stopReport = await stopOwned(server.handle, {
-        intWaitMs: profile.timeouts.stopTermMs ?? 5000,
-        termWaitMs: profile.timeouts.stopKillMs ?? 3000,
-        killWaitMs: 3000,
+      await new Promise((r) => server.log.end(r));
+      rec.append({ type: "server-stop", report: stopReport, exit: server.handle.exit });
+      appendJsonlSync(resolved.registryPath, {
+        type: "stopped",
+        label,
+        at: isoNow(),
+        pid: server.handle.native?.pid,
+        absent: stopReport.absent,
       });
-    } catch (error) {
-      stopReport = {
-        absent: false,
-        error: String(error?.message ?? error),
-        code: error?.code ?? null,
-      };
     }
-    await new Promise((r) => server.log.end(r));
-    rec.append({ type: "server-stop", report: stopReport, exit: server.handle.exit });
-    appendJsonlSync(resolved.registryPath, {
-      type: "stopped",
-      label,
-      at: isoNow(),
-      pid: server.handle.native?.pid,
-      absent: stopReport.absent,
-    });
-    const accounting = summaryExtra.accountingFinal ?? {
-      ...newAccounting(planned),
-      stopReason: summaryExtra.readyFailed
-        ? "ready-failed"
-        : exitCode === EXIT.controllerError
-          ? "controller-error"
-          : null,
-    };
-    if (summaryExtra.readyFailed || exitCode === EXIT.controllerError) accounting.error += 1;
+    const live = summaryExtra.accountingFinal ?? accountingRef.current;
+    const accounting = live ? { ...live } : { ...newAccounting(planned) };
+    if (!summaryExtra.accountingFinal && summaryExtra.stopReason) {
+      accounting.stopReason = accounting.stopReason ?? summaryExtra.stopReason;
+      accounting.error += 1;
+    }
     const summary = {
       ...summarize(rec.records, accounting),
+      accountingSource: summaryExtra.accountingFinal
+        ? "batch-result"
+        : live
+          ? "live-batch-accounting"
+          : "planned",
       command,
       label,
       exitCode,
+      identityRejected: summaryExtra.identityRejected === true,
       calibration: summaryExtra.calibration ?? null,
       resourceSamples: { count: samples.length, peak: sampledPeak(samples) },
       ownedServerAbsentAfterStop: Boolean(stopReport.absent),
-      serverExit: server.handle.exit,
+      serverExit: server?.handle.exit ?? null,
       wallMs: nsToMs(hrtimeNs() - startedNs),
     };
     writeJsonSync(summaryPath, summary);

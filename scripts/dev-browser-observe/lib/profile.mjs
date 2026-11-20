@@ -33,6 +33,14 @@ export function semanticErrors(profile) {
         errors.push(
           `$.scenarios[${s.id}].ops[${i}]: inject "${op.inject}" is only allowed in a scenario with set "negative-controls"`,
         );
+      if (op.inject === "restore-blocked" && profile.restoration?.writeMethod !== "in-place")
+        errors.push(
+          `$.scenarios[${s.id}].ops[${i}]: inject "restore-blocked" requires restoration.writeMethod "in-place" (a rename restore is not blocked by the target's mode)`,
+        );
+      if (op.inject === "write-error" && !["in-place", "atomic-rename"].includes(op.writeMethod))
+        errors.push(
+          `$.scenarios[${s.id}].ops[${i}]: inject "write-error" requires writeMethod "in-place" or "atomic-rename" (${op.writeMethod ?? "default"} would create the redirected path)`,
+        );
       const allowed = OP_WRITE_METHODS[op.op];
       if (allowed && op.writeMethod && !allowed.includes(op.writeMethod))
         errors.push(

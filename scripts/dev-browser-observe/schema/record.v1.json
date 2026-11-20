@@ -51,7 +51,9 @@
         "restoration-failed",
         "identity-rejected",
         "ready-failed",
-        "not-implemented"
+        "not-implemented",
+        "controller-error",
+        "materialize-error"
       ]
     },
     "latencyMs": {
