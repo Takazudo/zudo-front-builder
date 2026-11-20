@@ -28,32 +28,62 @@ function playwrightVersion() {
  * One owned Chromium (Playwright launch: fresh temporary profile), one
  * context, one page. Never touches the user's browser profile.
  */
-export async function launchOwnedBrowser(opts = {}) {
+export async function launchOwnedBrowser(
+  opts = {},
+  { chromiumImpl = null, observerFactory = null } = {},
+) {
   const cfg = { ...DEFAULT_BROWSER, ...opts };
-  const { chromium } = await import("@playwright/test");
+  const chromium = chromiumImpl ?? (await import("@playwright/test")).chromium;
   const executablePath = chromium.executablePath();
   const browser = await chromium.launch({ headless: cfg.headless, args: cfg.args });
-  const context = await browser.newContext({
-    viewport: cfg.viewport,
-    deviceScaleFactor: cfg.deviceScaleFactor,
-    serviceWorkers: "block",
-  });
-  const identity = {
-    engine: "chromium",
-    executablePath,
-    executableSha256: sha256File(executablePath),
-    version: browser.version(),
-    headless: cfg.headless,
-    args: cfg.args,
-    viewport: cfg.viewport,
-    deviceScaleFactor: cfg.deviceScaleFactor,
-    profile: "playwright-temporary",
-    playwrightVersion: playwrightVersion(),
-    observerSha256: sha256File(OBSERVER_PATH),
-  };
-  const observer = new ObserverPage(context, readFileSync(OBSERVER_PATH, "utf8"));
-  await observer.install();
-  return { browser, context, observer, identity };
+  try {
+    const context = await browser.newContext({
+      viewport: cfg.viewport,
+      deviceScaleFactor: cfg.deviceScaleFactor,
+      serviceWorkers: "block",
+    });
+    const identity = {
+      engine: "chromium",
+      executablePath,
+      executableSha256: sha256File(executablePath),
+      version: browser.version(),
+      headless: cfg.headless,
+      args: cfg.args,
+      viewport: cfg.viewport,
+      deviceScaleFactor: cfg.deviceScaleFactor,
+      profile: "playwright-temporary",
+      playwrightVersion: playwrightVersion(),
+      observerSha256: sha256File(OBSERVER_PATH),
+    };
+    const observer = observerFactory
+      ? observerFactory(context)
+      : new ObserverPage(context, readFileSync(OBSERVER_PATH, "utf8"));
+    await observer.install();
+    return { browser, context, observer, identity };
+  } catch (error) {
+    try {
+      await browser.close();
+    } catch {
+      // the launch error below is the one to report
+    }
+    throw error;
+  }
+}
+
+/** Close context and browser independently so a context failure never leaks Chromium. */
+export async function closeOwnedBrowser(handle) {
+  const errors = [];
+  try {
+    await handle.context.close();
+  } catch (error) {
+    errors.push({ step: "context.close", error: String(error?.message ?? error) });
+  }
+  try {
+    await handle.browser.close();
+  } catch (error) {
+    errors.push({ step: "browser.close", error: String(error?.message ?? error) });
+  }
+  return errors;
 }
 
 export function isLivereloadSocket(url) {
@@ -178,8 +208,24 @@ export class ObserverPage {
     return new URL(path, `${this.baseUrl}/`).href;
   }
 
+  /** Drop any pending measured wait so a later delivery is never routed to it. */
+  cancelWait() {
+    if (!this.waiter) return null;
+    const w = this.waiter;
+    this.waiter = null;
+    clearTimeout(w.timer);
+    w.resolve({ kind: "cancelled" });
+    return w.token;
+  }
+
+  hasEarly(token) {
+    return this.early.has(token);
+  }
+
   async disarm() {
     this.armedToken = null;
+    this.cancelWait();
+    this.early.clear();
     try {
       return await this.page.evaluate(() => (window.__dbo ? window.__dbo.disarm() : null));
     } catch (error) {

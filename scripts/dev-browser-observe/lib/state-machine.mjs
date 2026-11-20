@@ -8,6 +8,7 @@ export const OUTCOMES = [
   "arm-error",
   "prepare-error",
   "precondition-unstable",
+  "controller-error",
   "write-error",
   "server-exit",
   "resource-limit",
@@ -51,6 +52,7 @@ export function newAccounting(planned) {
     lateTokens: 0,
     expectedControlPasses: 0,
     expectedErrors: 0,
+    expectedTimeouts: 0,
     restorationFailures: 0,
     supplementalFailures: 0,
     lastArmedUnknownOperation: null,
@@ -91,6 +93,18 @@ export function overLimits(limits, sample, wallMs) {
   return null;
 }
 
+/**
+ * Exit disposition for a finished batch: ok when it never stopped, or when it
+ * stopped only by declared controls (negative-control timeout/injection or a
+ * classify timeout) with no undeclared error, timeout or stale left over.
+ */
+export function batchExitOk(acc, stopped) {
+  if (!stopped) return true;
+  if (!(acc.stoppedByExpectedControl || acc.stoppedByClassifyTimeout)) return false;
+  if (acc.error - acc.expectedErrors !== 0) return false;
+  return acc.timeout + acc.stale - acc.expectedTimeouts === 0;
+}
+
 function count(acc, outcome) {
   if (outcome === "success") acc.success += 1;
   else if (outcome === "timeout") acc.timeout += 1;
@@ -109,6 +123,7 @@ export async function runBatch({ scenarios, deps }) {
   const { recorder, clock, server, page, fs, limits = {}, timeouts } = deps;
   const planned = scenarios.reduce((n, s) => n + s.ops.length, 0);
   const acc = newAccounting(planned);
+  if (deps.accountingRef) deps.accountingRef.current = acc;
   const startedNs = deps.startedNs ?? clock.now();
   let activeSnapshot = null;
   let stopped = false;
@@ -184,7 +199,8 @@ export async function runBatch({ scenarios, deps }) {
     };
     if (blocked.length) {
       cleanupRec.inject = { kind: "restore-blocked", expectedOutcome: "restoration-failed" };
-      cleanupRec.controlPass = !ok && restore.mismatches.length > 0;
+      cleanupRec.controlPass = !ok && restore.mismatches.length > 0 && !stopped;
+      if (stopped) cleanupRec.controlNotCredited = `batch already stopped by ${acc.stopReason}`;
     }
     append(cleanupRec);
     if (blocks.length) {
@@ -208,7 +224,7 @@ export async function runBatch({ scenarios, deps }) {
     if (!ok) {
       acc.restorationFailures += 1;
       acc.error += 1;
-      if (cleanupRec.controlPass) {
+      if (cleanupRec.controlPass && !stopped) {
         acc.expectedErrors += 1;
         acc.expectedControlPasses += 1;
         acc.stoppedByExpectedControl = true;
@@ -218,358 +234,424 @@ export async function runBatch({ scenarios, deps }) {
   };
 
   let blockedForCleanup = [];
-  outer: for (const scenario of scenarios) {
-    activeSnapshot = fs.snapshot();
-    blockedForCleanup = [];
-    append({
-      type: "scenario-start",
-      scenario: scenario.id,
-      ops: scenario.ops.map((o) => o.id ?? o.op),
-      warmOrder: scenario.warmOrder ?? "none",
-    });
-    if (scenario.warmOrder && scenario.warmOrder !== "none") {
-      const paths = fs.warmPaths(scenario);
-      const visits = [];
-      try {
-        for (const path of paths) {
-          const t = clock.now();
-          const state = await page.prepare(path);
-          visits.push({ path, docUUID: state.docUUID, ms: nsToMs(clock.now() - t) });
+  let current = { where: null, armedToken: null, writeDone: false, resolved: false };
+  try {
+    outer: for (const scenario of scenarios) {
+      activeSnapshot = fs.snapshot();
+      blockedForCleanup = [];
+      append({
+        type: "scenario-start",
+        scenario: scenario.id,
+        ops: scenario.ops.map((o) => o.id ?? o.op),
+        warmOrder: scenario.warmOrder ?? "none",
+      });
+      if (scenario.warmOrder && scenario.warmOrder !== "none") {
+        const paths = fs.warmPaths(scenario);
+        const visits = [];
+        try {
+          for (const path of paths) {
+            const t = clock.now();
+            const state = await page.prepare(path);
+            visits.push({ path, docUUID: state.docUUID, ms: nsToMs(clock.now() - t) });
+          }
+        } catch (error) {
+          append({
+            type: "warm",
+            label: "unmeasured",
+            scenario: scenario.id,
+            warmOrder: scenario.warmOrder,
+            visits,
+            ok: false,
+            error: String(error?.message ?? error),
+          });
+          acc.error += 1;
+          stop("prepare-error", { scenario: scenario.id, op: null });
+          break outer;
         }
-      } catch (error) {
         append({
           type: "warm",
           label: "unmeasured",
           scenario: scenario.id,
           warmOrder: scenario.warmOrder,
           visits,
-          ok: false,
-          error: String(error?.message ?? error),
+          ok: true,
         });
-        acc.error += 1;
-        stop("prepare-error", { scenario: scenario.id, op: null });
-        break outer;
       }
-      append({
-        type: "warm",
-        label: "unmeasured",
-        scenario: scenario.id,
-        warmOrder: scenario.warmOrder,
-        visits,
-        ok: true,
-      });
-    }
-    for (const op of scenario.ops) {
-      const where = { scenario: scenario.id, op: op.id ?? op.op };
-      const base = {
-        type: "attempt",
-        label: "measured",
-        scenario: scenario.id,
-        opId: op.id ?? op.op,
-        op: op.op,
-        article: op.article ?? null,
-        expect: op.expect ?? "success",
-      };
-
-      const alive = server.isAlive();
-      if (!alive.alive) {
-        append({ ...base, type: "precheck", outcome: "server-exit", exit: alive.exit });
-        acc.error += 1;
-        stop("server-exit", where);
-        break outer;
-      }
-      const sample = server.sampleResources();
-      const wallMs = nsToMs(clock.now() - startedNs);
-      const tripped = overLimits(limits, sample, wallMs);
-      if (tripped) {
-        append({
-          ...base,
-          type: "precheck",
-          outcome: "resource-limit",
-          sample,
-          wallMs,
-          limits,
-          tripped,
-        });
-        acc.error += 1;
-        stop("resource-limit", where);
-        break outer;
-      }
-
-      let attempt;
-      try {
-        attempt = fs.prepareAttempt(op);
-        if (op.inject === "precondition-true") attempt.predicate = ALWAYS_TRUE_PREDICATE;
-        if (op.inject === "write-error") {
-          attempt.injectedFrom = attempt.write.path;
-          attempt.write = { ...attempt.write, path: fs.missingSibling(attempt.write.path) };
-        }
-        await page.prepare(attempt.targetPath);
-        page.markPre?.();
-      } catch (error) {
-        append({
-          ...base,
-          type: "precheck",
-          outcome: "prepare-error",
-          error: String(error?.message ?? error),
-        });
-        acc.error += 1;
-        stop("prepare-error", where);
-        break outer;
-      }
-
-      acc.attempted += 1;
-      acc.notAttempted -= 1;
-      const recBase = {
-        ...base,
-        token: attempt.token,
-        targetPath: attempt.targetPath,
-        predicate: attempt.predicate,
-        write: {
-          method: attempt.write.method,
-          path: attempt.write.path,
-          to: attempt.write.to ?? null,
-        },
-        sampleBefore: sample,
-        inject: op.inject
-          ? {
-              kind: op.inject,
-              expectedOutcome: INJECT_EXPECT[op.inject],
-              injectedFrom: attempt.injectedFrom ?? null,
-            }
-          : null,
-        targetSha256Before: fs.hashOf
-          ? fs.hashOf(attempt.injectedFrom ?? attempt.write.path)
-          : null,
-      };
-
-      const armed = await page.arm(attempt.token, attempt.predicate);
-      if (!armed.armed) {
-        const outcome = armed.precondition ? "precondition-failed" : "arm-error";
-        const r = {
-          ...recBase,
-          outcome,
-          arm: armed,
-          writePerformed: false,
-          targetSha256After: fs.hashOf ? fs.hashOf(attempt.write.path) : null,
+      for (const op of scenario.ops) {
+        const where = { scenario: scenario.id, op: op.id ?? op.op };
+        current = { where, armedToken: null, writeDone: false, resolved: false };
+        const base = {
+          type: "attempt",
+          label: "measured",
+          scenario: scenario.id,
+          opId: op.id ?? op.op,
+          op: op.op,
+          article: op.article ?? null,
+          expect: op.expect ?? "success",
         };
-        if (op.inject) r.controlPass = injectPass(op.inject, outcome, r);
-        append(r);
-        count(acc, outcome);
-        if (r.controlPass) {
-          acc.expectedControlPasses += 1;
-          acc.expectedErrors += 1;
-          acc.stoppedByExpectedControl = true;
-        }
-        stop(outcome, where);
-        break outer;
-      }
-      const preDocUUID = armed.docUUID;
-      const logMark = server.logMark?.() ?? null;
-      const serverPidBefore = server.pid();
-      page.markAttempt();
 
-      const unstable = page.preWriteInstability?.() ?? null;
-      if (unstable) {
-        await page.disarm();
-        append({
-          ...recBase,
-          outcome: "precondition-unstable",
-          unstable,
-          arm: armed,
-          writePerformed: false,
-          observerDisarmed: true,
-        });
-        count(acc, "precondition-unstable");
-        stop("precondition-unstable", where);
-        break outer;
-      }
-
-      let t0;
-      try {
-        t0 = fs.performWrite(attempt.write, () => clock.now());
-      } catch (error) {
-        await page.disarm();
-        acc.lastArmedUnknownOperation = {
-          ...where,
-          token: attempt.token,
-          writeCompleted: "unknown",
-        };
-        const wr = { ...recBase, outcome: "write-error" };
-        if (op.inject) wr.controlPass = injectPass(op.inject, "write-error", wr);
-        if (wr.controlPass) {
-          acc.expectedControlPasses += 1;
-          acc.expectedErrors += 1;
-          acc.stoppedByExpectedControl = true;
-        }
-        append({
-          ...wr,
-          error: String(error?.message ?? error),
-          writePerformed: "unknown",
-          observerDisarmed: true,
-          nativeWorkCancelled: false,
-        });
-        count(acc, "write-error");
-        stop("write-error", where);
-        break outer;
-      }
-
-      let injectKill = null;
-      if (op.inject === "kill-server-during-wait") injectKill = server.injectKill();
-      if (op.inject === "restore-blocked") blockedForCleanup.push(attempt.write.path);
-      const late = [];
-      const waitSamples = { count: 0, peakSummedRssKiB: 0, everyMs: limits.sampleEveryMs ?? 1000 };
-      let sampler = null;
-      const resourceTrip = new Promise((resolve) => {
-        sampler = setInterval(async () => {
-          const s = server.sampleResourcesAsync
-            ? await server.sampleResourcesAsync()
-            : server.sampleResources();
-          waitSamples.count += 1;
-          if (typeof s?.summedRssKiB === "number")
-            waitSamples.peakSummedRssKiB = Math.max(waitSamples.peakSummedRssKiB, s.summedRssKiB);
-          const wall = nsToMs(clock.now() - startedNs);
-          const trip = overLimits(limits, s, wall);
-          if (trip) resolve({ kind: "resource-limit", sample: s, tripped: trip, wallMs: wall });
-        }, waitSamples.everyMs);
-      });
-      let waited;
-      try {
-        waited = await Promise.race([
-          page.waitNotify(attempt.token, timeouts.attemptMs, (payload) => {
-            late.push(payload);
-            acc.lateTokens += 1;
-            append({
-              type: "late-token",
-              label: "not-success",
-              armedToken: attempt.token,
-              payload,
-            });
-          }),
-          server.waitExit().then((exit) => ({ kind: "server-exit", exit })),
-          resourceTrip,
-        ]);
-      } finally {
-        clearInterval(sampler);
-      }
-      const evidence = page.collectAttempt(t0);
-      const serverPidAfter = server.pid();
-      const serverLog = logMark === null ? null : server.logSince(logMark, t0);
-
-      let outcome;
-      const rec = {
-        ...recBase,
-        preDocUUID,
-        t0Ns: String(t0),
-        serverPidBefore,
-        serverPidAfter,
-        evidence,
-        writeEvidence: attempt.write.evidence ?? null,
-        serverLog,
-        lateTokensDuringAttempt: late.length,
-        waitSamples: {
-          ...waitSamples,
-          label: "sampled during the armed wait; not a lifetime peak",
-        },
-        injectKill,
-      };
-      if (waited.kind === "notify") {
-        outcome = "success";
-        rec.t1Ns = String(waited.t1);
-        rec.latencyMs = nsToMs(waited.t1 - t0);
-        rec.endpoint = "predicate confirmed + 2 rAF + binding delivery";
-        rec.notify = waited.payload;
-        rec.mechanism = classifyMechanism({
-          preDocUUID,
-          notifyDocUUID: waited.payload.docUUID,
-          mainFrameNavigations: evidence.mainFrameNavigations,
-          serverPidBefore,
-          serverPidAfter,
-          livereloadEvents: evidence.livereloadEvents ?? [],
-        });
-        acc.lastArmedUnknownOperation = null;
-      } else {
-        if (waited.kind === "server-exit") {
-          outcome = "server-exit";
-          rec.exit = waited.exit;
-        } else if (waited.kind === "resource-limit") {
-          outcome = "resource-limit";
-          rec.resource = {
-            sample: waited.sample,
-            tripped: waited.tripped,
-            wallMs: waited.wallMs,
-            limits,
-          };
-        } else {
-          outcome = evidence.newDocuments > 0 ? "stale" : "timeout";
-          rec.timeoutMs = timeouts.attemptMs;
-        }
-        await page.disarm();
-        rec.observerDisarmed = true;
-        rec.nativeWorkCancelled = false;
-        acc.lastArmedUnknownOperation = { ...where, token: attempt.token, writeCompleted: true };
-      }
-      if (rec.expect === "timeout") {
-        rec.controlPass = outcome === "timeout" || outcome === "stale";
-        if (rec.controlPass) acc.expectedControlPasses += 1;
-      }
-      rec.outcome = outcome;
-      if (op.inject && op.inject !== "restore-blocked") {
-        rec.controlPass = injectPass(op.inject, outcome, rec);
-        if (rec.controlPass) {
-          acc.expectedControlPasses += 1;
-          acc.expectedErrors += ERROR_OUTCOMES.has(outcome) ? 1 : 0;
-        }
-      }
-      rec.sampleAfter = server.sampleResources();
-      append(rec);
-      count(acc, outcome);
-      if (outcome !== "success") {
-        acc.stoppedByExpectedControl = rec.controlPass === true;
-        acc.stoppedByClassifyTimeout =
-          rec.expect === "classify" && (outcome === "timeout" || outcome === "stale");
-        stop(outcome, where);
-        break outer;
-      }
-      if (rec.expect === "timeout") {
-        stop("negative-control-unexpected-success", where);
-        break outer;
-      }
-
-      for (const check of attempt.supplemental) {
-        let res;
-        try {
-          res = await page.supplemental(check, timeouts.supplementalMs);
-        } catch (error) {
-          res = { ok: false, error: String(error?.message ?? error) };
-        }
-        append({
-          type: "supplemental",
-          label: "supplemental",
-          measured: false,
-          ...where,
-          token: attempt.token,
-          check,
-          ...res,
-        });
-        if (!res.ok) {
-          acc.supplementalFailures += 1;
+        const alive = server.isAlive();
+        if (!alive.alive) {
+          append({ ...base, type: "precheck", outcome: "server-exit", exit: alive.exit });
           acc.error += 1;
-          stop("supplemental-failed", where);
+          stop("server-exit", where);
           break outer;
         }
+        const sample = server.sampleResources();
+        const wallMs = nsToMs(clock.now() - startedNs);
+        const tripped = overLimits(limits, sample, wallMs);
+        if (tripped) {
+          append({
+            ...base,
+            type: "precheck",
+            outcome: "resource-limit",
+            sample,
+            wallMs,
+            limits,
+            tripped,
+          });
+          acc.error += 1;
+          stop("resource-limit", where);
+          break outer;
+        }
+
+        let attempt;
+        try {
+          attempt = fs.prepareAttempt(op);
+          if (op.inject === "precondition-true") attempt.predicate = ALWAYS_TRUE_PREDICATE;
+          if (op.inject === "write-error") {
+            attempt.injectedFrom = attempt.write.path;
+            attempt.write = { ...attempt.write, path: fs.missingSibling(attempt.write.path) };
+          }
+          await page.prepare(attempt.targetPath);
+          page.markPre?.();
+        } catch (error) {
+          append({
+            ...base,
+            type: "precheck",
+            outcome: "prepare-error",
+            error: String(error?.message ?? error),
+          });
+          acc.error += 1;
+          stop("prepare-error", where);
+          break outer;
+        }
+
+        acc.attempted += 1;
+        acc.notAttempted -= 1;
+        const recBase = {
+          ...base,
+          token: attempt.token,
+          targetPath: attempt.targetPath,
+          predicate: attempt.predicate,
+          write: {
+            method: attempt.write.method,
+            path: attempt.write.path,
+            to: attempt.write.to ?? null,
+          },
+          sampleBefore: sample,
+          inject: op.inject
+            ? {
+                kind: op.inject,
+                expectedOutcome: INJECT_EXPECT[op.inject],
+                injectedFrom: attempt.injectedFrom ?? null,
+              }
+            : null,
+          targetSha256Before: fs.hashOf
+            ? fs.hashOf(attempt.injectedFrom ?? attempt.write.path)
+            : null,
+        };
+
+        current.armedToken = attempt.token;
+        const armed = await page.arm(attempt.token, attempt.predicate);
+        if (!armed.armed) {
+          const outcome = armed.precondition ? "precondition-failed" : "arm-error";
+          const r = {
+            ...recBase,
+            outcome,
+            arm: armed,
+            writePerformed: false,
+            targetSha256After: fs.hashOf ? fs.hashOf(attempt.write.path) : null,
+          };
+          if (op.inject) r.controlPass = injectPass(op.inject, outcome, r);
+          append(r);
+          count(acc, outcome);
+          if (r.controlPass) {
+            acc.expectedControlPasses += 1;
+            acc.expectedErrors += 1;
+            acc.stoppedByExpectedControl = true;
+          }
+          stop(outcome, where);
+          break outer;
+        }
+        const preDocUUID = armed.docUUID;
+        const logMark = server.logMark?.() ?? null;
+        const serverPidBefore = server.pid();
+        page.markAttempt();
+
+        const unstable =
+          page.preWriteInstability?.() ??
+          (page.hasEarly?.(attempt.token)
+            ? { reason: "notified-before-write", token: attempt.token }
+            : null);
+        if (unstable) {
+          await page.disarm();
+          append({
+            ...recBase,
+            outcome: "precondition-unstable",
+            unstable,
+            arm: armed,
+            writePerformed: false,
+            observerDisarmed: true,
+          });
+          count(acc, "precondition-unstable");
+          stop("precondition-unstable", where);
+          break outer;
+        }
+
+        let t0;
+        try {
+          t0 = fs.performWrite(attempt.write, () => clock.now());
+          current.writeDone = true;
+        } catch (error) {
+          await page.disarm();
+          acc.lastArmedUnknownOperation = {
+            ...where,
+            token: attempt.token,
+            writeCompleted: "unknown",
+          };
+          const wr = { ...recBase, outcome: "write-error" };
+          if (op.inject) wr.controlPass = injectPass(op.inject, "write-error", wr);
+          if (wr.controlPass) {
+            acc.expectedControlPasses += 1;
+            acc.expectedErrors += 1;
+            acc.stoppedByExpectedControl = true;
+          }
+          append({
+            ...wr,
+            error: String(error?.message ?? error),
+            writePerformed: "unknown",
+            observerDisarmed: true,
+            nativeWorkCancelled: false,
+          });
+          count(acc, "write-error");
+          stop("write-error", where);
+          break outer;
+        }
+
+        let injectKill = null;
+        if (op.inject === "kill-server-during-wait") injectKill = server.injectKill();
+        if (op.inject === "restore-blocked") blockedForCleanup.push(attempt.write.path);
+        const late = [];
+        const waitSamples = {
+          count: 0,
+          peakSummedRssKiB: 0,
+          everyMs: limits.sampleEveryMs ?? 1000,
+        };
+        let sampler = null;
+        const resourceTrip = new Promise((resolve) => {
+          sampler = setInterval(async () => {
+            const s = server.sampleResourcesAsync
+              ? await server.sampleResourcesAsync()
+              : server.sampleResources();
+            waitSamples.count += 1;
+            if (typeof s?.summedRssKiB === "number")
+              waitSamples.peakSummedRssKiB = Math.max(waitSamples.peakSummedRssKiB, s.summedRssKiB);
+            const wall = nsToMs(clock.now() - startedNs);
+            const trip = overLimits(limits, s, wall);
+            if (trip) resolve({ kind: "resource-limit", sample: s, tripped: trip, wallMs: wall });
+          }, waitSamples.everyMs);
+        });
+        let waited;
+        try {
+          waited = await Promise.race([
+            page.waitNotify(attempt.token, timeouts.attemptMs, (payload) => {
+              late.push(payload);
+              acc.lateTokens += 1;
+              append({
+                type: "late-token",
+                label: "not-success",
+                armedToken: attempt.token,
+                payload,
+              });
+            }),
+            server.waitExit().then((exit) => ({ kind: "server-exit", exit })),
+            resourceTrip,
+          ]);
+        } finally {
+          clearInterval(sampler);
+        }
+        current.resolved = true;
+        const evidence = page.collectAttempt(t0);
+        const serverPidAfter = server.pid();
+        const serverLog = logMark === null ? null : server.logSince(logMark, t0);
+
+        let outcome;
+        const rec = {
+          ...recBase,
+          preDocUUID,
+          t0Ns: String(t0),
+          serverPidBefore,
+          serverPidAfter,
+          evidence,
+          writeEvidence: attempt.write.evidence ?? null,
+          serverLog,
+          lateTokensDuringAttempt: late.length,
+          waitSamples: {
+            ...waitSamples,
+            label: "sampled during the armed wait; not a lifetime peak",
+          },
+          injectKill,
+        };
+        if (waited.kind === "notify" && !(waited.t1 > t0)) {
+          outcome = "precondition-unstable";
+          rec.unstable = {
+            reason: "notify-not-after-t0",
+            t1Ns: String(waited.t1),
+            notify: waited.payload,
+          };
+          await page.disarm();
+          rec.observerDisarmed = true;
+          acc.lastArmedUnknownOperation = { ...where, token: attempt.token, writeCompleted: true };
+        } else if (waited.kind === "notify") {
+          outcome = "success";
+          rec.t1Ns = String(waited.t1);
+          rec.latencyMs = nsToMs(waited.t1 - t0);
+          rec.endpoint = "predicate confirmed + 2 rAF + binding delivery";
+          rec.notify = waited.payload;
+          rec.mechanism = classifyMechanism({
+            preDocUUID,
+            notifyDocUUID: waited.payload.docUUID,
+            mainFrameNavigations: evidence.mainFrameNavigations,
+            serverPidBefore,
+            serverPidAfter,
+            livereloadEvents: evidence.livereloadEvents ?? [],
+          });
+          acc.lastArmedUnknownOperation = null;
+        } else {
+          if (waited.kind === "server-exit") {
+            outcome = "server-exit";
+            rec.exit = waited.exit;
+          } else if (waited.kind === "resource-limit") {
+            outcome = "resource-limit";
+            rec.resource = {
+              sample: waited.sample,
+              tripped: waited.tripped,
+              wallMs: waited.wallMs,
+              limits,
+            };
+          } else {
+            outcome = evidence.newDocuments > 0 ? "stale" : "timeout";
+            rec.timeoutMs = timeouts.attemptMs;
+          }
+          await page.disarm();
+          rec.observerDisarmed = true;
+          rec.nativeWorkCancelled = false;
+          acc.lastArmedUnknownOperation = { ...where, token: attempt.token, writeCompleted: true };
+        }
+        if (rec.expect === "timeout") {
+          rec.controlPass = outcome === "timeout" || outcome === "stale";
+          if (rec.controlPass) {
+            acc.expectedControlPasses += 1;
+            acc.expectedTimeouts += 1;
+          }
+        }
+        if (rec.expect === "classify" && (outcome === "timeout" || outcome === "stale"))
+          acc.expectedTimeouts += 1;
+        rec.outcome = outcome;
+        if (op.inject && op.inject !== "restore-blocked") {
+          rec.controlPass = injectPass(op.inject, outcome, rec);
+          if (rec.controlPass) {
+            acc.expectedControlPasses += 1;
+            acc.expectedErrors += ERROR_OUTCOMES.has(outcome) ? 1 : 0;
+          }
+        }
+        rec.sampleAfter = server.sampleResources();
+        append(rec);
+        count(acc, outcome);
+        if (outcome !== "success") {
+          acc.stoppedByExpectedControl = rec.controlPass === true;
+          acc.stoppedByClassifyTimeout =
+            rec.expect === "classify" && (outcome === "timeout" || outcome === "stale");
+          stop(outcome, where);
+          break outer;
+        }
+        if (rec.expect === "timeout") {
+          stop("negative-control-unexpected-success", where);
+          break outer;
+        }
+
+        for (const check of attempt.supplemental) {
+          let res;
+          try {
+            res = await page.supplemental(check, timeouts.supplementalMs);
+          } catch (error) {
+            res = { ok: false, error: String(error?.message ?? error) };
+          }
+          append({
+            type: "supplemental",
+            label: "supplemental",
+            measured: false,
+            ...where,
+            token: attempt.token,
+            check,
+            ...res,
+          });
+          if (!res.ok) {
+            acc.supplementalFailures += 1;
+            acc.error += 1;
+            stop("supplemental-failed", where);
+            break outer;
+          }
+        }
+      }
+      const ok = await cleanup(activeSnapshot, "scenario-end", blockedForCleanup);
+      activeSnapshot = null;
+      if (!ok) {
+        stop("restoration-failed", { scenario: scenario.id, op: null });
+        break;
       }
     }
-    const ok = await cleanup(activeSnapshot, "scenario-end", blockedForCleanup);
-    activeSnapshot = null;
-    if (!ok) {
-      stop("restoration-failed", { scenario: scenario.id, op: null });
-      break;
+  } catch (error) {
+    try {
+      await page.disarm();
+    } catch {
+      // the page itself may be what failed; the record below carries the error
     }
+    if (current.armedToken && current.writeDone)
+      acc.lastArmedUnknownOperation = {
+        ...current.where,
+        token: current.armedToken,
+        writeCompleted: true,
+      };
+    append({
+      type: "controller-error",
+      outcome: "controller-error",
+      where: current.where,
+      armedToken: current.armedToken,
+      writePerformed: current.writeDone,
+      error: String(error?.stack ?? error),
+    });
+    acc.error += 1;
+    stop("controller-error", current.where);
   }
 
   if (activeSnapshot) {
-    const ok = await cleanup(activeSnapshot, `after-stop:${acc.stopReason}`, blockedForCleanup);
+    let ok = false;
+    try {
+      ok = await cleanup(activeSnapshot, `after-stop:${acc.stopReason}`, blockedForCleanup);
+    } catch (error) {
+      append({
+        type: "cleanup",
+        label: "cleanup",
+        measured: false,
+        reason: `after-stop:${acc.stopReason}`,
+        ok: false,
+        error: String(error?.stack ?? error),
+      });
+      acc.restorationFailures += 1;
+      acc.error += 1;
+    }
     if (!ok && acc.stopReason !== "restoration-failed")
       acc.stopReason = `${acc.stopReason}+restoration-failed`;
   }
