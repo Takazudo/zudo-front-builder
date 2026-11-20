@@ -33,16 +33,24 @@ export function adapterPath(fixtureDir, manifest, adapterId) {
   return join(fixtureDir, v.file);
 }
 
-export function zfbConfigFor(manifest, placement) {
+export function zfbConfigFor(manifest, placement, { trailingSlash = false } = {}) {
   const p = manifest.content.placements[placement];
   if (!p) throw new Error(`unknown placement ${placement}`);
   const collection = { name: manifest.content.collection, path: p.configPath };
   if (p.allowOutsideRoot) collection.allowOutsideRoot = true;
-  return { ...manifest.config, collections: [collection] };
+  const config = { ...manifest.config };
+  if (trailingSlash) config.trailingSlash = true;
+  return { ...config, collections: [collection] };
+}
+
+/** Route path for `key` ("home" | "article" | "independent"), following the trailingSlash option. */
+export function routePath(manifest, key, { slug = "", trailingSlash = false } = {}) {
+  const table = trailingSlash ? manifest.routesTrailingSlash : manifest.routes;
+  return table[key].replace("{slug}", slug);
 }
 
 /** Copy the fixture into a fresh work dir for one run; the source fixture is never edited. */
-export function materialize({ fixtureDir, workDir, placement, adapter }) {
+export function materialize({ fixtureDir, workDir, placement, adapter, trailingSlash = false }) {
   const manifest = loadFixture(fixtureDir);
   if (existsSync(workDir)) throw new Error(`work dir already exists: ${workDir}`);
   mkdirSync(workDir, { recursive: true });
@@ -54,13 +62,15 @@ export function materialize({ fixtureDir, workDir, placement, adapter }) {
   const adapterTarget = join(workDir, manifest.adapters.target);
   mkdirSync(dirname(adapterTarget), { recursive: true });
   cpSync(adapterPath(fixtureDir, manifest, adapter), adapterTarget);
-  const config = `${JSON.stringify(zfbConfigFor(manifest, placement), null, 2)}\n`;
+  const config = `${JSON.stringify(zfbConfigFor(manifest, placement, { trailingSlash }), null, 2)}\n`;
   writeFileSync(join(appDir, "zfb.config.json"), config);
   const articles = Object.fromEntries(
     manifest.articles.map((slug) => [slug, join(contentDir, `${slug}.md`)]),
   );
   return {
     manifest,
+    trailingSlash,
+    route: (key, slug) => routePath(manifest, key, { slug, trailingSlash }),
     workDir,
     appDir,
     contentDir,
@@ -145,72 +155,49 @@ function sel(manifest, key, slug) {
   return manifest.selectors[key].replaceAll("{slug}", slug);
 }
 
-/** Default timed predicate and supplemental checks for an op, before token substitution. */
-export function defaultsFor(manifest, op) {
+/**
+ * Default timed predicate and supplemental checks for an op, before token
+ * substitution. Title/category edits follow the op's target page: on the
+ * detail page the home listing is the supplemental check, and on the home
+ * page (e.g. targetPath "/") the detail page is.
+ */
+export function defaultsFor(manifest, op, { trailingSlash = false } = {}) {
   const slug = op.article;
-  const article = slug ? manifest.routes.article.replace("{slug}", slug) : null;
+  const route = (key, s = slug) => routePath(manifest, key, { slug: s, trailingSlash });
+  const text = (key, s = slug, value = "{token}") => ({
+    kind: "text",
+    selector: sel(manifest, key, s),
+    includes: value,
+  });
+  const homeOrDetail = (detailKey, homeKey) => {
+    const targetPath = op.targetPath ?? route("article");
+    const onHome = targetPath === route("home");
+    return {
+      targetPath,
+      predicate: onHome ? text(homeKey) : text(detailKey),
+      supplemental: [
+        onHome
+          ? { path: route("article"), predicate: text(detailKey) }
+          : { path: route("home"), predicate: text(homeKey) },
+      ],
+    };
+  };
   switch (op.op) {
     case "edit-title":
-      return {
-        targetPath: article,
-        predicate: {
-          kind: "text",
-          selector: sel(manifest, "articleTitle", slug),
-          includes: "{token}",
-        },
-        supplemental: [
-          {
-            path: "/",
-            predicate: {
-              kind: "text",
-              selector: sel(manifest, "homeTitle", slug),
-              includes: "{token}",
-            },
-          },
-        ],
-      };
+      return homeOrDetail("articleTitle", "homeTitle");
     case "edit-category":
-      return {
-        targetPath: article,
-        predicate: {
-          kind: "text",
-          selector: sel(manifest, "articleCategory", slug),
-          includes: "{token}",
-        },
-        supplemental: [
-          {
-            path: "/",
-            predicate: {
-              kind: "text",
-              selector: sel(manifest, "homeCategory", slug),
-              includes: "{token}",
-            },
-          },
-        ],
-      };
+      return homeOrDetail("articleCategory", "homeCategory");
     case "edit-body":
-      return {
-        targetPath: article,
-        predicate: {
-          kind: "text",
-          selector: sel(manifest, "articleBody", slug),
-          includes: "{token}",
-        },
-        supplemental: [],
-      };
+      return { targetPath: route("article"), predicate: text("articleBody"), supplemental: [] };
     case "stale-predicate":
       return {
-        targetPath: article,
-        predicate: {
-          kind: "text",
-          selector: sel(manifest, "articleBody", slug),
-          includes: "{unwrittenToken}",
-        },
+        targetPath: route("article"),
+        predicate: text("articleBody", slug, "{unwrittenToken}"),
         supplemental: [],
       };
     case "edit-css":
       return {
-        targetPath: op.targetPath ?? manifest.routes.independent,
+        targetPath: route("independent"),
         predicate: {
           kind: "computed-style",
           selector: ":root",
@@ -221,23 +208,15 @@ export function defaultsFor(manifest, op) {
       };
     case "delete-article":
       return {
-        targetPath: "/",
+        targetPath: route("home"),
         predicate: { kind: "absent", selector: sel(manifest, "homeItem", slug) },
         supplemental: [],
       };
     case "create-article":
-      return {
-        targetPath: "/",
-        predicate: {
-          kind: "text",
-          selector: sel(manifest, "homeTitle", slug),
-          includes: "{token}",
-        },
-        supplemental: [],
-      };
+      return { targetPath: route("home"), predicate: text("homeTitle"), supplemental: [] };
     case "rename-article":
       return {
-        targetPath: "/",
+        targetPath: route("home"),
         predicate: {
           kind: "count",
           selector: sel(manifest, "homeItem", renamedSlug(op)),
@@ -266,7 +245,7 @@ export function prepareAttempt(
   { token = newToken(), unwrittenToken = newToken() } = {},
 ) {
   const { manifest } = materialized;
-  const d = defaultsFor(manifest, op);
+  const d = defaultsFor(manifest, op, { trailingSlash: materialized.trailingSlash });
   const vars = { token, unwrittenToken, slug: op.article ?? "" };
   const predicate = substitute(op.predicate ?? d.predicate, vars);
   const supplemental = substitute(op.supplemental ?? d.supplemental, vars);
@@ -456,7 +435,7 @@ export function originalLiveChecks(materialized, snapshot) {
     const title = text.match(/^title: (.*)$/m)?.[1];
     if (title) {
       checks.push({
-        path: manifest.routes.article.replace("{slug}", slug),
+        path: routePath(manifest, "article", { slug, trailingSlash: materialized.trailingSlash }),
         predicate: { kind: "text", selector: sel(manifest, "articleTitle", slug), equals: title },
       });
     }
@@ -465,14 +444,14 @@ export function originalLiveChecks(materialized, snapshot) {
     (p) => p.startsWith(`${materialized.contentDir}/`) && p.endsWith(".md"),
   ).length;
   checks.push({
-    path: manifest.routes.home,
+    path: routePath(manifest, "home", { trailingSlash: materialized.trailingSlash }),
     predicate: { kind: "count", selector: "[data-home-item]", equals: articleCount },
   });
   const css = snapshot.files[materialized.cssPath]?.bytes.toString("utf8") ?? "";
   const marker = css.match(/--observe-css-marker: ([^;]*);/)?.[1];
   if (marker) {
     checks.push({
-      path: manifest.routes.independent,
+      path: routePath(manifest, "independent", { trailingSlash: materialized.trailingSlash }),
       predicate: {
         kind: "computed-style",
         selector: ":root",
@@ -482,4 +461,18 @@ export function originalLiveChecks(materialized, snapshot) {
     });
   }
   return checks;
+}
+
+/** Controller-driven, unmeasured warm-up navigations for a scenario's warmOrder. */
+export function warmPaths(materialized, scenario) {
+  const home = routePath(materialized.manifest, "home", {
+    trailingSlash: materialized.trailingSlash,
+  });
+  const detail = routePath(materialized.manifest, "article", {
+    slug: scenario.warmDetail ?? "a",
+    trailingSlash: materialized.trailingSlash,
+  });
+  if (scenario.warmOrder === "index-first") return [home, detail];
+  if (scenario.warmOrder === "detail-first") return [detail, home];
+  return [];
 }

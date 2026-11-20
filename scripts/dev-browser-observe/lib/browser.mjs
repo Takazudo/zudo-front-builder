@@ -56,6 +56,34 @@ export async function launchOwnedBrowser(opts = {}) {
   return { browser, context, observer, identity };
 }
 
+export function isLivereloadSocket(url) {
+  return /\/__zfb\/reload\/ws(?:[?#]|$)/.test(url);
+}
+
+/** livereload.js frames are JSON `{ event, data }`; anything else is kept raw. */
+export function livereloadFrame(payload, ns, url) {
+  const text = typeof payload === "string" ? payload : Buffer.from(payload).toString("utf8");
+  let event = "unparsed";
+  let data = null;
+  try {
+    const msg = JSON.parse(text);
+    if (msg && typeof msg.event === "string") {
+      event = msg.event;
+      data = msg.data ?? null;
+    }
+  } catch {
+    event = "unparsed";
+  }
+  return {
+    at: isoNow(),
+    ns: String(ns),
+    url,
+    event,
+    data,
+    raw: event === "unparsed" ? text.slice(0, 200) : undefined,
+  };
+}
+
 export class ObserverPage {
   constructor(context, observerSource, clock = hrtimeNs) {
     this.context = context;
@@ -70,7 +98,9 @@ export class ObserverPage {
     this.early = new Map();
     this.pingWaiters = new Map();
     this.docInitWaiters = [];
-    this.attemptMark = { docInits: 0, navigations: 0 };
+    this.wsFrames = [];
+    this.attemptMark = { docInits: 0, navigations: 0, wsFrames: 0 };
+    this.preMark = null;
     this.onStray = () => {};
   }
 
@@ -89,6 +119,12 @@ export class ObserverPage {
     this.page.on("framenavigated", (frame) => {
       if (frame === this.page.mainFrame())
         this.navigations.push({ at: isoNow(), ns: String(this.clock()), url: frame.url() });
+    });
+    this.page.on("websocket", (ws) => {
+      if (!isLivereloadSocket(ws.url())) return;
+      ws.on("framereceived", ({ payload }) =>
+        this.wsFrames.push(livereloadFrame(payload, this.clock(), ws.url())),
+      );
     });
   }
 
@@ -157,19 +193,57 @@ export class ObserverPage {
     return res;
   }
 
-  markAttempt() {
-    this.attemptMark = { docInits: this.docInits.length, navigations: this.navigations.length };
+  mark() {
+    return {
+      docInits: this.docInits.length,
+      navigations: this.navigations.length,
+      wsFrames: this.wsFrames.length,
+    };
   }
 
-  collectAttempt() {
-    const docInits = this.docInits.slice(this.attemptMark.docInits);
-    const navigations = this.navigations.slice(this.attemptMark.navigations);
+  since(mark, t0 = null) {
+    const rel = (x) => (t0 === null ? x : { ...x, msFromT0: nsToMs(BigInt(x.ns) - t0) });
+    const docInits = this.docInits.slice(mark.docInits).map(rel);
+    const navigations = this.navigations.slice(mark.navigations).map(rel);
+    const wsFrames = this.wsFrames.slice(mark.wsFrames).map(rel);
     return {
       mainFrameNavigations: navigations.length,
       newDocuments: docInits.length,
+      livereloadEvents: wsFrames.map((f) => f.event),
       docInits,
       navigations,
+      wsFrames,
     };
+  }
+
+  markAttempt() {
+    this.attemptMark = this.mark();
+  }
+
+  collectAttempt(t0 = null) {
+    return this.since(this.attemptMark, t0);
+  }
+
+  /** Start of the pre-write window (after prepare, before arming). */
+  markPre() {
+    this.preMark = this.mark();
+  }
+
+  /** Navigations, new documents or reload/css frames since markPre; nonempty means unstable. */
+  preWriteInstability() {
+    if (!this.preMark) return null;
+    const ev = this.since(this.preMark);
+    const frames = ev.wsFrames.filter((f) => f.event === "page" || f.event === "css");
+    if (ev.mainFrameNavigations === 0 && ev.newDocuments === 0 && frames.length === 0) return null;
+    return { ...ev, wsFrames: frames };
+  }
+
+  /** Hold for `ms` and record what the page saw; never navigates or reloads. */
+  async quietWindow(ms) {
+    const m = this.mark();
+    const start = this.clock();
+    await new Promise((r) => setTimeout(r, ms));
+    return { quietMs: ms, observedMs: nsToMs(this.clock() - start), ...this.since(m, start) };
   }
 
   waitNotify(token, timeoutMs, onLate = () => {}) {

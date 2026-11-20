@@ -9,6 +9,7 @@ export const CALIBRATION_CELLS = [
   "observer-init-after-navigation",
   "stale-then-new-token",
   "late-token",
+  "reload-survival-controller-triggered",
   "native-reload-survival",
 ];
 
@@ -49,6 +50,86 @@ async function syntheticTrial(observer, kind, timeoutMs) {
 }
 
 /**
+ * A real, unmeasured (calibration-labelled) in-place body edit of article b
+ * while armed on its page. Passes only on a new document with navigationType
+ * "reload" and a livereload `page` frame on the WebSocket, then restores the
+ * file and confirms the original state live.
+ */
+export async function nativeReloadSurvival({
+  observer,
+  fixtureOps,
+  timeoutMs,
+  restoreMs,
+  quietMs,
+}) {
+  const snap = fixtureOps.snapshot();
+  const target = fixtureOps.route("article", "b");
+  const state = await observer.prepare(target);
+  const attempt = fixtureOps.prepareAttempt({
+    op: "edit-body",
+    article: "b",
+    writeMethod: "in-place",
+  });
+  const armed = await observer.arm(attempt.token, attempt.predicate);
+  observer.markAttempt();
+  let t0 = null;
+  let writeError = null;
+  if (armed.armed) {
+    try {
+      t0 = fixtureOps.performWrite(attempt.write, () => observer.clock());
+    } catch (error) {
+      writeError = String(error?.message ?? error);
+    }
+  }
+  const waited =
+    t0 === null ? { kind: "not-written" } : await observer.waitNotify(attempt.token, timeoutMs);
+  const evidence = observer.collectAttempt(t0);
+  if (waited.kind !== "notify") await observer.disarm();
+  const restore = fixtureOps.restore(snap);
+  const live = [];
+  if (restore.mismatches.length === 0) {
+    for (const check of fixtureOps.liveChecks(snap))
+      live.push({ ...check, ...(await observer.liveCheck(check, restoreMs)) });
+  }
+  const restorationOk = restore.mismatches.length === 0 && live.every((l) => l.ok);
+  const quiet = restorationOk ? await observer.quietWindow(quietMs) : null;
+  const notify = waited.kind === "notify" ? waited.payload : null;
+  return {
+    ok:
+      armed.armed &&
+      notify !== null &&
+      notify.docUUID !== state.docUUID &&
+      notify.navigationType === "reload" &&
+      evidence.livereloadEvents.includes("page") &&
+      restorationOk,
+    ms: notify ? nsToMs(waited.t1 - t0) : null,
+    calibrationEdit: {
+      label: "calibration edit (unmeasured)",
+      method: attempt.write.method,
+      path: attempt.write.path,
+      token: attempt.token,
+      writeEvidence: attempt.write.evidence ?? null,
+      writeError,
+    },
+    preDocUUID: state.docUUID,
+    notifyDocUUID: notify?.docUUID ?? null,
+    navigationType: notify?.navigationType ?? null,
+    outcome: waited.kind,
+    evidence,
+    restorationOk,
+    restoration: {
+      writeMethod: restore.writeMethod,
+      actions: restore.actions,
+      mismatches: restore.mismatches,
+      live,
+      quiet,
+    },
+    measures:
+      "real in-place edit -> livereload page frame -> native reload -> armed predicate in the new document",
+  };
+}
+
+/**
  * Calibration cells measured through the same observer. Raw distributions are
  * recorded and never subtracted from workload latencies. Controller-triggered
  * navigation/reload happens only here, never inside a measured attempt.
@@ -61,6 +142,9 @@ export async function runCalibration({
   timeoutMs,
   staleTimeoutMs,
   pagePath,
+  fixtureOps = null,
+  restoreMs = 30000,
+  quietMs = 1500,
 }) {
   const results = {};
   const record = (cell, i, res) =>
@@ -145,6 +229,19 @@ export async function runCalibration({
             "a real delivery for a token the controller no longer waits for is recorded late, never success",
         };
       } else if (cell === "native-reload-survival") {
+        res = await nativeReloadSurvival({ observer, fixtureOps, timeoutMs, restoreMs, quietMs });
+        if (res.restorationOk === false) {
+          record(cell, i, res);
+          results[cell] = {
+            repeats,
+            failures: failures + 1,
+            distributionMs: distribution(values),
+            aborted: "restoration-failed",
+          };
+          results.aborted = { cell, i, reason: "restoration-failed" };
+          return results;
+        }
+      } else if (cell === "reload-survival-controller-triggered") {
         const state = await observer.prepare(pagePath);
         const token = tok();
         const armed = await observer.arm(token, {

@@ -58,6 +58,10 @@
         "adapter": {
           "type": "string",
           "minLength": 1
+        },
+        "trailingSlash": {
+          "type": "boolean",
+          "description": "Writes trailingSlash: true into zfb.config.json; routes and predicates use /articles/<slug>/. Default false."
         }
       }
     },
@@ -176,6 +180,11 @@
         "stopKillMs": {
           "type": "integer",
           "minimum": 1
+        },
+        "quietMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Post-restore quiet window after live confirmation (default 1500)."
         }
       }
     },
@@ -191,6 +200,11 @@
         "wallCeilingMs": {
           "type": "integer",
           "minimum": 1
+        },
+        "sampleEveryMs": {
+          "type": "integer",
+          "minimum": 50,
+          "description": "Resource sampling period during the armed wait (default 1000)."
         }
       }
     },
@@ -217,6 +231,7 @@
               "observer-init-after-navigation",
               "stale-then-new-token",
               "late-token",
+              "reload-survival-controller-triggered",
               "native-reload-survival"
             ]
           }
@@ -263,7 +278,8 @@
                   "type": "string"
                 },
                 "expect": {
-                  "enum": ["success", "timeout"]
+                  "enum": ["success", "timeout", "classify"],
+                  "description": "success (default); timeout = declared negative control; classify = timeout/stale is a classification result: recorded as timeout, batch still stops, exit 0 with stoppedByClassifyTimeout."
                 },
                 "targetPath": {
                   "type": "string"
@@ -286,6 +302,15 @@
                 }
               }
             }
+          },
+          "warmOrder": {
+            "enum": ["index-first", "detail-first", "none"],
+            "description": "Unmeasured controller navigations at scenario start: index-first = / then detail, detail-first = detail then /, none = only the target page."
+          },
+          "warmDetail": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Article slug for the warm detail page (default a)."
           }
         }
       }

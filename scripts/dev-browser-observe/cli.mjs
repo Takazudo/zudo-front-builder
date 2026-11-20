@@ -45,10 +45,15 @@ Commands:
   run --profile <p.json> --label <unique>
                                Run the profile's scenarios (fail-stop).
 
+Stop: SIGINT to the server group, SIGTERM after timeouts.stopTermMs, SIGKILL after
+timeouts.stopKillMs; the signal that ended each owned process is recorded.
+outDir must be outside every git work tree.
+
 Outputs (run/calibrate): <outDir>/<label>/records.jsonl (append + fsync per record),
 receipt.json, summary.json, server.log. A label is never reused.
 
-Exit codes: 0 ok (a batch stopped only by a declared negative control counts as ok),
+Exit codes: 0 ok (a batch stopped only by a declared negative control, or by an
+expect:"classify" timeout recorded as timeout, counts as ok),
 1 batch stopped / calibration failure, 2 usage, 3 identity rejected,
 4 not implemented (fixed-distribution), 5 lock busy, 6 owned server still alive,
 7 server not ready, 8 controller error.

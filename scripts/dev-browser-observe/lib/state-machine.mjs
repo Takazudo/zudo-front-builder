@@ -7,6 +7,7 @@ export const OUTCOMES = [
   "precondition-failed",
   "arm-error",
   "prepare-error",
+  "precondition-unstable",
   "write-error",
   "server-exit",
   "resource-limit",
@@ -34,6 +35,7 @@ export function newAccounting(planned) {
     supplementalFailures: 0,
     lastArmedUnknownOperation: null,
     stoppedByExpectedControl: false,
+    stoppedByClassifyTimeout: false,
     stopReason: null,
     stoppedAfter: null,
   };
@@ -45,11 +47,28 @@ export function classifyMechanism({
   mainFrameNavigations,
   serverPidBefore,
   serverPidAfter,
+  livereloadEvents = [],
 }) {
   if (serverPidBefore !== serverPidAfter) return "server-restart";
-  if (notifyDocUUID !== preDocUUID && mainFrameNavigations > 0) return "native-full-reload";
-  if (notifyDocUUID === preDocUUID && mainFrameNavigations === 0) return "in-document-update";
+  const page = livereloadEvents.includes("page");
+  const css = livereloadEvents.includes("css");
+  const newDoc = notifyDocUUID !== preDocUUID;
+  if (newDoc && mainFrameNavigations > 0)
+    return page ? "native-full-reload" : "full-reload-without-page-frame";
+  if (!newDoc && mainFrameNavigations === 0) return css ? "css-replacement" : "in-document-update";
   return "unclassified";
+}
+
+/** Which ceiling a sample trips, or null. */
+export function overLimits(limits, sample, wallMs) {
+  if (
+    limits.rssCeilingKiB &&
+    typeof sample?.summedRssKiB === "number" &&
+    sample.summedRssKiB > limits.rssCeilingKiB
+  )
+    return "rss";
+  if (limits.wallCeilingMs && wallMs > limits.wallCeilingMs) return "wall";
+  return null;
 }
 
 function count(acc, outcome) {
@@ -99,6 +118,9 @@ export async function runBatch({ scenarios, deps }) {
       }
     }
     const ok = restore.mismatches.length === 0 && live.every((l) => l.ok);
+    let quiet = null;
+    if (ok && liveSkipped === null && page.quietWindow)
+      quiet = await page.quietWindow(timeouts.quietMs ?? 1500);
     append({
       type: "cleanup",
       label: "cleanup",
@@ -106,7 +128,10 @@ export async function runBatch({ scenarios, deps }) {
       reason,
       ok,
       restored: restore.restored,
+      restorationWriteMethod: restore.writeMethod ?? null,
+      actions: restore.actions ?? null,
       mismatches: restore.mismatches,
+      quiet,
       live,
       liveSkipped,
     });
@@ -123,7 +148,40 @@ export async function runBatch({ scenarios, deps }) {
       type: "scenario-start",
       scenario: scenario.id,
       ops: scenario.ops.map((o) => o.id ?? o.op),
+      warmOrder: scenario.warmOrder ?? "none",
     });
+    if (scenario.warmOrder && scenario.warmOrder !== "none") {
+      const paths = fs.warmPaths(scenario);
+      const visits = [];
+      try {
+        for (const path of paths) {
+          const t = clock.now();
+          const state = await page.prepare(path);
+          visits.push({ path, docUUID: state.docUUID, ms: nsToMs(clock.now() - t) });
+        }
+      } catch (error) {
+        append({
+          type: "warm",
+          label: "unmeasured",
+          scenario: scenario.id,
+          warmOrder: scenario.warmOrder,
+          visits,
+          ok: false,
+          error: String(error?.message ?? error),
+        });
+        acc.error += 1;
+        stop("prepare-error", { scenario: scenario.id, op: null });
+        break outer;
+      }
+      append({
+        type: "warm",
+        label: "unmeasured",
+        scenario: scenario.id,
+        warmOrder: scenario.warmOrder,
+        visits,
+        ok: true,
+      });
+    }
     for (const op of scenario.ops) {
       const where = { scenario: scenario.id, op: op.id ?? op.op };
       const base = {
@@ -145,12 +203,8 @@ export async function runBatch({ scenarios, deps }) {
       }
       const sample = server.sampleResources();
       const wallMs = nsToMs(clock.now() - startedNs);
-      const overRss =
-        limits.rssCeilingKiB &&
-        typeof sample?.summedRssKiB === "number" &&
-        sample.summedRssKiB > limits.rssCeilingKiB;
-      const overWall = limits.wallCeilingMs && wallMs > limits.wallCeilingMs;
-      if (overRss || overWall) {
+      const tripped = overLimits(limits, sample, wallMs);
+      if (tripped) {
         append({
           ...base,
           type: "precheck",
@@ -158,7 +212,7 @@ export async function runBatch({ scenarios, deps }) {
           sample,
           wallMs,
           limits,
-          tripped: overRss ? "rss" : "wall",
+          tripped,
         });
         acc.error += 1;
         stop("resource-limit", where);
@@ -169,6 +223,7 @@ export async function runBatch({ scenarios, deps }) {
       try {
         attempt = fs.prepareAttempt(op);
         await page.prepare(attempt.targetPath);
+        page.markPre?.();
       } catch (error) {
         append({
           ...base,
@@ -209,6 +264,22 @@ export async function runBatch({ scenarios, deps }) {
       const serverPidBefore = server.pid();
       page.markAttempt();
 
+      const unstable = page.preWriteInstability?.() ?? null;
+      if (unstable) {
+        await page.disarm();
+        append({
+          ...recBase,
+          outcome: "precondition-unstable",
+          unstable,
+          arm: armed,
+          writePerformed: false,
+          observerDisarmed: true,
+        });
+        count(acc, "precondition-unstable");
+        stop("precondition-unstable", where);
+        break outer;
+      }
+
       let t0;
       try {
         t0 = fs.performWrite(attempt.write, () => clock.now());
@@ -233,15 +304,41 @@ export async function runBatch({ scenarios, deps }) {
       }
 
       const late = [];
-      const waited = await Promise.race([
-        page.waitNotify(attempt.token, timeouts.attemptMs, (payload) => {
-          late.push(payload);
-          acc.lateTokens += 1;
-          append({ type: "late-token", label: "not-success", armedToken: attempt.token, payload });
-        }),
-        server.waitExit().then((exit) => ({ kind: "server-exit", exit })),
-      ]);
-      const evidence = page.collectAttempt();
+      const waitSamples = { count: 0, peakSummedRssKiB: 0, everyMs: limits.sampleEveryMs ?? 1000 };
+      let sampler = null;
+      const resourceTrip = new Promise((resolve) => {
+        sampler = setInterval(async () => {
+          const s = server.sampleResourcesAsync
+            ? await server.sampleResourcesAsync()
+            : server.sampleResources();
+          waitSamples.count += 1;
+          if (typeof s?.summedRssKiB === "number")
+            waitSamples.peakSummedRssKiB = Math.max(waitSamples.peakSummedRssKiB, s.summedRssKiB);
+          const wall = nsToMs(clock.now() - startedNs);
+          const trip = overLimits(limits, s, wall);
+          if (trip) resolve({ kind: "resource-limit", sample: s, tripped: trip, wallMs: wall });
+        }, waitSamples.everyMs);
+      });
+      let waited;
+      try {
+        waited = await Promise.race([
+          page.waitNotify(attempt.token, timeouts.attemptMs, (payload) => {
+            late.push(payload);
+            acc.lateTokens += 1;
+            append({
+              type: "late-token",
+              label: "not-success",
+              armedToken: attempt.token,
+              payload,
+            });
+          }),
+          server.waitExit().then((exit) => ({ kind: "server-exit", exit })),
+          resourceTrip,
+        ]);
+      } finally {
+        clearInterval(sampler);
+      }
+      const evidence = page.collectAttempt(t0);
       const serverPidAfter = server.pid();
       const serverLog = logMark === null ? null : server.logSince(logMark, t0);
 
@@ -256,6 +353,10 @@ export async function runBatch({ scenarios, deps }) {
         writeEvidence: attempt.write.evidence ?? null,
         serverLog,
         lateTokensDuringAttempt: late.length,
+        waitSamples: {
+          ...waitSamples,
+          label: "sampled during the armed wait; not a lifetime peak",
+        },
       };
       if (waited.kind === "notify") {
         outcome = "success";
@@ -269,12 +370,21 @@ export async function runBatch({ scenarios, deps }) {
           mainFrameNavigations: evidence.mainFrameNavigations,
           serverPidBefore,
           serverPidAfter,
+          livereloadEvents: evidence.livereloadEvents ?? [],
         });
         acc.lastArmedUnknownOperation = null;
       } else {
         if (waited.kind === "server-exit") {
           outcome = "server-exit";
           rec.exit = waited.exit;
+        } else if (waited.kind === "resource-limit") {
+          outcome = "resource-limit";
+          rec.resource = {
+            sample: waited.sample,
+            tripped: waited.tripped,
+            wallMs: waited.wallMs,
+            limits,
+          };
         } else {
           outcome = evidence.newDocuments > 0 ? "stale" : "timeout";
           rec.timeoutMs = timeouts.attemptMs;
@@ -284,9 +394,8 @@ export async function runBatch({ scenarios, deps }) {
         rec.nativeWorkCancelled = false;
         acc.lastArmedUnknownOperation = { ...where, token: attempt.token, writeCompleted: true };
       }
-      if (rec.expect !== "success") {
-        rec.controlPass =
-          outcome === rec.expect || (rec.expect === "timeout" && outcome === "stale");
+      if (rec.expect === "timeout") {
+        rec.controlPass = outcome === "timeout" || outcome === "stale";
         if (rec.controlPass) acc.expectedControlPasses += 1;
       }
       rec.outcome = outcome;
@@ -295,10 +404,12 @@ export async function runBatch({ scenarios, deps }) {
       count(acc, outcome);
       if (outcome !== "success") {
         acc.stoppedByExpectedControl = rec.controlPass === true;
+        acc.stoppedByClassifyTimeout =
+          rec.expect === "classify" && (outcome === "timeout" || outcome === "stale");
         stop(outcome, where);
         break outer;
       }
-      if (rec.expect !== "success") {
+      if (rec.expect === "timeout") {
         stop("negative-control-unexpected-success", where);
         break outer;
       }

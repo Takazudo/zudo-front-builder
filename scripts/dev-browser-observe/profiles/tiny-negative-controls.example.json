@@ -9,7 +9,8 @@
   "fixture": {
     "dir": "../fixtures/tiny-two-article",
     "placement": "internal",
-    "adapter": "A0"
+    "adapter": "A0",
+    "trailingSlash": false
   },
   "pins": {
     "harnessTreeSha256": null,
@@ -42,11 +43,13 @@
     "supplementalMs": 30000,
     "restoreMs": 30000,
     "stopTermMs": 5000,
-    "stopKillMs": 3000
+    "stopKillMs": 3000,
+    "quietMs": 1500
   },
   "limits": {
     "rssCeilingKiB": 4194304,
-    "wallCeilingMs": 1800000
+    "wallCeilingMs": 1800000,
+    "sampleEveryMs": 1000
   },
   "calibration": {
     "repeats": 5,
@@ -59,6 +62,7 @@
       "observer-init-after-navigation",
       "stale-then-new-token",
       "late-token",
+      "reload-survival-controller-triggered",
       "native-reload-survival"
     ]
   },
@@ -83,7 +87,8 @@
           "article": "b",
           "writeMethod": "in-place"
         }
-      ]
+      ],
+      "warmOrder": "none"
     }
   ],
   "outDir": "/tmp/dev-browser-observe"

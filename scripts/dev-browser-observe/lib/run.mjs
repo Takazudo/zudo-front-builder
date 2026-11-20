@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { OBSERVER_PATH, launchOwnedBrowser } from "./browser.mjs";
 import { runCalibration, CALIBRATION_CELLS } from "./calibrate.mjs";
 import {
@@ -11,6 +11,7 @@ import {
   prepareAttempt,
   restoreSnapshot,
   snapshotSources,
+  warmPaths,
 } from "./fixture.mjs";
 import {
   ancestorNodeModules,
@@ -28,6 +29,7 @@ import { startDevServer } from "./server.mjs";
 import { newAccounting, runBatch } from "./state-machine.mjs";
 import { summarize } from "./stats.mjs";
 import {
+  sha256File,
   appendJsonlSync,
   hrtimeNs,
   isoNow,
@@ -96,13 +98,33 @@ function identityVerdict({ profile, resolved, manifest, receipt, extraAppDirs })
     },
   });
   const verdict = evaluateIdentity(profile, receipt, facts);
+  const variant = manifest.adapters.variants[profile.fixture.adapter];
+  const extra = [];
+  if (variant?.sha256) {
+    const actual = sha256File(adapterPath(resolved.fixtureDir, manifest, profile.fixture.adapter));
+    extra.push({
+      name: `adapter-provenance:${profile.fixture.adapter}`,
+      ok: actual === variant.sha256,
+      expected: variant.sha256,
+      actual,
+      provenance: variant.provenance,
+    });
+  }
+  const gitTree = findGitWorkTree(resolved.outDir);
+  extra.push({
+    name: "outdir-outside-git-worktree",
+    ok: gitTree === null,
+    expected: null,
+    actual: gitTree,
+  });
   const readable = {
     name: "build-receipt-readable",
     ok: receipt !== null,
     expected: resolved.buildReceipt,
     actual: receipt ? "read" : null,
   };
-  return { ok: verdict.ok && readable.ok, checks: [readable, ...verdict.checks], facts };
+  const checks = [readable, ...verdict.checks, ...extra];
+  return { ok: checks.every((c) => c.ok), checks, facts };
 }
 
 export async function execute({
@@ -119,6 +141,13 @@ export async function execute({
   }
   if (!LABEL_RE.test(label ?? "")) {
     stderr(`invalid --label ${JSON.stringify(label)} (must match ${LABEL_RE})`);
+    return EXIT.usage;
+  }
+  const gitTree = findGitWorkTree(resolved.outDir);
+  if (gitTree) {
+    stderr(
+      `outDir ${resolved.outDir} is inside the git work tree ${gitTree}; use a directory outside any checkout`,
+    );
     return EXIT.usage;
   }
   mkdirSync(resolved.outDir, { recursive: true });
@@ -224,6 +253,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
     workDir: join(labelDir, "work"),
     placement: profile.fixture.placement,
     adapter: profile.fixture.adapter,
+    trailingSlash: profile.fixture.trailingSlash === true,
   });
   const local = [
     ...findLocalTakazudoPackages(m.appDir),
@@ -234,6 +264,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
     placement: profile.fixture.placement,
     adapter: profile.fixture.adapter,
     adapterLabel: manifest.adapters.variants[profile.fixture.adapter].label,
+    adapterProvenance: manifest.adapters.variants[profile.fixture.adapter].provenance ?? null,
+    adapterSourceSha256: manifest.adapters.variants[profile.fixture.adapter].sha256 ?? null,
+    trailingSlash: m.trailingSlash,
     workDir: m.workDir,
     appDir: m.appDir,
     contentDir: m.contentDir,
@@ -344,6 +377,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
       return s;
     };
 
+    const fixtureOps = {
+      prepareAttempt: (op) => prepareAttempt(m, op),
+      performWrite: (w, onT0) => performWrite(w, onT0),
+      snapshot: () => snapshotSources(m),
+      restore: (s) => restoreSnapshot(s, { writeMethod: profile.restoration.writeMethod }),
+      liveChecks: (s) => originalLiveChecks(m, s),
+      warmPaths: (scenario) => warmPaths(m, scenario),
+      route: m.route,
+    };
+
     if (command === "run") {
       const { accounting, stopped } = await runBatch({
         scenarios: profile.scenarios,
@@ -352,13 +395,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
           clock: { now: hrtimeNs },
           server: { ...server, sampleResources: sampleServer },
           page: observer,
-          fs: {
-            prepareAttempt: (op) => prepareAttempt(m, op),
-            performWrite: (w, onT0) => performWrite(w, onT0),
-            snapshot: () => snapshotSources(m),
-            restore: (s) => restoreSnapshot(s, { writeMethod: profile.restoration.writeMethod }),
-            liveChecks: (s) => originalLiveChecks(m, s),
-          },
+          fs: fixtureOps,
           limits: profile.limits,
           timeouts: profile.timeouts,
           startedNs,
@@ -366,7 +403,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
       });
       summaryExtra = { accountingFinal: accounting };
       exitCode =
-        !stopped || (accounting.stoppedByExpectedControl && accounting.error === 0)
+        !stopped ||
+        ((accounting.stoppedByExpectedControl || accounting.stoppedByClassifyTimeout) &&
+          accounting.error === 0)
           ? EXIT.ok
           : EXIT.stopped;
     } else {
@@ -378,7 +417,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
         repeats: cal.repeats ?? 5,
         timeoutMs: profile.timeouts.attemptMs,
         staleTimeoutMs: cal.staleTimeoutMs ?? 2000,
-        pagePath: manifest.routes.independent,
+        pagePath: m.route("independent"),
+        fixtureOps,
+        restoreMs: profile.timeouts.restoreMs,
+        quietMs: profile.timeouts.quietMs ?? 1500,
       });
       sampleServer();
       summaryExtra = { calibration: results };
@@ -405,8 +447,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
     let stopReport;
     try {
       stopReport = await stopOwned(server.handle, {
-        termWaitMs: profile.timeouts.stopTermMs ?? 5000,
-        killWaitMs: profile.timeouts.stopKillMs ?? 3000,
+        intWaitMs: profile.timeouts.stopTermMs ?? 5000,
+        termWaitMs: profile.timeouts.stopKillMs ?? 3000,
+        killWaitMs: 3000,
       });
     } catch (error) {
       stopReport = {
@@ -449,5 +492,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr }) {
     rec.append({ type: "run-end", exitCode });
     if (!stopReport.absent)
       stderr("owned server processes survived stop; the next batch will refuse to start");
+  }
+}
+
+/** The nearest enclosing git work tree root (a dir holding `.git`), or null. */
+export function findGitWorkTree(dir) {
+  let cur = resolve(dir);
+  for (;;) {
+    if (existsSync(join(cur, ".git"))) return cur;
+    const parent = dirname(cur);
+    if (parent === cur) return null;
+    cur = parent;
   }
 }

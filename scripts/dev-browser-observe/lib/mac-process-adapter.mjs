@@ -1,4 +1,6 @@
+import { execFile } from "node:child_process";
 import { loadavg, totalmem, freemem, platform, arch, release } from "node:os";
+import { promisify } from "node:util";
 import { isoNow, run } from "./util.mjs";
 
 const C_ENV = () => ({ ...process.env, LC_ALL: "C" });
@@ -115,4 +117,48 @@ export function sampledPeak(samples) {
   let peak = 0;
   for (const s of samples) peak = Math.max(peak, s.summedRssKiB ?? 0);
   return { summedRssKiB: peak, sampleCount: samples.length, label: SAMPLE_LABELS.peak };
+}
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Non-blocking variant used during the armed wait, so sampling never stalls
+ * the event loop that timestamps binding delivery. Threads are not sampled here.
+ */
+export async function sampleAsync(pids) {
+  const at = isoNow();
+  const hr = process.hrtime.bigint().toString();
+  if (pids.length === 0)
+    return { at, hrtimeNs: hr, processes: [], summedRssKiB: 0, label: SAMPLE_LABELS.rss };
+  let text = "";
+  try {
+    text = (
+      await execFileAsync("ps", ["-o", "pid=,rss=,vsz=", "-p", pids.join(",")], { env: C_ENV() })
+    ).stdout;
+  } catch (error) {
+    text = error?.stdout ?? "";
+  }
+  const rows = parseSampleRows(text);
+  const processes = pids.map((pid) => {
+    const r = rows.find((x) => x.pid === pid);
+    return {
+      pid,
+      present: Boolean(r),
+      rssKiB: r ? r.rssKiB : "unavailable",
+      vszKiB: r ? r.vszKiB : "unavailable",
+      threads: "unavailable",
+    };
+  });
+  const summed = processes.reduce(
+    (acc, p) => (typeof p.rssKiB === "number" ? acc + p.rssKiB : acc),
+    0,
+  );
+  return {
+    at,
+    hrtimeNs: hr,
+    processes,
+    summedRssKiB: summed,
+    label: SAMPLE_LABELS.rss,
+    threadsNote: "not sampled during the armed wait",
+  };
 }

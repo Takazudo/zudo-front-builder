@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { sample } from "./mac-process-adapter.mjs";
+import { sample, sampleAsync } from "./mac-process-adapter.mjs";
 import { snapshotOwned, spawnOwned } from "./process-owner.mjs";
 import { hrtimeNs, isoNow, nsToMs, stripAnsi } from "./util.mjs";
 
@@ -124,6 +124,7 @@ export function startDevServer({
       const owned = handle.exit === null ? snapshotOwned(handle) : [];
       return sample(owned.map((p) => p.pid));
     },
+    sampleResourcesAsync: () => sampleAsync([...(handle.known?.keys() ?? [])]),
     logMark: () => lines.length,
     /** Server output lines since `mark`, each with ms relative to the attempt's t0 (server.log has them all). */
     logSince: (mark, t0) => {
