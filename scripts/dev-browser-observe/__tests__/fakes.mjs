@@ -35,6 +35,10 @@ export function fakeServer({
     pid: () => 4242,
     waitExit: () => exited,
     sampleResources: () => ({ summedRssKiB: s.rss }),
+    injectKill() {
+      setTimeout(() => s.die({ exitCode: null, signalCode: "SIGKILL" }), 1);
+      return { ok: true, pid: 4242, signal: "SIGKILL" };
+    },
     die(e = exit) {
       s.exit = e;
       resolveExit(e);
@@ -77,6 +81,14 @@ export function fakePage({
     preWriteInstability() {
       const u = typeof p.unstable === "function" ? p.unstable() : p.unstable;
       return u ?? null;
+    },
+    settles: [],
+    mark() {
+      return { m: true };
+    },
+    async settle(opts) {
+      p.settles.push(opts);
+      return { settled: true, reason: "no-frame-for-quietMs", nativeUpdateObserved: false };
     },
     async quietWindow(ms) {
       p.quietWindows.push(ms);
@@ -134,6 +146,8 @@ export function fakeFs({ failWrite = false, failRestore = false, clockForT1 } = 
     },
     performWrite(w, onT0) {
       if (failWrite) throw new Error("EACCES: simulated write failure");
+      if (w.method === "in-place" && !(w.path in files))
+        throw new Error(`in-place target missing: ${w.path}`);
       const t0 = onT0();
       f.lastT0 = t0;
       files[w.path] = w.bytes;
@@ -146,10 +160,33 @@ export function fakeFs({ failWrite = false, failRestore = false, clockForT1 } = 
     },
     restore(snap) {
       f.restores += 1;
+      const blockedPaths = Object.keys(snap).filter(
+        (k) => f.blocked.has(k) && files[k] !== snap[k],
+      );
+      if (blockedPaths.length)
+        return {
+          restored: [],
+          mismatches: blockedPaths.map((path) => ({ path, want: snap[path], got: files[path] })),
+        };
       if (failRestore) return { restored: [], mismatches: [{ path: "a.md", want: "x", got: "y" }] };
       for (const k of Object.keys(files)) delete files[k];
       Object.assign(files, snap);
       return { restored: Object.keys(snap), mismatches: [] };
+    },
+    blocked: new Set(),
+    hashOf(path) {
+      return path in files ? `h:${files[path]}` : null;
+    },
+    missingSibling(path) {
+      return `.${path}.missing`;
+    },
+    blockWrite(path) {
+      f.blocked.add(path);
+      return { path, modeBefore: 0o644, modeApplied: 0o444 };
+    },
+    unblockWrite(b) {
+      f.blocked.delete(b.path);
+      return { path: b.path, modeRestored: b.modeBefore };
     },
     warmPaths(scenario) {
       return scenario.warmOrder === "index-first"

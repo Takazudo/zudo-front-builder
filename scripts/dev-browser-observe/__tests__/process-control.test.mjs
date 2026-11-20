@@ -22,6 +22,8 @@ import {
   stopOwned,
 } from "../lib/process-owner.mjs";
 import { EXIT, execute, verifyIdentityOnly } from "../lib/run.mjs";
+import { injectKillOwned } from "../lib/server.mjs";
+import { lockContentionCheck } from "../lib/lock-check.mjs";
 import { runBatch } from "../lib/state-machine.mjs";
 import { HARNESS_DIR, delay, readJson, readJsonl } from "../lib/util.mjs";
 import { deps, fakeFs, fakePage } from "./fakes.mjs";
@@ -204,6 +206,51 @@ describe("real child processes", () => {
   });
 });
 
+describe("kill-server-during-wait injection on a real child", () => {
+  it("SIGKILLs the birth-verified owned process and the batch records server-exit/SIGKILL", async () => {
+    const h = own(["-e", "setInterval(() => {}, 1000)"]);
+    const server = { ...serverFrom(h), injectKill: () => injectKillOwned(h) };
+    const d = deps({ page: fakePage({ behaviors: [{ kind: "never" }] }), server, fs: fakeFs() });
+    d.timeouts.attemptMs = 10_000;
+    const scen = [
+      {
+        id: "neg",
+        set: "negative-controls",
+        ops: [
+          {
+            id: "k",
+            op: "edit-title",
+            article: "a",
+            writeMethod: "in-place",
+            inject: "kill-server-during-wait",
+          },
+          { id: "n", op: "edit-body", article: "a", writeMethod: "in-place" },
+        ],
+      },
+    ];
+    const { accounting } = await runBatch({ scenarios: scen, deps: d });
+    const rec = d.recorder.records.find((r) => r.type === "attempt");
+    expect(rec.injectKill).toMatchObject({ ok: true, pid: h.native.pid, signal: "SIGKILL" });
+    expect(rec).toMatchObject({
+      outcome: "server-exit",
+      exit: { exitCode: null, signalCode: "SIGKILL" },
+      controlPass: true,
+    });
+    expect(accounting).toMatchObject({ stoppedByExpectedControl: true, notAttempted: 1 });
+  });
+
+  it("refuses to kill when the birth identity no longer matches", () => {
+    const h = own(["-e", "setInterval(() => {}, 1000)"]);
+    h.native = { ...h.native, lstart: "Mon Jan 1 00:00:00 2001" };
+    const kills = [];
+    expect(injectKillOwned(h, (...a) => kills.push(a))).toMatchObject({
+      ok: false,
+      reason: "birth-identity-mismatch-or-gone",
+    });
+    expect(kills).toEqual([]);
+  });
+});
+
 describe("lock", () => {
   it("a second nonblocking acquirer fails while the first holds the lock", async () => {
     const path = join(tmp(), "x.lock");
@@ -346,6 +393,18 @@ describe("execute (identity gate)", () => {
       }),
     ).toBe(EXIT.usage);
     expect(msgs.join("\n")).toMatch(/label already used/);
+  });
+
+  it("lock-contention-check: a second run exits 5 while hold-lock holds the lock", async () => {
+    const s = setup();
+    const r = await lockContentionCheck(s.profilePath, { holdMs: 30_000 });
+    expect(r).toMatchObject({
+      ok: true,
+      secondRun: { exit: 5 },
+      labelDirCreated: false,
+      holder: { exit: { code: 0 } },
+    });
+    expect(r.secondRun.stderr).toMatch(/holds/);
   });
 
   it("rejects fixed-distribution mode as not implemented", async () => {
