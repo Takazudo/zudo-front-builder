@@ -7635,6 +7635,22 @@ impl DevRenderSession {
     /// `embed_handlers`) diverge by historical accident — see the TODO
     /// in `crates/zfb-server/src/embed_handlers.rs` for the unify-later
     /// follow-up.
+    /// Bracket-grammar patterns of every prerendered and static page
+    /// (#4750), deduplicated. A slash URL admitted by its slashless key
+    /// yields to these so their canonical `/route/` URL stays theirs.
+    fn prerendered_patterns(&self) -> Vec<String> {
+        let tables = self.inner.routes.read().unwrap_or_else(|p| p.into_inner());
+        let mut patterns: Vec<String> = tables
+            .routes_by_source
+            .values()
+            .flatten()
+            .map(|e| colon_template_to_bracket(&e.entry.route_key))
+            .collect();
+        patterns.sort();
+        patterns.dedup();
+        patterns
+    }
+
     fn ssr_patterns(&self) -> Vec<String> {
         self.inner
             .routes
@@ -11765,7 +11781,10 @@ fn make_ssr_route_set(
         .into_iter()
         .map(|pattern| SsrRouteRecord { pattern })
         .collect();
-    Some(SsrRouteSet::new(records, dispatcher))
+    Some(
+        SsrRouteSet::new(records, dispatcher)
+            .with_prerendered_patterns(session.prerendered_patterns()),
+    )
 }
 
 /// Rewrite the live [`SsrRoutesHandle`] from the dev session's CURRENT SSR

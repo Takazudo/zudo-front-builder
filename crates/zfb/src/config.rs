@@ -485,6 +485,11 @@ pub struct Config {
     /// Hrefs that already end in `/`, that have a file extension
     /// (`.png`, `.pdf`, …), or that opt out via `data-no-base` pass
     /// through unchanged.
+    ///
+    /// Native `zfb dev` also routes request-time (`prerender = false`)
+    /// pages by their slashless form when this is `true` (#4750): the
+    /// original URL is dispatched and no redirect is issued. `zfb build`
+    /// and the deployed Worker keep strict route matching.
     #[serde(default)]
     pub trailing_slash: bool,
 

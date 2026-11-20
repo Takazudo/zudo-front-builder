@@ -191,6 +191,7 @@ fn embedded_extraction_resolves_owned_runtime_and_hono_with_no_consumer_node_mod
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
         base_prefix: None,
+        dev_trailing_slash_dispatch: false,
     };
 
     let out = bundle(input).expect(

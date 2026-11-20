@@ -1282,7 +1282,34 @@ async fn serve_page(
             handle.read().unwrap_or_else(|p| p.into_inner()).clone();
         if let Some(set) = set_snapshot {
             let path_only = format!("/{trimmed}");
-            if set.find_match(&path_only).is_some() {
+            let raw_path = strip_prefix_from_full_uri(uri, state.base_prefix.as_deref())
+                .map(|pq| pq.split_once('?').map(|(p, _)| p.to_string()).unwrap_or(pq));
+            let admission = ssr_admission_path(
+                &path_only,
+                raw_path.as_deref().unwrap_or(&path_only),
+                state.trailing_slash,
+            );
+            let matched = if admission == path_only {
+                set.find_match(&path_only).is_some()
+            } else {
+                // A slash URL admitted by its slashless key must not take a
+                // URL whose slashless form a plugin, embed handler or
+                // injected (prerendered) route owns.
+                let owned_elsewhere = state
+                    .plugins
+                    .as_ref()
+                    .is_some_and(|p| p.find_match(admission).is_some())
+                    || state
+                        .embed_handlers
+                        .as_ref()
+                        .is_some_and(|e| e.find_match(admission).is_some())
+                    || state
+                        .injected_routes
+                        .as_ref()
+                        .is_some_and(|i| i.find_match(admission).is_some());
+                !owned_elsewhere && set.find_slash_match(admission).is_some()
+            };
+            if matched {
                 // Issue #931: same Origin gate as the plugin leg above.
                 if let Some(resp) = origin_rejection(state, &method, &headers) {
                     return resp;
@@ -1746,6 +1773,39 @@ fn strip_prefix_from_full_uri(uri: &Uri, prefix: Option<&str>) -> Option<String>
         return Some(rest.to_string());
     }
     Some(raw.to_string())
+}
+
+/// SSR route-admission key for a request (#4750).
+///
+/// `path_only` is the decoded request path (base prefix removed) and
+/// `raw_path` the same path still percent-encoded. With `trailingSlash: true`
+/// an eligible URL ending in one literal `/` is admitted by its slashless form,
+/// so `/live/first/` reaches the route that serves `/live/first`. Eligible means
+/// not the root, not ending in `//`, and a last segment with no `.` extension.
+/// The slash checks run on `raw_path`, so an encoded `%2F` is never treated as
+/// the trailing slash; the extension check runs on the decoded path, so `%2E`
+/// counts as a `.` exactly as the runtime's `decodeURI` sees it. Everything else, and every path when `trailing_slash` is
+/// false, is returned unchanged.
+///
+/// Only admission uses this key. The dispatched [`SsrRequest::url_path`] keeps
+/// the original URL; the runtime router applies the same rule to select the
+/// route (`devTrailingSlashLookupPath` in `packages/zfb-runtime/src/router.ts`).
+fn ssr_admission_path<'a>(path_only: &'a str, raw_path: &str, trailing_slash: bool) -> &'a str {
+    let eligible = trailing_slash
+        && raw_path.len() > 1
+        && raw_path.ends_with('/')
+        && !raw_path.ends_with("//")
+        && path_only.len() > 1
+        && path_only.ends_with('/')
+        && !path_only[..path_only.len() - 1]
+            .rsplit('/')
+            .next()
+            .is_some_and(|segment| segment.contains('.'));
+    if eligible {
+        &path_only[..path_only.len() - 1]
+    } else {
+        path_only
+    }
 }
 
 /// Resolve `path` (following symlinks) and require the result to live
@@ -2430,6 +2490,26 @@ pub(crate) fn page_response_bytes(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ssr_admission_path_strips_one_literal_trailing_slash_when_enabled() {
+        use super::ssr_admission_path as key;
+        assert_eq!(key("/live/first/", "/live/first/", true), "/live/first");
+        assert_eq!(key("/request/", "/request/", true), "/request");
+        assert_eq!(key("/docs/a/b/", "/docs/a/b/", true), "/docs/a/b");
+        // Disabled, root, no slash, repeated slashes, extensions: unchanged.
+        assert_eq!(key("/live/first/", "/live/first/", false), "/live/first/");
+        assert_eq!(key("/", "/", true), "/");
+        assert_eq!(key("/live/first", "/live/first", true), "/live/first");
+        assert_eq!(key("/live/first//", "/live/first//", true), "/live/first//");
+        assert_eq!(key("/feed.xml/", "/feed.xml/", true), "/feed.xml/");
+        assert_eq!(key("/live/v1.2/", "/live/v1.2/", true), "/live/v1.2/");
+        // An encoded `%2F` decodes to `/` but is not a literal trailing slash.
+        assert_eq!(key("/live/a/", "/live/a%2F", true), "/live/a/");
+        assert_eq!(key("/live/a//", "/live/a%2F/", true), "/live/a/");
+        // An encoded dot is still an extension (the runtime decodes `%2E`).
+        assert_eq!(key("/live/v1.2/", "/live/v1%2E2/", true), "/live/v1.2/");
+    }
+
     use super::*;
     use crate::inject::LIVERELOAD_TAG;
     use crate::livereload::ReloadEvent;

@@ -540,6 +540,13 @@ export type ZfbConfig = {
    * (`.png`, `.pdf`, …), or that opt out via `data-no-base` pass
    * through unchanged.
    *
+   * Native `zfb dev` also routes request-time (`prerender = false`) pages
+   * by their slashless form when this is `true`: `/live/first/` reaches
+   * the same route and params as `/live/first`, with the original URL
+   * passed through and no redirect. Root, extension-bearing and
+   * repeated-slash URLs are not affected. `zfb build` and the deployed
+   * Worker keep strict route matching.
+   *
    * Mirrors `Config::trailing_slash` in crates/zfb/src/config.rs.
    */
   trailingSlash?: boolean;

@@ -115,6 +115,21 @@ async fn boot_with_opts(
     tokio::task::JoinHandle<anyhow::Result<()>>,
     tempfile::TempDir,
 ) {
+    boot_with_trailing_slash(ssr_routes, plugin_set, base, mode, false).await
+}
+
+async fn boot_with_trailing_slash(
+    ssr_routes: Option<SsrRouteSet>,
+    plugin_set: Option<DevMiddlewareSet>,
+    base: Option<String>,
+    mode: zfb_server::ServerMode,
+    trailing_slash: bool,
+) -> (
+    SocketAddr,
+    PageCache,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    tempfile::TempDir,
+) {
     let tmp = tempfile::tempdir().unwrap();
     let dist_root = tmp.path().join("dist");
     let public_root = tmp.path().join("public");
@@ -145,7 +160,7 @@ async fn boot_with_opts(
         injected_routes: None,
         ssr_routes: ssr_handle,
         base,
-        trailing_slash: false,
+        trailing_slash,
         mode,
         islands_bundle_url: None,
         css_bundle_url: None,
@@ -863,5 +878,227 @@ async fn ssr_error_body_is_generic_in_preview_mode() {
         "Preview mode must return a generic error body; got: {body}"
     );
 
+    server.abort();
+}
+
+// ---------------------------------------------------------------------------
+// #4750 — `trailingSlash: true` admits an eligible `/route/` URL by its
+// slashless form while dispatching the original URL.
+// ---------------------------------------------------------------------------
+
+fn multi_ssr_set(patterns: &[&str], dispatcher: Arc<dyn SsrDispatcher>) -> SsrRouteSet {
+    SsrRouteSet::new(
+        patterns
+            .iter()
+            .map(|p| SsrRouteRecord {
+                pattern: (*p).into(),
+            })
+            .collect(),
+        dispatcher,
+    )
+}
+
+const SLASH_PATTERNS: &[&str] = &[
+    "/live/[slug]",
+    "/request",
+    "/docs/[...slug]",
+    "/opt/[[...slug]]",
+];
+
+async fn slash_server(
+    trailing_slash: bool,
+    base: Option<String>,
+) -> (
+    SocketAddr,
+    Arc<RecordingSsrDispatcher>,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    tempfile::TempDir,
+) {
+    let canned = SsrResponse {
+        status: 200,
+        headers: vec![("content-type".into(), "text/plain; charset=utf-8".into())],
+        body: b"ssr".to_vec(),
+    };
+    let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
+    let set = multi_ssr_set(SLASH_PATTERNS, dispatcher.clone() as Arc<dyn SsrDispatcher>);
+    let (addr, _pages, server, tmp) = boot_with_trailing_slash(
+        Some(set),
+        None,
+        base,
+        zfb_server::ServerMode::Dev,
+        trailing_slash,
+    )
+    .await;
+    (addr, dispatcher, server, tmp)
+}
+
+/// GET `path` and report (status, dispatched url_path if the SSR layer ran).
+async fn probe(
+    addr: SocketAddr,
+    dispatcher: &RecordingSsrDispatcher,
+    method: reqwest::Method,
+    path: &str,
+) -> (u16, Option<String>) {
+    let before = dispatcher.invocations.load(Ordering::SeqCst);
+    let resp = reqwest::Client::new()
+        .request(method, format!("http://{addr}{path}"))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    let after = dispatcher.invocations.load(Ordering::SeqCst);
+    let dispatched = if after > before {
+        Some(dispatcher.last.lock().await.clone().unwrap().url_path)
+    } else {
+        None
+    };
+    (status, dispatched)
+}
+
+#[tokio::test]
+async fn trailing_slash_true_admits_slash_urls_and_keeps_original_url() {
+    let (addr, d, server, _tmp) = slash_server(true, None).await;
+    let get = reqwest::Method::GET;
+    for (path, expect) in [
+        ("/live/first/", "/live/first/"),
+        ("/live/first", "/live/first"),
+        ("/request/", "/request/"),
+        ("/request", "/request"),
+        ("/request/?b=2&a=1&a=%20", "/request/?b=2&a=1&a=%20"),
+        ("/docs/a/b/", "/docs/a/b/"),
+        ("/opt/", "/opt/"),
+        ("/opt/a/", "/opt/a/"),
+    ] {
+        assert_eq!(
+            probe(addr, &d, get.clone(), path).await,
+            (200, Some(expect.to_string())),
+            "{path} must reach the SSR dispatcher with its original URL"
+        );
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn trailing_slash_true_keeps_genuine_404s_and_guards() {
+    let (addr, d, server, _tmp) = slash_server(true, None).await;
+    for path in [
+        "/docs/", // required catch-all: zero segments still rejected
+        "/docs",
+        "/live/first//", // repeated trailing slash
+        "/live//first/", // internal empty segment
+        "/live/v1.2/",   // extension-bearing last segment
+        "/live/a%2F",    // encoded slash is not a trailing slash
+        "/live/a%2F/",
+        "/unknown/", // genuine unknown route
+    ] {
+        assert_eq!(
+            probe(addr, &d, reqwest::Method::GET, path).await,
+            (404, None),
+            "{path} must not be admitted to SSR"
+        );
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn trailing_slash_false_keeps_slash_urls_strict() {
+    let (addr, d, server, _tmp) = slash_server(false, None).await;
+    for path in ["/live/first/", "/request/", "/opt/"] {
+        assert_eq!(
+            probe(addr, &d, reqwest::Method::GET, path).await,
+            (404, None),
+            "{path}"
+        );
+    }
+    assert_eq!(
+        probe(addr, &d, reqwest::Method::GET, "/live/first").await,
+        (200, Some("/live/first".to_string()))
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn trailing_slash_true_strips_base_but_not_the_slash_from_dispatched_url() {
+    let (addr, d, server, _tmp) = slash_server(true, Some("/base/".to_string())).await;
+    assert_eq!(
+        probe(addr, &d, reqwest::Method::GET, "/base/request/?x=1").await,
+        (200, Some("/request/?x=1".to_string()))
+    );
+    assert_eq!(
+        probe(addr, &d, reqwest::Method::GET, "/base/live/first/").await,
+        (200, Some("/live/first/".to_string()))
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn trailing_slash_true_forwards_post_body_headers_and_head() {
+    let (addr, d, server, _tmp) = slash_server(true, None).await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/request/?k=v"))
+        .header("content-type", "application/json")
+        .header("x-probe", "kept")
+        .body("{\"x\":1}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let captured = d.last.lock().await.clone().unwrap();
+    assert_eq!(captured.method, "POST");
+    assert_eq!(captured.url_path, "/request/?k=v");
+    assert_eq!(captured.body.as_slice(), b"{\"x\":1}");
+    assert_eq!(
+        captured.headers.get("x-probe").map(String::as_str),
+        Some("kept")
+    );
+
+    let (status, dispatched) = probe(addr, &d, reqwest::Method::HEAD, "/live/first/").await;
+    assert_eq!((status, dispatched.as_deref()), (200, Some("/live/first/")));
+    assert_eq!(d.last.lock().await.clone().unwrap().method, "HEAD");
+    server.abort();
+}
+
+#[tokio::test]
+async fn trailing_slash_true_slash_url_yields_to_prerendered_and_plugin_owners() {
+    let canned = SsrResponse {
+        status: 200,
+        headers: vec![("content-type".into(), "text/plain; charset=utf-8".into())],
+        body: b"ssr".to_vec(),
+    };
+    let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
+    let set = multi_ssr_set(
+        &["/live/[slug]"],
+        dispatcher.clone() as Arc<dyn SsrDispatcher>,
+    )
+    .with_prerendered_patterns(vec!["/live/about".into()]);
+    let plugin_set = DevMiddlewareSet {
+        registrations: Arc::new(vec![PluginRegistration {
+            path: "/live/plugin".into(),
+            handler_id: "h1".into(),
+            plugin: "test".into(),
+        }]),
+        dispatcher: Arc::new(AlwaysRespondingPluginDispatcher) as Arc<dyn DevMiddlewareDispatcher>,
+    };
+    let (addr, _pages, server, _tmp) = boot_with_trailing_slash(
+        Some(set),
+        Some(plugin_set),
+        None,
+        zfb_server::ServerMode::Dev,
+        true,
+    )
+    .await;
+
+    // A prerendered sibling keeps its canonical slash URL: not dispatched to
+    // SSR (the empty test cache then answers 404).
+    let (status, dispatched) = probe(addr, &dispatcher, reqwest::Method::GET, "/live/about/").await;
+    assert_eq!((status, dispatched), (404, None));
+    // A plugin-owned slashless URL is not taken over by SSR via its slash form.
+    let (_, dispatched) = probe(addr, &dispatcher, reqwest::Method::GET, "/live/plugin/").await;
+    assert_eq!(dispatched, None);
+    // Other slugs still reach SSR.
+    assert_eq!(
+        probe(addr, &dispatcher, reqwest::Method::GET, "/live/first/").await,
+        (200, Some("/live/first/".to_string()))
+    );
     server.abort();
 }
