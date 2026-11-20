@@ -124,6 +124,38 @@ A `negative-controls` scenario declares `expect: "timeout"`, for example a
 `stale-predicate` op. A timeout there is a control pass and still stops the
 batch.
 
+## Round-2 controls
+
+- **Livereload frames:** every attempt records the zfb livereload WebSocket
+  frames (`/__zfb/reload/ws`, JSON `{ event, data }`) with `msFromT0`. A new
+  document after a main-frame navigation with a `page` frame is
+  `native-full-reload`; without that frame it is
+  `full-reload-without-page-frame`. The same document with a `css` frame is
+  `css-replacement`.
+- **Pre-write stability:** a navigation, new document, or `page`/`css` frame
+  between the target page's load and `t0` records `precondition-unstable` and
+  stops, with no write.
+- **Quiet window:** after each cleanup's live confirmation the harness holds
+  `timeouts.quietMs` (default 1500) and records any navigations or frames.
+- **Armed-wait sampling:** the harness samples owned PIDs every
+  `limits.sampleEveryMs` (default 1000) during the armed wait. It uses a
+  non-blocking `ps`, so the event loop that timestamps `t1` is not stalled. A
+  ceiling trip records `resource-limit` and stops.
+- **`expect: "classify"`:** a timeout is recorded as `timeout` and the batch
+  still stops. The CLI exits 0 with `stoppedByClassifyTimeout`, and the
+  timeout is never counted as success.
+- **`warmOrder`** (scenario): `index-first` (`/` then the detail page),
+  `detail-first` (the reverse), or `none` (only the target page). These are
+  unmeasured controller navigations before the first `t0`, recorded as `warm`.
+- **`fixture.trailingSlash`:** writes `trailingSlash: true` into the config;
+  routes and predicates use `/articles/<slug>/`.
+- **Calibration:** `reload-survival-controller-triggered` uses
+  `location.reload()`. `native-reload-survival` makes a real, unmeasured
+  in-place body edit of `b.md` while armed on its page. It requires a new
+  document, `navigationType` `reload` and a livereload `page` frame, then
+  restores and confirms the original state live. With a memoizing adapter
+  (A1) that body edit may legitimately not render, so calibrate with A0.
+
 ## Restoration and processes
 
 Exact source bytes are snapshotted before each scenario and restored after it
@@ -133,19 +165,26 @@ labelled `cleanup` and is never a measured trial.
 
 The server is spawned detached in its own process group, with `launcher: none`.
 Its birth identity (pid, ppid, pgid, `lstart`, comm, args) is re-verified
-before any signal. To stop it, the harness sends SIGTERM to the group, waits a
-bounded time, sends SIGKILL to verified survivors, and then verifies they are
-gone.
+before any signal. To stop it, the harness sends SIGINT to the group (zfb's
+graceful path), then SIGTERM after `stopTermMs`, then SIGKILL after
+`stopKillMs`, and then verifies the processes are gone. `endings` records the
+signal after which each process disappeared. `outDir` must be outside every
+git work tree.
 
 ## Fixture `tiny-two-article`
 
 The fixture is a zfb app with no `node_modules`. It has two Markdown articles,
 `a` and `b`, with `title` and `category` frontmatter. Routes are `/`,
-`/articles/<slug>` and `/independent`. Two content placements are selectable:
-`internal`, or `external` with `allowOutsideRoot`.
+`/articles/<slug>` and `/independent`, each with a trailing slash when
+`fixture.trailingSlash` is set. Two content placements are selectable:
+`internal`, or `external`, which is `../content/articles` with
+`allowOutsideRoot`, as in the original reproducer.
 
-Helper adapters live in `fixtures/tiny-two-article/adapters/`. `A0` is a
-reconstructed direct-read helper. The home page, the detail render and the
+Helper adapters live in `fixtures/tiny-two-article/adapters/`; see the
+adapter README. `A0` is a reconstructed direct-read helper. `A1` is the exact
+original memoized helper, and `verify-identity` checks its hash. `A2` is A1
+plus a snapshot-touch line. `A3` is a reconstructed diagnostic that rebuilds
+when the snapshot slot changes. The home page, the detail render and the
 detail route's `paths()` all call the same `getIndex()` from `lib/content.ts`. The managed CSS is `app/styles/global.css`,
 which zfb links into every page; its custom property is
 `--observe-css-marker`. A plain `.css` import from a page is not supported
