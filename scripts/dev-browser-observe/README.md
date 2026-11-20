@@ -242,6 +242,26 @@ batch.
   after-stop cleanup does not apply the `restore-blocked` chmod, and records
   the skip.
 
+## Round-6 controls
+
+- **Uncredited injections:** a declared `inject` that does not produce its
+  declared outcome stops the batch with `negative-control-not-fired`. It records
+  `control-not-fired` and gives a non-ok exit. Examples: a kill refused by the
+  birth check, a notify that wins the race, a block that did not take, or a
+  write that unexpectedly succeeded. The batch never continues.
+- **`restore-blocked` timing:** the blocked restoration runs immediately after
+  the injected op, so no later op touches the blocked file. After `revert-mode`,
+  the harness retries the restoration once without the block
+  (`retry: true`), so the work tree is not left mutated. The blocked attempt's
+  `restorationFailures` stays counted, and a failed retry is counted on top of
+  it.
+- **Arm errors:** a throwing `page.arm()` becomes an attempt with outcome
+  `arm-error`.
+- **Calibration live checks:** a throwing live check inside the
+  `native-reload-survival` calibration cell is recorded as a failed check, so
+  earlier cells' results are kept.
+- **`hold-lock`:** `--ms` requires a finite, non-negative number.
+
 ## Restoration and processes
 
 Exact source bytes are snapshotted before each scenario and restored after it

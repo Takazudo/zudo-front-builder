@@ -107,7 +107,7 @@ describe("#7 calibration ping is bounded", () => {
 });
 
 describe("#9 after-stop cleanup never applies the restore-blocked chmod", () => {
-  it("restores the file and records the skipped block", async () => {
+  it("a restore-blocked op that itself timed out never applies the block, and the restore runs", async () => {
     const scen = [
       {
         id: "neg",
@@ -120,7 +120,6 @@ describe("#9 after-stop cleanup never applies the restore-blocked chmod", () => 
             writeMethod: "in-place",
             inject: "restore-blocked",
           },
-          { id: "late", op: "edit-body", article: "a", writeMethod: "in-place" },
         ],
       },
     ];
@@ -131,10 +130,7 @@ describe("#9 after-stop cleanup never applies the restore-blocked chmod", () => 
       blockCalls.push(p);
       return block(p);
     };
-    const d = deps({
-      page: fakePage({ behaviors: [{ kind: "notify", t1: 2_000_000_000n }, { kind: "timeout" }] }),
-      fs,
-    });
+    const d = deps({ page: fakePage({ behaviors: [{ kind: "timeout" }] }), fs });
     const { accounting } = await runBatch({ scenarios: scen, deps: d });
     expect(blockCalls).toEqual([]);
     expect(fs.files["a.md"]).toBe("v0");

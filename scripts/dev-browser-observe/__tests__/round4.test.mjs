@@ -100,7 +100,7 @@ describe("#2 a throwing page call still cleans up and ends the batch", () => {
 });
 
 describe("#3 restore-blocked is credited only when nothing else stopped the batch", () => {
-  it("a real timeout after a restore-blocked op is not an expected control and does not exit ok", async () => {
+  it("restore-blocked stops right after the injected op: the next op is never reached (round 6 #2)", async () => {
     const scen = [
       {
         id: "neg",
@@ -113,29 +113,37 @@ describe("#3 restore-blocked is credited only when nothing else stopped the batc
             writeMethod: "in-place",
             inject: "restore-blocked",
           },
-          { id: "late", op: "edit-body", article: "a", writeMethod: "in-place" },
+          { id: "never", op: "edit-body", article: "a", writeMethod: "in-place" },
         ],
       },
     ];
-    const d = deps({
-      page: fakePage({ behaviors: [{ kind: "notify", t1: 2_000_000_000n }, { kind: "timeout" }] }),
-    });
+    const fs = fakeFs();
+    const d = deps({ page: fakePage({ behaviors: [{ kind: "notify", t1: 2_000_000_000n }] }), fs });
     const { accounting, stopped } = await runBatch({ scenarios: scen, deps: d });
-    const cleanup = d.recorder.records.find((r) => r.type === "cleanup");
-    // Round 5 #9: once another outcome stopped the batch, the block is not applied and the restore runs.
-    expect(cleanup).toMatchObject({
+    expect(d.recorder.records.filter((r) => r.type === "attempt").map((r) => r.opId)).toEqual([
+      "blk",
+    ]);
+    const cleanups = d.recorder.records.filter((r) => r.type === "cleanup");
+    expect(cleanups[0]).toMatchObject({
+      reason: "inject:restore-blocked",
+      ok: false,
+      controlPass: true,
+      retry: false,
+    });
+    expect(cleanups[1]).toMatchObject({
+      reason: "inject:restore-blocked:retry-unblocked",
       ok: true,
-      inject: { kind: "restore-blocked", applied: false },
-      controlNotCredited: "batch already stopped by timeout; block not applied so the restore runs",
+      retry: true,
     });
-    expect(d.recorder.records.some((r) => r.type === "inject")).toBe(false);
+    expect(fs.files["a.md"]).toBe("v0");
     expect(accounting).toMatchObject({
-      stoppedByExpectedControl: false,
-      expectedErrors: 0,
-      timeout: 1,
-      restorationFailures: 0,
+      notAttempted: 1,
+      restorationFailures: 1,
+      stopReason: "restoration-failed",
+      stoppedByExpectedControl: true,
+      expectedErrors: 1,
     });
-    expect(batchExitOk(accounting, stopped)).toBe(false);
+    expect(batchExitOk(accounting, stopped)).toBe(true);
   });
 
   it("batchExitOk counts undeclared timeouts/stale and errors", () => {
