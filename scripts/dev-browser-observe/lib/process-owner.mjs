@@ -1,5 +1,8 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { delay, isoNow, run, tryRun } from "./util.mjs";
+
+const execFileAsync = promisify(execFile);
 
 export class PidReuseError extends Error {
   constructor(expected, actual) {
@@ -88,7 +91,29 @@ export function ownedProcesses(table, root) {
  * Spawn `cmd` detached (own process group). The returned handle records the
  * birth identity and every exit event (exitCode null + signalCode set when signalled).
  */
-export function spawnOwned(cmd, args, { cwd, env, onStdout, onStderr } = {}) {
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Birth identity read right after spawn, retried a bounded number of times. */
+export function readBirthWithRetries(
+  pid,
+  { tries = 5, waitMs = 20, birthImpl = birthIdentity } = {},
+) {
+  for (let i = 0; i < tries; i += 1) {
+    const birth = birthImpl(pid);
+    if (birth) return { birth, attempts: i + 1 };
+    if (i < tries - 1) sleepSync(waitMs);
+  }
+  return { birth: null, attempts: tries };
+}
+
+export function spawnOwned(
+  cmd,
+  args,
+  { cwd, env, onStdout, onStderr, birthImpl = birthIdentity } = {},
+) {
+  const spawnWallMs = Date.now();
   const child = spawn(cmd, args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   const handle = {
     child,
@@ -122,9 +147,9 @@ export function spawnOwned(cmd, args, { cwd, env, onStdout, onStderr } = {}) {
   if (onStdout) child.stdout.on("data", onStdout);
   if (onStderr) child.stderr.on("data", onStderr);
   if (child.pid) {
-    const birth = birthIdentity(child.pid);
+    const { birth, attempts } = readBirthWithRetries(child.pid, { birthImpl });
     handle.native = birth
-      ? { ...birth, executable: cmd, argv: args }
+      ? { ...birth, executable: cmd, argv: args, spawnWallMs, birthAttempts: attempts }
       : {
           pid: child.pid,
           pgid: child.pid,
@@ -132,6 +157,9 @@ export function spawnOwned(cmd, args, { cwd, env, onStdout, onStderr } = {}) {
           argv: args,
           lstart: "unavailable",
           comm: "unavailable",
+          birthUnverifiable: true,
+          spawnWallMs,
+          birthAttempts: attempts,
         };
     handle.known = new Map(birth ? [[birth.pid, birth]] : []);
   }
@@ -152,6 +180,30 @@ export function snapshotOwned(handle, psImpl) {
   const seen = ownedProcesses(psTable(psImpl), handle.native);
   for (const p of seen) remember(handle, p, "snapshot");
   return seen;
+}
+
+/** Members of `pgid` that started at or after `minMs` (used when the root birth is unverifiable). */
+export function pgidScopeSince(table, pgid, minMs) {
+  return table.filter((p) => p.pgid === pgid && (parseLstart(p.lstart) ?? -1) >= minMs);
+}
+
+/** Live owned processes whose birth still matches a known entry (async ps; ps -p exits 1 when some are gone). */
+export async function liveKnownAsync(handle, execImpl = execFileAsync) {
+  const known = [...(handle.known?.values() ?? [])];
+  if (known.length === 0) return [];
+  let text = "";
+  try {
+    text = (
+      await execImpl(
+        "ps",
+        ["-o", "pid=,ppid=,pgid=,lstart=,comm=", "-p", known.map((k) => k.pid).join(",")],
+        { env: { ...process.env, LC_ALL: "C" } },
+      )
+    ).stdout;
+  } catch (error) {
+    text = error?.stdout ?? "";
+  }
+  return parsePsTable(String(text)).filter((p) => known.some((k) => sameBirth(k, p)));
 }
 
 export function parseLstart(lstart) {
@@ -218,15 +270,28 @@ export async function stopOwned(
       endings: [],
       finishedAt: isoNow(),
     };
-  const rootNow = handle.exit === null ? birthImpl(root.pid) : null;
+  report.pgidScans = [];
+  const unverifiable = root.birthUnverifiable === true;
+  const minLstartMs = unverifiable ? Math.floor(root.spawnWallMs / 1000) * 1000 : null;
+  if (unverifiable) {
+    report.mode = "unverifiable-birth-pgid-scope";
+    report.scope = {
+      pgid: root.pgid,
+      minLstartMs,
+      note: "root birth was never readable; only group members started at or after the spawn second are signalled, individually",
+    };
+  }
+  const rootNow = handle.exit === null && !unverifiable ? birthImpl(root.pid) : null;
   if (handle.exit === null && rootNow !== null && !sameBirth(root, rootNow))
     throw new PidReuseError(root, rootNow);
   const rootAlive = handle.exit === null && rootNow !== null;
   if (rootAlive) snapshotOwned(handle, psImpl);
-  report.pgidScans = [];
   const current = () => {
     const table = psTable(psImpl);
-    if (handle.exit !== null || !rootAlive) {
+    if (unverifiable) {
+      for (const p of pgidScopeSince(table, root.pgid, minLstartMs))
+        remember(handle, p, "pgid-scope-unverifiable");
+    } else if (handle.exit !== null || !rootAlive) {
       const scan = pgidSurvivors(table, root);
       for (const p of scan.found) remember(handle, p, "pgid-scan");
       if (scan.reused || scan.found.length)
@@ -292,7 +357,8 @@ export async function stopOwned(
   settle();
   if (root && handle.exit && endings.has(root.pid)) endings.get(root.pid).exit = handle.exit;
   report.remaining = left;
-  report.absent = left.length === 0;
+  // The root's own exit event is required too: a live root missing from ps is not absent.
+  report.absent = left.length === 0 && handle.exit !== null;
   report.endings = [...endings.values()];
   report.known = [...(handle.known?.values() ?? [])];
   report.exit = handle.exit;
