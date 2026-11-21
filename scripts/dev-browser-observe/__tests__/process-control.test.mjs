@@ -61,6 +61,9 @@ const own = (args) => {
   return h;
 };
 
+// These tests read the host's real `ps`, so its lstart semantics (and the Linux procps slack) are the host's.
+const HOST_PLATFORM = process.platform;
+
 afterEach(async () => {
   for (const h of children.splice(0)) {
     if (h.exit === null) {
@@ -145,7 +148,12 @@ describe("real child processes", () => {
       `require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); setInterval(() => {}, 1000)`,
     ]);
     await delay(300);
-    const report = await stopOwned(h, { intWaitMs: 3000, termWaitMs: 2000, killWaitMs: 2000 });
+    const report = await stopOwned(h, {
+      platform: HOST_PLATFORM,
+      intWaitMs: 3000,
+      termWaitMs: 2000,
+      killWaitMs: 2000,
+    });
     expect(report.rootAlive).toBe(true);
     expect(report.ownedBefore.length).toBeGreaterThanOrEqual(2);
     expect(report.absent).toBe(true);
@@ -160,7 +168,12 @@ describe("real child processes", () => {
   it("sends SIGTERM after stopTermMs when SIGINT is ignored", async () => {
     const h = own(["-e", "process.on('SIGINT', () => {}); setInterval(() => {}, 1000)"]);
     await delay(300);
-    const report = await stopOwned(h, { intWaitMs: 400, termWaitMs: 2000, killWaitMs: 2000 });
+    const report = await stopOwned(h, {
+      platform: HOST_PLATFORM,
+      intWaitMs: 400,
+      termWaitMs: 2000,
+      killWaitMs: 2000,
+    });
     expect(report.steps.map((s) => s.signal)).toEqual(["SIGINT", "SIGTERM"]);
     expect(report.exit).toMatchObject({ exitCode: null, signalCode: "SIGTERM" });
     expect(report.endings.find((e) => e.pid === h.native.pid)).toMatchObject({
@@ -174,7 +187,12 @@ describe("real child processes", () => {
       "process.on('SIGINT', () => process.exit(0)); setInterval(() => {}, 1000)",
     ]);
     await delay(300);
-    const report = await stopOwned(h, { intWaitMs: 3000, termWaitMs: 1000, killWaitMs: 1000 });
+    const report = await stopOwned(h, {
+      platform: HOST_PLATFORM,
+      intWaitMs: 3000,
+      termWaitMs: 1000,
+      killWaitMs: 1000,
+    });
     expect(report.exit).toMatchObject({ exitCode: 0, signalCode: null });
     expect(report.endings.find((e) => e.pid === h.native.pid)).toMatchObject({
       endedAfter: "SIGINT",
@@ -187,7 +205,12 @@ describe("real child processes", () => {
       "process.on('SIGINT', () => {}); process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)",
     ]);
     await delay(300);
-    const report = await stopOwned(h, { intWaitMs: 300, termWaitMs: 300, killWaitMs: 2000 });
+    const report = await stopOwned(h, {
+      platform: HOST_PLATFORM,
+      intWaitMs: 300,
+      termWaitMs: 300,
+      killWaitMs: 2000,
+    });
     expect(report.steps.map((s) => s.signal)).toEqual(["SIGINT", "SIGTERM", "SIGKILL"]);
     expect(report.endings.find((e) => e.pid === h.native.pid)).toMatchObject({
       endedAfter: "SIGKILL",
@@ -200,9 +223,9 @@ describe("real child processes", () => {
     const h = own(["-e", "setInterval(() => {}, 1000)"]);
     const signals = [];
     h.native = { ...h.native, lstart: "Mon Jan 1 00:00:00 2001" };
-    await expect(stopOwned(h, { killImpl: (...a) => signals.push(a) })).rejects.toBeInstanceOf(
-      PidReuseError,
-    );
+    await expect(
+      stopOwned(h, { platform: HOST_PLATFORM, killImpl: (...a) => signals.push(a) }),
+    ).rejects.toBeInstanceOf(PidReuseError);
     expect(signals).toEqual([]);
     expect(h.exit).toBeNull();
   });
@@ -210,10 +233,10 @@ describe("real child processes", () => {
   it("finds a still-alive owned server from the registry by birth identity", async () => {
     const h = own(["-e", "setInterval(() => {}, 1000)"]);
     const entry = birthIdentity(h.native.pid);
-    expect(liveOwnedFromRegistry([entry])).toHaveLength(1);
+    expect(liveOwnedFromRegistry([entry], undefined, HOST_PLATFORM)).toHaveLength(1);
     process.kill(h.native.pid, "SIGKILL");
     await h.exited;
-    expect(liveOwnedFromRegistry([entry])).toHaveLength(0);
+    expect(liveOwnedFromRegistry([entry], undefined, HOST_PLATFORM)).toHaveLength(0);
   });
 
   it("samples rss/vsz/threads for a live pid", () => {
@@ -304,7 +327,12 @@ describe("pgid scan after the root died (round 4 #5)", () => {
     expect(alive(gcPid)).toBe(true);
     const registered = [];
     h.onNewOwned = (p) => registered.push(p);
-    const report = await stopOwned(h, { intWaitMs: 2000, termWaitMs: 1000, killWaitMs: 1000 });
+    const report = await stopOwned(h, {
+      platform: HOST_PLATFORM,
+      intWaitMs: 2000,
+      termWaitMs: 1000,
+      killWaitMs: 1000,
+    });
     expect(report.rootAlive).toBe(false);
     expect(report.pgidScans[0].found).toContain(gcPid);
     expect(registered.map((p) => [p.pid, p.source])).toEqual([[gcPid, "pgid-scan"]]);
@@ -338,7 +366,12 @@ describe("round 5: dev-server stream handling on real processes", () => {
     children.push(server.handle);
     const ready = await server.ready;
     expect(ready.baseUrl).toBe("http://127.0.0.1:1234");
-    await stopOwned(server.handle, { intWaitMs: 1000, termWaitMs: 1000, killWaitMs: 1000 });
+    await stopOwned(server.handle, {
+      platform: HOST_PLATFORM,
+      intWaitMs: 1000,
+      termWaitMs: 1000,
+      killWaitMs: 1000,
+    });
     await server.closeLog();
   });
 
@@ -360,6 +393,7 @@ describe("round 5: dev-server stream handling on real processes", () => {
     const mark0 = 0;
     await delay(300);
     const report = await stopOwned(server.handle, {
+      platform: HOST_PLATFORM,
       intWaitMs: 300,
       termWaitMs: 1000,
       killWaitMs: 1000,
@@ -385,7 +419,12 @@ describe("round 5 #5: unverifiable spawn birth", () => {
       birthAttempts: 5,
     });
     await delay(1100);
-    const report = await stopOwned(h, { intWaitMs: 2000, termWaitMs: 1000, killWaitMs: 1000 });
+    const report = await stopOwned(h, {
+      platform: HOST_PLATFORM,
+      intWaitMs: 2000,
+      termWaitMs: 1000,
+      killWaitMs: 1000,
+    });
     expect(report.mode).toBe("unverifiable-birth-pgid-scope");
     expect(report.endings.find((e) => e.pid === h.native.pid)).toMatchObject({
       endedAfter: "SIGINT",
@@ -403,15 +442,23 @@ describe("round 7 #1: an unverifiable root is registered with its real birth", (
     h.onNewOwned = (p) => {
       if (shouldRegisterOwned(h.native, p)) registered.push(p);
     };
-    snapshotOwned(h);
+    snapshotOwned(h, undefined, HOST_PLATFORM);
     expect(registered.map((p) => p.pid)).toEqual([h.native.pid]);
     expect(registered[0].lstart).not.toBe("unavailable");
     const spawnRow = { type: "spawn", ...h.native };
-    expect(liveOwnedFromRegistry([spawnRow])).toHaveLength(1);
-    expect(liveOwnedFromRegistry([{ type: "owned", ...registered[0] }])).toHaveLength(1);
+    expect(liveOwnedFromRegistry([spawnRow], undefined, HOST_PLATFORM)).toHaveLength(1);
+    expect(
+      liveOwnedFromRegistry([{ type: "owned", ...registered[0] }], undefined, HOST_PLATFORM),
+    ).toHaveLength(1);
     process.kill(h.native.pid, "SIGKILL");
     await h.exited;
-    expect(liveOwnedFromRegistry([spawnRow, { type: "owned", ...registered[0] }])).toHaveLength(0);
+    expect(
+      liveOwnedFromRegistry(
+        [spawnRow, { type: "owned", ...registered[0] }],
+        undefined,
+        HOST_PLATFORM,
+      ),
+    ).toHaveLength(0);
   });
 });
 

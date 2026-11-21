@@ -31,25 +31,48 @@ describe("#1 unverifiable-birth roots reach the next-batch guard", () => {
     expect(shouldRegisterOwned({ pid: 50 }, { pid: 51 })).toBe(true);
   });
 
-  it("matches an unverifiable row by pid + pgid + start at or after the spawn second", () => {
-    const at =
-      (lstart, pgid = 50) =>
-      () => ({ pid: 50, pgid, lstart, comm: "zfb" });
-    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 06:00:00 2026"))).toHaveLength(1);
-    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 05:59:59 2026"))).toHaveLength(0);
-    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 06:00:05 2026", 77))).toHaveLength(0);
-    expect(liveOwnedFromRegistry([row], () => null)).toHaveLength(0);
+  const at =
+    (lstart, pgid = 50, pid = 50) =>
+    () => ({ pid, pgid, lstart, comm: "zfb" });
+
+  it("matches an unverifiable row by pid + pgid + start at or after the spawn second (darwin: no lstart slack)", () => {
+    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 06:00:00 2026"), "darwin")).toHaveLength(1);
+    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 05:59:59 2026"), "darwin")).toHaveLength(0);
+    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 06:00:05 2026", 77), "darwin")).toHaveLength(
+      0,
+    );
+    expect(liveOwnedFromRegistry([row], () => null, "darwin")).toHaveLength(0);
+  });
+
+  it("on linux the 1 s procps lstart slack admits the previous second for the root row only", () => {
+    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 06:00:00 2026"), "linux")).toHaveLength(1);
+    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 05:59:59 2026"), "linux")).toHaveLength(1);
+    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 05:59:58 2026"), "linux")).toHaveLength(0);
+    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 06:00:05 2026", 77), "linux")).toHaveLength(
+      0,
+    );
+    expect(liveOwnedFromRegistry([row], () => null, "linux")).toHaveLength(0);
+    const member = { ...row, pid: 51 };
+    expect(
+      liveOwnedFromRegistry([member], at("Sat Nov 21 06:00:00 2026", 50, 51), "linux"),
+    ).toHaveLength(1);
+    expect(
+      liveOwnedFromRegistry([member], at("Sat Nov 21 05:59:59 2026", 50, 51), "linux"),
+    ).toHaveLength(0);
   });
 
   it("verified rows still require the exact birth", () => {
     const verified = { pid: 60, pgid: 60, lstart: "Sat Nov 21 06:00:00 2026", comm: "zfb" };
-    expect(liveOwnedFromRegistry([verified], () => ({ ...verified }))).toHaveLength(1);
-    expect(
-      liveOwnedFromRegistry([verified], () => ({
-        ...verified,
-        lstart: "Sat Nov 21 07:00:00 2026",
-      })),
-    ).toHaveLength(0);
+    for (const platform of ["darwin", "linux"])
+      expect(liveOwnedFromRegistry([verified], () => ({ ...verified }), platform)).toHaveLength(1);
+    for (const platform of ["darwin", "linux"])
+      expect(
+        liveOwnedFromRegistry(
+          [verified],
+          () => ({ ...verified, lstart: "Sat Nov 21 07:00:00 2026" }),
+          platform,
+        ),
+      ).toHaveLength(0);
   });
 });
 
