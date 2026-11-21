@@ -2131,12 +2131,12 @@ fn write_in_place(path: &Path, bytes: &[u8]) {
 #[derive(Clone, Copy, Debug)]
 enum EmptyCollectionRecovery {
     /// The paginated routes were served before the collection emptied (#4764).
-    PaginationVisitedFirst,
+    VisitedFirst,
     /// No paginated route was ever requested before it disappeared.
-    PaginationNeverRequested,
-    /// Like `PaginationVisitedFirst`, but every write is an atomic save
+    NeverRequested,
+    /// Like `VisitedFirst`, but every write is an atomic save
     /// (temp sibling + rename), which reaches the watcher as Created/Removed.
-    PaginationVisitedFirstAtomicSave,
+    VisitedFirstAtomicSave,
 }
 
 /// Write `bytes` the way an atomic-saving editor does: a temp sibling in the
@@ -2205,15 +2205,13 @@ async fn run_empty_collection_recovery(variant: EmptyCollectionRecovery) {
         let beta_url = format!("{base}/posts/beta/");
         let tag_url = format!("{base}/tags/guide/");
 
-        let write: fn(&Path, &[u8]) = if matches!(
-            variant,
-            EmptyCollectionRecovery::PaginationVisitedFirstAtomicSave
-        ) {
-            write_atomic
-        } else {
-            write_in_place
-        };
-        if !matches!(variant, EmptyCollectionRecovery::PaginationNeverRequested) {
+        let write: fn(&Path, &[u8]) =
+            if matches!(variant, EmptyCollectionRecovery::VisitedFirstAtomicSave) {
+                write_atomic
+            } else {
+                write_in_place
+            };
+        if !matches!(variant, EmptyCollectionRecovery::NeverRequested) {
             for (url, title) in page_urls.iter().zip(expected_page_titles) {
                 poll_until_body_matches(&client, url, page_has_only(title))
                     .await
@@ -2351,17 +2349,17 @@ async fn run_empty_collection_recovery(variant: EmptyCollectionRecovery) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn cold_lazy_invalid_frontmatter_recovery_restores_visited_pagination() {
-    run_empty_collection_recovery(EmptyCollectionRecovery::PaginationVisitedFirst).await;
+    run_empty_collection_recovery(EmptyCollectionRecovery::VisitedFirst).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn cold_lazy_invalid_frontmatter_recovery_serves_never_requested_pagination() {
-    run_empty_collection_recovery(EmptyCollectionRecovery::PaginationNeverRequested).await;
+    run_empty_collection_recovery(EmptyCollectionRecovery::NeverRequested).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn cold_lazy_invalid_frontmatter_recovery_with_atomic_saves() {
-    run_empty_collection_recovery(EmptyCollectionRecovery::PaginationVisitedFirstAtomicSave).await;
+    run_empty_collection_recovery(EmptyCollectionRecovery::VisitedFirstAtomicSave).await;
 }
 
 fn post_with_tags(title: &str, date: &str, tags: &[&str], body: &str) -> Vec<u8> {
