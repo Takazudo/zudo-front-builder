@@ -2061,3 +2061,496 @@ async fn cold_lazy_deleted_entry_index_before_delete_control() {
 async fn cold_lazy_deleted_entry_title_only() {
     run_deleted_collection_entry_sequence(DeletionSequence::TitleOnly).await;
 }
+
+/// Poll until `url` answers 404. Used for routes that a collection change
+/// legitimately removed; returns the last observation on timeout.
+async fn poll_until_status_404(client: &reqwest::Client, url: &str) -> Result<(), String> {
+    let start = Instant::now();
+    let mut last = String::from("no response");
+    while start.elapsed() < SCENARIO_DEADLINE {
+        match client.get(url).send().await {
+            Ok(response) if response.status().as_u16() == 404 => return Ok(()),
+            Ok(response) => last = format!("status {}", response.status().as_u16()),
+            Err(error) => last = format!("request error: {error}"),
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    Err(last)
+}
+
+/// Poll `url` until it answers 200 with a body that satisfies `accept`.
+async fn poll_until_body_matches(
+    client: &reqwest::Client,
+    url: &str,
+    accept: impl Fn(&str) -> bool,
+) -> Result<(), String> {
+    let start = Instant::now();
+    let mut last = String::from("no response");
+    while start.elapsed() < SCENARIO_DEADLINE {
+        match client.get(url).send().await {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let body = response.text().await.unwrap_or_default();
+                if status == 200 && accept(&body) {
+                    return Ok(());
+                }
+                last = format!("status {status}, body:\n{body}");
+            }
+            Err(error) => last = format!("request error: {error}"),
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    Err(last)
+}
+
+/// Write `bytes` to an existing file through the same inode
+/// (`O_WRONLY|O_TRUNC`, never `O_CREAT`), so the watcher reports an in-place
+/// modification rather than the create/rename shape an atomic save produces.
+/// An atomic save would route the restore through watch-ADD discovery, which
+/// already folds changed route sources into the tick and hides #4764.
+/// The truncate and the write can surface as separate ticks, as a real
+/// in-place editor save can; every assertion below polls for an end state.
+fn write_in_place(path: &Path, bytes: &[u8]) {
+    use std::io::Write;
+    let inode_before = std::os::unix::fs::MetadataExt::ino(&fs::metadata(path).expect("stat"));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .expect("open existing file in place");
+    file.write_all(bytes).expect("write in place");
+    file.sync_all().expect("fsync in-place write");
+    drop(file);
+    let inode_after = std::os::unix::fs::MetadataExt::ino(&fs::metadata(path).expect("stat"));
+    assert_eq!(
+        inode_before, inode_after,
+        "in-place write must keep the inode"
+    );
+}
+
+#[derive(Clone, Copy, Debug)]
+enum EmptyCollectionRecovery {
+    /// The paginated routes were served before the collection emptied (#4764).
+    VisitedFirst,
+    /// No paginated route was ever requested before it disappeared.
+    NeverRequested,
+    /// Like `VisitedFirst`, but every write is an atomic save
+    /// (temp sibling + rename), which reaches the watcher as Created/Removed.
+    VisitedFirstAtomicSave,
+}
+
+/// Write `bytes` the way an atomic-saving editor does: a temp sibling in the
+/// same directory, then `rename` over the target (a new inode).
+fn write_atomic(path: &Path, bytes: &[u8]) {
+    let tmp = path.with_file_name(format!(
+        ".{}.e2e-tmp",
+        path.file_name().unwrap().to_string_lossy()
+    ));
+    fs::write(&tmp, bytes).expect("write atomic temp sibling");
+    fs::rename(&tmp, path).expect("rename temp sibling over target");
+}
+
+/// Issue #4764: an in-place invalid-frontmatter edit empties the collection
+/// (ZB024), so every `paths()` route over it shrinks to zero. Restoring the
+/// exact original bytes in place must bring each paginated URL back with its
+/// original membership on the next request. Before the fix, the edit-tick
+/// refresh re-expanded `posts/page/[page]` but only cleared narrowing with the
+/// changed source instead of selecting it, so its returning routes were never
+/// marked stale and cold-lazy answered 404 for them.
+///
+/// The same session then proves an ordinary edit still propagates to the
+/// returned pages and that a genuine deletion still shrinks the pagination.
+async fn run_empty_collection_recovery(variant: EmptyCollectionRecovery) {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create empty-collection recovery fixture");
+    let root = temp
+        .path()
+        .canonicalize()
+        .expect("canonicalize empty-collection recovery fixture");
+    copy_dir(&fixture_dir(), &root).expect("copy empty-collection recovery fixture");
+    fs::create_dir_all(root.join("data")).expect("create handshake-probe data directory");
+    let data_probe_path = root.join("data/handshake-probe.json");
+    fs::write(&data_probe_path, "{\"revision\":0}\n").expect("write initial handshake probe");
+
+    // Timing lines (selected pages, route-table misses) make a failure here
+    // diagnosable from the panic output alone.
+    let mut session = spawn_dev_with_timing(root, DevMode::Lazy, Some("cold"), true);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some((base, client)) =
+            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+        else {
+            return ScenarioOutcome::Skipped;
+        };
+
+        // Dates sort the pagination newest first: alpha, beta, warmup.
+        let page_urls: Vec<String> = (1..=3).map(|n| format!("{base}/posts/page/{n}/")).collect();
+        let expected_page_titles = ["Alpha V1 Frontmatter", "Beta Frontmatter", "Warmup"];
+        let page_has_only = |expected: &'static str| {
+            move |body: &str| {
+                body.contains(expected)
+                    && [
+                        "Alpha V1 Frontmatter",
+                        "Beta Frontmatter",
+                        "<h2>Warmup</h2>",
+                    ]
+                    .iter()
+                    .filter(|other| !other.contains(expected))
+                    .all(|other| !body.contains(other))
+            }
+        };
+        let index_url = format!("{base}/posts/");
+        let beta_url = format!("{base}/posts/beta/");
+        let tag_url = format!("{base}/tags/guide/");
+
+        let write: fn(&Path, &[u8]) =
+            if matches!(variant, EmptyCollectionRecovery::VisitedFirstAtomicSave) {
+                write_atomic
+            } else {
+                write_in_place
+            };
+        if !matches!(variant, EmptyCollectionRecovery::NeverRequested) {
+            for (url, title) in page_urls.iter().zip(expected_page_titles) {
+                poll_until_body_matches(&client, url, page_has_only(title))
+                    .await
+                    .unwrap_or_else(|last| {
+                        panic!(
+                            "[{variant:?}] baseline {url} not served: {last}\n{}",
+                            session.logs()
+                        )
+                    });
+            }
+        }
+        poll_until_response_contains(
+            &client,
+            &index_url,
+            "Beta Frontmatter",
+            "baseline post index",
+            &session,
+        )
+        .await;
+
+        // In-place invalid YAML: the whole collection becomes empty (the
+        // existing ZB024 policy, deliberately unchanged here).
+        let beta_path = session.root.join("content/posts/beta.md");
+        let original_beta = fs::read(&beta_path).expect("read original beta bytes");
+        write(
+            &beta_path,
+            b"---\ntitle: [unclosed\ndate: 2026-01-01\n---\n\nbroken\n",
+        );
+        poll_until_body_matches(&client, &index_url, |body| {
+            body.contains("Post index") && !body.contains("Alpha V1 Frontmatter")
+        })
+        .await
+        .unwrap_or_else(|last| {
+            panic!(
+                "[{variant:?}] the invalid edit never emptied the post index: {last}\n{}",
+                session.logs()
+            )
+        });
+        assert!(
+            read_log(&session.stdout_path).contains("ZB024")
+                || read_log(&session.stderr_path).contains("ZB024"),
+            "[{variant:?}] expected the ZB024 empty-collection diagnostic\n{}",
+            session.logs()
+        );
+        // `paginate([])` keeps one empty page, so pages 2 and 3 are the ones
+        // that leave the route table while the collection is empty.
+        for url in &page_urls[1..] {
+            poll_until_status_404(&client, url)
+                .await
+                .unwrap_or_else(|last| {
+                    panic!(
+                        "[{variant:?}] {url} should vanish while the collection is empty: \
+                         {last}\n{}",
+                        session.logs()
+                    )
+                });
+        }
+
+        // Restore the exact original bytes, in place.
+        write(&beta_path, &original_beta);
+        for (url, title) in page_urls.iter().zip(expected_page_titles) {
+            poll_until_body_matches(&client, url, page_has_only(title))
+                .await
+                .unwrap_or_else(|last| {
+                    panic!(
+                        "[{variant:?}] {url} did not return with {title:?} after the original \
+                         bytes were restored in place: {last}\n{}",
+                        session.logs()
+                    )
+                });
+        }
+        for (url, marker) in [
+            (&index_url, "Beta Frontmatter"),
+            (&beta_url, "V1-BODY-BETA"),
+            (&tag_url, "Alpha V1 Frontmatter"),
+        ] {
+            poll_until_response_contains(&client, url, marker, "restored route", &session).await;
+        }
+
+        // A later ordinary edit still propagates to a returned page.
+        write(
+            &session.root.join("content/posts/alpha.md"),
+            b"---\ntitle: Alpha Recovered Edit\ndate: 2026-01-02\ntags:\n  - guide\n---\n\nV2-BODY-ALPHA after recovery.\n",
+        );
+        poll_until_response_contains(
+            &client,
+            &page_urls[0],
+            "Alpha Recovered Edit",
+            "ordinary edit after recovery",
+            &session,
+        )
+        .await;
+
+        // A genuine deletion still shrinks the pagination: page 3 goes away
+        // and warmup moves to page 2.
+        fs::remove_file(&beta_path).expect("delete beta");
+        poll_until_status_404(&client, &page_urls[2])
+            .await
+            .unwrap_or_else(|last| {
+                panic!(
+                    "[{variant:?}] /posts/page/3/ survived the deletion: {last}\n{}",
+                    session.logs()
+                )
+            });
+        poll_until_body_matches(&client, &page_urls[1], page_has_only("Warmup"))
+            .await
+            .unwrap_or_else(|last| {
+                panic!(
+                    "[{variant:?}] /posts/page/2/ did not move to warmup after the deletion: \
+                     {last}\n{}",
+                    session.logs()
+                )
+            });
+        poll_until_status_404(&client, &beta_url)
+            .await
+            .unwrap_or_else(|last| {
+                panic!(
+                    "[{variant:?}] deleted beta entry still served: {last}\n{}",
+                    session.logs()
+                )
+            });
+
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(Duration::from_secs(360), body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] empty-collection recovery {variant:?} exceeded 360s; process group {pgid} \
+             will be killed.\n{}",
+            session.logs()
+        ),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_invalid_frontmatter_recovery_restores_visited_pagination() {
+    run_empty_collection_recovery(EmptyCollectionRecovery::VisitedFirst).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_invalid_frontmatter_recovery_serves_never_requested_pagination() {
+    run_empty_collection_recovery(EmptyCollectionRecovery::NeverRequested).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_invalid_frontmatter_recovery_with_atomic_saves() {
+    run_empty_collection_recovery(EmptyCollectionRecovery::VisitedFirstAtomicSave).await;
+}
+
+fn post_with_tags(title: &str, date: &str, tags: &[&str], body: &str) -> Vec<u8> {
+    let tags = if tags.is_empty() {
+        "tags: []\n".to_string()
+    } else {
+        format!(
+            "tags:\n{}",
+            tags.iter()
+                .map(|t| format!("  - {t}\n"))
+                .collect::<String>()
+        )
+    };
+    format!("---\ntitle: {title}\ndate: {date}\n{tags}---\n\n{body}\n").into_bytes()
+}
+
+/// #4771 lifecycle rows driven only by VALID metadata edits, all in place:
+///
+/// - a tag rename keeps the route count but swaps a URL (`/tags/guide/` goes,
+///   `/tags/fresh/` comes);
+/// - clearing every tag takes `tags/[tag]`'s `paths()` to zero routes, and
+///   restoring one tag must bring its URL back on the first request;
+/// - after that recovery another edit propagates, and a warm restart over the
+///   same tree serves the latest bytes without resurrecting retired URLs.
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_valid_tag_edits_swap_empty_and_restore_routes_across_restart() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create tag lifecycle fixture");
+    let root = temp
+        .path()
+        .canonicalize()
+        .expect("canonicalize tag lifecycle fixture");
+    copy_dir(&fixture_dir(), &root).expect("copy tag lifecycle fixture");
+    fs::create_dir_all(root.join("data")).expect("create handshake-probe data directory");
+    let data_probe_path = root.join("data/handshake-probe.json");
+    fs::write(&data_probe_path, "{\"revision\":0}\n").expect("write initial handshake probe");
+    let posts = root.join("content/posts");
+    let (alpha, beta, warmup) = (
+        posts.join("alpha.md"),
+        posts.join("beta.md"),
+        posts.join("__warmup.md"),
+    );
+
+    let mut session = spawn_dev_with_timing(root.clone(), DevMode::Lazy, Some("cold"), true);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some((base, client)) =
+            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+        else {
+            return ScenarioOutcome::Skipped;
+        };
+        let url = |tag: &str| format!("{base}/tags/{tag}/");
+        let expect_404 = |tag: &'static str, phase: &'static str| {
+            let url = url(tag);
+            let client = client.clone();
+            async move {
+                poll_until_status_404(&client, &url)
+                    .await
+                    .unwrap_or_else(|last| panic!("[{phase}] {url} still served: {last}"));
+            }
+        };
+
+        // Baseline: visit every tag route.
+        for (tag, marker) in [
+            ("guide", "Alpha V1 Frontmatter"),
+            ("other", "Beta Frontmatter"),
+            ("warmup", "Warmup"),
+        ] {
+            poll_until_response_contains(&client, &url(tag), marker, "baseline tag", &session)
+                .await;
+        }
+
+        // Same route count, different URL set.
+        write_in_place(
+            &alpha,
+            &post_with_tags(
+                "Alpha V1 Frontmatter",
+                "2026-01-02",
+                &["fresh"],
+                "V1-BODY-ALPHA swap.",
+            ),
+        );
+        poll_until_response_contains(
+            &client,
+            &url("fresh"),
+            "Alpha V1 Frontmatter",
+            "swapped-in tag",
+            &session,
+        )
+        .await;
+        expect_404("guide", "swapped-out tag").await;
+
+        // Every tag cleared: tags/[tag] has zero routes.
+        for (path, title, date, body) in [
+            (
+                &alpha,
+                "Alpha V1 Frontmatter",
+                "2026-01-02",
+                "V1-BODY-ALPHA cleared.",
+            ),
+            (
+                &beta,
+                "Beta Frontmatter",
+                "2026-01-01",
+                "V1-BODY-BETA cleared.",
+            ),
+            (&warmup, "Warmup", "2025-01-01", "Warmup cleared."),
+        ] {
+            write_in_place(path, &post_with_tags(title, date, &[], body));
+        }
+        for tag in ["fresh", "other", "warmup"] {
+            expect_404(tag, "all tags cleared").await;
+        }
+
+        // One tag returns; its URL must serve on the first request.
+        write_in_place(
+            &alpha,
+            &post_with_tags(
+                "Alpha V1 Frontmatter",
+                "2026-01-02",
+                &["guide"],
+                "V1-BODY-ALPHA back.",
+            ),
+        );
+        poll_until_response_contains(
+            &client,
+            &url("guide"),
+            "Alpha V1 Frontmatter",
+            "returned tag",
+            &session,
+        )
+        .await;
+        expect_404("fresh", "retired tag stays retired").await;
+
+        // A later edit propagates to the returned route.
+        write_in_place(
+            &alpha,
+            &post_with_tags(
+                "Alpha After Return",
+                "2026-01-02",
+                &["guide"],
+                "V2-BODY-ALPHA.",
+            ),
+        );
+        poll_until_response_contains(
+            &client,
+            &url("guide"),
+            "Alpha After Return",
+            "edit after return",
+            &session,
+        )
+        .await;
+
+        // Warm restart over the same tree.
+        session.stop_gracefully().await;
+        let mut second = spawn_dev_with_timing(root.clone(), DevMode::Lazy, Some("cold"), true);
+        let Some((second_base, second_client)) =
+            boot_and_handshake_banner_only(&mut second, &data_probe_path).await
+        else {
+            return ScenarioOutcome::Skipped;
+        };
+        poll_until_response_contains(
+            &second_client,
+            &format!("{second_base}/tags/guide/"),
+            "Alpha After Return",
+            "warm restart serves latest",
+            &second,
+        )
+        .await;
+        for tag in ["fresh", "other", "warmup"] {
+            let url = format!("{second_base}/tags/{tag}/");
+            poll_until_status_404(&second_client, &url)
+                .await
+                .unwrap_or_else(|last| {
+                    panic!(
+                        "[warm restart] retired {url} resurrected: {last}\n{}",
+                        second.logs()
+                    )
+                });
+        }
+        second.stop_gracefully().await;
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(Duration::from_secs(360), body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] tag lifecycle exceeded 360s; process group {pgid} will be killed.\n{}",
+            session.logs()
+        ),
+    }
+}

@@ -17,7 +17,7 @@
 //!   content hashing is the production pipeline's job (see
 //!   [`super::prod::ProductionAssetPipeline`]).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -705,6 +705,21 @@ impl WriteShared {
     }
 }
 
+/// Append each changed route source the plan did not already select (#4764).
+/// Returns whether anything was added. Planned pages keep their order; the
+/// added sources follow in sorted order, because the refresh reports them in
+/// hash-map order.
+fn fold_changed_sources(pages: &mut Vec<PageId>, changed: Vec<PageId>) -> bool {
+    let planned: HashSet<PageId> = pages.iter().cloned().collect();
+    let added: BTreeSet<PageId> = changed
+        .into_iter()
+        .filter(|source| !planned.contains(source))
+        .collect();
+    let any = !added.is_empty();
+    pages.extend(added);
+    any
+}
+
 fn attempt_document_prune(
     shared: &WriteShared,
     path: PathBuf,
@@ -1149,10 +1164,13 @@ impl AssetPipeline for DevAssetPipeline {
         // `renderer_fresh` includes `Skipped`; its precise sticky proof is the
         // separate `discovery_document_boundary_pending` probe above.
         let mut renderer_refreshed = false;
+        // Set when the empty-selection reload below adds route sources, so
+        // narrowing treats the route structure as moved (fallback G5).
+        let mut route_structure_moved = false;
         let mut attempted_prunes = HashSet::new();
 
         // 1. Pages.
-        let pages: Vec<PageId> = match &plan.pages {
+        let mut pages: Vec<PageId> = match &plan.pages {
             PageSelection::All => {
                 // The orchestrator should have resolved this. If we still
                 // see All here it means the caller bypassed the
@@ -1250,8 +1268,19 @@ impl AssetPipeline for DevAssetPipeline {
                 // nothing to prune.
                 let vanished = match reload()? {
                     RefreshOutcome::Skipped => Vec::new(),
-                    RefreshOutcome::Refreshed { vanished, .. } => {
+                    RefreshOutcome::Refreshed {
+                        vanished,
+                        changed_sources,
+                    } => {
                         renderer_refreshed = true;
+                        // #4764 — a source whose routes returned (for example
+                        // a `paths()` route over a collection that was empty)
+                        // has no consumer edge left to select it. Select it
+                        // here so the render block below renders or stales
+                        // its new routes; the block skips a second reload.
+                        if fold_changed_sources(&mut pages, changed_sources) {
+                            route_structure_moved = true;
+                        }
                         vanished
                     }
                 };
@@ -1318,7 +1347,7 @@ impl AssetPipeline for DevAssetPipeline {
         // G6: a discovery-refreshed renderer (`renderer_fresh`) implies a
         // created file in this tick → the fan-out is no longer safe to narrow.
         let mut narrowing: Option<crate::ContentNarrowing> = plan.content_narrowing.clone();
-        if plan.renderer_fresh {
+        if plan.renderer_fresh || route_structure_moved {
             if let Some(n) = narrowing.as_mut() {
                 n.fan_out_safe = false;
             }
@@ -1342,7 +1371,7 @@ impl AssetPipeline for DevAssetPipeline {
             // the discovery hook), reload_renderer is skipped — but the
             // plan may still carry vanished paths from that same discovery
             // refresh via RebuildPlan::prune_paths (issue #804 P2).
-            if !plan.renderer_fresh {
+            if !plan.renderer_fresh && !renderer_refreshed {
                 if let Some(reload) = &ctx.reload_renderer {
                     match reload()? {
                         RefreshOutcome::Skipped => renderer_refresh_skipped = true,
@@ -1367,6 +1396,16 @@ impl AssetPipeline for DevAssetPipeline {
                                     n.fan_out_safe = false;
                                 }
                             }
+                            // #4764 — the planner selected pages from the
+                            // pre-refresh graph. A source whose route set
+                            // changed may have lost every consumer edge while
+                            // it had zero routes (a collection that emptied
+                            // and came back), so it would never render or be
+                            // marked stale and its returning URLs would 404.
+                            // Watch-ADD discovery already folds the same set
+                            // into the plan (`DiscoveryOutcome::pages`); do
+                            // the same for the edit-tick refresh.
+                            fold_changed_sources(&mut pages, changed_sources);
                             route_vanished.extend(vanished);
                         }
                     }
@@ -1595,7 +1634,10 @@ impl AssetPipeline for DevAssetPipeline {
             }
             let event = if discovery_lazy_repair_pending {
                 DocumentPublicationEvent::CommitDiscoveryLazyRepair
-            } else if has_selected_documents {
+            } else if has_selected_documents || !pages.is_empty() {
+                // `pages` also holds route sources the refresh folded into an
+                // initially empty selection (#4764); their documents were
+                // written this tick.
                 DocumentPublicationEvent::CommitPublished
             } else if renderer_refreshed
                 || discovery_document_boundary_pending
@@ -3786,5 +3828,165 @@ mod tests {
             third.pages_written,
         );
         assert!(third.pages_pruned.is_empty());
+    }
+
+    // ── Returning route sources join the selection (issue #4764) ──────────
+
+    /// Context recording each page list the render callback receives and how
+    /// many times the reloader ran.
+    fn ctx_recording_pages(
+        dist_root: PathBuf,
+        outcome: RefreshOutcome,
+        seen: Arc<Mutex<Vec<Vec<PageId>>>>,
+        reloads: Arc<AtomicUsize>,
+    ) -> BuildContext {
+        BuildContext {
+            dist_root,
+            render_pages: Arc::new(
+                move |pages: &[PageId], _: Option<&crate::ContentNarrowing>| {
+                    seen.lock().unwrap().push(pages.to_vec());
+                    Ok(vec![])
+                },
+            ),
+            run_css: None,
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: Some(Arc::new(move || {
+                reloads.fetch_add(1, Ordering::SeqCst);
+                Ok(outcome.clone())
+            })),
+        }
+    }
+
+    /// An edit tick selected `/p/a.tsx` from the pre-refresh graph, and the
+    /// refresh reports `[slug].tsx` (whose routes returned) plus the already
+    /// selected page as changed. The returning source must reach the render
+    /// callback once, after the planned page.
+    #[test]
+    fn edit_tick_refresh_selects_returning_route_sources() {
+        let dir = tempdir().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let reloads = Arc::new(AtomicUsize::new(0));
+        let ctx = ctx_recording_pages(
+            dir.path().to_path_buf(),
+            RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![pid("/p/blog/[slug].tsx"), pid("/p/a.tsx")],
+            },
+            seen.clone(),
+            reloads.clone(),
+        );
+        DevAssetPipeline::new()
+            .apply(&single_page_plan(), &ctx)
+            .unwrap();
+        assert_eq!(reloads.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![vec![pid("/p/a.tsx"), pid("/p/blog/[slug].tsx")]]
+        );
+    }
+
+    /// No page was selected (every consumer edge was retired while the
+    /// collection was empty) but the tick is SSR-relevant. The single reload
+    /// reports returning sources; they must render, and the render block
+    /// must not reload a second time.
+    #[test]
+    fn empty_selection_refresh_selects_returning_route_sources_once() {
+        let dir = tempdir().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let reloads = Arc::new(AtomicUsize::new(0));
+        let ctx = ctx_recording_pages(
+            dir.path().to_path_buf(),
+            RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![pid("/p/archive/[page].tsx")],
+            },
+            seen.clone(),
+            reloads.clone(),
+        );
+        let mut plan = single_page_plan();
+        plan.pages = PageSelection::none();
+        plan.ssr_reload_needed = true;
+        DevAssetPipeline::new().apply(&plan, &ctx).unwrap();
+        assert_eq!(reloads.load(Ordering::SeqCst), 1, "one bundle per tick");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![vec![pid("/p/archive/[page].tsx")]]
+        );
+    }
+
+    /// Control: an empty-selection refresh that reports no changed source
+    /// still renders nothing (the SSR-only reload path is unchanged).
+    #[test]
+    fn empty_selection_refresh_without_changed_sources_renders_nothing() {
+        let dir = tempdir().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let reloads = Arc::new(AtomicUsize::new(0));
+        let ctx = ctx_recording_pages(
+            dir.path().to_path_buf(),
+            RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            },
+            seen.clone(),
+            reloads.clone(),
+        );
+        let mut plan = single_page_plan();
+        plan.pages = PageSelection::none();
+        plan.ssr_reload_needed = true;
+        DevAssetPipeline::new().apply(&plan, &ctx).unwrap();
+        assert_eq!(reloads.load(Ordering::SeqCst), 1);
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    /// Review finding on #4764: a returning source folded into an empty
+    /// selection writes an SSG document, so the tick must commit as
+    /// published rather than ready-on-request.
+    #[test]
+    fn empty_selection_fold_commits_published_documents() {
+        let dir = tempdir().unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hook_events = Arc::clone(&events);
+        let pipeline =
+            DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
+                hook_events.lock().unwrap().push(event)
+            }));
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(|pages: &[PageId], _| {
+                Ok(pages
+                    .iter()
+                    .map(|page| RenderedPage {
+                        page: page.clone(),
+                        output_path: RelDistPath::new("archive/1/index.html").unwrap(),
+                        html: "<h1>archive</h1>".into(),
+                        content_type: None,
+                    })
+                    .collect())
+            }),
+            run_css: None,
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: Some(Arc::new(|| {
+                Ok(RefreshOutcome::Refreshed {
+                    vanished: vec![],
+                    changed_sources: vec![pid("/p/archive/[page].tsx")],
+                })
+            })),
+        };
+        let mut plan = RebuildPlan::empty();
+        plan.ssr_reload_needed = true;
+        let outcome = pipeline.apply(&plan, &ctx).unwrap();
+        assert_eq!(outcome.pages_rendered, 1);
+        assert!(dir.path().join("archive/1/index.html").exists());
+        let events = events.lock().unwrap();
+        assert!(
+            events.contains(&DocumentPublicationEvent::CommitPublished),
+            "{events:?}"
+        );
+        assert!(
+            !events.contains(&DocumentPublicationEvent::CommitReadyOnRequest),
+            "{events:?}"
+        );
     }
 }
