@@ -8799,11 +8799,19 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// request and collection). In-place conversion keeps object identity, so
 /// entries captured before the wrapper ran stay observed, and spread,
 /// `Object.keys`, `JSON.stringify` and `structuredClone` keep producing plain
-/// data. Writes keep build semantics: a converted object passed to
-/// `Object.freeze` (patched in the dev worker to remember it) rejects writes
-/// with a `TypeError`, a sealed one still accepts them, and an assignment
-/// through `Object.create(data)` defines an own property on the derived
-/// object. A cached entry's `Content` resolves its compiled body through
+/// data. Writes follow the ordinary `[[Set]]` steps for the receiver: a write
+/// to the object itself, or through a Proxy that forwards to its tracking
+/// accessor, updates the shared value and keeps tracking; any other receiver
+/// (an `Object.create(data)` object, `Reflect.set` with an unrelated
+/// receiver) gets or updates its own data property and the shared value is
+/// untouched. A converted object passed to `Object.freeze` rejects writes
+/// with a `TypeError`, and a sealed one still accepts them. The worker's
+/// `Object.freeze` is replaced once per realm (marked with
+/// `Symbol.for("zfb.devContentTrace.freeze")`, which also holds the
+/// tracking sets); each worker generation boots a fresh isolate and
+/// context (`ThreadedV8Host::new_with_dev_content_trace_wrapper` spawns a new
+/// host via `NativeHost::with_loader`), so nothing carries across
+/// generations. A cached entry's `Content` resolves its compiled body through
 /// `globalThis.__zfb.content.get(...)` at render time, so that lookup records
 /// a read of the owning collection too; when the bundle emitted no bridge, the
 /// wrapper installs one whose `get` only records and returns `undefined`, so
@@ -8840,8 +8848,9 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// - In dev only, `Object.isFrozen` and `Object.getOwnPropertyDescriptor`
 ///   see accessors (a sealed converted object reports frozen), and
 ///   redefining a key with `Object.defineProperty` without a `value` drops
-///   its value. `Reflect.set` on frozen frontmatter throws in dev instead of
-///   returning `false`.
+///   its value. Where a write must fail (frozen frontmatter, a non-writable or
+///   accessor own property on the receiver, a non-extensible receiver),
+///   `Reflect.set` throws in dev instead of returning `false`.
 /// - A freeze through an `Object.freeze` reference captured before the
 ///   wrapper installed (for example `const freeze = Object.freeze` in the
 ///   bundle) is not seen, so dev still accepts writes that build rejects.
@@ -8974,8 +8983,32 @@ function __zfb_record_collection_read(current, collection) {{
   }});
 }}
 
-const __zfb_tracked_frontmatter = new WeakSet();
-const __zfb_frozen_frontmatter = new WeakSet();
+const __zfb_freeze_marker = Symbol.for("zfb.devContentTrace.freeze");
+let __zfb_tracked_frontmatter = new WeakSet();
+let __zfb_frozen_frontmatter = new WeakSet();
+
+function __zfb_install_freeze_patch() {{
+  let state = Object.freeze[__zfb_freeze_marker];
+  if (!state) {{
+    const originalFreeze = Object.freeze;
+    state = {{ tracked: new WeakSet(), frozen: new WeakSet() }};
+    const patchState = state;
+    const replacement = {{
+      freeze(target) {{
+        if (patchState.tracked.has(target)) patchState.frozen.add(target);
+        return originalFreeze(target);
+      }},
+    }}.freeze;
+    Object.defineProperty(replacement, __zfb_freeze_marker, {{ value: state }});
+    Object.freeze = replacement;
+  }}
+  __zfb_tracked_frontmatter = state.tracked;
+  __zfb_frozen_frontmatter = state.frozen;
+}}
+
+function __zfb_read_only_error(key) {{
+  return new TypeError(`Cannot assign to read only property '${{key}}' of object '#<Object>'`);
+}}
 const __zfb_untrackable_collections = new Set();
 let __zfb_instrumented_bridge;
 let __zfb_instrumented_bridge_get;
@@ -9002,31 +9035,49 @@ function __zfb_track_frontmatter(frontmatter, owners) {{
     let value = descriptor.value;
     const writable = descriptor.writable;
     const enumerable = descriptor.enumerable;
+    const getter = function () {{
+      const current = __zfb_trace_state.current;
+      if (current) __zfb_record_owner_reads(current, owners);
+      return value;
+    }};
+    const setter = function (next) {{
+      const receiver = this;
+      if (__zfb_frozen_frontmatter.has(frontmatter)) throw __zfb_read_only_error(key);
+      if (receiver === frontmatter) {{
+        value = next;
+        return;
+      }}
+      if (receiver === null || (typeof receiver !== "object" && typeof receiver !== "function")) {{
+        throw new TypeError(`Cannot create property '${{key}}' on ${{typeof receiver}} '${{String(receiver)}}'`);
+      }}
+      const existing = Reflect.getOwnPropertyDescriptor(receiver, key);
+      if (existing) {{
+        if (existing.get === getter) {{
+          value = next;
+          return;
+        }}
+        if (!("value" in existing)) {{
+          throw new TypeError(`Cannot redefine property: ${{key}}`);
+        }}
+        if (!existing.writable) throw __zfb_read_only_error(key);
+        Object.defineProperty(receiver, key, {{ value: next }});
+        return;
+      }}
+      if (!Object.isExtensible(receiver)) {{
+        throw new TypeError(`Cannot add property ${{key}}, object is not extensible`);
+      }}
+      Object.defineProperty(receiver, key, {{
+        value: next,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      }});
+    }};
     Object.defineProperty(frontmatter, key, {{
       configurable: true,
       enumerable,
-      get() {{
-        const current = __zfb_trace_state.current;
-        if (current) __zfb_record_owner_reads(current, owners);
-        return value;
-      }},
-      set: writable
-        ? function (next) {{
-            if (__zfb_frozen_frontmatter.has(frontmatter)) {{
-              throw new TypeError(`Cannot assign to read only property '${{key}}' of object '#<Object>'`);
-            }}
-            if (this !== frontmatter && Object.prototype.isPrototypeOf.call(frontmatter, this)) {{
-              Object.defineProperty(this, key, {{
-                value: next,
-                writable: true,
-                enumerable: true,
-                configurable: true,
-              }});
-              return;
-            }}
-            value = next;
-          }}
-        : undefined,
+      get: getter,
+      set: writable ? setter : undefined,
     }});
   }}
 }}
@@ -9063,6 +9114,7 @@ try {{
         }}
       }}
     }}
+    if (frontmatterOwners.size > 0) __zfb_install_freeze_patch();
     for (const [frontmatter, owners] of frontmatterOwners) {{
       if (__zfb_frontmatter_is_convertible(frontmatter)) {{
         __zfb_track_frontmatter(frontmatter, owners);
@@ -9074,15 +9126,6 @@ try {{
       console.warn(
         `[zfb dev] content provenance: collection "${{collection}}" has frontmatter that was frozen or sealed before tracing started; every route rendered in dev is treated as a reader of "${{collection}}"`,
       );
-    }}
-    if (frontmatterOwners.size > 0) {{
-      const originalFreeze = Object.freeze;
-      Object.freeze = {{
-        freeze(target) {{
-          if (__zfb_tracked_frontmatter.has(target)) __zfb_frozen_frontmatter.add(target);
-          return originalFreeze(target);
-        }},
-      }}.freeze;
     }}
     if (specifierCollections.size > 0) {{
       const recordContentLookup = (specifier) => {{

@@ -1211,9 +1211,13 @@ export { worker as default };
         );
     }
 
-    /// A write through a Proxy around converted frontmatter, or through
-    /// `Reflect.set` with an unrelated receiver, must update the shared value
-    /// and keep the tracking accessor, so a later traced read still records.
+    /// Converted frontmatter keeps ordinary `[[Set]]` receiver semantics. A
+    /// write through a Proxy forwarding to it updates the shared value and
+    /// keeps the tracking accessor, so a later traced read still records.
+    /// `Reflect.set` with an unrelated receiver writes the receiver's own
+    /// property, updating an existing writable one, and leaves the shared
+    /// value alone; a non-extensible receiver or a non-writable own property
+    /// on it rejects the write. The freeze patch installs once per realm.
     #[test]
     fn dev_content_trace_wrapper_keeps_tracking_after_proxy_and_reflect_writes() {
         let dir = tempfile::tempdir().unwrap();
@@ -1232,14 +1236,29 @@ const data = __zfb_ns.contentSnapshot.collections.articles[0].frontmatter;
 const worker = {
   fetch(request) {
     if (new URL(request.url).pathname === "/__proxy-write") {
+      const results = [];
       new Proxy(data, {}).title = "Via Proxy";
-      const afterProxy = data.title;
+      results.push(data.title);
       const receiver = {};
-      const reflected = Reflect.set(data, "title", "Via Reflect", receiver);
-      const accessor = typeof Object.getOwnPropertyDescriptor(data, "title").get === "function";
-      return new Response(
-        [afterProxy, reflected, data.title, Object.hasOwn(receiver, "title"), accessor].join("|"),
-      );
+      results.push(Reflect.set(data, "title", "Via Reflect", receiver));
+      const own = Object.getOwnPropertyDescriptor(receiver, "title");
+      results.push(own.value, own.writable, own.enumerable, own.configurable, data.title);
+      results.push(Reflect.set(data, "title", "Again", receiver), receiver.title, data.title);
+      const derived = Object.create(data);
+      derived.title = "Derived";
+      results.push(Object.hasOwn(derived, "title"), derived.title, data.title);
+      for (const target of [Object.preventExtensions({}), Object.defineProperty({}, "title", { value: "fixed" })]) {
+        try {
+          Reflect.set(data, "title", "X", target);
+          results.push("no error");
+        } catch (caught) {
+          results.push(caught instanceof TypeError);
+        }
+      }
+      results.push(typeof Object.getOwnPropertyDescriptor(data, "title").get === "function");
+      const marker = Symbol.for("zfb.devContentTrace.freeze");
+      results.push(typeof Object.freeze[marker] === "object");
+      return new Response(results.join("|"));
     }
     return new Response("home:" + data.title);
   },
@@ -1249,9 +1268,10 @@ export { worker as default };
         let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
         assert_eq!(
             String::from_utf8_lossy(&host.dispatch_fetch("/__proxy-write").unwrap().body),
-            "Via Proxy|true|Via Reflect|false|true"
+            "Via Proxy|true|Via Reflect|true|true|true|Via Proxy|\
+             true|Again|Via Proxy|true|Derived|Via Proxy|true|true|true|true"
         );
-        assert_eq!(host.dispatch_fetch("/").unwrap().body, b"home:Via Reflect");
+        assert_eq!(host.dispatch_fetch("/").unwrap().body, b"home:Via Proxy");
         let body = drain_content_trace(host.as_mut(), &token);
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let home = pages.join("index.tsx").to_string_lossy().into_owned();
