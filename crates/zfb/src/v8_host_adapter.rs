@@ -997,6 +997,18 @@ mod tests {
     /// route that reads nothing stays a visit without reads.
     #[test]
     fn dev_content_trace_wrapper_observes_memoized_collection_data_reads() {
+        run_memoized_collection_trace_case(true);
+    }
+
+    /// Same scenario when the bundle emitted no content bridge: the wrapper's
+    /// pass-through bridge must record `Content` lookups while `Content`
+    /// still renders its captured body fallback.
+    #[test]
+    fn dev_content_trace_wrapper_observes_memoized_content_without_bridge() {
+        run_memoized_collection_trace_case(false);
+    }
+
+    fn run_memoized_collection_trace_case(with_bridge: bool) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let pages = root.join("pages");
@@ -1033,7 +1045,7 @@ __zfb_ns.contentSnapshot = JSON.parse(JSON.stringify({
     ],
   },
 }));
-__zfb_ns.content = { get: (spec) => (spec.startsWith("spec-") ? () => "compiled-" + spec : undefined) };
+__BRIDGE__
 function buildContentComponent(module_specifier, body) {
   return function Content() {
     const renderer = globalThis.__zfb?.content?.get(module_specifier);
@@ -1081,11 +1093,32 @@ const worker = {
       return new Response("detail:" + article.data.title, { status: 200 });
     }
     if (pathname === "/independent") return new Response("independent", { status: 200 });
+    if (pathname === "/__frozen-write") {
+      const alpha = getIndex().bySlug.get("a").data;
+      const beta = getIndex().bySlug.get("b").data;
+      beta.title = "Beta Written";
+      const written = beta.title;
+      beta.title = "Beta";
+      Object.freeze(alpha);
+      let error = "none";
+      try {
+        alpha.title = "Changed";
+      } catch (caught) {
+        error = caught instanceof TypeError ? caught.message : String(caught);
+      }
+      return new Response(written + "|" + error + "|" + alpha.title + "|" + JSON.stringify(alpha), { status: 200 });
+    }
     return new Response("missing", { status: 404 });
   },
 };
 export { worker as default };
 "#;
+        let bridge = if with_bridge {
+            r#"__zfb_ns.content = { get: (spec) => (spec.startsWith("spec-") ? () => "compiled-" + spec : undefined) };"#
+        } else {
+            ""
+        };
+        let inner_bytes = inner_bytes.replace("__BRIDGE__", bridge);
         let bundle_path = root.join("bundle.mjs");
         std::fs::write(&bundle_path, inner_bytes).unwrap();
 
@@ -1126,11 +1159,26 @@ export { worker as default };
         let home = host.dispatch_fetch("/").expect("home dispatch");
         assert_eq!(home.body, b"home:Alpha,Beta");
         let bodies = host.dispatch_fetch("/bodies").expect("bodies dispatch");
-        assert_eq!(bodies.body, b"bodies:compiled-spec-a,compiled-spec-b");
+        let expected_bodies: &[u8] = if with_bridge {
+            b"bodies:compiled-spec-a,compiled-spec-b"
+        } else {
+            b"bodies:alpha,beta"
+        };
+        assert_eq!(bodies.body, expected_bodies);
         let independent = host.dispatch_fetch("/independent").expect("independent");
         assert_eq!(independent.body, b"independent");
         let detail = host.dispatch_fetch("/articles/a").expect("detail dispatch");
         assert_eq!(detail.body, b"detail:Alpha");
+        // Untraced path: converted frontmatter stays writable, and a frozen
+        // object rejects writes as a strict-mode read-only assignment does.
+        let frozen = host
+            .dispatch_fetch("/__frozen-write")
+            .expect("frozen write dispatch");
+        assert_eq!(
+            String::from_utf8_lossy(&frozen.body),
+            "Beta Written|Cannot assign to read only property 'title' of object|Alpha|\
+             {\"title\":\"Alpha\",\"category\":\"news\"}"
+        );
 
         let headers = std::collections::BTreeMap::from([(
             crate::commands::dev::DEV_CONTENT_TRACE_HEADER.to_string(),

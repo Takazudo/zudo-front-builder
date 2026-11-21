@@ -8805,11 +8805,26 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// same aggregate collection read (once per request and collection). In-place
 /// conversion keeps object identity, so entries captured before the wrapper
 /// ran stay observed, and spread, `Object.keys`, `JSON.stringify` and
-/// `structuredClone` keep producing plain data. A cached entry's `Content`
-/// resolves its compiled body through `globalThis.__zfb.content.get(...)` at
-/// render time, so that lookup records a read of the owning collection too.
-/// Values copied out before the current request (a cached array of title
-/// strings, `slug`, `body`, a nested frontmatter object) remain unobserved.
+/// `structuredClone` keep producing plain data. Writes to a frozen frontmatter
+/// object throw like a strict-mode write to a read-only property. A cached
+/// entry's `Content` resolves its compiled body through
+/// `globalThis.__zfb.content.get(...)` at render time, so that lookup records a
+/// read of the owning collection too; when the bundle emitted no bridge, the
+/// wrapper installs one whose `get` only records and returns `undefined`, so
+/// `Content` keeps its body fallback.
+///
+/// Known limits: values copied out before the current request remain
+/// unobserved (a cached array of title strings, `slug`, `body`, a nested
+/// frontmatter object held separately), including a `paths()` that maps only
+/// cached `e.slug` values; an entry with null frontmatter gets a fresh `{}`
+/// per `getCollection()` call, which has nothing to observe.
+///
+/// `__zfb_trace_state.current` is a single slot saved and restored around
+/// each awaited fetch. That is sound because the V8 host serves one dispatch
+/// at a time and awaits it before taking the next (`serve_v8_host_requests`
+/// in `v8_host_adapter.rs`); work a route leaves running after its response
+/// resolves would be attributed to whichever request is current then.
+///
 /// The wrapper is dev-only and exists solely to feed the dependency graph with
 /// observations made by the running worker.
 ///
@@ -8953,6 +8968,9 @@ function __zfb_track_frontmatter(collection, frontmatter) {{
       }},
       set: descriptor.writable
         ? function (next) {{
+            if (Object.isFrozen(frontmatter)) {{
+              throw new TypeError(`Cannot assign to read only property '${{key}}' of object`);
+            }}
             value = next;
           }}
         : undefined,
@@ -8981,19 +8999,31 @@ try {{
         }}
       }}
     }}
-    const contentBridge = globalThis.__zfb?.content;
-    if (contentBridge && typeof contentBridge.get === "function" && specifierCollections.size > 0) {{
-      const bridgeGet = contentBridge.get;
-      contentBridge.get = function (specifier) {{
+    if (specifierCollections.size > 0) {{
+      const recordContentLookup = (specifier) => {{
         const current = __zfb_trace_state.current;
         const owners = current ? specifierCollections.get(specifier) : undefined;
-        if (owners) {{
-          for (const collection of owners) {{
-            if (!current.reads.has(collection)) __zfb_record_collection_read(current, collection);
-          }}
+        if (!owners) return;
+        for (const collection of owners) {{
+          if (!current.reads.has(collection)) __zfb_record_collection_read(current, collection);
         }}
-        return bridgeGet.apply(this, arguments);
       }};
+      const namespace = globalThis.__zfb;
+      const contentBridge = namespace.content;
+      if (contentBridge === undefined || contentBridge === null) {{
+        namespace.content = {{
+          get(specifier) {{
+            recordContentLookup(specifier);
+            return undefined;
+          }},
+        }};
+      }} else if (typeof contentBridge.get === "function") {{
+        const bridgeGet = contentBridge.get;
+        contentBridge.get = function (specifier) {{
+          recordContentLookup(specifier);
+          return bridgeGet.apply(this, arguments);
+        }};
+      }}
     }}
     snapshot.collections = new Proxy(collections, {{
       get(target, property, receiver) {{
