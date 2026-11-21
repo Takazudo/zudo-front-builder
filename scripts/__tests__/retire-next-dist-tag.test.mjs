@@ -25,6 +25,7 @@ import {
   compareSemver,
   decideNextTagAction,
   decideReleasePendingAction,
+  formatSweepSummary,
   isTerminalNpmError,
   parseSemver,
   parseDistTags,
@@ -629,6 +630,235 @@ describe("read-compare-write guards", () => {
     expect(results[0].action).toBe("retired");
     expect(tags["@takazudo/zfb"].next).toBeUndefined();
     expect(lines.some((l) => l.includes("confirmed by re-read"))).toBe(true);
+  });
+});
+
+// A fully scripted registry: each npm call consumes the next step, and every
+// invocation (reads included) is recorded so the sequence itself is asserted.
+function scriptedNpm(steps) {
+  const invocations = [];
+  let index = 0;
+  return {
+    invocations,
+    remaining: () => steps.length - index,
+    npm: async (args) => {
+      invocations.push(args);
+      const step = steps[index];
+      index += 1;
+      if (!step) throw new Error(`unscripted npm call: ${args.join(" ")}`);
+      expect(args[0] === "view" ? "view" : "rm").toBe(step.kind);
+      if (step.error) throw new Error(step.error);
+      return step.kind === "view" ? JSON.stringify(step.tags) : "";
+    },
+  };
+}
+
+describe("settled-absence reporting (#4769)", () => {
+  const PKG = "@takazudo/zfb-darwin-arm64";
+  const VIEW = ["view", PKG, "dist-tags", "--json", "--prefer-online"];
+  const RM = (tag) => ["dist-tag", "rm", PKG, tag];
+  const view = (tags) => ({ kind: "view", tags });
+  const rm = (error) => ({ kind: "rm", error });
+
+  async function run(steps, options = {}) {
+    const fake = scriptedNpm(steps);
+    const lines = [];
+    const waits = [];
+    const report = await retireNextDistTag({
+      packages: [PKG],
+      npm: fake.npm,
+      wait: async (ms) => {
+        waits.push(ms);
+      },
+      log: (line) => lines.push(line),
+      summaryPath: undefined,
+      ...options,
+    });
+    expect(fake.remaining()).toBe(0);
+    return { ...report, lines, waits, invocations: fake.invocations };
+  }
+
+  const summary = (report, dryRun = false) => formatSweepSummary({ ...report, dryRun });
+
+  for (const [tag, stale] of [
+    [HOLDING_DIST_TAG, { latest: "7.1.0", [HOLDING_DIST_TAG]: "7.1.0" }],
+    ["next", { latest: "7.1.0", next: "7.1.0-rc.1" }],
+  ]) {
+    const gone = { latest: "7.1.0" };
+
+    describe(`'${tag}'`, () => {
+      it("immediate confirmation is the only outcome counted as retired", async () => {
+        const report = await run([view(stale), view(stale), rm(), view(gone)]);
+        const result = (tag === "next" ? report.results : report.pendingResults)[0];
+        expect(result).toMatchObject({
+          action: "retired",
+          writeAttempts: 1,
+          lastWrite: "acknowledged",
+          observed: "absent",
+        });
+        expect(report.invocations).toEqual([VIEW, VIEW, RM(tag), VIEW]);
+        expect(report.lines.some((l) => l.includes("confirmed by re-read (attempt 1)"))).toBe(true);
+        expect(report.lines.some((l) => l.includes("in place"))).toBe(false);
+        expect(report.failed).toBe(0);
+        expect(summary(report)).toBe(
+          tag === "next"
+            ? `dist-tag sweep complete: 'next' 1 retired, 0 absent after attempt; '${HOLDING_DIST_TAG}' 0 retired, 0 absent after attempt; 0 failed.`
+            : `dist-tag sweep complete: 'next' 0 retired, 0 absent after attempt; '${HOLDING_DIST_TAG}' 1 retired, 0 absent after attempt; 0 failed.`,
+        );
+      });
+
+      it("delayed confirmation then absence (the v7.1.0 finalizer sequence) is not 'left in place'", async () => {
+        const report = await run([
+          view(stale), // sweep pre-filter
+          view(stale), // attempt 1 pre-write read
+          rm(), // acknowledged
+          view(stale), // confirm read still stale
+          view(stale), // attempt 2 pre-write read, still stale
+          rm(`Command failed: npm dist-tag rm\nnpm error ${tag} is not a dist-tag on ${PKG}`),
+          view(gone), // attempt 3 pre-write read: absent
+        ]);
+        const result = (tag === "next" ? report.results : report.pendingResults)[0];
+        expect(result).toEqual({
+          pkg: PKG,
+          action: "absent-after-attempt",
+          reason: `no '${tag}' dist-tag`,
+          writeAttempts: 2,
+          lastWrite: "failed",
+          observed: "absent",
+        });
+        expect(report.invocations).toEqual([VIEW, VIEW, RM(tag), VIEW, VIEW, RM(tag), VIEW]);
+        expect(report.waits).toEqual([5000, 10000]);
+        expect(report.lines.some((l) => l.includes("in place"))).toBe(false);
+        expect(report.lines.some((l) => l.startsWith("::"))).toBe(false);
+        expect(
+          report.lines.filter((l) => l.includes(`dist-tag rm ${tag} not confirmed`)),
+        ).toHaveLength(2);
+        expect(report.lines).toContain(
+          `  ${PKG}: '${tag}' observed absent on a later re-read after 2 removal attempt(s) (last rm failed) — absence settled; removal not attributed to this run.`,
+        );
+        expect(report.failed).toBe(0);
+        expect(summary(report)).toBe(
+          tag === "next"
+            ? `dist-tag sweep complete: 'next' 0 retired, 1 absent after attempt; '${HOLDING_DIST_TAG}' 0 retired, 0 absent after attempt; 0 failed.`
+            : `dist-tag sweep complete: 'next' 0 retired, 0 absent after attempt; '${HOLDING_DIST_TAG}' 0 retired, 1 absent after attempt; 0 failed.`,
+        );
+      });
+
+      it("absence before any write is reported as absent, never as a removal", async () => {
+        const report = await run([view(stale), view(gone)]);
+        const result = (tag === "next" ? report.results : report.pendingResults)[0];
+        expect(result).toMatchObject({
+          action: "absent",
+          writeAttempts: 0,
+          lastWrite: "none",
+          observed: "absent",
+        });
+        expect(report.invocations).toEqual([VIEW, VIEW]);
+        expect(report.lines).toContain(
+          `  ${PKG}: '${tag}' already absent before any removal attempt (no '${tag}' dist-tag).`,
+        );
+        expect(report.lines.some((l) => l.includes("in place"))).toBe(false);
+        expect(summary(report)).toMatch(/0 retired, 0 absent after attempt; .*0 retired, 0 absent/);
+      });
+
+      it("a concurrent move ahead is the only outcome reported as left in place", async () => {
+        const ahead =
+          tag === "next"
+            ? { latest: "7.1.0", next: "7.2.0-next.1" }
+            : { latest: "7.1.0", [HOLDING_DIST_TAG]: "7.1.1" };
+        const report = await run([view(stale), view(ahead)]);
+        const result = (tag === "next" ? report.results : report.pendingResults)[0];
+        expect(result).toMatchObject({
+          action: "changed",
+          writeAttempts: 0,
+          lastWrite: "none",
+          observed: "retained",
+        });
+        expect(report.invocations).toEqual([VIEW, VIEW]);
+        expect(
+          report.lines.some((l) =>
+            l.startsWith(`  ${PKG}: left '${tag}' in place — dist-tags changed before the write`),
+          ),
+        ).toBe(true);
+        expect(report.failed).toBe(0);
+        expect(summary(report)).not.toMatch(/[1-9] (retired|absent after attempt)/);
+      });
+
+      it("a terminal auth failure stops with ::error:: and is not counted as absent", async () => {
+        const report = await run([view(stale), view(stale), rm("npm error code E403")]);
+        const result = (tag === "next" ? report.results : report.pendingResults)[0];
+        expect(result).toMatchObject({
+          action: "error",
+          terminal: true,
+          writeAttempts: 1,
+          lastWrite: "failed",
+          observed: "unknown",
+        });
+        expect(report.authFailed).toBe(true);
+        expect(report.waits).toEqual([]);
+        expect(report.invocations).toEqual([VIEW, VIEW, RM(tag)]);
+        expect(
+          report.lines.some((l) => l.startsWith("::error title=npm dist-tag auth failure::")),
+        ).toBe(true);
+        expect(summary(report)).toMatch(/; 1 failed\.$/);
+        expect(summary(report)).not.toMatch(/[1-9] (retired|absent after attempt)/);
+      });
+
+      it("persistent stale confirmation fails after maxAttempts at ::warning::", async () => {
+        const steps = [view(stale)];
+        for (let i = 0; i < 3; i += 1) steps.push(view(stale), rm(), view(stale));
+        const report = await run(steps, { maxAttempts: 3 });
+        const result = (tag === "next" ? report.results : report.pendingResults)[0];
+        expect(result).toMatchObject({
+          action: "error",
+          terminal: false,
+          writeAttempts: 3,
+          lastWrite: "acknowledged",
+          observed: "present",
+        });
+        expect(report.waits).toEqual([5000, 10000]);
+        expect(report.invocations.filter((a) => a[0] === "dist-tag")).toHaveLength(3);
+        expect(report.lines.some((l) => l.startsWith("::warning::"))).toBe(true);
+        expect(report.lines.some((l) => l.startsWith("::error"))).toBe(false);
+        expect(summary(report)).toMatch(/0 retired, 0 absent after attempt; .*; 1 failed\.$/);
+      });
+
+      it("dry run decides 'would remove' and writes nothing", async () => {
+        const report = await run([view(stale)], { dryRun: true });
+        const result = (tag === "next" ? report.results : report.pendingResults)[0];
+        expect(result).toMatchObject({ action: "retire", dryRun: true });
+        expect(report.invocations).toEqual([VIEW]);
+        expect(report.lines).toContain(`  ${PKG}: would remove '${tag}' — ${result.reason}`);
+        expect(summary(report, true)).toBe(
+          tag === "next"
+            ? `dist-tag sweep complete: 'next' 1 would retire; '${HOLDING_DIST_TAG}' 0 would retire; 0 failed.`
+            : `dist-tag sweep complete: 'next' 0 would retire; '${HOLDING_DIST_TAG}' 1 would retire; 0 failed.`,
+        );
+      });
+    });
+  }
+
+  it("counts the all-packages finalizer sequence as settled absence, not 0 of 11", async () => {
+    const stale = { latest: "7.1.0", [HOLDING_DIST_TAG]: "7.1.0" };
+    const gone = { latest: "7.1.0" };
+    const packages = PUBLISHED_PACKAGES;
+    const steps = packages.flatMap((pkg) => [
+      view(stale),
+      view(stale),
+      rm(),
+      view(stale),
+      view(stale),
+      rm(`npm error ${HOLDING_DIST_TAG} is not a dist-tag on ${pkg}`),
+      view(gone),
+    ]);
+    const report = await run(steps, { packages });
+    expect(report.pendingResults.map((r) => r.action)).toEqual(
+      packages.map(() => "absent-after-attempt"),
+    );
+    expect(report.results.map((r) => r.action)).toEqual(packages.map(() => "absent"));
+    expect(summary(report)).toBe(
+      `dist-tag sweep complete: 'next' 0 retired, 0 absent after attempt; '${HOLDING_DIST_TAG}' 0 retired, ${packages.length} absent after attempt; 0 failed.`,
+    );
   });
 });
 
