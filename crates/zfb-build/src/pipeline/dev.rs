@@ -17,7 +17,7 @@
 //!   content hashing is the production pipeline's job (see
 //!   [`super::prod::ProductionAssetPipeline`]).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -706,16 +706,18 @@ impl WriteShared {
 }
 
 /// Append each changed route source the plan did not already select (#4764).
-/// Returns whether anything was added. Order is kept: planned pages first.
+/// Returns whether anything was added. Planned pages keep their order; the
+/// added sources follow in sorted order, because the refresh reports them in
+/// hash-map order.
 fn fold_changed_sources(pages: &mut Vec<PageId>, changed: Vec<PageId>) -> bool {
-    let mut added = false;
-    for source in changed {
-        if !pages.contains(&source) {
-            pages.push(source);
-            added = true;
-        }
-    }
-    added
+    let planned: HashSet<PageId> = pages.iter().cloned().collect();
+    let added: BTreeSet<PageId> = changed
+        .into_iter()
+        .filter(|source| !planned.contains(source))
+        .collect();
+    let any = !added.is_empty();
+    pages.extend(added);
+    any
 }
 
 fn attempt_document_prune(
@@ -1632,7 +1634,10 @@ impl AssetPipeline for DevAssetPipeline {
             }
             let event = if discovery_lazy_repair_pending {
                 DocumentPublicationEvent::CommitDiscoveryLazyRepair
-            } else if has_selected_documents {
+            } else if has_selected_documents || !pages.is_empty() {
+                // `pages` also holds route sources the refresh folded into an
+                // initially empty selection (#4764); their documents were
+                // written this tick.
                 DocumentPublicationEvent::CommitPublished
             } else if renderer_refreshed
                 || discovery_document_boundary_pending
@@ -3932,5 +3937,56 @@ mod tests {
         DevAssetPipeline::new().apply(&plan, &ctx).unwrap();
         assert_eq!(reloads.load(Ordering::SeqCst), 1);
         assert!(seen.lock().unwrap().is_empty());
+    }
+
+    /// Review finding on #4764: a returning source folded into an empty
+    /// selection writes an SSG document, so the tick must commit as
+    /// published rather than ready-on-request.
+    #[test]
+    fn empty_selection_fold_commits_published_documents() {
+        let dir = tempdir().unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hook_events = Arc::clone(&events);
+        let pipeline =
+            DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
+                hook_events.lock().unwrap().push(event)
+            }));
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(|pages: &[PageId], _| {
+                Ok(pages
+                    .iter()
+                    .map(|page| RenderedPage {
+                        page: page.clone(),
+                        output_path: RelDistPath::new("archive/1/index.html").unwrap(),
+                        html: "<h1>archive</h1>".into(),
+                        content_type: None,
+                    })
+                    .collect())
+            }),
+            run_css: None,
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: Some(Arc::new(|| {
+                Ok(RefreshOutcome::Refreshed {
+                    vanished: vec![],
+                    changed_sources: vec![pid("/p/archive/[page].tsx")],
+                })
+            })),
+        };
+        let mut plan = RebuildPlan::empty();
+        plan.ssr_reload_needed = true;
+        let outcome = pipeline.apply(&plan, &ctx).unwrap();
+        assert_eq!(outcome.pages_rendered, 1);
+        assert!(dir.path().join("archive/1/index.html").exists());
+        let events = events.lock().unwrap();
+        assert!(
+            events.contains(&DocumentPublicationEvent::CommitPublished),
+            "{events:?}"
+        );
+        assert!(
+            !events.contains(&DocumentPublicationEvent::CommitReadyOnRequest),
+            "{events:?}"
+        );
     }
 }
