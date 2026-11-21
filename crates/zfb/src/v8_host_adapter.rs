@@ -1259,28 +1259,24 @@ export { worker as default };
         );
     }
 
-    /// When the bundle emitted no bridge, the wrapper's placeholder bridge can
-    /// be replaced by a real one later. Requests since the last drain may have
-    /// used it uninstrumented, so that drain is rejected (the session takes
-    /// its `All` fallback). The wrapper adopts and instruments the new bridge,
-    /// treats bridge-owning collections as read by every traced request from
-    /// then on, and later drains are usable. The rejected drain's visits are
-    /// replayed into the next ready drain with those reads, so a route
-    /// rendered only in that window still becomes a consumer. Replacing the adopted real
-    /// bridge afterwards still gives the not-ready fallback.
+    /// When the bundle emitted no bridge, the wrapper's placeholder bridge
+    /// records `Content` lookups. Replacing or removing it afterwards hides
+    /// later lookups, so every drain from then on reports not ready and the
+    /// session keeps its `All` fallback for that worker generation.
     #[test]
-    fn dev_content_trace_wrapper_adopts_bridge_replacing_its_placeholder() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let pages = root.join("pages");
-        std::fs::create_dir_all(&pages).unwrap();
-        for page in ["index.tsx", "bodies.tsx", "window.tsx"] {
-            std::fs::write(pages.join(page), "export default () => null;\n").unwrap();
-        }
-        std::fs::create_dir_all(root.join("content/articles")).unwrap();
-        let a_md = root.join("content/articles/a.md");
-        std::fs::write(&a_md, "---\ntitle: Alpha\n---\n\nalpha\n").unwrap();
-        let inner_bytes = r#"
+    fn dev_content_trace_wrapper_rejects_placeholder_bridge_replaced_or_removed() {
+        for (route, swap) in [
+            ("/__install-bridge", "replaced"),
+            ("/__remove-bridge", "removed"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let pages = root.join("pages");
+            std::fs::create_dir_all(&pages).unwrap();
+            for page in ["index.tsx", "bodies.tsx"] {
+                std::fs::write(pages.join(page), "export default () => null;\n").unwrap();
+            }
+            let inner_bytes = r#"
 const __zfb_ns = (globalThis.__zfb ??= {});
 __zfb_ns.contentSnapshot = {
   collections: {
@@ -1292,7 +1288,11 @@ const worker = {
     const pathname = new URL(request.url).pathname;
     if (pathname === "/__install-bridge") {
       __zfb_ns.content = { get: (spec) => () => "compiled-" + spec };
-      return new Response("installed");
+      return new Response("swapped");
+    }
+    if (pathname === "/__remove-bridge") {
+      delete __zfb_ns.content;
+      return new Response("swapped");
     }
     if (pathname === "/bodies") {
       const renderer = globalThis.__zfb?.content?.get("spec-a");
@@ -1303,133 +1303,51 @@ const worker = {
 };
 export { worker as default };
 "#;
-        let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
-        let home = pages.join("index.tsx").to_string_lossy().into_owned();
-        let bodies = pages.join("bodies.tsx").to_string_lossy().into_owned();
-        let window = pages.join("window.tsx").to_string_lossy().into_owned();
-        let render_reads = |payload: &serde_json::Value, source: &str| {
-            payload["events"]
+            let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
+            let bodies = pages.join("bodies.tsx").to_string_lossy().into_owned();
+
+            assert_eq!(
+                host.dispatch_fetch("/bodies").unwrap().body,
+                b"bodies:alpha"
+            );
+            let body = drain_content_trace(host.as_mut(), &token);
+            assert_eq!(
+                crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body),
+                None,
+                "{swap}: the placeholder keeps the worker usable"
+            );
+            let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let placeholder_reads = payload["events"]
                 .as_array()
                 .expect("events")
                 .iter()
                 .filter(|event| {
-                    event["source"] == source
-                        && event["phase"] == "render"
+                    event["source"] == bodies.as_str()
                         && event["kind"] == "read"
                         && event["collection"] == "articles"
                 })
-                .count()
-        };
+                .count();
+            assert_eq!(placeholder_reads, 1, "{swap}: {payload:?}");
 
-        assert_eq!(
-            host.dispatch_fetch("/bodies").unwrap().body,
-            b"bodies:alpha"
-        );
-        let body = drain_content_trace(host.as_mut(), &token);
-        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            render_reads(&payload, &bodies),
-            1,
-            "placeholder lookup: {payload:?}"
-        );
-        let logs = host.drain_console_logs();
-        assert!(!logs.contains("content provenance"), "{logs}");
-
-        assert_eq!(
-            host.dispatch_fetch("/__install-bridge").unwrap().body,
-            b"installed"
-        );
-        assert_eq!(
-            host.dispatch_fetch("/bodies").unwrap().body,
-            b"bodies:compiled-spec-a"
-        );
-        // Rendered only inside the adoption window and never revisited.
-        host.dispatch_fetch("/window").unwrap();
-        let body = drain_content_trace(host.as_mut(), &token);
-        let error = crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body)
-            .expect("the drain that adopts the real bridge must be rejected");
-        assert!(
-            error.contains(
-                "content bridge installed after trace install; conservative fallback for this \
-                 generation's prior requests"
-            ),
-            "{error}"
-        );
-        let logs = host.drain_console_logs();
-        assert!(
-            logs.contains("collection \"articles\"")
-                && logs.contains("content bridge installed after tracing started"),
-            "{logs}"
-        );
-
-        host.dispatch_fetch("/").unwrap();
-        host.dispatch_fetch("/bodies").unwrap();
-        let body = drain_content_trace(host.as_mut(), &token);
-        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body),
-            None
-        );
-        assert_eq!(
-            render_reads(&payload, &home),
-            1,
-            "an untrackable collection is read by every traced request: {payload:?}"
-        );
-        assert_eq!(
-            render_reads(&payload, &bodies),
-            2,
-            "the window visit is replayed beside the new one: {payload:?}"
-        );
-        assert_eq!(
-            render_reads(&payload, &window),
-            1,
-            "the window-only route is credited in the next ready drain: {payload:?}"
-        );
-        let routes: Vec<(
-            std::path::PathBuf,
-            Vec<crate::commands::dev::AdapterTestRouteEntry>,
-        )> = vec![
-            (pages.join("index.tsx"), vec![("/", "index.html", None)]),
-            (
-                pages.join("bodies.tsx"),
-                vec![("/bodies", "bodies.html", None)],
-            ),
-            (
-                pages.join("window.tsx"),
-                vec![("/window", "window.html", None)],
-            ),
-        ];
-        let page_sources: std::collections::HashSet<std::path::PathBuf> =
-            routes.iter().map(|(source, _)| source.clone()).collect();
-        let consumers = crate::commands::dev::content_consumers_from_trace_for_adapter_tests(
-            &root,
-            &["articles"],
-            routes,
-            page_sources,
-            &[],
-            &body,
-            &a_md,
-        );
-        assert!(
-            consumers.contains(&pages.join("window.tsx")),
-            "a route rendered only in the adoption window must consume a.md: {consumers:?}"
-        );
-        let body = drain_content_trace(host.as_mut(), &token);
-        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            render_reads(&payload, &window),
-            0,
-            "the replay is delivered once: {payload:?}"
-        );
-
-        host.dispatch_fetch("/__install-bridge").unwrap();
-        let body = drain_content_trace(host.as_mut(), &token);
-        let error = crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body)
-            .expect("replacing the adopted real bridge keeps the not-ready fallback");
-        assert!(
-            error.contains("content bridge replaced after trace install; conservative fallback"),
-            "{error}"
-        );
+            assert_eq!(host.dispatch_fetch(route).unwrap().body, b"swapped");
+            host.dispatch_fetch("/bodies").unwrap();
+            for drain in 0..2 {
+                let body = drain_content_trace(host.as_mut(), &token);
+                let error =
+                    crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body)
+                        .unwrap_or_else(|| {
+                            panic!("{swap}: drain {drain} after the swap must be rejected")
+                        });
+                assert!(
+                    error.contains(
+                        "content bridge installed or removed after trace install; \
+                         conservative fallback"
+                    ),
+                    "{swap}: {error}"
+                );
+                host.dispatch_fetch("/").unwrap();
+            }
+        }
     }
 
     /// Replacing the content bridge after install would hide `Content`
@@ -1487,7 +1405,9 @@ export { worker as default };
     /// including one made before its original was frozen, and never reverts
     /// a later redefinition of the original. On sealed frontmatter a Proxy
     /// write keeps tracking, and a clone made after sealing writes the shared
-    /// value (a documented dev-only limit).
+    /// value (a documented dev-only limit). A frozen clone and a Proxy whose
+    /// `defineProperty` trap refuses both reject the write and leave the
+    /// shared value unchanged.
     /// `Reflect.set` with an unrelated receiver writes the receiver's own
     /// property, updating an existing writable one, and leaves the shared
     /// value alone; a non-extensible receiver or a non-writable own property
@@ -1567,6 +1487,22 @@ const worker = {
       cloneBeforeRedefine.title = "Clone Write";
       const redefinedOwn = Object.getOwnPropertyDescriptor(redefined, "title");
       results.push(redefinedOwn.value, redefinedOwn.writable, "value" in redefinedOwn, cloneBeforeRedefine.title);
+
+      const shared = data.title;
+      const frozenClone = descriptorClone(data);
+      Object.freeze(frozenClone);
+      for (const write of [
+        () => { frozenClone.title = "Frozen Clone Write"; },
+        () => { new Proxy(data, { defineProperty: () => false }).title = "Refused"; },
+      ]) {
+        try {
+          write();
+          results.push("no error");
+        } catch (caught) {
+          results.push(caught instanceof TypeError);
+        }
+        results.push(data.title === shared);
+      }
       return new Response(results.join("|"));
     }
     return new Response("home:" + data.title + "," + sealed.title);
@@ -1582,7 +1518,8 @@ export { worker as default };
              true|true|true|true|\
              Sealed Proxy|true|Sealed Clone|\
              Frozen Clone|Gamma|true|\
-             Fixed|false|true|Clone Write"
+             Fixed|false|true|Clone Write|\
+             true|true|true|true"
         );
         assert_eq!(
             host.dispatch_fetch("/").unwrap().body,

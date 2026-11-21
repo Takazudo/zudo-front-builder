@@ -8811,9 +8811,12 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// accessor and cannot be told apart, so the wrapper defines the data
 /// property on that receiver: a clone keeps it, while a Proxy view forwards
 /// it to the frontmatter object, over which the wrapper then re-installs
-/// the tracking accessor with the new value. When that define fails, a
-/// frozen target rejects the write and a sealed one updates the shared
-/// value. The worker's
+/// the tracking accessor with the new value. When that define fails, the
+/// shared value is updated only if the original frontmatter is genuinely
+/// sealed (non-extensible, its tracking accessor non-configurable, not
+/// frozen); every other failure (a frozen original or clone, a Proxy whose
+/// `defineProperty` trap refuses) rejects the write with V8's read-only
+/// `TypeError`. The worker's
 /// `Object.freeze` is replaced once per realm (marked with
 /// `Symbol.for("zfb.devContentTrace.freeze")`, which also holds the
 /// tracking sets); each worker generation boots a fresh isolate and
@@ -8837,16 +8840,12 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 ///   bridge slot): every collection that owns a module specifier becomes
 ///   read by every traced request, with its own warning.
 /// - If the bridge was the wrapper's own placeholder (the bundle emitted none)
-///   and the bundle installs a real bridge later, requests since the last
-///   drain may have used the uninstrumented bridge. That drain reports not
-///   ready ("content bridge installed after trace install"), so the session
-///   clears this worker's `Content` edges and takes the `All` selection. The
-///   wrapper instruments the new bridge's `get` and treats every collection
-///   owning a module specifier as read by every traced request from then on
-///   (one warning each, naming any instrumentation error); later drains
-///   report ready. The rejected drain's events are replayed in the next
-///   ready drain, each visit with a read of every untrackable collection, so
-///   a route rendered only in that window still becomes a consumer.
+///   and it is later replaced, removed or set to `null`/`undefined`, or the
+///   `globalThis.__zfb` namespace itself is replaced, the next drain reports
+///   not ready ("content bridge installed or removed after trace install")
+///   for the rest of that worker generation, as for a replaced real bridge
+///   below. A bundle that installs its content bridge lazily therefore
+///   loses narrowing for that generation.
 /// - If a real instrumented bridge object or its `get` is replaced after
 ///   install (including a bridge that had no `get` function at install), the
 ///   next drain reports not ready ("content bridge replaced after trace
@@ -9047,7 +9046,6 @@ const __zfb_untrackable_collections = new Set();
 let __zfb_instrumented_bridge;
 let __zfb_instrumented_bridge_get;
 let __zfb_bridge_is_placeholder = false;
-let __zfb_deferred_events = [];
 let __zfb_specifier_collections = new Map();
 
 function __zfb_mark_untrackable(owners, reason) {{
@@ -9089,24 +9087,6 @@ function __zfb_all_specifier_owners() {{
     for (const collection of collections) owners.add(collection);
   }}
   return owners;
-}}
-
-function __zfb_adopt_bridge_replacing_placeholder() {{
-  __zfb_bridge_is_placeholder = false;
-  __zfb_instrumented_bridge = undefined;
-  __zfb_instrumented_bridge_get = undefined;
-  let reason = "had its content bridge installed after tracing started";
-  const bridge = globalThis.__zfb?.content;
-  if (bridge !== undefined && bridge !== null) {{
-    try {{
-      __zfb_instrument_bridge(bridge);
-    }} catch (error) {{
-      __zfb_instrumented_bridge = undefined;
-      __zfb_instrumented_bridge_get = undefined;
-      reason = `${{reason}} and could not be instrumented (${{String(error)}})`;
-    }}
-  }}
-  __zfb_mark_untrackable(__zfb_all_specifier_owners(), reason);
 }}
 
 function __zfb_record_owner_reads(current, owners) {{
@@ -9159,7 +9139,14 @@ function __zfb_track_frontmatter(frontmatter, owners) {{
           }});
         }} catch (error) {{
           if (!(error instanceof TypeError)) throw error;
-          if (__zfb_frozen_frontmatter.has(frontmatter)) throw __zfb_read_only_error(key);
+          const original = Reflect.getOwnPropertyDescriptor(frontmatter, key);
+          const sealedOriginal =
+            !Reflect.isExtensible(frontmatter) &&
+            original !== undefined &&
+            original.get === getter &&
+            !original.configurable &&
+            !__zfb_frozen_frontmatter.has(frontmatter);
+          if (!sealedOriginal) throw __zfb_read_only_error(key);
           value = next;
           return;
         }}
@@ -9294,39 +9281,17 @@ export default {{
       if (request.headers.get(__zfb_trace_header) !== __zfb_trace_token) {{
         return new Response("Not Found", {{ status: 404 }});
       }}
-      let drainReady = __zfb_trace_state.ready;
-      let drainError = __zfb_trace_state.error;
-      let events = __zfb_trace_state.events.splice(0);
       if (__zfb_trace_state.ready && __zfb_bridge_replaced()) {{
-        if (__zfb_bridge_is_placeholder) {{
-          __zfb_adopt_bridge_replacing_placeholder();
-          __zfb_deferred_events = __zfb_deferred_events.concat(events);
-          drainReady = false;
-          drainError =
-            "content bridge installed after trace install; conservative fallback for this generation's prior requests";
-        }} else {{
-          __zfb_trace_state.ready = false;
-          __zfb_trace_state.error = "content bridge replaced after trace install; conservative fallback";
-          drainReady = false;
-          drainError = __zfb_trace_state.error;
-        }}
+        __zfb_trace_state.ready = false;
+        __zfb_trace_state.error = __zfb_bridge_is_placeholder
+          ? "content bridge installed or removed after trace install; conservative fallback"
+          : "content bridge replaced after trace install; conservative fallback";
       }}
-      if (drainReady && __zfb_deferred_events.length > 0) {{
-        const replay = [];
-        for (const event of __zfb_deferred_events) {{
-          replay.push(event);
-          if (event.kind !== "visit") continue;
-          for (const collection of __zfb_untrackable_collections) {{
-            replay.push({{ source: event.source, collection, phase: event.phase, kind: "read" }});
-          }}
-        }}
-        __zfb_deferred_events = [];
-        events = replay.concat(events);
-      }}
+      const events = __zfb_trace_state.events.splice(0);
       return new Response(JSON.stringify({{
-        ready: drainReady,
+        ready: __zfb_trace_state.ready,
         events,
-        error: drainError,
+        error: __zfb_trace_state.error,
       }}), {{
         status: 200,
         headers: {{ "Content-Type": "application/json; charset=utf-8" }},
