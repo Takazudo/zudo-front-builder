@@ -458,6 +458,15 @@ describe("performWrites", () => {
     expect(r.tLast).toBe(3000n);
   });
 
+  it("an empty step list is a clear no-write-steps error, not a TypeError", async () => {
+    await expect(performWrites([], () => 1n)).rejects.toMatchObject({
+      message: "no write steps",
+      code: "no-write-steps",
+      steps: [],
+    });
+    await expect(performWrites([], () => 1n)).rejects.not.toBeInstanceOf(TypeError);
+  });
+
   it("a failing step reports the completed ones", async () => {
     const { m } = setup();
     const writes = [

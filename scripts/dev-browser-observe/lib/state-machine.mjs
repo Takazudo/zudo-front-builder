@@ -1,5 +1,5 @@
 import { runSpecialMode } from "./special-modes.mjs";
-import { nsToMs } from "./util.mjs";
+import { NO_WRITE_STEPS, noWriteStepsError, nsToMs } from "./util.mjs";
 
 export const OUTCOMES = [
   "success",
@@ -374,6 +374,11 @@ export async function runBatch({ scenarios, deps }) {
         let preparedState = null;
         try {
           attempt = fs.prepareAttempt(op);
+          if (
+            (Array.isArray(attempt.writes) && attempt.writes.length === 0) ||
+            (!attempt.writes && !attempt.write)
+          )
+            throw noWriteStepsError();
           if (op.inject === "precondition-true") attempt.predicate = ALWAYS_TRUE_PREDICATE;
           if (op.inject === "write-error") {
             attempt.injectedFrom = attempt.write.path;
@@ -387,6 +392,8 @@ export async function runBatch({ scenarios, deps }) {
             ...base,
             type: "precheck",
             outcome: "prepare-error",
+            errorKind: error?.code === NO_WRITE_STEPS ? NO_WRITE_STEPS : null,
+            writePerformed: false,
             error: String(error?.message ?? error),
           });
           acc.error += 1;

@@ -137,6 +137,17 @@ export function gitToplevelAndHead(cwd) {
   return { top, head };
 }
 
+export const NO_WRITE_STEPS = "no-write-steps";
+
+/** A workload with no write steps: a plan error, distinct from a failed write (nothing was written). */
+export function noWriteStepsError() {
+  const error = new Error("no write steps");
+  error.code = NO_WRITE_STEPS;
+  error.steps = [];
+  error.failedStep = null;
+  return error;
+}
+
 export function gitToplevel(cwd) {
   return run("git", ["rev-parse", "--show-toplevel"], { cwd }).trim();
 }
