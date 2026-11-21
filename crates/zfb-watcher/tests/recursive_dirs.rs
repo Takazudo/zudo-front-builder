@@ -156,6 +156,28 @@ fn assert_none_under(changes: &[Change], forbidden: &Path, context: &str) {
     );
 }
 
+/// `true` when `path` lies strictly below `dir`. `Path::starts_with` is
+/// component-aware, so `dir-other` never counts as below `dir`.
+fn is_strict_descendant(path: &Path, dir: &Path) -> bool {
+    path != dir && path.starts_with(dir)
+}
+
+/// Non-recursive counterpart of [`assert_none_under`] for a direct child
+/// `dir` of a non-recursively watched parent: notify delivers events for
+/// the watched dir and its direct children (its FSEvents backend checks
+/// `path == watched || path.parent() == watched`), so `dir` itself may
+/// legally appear (#4765), while anything strictly below it may not.
+fn assert_no_strict_descendants(changes: &[Change], dir: &Path, context: &str) {
+    let offenders: Vec<&Change> = changes
+        .iter()
+        .filter(|change| is_strict_descendant(&change.path, dir))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "{context}: nothing strictly below {dir:?} may be delivered, got {offenders:#?}",
+    );
+}
+
 /// Workspace layout shared by the tests: a canonicalized tempdir holding a
 /// project (`app/` with a `pages` boot root) plus whatever sibling dirs a
 /// test creates next to it. Canonicalized up front because FSEvents
@@ -307,10 +329,11 @@ async fn dependency_parent_root_upgrades_to_recursive() {
     sentinel_round_trip(&mut rx, &sib_lib, "baseline-live").await;
 
     // Grandchildren are NOT delivered by the non-recursive parent watch.
+    // `deep` itself is a direct child and may legally be reported (#4765).
     std::fs::write(sib_lib.join("deep/inner.ts"), b"deep").expect("write deep pre-upgrade");
     let mut seen = sentinel_round_trip(&mut rx, &sib_lib, "pre-upgrade").await;
     seen.extend(drain_batch_tail(&mut rx).await);
-    assert_none_under(&seen, &sib_lib.join("deep"), "non-recursive baseline");
+    assert_no_strict_descendants(&seen, &sib_lib.join("deep"), "non-recursive baseline");
 
     // Upgrade: the same dir as a recursive root. It must NOT be deduped
     // away by the existing non-recursive registration, and must report.
@@ -538,7 +561,7 @@ async fn retired_root_that_is_a_dependency_parent_keeps_direct_child_delivery() 
     std::fs::write(sib_lib.join("deep/gone.ts"), b"deep").expect("write deep post-retire");
     let mut seen = sentinel_round_trip(&mut rx, &sib_lib, "after-doubt").await;
     seen.extend(drain_batch_tail(&mut rx).await);
-    assert_none_under(&seen, &sib_lib.join("deep"), "retired recursion");
+    assert_no_strict_descendants(&seen, &sib_lib.join("deep"), "retired recursion");
 
     {
         let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
@@ -744,7 +767,7 @@ async fn dependency_registration_after_sync_does_not_downgrade_recursion() {
     std::fs::write(sib_lib.join("deep/gone.ts"), b"deep").expect("write deep post-retire");
     let mut seen = sentinel_round_trip(&mut rx, &sib_lib, "after-doubt").await;
     seen.extend(drain_batch_tail(&mut rx).await);
-    assert_none_under(&seen, &sib_lib.join("deep"), "retired recursion");
+    assert_no_strict_descendants(&seen, &sib_lib.join("deep"), "retired recursion");
 
     {
         let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
@@ -1299,5 +1322,80 @@ async fn sentinel_rejects_queued_events_from_an_earlier_phase() {
     assert_eq!(
         seen.last().unwrap().path,
         tmp.path().join("sentinel-current-0.txt")
+    );
+}
+
+// Deterministic oracle for the non-recursive absence predicate (#4765):
+// the direct-child directory is allowed, anything strictly below it is
+// forbidden, and near-name siblings are never mistaken for descendants.
+
+fn change_at(path: PathBuf) -> Change {
+    Change::new(path, zfb_watcher::ChangeKind::Created)
+}
+
+#[test]
+fn strict_descendant_oracle_partitions_paths() {
+    let lib = Path::new("/ws/sib/lib");
+    let deep = lib.join("deep");
+    assert!(!is_strict_descendant(&deep, &deep), "the dir itself");
+    assert!(is_strict_descendant(&deep.join("inner.ts"), &deep));
+    assert!(is_strict_descendant(&deep.join("a/b/c.ts"), &deep));
+    assert!(!is_strict_descendant(&lib.join("deep-other"), &deep));
+    assert!(!is_strict_descendant(
+        &lib.join("deep-other/inner.ts"),
+        &deep
+    ));
+    assert!(!is_strict_descendant(&lib.join("deepx/inner.ts"), &deep));
+    assert!(!is_strict_descendant(&lib.join("helper.ts"), &deep));
+    assert!(!is_strict_descendant(lib, &deep), "the watched parent");
+}
+
+#[test]
+fn strict_descendant_assertion_allows_the_direct_child_dir_event() {
+    let deep = PathBuf::from("/ws/sib/lib/deep");
+    let lib = PathBuf::from("/ws/sib/lib");
+    assert_no_strict_descendants(
+        &[
+            change_at(deep.clone()),
+            change_at(lib.join("sentinel-pre-upgrade-0.txt")),
+            change_at(lib.join("deep-other/inner.ts")),
+        ],
+        &deep,
+        "oracle",
+    );
+}
+
+#[test]
+#[should_panic(expected = "nothing strictly below")]
+fn strict_descendant_assertion_rejects_deep_file_beside_the_allowed_dir_event() {
+    let deep = PathBuf::from("/ws/sib/lib/deep");
+    assert_no_strict_descendants(
+        &[change_at(deep.clone()), change_at(deep.join("inner.ts"))],
+        &deep,
+        "oracle",
+    );
+}
+
+#[test]
+#[should_panic(expected = "nothing strictly below")]
+fn strict_descendant_assertion_rejects_nested_descendant() {
+    let deep = PathBuf::from("/ws/sib/lib/deep");
+    assert_no_strict_descendants(&[change_at(deep.join("x/y.ts"))], &deep, "oracle");
+}
+
+#[test]
+#[should_panic(expected = "nothing under")]
+fn none_under_still_rejects_the_skip_dir_itself() {
+    let dist = PathBuf::from("/ws/sib/dist");
+    assert_none_under(&[change_at(dist.clone())], &dist, "oracle");
+}
+
+#[test]
+fn none_under_ignores_near_name_siblings() {
+    let dist = PathBuf::from("/ws/sib/dist");
+    assert_none_under(
+        &[change_at(PathBuf::from("/ws/sib/distress/a.css"))],
+        &dist,
+        "oracle",
     );
 }
