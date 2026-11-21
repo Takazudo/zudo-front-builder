@@ -102,19 +102,8 @@ describe("BUG 1: cleanup settle waits for the restore's own native update", () =
     });
   });
 
-  it("a 'page not in cache' response is transient evidence and never a pass", async () => {
+  it("a positive check never accepts 'page not in cache' as presence", async () => {
     const p = new ObserverPage(null, "", () => 1n);
-    p.observePage = async (path) => ({
-      ok: true,
-      path,
-      httpStatus: 404,
-      bodyExcerpt: "404 — page not in cache",
-      containsMarker: false,
-      notInCache: true,
-    });
-    expect(
-      await p.goneCheck({ kind: "gone", path: "/articles/x/", absentText: "X" }),
-    ).toMatchObject({ ok: false, evidence: "transient-not-in-cache" });
     p.baseUrl = "http://127.0.0.1:1";
     p.prepare = async () => ({ docUUID: "d", httpStatus: 404 });
     p.arm = async () => ({ armed: false, precondition: "true-before-write", actual: 0 });
@@ -151,6 +140,11 @@ describe("BUG 2: the cleanup gone check for a removed created file", () => {
     p.navigateAndAwait = async () => {
       throw new Error("navigateAndAwait must not receive a gone check");
     };
-    expect(await p.liveCheck(gone, 10)).toMatchObject({ ok: true, kind: "gone", httpStatus: 404 });
+    expect(await p.liveCheck(gone, 10, { quietMs: 1 })).toMatchObject({
+      ok: true,
+      kind: "gone",
+      httpStatus: 404,
+      basis: "stable-reads",
+    });
   });
 });
