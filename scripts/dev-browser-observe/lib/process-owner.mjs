@@ -60,14 +60,21 @@ export function birthIdentity(pid, psImpl = run) {
   return { ...row, args, observedAt: isoNow() };
 }
 
+const comparableArgs = (a) => (typeof a === "string" && a !== "unavailable" ? a : null);
+
+/**
+ * Same process birth: pid + pgid + lstart, plus the `ps -o args=` string
+ * when both sides recorded it. `comm` is informational only: on Linux, Node
+ * renames its main thread (PR_SET_NAME) shortly after spawn, so procps
+ * `comm` changes from "node" to "MainThread" for the same process.
+ */
 export function sameBirth(expected, actual) {
-  return (
-    Boolean(actual) &&
-    actual.pid === expected.pid &&
-    actual.lstart === expected.lstart &&
-    actual.comm === expected.comm &&
-    actual.pgid === expected.pgid
-  );
+  if (!actual) return false;
+  if (actual.pid !== expected.pid || actual.pgid !== expected.pgid) return false;
+  if (actual.lstart !== expected.lstart) return false;
+  const want = comparableArgs(expected.args);
+  const got = comparableArgs(actual.args);
+  return want === null || got === null || want === got;
 }
 
 /** Group members plus ppid-descendants of the root, from one ps snapshot. */
