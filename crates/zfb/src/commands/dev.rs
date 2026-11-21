@@ -8800,12 +8800,23 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// entries captured before the wrapper ran stay observed, and spread,
 /// `Object.keys`, `JSON.stringify` and `structuredClone` keep producing plain
 /// data. Writes follow the ordinary `[[Set]]` steps for the receiver: a write
-/// to the object itself, or through a Proxy that forwards to its tracking
-/// accessor, updates the shared value and keeps tracking; any other receiver
-/// (an `Object.create(data)` object, `Reflect.set` with an unrelated
-/// receiver) gets or updates its own data property and the shared value is
-/// untouched. A converted object passed to `Object.freeze` rejects writes
-/// with a `TypeError`, and a sealed one still accepts them. The worker's
+/// to the object itself updates the shared value, and rejects with a
+/// `TypeError` once the object was passed to `Object.freeze` (a sealed one
+/// still accepts it). Any other receiver (an `Object.create(data)` object,
+/// a descriptor-copied clone such as
+/// `Object.create(p, Object.getOwnPropertyDescriptors(data))`, `Reflect.set`
+/// with an unrelated receiver) gets or updates its own data property and the
+/// shared value is untouched; a receiver that only inherits from frozen
+/// frontmatter is rejected. A Proxy view and a clone both carry the tracking
+/// accessor and cannot be told apart, so the wrapper defines the data
+/// property on that receiver: a clone keeps it, while a Proxy view forwards
+/// it to the frontmatter object, over which the wrapper then re-installs
+/// the tracking accessor with the new value. When that define fails, the
+/// shared value is updated only if the original frontmatter is genuinely
+/// sealed (non-extensible, its tracking accessor non-configurable, not
+/// frozen); every other failure (a frozen original or clone, a Proxy whose
+/// `defineProperty` trap refuses) rejects the write with V8's read-only
+/// `TypeError`. The worker's
 /// `Object.freeze` is replaced once per realm (marked with
 /// `Symbol.for("zfb.devContentTrace.freeze")`, which also holds the
 /// tracking sets); each worker generation boots a fresh isolate and
@@ -8828,8 +8839,15 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 ///   instrumented at install (a frozen bridge, or a read-only `get` or
 ///   bridge slot): every collection that owns a module specifier becomes
 ///   read by every traced request, with its own warning.
-/// - If the content bridge object or its `get` is replaced after install
-///   (including a bridge that had no `get` function at install), the
+/// - If the bridge was the wrapper's own placeholder (the bundle emitted none)
+///   and it is later replaced, removed or set to `null`/`undefined`, or the
+///   `globalThis.__zfb` namespace itself is replaced, the next drain reports
+///   not ready ("content bridge installed or removed after trace install")
+///   for the rest of that worker generation, as for a replaced real bridge
+///   below. A bundle that installs its content bridge lazily therefore
+///   loses narrowing for that generation.
+/// - If a real instrumented bridge object or its `get` is replaced after
+///   install (including a bridge that had no `get` function at install), the
 ///   next drain reports not ready ("content bridge replaced after trace
 ///   install"). Any other instrumentation failure also leaves the wrapper not
 ///   ready. [`decode_content_trace_payload`] rejects every drain from such a
@@ -8852,19 +8870,37 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// - In dev only, `Object.isFrozen` and `Object.getOwnPropertyDescriptor`
 ///   see accessors (a sealed converted object reports frozen), and
 ///   redefining a key with `Object.defineProperty` without a `value` drops
-///   its value. Where a write must fail (frozen frontmatter, a non-writable or
+///   its value. `Object.defineProperty(data, key, { value })` over a tracked
+///   key leaves a non-writable, untracked data property, where build keeps
+///   the key writable. A descriptor-copied clone reads the shared value
+///   until it is written, where in build it holds a snapshot of the value
+///   at copy time. A clone made after the frontmatter was sealed cannot
+///   take its own property in dev, so its write changes the shared value,
+///   where build changes only the clone. Where a write must fail (frozen frontmatter, a non-writable or
 ///   accessor own property on the receiver, a non-extensible receiver),
 ///   `Reflect.set` throws in dev instead of returning `false`.
 /// - A freeze through an `Object.freeze` reference captured before the
 ///   wrapper installed (for example `const freeze = Object.freeze` in the
 ///   bundle) is not seen, so dev still accepts writes that build rejects.
-///   The same holds for a freeze applied through a Proxy view of tracked
-///   frontmatter (`Object.freeze(new Proxy(data, {}))`). Only code that
-///   already throws in build is affected.
+///   Only code that already throws in build is affected.
+/// - Exotic seal/freeze/clone/proxy combinations, which JS cannot tell apart
+///   from ordinary ones:
+///   - with a sealed original, a write through a frozen descriptor-copied
+///     clone, or through a Proxy whose `defineProperty` trap refuses,
+///     updates the shared value instead of throwing (it looks the same as a
+///     transparent Proxy of the sealed original);
+///   - a freeze applied through a Proxy view
+///     (`Object.freeze(new Proxy(data, {}))`) is not tracked, so later
+///     writes to the original still succeed;
+///   - `Reflect.set(a, key, v, b)` where `b` carries a different tracked
+///     frontmatter object's accessor throws in dev.
 /// - `__zfb_trace_state.current` is a single slot saved and restored around
 ///   each awaited fetch. That is sound because the V8 host serves one
 ///   dispatch at a time and awaits it before taking the next
-///   (`serve_v8_host_requests` in `v8_host_adapter.rs`). Async work a
+///   (`serve_v8_host_requests` in `v8_host_adapter.rs`). The trace drain
+///   (`reconcile_content_provenance`) is one more dispatch through that same
+///   loop, under the renderer mutex, so no route fetch is in flight while it
+///   runs. Async work a
 ///   route leaves running after its response resolves is credited to
 ///   whichever request is current then.
 ///
@@ -9018,6 +9054,17 @@ function __zfb_read_only_error(key) {{
 const __zfb_untrackable_collections = new Set();
 let __zfb_instrumented_bridge;
 let __zfb_instrumented_bridge_get;
+let __zfb_bridge_is_placeholder = false;
+
+function __zfb_mark_untrackable(owners, reason) {{
+  for (const collection of owners) {{
+    if (__zfb_untrackable_collections.has(collection)) continue;
+    __zfb_untrackable_collections.add(collection);
+    console.warn(
+      `[zfb dev] content provenance: collection "${{collection}}" ${{reason}}; every route rendered in dev is treated as a reader of "${{collection}}"`,
+    );
+  }}
+}}
 
 function __zfb_record_owner_reads(current, owners) {{
   for (const collection of owners) {{
@@ -9048,8 +9095,8 @@ function __zfb_track_frontmatter(frontmatter, owners) {{
     }};
     const setter = function (next) {{
       const receiver = this;
-      if (__zfb_frozen_frontmatter.has(frontmatter)) throw __zfb_read_only_error(key);
       if (receiver === frontmatter) {{
+        if (__zfb_frozen_frontmatter.has(frontmatter)) throw __zfb_read_only_error(key);
         value = next;
         return;
       }}
@@ -9057,11 +9104,38 @@ function __zfb_track_frontmatter(frontmatter, owners) {{
         throw new TypeError(`Cannot create property '${{key}}' on ${{typeof receiver}} '${{String(receiver)}}'`);
       }}
       const existing = Reflect.getOwnPropertyDescriptor(receiver, key);
-      if (existing) {{
-        if (existing.get === getter) {{
+      if (existing && existing.get === getter) {{
+        // A Proxy view of the frontmatter and a descriptor-copied clone look the same here.
+        const before = Reflect.getOwnPropertyDescriptor(frontmatter, key);
+        try {{
+          Object.defineProperty(receiver, key, {{
+            value: next,
+            writable: true,
+            enumerable: existing.enumerable,
+            configurable: true,
+          }});
+        }} catch (error) {{
+          if (!(error instanceof TypeError)) throw error;
+          const original = Reflect.getOwnPropertyDescriptor(frontmatter, key);
+          const sealedOriginal =
+            !Reflect.isExtensible(frontmatter) &&
+            original !== undefined &&
+            original.get === getter &&
+            !original.configurable &&
+            !__zfb_frozen_frontmatter.has(frontmatter);
+          if (!sealedOriginal) throw __zfb_read_only_error(key);
           value = next;
           return;
         }}
+        const after = Reflect.getOwnPropertyDescriptor(frontmatter, key);
+        if (before && before.get === getter && after && "value" in after && after.configurable) {{
+          value = after.value;
+          install(after.enumerable);
+        }}
+        return;
+      }}
+      if (__zfb_frozen_frontmatter.has(frontmatter)) throw __zfb_read_only_error(key);
+      if (existing) {{
         if (!("value" in existing)) {{
           throw new TypeError(`Cannot redefine property: ${{key}}`);
         }}
@@ -9079,12 +9153,15 @@ function __zfb_track_frontmatter(frontmatter, owners) {{
         configurable: true,
       }});
     }};
-    Object.defineProperty(frontmatter, key, {{
-      configurable: true,
-      enumerable,
-      get: getter,
-      set: writable ? setter : undefined,
-    }});
+    const install = (isEnumerable) => {{
+      Object.defineProperty(frontmatter, key, {{
+        configurable: true,
+        enumerable: isEnumerable,
+        get: getter,
+        set: writable ? setter : undefined,
+      }});
+    }};
+    install(enumerable);
   }}
 }}
 
@@ -9121,17 +9198,11 @@ try {{
       }}
     }}
     if (frontmatterOwners.size > 0) __zfb_install_freeze_patch();
-    const untrackableReasons = new Map();
-    const markUntrackable = (owners, reason) => {{
-      for (const collection of owners) {{
-        if (!untrackableReasons.has(collection)) untrackableReasons.set(collection, reason);
-      }}
-    }};
     for (const [frontmatter, owners] of frontmatterOwners) {{
       if (__zfb_frontmatter_is_convertible(frontmatter)) {{
         __zfb_track_frontmatter(frontmatter, owners);
       }} else {{
-        markUntrackable(owners, "has frontmatter that was frozen or sealed before tracing started");
+        __zfb_mark_untrackable(owners, "has frontmatter that was frozen or sealed before tracing started");
       }}
     }}
     if (specifierCollections.size > 0) {{
@@ -9154,6 +9225,7 @@ try {{
           if (namespace.content !== bridge) throw new TypeError("content bridge slot is read-only");
           __zfb_instrumented_bridge = bridge;
           __zfb_instrumented_bridge_get = bridge.get;
+          __zfb_bridge_is_placeholder = true;
         }} else if (typeof contentBridge.get === "function") {{
           const bridgeGet = contentBridge.get;
           const tracedGet = function (specifier) {{
@@ -9171,16 +9243,16 @@ try {{
       }} catch (error) {{
         __zfb_instrumented_bridge = undefined;
         __zfb_instrumented_bridge_get = undefined;
-        for (const owners of specifierCollections.values()) {{
-          markUntrackable(owners, `has a content bridge that could not be instrumented (${{String(error)}})`);
+        __zfb_bridge_is_placeholder = false;
+        const owners = new Set();
+        for (const collectionsOwning of specifierCollections.values()) {{
+          for (const collection of collectionsOwning) owners.add(collection);
         }}
+        __zfb_mark_untrackable(
+          owners,
+          `has a content bridge that could not be instrumented (${{String(error)}})`,
+        );
       }}
-    }}
-    for (const [collection, reason] of untrackableReasons) {{
-      __zfb_untrackable_collections.add(collection);
-      console.warn(
-        `[zfb dev] content provenance: collection "${{collection}}" ${{reason}}; every route rendered in dev is treated as a reader of "${{collection}}"`,
-      );
     }}
     snapshot.collections = new Proxy(collections, {{
       get(target, property, receiver) {{
@@ -9207,7 +9279,9 @@ export default {{
       }}
       if (__zfb_trace_state.ready && __zfb_bridge_replaced()) {{
         __zfb_trace_state.ready = false;
-        __zfb_trace_state.error = "content bridge replaced after trace install; conservative fallback";
+        __zfb_trace_state.error = __zfb_bridge_is_placeholder
+          ? "content bridge installed or removed after trace install; conservative fallback"
+          : "content bridge replaced after trace install; conservative fallback";
       }}
       const events = __zfb_trace_state.events.splice(0);
       return new Response(JSON.stringify({{
@@ -12271,7 +12345,8 @@ pub(crate) fn content_consumers_from_trace_for_adapter_tests(
                 )
             })
             .collect();
-    apply_content_trace_observations(&mut retained, classified.observed, classified.reads);
+    apply_content_trace_observations(&mut retained, classified.observed.clone(), classified.reads);
+    demote_retained_paths_reads(&mut retained, &classified.observed, &membership.membership);
     let mut graph = DependencyGraph::new();
     replace_content_edges(
         &mut graph,
