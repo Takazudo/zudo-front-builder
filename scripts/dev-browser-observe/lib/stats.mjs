@@ -24,7 +24,10 @@ export function distribution(values) {
 
 /** Latency stats are conditional on success: failed attempts never contribute a duration. */
 export function summarize(records, accounting) {
-  const successes = records.filter((r) => r.type === "attempt" && r.outcome === "success");
+  // hidden-edit and final-state successes carry no update latency, so they are left out of the distribution.
+  const successes = records.filter(
+    (r) => r.type === "attempt" && r.outcome === "success" && typeof r.latencyMs === "number",
+  );
   const byOp = {};
   for (const r of successes) (byOp[r.op] ??= []).push(r.latencyMs);
   return {

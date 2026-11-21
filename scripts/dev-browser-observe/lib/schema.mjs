@@ -8,6 +8,7 @@ export const SCHEMA_FILES = {
   record: "record.v1.json",
   "build-receipt": "build-receipt.v1.json",
   fixture: "tiny-fixture.v1.json",
+  "field-notes-fixture": "field-notes-fixture.v1.json",
 };
 
 export function loadSchema(name) {

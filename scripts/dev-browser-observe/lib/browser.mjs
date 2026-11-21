@@ -93,6 +93,8 @@ export async function closeOwnedBrowser(handle, { timeoutMs = 10000 } = {}) {
   return errors;
 }
 
+export const TRANSIENT_REREAD_MS = 500;
+
 export function isLivereloadSocket(url) {
   return /\/__zfb\/reload\/ws(?:[?#]|$)/.test(url);
 }
@@ -136,6 +138,7 @@ export class ObserverPage {
     this.pingWaiters = new Map();
     this.docInitWaiters = [];
     this.wsFrames = [];
+    this.requests = [];
     this.resolved = new Set();
     this.duplicates = [];
     this.attemptMark = { docInits: 0, navigations: 0, wsFrames: 0 };
@@ -158,6 +161,15 @@ export class ObserverPage {
     this.page.on("framenavigated", (frame) => {
       if (frame === this.page.mainFrame())
         this.navigations.push({ at: isoNow(), ns: String(this.clock()), url: frame.url() });
+    });
+    this.page.on("request", (req) => {
+      this.requests.push({
+        at: isoNow(),
+        ns: String(this.clock()),
+        url: req.url(),
+        resourceType: req.resourceType(),
+        navigation: req.isNavigationRequest(),
+      });
     });
     this.page.on("websocket", (ws) => {
       if (!isLivereloadSocket(ws.url())) return;
@@ -258,7 +270,11 @@ export class ObserverPage {
       waitUntil: "load",
       timeout: timeoutMs,
     });
-    const state = await this.page.evaluate(() => window.__dbo.state());
+    const state = await this.page.evaluate(() => ({
+      ...window.__dbo.state(),
+      notInCache:
+        (document.body ? document.body.innerText : "").indexOf("page not in cache") !== -1,
+    }));
     if (state.armed) await this.page.evaluate(() => window.__dbo.disarm());
     return { ...state, httpStatus: response ? response.status() : null };
   }
@@ -268,7 +284,20 @@ export class ObserverPage {
     const started = this.clock();
     try {
       await this.page.waitForLoadState("load", { timeout: timeoutMs });
-      const state = await this.page.evaluate(() => (window.__dbo ? window.__dbo.state() : null));
+      // Same facts prepare() computes, so the transient re-read loop also applies after an abort.
+      const state = await this.page.evaluate(() => {
+        if (!window.__dbo) return null;
+        const nav = performance.getEntriesByType("navigation")[0];
+        return {
+          ...window.__dbo.state(),
+          notInCache:
+            (document.body ? document.body.innerText : "").indexOf("page not in cache") !== -1,
+          httpStatus:
+            nav && typeof nav.responseStatus === "number" && nav.responseStatus > 0
+              ? nav.responseStatus
+              : null,
+        };
+      });
       if (state?.armed) await this.page.evaluate(() => window.__dbo.disarm());
       return {
         ok: state !== null,
@@ -298,6 +327,8 @@ export class ObserverPage {
           armed: st ? st.armed : null,
           predicateNow: window.__dbo ? window.__dbo.evaluate(p) : null,
           bodyExcerpt: (document.body ? document.body.innerText : "").slice(0, 600),
+          notInCache:
+            (document.body ? document.body.innerText : "").indexOf("page not in cache") !== -1,
         };
       }, predicate);
     } catch (error) {
@@ -306,12 +337,20 @@ export class ObserverPage {
   }
 
   /**
-   * Cleanup settle: wait until nothing (livereload frame, main-frame
-   * navigation, new document) has happened for `quietMs`, measured from the
-   * restore write or the last such event, bounded by `boundMs`. Records
-   * whether the restore's own native update (page/css frame) was observed.
+   * Cleanup/after-write settle. With `requireNativeUpdate`, the settle ends only
+   * after the write's own native update is observed (a livereload page/css
+   * frame or a new document) followed by `quietMs` of quiet; otherwise
+   * `quietMs` of quiet alone suffices. Always bounded by `boundMs`.
    */
-  async settle({ mark, startNs, quietMs, boundMs, stepMs = 50 }) {
+  async settle({
+    mark,
+    startNs,
+    quietMs,
+    boundMs,
+    requireNativeUpdate = false,
+    rule = null,
+    stepMs = 50,
+  }) {
     const begun = this.clock();
     for (;;) {
       const ev = this.since(mark, startNs);
@@ -322,15 +361,19 @@ export class ObserverPage {
       const now = this.clock();
       const quietFor = nsToMs(now - lastNs);
       const waitedMs = nsToMs(now - begun);
-      const nativeUpdateObserved = ev.wsFrames.some((f) => f.event === "page" || f.event === "css");
-      if (quietFor >= quietMs || waitedMs >= boundMs) {
+      const nativeUpdateObserved =
+        ev.wsFrames.some((f) => f.event === "page" || f.event === "css") || ev.newDocuments > 0;
+      const done = quietFor >= quietMs && (!requireNativeUpdate || nativeUpdateObserved);
+      if (done || waitedMs >= boundMs) {
         return {
-          settled: quietFor >= quietMs,
-          reason:
-            quietFor >= quietMs
-              ? nativeUpdateObserved
-                ? "native-update-observed-then-quiet"
-                : "no-frame-for-quietMs"
+          settled: done,
+          rule: rule ?? (requireNativeUpdate ? "require-native-update" : "quiet-only"),
+          reason: done
+            ? nativeUpdateObserved
+              ? "native-update-observed-then-quiet"
+              : "no-frame-for-quietMs"
+            : requireNativeUpdate && !nativeUpdateObserved
+              ? "bound-exceeded-without-native-update"
               : "bound-exceeded",
           nativeUpdateObserved,
           quietMs,
@@ -343,9 +386,12 @@ export class ObserverPage {
     }
   }
 
-  async arm(token, predicate) {
+  async arm(token, predicate, watch = null) {
     this.armedToken = token;
-    const res = await this.page.evaluate(([t, p]) => window.__dbo.arm(t, p), [token, predicate]);
+    const res = await this.page.evaluate(
+      ([t, p, w]) => window.__dbo.arm(t, p, w),
+      [token, predicate, watch],
+    );
     if (!res.armed) this.armedToken = null;
     return res;
   }
@@ -355,6 +401,7 @@ export class ObserverPage {
       docInits: this.docInits.length,
       navigations: this.navigations.length,
       wsFrames: this.wsFrames.length,
+      requests: this.requests.length,
     };
   }
 
@@ -363,6 +410,7 @@ export class ObserverPage {
     const docInits = this.docInits.slice(mark.docInits).map(rel);
     const navigations = this.navigations.slice(mark.navigations).map(rel);
     const wsFrames = this.wsFrames.slice(mark.wsFrames).map(rel);
+    const requests = this.requests.slice(mark.requests ?? this.requests.length).map(rel);
     return {
       mainFrameNavigations: navigations.length,
       newDocuments: docInits.length,
@@ -370,6 +418,7 @@ export class ObserverPage {
       docInits,
       navigations,
       wsFrames,
+      requests,
     };
   }
 
@@ -442,6 +491,7 @@ export class ObserverPage {
         if (!aborted || i >= 1) {
           return {
             ok: false,
+            stage: "navigation",
             error: msg,
             recovery,
             evidence: this.since(m, navStart),
@@ -460,9 +510,40 @@ export class ObserverPage {
         if (onTarget) state = resulting.state;
       }
     }
+    // zfb dev answers "404 — page not in cache" while a rebuild is in flight (and for removed URLs).
+    // A presence check never accepts it: re-read by navigation only, bounded by the check timeout.
+    const transientReads = [];
+    const deadline = navStart + BigInt(Math.round(timeoutMs * 1e6));
+    while (state.notInCache && this.clock() < deadline) {
+      transientReads.push({
+        at: isoNow(),
+        httpStatus: state.httpStatus ?? null,
+        evidence: "transient-not-in-cache",
+      });
+      await new Promise((r) => setTimeout(r, TRANSIENT_REREAD_MS));
+      try {
+        state = await this.prepare(path);
+      } catch (error) {
+        transientReads.push({ at: isoNow(), error: String(error?.message ?? error) });
+      }
+    }
+    if (state.notInCache) {
+      return {
+        ok: false,
+        stage: "transient",
+        transient: "transient-not-in-cache",
+        transientReads,
+        httpStatus: state.httpStatus ?? null,
+        recovery,
+        sinceNavigationMs: nsToMs(this.clock() - navStart),
+        evidence: this.since(m, navStart),
+        failure: await this.failureSnapshot(predicate),
+      };
+    }
     const token = `${tokenPrefix}-${Math.random().toString(16).slice(2, 10)}`;
     const armed = await this.arm(token, predicate);
     const base = {
+      transientReads,
       docUUID: state.docUUID,
       httpStatus: state.httpStatus ?? null,
       firstReadActual: armed.actual ?? null,
@@ -470,42 +551,152 @@ export class ObserverPage {
     };
     if (!armed.armed && armed.precondition) {
       this.armedToken = null;
+      const sinceNavigationMs = nsToMs(this.clock() - navStart);
+      const page = await this.failureSnapshot(predicate);
+      const transient = page?.notInCache === true;
       return {
-        ok: true,
+        ok: !transient,
+        stage: transient ? "transient" : "confirmed",
         firstReadMatched: true,
         ...base,
-        sinceNavigationMs: nsToMs(this.clock() - navStart),
+        sinceNavigationMs,
         actual: armed.actual,
         evidence: this.since(m, navStart),
+        page,
+        ...(transient ? { transient: "transient-not-in-cache" } : {}),
       };
     }
     if (!armed.armed)
       return {
         ok: false,
+        stage: "arm",
         error: armed.error ?? "arm failed",
         ...base,
         evidence: this.since(m, navStart),
       };
-    const waited = await this.waitNotify(token, timeoutMs, (p) => this.onStray(p));
+    // The wait gets what is left of the check budget after navigation and transient re-reads.
+    const remainingMs = Math.max(1, timeoutMs - nsToMs(this.clock() - navStart));
+    const waited = await this.waitNotify(token, remainingMs, (p) => this.onStray(p));
+    const sinceNavigationMs = nsToMs(this.clock() - navStart);
     const failure = waited.kind === "notify" ? null : await this.failureSnapshot(predicate);
+    const page = failure ?? (await this.failureSnapshot(predicate));
     if (waited.kind !== "notify") await this.disarm();
     this.armedToken = null;
+    // zfb dev's "404 — page not in cache … rebuild may still be in flight" is a transient state, never a pass.
+    const transient = page?.notInCache === true || failure?.notInCache === true;
     return {
-      ok: waited.kind === "notify",
+      ok: waited.kind === "notify" && !transient,
+      stage:
+        waited.kind === "notify"
+          ? transient
+            ? "transient"
+            : "confirmed"
+          : transient
+            ? "transient"
+            : "wait",
+      ...(transient ? { transient: "transient-not-in-cache" } : {}),
       firstReadMatched: false,
       ...base,
-      sinceNavigationMs: nsToMs(this.clock() - navStart),
+      sinceNavigationMs,
       notify: waited.payload ?? null,
       evidence: this.since(m, navStart),
       failure,
+      page,
     };
   }
 
-  supplemental(check, timeoutMs) {
+  /** Read-only predicate evaluation in the current document (no arming). */
+  async evaluateNow(predicate) {
+    return this.page.evaluate(
+      (p) =>
+        window.__dbo ? window.__dbo.evaluate(p) : { matched: false, error: "observer missing" },
+      predicate,
+    );
+  }
+
+  supplemental(check, timeoutMs, goneOpts = {}) {
+    if (check.kind === "gone") return this.goneCheck(check, goneOpts);
     return this.navigateAndAwait(check.path, check.predicate, timeoutMs, "supp");
   }
 
-  liveCheck(check, timeoutMs) {
+  /** One fresh navigation and a read-only look at the result (status, title, excerpt, marker text). */
+  async observePage(path, { markerText = null, errorMarkers = [] } = {}) {
+    const navStart = this.clock();
+    try {
+      await this.disarm();
+      const response = await this.page.goto(this.url(path), { waitUntil: "load", timeout: 30000 });
+      const view = await this.page.evaluate(
+        ([marker, markers]) => {
+          const text = document.body ? document.body.innerText : "";
+          return {
+            url: location.href,
+            title: document.title,
+            containsMarker: marker ? text.indexOf(marker) !== -1 : null,
+            markersFound: markers.filter(
+              (m) => text.indexOf(m) !== -1 || document.title.indexOf(m) !== -1,
+            ),
+            notInCache: text.indexOf("page not in cache") !== -1,
+            bodyExcerpt: text.slice(0, 600),
+          };
+        },
+        [markerText, errorMarkers],
+      );
+      return {
+        ok: true,
+        path,
+        httpStatus: response ? response.status() : null,
+        sinceNavigationMs: nsToMs(this.clock() - navStart),
+        ...view,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        path,
+        error: String(error?.message ?? error),
+        sinceNavigationMs: nsToMs(this.clock() - navStart),
+      };
+    }
+  }
+
+  /**
+   * A removed URL passes when it answers 404/410 without the removed content
+   * (zfb dev's steady body for a removed URL is the generic "page not in
+   * cache" 404). Basis: the preceding settle observed the write's own native
+   * update, or a second read after `quietMs` returns the same 404 with no
+   * content. A 200 error page or still-rendered content fails.
+   */
+  async goneCheck(check, { quietMs = 1500, nativeUpdateConfirmed = false } = {}) {
+    const read = () => this.observePage(check.path, { markerText: check.absentText ?? null });
+    const looksGone = (v) =>
+      v.ok && (v.httpStatus === 404 || v.httpStatus === 410) && v.containsMarker !== true;
+    const reads = [await read()];
+    let basis = null;
+    if (looksGone(reads[0]) && nativeUpdateConfirmed) basis = "settle-native-update";
+    else if (looksGone(reads[0])) {
+      await new Promise((r) => setTimeout(r, quietMs));
+      reads.push(await read());
+      if (looksGone(reads[1])) basis = "stable-reads";
+    }
+    const last = reads[reads.length - 1];
+    return {
+      ...last,
+      kind: "gone",
+      ok: basis !== null,
+      basis,
+      statusOk: last.httpStatus === 404 || last.httpStatus === 410,
+      stableReads: reads.filter(looksGone).length,
+      reads: reads.map((v) => ({
+        httpStatus: v.httpStatus ?? null,
+        title: v.title ?? null,
+        notInCache: v.notInCache ?? null,
+        containsMarker: v.containsMarker ?? null,
+        error: v.error ?? null,
+      })),
+    };
+  }
+
+  liveCheck(check, timeoutMs, goneOpts = {}) {
+    if (check.kind === "gone") return this.goneCheck(check, goneOpts);
     return this.navigateAndAwait(check.path, check.predicate, timeoutMs, "restore");
   }
 

@@ -1,0 +1,71 @@
+{
+  "schema": "field-notes-fixture.v1",
+  "name": "field-notes-100",
+  "description": "The original 100-article Field Notes ZFB app. The app and corpus are NOT in this repo: they are read from the profile's fixture.source.dir and pinned by tree hash.",
+  "source": {
+    "app": "apps/zfb",
+    "helper": "lib/content.ts",
+    "content": "content",
+    "shared": "shared",
+    "datasetSha256": "fcaa222e52caaedb411a4136f106d4ddb5eaa7334a3ef03f34ccd282f6bab58a",
+    "generator": {
+      "path": "scripts/generate.mjs",
+      "sha256": "f2eaa2fe860b8cbc88e4ac2274f8e00c003ee7fb891e2dd151e5069f6b386641",
+      "args": "100"
+    },
+    "treeHashes": "apps/zfb excluding lib/content.ts (and node_modules/dist/.zfb), content/, shared/; recorded by `cli.mjs pins` and checked by verify-identity"
+  },
+  "adapters": {
+    "target": "apps/zfb/lib/content.ts",
+    "storage": "Stored as content.ts.adapter so the repo formatter never rewrites byte-exact inputs.",
+    "variants": {
+      "original-memoized": {
+        "file": "adapters/original-memoized/content.ts.adapter",
+        "provenance": "original-input",
+        "sha256": "c104d8f06e11297d646cc59a360b29622a9a03ec8aaca1bc39db3d112cfbac40",
+        "label": "original memoized helper (module-level index cache)",
+        "facts": [
+          {
+            "fact": "equals the reverse of research/zfb-dev-prototype/zfb-content-snapshot-index.patch applied to the recovered file",
+            "patchSha256": "4067607666c603c3e35ddedaa2acb7be039ab59e682a934447236dfa3d423bef",
+            "verifiedBy": "git apply -R on a copy of the recovered file produced exactly this sha256"
+          },
+          {
+            "fact": "equals apps/zfb/lib/content.ts recorded in the original benchmark's results/primary/environment.json",
+            "environmentJsonSha256": "27a771024046e94892988161c0d1eac188a614e747444fc5d7dc6df199e33cfa",
+            "recordedSha256": "c104d8f06e11297d646cc59a360b29622a9a03ec8aaca1bc39db3d112cfbac40"
+          }
+        ]
+      },
+      "recovered-snapshot": {
+        "file": "adapters/recovered-snapshot/content.ts.adapter",
+        "provenance": "recovered-input",
+        "sha256": "7ff8a753c4f07b1f09b446e948210c67e1bfbb7a0ea96804c82c379db76edf2a",
+        "label": "recovered archive helper: A3-like diagnostic workaround (reuses the index only for the same content-snapshot slot)"
+      },
+      "direct-read": {
+        "file": "adapters/direct-read/content.ts.adapter",
+        "provenance": "reconstructed",
+        "sha256": "794d4ef8c8aae9d4c5bff92ca4df865641edef49eb261f27c3fe772c7c7e6426",
+        "label": "RECONSTRUCTED control: the original API and rules, rebuilt on every call with no module cache"
+      }
+    }
+  },
+  "paths": {
+    "layout": "components/Layout.tsx",
+    "publicCss": "public/site.css"
+  },
+  "layoutFooter": "Same content. Same design. Three build systems.",
+  "publicCss": {
+    "file": "apps/zfb/public/site.css",
+    "customProperty": "--fn-public-marker",
+    "note": "the op adds/changes this custom property inside the existing :root block; public CSS may have no auto-update contract, so the op must declare expect: classify"
+  },
+  "managedCss": {
+    "file": "managed/global.css.src",
+    "target": "styles/global.css",
+    "customProperty": "--fieldnotes-managed-marker",
+    "sha256": "113a9a7a3af24c84767d949363b82952e84e1b0369f8698b98b4bac3be22ea6f",
+    "note": "declared fixture addition, used only with fixture.managedCss: true; zfb links styles/global.css into every page"
+  }
+}

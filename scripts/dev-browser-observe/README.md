@@ -280,6 +280,58 @@ batch.
 - **Stream decoding:** output is decoded with a per-stream UTF-8 decoder
   before it is split into lines.
 
+## Field Notes fixture (`kind: "field-notes"`)
+
+`fixture.kind: "field-notes"` runs the original 100-article Field Notes ZFB
+app. That app is not in this repo. `fixture.source.dir` points at the
+parent-provided source dir, and the profile pins its tree hashes: `apps/zfb`
+without `lib/content.ts`, `content/`, `shared/`, and the generator's
+`datasetSha256`. `cli.mjs pins` prints all of them, and `verify-identity`
+rejects any drift.
+
+The adapters (`original-memoized`, `recovered-snapshot` and `direct-read`)
+replace `apps/zfb/lib/content.ts`. Their provenance is recorded in
+`fixtures/field-notes/manifest.json`. `managedCss: true` adds a declared
+`styles/global.css` with a custom property.
+
+| Op | What it writes | Timed predicate | Supplemental (after the endpoint) |
+| --- | --- | --- | --- |
+| `edit-body` | token in the first paragraph | detail body | none |
+| `edit-shared-component` | footer text in `Layout.tsx` | footer on the active page | `/archive/1/` footer |
+| `edit-managed-css` | `--fieldnotes-managed-marker` | computed style | none |
+| `edit-public-css` | `--fn-public-marker` in `public/site.css` (`expect: classify`) | computed style | none |
+| `edit-title` | title | detail `h1`, or the home card | home card, category card, archive card, related cards of the referrers |
+| `edit-category` | `category` + `categoryLabel` | detail eyebrow | old and new category membership, card meta, recomputed related lists |
+| `add-article` | `create` of the next article | hero count | new URL body, archive page, category membership |
+| `delete-article` | `unlink` | hero count | old URL gone (404/410 and not still rendered), lists, related lists |
+| `rename-slug-change` | `rename`, then an in-place `slug` update | new card on home/archive | old URL gone, new URL body, category membership |
+| `rename-filename-only` | `rename` (slug kept) | `expected-negative` | observe error/last-good, then rename back and require live restore |
+| `edit-invalid-frontmatter` | broken YAML | `expected-negative` | observe error/last-good, then restore bytes and require live restore |
+| `hidden-edit` | body of an unvisited article | none while elsewhere; see below | none |
+| `burst` | `count` titles at `spacingMs` | latest token only | none |
+| `rapid-sequence` | title then category, or add then delete | both, or the final state after settle | as `edit-category`, or the final-state checks |
+
+Notes on the special ops:
+
+- **`hidden-edit`** records the active page's reloads, frames and document
+  changes for `observeMs`, then waits `accessDelayMs`. That wait is not update
+  latency. It then navigates and records `firstDisplayAfterNavigationMs`, plus
+  every earlier request for the article's URL (`prefetchRequests`).
+- **`burst`** reports `latencyFromFirstWriteMs` and `latencyFromLastWriteMs`,
+  and `watchSeen` lists any intermediate token the observer saw.
+- **Expected-negative ops** belong only in scenarios with
+  `set: "expected-negative"`. Each one counts as `expected-negative-observed`
+  only when every observed page is in its declared `expectState` and the
+  recovery restores live behaviour. Anything else is
+  `expected-negative-mismatch` or `recovery-failed`: an error and a stop.
+
+After each scenario, restoration reverts renames with `rename`, removes
+created files and restores bytes. It then live-checks the home page and
+counts, the touched detail pages, every archive page and a category page.
+
+`run --scenario id[,id]` runs selected families, so one classify stop does not
+hide the others. The matrices are in `profiles/field-notes-*.example.json`.
+
 ## Restoration and processes
 
 Exact source bytes are snapshotted before each scenario and restored after it

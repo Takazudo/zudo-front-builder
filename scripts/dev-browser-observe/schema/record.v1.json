@@ -54,7 +54,11 @@
         "ready-failed",
         "not-implemented",
         "controller-error",
-        "materialize-error"
+        "materialize-error",
+        "expected-negative-observed",
+        "expected-negative-mismatch",
+        "recovery-failed",
+        "final-state-mismatch"
       ]
     },
     "latencyMs": {

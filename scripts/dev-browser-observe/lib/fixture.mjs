@@ -421,7 +421,19 @@ export function defaultT0() {
   return hrtimeNs();
 }
 
-/** Exact bytes + sha256 of every workload-reachable file. */
+/** Exact bytes + sha256 of every file in `dirs` plus the listed `files`. */
+export function snapshotPaths({ dirs = [], files = [] }) {
+  const out = {};
+  for (const dir of dirs) for (const f of walkFiles(dir)) out[f.abs] = readFileSync(f.abs);
+  for (const path of files) out[path] = readFileSync(path);
+  return {
+    dirs: [...dirs],
+    files: Object.fromEntries(
+      Object.entries(out).map(([p, b]) => [p, { bytes: b, sha256: sha256(b) }]),
+    ),
+  };
+}
+
 export function snapshotSources(materialized) {
   const files = {};
   for (const f of walkFiles(materialized.contentDir)) files[f.abs] = readFileSync(f.abs);
@@ -454,11 +466,57 @@ export function verifySnapshot(snapshot) {
  * `create`, unexpected files in snapshot dirs are removed with `unlink`.
  * Every action is returned with its method, then hashes are re-verified.
  */
-export function restoreSnapshot(snapshot, { writeMethod = "in-place", fsImpl = REAL_FS } = {}) {
+export function restoreSnapshot(
+  snapshot,
+  { writeMethod = "in-place", fsImpl = REAL_FS, renameRevert = false } = {},
+) {
   if (!RESTORATION_WRITE_METHODS.includes(writeMethod))
     throw new Error(`restoration writeMethod ${writeMethod} not allowed`);
   const actions = [];
   const untimed = () => 0n;
+  if (renameRevert) {
+    // A renamed file is reverted with a rename (then fixed in place if its bytes differ):
+    // pair each missing snapshot file with an extra file in the same dir, by equal
+    // content first, otherwise when exactly one of each is left in that dir.
+    const missing = Object.keys(snapshot.files).filter((p) => !existsSync(p));
+    const extras = snapshot.dirs
+      .flatMap((d) => walkFiles(d).map((f) => f.abs))
+      .filter((p) => !(p in snapshot.files));
+    const pairs = [];
+    for (const m of missing) {
+      const same = extras.find(
+        (e) =>
+          dirname(e) === dirname(m) &&
+          !pairs.some((x) => x.from === e) &&
+          sha256(readFileSync(e)) === snapshot.files[m].sha256,
+      );
+      if (same) pairs.push({ from: same, to: m });
+    }
+    for (const dir of new Set(missing.map((m) => dirname(m)))) {
+      const leftM = missing.filter((m) => dirname(m) === dir && !pairs.some((x) => x.to === m));
+      const leftE = extras.filter((e) => dirname(e) === dir && !pairs.some((x) => x.from === e));
+      if (leftM.length === 1 && leftE.length === 1) pairs.push({ from: leftE[0], to: leftM[0] });
+    }
+    for (const pair of pairs) {
+      const write = { method: "rename", path: pair.from, to: pair.to };
+      try {
+        performWrite(write, untimed, fsImpl);
+        actions.push({
+          path: pair.to,
+          from: pair.from,
+          method: "rename",
+          evidence: write.evidence,
+        });
+      } catch (error) {
+        actions.push({
+          path: pair.to,
+          from: pair.from,
+          method: "rename",
+          error: String(error?.message ?? error),
+        });
+      }
+    }
+  }
   for (const [path, { bytes, sha256: want }] of Object.entries(snapshot.files)) {
     const exists = existsSync(path);
     const got = exists ? sha256(readFileSync(path)) : null;
@@ -566,4 +624,42 @@ export function blockWrite(path) {
 export function unblockWrite(block) {
   chmodSync(block.path, block.modeBefore);
   return { path: block.path, modeRestored: statSync(block.path).mode & 0o7777 };
+}
+
+/**
+ * Multi-step workload write. Each step uses its declared method; step i waits
+ * its requested `afterMs` (spacing) before running. Returns the first step's
+ * t0, the last step's start, and every step's actual timestamp. A failing
+ * step throws with `.steps` (the completed ones) attached.
+ */
+export async function performWrites(
+  steps,
+  now,
+  fsImpl = REAL_FS,
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+) {
+  const done = [];
+  let t0 = null;
+  for (const [i, step] of steps.entries()) {
+    if (i > 0 && step.afterMs) await sleep(step.afterMs);
+    try {
+      const t = performWrite(step, now, fsImpl);
+      if (t0 === null) t0 = t;
+      done.push({
+        i,
+        method: step.method,
+        path: step.path,
+        to: step.to ?? null,
+        requestedAfterMs: step.afterMs ?? 0,
+        tNs: String(t),
+        evidence: step.evidence ?? null,
+      });
+    } catch (error) {
+      error.steps = done;
+      error.failedStep = i;
+      throw error;
+    }
+  }
+  const lastNs = BigInt(done[done.length - 1].tNs);
+  return { t0, tLast: lastNs, steps: done };
 }

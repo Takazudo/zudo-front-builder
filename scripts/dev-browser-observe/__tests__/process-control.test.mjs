@@ -30,6 +30,8 @@ import {
   stopOwned,
 } from "../lib/process-owner.mjs";
 import { EXIT, execute, verifyIdentityOnly } from "../lib/run.mjs";
+import { loadFieldNotesFixture, sourceTreeHashes } from "../lib/fieldnotes.mjs";
+import { makeFakeSource } from "./fieldnotes-fake.mjs";
 import { SERVER_LINES_KEPT, injectKillOwned, startDevServer } from "../lib/server.mjs";
 import { lockContentionCheck } from "../lib/lock-check.mjs";
 import { runBatch } from "../lib/state-machine.mjs";
@@ -775,6 +777,73 @@ describe("execute (identity gate)", () => {
       }),
     ).toBe(EXIT.controllerError);
     expect(msgs.join("\n")).toMatch(/not contention/);
+  });
+
+  it("--scenario runs only the named scenarios and records the selection; an unknown id is a usage error", async () => {
+    const s = setup();
+    const msgs = [];
+    expect(
+      await execute({
+        profilePath: s.profilePath,
+        label: "SC0",
+        command: "run",
+        stderr: (m) => msgs.push(m),
+        scenarios: ["nope"],
+      }),
+    ).toBe(EXIT.usage);
+    expect(msgs.join("\n")).toMatch(/unknown --scenario/);
+    const p = JSON.parse(readFileSync(s.profilePath, "utf8"));
+    const first = p.scenarios[0].id;
+    const code = await execute({
+      profilePath: s.profilePath,
+      label: "SC1",
+      command: "run",
+      stderr: () => {},
+      scenarios: [first],
+    });
+    expect(code).toBe(EXIT.identityRejected);
+    const records = readJsonl(join(s.outDir, "SC1", "records.jsonl"));
+    expect(records[0]).toMatchObject({ type: "run-start", scenarioSelection: [first] });
+    expect(readJson(join(s.outDir, "SC1", "summary.json")).accounting.planned).toBe(
+      p.scenarios[0].ops.length,
+    );
+    expect(readJson(join(s.outDir, "SC1", "receipt.json")).scenarioSelection).toEqual([first]);
+  });
+
+  it("field-notes verify-identity checks the source pins, the dataset declaration and adapter provenance", async () => {
+    const root = tmp();
+    const src = join(root, "src");
+    makeFakeSource(src);
+    const fixtureDir = join(HARNESS_DIR, "fixtures", "field-notes");
+    const manifest = loadFieldNotesFixture(fixtureDir);
+    const profile = JSON.parse(
+      readFileSync(
+        join(HARNESS_DIR, "profiles", "field-notes-original-memoized.example.json"),
+        "utf8",
+      ),
+    );
+    profile.fixture.dir = fixtureDir;
+    profile.fixture.source = { dir: src, ...sourceTreeHashes(src, manifest) };
+    Object.assign(profile, { buildReceipt: join(root, "none.json"), outDir: join(root, "out") });
+    profile.pins = currentPins({
+      fixtureDir,
+      observerPath: OBSERVER_PATH,
+      adapterPath: join(fixtureDir, manifest.adapters.variants["original-memoized"].file),
+    });
+    writeFileSync(join(root, "p.json"), JSON.stringify(profile));
+    const v = verifyIdentityOnly(join(root, "p.json"));
+    const byName = Object.fromEntries(v.checks.map((c) => [c.name, c]));
+    for (const k of ["appsZfbTreeSha256", "contentTreeSha256", "sharedTreeSha256", "datasetSha256"])
+      expect(byName[`source-pin:${k}`].ok, k).toBe(true);
+    expect(byName["adapter-provenance:original-memoized"].ok).toBe(true);
+    expect(byName["managed-css-addition"].ok).toBe(true);
+    expect(byName["source-dataset-matches-manifest-declaration"]).toMatchObject({
+      ok: false,
+      expected: manifest.source.datasetSha256,
+    });
+    writeFileSync(join(src, "content", "articles", "article-00001.md"), "tampered\n");
+    const v2 = verifyIdentityOnly(join(root, "p.json"));
+    expect(v2.checks.find((c) => c.name === "source-pin:contentTreeSha256").ok).toBe(false);
   });
 
   it("rejects fixed-distribution mode as not implemented", async () => {

@@ -41,6 +41,8 @@ describe("observer predicate engine (loaded from observer-init.js without a brow
       "absent",
       "computed-style",
       "document-uuid-not",
+      "attribute-list",
+      "all",
     ]);
   });
 
@@ -140,5 +142,54 @@ describe("observer predicate engine (loaded from observer-init.js without a brow
     expect(engine.validate({ kind: "computed-style", selector: ":root", equals: "x" })).toContain(
       "property required",
     );
+  });
+});
+
+describe("field-notes predicates (attribute-list, all)", () => {
+  const engine = loadEngine();
+  it("attribute-list matches the exact ordered list", () => {
+    const links = ["/a/", "/b/"].map((h) => el({ attrs: { href: h } }));
+    const e = env({ ".rel a": links });
+    expect(
+      engine.evaluate(
+        { kind: "attribute-list", selector: ".rel a", name: "href", equals: ["/a/", "/b/"] },
+        e,
+      ),
+    ).toMatchObject({ matched: true, actual: ["/a/", "/b/"] });
+    expect(
+      engine.evaluate(
+        { kind: "attribute-list", selector: ".rel a", name: "href", equals: ["/b/", "/a/"] },
+        e,
+      ).matched,
+    ).toBe(false);
+    expect(
+      engine.evaluate(
+        { kind: "attribute-list", selector: ".rel a", name: "href", equals: ["/a/"] },
+        e,
+      ).matched,
+    ).toBe(false);
+    expect(
+      engine.validate({ kind: "attribute-list", selector: "a", name: "href", equals: "x" }),
+    ).toContain("attribute-list equals must be an array");
+  });
+
+  it("all requires every part and reports each actual", () => {
+    const e = env({ h1: [el({ text: "T tok" })], ".eyebrow": [el({ text: "Testing" })] });
+    const both = {
+      kind: "all",
+      of: [
+        { kind: "text", selector: "h1", includes: "tok" },
+        { kind: "text", selector: ".eyebrow", equals: "Testing" },
+      ],
+    };
+    expect(engine.evaluate(both, e)).toMatchObject({ matched: true, actual: ["T tok", "Testing"] });
+    expect(
+      engine.evaluate({ ...both, of: [both.of[0], { ...both.of[1], equals: "Design" }] }, e)
+        .matched,
+    ).toBe(false);
+    expect(engine.validate({ kind: "all", of: [] })).toEqual(["all needs a non-empty of[]"]);
+    expect(
+      engine.validate({ kind: "all", of: [{ kind: "count", selector: "x", equals: "1" }] })[0],
+    ).toMatch(/of\[0\]: count equals must be a number/);
   });
 });

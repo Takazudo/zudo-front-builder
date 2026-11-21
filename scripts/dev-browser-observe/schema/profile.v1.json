@@ -46,14 +46,15 @@
     },
     "fixture": {
       "type": "object",
-      "required": ["dir", "placement", "adapter"],
+      "required": ["dir", "adapter"],
       "additionalProperties": false,
       "properties": {
         "dir": {
           "type": "string"
         },
         "placement": {
-          "enum": ["internal", "external"]
+          "enum": ["internal", "external"],
+          "description": "tiny only."
         },
         "adapter": {
           "type": "string",
@@ -66,6 +67,43 @@
         "configFormat": {
           "enum": ["json", "ts"],
           "description": "json (default) writes zfb.config.json. ts writes zfb.config.ts: the byte-exact original when placement external + trailingSlash true + wind false, otherwise a generated defineConfig labelled reconstructed."
+        },
+        "kind": {
+          "enum": ["tiny", "field-notes"],
+          "description": "tiny (default) or field-notes (the original 100-article app, read from fixture.source.dir)."
+        },
+        "managedCss": {
+          "type": "boolean",
+          "description": "field-notes only: add an app-level managed stylesheet (declared fixture addition)."
+        },
+        "source": {
+          "type": "object",
+          "required": [
+            "dir",
+            "appsZfbTreeSha256",
+            "contentTreeSha256",
+            "sharedTreeSha256",
+            "datasetSha256"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "dir": {
+              "type": "string",
+              "minLength": 1
+            },
+            "appsZfbTreeSha256": {
+              "type": ["string", "null"]
+            },
+            "contentTreeSha256": {
+              "type": ["string", "null"]
+            },
+            "sharedTreeSha256": {
+              "type": ["string", "null"]
+            },
+            "datasetSha256": {
+              "type": ["string", "null"]
+            }
+          }
         }
       }
     },
@@ -257,7 +295,7 @@
             "minLength": 1
           },
           "set": {
-            "enum": ["workload", "negative-controls"]
+            "enum": ["workload", "negative-controls", "expected-negative"]
           },
           "ops": {
             "type": "array",
@@ -271,13 +309,23 @@
                 },
                 "op": {
                   "enum": [
-                    "edit-title",
+                    "add-article",
+                    "burst",
+                    "create-article",
+                    "delete-article",
                     "edit-body",
                     "edit-category",
                     "edit-css",
-                    "delete-article",
-                    "create-article",
+                    "edit-invalid-frontmatter",
+                    "edit-managed-css",
+                    "edit-public-css",
+                    "edit-shared-component",
+                    "edit-title",
+                    "hidden-edit",
+                    "rapid-sequence",
                     "rename-article",
+                    "rename-filename-only",
+                    "rename-slug-change",
                     "stale-predicate"
                   ]
                 },
@@ -315,6 +363,54 @@
                     "precondition-true"
                   ],
                   "description": "Negative-control injection; only in set negative-controls. Declared outcomes: server-exit (SIGKILL), restoration-failed, write-error, precondition-failed (no write, hash-proven)."
+                },
+                "toCategory": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "category": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 2
+                },
+                "spacingMs": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "observeMs": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "accessDelayMs": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "settleMs": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "recoveryTimeoutMs": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "variant": {
+                  "enum": ["title-then-category", "add-then-delete"]
+                },
+                "expectState": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "error",
+                      "last-good",
+                      "route-not-expanded",
+                      "empty-collection",
+                      "other"
+                    ]
+                  },
+                  "description": "Declared acceptable states (default [error, last-good]); route-not-expanded and empty-collection are classified explicitly and are NOT expected unless declared."
                 }
               }
             }
