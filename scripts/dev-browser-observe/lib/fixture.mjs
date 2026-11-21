@@ -14,7 +14,15 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { hrtimeNs, randomHex, readJson, sha256, treeHashDir, walkFiles } from "./util.mjs";
+import {
+  hrtimeNs,
+  noWriteStepsError,
+  randomHex,
+  readJson,
+  sha256,
+  treeHashDir,
+  walkFiles,
+} from "./util.mjs";
 
 export const FIXTURE_SCHEMA = "tiny-fixture.v1";
 
@@ -638,6 +646,7 @@ export async function performWrites(
   fsImpl = REAL_FS,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
 ) {
+  if (!Array.isArray(steps) || steps.length === 0) throw noWriteStepsError();
   const done = [];
   let t0 = null;
   for (const [i, step] of steps.entries()) {

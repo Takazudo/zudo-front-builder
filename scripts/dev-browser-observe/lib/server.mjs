@@ -119,6 +119,7 @@ export function serverEnv(baseEnv, overrides, diagnostic) {
 /** Negative control: SIGKILL the owned native process after re-verifying its birth identity. */
 export function injectKillOwned(handle, killImpl = process.kill) {
   const root = handle.native;
+  if (root == null) return { ok: false, reason: "never-spawned" };
   const now = handle.exit === null ? birthIdentity(root.pid) : null;
   if (!sameBirth(root, now))
     return { ok: false, reason: "birth-identity-mismatch-or-gone", expected: root, actual: now };

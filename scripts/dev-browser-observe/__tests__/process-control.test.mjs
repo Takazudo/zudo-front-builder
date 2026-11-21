@@ -257,6 +257,15 @@ describe("kill-server-during-wait injection on a real child", () => {
     expect(accounting).toMatchObject({ stoppedByExpectedControl: true, notAttempted: 1 });
   });
 
+  it("returns never-spawned, without signalling, when the server was never spawned", () => {
+    const kills = [];
+    expect(injectKillOwned({ native: null, exit: null }, (...a) => kills.push(a))).toEqual({
+      ok: false,
+      reason: "never-spawned",
+    });
+    expect(kills).toEqual([]);
+  });
+
   it("refuses to kill when the birth identity no longer matches", () => {
     const h = own(["-e", "setInterval(() => {}, 1000)"]);
     h.native = { ...h.native, lstart: "Mon Jan 1 00:00:00 2001" };
@@ -602,6 +611,104 @@ describe("execute (identity gate)", () => {
       holder: { exit: { code: 0 } },
     });
     expect(r.secondRun.stderr).toMatch(/holds/);
+  });
+
+  describe("lock-contention-check deadline", () => {
+    const hanging =
+      (lines = "") =>
+      (args) => {
+        const child = spawn(
+          process.execPath,
+          [
+            "-e",
+            `process.stdout.write(${JSON.stringify(args[0] === "hold-lock" ? lines : "")}); setInterval(() => {}, 1000)`,
+          ],
+          { stdio: ["pipe", "pipe", "pipe"] },
+        );
+        return {
+          child,
+          done: new Promise((resolve) =>
+            child.once("exit", (code, signal) => resolve({ code, signal, stdout: "", stderr: "" })),
+          ),
+        };
+      };
+    const withOnLine =
+      (impl) =>
+      (args, opts = {}) => {
+        const started = impl(args);
+        let text = "";
+        started.child.stdout.on("data", (d) => {
+          text += d.toString();
+          opts.onLine?.(text);
+        });
+        return started;
+      };
+
+    it("on expiry kills the birth-verified holder and second run and reports timedOut", async () => {
+      const s = setup();
+      const kills = [];
+      const pids = [];
+      const runNodeImpl = withOnLine((args) => {
+        const started = hanging("LOCKED fake\n")(args);
+        pids.push(started.child.pid);
+        return started;
+      });
+      const t0 = Date.now();
+      const r = await lockContentionCheck(s.profilePath, {
+        deadlineMs: 1500,
+        runNodeImpl,
+        killImpl: (pid, signal) => {
+          kills.push([pid, signal]);
+          process.kill(pid, signal);
+        },
+      });
+      expect(Date.now() - t0).toBeLessThan(10_000);
+      expect(r).toMatchObject({ ok: false, timedOut: true, deadlineMs: 1500 });
+      expect(r.children.map((c) => [c.role, c.killed, c.exitSeen])).toEqual([
+        ["holder", true, true],
+        ["second-run", true, true],
+      ]);
+      expect(kills).toEqual(pids.map((pid) => [pid, "SIGKILL"]));
+      for (const pid of pids) expect(birthIdentity(pid)).toBeNull();
+    });
+
+    it("does not kill a child whose birth identity no longer matches", async () => {
+      const s = setup();
+      const kills = [];
+      let holderPid = null;
+      const runNodeImpl = withOnLine((args) => {
+        const started = hanging("LOCKED fake\n")(args);
+        if (args[0] === "hold-lock") holderPid = started.child.pid;
+        return started;
+      });
+      let checks = 0;
+      const birthImpl = (pid) => {
+        const b = birthIdentity(pid);
+        if (pid === holderPid && b && ++checks > 1)
+          return { ...b, lstart: "Mon Jan 1 00:00:00 2001" };
+        return b;
+      };
+      try {
+        const r = await lockContentionCheck(s.profilePath, {
+          deadlineMs: 1000,
+          runNodeImpl,
+          birthImpl,
+          killImpl: (pid, signal) => {
+            kills.push([pid, signal]);
+            process.kill(pid, signal);
+          },
+        });
+        expect(r).toMatchObject({ ok: false, timedOut: true });
+        expect(r.children.find((c) => c.role === "holder")).toMatchObject({
+          killed: false,
+          reason: "birth-unverified",
+        });
+        expect(kills.some(([pid]) => pid === holderPid)).toBe(false);
+        expect(r.children.find((c) => c.role === "second-run")).toMatchObject({ killed: true });
+      } finally {
+        if (holderPid && birthIdentity(holderPid)) process.kill(holderPid, "SIGKILL");
+      }
+    });
   });
 
   it("a materialize failure after accepted identity still writes receipt, summary and run-end (round 4 #10)", async () => {

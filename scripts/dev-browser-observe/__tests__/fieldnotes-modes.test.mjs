@@ -362,3 +362,61 @@ describe("standard multi-step writes", () => {
     expect(accounting.stopReason).toBe("precondition-unstable");
   });
 });
+
+describe("an attempt with no write steps is a classified plan error", () => {
+  const precheckOf = (d) => d.recorder.records.find((r) => r.type === "precheck");
+
+  it("special mode: prepare-error with errorKind no-write-steps, before arming or writing", async () => {
+    const fs = modeFs(negAttempt({ writes: [] }));
+    const writesSeen = [];
+    fs.performWrites = async (writes) => {
+      writesSeen.push(writes);
+      return { t0: 0n, tLast: 0n, steps: [] };
+    };
+    const d = deps({ page: modePage(), fs });
+    const { accounting, stopped } = await runBatch({
+      scenarios: scen({ id: "neg-op", op: "rename-filename-only", article: "a" }),
+      deps: d,
+    });
+    expect(precheckOf(d)).toMatchObject({
+      outcome: "prepare-error",
+      errorKind: "no-write-steps",
+      writePerformed: false,
+      error: "no write steps",
+    });
+    expect(d.recorder.records.some((r) => r.type === "controller-error")).toBe(false);
+    expect(d.recorder.records.some((r) => r.type === "attempt")).toBe(false);
+    expect(writesSeen).toEqual([]);
+    expect(stopped).toBeTruthy();
+    expect(accounting).toMatchObject({ stopReason: "prepare-error", attempted: 0 });
+  });
+
+  it("standard op: prepare-error with errorKind no-write-steps, nothing written", async () => {
+    const fs = fakeFs();
+    const writesSeen = [];
+    fs.prepareAttempt = () => ({
+      token: "t0",
+      targetPath: "/a",
+      predicate: { kind: "text", selector: "h1", includes: "t0" },
+      supplemental: [],
+      writes: [],
+    });
+    fs.performWrite = (w) => {
+      writesSeen.push(w);
+      return 1n;
+    };
+    const d = deps({ page: fakePage({}), fs });
+    const { accounting } = await runBatch({
+      scenarios: [{ id: "s", ops: [{ id: "b", op: "burst", article: "a" }] }],
+      deps: d,
+    });
+    expect(precheckOf(d)).toMatchObject({
+      outcome: "prepare-error",
+      errorKind: "no-write-steps",
+      writePerformed: false,
+    });
+    expect(d.recorder.records.some((r) => r.type === "controller-error")).toBe(false);
+    expect(writesSeen).toEqual([]);
+    expect(accounting).toMatchObject({ stopReason: "prepare-error" });
+  });
+});
