@@ -8882,9 +8882,18 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// - A freeze through an `Object.freeze` reference captured before the
 ///   wrapper installed (for example `const freeze = Object.freeze` in the
 ///   bundle) is not seen, so dev still accepts writes that build rejects.
-///   The same holds for a freeze applied through a Proxy view of tracked
-///   frontmatter (`Object.freeze(new Proxy(data, {}))`). Only code that
-///   already throws in build is affected.
+///   Only code that already throws in build is affected.
+/// - Exotic seal/freeze/clone/proxy combinations, which JS cannot tell apart
+///   from ordinary ones:
+///   - with a sealed original, a write through a frozen descriptor-copied
+///     clone, or through a Proxy whose `defineProperty` trap refuses,
+///     updates the shared value instead of throwing (it looks the same as a
+///     transparent Proxy of the sealed original);
+///   - a freeze applied through a Proxy view
+///     (`Object.freeze(new Proxy(data, {}))`) is not tracked, so later
+///     writes to the original still succeed;
+///   - `Reflect.set(a, key, v, b)` where `b` carries a different tracked
+///     frontmatter object's accessor throws in dev.
 /// - `__zfb_trace_state.current` is a single slot saved and restored around
 ///   each awaited fetch. That is sound because the V8 host serves one
 ///   dispatch at a time and awaits it before taking the next
@@ -9046,7 +9055,6 @@ const __zfb_untrackable_collections = new Set();
 let __zfb_instrumented_bridge;
 let __zfb_instrumented_bridge_get;
 let __zfb_bridge_is_placeholder = false;
-let __zfb_specifier_collections = new Map();
 
 function __zfb_mark_untrackable(owners, reason) {{
   for (const collection of owners) {{
@@ -9056,37 +9064,6 @@ function __zfb_mark_untrackable(owners, reason) {{
       `[zfb dev] content provenance: collection "${{collection}}" ${{reason}}; every route rendered in dev is treated as a reader of "${{collection}}"`,
     );
   }}
-}}
-
-function __zfb_record_content_lookup(specifier) {{
-  const current = __zfb_trace_state.current;
-  const owners = current ? __zfb_specifier_collections.get(specifier) : undefined;
-  if (owners) __zfb_record_owner_reads(current, owners);
-}}
-
-function __zfb_instrument_bridge(contentBridge) {{
-  if (typeof contentBridge.get === "function") {{
-    const bridgeGet = contentBridge.get;
-    const tracedGet = function (specifier) {{
-      __zfb_record_content_lookup(specifier);
-      return bridgeGet.apply(this, arguments);
-    }};
-    contentBridge.get = tracedGet;
-    if (contentBridge.get !== tracedGet) throw new TypeError("content bridge get is read-only");
-    __zfb_instrumented_bridge = contentBridge;
-    __zfb_instrumented_bridge_get = tracedGet;
-  }} else {{
-    __zfb_instrumented_bridge = contentBridge;
-    __zfb_instrumented_bridge_get = contentBridge.get;
-  }}
-}}
-
-function __zfb_all_specifier_owners() {{
-  const owners = new Set();
-  for (const collections of __zfb_specifier_collections.values()) {{
-    for (const collection of collections) owners.add(collection);
-  }}
-  return owners;
 }}
 
 function __zfb_record_owner_reads(current, owners) {{
@@ -9228,15 +9205,19 @@ try {{
         __zfb_mark_untrackable(owners, "has frontmatter that was frozen or sealed before tracing started");
       }}
     }}
-    __zfb_specifier_collections = specifierCollections;
     if (specifierCollections.size > 0) {{
+      const recordContentLookup = (specifier) => {{
+        const current = __zfb_trace_state.current;
+        const owners = current ? specifierCollections.get(specifier) : undefined;
+        if (owners) __zfb_record_owner_reads(current, owners);
+      }};
       try {{
         const namespace = globalThis.__zfb;
         const contentBridge = namespace.content;
         if (contentBridge === undefined || contentBridge === null) {{
           const bridge = {{
             get(specifier) {{
-              __zfb_record_content_lookup(specifier);
+              recordContentLookup(specifier);
               return undefined;
             }},
           }};
@@ -9245,15 +9226,30 @@ try {{
           __zfb_instrumented_bridge = bridge;
           __zfb_instrumented_bridge_get = bridge.get;
           __zfb_bridge_is_placeholder = true;
+        }} else if (typeof contentBridge.get === "function") {{
+          const bridgeGet = contentBridge.get;
+          const tracedGet = function (specifier) {{
+            recordContentLookup(specifier);
+            return bridgeGet.apply(this, arguments);
+          }};
+          contentBridge.get = tracedGet;
+          if (contentBridge.get !== tracedGet) throw new TypeError("content bridge get is read-only");
+          __zfb_instrumented_bridge = contentBridge;
+          __zfb_instrumented_bridge_get = tracedGet;
         }} else {{
-          __zfb_instrument_bridge(contentBridge);
+          __zfb_instrumented_bridge = contentBridge;
+          __zfb_instrumented_bridge_get = contentBridge.get;
         }}
       }} catch (error) {{
         __zfb_instrumented_bridge = undefined;
         __zfb_instrumented_bridge_get = undefined;
         __zfb_bridge_is_placeholder = false;
+        const owners = new Set();
+        for (const collectionsOwning of specifierCollections.values()) {{
+          for (const collection of collectionsOwning) owners.add(collection);
+        }}
         __zfb_mark_untrackable(
-          __zfb_all_specifier_owners(),
+          owners,
           `has a content bridge that could not be instrumented (${{String(error)}})`,
         );
       }}
