@@ -185,6 +185,15 @@ export const FN_SEL = {
 };
 
 const text = (selector, op, value) => ({ kind: "text", selector, [op]: value });
+
+// The home page with an empty collection (content snapshot failed): hero count "0" and no cards.
+export const EMPTY_HOME_PROBE = {
+  kind: "all",
+  of: [
+    { kind: "text", selector: FN_SEL.heroCount, equals: "0" },
+    { kind: "count", selector: FN_SEL.cardLinks, equals: 0 },
+  ],
+};
 const count = (selector, equals) => ({ kind: "count", selector, equals });
 const hrefList = (selector, list) => ({
   kind: "attribute-list",
@@ -499,6 +508,7 @@ export function planFieldNotesOp(m, model, op, { token = newToken(), tokens = nu
               FN_SEL.cardLinks,
               original.articles.slice(0, model.spec.homeSize).map((a) => href(a.slug)),
             ),
+            empty: EMPTY_HOME_PROBE,
           },
           {
             path: href(slug),
@@ -521,7 +531,11 @@ export function planFieldNotesOp(m, model, op, { token = newToken(), tokens = nu
         expectState: op.expectState ?? ["error", "last-good"],
         observe: [
           { path: href(slug), lastGood: text(FN_SEL.title, "equals", idx.bySlug.get(slug).title) },
-          { path: "/", lastGood: text(FN_SEL.heroCount, "equals", heroText(idx.articles.length)) },
+          {
+            path: "/",
+            lastGood: text(FN_SEL.heroCount, "equals", heroText(idx.articles.length)),
+            empty: EMPTY_HOME_PROBE,
+          },
         ],
         errorMarkers: [],
         recovery: [

@@ -210,7 +210,14 @@ export async function runBatch({ scenarios, deps }) {
         });
       for (const check of fs.liveChecks(snapshot)) {
         try {
-          live.push({ ...check, ...(await page.liveCheck(check, timeouts.restoreMs)) });
+          live.push({
+            ...check,
+            ...(await page.liveCheck(check, timeouts.restoreMs, {
+              quietMs: timeouts.quietMs ?? 1500,
+              nativeUpdateConfirmed:
+                settle?.settled === true && settle?.nativeUpdateObserved === true,
+            })),
+          });
         } catch (error) {
           live.push({ ...check, ok: false, error: String(error?.message ?? error) });
         }
@@ -704,7 +711,9 @@ export async function runBatch({ scenarios, deps }) {
         for (const check of attempt.supplemental) {
           let res;
           try {
-            res = await page.supplemental(check, timeouts.supplementalMs);
+            res = await page.supplemental(check, timeouts.supplementalMs, {
+              quietMs: timeouts.quietMs ?? 1500,
+            });
           } catch (error) {
             res = { ok: false, error: String(error?.message ?? error) };
           }

@@ -402,8 +402,15 @@
                 "expectState": {
                   "type": "array",
                   "items": {
-                    "enum": ["error", "last-good", "other"]
-                  }
+                    "enum": [
+                      "error",
+                      "last-good",
+                      "route-not-expanded",
+                      "empty-collection",
+                      "other"
+                    ]
+                  },
+                  "description": "Declared acceptable states (default [error, last-good]); route-not-expanded and empty-collection are classified explicitly and are NOT expected unless declared."
                 }
               }
             }

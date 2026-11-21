@@ -22,18 +22,40 @@ async function doWrites(fs, writes, clock) {
 }
 
 /**
- * Classify one observed page of an expected-negative op:
- * "error" (5xx, or a declared error marker in the page text), "last-good"
- * (200 and the original content still renders), "navigation-error", or "other".
+ * Classify one observed page of an expected-negative op, with its basis:
+ * - "error": a 5xx, or a declared error marker in the page text/title;
+ * - "route-not-expanded": zfb dev's 404 "page not in cache" for this URL
+ *   (the route was not expanded, e.g. paths() threw or no longer lists it);
+ * - "empty-collection": a 200 page whose declared empty probe matches
+ *   (the content snapshot failed and getCollection() returned nothing);
+ * - "last-good": a 200 page still rendering the original content;
+ * - "navigation-error" or "other" otherwise.
  */
-export function classifyNegativeState(view, lastGood, errorMarkers = []) {
-  if (!view.ok) return "navigation-error";
+export function classifyNegative(view, { lastGood = null, empty = null, errorMarkers = [] } = {}) {
+  if (!view.ok)
+    return { state: "navigation-error", basis: `navigation failed: ${view.error ?? "unknown"}` };
   const excerpt = view.bodyExcerpt ?? "";
-  if ((view.httpStatus ?? 0) >= 500) return "error";
-  if (errorMarkers.some((m) => excerpt.includes(m) || (view.title ?? "").includes(m)))
-    return "error";
-  if (view.httpStatus === 200 && lastGood?.matched === true) return "last-good";
-  return "other";
+  const status = view.httpStatus ?? null;
+  if ((status ?? 0) >= 500) return { state: "error", basis: `http-${status}` };
+  const marker = errorMarkers.find((m) => excerpt.includes(m) || (view.title ?? "").includes(m));
+  if (marker) return { state: "error", basis: `error-marker: ${marker} (http-${status})` };
+  if (status === 404 && view.notInCache === true)
+    return { state: "route-not-expanded", basis: "http-404 page not in cache" };
+  if (status === 200 && empty?.matched === true)
+    return {
+      state: "empty-collection",
+      basis: `http-200 empty probe matched (${JSON.stringify(empty.actual ?? null)})`,
+    };
+  if (status === 200 && lastGood?.matched === true)
+    return { state: "last-good", basis: "http-200 original content predicate matched" };
+  return {
+    state: "other",
+    basis: `http-${status} notInCache=${view.notInCache ?? null} lastGood=${lastGood?.matched ?? null} empty=${empty?.matched ?? null}`,
+  };
+}
+
+export function classifyNegativeState(view, lastGood, errorMarkers = [], empty = null) {
+  return classifyNegative(view, { lastGood, empty, errorMarkers }).state;
 }
 
 /**
@@ -110,7 +132,13 @@ async function runFinalState(ctx) {
   const checks = [];
   for (const check of attempt.finalChecks) {
     try {
-      checks.push({ check, ...(await page.supplemental(check, timeouts.supplementalMs)) });
+      checks.push({
+        check,
+        ...(await page.supplemental(check, timeouts.supplementalMs, {
+          quietMs: timeouts.quietMs ?? 1500,
+          nativeUpdateConfirmed: settle.settled === true && settle.nativeUpdateObserved === true,
+        })),
+      });
     } catch (error) {
       checks.push({ check, ok: false, error: String(error?.message ?? error) });
     }
@@ -155,18 +183,18 @@ async function runExpectedNegative(ctx) {
   const observed = [];
   for (const o of attempt.observe) {
     const view = await page.observePage(o.path);
-    let lastGood = null;
-    try {
-      lastGood = view.ok ? await page.evaluateNow(o.lastGood) : null;
-    } catch (error) {
-      lastGood = { matched: false, error: String(error?.message ?? error) };
-    }
-    observed.push({
-      path: o.path,
-      view,
-      lastGood,
-      state: classifyNegativeState(view, lastGood, attempt.errorMarkers),
-    });
+    const probe = async (pred) => {
+      if (!pred || !view.ok) return null;
+      try {
+        return await page.evaluateNow(pred);
+      } catch (error) {
+        return { matched: false, error: String(error?.message ?? error) };
+      }
+    };
+    const lastGood = await probe(o.lastGood);
+    const empty = await probe(o.empty);
+    const c = classifyNegative(view, { lastGood, empty, errorMarkers: attempt.errorMarkers });
+    observed.push({ path: o.path, state: c.state, basis: c.basis, view, lastGood, empty });
   }
   const statePass = observed.every((o) => attempt.expectState.includes(o.state));
   const r0 = clock.now();
@@ -183,7 +211,9 @@ async function runExpectedNegative(ctx) {
       try {
         recoveryChecks.push({
           check,
-          ...(await page.supplemental(check, op.recoveryTimeoutMs ?? timeouts.restoreMs)),
+          ...(await page.supplemental(check, op.recoveryTimeoutMs ?? timeouts.restoreMs, {
+            quietMs: timeouts.quietMs ?? 1500,
+          })),
         });
       } catch (error) {
         recoveryChecks.push({ check, ok: false, error: String(error?.message ?? error) });
@@ -204,6 +234,13 @@ async function runExpectedNegative(ctx) {
       t0Ns: String(t0),
       writeSteps: steps,
       expectState: attempt.expectState,
+      observedSummary: observed.map((o) => ({
+        path: o.path,
+        state: o.state,
+        basis: o.basis,
+        httpStatus: o.view.httpStatus ?? null,
+        expected: attempt.expectState.includes(o.state),
+      })),
       settle,
       observed,
       statePass,

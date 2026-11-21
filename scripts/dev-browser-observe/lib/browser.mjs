@@ -93,6 +93,8 @@ export async function closeOwnedBrowser(handle, { timeoutMs = 10000 } = {}) {
   return errors;
 }
 
+export const TRANSIENT_REREAD_MS = 500;
+
 export function isLivereloadSocket(url) {
   return /\/__zfb\/reload\/ws(?:[?#]|$)/.test(url);
 }
@@ -268,7 +270,11 @@ export class ObserverPage {
       waitUntil: "load",
       timeout: timeoutMs,
     });
-    const state = await this.page.evaluate(() => window.__dbo.state());
+    const state = await this.page.evaluate(() => ({
+      ...window.__dbo.state(),
+      notInCache:
+        (document.body ? document.body.innerText : "").indexOf("page not in cache") !== -1,
+    }));
     if (state.armed) await this.page.evaluate(() => window.__dbo.disarm());
     return { ...state, httpStatus: response ? response.status() : null };
   }
@@ -496,9 +502,39 @@ export class ObserverPage {
         if (onTarget) state = resulting.state;
       }
     }
+    // zfb dev answers "404 — page not in cache" while a rebuild is in flight (and for removed URLs).
+    // A presence check never accepts it: re-read by navigation only, bounded by the check timeout.
+    const transientReads = [];
+    const deadline = navStart + BigInt(Math.round(timeoutMs * 1e6));
+    while (state.notInCache && this.clock() < deadline) {
+      transientReads.push({
+        at: isoNow(),
+        httpStatus: state.httpStatus ?? null,
+        evidence: "transient-not-in-cache",
+      });
+      await new Promise((r) => setTimeout(r, TRANSIENT_REREAD_MS));
+      try {
+        state = await this.prepare(path);
+      } catch (error) {
+        transientReads.push({ at: isoNow(), error: String(error?.message ?? error) });
+      }
+    }
+    if (state.notInCache) {
+      return {
+        ok: false,
+        transient: "transient-not-in-cache",
+        transientReads,
+        httpStatus: state.httpStatus ?? null,
+        recovery,
+        sinceNavigationMs: nsToMs(this.clock() - navStart),
+        evidence: this.since(m, navStart),
+        failure: await this.failureSnapshot(predicate),
+      };
+    }
     const token = `${tokenPrefix}-${Math.random().toString(16).slice(2, 10)}`;
     const armed = await this.arm(token, predicate);
     const base = {
+      transientReads,
       docUUID: state.docUUID,
       httpStatus: state.httpStatus ?? null,
       firstReadActual: armed.actual ?? null,
@@ -557,8 +593,8 @@ export class ObserverPage {
     );
   }
 
-  supplemental(check, timeoutMs) {
-    if (check.kind === "gone") return this.goneCheck(check);
+  supplemental(check, timeoutMs, goneOpts = {}) {
+    if (check.kind === "gone") return this.goneCheck(check, goneOpts);
     return this.navigateAndAwait(check.path, check.predicate, timeoutMs, "supp");
   }
 
@@ -599,20 +635,45 @@ export class ObserverPage {
    * A removed URL must answer 404/410 AND must not still render the removed
    * content: a 200 error page or a 200 last-good page is a failure.
    */
-  async goneCheck(check) {
-    const view = await this.observePage(check.path, { markerText: check.absentText ?? null });
-    const statusOk = view.httpStatus === 404 || view.httpStatus === 410;
+  /**
+   * A removed URL passes when it answers 404/410 without the removed content
+   * (zfb dev's steady body for a removed URL is the generic "page not in
+   * cache" 404). Basis: the preceding settle observed the write's own native
+   * update, or a second read after `quietMs` returns the same 404 with no
+   * content. A 200 error page or still-rendered content fails.
+   */
+  async goneCheck(check, { quietMs = 1500, nativeUpdateConfirmed = false } = {}) {
+    const read = () => this.observePage(check.path, { markerText: check.absentText ?? null });
+    const looksGone = (v) =>
+      v.ok && (v.httpStatus === 404 || v.httpStatus === 410) && v.containsMarker !== true;
+    const reads = [await read()];
+    let basis = null;
+    if (looksGone(reads[0]) && nativeUpdateConfirmed) basis = "settle-native-update";
+    else if (looksGone(reads[0])) {
+      await new Promise((r) => setTimeout(r, quietMs));
+      reads.push(await read());
+      if (looksGone(reads[1])) basis = "stable-reads";
+    }
+    const last = reads[reads.length - 1];
     return {
-      ...view,
+      ...last,
       kind: "gone",
-      ok: view.ok && statusOk && view.containsMarker !== true && view.notInCache !== true,
-      statusOk,
-      ...(view.notInCache ? { evidence: "transient-not-in-cache" } : {}),
+      ok: basis !== null,
+      basis,
+      statusOk: last.httpStatus === 404 || last.httpStatus === 410,
+      stableReads: reads.filter(looksGone).length,
+      reads: reads.map((v) => ({
+        httpStatus: v.httpStatus ?? null,
+        title: v.title ?? null,
+        notInCache: v.notInCache ?? null,
+        containsMarker: v.containsMarker ?? null,
+        error: v.error ?? null,
+      })),
     };
   }
 
-  liveCheck(check, timeoutMs) {
-    if (check.kind === "gone") return this.goneCheck(check);
+  liveCheck(check, timeoutMs, goneOpts = {}) {
+    if (check.kind === "gone") return this.goneCheck(check, goneOpts);
     return this.navigateAndAwait(check.path, check.predicate, timeoutMs, "restore");
   }
 
