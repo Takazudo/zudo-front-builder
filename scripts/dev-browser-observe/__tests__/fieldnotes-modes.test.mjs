@@ -226,7 +226,7 @@ describe("hidden-edit mode", () => {
 
   it("a stale body after navigation under expect classify stops with stoppedByClassifyTimeout", async () => {
     const page = modePage({
-      navigateAndAwait: async () => ({ ok: false, firstReadMatched: false }),
+      navigateAndAwait: async () => ({ ok: false, stage: "wait", firstReadMatched: false }),
     });
     const d = deps({ page, fs: modeFs(hiddenAttempt) });
     const { accounting, stopped } = await runBatch({
