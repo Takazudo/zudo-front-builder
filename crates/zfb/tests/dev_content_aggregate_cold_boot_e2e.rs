@@ -2120,7 +2120,10 @@ fn write_in_place(path: &Path, bytes: &[u8]) {
     file.sync_all().expect("fsync in-place write");
     drop(file);
     let inode_after = std::os::unix::fs::MetadataExt::ino(&fs::metadata(path).expect("stat"));
-    assert_eq!(inode_before, inode_after, "in-place write must keep the inode");
+    assert_eq!(
+        inode_before, inode_after,
+        "in-place write must keep the inode"
+    );
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2167,21 +2170,19 @@ async fn run_empty_collection_recovery(variant: EmptyCollectionRecovery) {
         };
 
         // Dates sort the pagination newest first: alpha, beta, warmup.
-        let page_urls: Vec<String> = (1..=3)
-            .map(|n| format!("{base}/posts/page/{n}/"))
-            .collect();
-        let expected_page_titles = [
-            "Alpha V1 Frontmatter",
-            "Beta Frontmatter",
-            "Warmup",
-        ];
+        let page_urls: Vec<String> = (1..=3).map(|n| format!("{base}/posts/page/{n}/")).collect();
+        let expected_page_titles = ["Alpha V1 Frontmatter", "Beta Frontmatter", "Warmup"];
         let page_has_only = |expected: &'static str| {
             move |body: &str| {
                 body.contains(expected)
-                    && ["Alpha V1 Frontmatter", "Beta Frontmatter", "<h2>Warmup</h2>"]
-                        .iter()
-                        .filter(|other| !other.contains(expected))
-                        .all(|other| !body.contains(other))
+                    && [
+                        "Alpha V1 Frontmatter",
+                        "Beta Frontmatter",
+                        "<h2>Warmup</h2>",
+                    ]
+                    .iter()
+                    .filter(|other| !other.contains(expected))
+                    .all(|other| !body.contains(other))
             }
         };
         let index_url = format!("{base}/posts/");
@@ -2193,7 +2194,10 @@ async fn run_empty_collection_recovery(variant: EmptyCollectionRecovery) {
                 poll_until_body_matches(&client, url, page_has_only(title))
                     .await
                     .unwrap_or_else(|last| {
-                        panic!("[{variant:?}] baseline {url} not served: {last}\n{}", session.logs())
+                        panic!(
+                            "[{variant:?}] baseline {url} not served: {last}\n{}",
+                            session.logs()
+                        )
                     });
             }
         }
@@ -2302,7 +2306,10 @@ async fn run_empty_collection_recovery(variant: EmptyCollectionRecovery) {
         poll_until_status_404(&client, &beta_url)
             .await
             .unwrap_or_else(|last| {
-                panic!("[{variant:?}] deleted beta entry still served: {last}\n{}", session.logs())
+                panic!(
+                    "[{variant:?}] deleted beta entry still served: {last}\n{}",
+                    session.logs()
+                )
             });
 
         ScenarioOutcome::Completed
