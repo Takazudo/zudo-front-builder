@@ -1,7 +1,7 @@
 import { constants, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   TRANSFORMS,
   materialize,
@@ -18,6 +18,7 @@ import {
 import {
   BUILD_RECEIPT_SCHEMA,
   chooseVendorCandidate,
+  dirtyIdentity,
   embeddedBytesCheck,
   evaluateIdentity,
   findLocalTakazudoPackages,
@@ -26,7 +27,8 @@ import {
   recordBuild,
   sourcePackagesWorkingTree,
 } from "../lib/identity.mjs";
-import { HARNESS_DIR, gitToplevel } from "../lib/util.mjs";
+import { execFileSync } from "node:child_process";
+import { HARNESS_DIR } from "../lib/util.mjs";
 
 const FIXTURE = join(HARNESS_DIR, "fixtures", "tiny-two-article");
 const tmps = [];
@@ -265,7 +267,67 @@ describe("tiny-two-article fixture", () => {
   });
 });
 
+/**
+ * A tiny committed git repo with the three embedded packages (plus files
+ * build.rs's copy_ts_src filter must skip), so record-build tests never hash
+ * or diff the real checkout.
+ */
+function makeTinySourceRepo() {
+  const repo = mkdtempSync(join(tmpdir(), "dbo-tinyrepo-"));
+  const files = {
+    "Cargo.lock": "# tiny lock\n",
+    "packages/zfb/package.json": '{"name":"@takazudo/zfb"}\n',
+    "packages/zfb/src/index.ts": "export const zfb = 1;\n",
+    "packages/zfb/src/__tests__/skip.test.ts": "skipped\n",
+    "packages/zfb/src/.hidden/skip.ts": "skipped\n",
+    "packages/zfb/src/notes.md": "skipped\n",
+    "packages/zfb-runtime/package.json": '{"name":"@takazudo/zfb-runtime"}\n',
+    "packages/zfb-runtime/src/runtime.ts": "export const runtime = 1;\n",
+    "packages/zfb-slugify/package.json": '{"name":"@takazudo/zfb-slugify"}\n',
+    "packages/zfb-slugify/src/slugify.ts": "export const slugify = 1;\n",
+  };
+  for (const [rel, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(repo, rel)), { recursive: true });
+    writeFileSync(join(repo, rel), text);
+  }
+  const git = (...args) =>
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=dbo-test",
+        "-c",
+        "user.email=dbo-test@invalid",
+        "-c",
+        "commit.gpgsign=false",
+        ...args,
+      ],
+      { cwd: repo, stdio: "ignore" },
+    );
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-q", "-m", "tiny");
+  return repo;
+}
+
 describe("identity", () => {
+  // Built once, outside each test's budget: the git spawns (and a cold macOS git shim) cost seconds on a loaded host.
+  let tinyRepo;
+  let dirtyRepo;
+  beforeAll(() => {
+    tinyRepo = makeTinySourceRepo();
+    dirtyRepo = makeTinySourceRepo();
+    writeFileSync(join(dirtyRepo, "packages/zfb/src/index.ts"), "export const zfb = 2;\n");
+    writeFileSync(
+      join(dirtyRepo, "packages/zfb-runtime/src/extra.ts"),
+      "export const extra = 1;\n",
+    );
+  });
+  afterAll(() => {
+    for (const repo of [tinyRepo, dirtyRepo])
+      if (repo) rmSync(repo, { recursive: true, force: true });
+  });
+
   it("mirrors build.rs copy_ts_src filtering", () => {
     expect(isEmbeddedSrcPath("content.ts")).toBe(true);
     expect(isEmbeddedSrcPath("zudo-react/index.ts")).toBe(true);
@@ -301,7 +363,7 @@ describe("identity", () => {
   });
 
   it("record-build locates the vendor out dir and binds it to the source and exe bytes", () => {
-    const repo = gitToplevel(HARNESS_DIR);
+    const repo = tinyRepo;
     const target = tmp();
     const working = sourcePackagesWorkingTree(repo);
     const outDir = join(target, "debug", "build", "zfb-0123abcd", "out");
@@ -333,16 +395,62 @@ describe("identity", () => {
     expect(receipt.vendor.chosen.outDir).toBe(outDir);
     expect(receipt.build.triple).toBe("aarch64-apple-darwin");
     expect(receipt.embeddedBytes.missing).toEqual([]);
-    if (!receipt.source.dirty) expect(receipt.vendor.matchesExpected).toBe(true);
-    else expect(receipt.vendor.chosen.treeSha256).toBe(receipt.vendor.expectedWorkingTree.sha256);
+    expect(receipt.source.dirty).toBe(false);
+    expect(receipt.vendor.matchesExpected).toBe(true);
+    expect(receipt.vendor.expectedAtSha.fileCount).toBe(6);
     expect(locateVendorCandidates(target, { triple: null, profile: "dev" })).toHaveLength(1);
     expect(
       chooseVendorCandidate([{ ...receipt.vendor.chosen, declaredVendorDir: null }]),
     ).toBeNull();
   });
 
+  it("record-build on a dirty tree binds the vendor to the working tree and the dirty identity", () => {
+    const repo = dirtyRepo;
+    const target = tmp();
+    const working = sourcePackagesWorkingTree(repo);
+    const outDir = join(target, "debug", "build", "zfb-d1d1d1d1", "out");
+    for (const c of working.contents) {
+      const p = join(outDir, "vendor", c.path);
+      mkdirSync(join(p, ".."), { recursive: true });
+      writeFileSync(p, c.bytes);
+    }
+    writeFileSync(
+      join(target, "debug", "build", "zfb-d1d1d1d1", "output"),
+      `cargo:rustc-env=ZFB_VENDOR_DIR=${join(outDir, "vendor")}\n`,
+    );
+    const exe = join(target, "debug", "zfb");
+    writeFileSync(exe, Buffer.concat(working.contents.map((c) => c.bytes)));
+    const receipt = recordBuild({
+      exe,
+      profile: "dev",
+      repo,
+      targetDir: target,
+      probe: {
+        rustc: () => ({ ok: true, stdout: "host: aarch64-apple-darwin\n" }),
+        cargo: () => ({ ok: true, stdout: "cargo" }),
+      },
+    });
+    const dirty = dirtyIdentity(repo);
+    expect(receipt.source.dirty).toBe(true);
+    expect(receipt.source.untracked).toEqual(["packages/zfb-runtime/src/extra.ts"]);
+    expect(receipt.source.patchBytes).toBeGreaterThan(0);
+    expect(receipt.source.dirtyIdentitySha256).toBe(dirty.dirtyIdentitySha256);
+    expect(receipt.source.dirtyIdentitySha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(receipt.vendor.expectedBasis).toBe("working-tree-at-record");
+    expect(receipt.vendor.expectedWorkingTree).toEqual({
+      sha256: working.sha256,
+      fileCount: 7,
+    });
+    expect(receipt.vendor.expectedAtSha.fileCount).toBe(6);
+    expect(receipt.vendor.expectedWorkingTree.sha256).not.toBe(receipt.vendor.expectedAtSha.sha256);
+    expect(receipt.vendor.chosen.outDir).toBe(outDir);
+    expect(receipt.vendor.chosen.treeSha256).toBe(receipt.vendor.expectedWorkingTree.sha256);
+    expect(receipt.vendor.matchesExpected).toBe(true);
+    expect(receipt.embeddedBytes).toMatchObject({ basis: "working-tree-at-record", missing: [] });
+  });
+
   it("record-build binds an explicit frozen exe and vendor copy and records the original build exe", () => {
-    const repo = gitToplevel(HARNESS_DIR);
+    const repo = tinyRepo;
     const root = tmp();
     const working = sourcePackagesWorkingTree(repo);
     const writeVendor = (dir) => {

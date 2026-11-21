@@ -232,7 +232,12 @@ batch.
   bounded retries. If it is still unreadable it is recorded as
   `birthUnverifiable`. Stop then signals, individually, only members of the
   process group that started at or after the spawn second
-  (`mode: "unverifiable-birth-pgid-scope"`).
+  (`mode: "unverifiable-birth-pgid-scope"`). On Linux, procps `lstart` can
+  read up to 1 s before the real start (it adds the process start to a boot
+  time truncated to whole seconds), so the root pid alone (pid = recorded root
+  pid = pgid) may show the previous second. Every other group member must
+  still start at or after the spawn second, so an older stray member of a
+  reused group never enters the scope. macOS gets no slack.
 - **Bounded waits:** armed-wait sampling covers only birth-matching live owned
   PIDs. Calibration pings time out instead of hanging. `hold-lock --ms`
   releases stdin and exits.
@@ -267,7 +272,9 @@ batch.
 - **Unverifiable birth:** a root whose birth was unverifiable at spawn is
   registered as an `owned` row once a snapshot sees its real birth. Registry
   rows marked `birthUnverifiable` match the next-batch guard by pid + pgid +
-  start at or after the spawn second.
+  start at or after the spawn second. A root row (pid = pgid) on Linux may
+  start up to 1 s earlier, for the same procps `lstart` reason; no other
+  row gets that slack.
 - **Shutdown order:** the server is stopped first. The browser is then closed
   with `context.close()` and `browser.close()` each bounded by 10 s; a timeout
   is recorded. Record writes in shutdown are best-effort and reported on
