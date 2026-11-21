@@ -18,6 +18,7 @@ import {
 import {
   BUILD_RECEIPT_SCHEMA,
   chooseVendorCandidate,
+  dirtyIdentity,
   embeddedBytesCheck,
   evaluateIdentity,
   findLocalTakazudoPackages,
@@ -312,10 +313,20 @@ function makeTinySourceRepo() {
 describe("identity", () => {
   // Built once, outside each test's budget: the git spawns (and a cold macOS git shim) cost seconds on a loaded host.
   let tinyRepo;
+  let dirtyRepo;
   beforeAll(() => {
     tinyRepo = makeTinySourceRepo();
+    dirtyRepo = makeTinySourceRepo();
+    writeFileSync(join(dirtyRepo, "packages/zfb/src/index.ts"), "export const zfb = 2;\n");
+    writeFileSync(
+      join(dirtyRepo, "packages/zfb-runtime/src/extra.ts"),
+      "export const extra = 1;\n",
+    );
   });
-  afterAll(() => rmSync(tinyRepo, { recursive: true, force: true }));
+  afterAll(() => {
+    for (const repo of [tinyRepo, dirtyRepo])
+      if (repo) rmSync(repo, { recursive: true, force: true });
+  });
 
   it("mirrors build.rs copy_ts_src filtering", () => {
     expect(isEmbeddedSrcPath("content.ts")).toBe(true);
@@ -391,6 +402,51 @@ describe("identity", () => {
     expect(
       chooseVendorCandidate([{ ...receipt.vendor.chosen, declaredVendorDir: null }]),
     ).toBeNull();
+  });
+
+  it("record-build on a dirty tree binds the vendor to the working tree and the dirty identity", () => {
+    const repo = dirtyRepo;
+    const target = tmp();
+    const working = sourcePackagesWorkingTree(repo);
+    const outDir = join(target, "debug", "build", "zfb-d1d1d1d1", "out");
+    for (const c of working.contents) {
+      const p = join(outDir, "vendor", c.path);
+      mkdirSync(join(p, ".."), { recursive: true });
+      writeFileSync(p, c.bytes);
+    }
+    writeFileSync(
+      join(target, "debug", "build", "zfb-d1d1d1d1", "output"),
+      `cargo:rustc-env=ZFB_VENDOR_DIR=${join(outDir, "vendor")}\n`,
+    );
+    const exe = join(target, "debug", "zfb");
+    writeFileSync(exe, Buffer.concat(working.contents.map((c) => c.bytes)));
+    const receipt = recordBuild({
+      exe,
+      profile: "dev",
+      repo,
+      targetDir: target,
+      probe: {
+        rustc: () => ({ ok: true, stdout: "host: aarch64-apple-darwin\n" }),
+        cargo: () => ({ ok: true, stdout: "cargo" }),
+      },
+    });
+    const dirty = dirtyIdentity(repo);
+    expect(receipt.source.dirty).toBe(true);
+    expect(receipt.source.untracked).toEqual(["packages/zfb-runtime/src/extra.ts"]);
+    expect(receipt.source.patchBytes).toBeGreaterThan(0);
+    expect(receipt.source.dirtyIdentitySha256).toBe(dirty.dirtyIdentitySha256);
+    expect(receipt.source.dirtyIdentitySha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(receipt.vendor.expectedBasis).toBe("working-tree-at-record");
+    expect(receipt.vendor.expectedWorkingTree).toEqual({
+      sha256: working.sha256,
+      fileCount: 7,
+    });
+    expect(receipt.vendor.expectedAtSha.fileCount).toBe(6);
+    expect(receipt.vendor.expectedWorkingTree.sha256).not.toBe(receipt.vendor.expectedAtSha.sha256);
+    expect(receipt.vendor.chosen.outDir).toBe(outDir);
+    expect(receipt.vendor.chosen.treeSha256).toBe(receipt.vendor.expectedWorkingTree.sha256);
+    expect(receipt.vendor.matchesExpected).toBe(true);
+    expect(receipt.embeddedBytes).toMatchObject({ basis: "working-tree-at-record", missing: [] });
   });
 
   it("record-build binds an explicit frozen exe and vendor copy and records the original build exe", () => {

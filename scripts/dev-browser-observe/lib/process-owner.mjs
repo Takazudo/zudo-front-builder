@@ -178,19 +178,15 @@ function remember(handle, p, source) {
 export function snapshotOwned(handle, psImpl, platform = process.platform) {
   if (!handle.native) return [];
   let seen = ownedProcesses(psTable(psImpl), handle.native);
-  if (handle.native.birthUnverifiable) {
-    const min = spawnSecondMs(handle.native, platform);
-    seen = seen.filter(
-      (p) => p.pgid === handle.native.pgid && (parseLstart(p.lstart) ?? -1) >= min,
-    );
-  }
+  if (handle.native.birthUnverifiable)
+    seen = seen.filter((p) => inSpawnScope(handle.native, p, platform));
   for (const p of seen) remember(handle, p, "snapshot");
   return seen;
 }
 
-/** Members of `pgid` that started at or after `minMs` (used when the root birth is unverifiable). */
-export function pgidScopeSince(table, pgid, minMs) {
-  return table.filter((p) => p.pgid === pgid && (parseLstart(p.lstart) ?? -1) >= minMs);
+/** Members of `root`'s group within its spawn scope (used when the root birth is unverifiable). */
+export function pgidScopeSince(table, root, platform = process.platform) {
+  return table.filter((p) => inSpawnScope(root, p, platform));
 }
 
 /** Live owned processes whose birth still matches a known entry (async ps; ps -p exits 1 when some are gone). */
@@ -279,26 +275,26 @@ export async function stopOwned(
     };
   report.pgidScans = [];
   const unverifiable = root.birthUnverifiable === true;
-  const minLstartMs = unverifiable ? spawnSecondMs(root, platform) : null;
   if (unverifiable) {
     report.mode = "unverifiable-birth-pgid-scope";
     report.scope = {
       pgid: root.pgid,
-      minLstartMs,
+      minLstartMs: spawnSecondMs(root),
+      rootMinLstartMs: scopeFloorMs(root, root, platform),
       lstartSlackMs: lstartSlackMs(platform),
       platform,
-      note: "root birth was never readable; only group members started at or after the spawn second (less the platform's lstart slack) are signalled, individually",
+      note: "root birth was never readable; only group members started at or after the spawn second are signalled, individually; the platform's lstart slack applies to the root pid (pid === pgid) only",
     };
   }
   const rootNow = handle.exit === null && !unverifiable ? birthImpl(root.pid) : null;
   if (handle.exit === null && rootNow !== null && !sameBirth(root, rootNow))
     throw new PidReuseError(root, rootNow);
   const rootAlive = handle.exit === null && rootNow !== null;
-  if (rootAlive) snapshotOwned(handle, psImpl);
+  if (rootAlive) snapshotOwned(handle, psImpl, platform);
   const current = () => {
     const table = psTable(psImpl);
     if (unverifiable) {
-      for (const p of pgidScopeSince(table, root.pgid, minLstartMs))
+      for (const p of pgidScopeSince(table, root, platform))
         remember(handle, p, "pgid-scope-unverifiable");
     } else if (handle.exit !== null || !rootAlive) {
       const scan = pgidSurvivors(table, root);
@@ -395,15 +391,33 @@ export function lstartSlackMs(platform = process.platform) {
   return platform === "linux" ? 1000 : 0;
 }
 
-/** Earliest lstart (ms) a process started at or after `native`'s spawn can show on this platform. */
-export function spawnSecondMs(native, platform = process.platform) {
-  return Math.floor(native.spawnWallMs / 1000) * 1000 - lstartSlackMs(platform);
+/** The whole second containing `native`'s spawn (ms). */
+export function spawnSecondMs(native) {
+  return Math.floor(native.spawnWallMs / 1000) * 1000;
+}
+
+/**
+ * Earliest lstart (ms) `p` may show to count as started by `root`'s spawn.
+ * The platform's lstart slack applies only to the root itself (pid === the
+ * recorded root pid === its pgid); every other group member must show
+ * lstart >= the spawn second, so an older stray member of a reused group
+ * can never enter the scope.
+ */
+export function scopeFloorMs(root, p, platform = process.platform) {
+  const isRoot = p.pid === root.pid && p.pid === root.pgid;
+  return spawnSecondMs(root) - (isRoot ? lstartSlackMs(platform) : 0);
+}
+
+export function inSpawnScope(root, p, platform = process.platform) {
+  return p.pgid === root.pgid && (parseLstart(p.lstart) ?? -1) >= scopeFloorMs(root, p, platform);
 }
 
 /**
  * Registry rows still alive. A verified row matches by birth identity. A row
  * whose birth was unverifiable at spawn matches by pid + pgid with a start at
- * or after its spawn second.
+ * or after its spawn second. On Linux, procps lstart can read up to 1 s early
+ * (see lstartSlackMs), so that 1 s slack is allowed for a root row
+ * (pid === pgid) only; any other row needs lstart >= the spawn second.
  */
 export function liveOwnedFromRegistry(
   entries,
@@ -413,8 +427,7 @@ export function liveOwnedFromRegistry(
   return entries.filter((e) => {
     const now = birthImpl(e.pid);
     if (!now) return false;
-    if (e.birthUnverifiable)
-      return now.pgid === e.pgid && (parseLstart(now.lstart) ?? -1) >= spawnSecondMs(e, platform);
+    if (e.birthUnverifiable) return inSpawnScope(e, { ...now, pid: e.pid }, platform);
     return sameBirth(e, now);
   });
 }
