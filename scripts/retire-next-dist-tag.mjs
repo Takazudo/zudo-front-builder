@@ -298,7 +298,14 @@ export function decideReleasePendingAction(distTags) {
 /**
  * Remove one dist-tag from one package with read-compare-write and retry.
  * `decide` is re-run on freshly read dist-tags before every `rm`.
- * Returns { outcome: "retired" | "changed" | null, terminal, lastError, reason }.
+ *
+ * The write facts (`writeAttempts`, `lastWrite`) are kept apart from the
+ * observed state (`observed`): a tag that a later pre-write read shows absent
+ * after an unconfirmed `rm` may have been removed by that `rm` (behind a stale
+ * registry read) or by another actor, so it is never reported as `retired`.
+ *
+ * Returns { outcome, terminal, lastError, reason, writeAttempts, lastWrite, observed }
+ * with outcome "retired" | "absent-after-attempt" | "absent" | "changed" | null.
  */
 async function removeTagWithRetry({ pkg, tag, decide, reason, npm, wait, log, maxAttempts }) {
   const rmArgs = ["dist-tag", "rm", pkg, tag];
@@ -307,29 +314,44 @@ async function removeTagWithRetry({ pkg, tag, decide, reason, npm, wait, log, ma
   let lastError = "";
   let delay = 5000;
   let currentReason = reason;
+  let writeAttempts = 0;
+  let lastWrite = "none";
+  let observed = "unknown";
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       // Re-read immediately before the write and re-decide on fresh state:
       // a concurrent publish may have moved the tag ahead (or removed it).
       const fresh = decide(await readDistTags(pkg, npm));
       if (fresh.action !== "retire") {
-        outcome = "changed";
         currentReason = fresh.reason;
+        if (fresh.action === "absent") {
+          observed = "absent";
+          outcome = writeAttempts > 0 ? "absent-after-attempt" : "absent";
+        } else {
+          observed = "retained";
+          outcome = "changed";
+        }
         break;
       }
       currentReason = fresh.reason;
+      writeAttempts += 1;
+      lastWrite = "failed";
       await npm(rmArgs);
+      lastWrite = "acknowledged";
       const after = await readDistTags(pkg, npm);
       if (!after?.[tag]) {
         log(
           `  ${pkg}: removed '${tag}' (${currentReason}) — OK, confirmed by re-read (attempt ${attempt})`,
         );
+        observed = "absent";
         outcome = "retired";
         break;
       }
+      observed = "present";
       lastError = `re-read after rm still shows ${tag}=${after[tag]}`;
     } catch (error) {
       lastError = error.message;
+      observed = "unknown";
       if (isTerminalNpmError(lastError)) {
         terminal = true;
         break;
@@ -343,12 +365,26 @@ async function removeTagWithRetry({ pkg, tag, decide, reason, npm, wait, log, ma
       delay *= 2;
     }
   }
-  return { outcome, terminal, lastError, reason: currentReason };
+  return {
+    outcome,
+    terminal,
+    lastError,
+    reason: currentReason,
+    writeAttempts,
+    lastWrite,
+    observed,
+  };
 }
 
 /**
  * Sweep one tag of one package: decide on `distTags`, then remove when the
  * policy says so. Returns { result, failed, terminal }.
+ *
+ * Write-path result actions: "retired" (rm acknowledged and the immediate
+ * re-read confirmed absence), "absent-after-attempt" (absence first seen on a
+ * later pre-write read, so this run does not claim the removal), "absent"
+ * (gone before this run wrote anything), "changed" (fresh state says keep:
+ * left in place) and "error".
  */
 async function sweepTag({ pkg, tag, decide, distTags, dryRun, npm, wait, log, maxAttempts }) {
   const decision = decide(distTags);
@@ -364,27 +400,47 @@ async function sweepTag({ pkg, tag, decide, distTags, dryRun, npm, wait, log, ma
       terminal: false,
     };
   }
-  const { outcome, terminal, lastError, reason } = await removeTagWithRetry({
-    pkg,
-    tag,
-    decide,
-    reason: decision.reason,
-    npm,
-    wait,
-    log,
-    maxAttempts,
-  });
+  const { outcome, terminal, lastError, reason, writeAttempts, lastWrite, observed } =
+    await removeTagWithRetry({
+      pkg,
+      tag,
+      decide,
+      reason: decision.reason,
+      npm,
+      wait,
+      log,
+      maxAttempts,
+    });
+  const attempt = { writeAttempts, lastWrite, observed };
   if (outcome === "changed") {
     log(`  ${pkg}: left '${tag}' in place — dist-tags changed before the write (${reason}).`);
     return {
-      result: { pkg, action: "changed", reason },
+      result: { pkg, action: "changed", reason, ...attempt },
+      failed: false,
+      terminal: false,
+    };
+  }
+  if (outcome === "absent") {
+    log(`  ${pkg}: '${tag}' already absent before any removal attempt (${reason}).`);
+    return {
+      result: { pkg, action: "absent", reason, ...attempt },
+      failed: false,
+      terminal: false,
+    };
+  }
+  if (outcome === "absent-after-attempt") {
+    log(
+      `  ${pkg}: '${tag}' observed absent on a later re-read after ${writeAttempts} removal attempt(s) (last rm ${lastWrite}) — absence settled; removal not attributed to this run.`,
+    );
+    return {
+      result: { pkg, action: "absent-after-attempt", reason, ...attempt },
       failed: false,
       terminal: false,
     };
   }
   if (outcome === "retired") {
     return {
-      result: { pkg, action: "retired", reason },
+      result: { pkg, action: "retired", reason, ...attempt },
       failed: false,
       terminal: false,
     };
@@ -394,7 +450,7 @@ async function sweepTag({ pkg, tag, decide, distTags, dryRun, npm, wait, log, ma
       `::error title=npm dist-tag auth failure::${pkg}: 'npm dist-tag rm ${tag}' was refused with an authentication error (${lastError}). The release workflow authenticates only through GitHub OIDC trusted publishing: check the package's trusted publisher (repository, workflow release.yml) and that its "Allow npm dist-tag" option is enabled. Not retried.`,
     );
     return {
-      result: { pkg, action: "error", terminal: true, reason: lastError },
+      result: { pkg, action: "error", terminal: true, reason: lastError, ...attempt },
       failed: true,
       terminal: true,
     };
@@ -403,10 +459,24 @@ async function sweepTag({ pkg, tag, decide, distTags, dryRun, npm, wait, log, ma
     `::warning::${pkg}: could not remove the stale '${tag}' dist-tag after ${maxAttempts} attempts (${lastError}). Manual remediation (maintainer's own interactive npm session): npm dist-tag rm ${pkg} ${tag}`,
   );
   return {
-    result: { pkg, action: "error", terminal: false, reason: lastError },
+    result: { pkg, action: "error", terminal: false, reason: lastError, ...attempt },
     failed: true,
     terminal: false,
   };
+}
+
+/**
+ * The CLI's final summary line, as a pure function of a sweep report.
+ * "retired" counts only confirmed removals; "absent after attempt" counts a
+ * settled absence first seen on a later read; a dry run counts "would retire".
+ */
+export function formatSweepSummary({ results, pendingResults, failed, dryRun = false }) {
+  const count = (list, predicate) => list.filter(predicate).length;
+  const lane = (tag, list) =>
+    dryRun
+      ? `'${tag}' ${count(list, (r) => r.dryRun)} would retire`
+      : `'${tag}' ${count(list, (r) => r.action === "retired")} retired, ${count(list, (r) => r.action === "absent-after-attempt")} absent after attempt`;
+  return `dist-tag sweep complete: ${lane("next", results)}; ${lane(HOLDING_DIST_TAG, pendingResults)}; ${failed} failed.`;
 }
 
 /**
@@ -510,11 +580,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     dryRun,
     packages: policyForRelease(process.env.ZFB_RELEASE_SOURCE_COMMIT).names,
   });
-  const count = (list, action) =>
-    list.filter((r) => r.action === action || (action === "retired" && r.dryRun)).length;
-  console.log(
-    `dist-tag sweep complete: 'next' ${count(results, "retired")} retired; '${HOLDING_DIST_TAG}' ${count(pendingResults, "retired")} retired; ${failed} failed.`,
-  );
+  console.log(formatSweepSummary({ results, pendingResults, failed, dryRun }));
   // Always 0: a leftover dist-tag must never redden an otherwise good release.
   // Failures are surfaced as ::warning:: (auth: ::error::) annotations above.
   process.exit(0);
