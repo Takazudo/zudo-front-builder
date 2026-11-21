@@ -1008,6 +1008,93 @@ mod tests {
         run_memoized_collection_trace_case(false);
     }
 
+    /// A helper that freezes its cached entries' `data` during inner-module
+    /// evaluation leaves frontmatter the wrapper cannot convert. That must
+    /// not be silent: the drain reports not-ready with the frozen error, the
+    /// production decoder rejects it, and the dev session takes its existing
+    /// provenance-unavailable path (cleared `Content` edges, `All` selection).
+    /// Pages still render normally.
+    #[test]
+    fn dev_content_trace_wrapper_rejects_frontmatter_frozen_before_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let pages = root.join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(pages.join("index.tsx"), "export default () => null;\n").unwrap();
+        let inner_bytes = r#"
+const __zfb_ns = (globalThis.__zfb ??= {});
+__zfb_ns.contentSnapshot = JSON.parse(JSON.stringify({
+  collections: {
+    articles: [
+      { slug: "a", frontmatter: { title: "Alpha" }, body: "alpha", module_specifier: "spec-a" },
+      { slug: "b", frontmatter: { title: "Beta" }, body: "beta", module_specifier: "spec-b" },
+    ],
+  },
+}));
+let cached;
+function getIndex() {
+  if (cached) return cached;
+  const articles = __zfb_ns.contentSnapshot.collections.articles.map((entry) => ({
+    slug: entry.slug,
+    data: entry.frontmatter ?? {},
+  }));
+  for (const article of articles) Object.freeze(article.data);
+  cached = { articles };
+  return cached;
+}
+getIndex();
+const worker = {
+  fetch() {
+    const titles = getIndex().articles.map((article) => article.data.title);
+    return new Response("home:" + titles.join(","), { status: 200 });
+  },
+};
+export { worker as default };
+"#;
+        let bundle_path = root.join("bundle.mjs");
+        std::fs::write(&bundle_path, inner_bytes).unwrap();
+        let router = zfb_router::Router::scan(&pages).unwrap();
+        let (token, wrapper_source) = crate::commands::dev::content_trace_wrapper_for_adapter_tests(
+            &bundle_path,
+            router.routes(),
+        );
+        let factory = make_v8_host_factory_with_dev_content_trace_wrapper(
+            PluginRegistryHooks::default(),
+            wrapper_source,
+        );
+        let mut host = factory(&bundle_path).expect("real content-trace wrapper boots");
+
+        let home = host.dispatch_fetch("/").expect("home dispatch");
+        assert_eq!(home.body, b"home:Alpha,Beta");
+
+        let headers = std::collections::BTreeMap::from([(
+            crate::commands::dev::DEV_CONTENT_TRACE_HEADER.to_string(),
+            token,
+        )]);
+        let drain = host
+            .dispatch_fetch_full_with_mode(
+                crate::commands::dev::DEV_CONTENT_TRACE_ENDPOINT,
+                "GET",
+                &headers,
+                &[],
+                zfb_build::renderer::DispatchMode::BuildTime,
+            )
+            .expect("trace drain");
+        assert_eq!(drain.status, 200);
+        let payload: serde_json::Value = serde_json::from_slice(&drain.body).unwrap();
+        assert_eq!(payload["ready"], false, "{payload:?}");
+        let error =
+            crate::commands::dev::content_trace_payload_error_for_adapter_tests(&drain.body)
+                .expect("the production decoder must reject a not-ready drain");
+        assert!(
+            error.contains("not ready")
+                && error.contains(
+                    "content frontmatter was frozen before trace install; conservative fallback"
+                ),
+            "{error}"
+        );
+    }
+
     fn run_memoized_collection_trace_case(with_bridge: bool) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();

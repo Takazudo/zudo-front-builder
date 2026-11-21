@@ -7343,14 +7343,7 @@ impl DevRenderSession {
             if response.status != 200 {
                 anyhow::bail!("content provenance drain returned HTTP {}", response.status);
             }
-            let payload: DevContentTracePayload = serde_json::from_slice(&response.body)
-                .context("decoding content provenance trace payload")?;
-            if !payload.ready {
-                anyhow::bail!("content provenance trace wrapper is not ready");
-            }
-            if let Some(error) = payload.error {
-                anyhow::bail!("content provenance trace wrapper failed: {error}");
-            }
+            let payload = decode_content_trace_payload(&response.body)?;
 
             let membership = collect_content_provenance_membership(
                 &self.inner.rebuild_inputs.cfg,
@@ -8813,11 +8806,22 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// wrapper installs one whose `get` only records and returns `undefined`, so
 /// `Content` keeps its body fallback.
 ///
+/// Frontmatter that was already frozen or sealed when the wrapper installs
+/// (for example a helper that deep-freezes its module-level cache during
+/// module evaluation) cannot be converted. Any instrumentation failure,
+/// including that one, intentionally leaves the wrapper not ready with an
+/// error: [`decode_content_trace_payload`] rejects every drain from that
+/// worker, its `Content` edges are cleared, and content edits take the
+/// conservative unknown-path `All` selection.
+///
 /// Known limits: values copied out before the current request remain
 /// unobserved (a cached array of title strings, `slug`, `body`, a nested
 /// frontmatter object held separately), including a `paths()` that maps only
 /// cached `e.slug` values; an entry with null frontmatter gets a fresh `{}`
-/// per `getCollection()` call, which has nothing to observe.
+/// per `getCollection()` call, which has nothing to observe. In dev only,
+/// `Object.getOwnPropertyDescriptor` reports frontmatter keys as accessors,
+/// and redefining one with `Object.defineProperty` without a `value` drops
+/// its value.
 ///
 /// `__zfb_trace_state.current` is a single slot saved and restored around
 /// each awaited fetch. That is sound because the V8 host serves one dispatch
@@ -8954,7 +8958,10 @@ function __zfb_track_frontmatter(collection, frontmatter) {{
   __zfb_tracked_frontmatter.add(frontmatter);
   for (const key of Object.keys(frontmatter)) {{
     const descriptor = Object.getOwnPropertyDescriptor(frontmatter, key);
-    if (!descriptor || !descriptor.configurable || !("value" in descriptor)) continue;
+    if (!descriptor || !("value" in descriptor)) continue;
+    if (!descriptor.configurable) {{
+      throw new Error("content frontmatter was frozen before trace install; conservative fallback");
+    }}
     let value = descriptor.value;
     Object.defineProperty(frontmatter, key, {{
       configurable: true,
@@ -9028,7 +9035,7 @@ try {{
     snapshot.collections = new Proxy(collections, {{
       get(target, property, receiver) {{
         const current = __zfb_trace_state.current;
-        if (current && typeof property === "string") {{
+        if (current && typeof property === "string" && !current.reads.has(property)) {{
           __zfb_record_collection_read(current, property);
         }}
         return Reflect.get(target, property, receiver);
@@ -10699,6 +10706,25 @@ struct ClassifiedContentTrace {
     reads: BTreeMap<DevContentTraceObservation, Vec<TrackedContentRead>>,
 }
 
+/// Decode one trace drain. A wrapper that is not ready or reports an error
+/// makes this worker's provenance unusable; the caller then clears its
+/// `Content` edges so content edits take the unknown-path `All` fallback.
+#[cfg(feature = "direct-v8")]
+fn decode_content_trace_payload(body: &[u8]) -> Result<DevContentTracePayload> {
+    let payload: DevContentTracePayload =
+        serde_json::from_slice(body).context("decoding content provenance trace payload")?;
+    if !payload.ready {
+        match payload.error {
+            Some(error) => anyhow::bail!("content provenance trace wrapper is not ready: {error}"),
+            None => anyhow::bail!("content provenance trace wrapper is not ready"),
+        }
+    }
+    if let Some(error) = payload.error {
+        anyhow::bail!("content provenance trace wrapper failed: {error}");
+    }
+    Ok(payload)
+}
+
 /// Convert worker trace events into route observations and pure provenance
 /// reads. A visit is meaningful even when it made no `getCollection()` call:
 /// it is the positive evidence needed to drop that route phase's prior worker
@@ -11996,6 +12022,15 @@ pub(crate) fn content_trace_wrapper_for_adapter_tests(
     wrap_dev_bundle_with_content_trace(&output, routes).expect("canonical wrapper generation")
 }
 
+/// Test-only: the error the production drain decoder reports for `body`, or
+/// `None` when the drain is usable.
+#[cfg(all(test, feature = "direct-v8"))]
+pub(crate) fn content_trace_payload_error_for_adapter_tests(body: &[u8]) -> Option<String> {
+    decode_content_trace_payload(body)
+        .err()
+        .map(|error| format!("{error:#}"))
+}
+
 /// One SSG route entry for [`content_consumers_from_trace_for_adapter_tests`]:
 /// `(url_path, output_path, slug param)`.
 #[cfg(all(test, feature = "direct-v8"))]
@@ -12053,13 +12088,7 @@ pub(crate) fn content_consumers_from_trace_for_adapter_tests(
             (source, entries)
         })
         .collect();
-    let payload: DevContentTracePayload =
-        serde_json::from_slice(trace_body).expect("trace endpoint payload");
-    assert!(
-        payload.ready,
-        "trace wrapper must be ready: {:?}",
-        payload.error
-    );
+    let payload = decode_content_trace_payload(trace_body).expect("usable trace payload");
     let classified = classify_content_trace_events(
         payload.events,
         &routes_by_source,
