@@ -12,6 +12,7 @@ import {
   treeHashDir,
   treeHashFromEntries,
   tryRun,
+  gitToplevelAndHead,
 } from "./util.mjs";
 
 export const BUILD_RECEIPT_SCHEMA = "dev-browser-observe.build-receipt.v1";
@@ -67,16 +68,19 @@ function catFileBatch(repo, shas) {
 /** Source package files as build.rs would embed them, read from the git object store at `sha`. */
 export function sourcePackagesAtSha(repo, sha) {
   const rows = [];
-  for (const [pkgRel, vendorName] of EMBEDDED_PACKAGES) {
-    const listing = run(
-      "git",
-      ["ls-tree", "-r", "-z", "--full-tree", sha, "--", `${pkgRel}/package.json`, `${pkgRel}/src`],
-      { cwd: repo },
-    );
-    for (const line of listing.split("\0").filter(Boolean)) {
-      const [meta, path] = line.split("\t");
-      const [mode, type, blob] = meta.split(" ");
-      if (type !== "blob" || mode === "120000") continue;
+  // One ls-tree for all packages: each git spawn is costly on a loaded host (the macOS /usr/bin/git shim).
+  const pathspecs = EMBEDDED_PACKAGES.flatMap(([pkgRel]) => [
+    `${pkgRel}/package.json`,
+    `${pkgRel}/src`,
+  ]);
+  const listing = run("git", ["ls-tree", "-r", "-z", "--full-tree", sha, "--", ...pathspecs], {
+    cwd: repo,
+  });
+  for (const line of listing.split("\0").filter(Boolean)) {
+    const [meta, path] = line.split("\t");
+    const [mode, type, blob] = meta.split(" ");
+    if (type !== "blob" || mode === "120000") continue;
+    for (const [pkgRel, vendorName] of EMBEDDED_PACKAGES) {
       const vendorPath = vendorPathFor(pkgRel, vendorName, path);
       if (vendorPath) rows.push({ path: vendorPath, blob });
     }
@@ -210,10 +214,9 @@ export function dirtyIdentity(repo) {
 }
 
 export function recordBuild(opts) {
-  const repo = gitToplevel(opts.repo);
+  const { top: repo, head: sha } = gitToplevelAndHead(opts.repo);
   const exe = resolve(opts.exe);
   const exeBytes = readFileSync(exe);
-  const sha = gitHead(repo);
   const dirty = dirtyIdentity(repo);
   const env = { ...process.env };
   if (opts.toolchain) env.RUSTUP_TOOLCHAIN = opts.toolchain;

@@ -129,6 +129,14 @@ export function gitHead(cwd) {
   return run("git", ["rev-parse", "HEAD"], { cwd }).trim();
 }
 
+/** Toplevel and HEAD from a single git process. */
+export function gitToplevelAndHead(cwd) {
+  const [top, head] = run("git", ["rev-parse", "--show-toplevel", "HEAD"], { cwd })
+    .trim()
+    .split("\n");
+  return { top, head };
+}
+
 export function gitToplevel(cwd) {
   return run("git", ["rev-parse", "--show-toplevel"], { cwd }).trim();
 }
