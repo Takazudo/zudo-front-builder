@@ -8824,6 +8824,10 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 ///   treated as read by every traced request, `paths()` and render alike,
 ///   so every visited route consumes it; other collections keep exact
 ///   observations. One `console.warn` per such collection names it.
+/// - The same per-collection fallback covers a content bridge that cannot be
+///   instrumented at install (a frozen bridge, or a read-only `get` or
+///   bridge slot): every collection that owns a module specifier becomes
+///   read by every traced request, with its own warning.
 /// - If the content bridge object or its `get` is replaced after install
 ///   (including a bridge that had no `get` function at install), the
 ///   next drain reports not ready ("content bridge replaced after trace
@@ -8854,7 +8858,9 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// - A freeze through an `Object.freeze` reference captured before the
 ///   wrapper installed (for example `const freeze = Object.freeze` in the
 ///   bundle) is not seen, so dev still accepts writes that build rejects.
-///   Only code that already throws in build is affected.
+///   The same holds for a freeze applied through a Proxy view of tracked
+///   frontmatter (`Object.freeze(new Proxy(data, {}))`). Only code that
+///   already throws in build is affected.
 /// - `__zfb_trace_state.current` is a single slot saved and restored around
 ///   each awaited fetch. That is sound because the V8 host serves one
 ///   dispatch at a time and awaits it before taking the next
@@ -9115,17 +9121,18 @@ try {{
       }}
     }}
     if (frontmatterOwners.size > 0) __zfb_install_freeze_patch();
+    const untrackableReasons = new Map();
+    const markUntrackable = (owners, reason) => {{
+      for (const collection of owners) {{
+        if (!untrackableReasons.has(collection)) untrackableReasons.set(collection, reason);
+      }}
+    }};
     for (const [frontmatter, owners] of frontmatterOwners) {{
       if (__zfb_frontmatter_is_convertible(frontmatter)) {{
         __zfb_track_frontmatter(frontmatter, owners);
       }} else {{
-        for (const collection of owners) __zfb_untrackable_collections.add(collection);
+        markUntrackable(owners, "has frontmatter that was frozen or sealed before tracing started");
       }}
-    }}
-    for (const collection of __zfb_untrackable_collections) {{
-      console.warn(
-        `[zfb dev] content provenance: collection "${{collection}}" has frontmatter that was frozen or sealed before tracing started; every route rendered in dev is treated as a reader of "${{collection}}"`,
-      );
     }}
     if (specifierCollections.size > 0) {{
       const recordContentLookup = (specifier) => {{
@@ -9133,29 +9140,47 @@ try {{
         const owners = current ? specifierCollections.get(specifier) : undefined;
         if (owners) __zfb_record_owner_reads(current, owners);
       }};
-      const namespace = globalThis.__zfb;
-      const contentBridge = namespace.content;
-      if (contentBridge === undefined || contentBridge === null) {{
-        namespace.content = {{
-          get(specifier) {{
+      try {{
+        const namespace = globalThis.__zfb;
+        const contentBridge = namespace.content;
+        if (contentBridge === undefined || contentBridge === null) {{
+          const bridge = {{
+            get(specifier) {{
+              recordContentLookup(specifier);
+              return undefined;
+            }},
+          }};
+          namespace.content = bridge;
+          if (namespace.content !== bridge) throw new TypeError("content bridge slot is read-only");
+          __zfb_instrumented_bridge = bridge;
+          __zfb_instrumented_bridge_get = bridge.get;
+        }} else if (typeof contentBridge.get === "function") {{
+          const bridgeGet = contentBridge.get;
+          const tracedGet = function (specifier) {{
             recordContentLookup(specifier);
-            return undefined;
-          }},
-        }};
-        __zfb_instrumented_bridge = namespace.content;
-        __zfb_instrumented_bridge_get = namespace.content.get;
-      }} else if (typeof contentBridge.get === "function") {{
-        const bridgeGet = contentBridge.get;
-        contentBridge.get = function (specifier) {{
-          recordContentLookup(specifier);
-          return bridgeGet.apply(this, arguments);
-        }};
-        __zfb_instrumented_bridge = contentBridge;
-        __zfb_instrumented_bridge_get = contentBridge.get;
-      }} else {{
-        __zfb_instrumented_bridge = contentBridge;
-        __zfb_instrumented_bridge_get = contentBridge.get;
+            return bridgeGet.apply(this, arguments);
+          }};
+          contentBridge.get = tracedGet;
+          if (contentBridge.get !== tracedGet) throw new TypeError("content bridge get is read-only");
+          __zfb_instrumented_bridge = contentBridge;
+          __zfb_instrumented_bridge_get = tracedGet;
+        }} else {{
+          __zfb_instrumented_bridge = contentBridge;
+          __zfb_instrumented_bridge_get = contentBridge.get;
+        }}
+      }} catch (error) {{
+        __zfb_instrumented_bridge = undefined;
+        __zfb_instrumented_bridge_get = undefined;
+        for (const owners of specifierCollections.values()) {{
+          markUntrackable(owners, `has a content bridge that could not be instrumented (${{String(error)}})`);
+        }}
       }}
+    }}
+    for (const [collection, reason] of untrackableReasons) {{
+      __zfb_untrackable_collections.add(collection);
+      console.warn(
+        `[zfb dev] content provenance: collection "${{collection}}" ${{reason}}; every route rendered in dev is treated as a reader of "${{collection}}"`,
+      );
     }}
     snapshot.collections = new Proxy(collections, {{
       get(target, property, receiver) {{

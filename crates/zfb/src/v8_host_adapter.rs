@@ -1163,6 +1163,102 @@ export { worker as default };
         );
     }
 
+    /// A frozen content bridge cannot be instrumented. That must not cost the
+    /// whole worker its provenance: every collection owning a module
+    /// specifier falls back to "read by every traced request", with one
+    /// warning, while a collection without specifiers stays exact.
+    #[test]
+    fn dev_content_trace_wrapper_treats_uninstrumentable_bridge_collections_as_read_everywhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let pages = root.join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        for page in ["index.tsx", "notes.tsx"] {
+            std::fs::write(pages.join(page), "export default () => null;\n").unwrap();
+        }
+        for (dir, file, title) in [("articles", "a.md", "Alpha"), ("notes", "n.md", "Note")] {
+            std::fs::create_dir_all(root.join("content").join(dir)).unwrap();
+            std::fs::write(
+                root.join("content").join(dir).join(file),
+                format!("---\ntitle: {title}\n---\n\nbody\n"),
+            )
+            .unwrap();
+        }
+        let inner_bytes = r#"
+const __zfb_ns = (globalThis.__zfb ??= {});
+__zfb_ns.contentSnapshot = JSON.parse(JSON.stringify({
+  collections: {
+    articles: [{ slug: "a", frontmatter: { title: "Alpha" }, body: "alpha", module_specifier: "spec-a" }],
+    notes: [{ slug: "n", frontmatter: { title: "Note" }, body: "note" }],
+  },
+}));
+__zfb_ns.content = Object.freeze({ get: () => undefined });
+const notes = __zfb_ns.contentSnapshot.collections.notes.map((entry) => entry.frontmatter);
+const worker = {
+  fetch(request) {
+    if (new URL(request.url).pathname === "/notes") {
+      return new Response("notes:" + notes.map((note) => note.title).join(","));
+    }
+    return new Response("home");
+  },
+};
+export { worker as default };
+"#;
+        let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
+        let logs = host.drain_console_logs();
+        assert!(
+            logs.contains("collection \"articles\"")
+                && logs.contains("content bridge that could not be instrumented"),
+            "one warning must name the collection behind the frozen bridge: {logs}"
+        );
+        assert!(!logs.contains("collection \"notes\""), "{logs}");
+
+        assert_eq!(host.dispatch_fetch("/").unwrap().body, b"home");
+        assert_eq!(host.dispatch_fetch("/notes").unwrap().body, b"notes:Note");
+        let body = drain_content_trace(host.as_mut(), &token);
+        assert_eq!(
+            crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body),
+            None,
+            "an uninstrumentable bridge must not disable the whole worker"
+        );
+
+        let routes: Vec<(
+            std::path::PathBuf,
+            Vec<crate::commands::dev::AdapterTestRouteEntry>,
+        )> = vec![
+            (pages.join("index.tsx"), vec![("/", "index.html", None)]),
+            (
+                pages.join("notes.tsx"),
+                vec![("/notes", "notes.html", None)],
+            ),
+        ];
+        let page_sources: std::collections::HashSet<std::path::PathBuf> =
+            routes.iter().map(|(source, _)| source.clone()).collect();
+        let consumers_of = |entry: std::path::PathBuf| {
+            crate::commands::dev::content_consumers_from_trace_for_adapter_tests(
+                &root,
+                &["articles", "notes"],
+                routes.clone(),
+                page_sources.clone(),
+                &[],
+                &body,
+                &entry,
+            )
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(
+            consumers_of(root.join("content/articles/a.md")),
+            std::collections::BTreeSet::from([pages.join("index.tsx"), pages.join("notes.tsx")]),
+            "every traced route conservatively consumes the bridge-owning collection"
+        );
+        assert_eq!(
+            consumers_of(root.join("content/notes/n.md")),
+            std::collections::BTreeSet::from([pages.join("notes.tsx")]),
+            "a collection without module specifiers keeps exact observations"
+        );
+    }
+
     /// Replacing the content bridge after install would hide `Content`
     /// lookups. The next drain must report not ready so the session takes its
     /// provenance-unavailable `All` fallback.
