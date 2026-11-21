@@ -12,6 +12,10 @@
 //! assertion after discovery. With `ZFB_DEV_EAGER=1`, every check is an
 //! on-disk watcher-tick write; no HTTP request can make a stale route fresh.
 //!
+//! `dev-content-memo-helper` adds a cold-lazy case where the home page reads
+//! entries memoized by a module-level helper that a dynamic route's `paths()`
+//! populated first, so the home render never calls `getCollection()` itself.
+//!
 //! This is a real V8/esbuild dev E2E and therefore adopts both the in-process
 //! serial mutex and the cross-binary lock used by sibling dev tests.
 
@@ -197,6 +201,15 @@ enum DevMode {
 /// `None` keeps the pre-epic-#1806 default of removing the var entirely
 /// (Off), matching every pre-existing test in this binary.
 fn spawn_dev(root: PathBuf, mode: DevMode, boot_lazy: Option<&str>) -> DevSession {
+    spawn_dev_with_timing(root, mode, boot_lazy, false)
+}
+
+fn spawn_dev_with_timing(
+    root: PathBuf,
+    mode: DevMode,
+    boot_lazy: Option<&str>,
+    timing: bool,
+) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
@@ -220,6 +233,9 @@ fn spawn_dev(root: PathBuf, mode: DevMode, boot_lazy: Option<&str>) -> DevSessio
     }
     if let Some(value) = boot_lazy {
         command.env("ZFB_DEV_BOOT_LAZY", value);
+    }
+    if timing {
+        command.env("ZFB_DEV_TIMING", "1");
     }
     command.process_group(0);
 
@@ -1440,6 +1456,201 @@ async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
         Err(_) => panic!(
             "[watchdog] warm-restart content provenance dev E2E did not finish within {}s",
             OVERALL_DEADLINE.as_secs(),
+        ),
+    }
+}
+
+fn memo_helper_fixture_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dev-content-memo-helper")
+}
+
+/// Wait until stderr past `offset` holds a line containing every `needles`
+/// fragment, and return that line plus the stderr offset just after it.
+async fn wait_for_stderr_line(
+    session: &DevSession,
+    offset: usize,
+    needles: &[&str],
+    phase: &str,
+) -> (String, usize) {
+    let start = Instant::now();
+    while start.elapsed() < SCENARIO_DEADLINE {
+        let stderr = read_log(&session.stderr_path);
+        let mut cursor = offset;
+        let tail = stderr.get(offset..).unwrap_or_default();
+        for line in tail.split_inclusive('\n') {
+            cursor += line.len();
+            if line.ends_with('\n') && needles.iter().all(|needle| line.contains(needle)) {
+                return (line.trim_end().to_string(), cursor);
+            }
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "[{phase}] no stderr line containing {needles:?} within {}s.\n{}",
+        SCENARIO_DEADLINE.as_secs(),
+        session.logs(),
+    );
+}
+
+/// A user helper memoizes `getCollection("articles")` at module level. Every
+/// fresh worker evaluates the dynamic route's `paths()` first, which fills the
+/// cache, so the home page later reads only the cached entries' `data`. Its
+/// render must still count as an `articles` reader: an in-place title write to
+/// a.md has to refresh `/`, while `/independent/`, which reads nothing, stays
+/// untouched. The `fan_out_safe=true` tick line proves the refresh comes from
+/// narrowed provenance, not the `All` fallback.
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_memoized_collection_helper_title_edit_refreshes_home() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create tempdir for memo-helper fixture");
+    let root = temp
+        .path()
+        .canonicalize()
+        .expect("canonicalize memo-helper fixture root");
+    copy_dir(&memo_helper_fixture_dir(), &root).expect("copy memo-helper fixture");
+    assert!(!root.join(".zfb-build").exists(), "fixture must start cold");
+    fs::create_dir_all(root.join("data")).expect("create handshake-probe data directory");
+    let data_probe_path = root.join("data/handshake-probe.json");
+    fs::write(&data_probe_path, "{\"revision\":0}\n").expect("write initial handshake probe");
+
+    let mut session = spawn_dev_with_timing(root, DevMode::Lazy, Some("cold"), true);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some((base, client)) =
+            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+        else {
+            return ScenarioOutcome::Skipped;
+        };
+        let route_count = parse_cold_lazy_route_count(&read_log(&session.stdout_path));
+        assert!(
+            matches!(route_count, Some(n) if n > 0),
+            "cold-lazy boot was not confirmed; count {route_count:?}\n{}",
+            session.logs()
+        );
+
+        let home_url = format!("{base}/");
+        let detail_url = format!("{base}/articles/a/");
+        let independent_url = format!("{base}/independent/");
+        // Browser-like first visits: each route renders in the current worker
+        // and records its observation before the edit lands.
+        for (url, marker, phase) in [
+            (&home_url, "Alpha Memo V1", "home lists the initial title"),
+            (
+                &detail_url,
+                "Alpha Memo V1",
+                "detail serves the initial title",
+            ),
+            (
+                &independent_url,
+                "MEMO-INDEPENDENT",
+                "independent route renders",
+            ),
+        ] {
+            poll_until_response_contains(&client, url, marker, phase, &session).await;
+        }
+        drain_ticks_until_quiescent(&base).await;
+        let independent_file = session.html_root().join("independent/index.html");
+        let independent_before = snapshot_file(&independent_file);
+
+        let offset = read_log(&session.stderr_path).len();
+        let sse = subscribe_sse(&base).await;
+        fs::write(
+            session.root.join("content/articles/a.md"),
+            "---\ntitle: Alpha Memo V2\n---\n\nAlpha body.\n",
+        )
+        .expect("edit a.md title in place");
+
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(name)) => assert_eq!(
+                name.as_str(),
+                "page",
+                "a.md title edit broadcast an unexpected SSE event.\n{}",
+                session.logs(),
+            ),
+            Ok(None) => eprintln!(
+                "[content_aggregate_cold_boot_e2e] no SSE page event observed for the memo \
+                 helper edit; relying on the authoritative response and timing checks."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after the memo helper edit: {error:#}\n{}",
+                session.logs(),
+            ),
+        }
+
+        let (tick, after_tick) = wait_for_stderr_line(
+            &session,
+            offset,
+            &["[zfb-timing] tick(): kinds=[", "a.md:Modified"],
+            "a.md edit reached the orchestrator",
+        )
+        .await;
+        assert!(
+            tick.contains("fan_out_safe=true"),
+            "the a.md tick must be a narrowed content tick, not the All fallback: {tick}\n{}",
+            session.logs(),
+        );
+        let (plan, _) = wait_for_stderr_line(
+            &session,
+            after_tick,
+            &["[zfb-timing] lazy-render plan: pages="],
+            "lazy-render plan after the a.md tick",
+        )
+        .await;
+        assert!(
+            plan.ends_with("pages=2"),
+            "the plan must hold exactly the detail route and the memoizing home page, and not \
+             /independent/: {plan}\n{}",
+            session.logs(),
+        );
+
+        poll_until_response_contains(
+            &client,
+            &home_url,
+            "Alpha Memo V2",
+            "home serves the edited title read through the memoized helper",
+            &session,
+        )
+        .await;
+        poll_until_response_contains(
+            &client,
+            &detail_url,
+            "Alpha Memo V2",
+            "detail serves the edited title",
+            &session,
+        )
+        .await;
+        poll_until_response_contains(
+            &client,
+            &independent_url,
+            "MEMO-INDEPENDENT",
+            "independent route still serves",
+            &session,
+        )
+        .await;
+        assert_snapshot_unchanged(
+            &independent_file,
+            &independent_before,
+            "a.md edit narrows past /independent/, which reads no content",
+            &session,
+        );
+        let logs = session.logs();
+        assert!(
+            !logs.contains("content provenance unavailable"),
+            "provenance must stay available for this scenario\n{logs}"
+        );
+
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] memo-helper content provenance dev E2E did not finish within {}s. \
+             Process group {pgid} will be killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
         ),
     }
 }
