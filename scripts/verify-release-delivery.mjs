@@ -783,6 +783,19 @@ function checkRequiredJob(section, grouped, spec, prefix) {
     ? [...grouped.entries()].filter(([name]) => name.startsWith(spec.namePrefix)).map(([, e]) => e)
     : [grouped.get(spec.name)].filter(Boolean);
   if (matches.length === 0) {
+    // A skipped reusable-workflow caller is never expanded: Actions lists one job
+    // under the bare caller name instead of "<caller> / <inner job>".
+    const callerName = spec.namePrefix?.replace(/ \/ $/, "");
+    const caller = callerName ? grouped.get(callerName) : undefined;
+    if (caller) {
+      const outcome = caller.effective.conclusion ?? caller.effective.status;
+      section.failed(
+        id,
+        `required job "${spec.namePrefix}" never expanded: its reusable-workflow caller "${callerName}" concluded ${outcome}`,
+        { caller: caller.history.map(jobSummary) },
+      );
+      return undefined;
+    }
     section.failed(id, `required job "${spec.name ?? spec.namePrefix}" is absent from the run`);
     return undefined;
   }
