@@ -1,0 +1,57 @@
+{
+  "$id": "tiny-fixture.v1",
+  "title": "dev-browser-observe fixture manifest",
+  "type": "object",
+  "required": [
+    "schema",
+    "name",
+    "app",
+    "articles",
+    "content",
+    "adapters",
+    "routes",
+    "selectors",
+    "css",
+    "routesTrailingSlash"
+  ],
+  "properties": {
+    "schema": {
+      "const": "tiny-fixture.v1"
+    },
+    "name": {
+      "type": "string"
+    },
+    "app": {
+      "type": "string"
+    },
+    "articles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "content": {
+      "type": "object",
+      "required": ["source", "collection", "placements"]
+    },
+    "adapters": {
+      "type": "object",
+      "required": ["target", "variants"]
+    },
+    "config": {
+      "type": "object"
+    },
+    "css": {
+      "type": "object"
+    },
+    "routes": {
+      "type": "object"
+    },
+    "selectors": {
+      "type": "object"
+    },
+    "routesTrailingSlash": {
+      "type": "object"
+    }
+  }
+}

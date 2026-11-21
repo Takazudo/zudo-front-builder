@@ -988,6 +988,906 @@ mod tests {
         );
     }
 
+    /// A module-level memo helper caches `getCollection()` entries before any
+    /// route runs (here: at inner-module evaluation, before the wrapper
+    /// installs), so no route calls `getCollection()` while traced. Boots the
+    /// REAL generated wrapper and requires reads through the cached entries'
+    /// `data` (render and `paths()` phases) and `Content` to record the
+    /// collection, so an a.md edit keeps every such route a consumer, while a
+    /// route that reads nothing stays a visit without reads.
+    #[test]
+    fn dev_content_trace_wrapper_observes_memoized_collection_data_reads() {
+        run_memoized_collection_trace_case(true);
+    }
+
+    /// Same scenario when the bundle emitted no content bridge: the wrapper's
+    /// pass-through bridge must record `Content` lookups while `Content`
+    /// still renders its captured body fallback.
+    #[test]
+    fn dev_content_trace_wrapper_observes_memoized_content_without_bridge() {
+        run_memoized_collection_trace_case(false);
+    }
+
+    /// Boot the REAL generated wrapper around `inner_bytes` for the pages
+    /// under `pages`, returning the host and its drain token.
+    fn boot_content_trace_host(
+        root: &Path,
+        pages: &Path,
+        inner_bytes: &str,
+    ) -> (Box<dyn EmbeddedV8Host>, String) {
+        let bundle_path = root.join("bundle.mjs");
+        std::fs::write(&bundle_path, inner_bytes).unwrap();
+        let router = zfb_router::Router::scan(pages).unwrap();
+        let (token, wrapper_source) = crate::commands::dev::content_trace_wrapper_for_adapter_tests(
+            &bundle_path,
+            router.routes(),
+        );
+        let factory = make_v8_host_factory_with_dev_content_trace_wrapper(
+            PluginRegistryHooks::default(),
+            wrapper_source,
+        );
+        let host = factory(&bundle_path).expect("real content-trace wrapper boots");
+        (host, token)
+    }
+
+    fn drain_content_trace(host: &mut dyn EmbeddedV8Host, token: &str) -> Vec<u8> {
+        let headers = std::collections::BTreeMap::from([(
+            crate::commands::dev::DEV_CONTENT_TRACE_HEADER.to_string(),
+            token.to_string(),
+        )]);
+        let drain = host
+            .dispatch_fetch_full_with_mode(
+                crate::commands::dev::DEV_CONTENT_TRACE_ENDPOINT,
+                "GET",
+                &headers,
+                &[],
+                zfb_build::renderer::DispatchMode::BuildTime,
+            )
+            .expect("trace drain");
+        assert_eq!(drain.status, 200);
+        drain.body
+    }
+
+    /// A helper that freezes one collection's cached `data` during inner-module
+    /// evaluation leaves frontmatter the wrapper cannot convert. That
+    /// collection must not go silently stale: it is read by every traced
+    /// request, so `/` and even `/independent` consume it, with one console
+    /// warning naming it. Another collection keeps exact observations.
+    #[test]
+    fn dev_content_trace_wrapper_treats_frozen_before_install_collection_as_read_everywhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let pages = root.join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        for page in ["index.tsx", "independent.tsx", "notes.tsx"] {
+            std::fs::write(pages.join(page), "export default () => null;\n").unwrap();
+        }
+        for (dir, file, title) in [("articles", "a.md", "Alpha"), ("notes", "n.md", "Note")] {
+            std::fs::create_dir_all(root.join("content").join(dir)).unwrap();
+            std::fs::write(
+                root.join("content").join(dir).join(file),
+                format!("---\ntitle: {title}\n---\n\nbody\n"),
+            )
+            .unwrap();
+        }
+        let inner_bytes = r#"
+const __zfb_ns = (globalThis.__zfb ??= {});
+__zfb_ns.contentSnapshot = JSON.parse(JSON.stringify({
+  collections: {
+    articles: [{ slug: "a", frontmatter: { title: "Alpha" }, body: "alpha", module_specifier: "spec-a" }],
+    notes: [{ slug: "n", frontmatter: { title: "Note" }, body: "note", module_specifier: "spec-n" }],
+  },
+}));
+function cache(name, freeze) {
+  return __zfb_ns.contentSnapshot.collections[name].map((entry) => {
+    const data = entry.frontmatter ?? {};
+    if (freeze) Object.freeze(data);
+    return { slug: entry.slug, data };
+  });
+}
+const articles = cache("articles", true);
+const notes = cache("notes", false);
+const worker = {
+  fetch(request) {
+    const pathname = new URL(request.url).pathname;
+    if (pathname === "/") return new Response("home:" + articles.map((a) => a.data.title).join(","));
+    if (pathname === "/notes") return new Response("notes:" + notes.map((n) => n.data.title).join(","));
+    return new Response("independent");
+  },
+};
+export { worker as default };
+"#;
+        let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
+        let logs = host.drain_console_logs();
+        assert!(
+            logs.contains("collection \"articles\"") && logs.contains("frozen or sealed"),
+            "one warning must name the untrackable collection: {logs}"
+        );
+        assert!(!logs.contains("collection \"notes\""), "{logs}");
+
+        assert_eq!(host.dispatch_fetch("/").unwrap().body, b"home:Alpha");
+        assert_eq!(host.dispatch_fetch("/notes").unwrap().body, b"notes:Note");
+        assert_eq!(
+            host.dispatch_fetch("/independent").unwrap().body,
+            b"independent"
+        );
+        let body = drain_content_trace(host.as_mut(), &token);
+        assert_eq!(
+            crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body),
+            None,
+            "an untrackable collection must not disable the whole worker"
+        );
+
+        let routes: Vec<(
+            std::path::PathBuf,
+            Vec<crate::commands::dev::AdapterTestRouteEntry>,
+        )> = vec![
+            (pages.join("index.tsx"), vec![("/", "index.html", None)]),
+            (
+                pages.join("notes.tsx"),
+                vec![("/notes", "notes.html", None)],
+            ),
+            (
+                pages.join("independent.tsx"),
+                vec![("/independent", "independent.html", None)],
+            ),
+        ];
+        let page_sources: std::collections::HashSet<std::path::PathBuf> =
+            routes.iter().map(|(source, _)| source.clone()).collect();
+        let consumers_of = |entry: std::path::PathBuf| {
+            crate::commands::dev::content_consumers_from_trace_for_adapter_tests(
+                &root,
+                &["articles", "notes"],
+                routes.clone(),
+                page_sources.clone(),
+                &[],
+                &body,
+                &entry,
+            )
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(
+            consumers_of(root.join("content/articles/a.md")),
+            std::collections::BTreeSet::from([
+                pages.join("index.tsx"),
+                pages.join("notes.tsx"),
+                pages.join("independent.tsx"),
+            ]),
+            "every traced route conservatively consumes the untrackable collection"
+        );
+        assert_eq!(
+            consumers_of(root.join("content/notes/n.md")),
+            std::collections::BTreeSet::from([pages.join("notes.tsx")]),
+            "the trackable collection keeps exact observations"
+        );
+    }
+
+    /// A frozen content bridge cannot be instrumented. That must not cost the
+    /// whole worker its provenance: every collection owning a module
+    /// specifier falls back to "read by every traced request", with one
+    /// warning, while a collection without specifiers stays exact.
+    #[test]
+    fn dev_content_trace_wrapper_treats_uninstrumentable_bridge_collections_as_read_everywhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let pages = root.join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        for page in ["index.tsx", "notes.tsx"] {
+            std::fs::write(pages.join(page), "export default () => null;\n").unwrap();
+        }
+        for (dir, file, title) in [("articles", "a.md", "Alpha"), ("notes", "n.md", "Note")] {
+            std::fs::create_dir_all(root.join("content").join(dir)).unwrap();
+            std::fs::write(
+                root.join("content").join(dir).join(file),
+                format!("---\ntitle: {title}\n---\n\nbody\n"),
+            )
+            .unwrap();
+        }
+        let inner_bytes = r#"
+const __zfb_ns = (globalThis.__zfb ??= {});
+__zfb_ns.contentSnapshot = JSON.parse(JSON.stringify({
+  collections: {
+    articles: [{ slug: "a", frontmatter: { title: "Alpha" }, body: "alpha", module_specifier: "spec-a" }],
+    notes: [{ slug: "n", frontmatter: { title: "Note" }, body: "note" }],
+  },
+}));
+__zfb_ns.content = Object.freeze({ get: () => undefined });
+const notes = __zfb_ns.contentSnapshot.collections.notes.map((entry) => entry.frontmatter);
+const worker = {
+  fetch(request) {
+    if (new URL(request.url).pathname === "/notes") {
+      return new Response("notes:" + notes.map((note) => note.title).join(","));
+    }
+    return new Response("home");
+  },
+};
+export { worker as default };
+"#;
+        let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
+        let logs = host.drain_console_logs();
+        assert!(
+            logs.contains("collection \"articles\"")
+                && logs.contains("content bridge that could not be instrumented"),
+            "one warning must name the collection behind the frozen bridge: {logs}"
+        );
+        assert!(!logs.contains("collection \"notes\""), "{logs}");
+
+        assert_eq!(host.dispatch_fetch("/").unwrap().body, b"home");
+        assert_eq!(host.dispatch_fetch("/notes").unwrap().body, b"notes:Note");
+        let body = drain_content_trace(host.as_mut(), &token);
+        assert_eq!(
+            crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body),
+            None,
+            "an uninstrumentable bridge must not disable the whole worker"
+        );
+
+        let routes: Vec<(
+            std::path::PathBuf,
+            Vec<crate::commands::dev::AdapterTestRouteEntry>,
+        )> = vec![
+            (pages.join("index.tsx"), vec![("/", "index.html", None)]),
+            (
+                pages.join("notes.tsx"),
+                vec![("/notes", "notes.html", None)],
+            ),
+        ];
+        let page_sources: std::collections::HashSet<std::path::PathBuf> =
+            routes.iter().map(|(source, _)| source.clone()).collect();
+        let consumers_of = |entry: std::path::PathBuf| {
+            crate::commands::dev::content_consumers_from_trace_for_adapter_tests(
+                &root,
+                &["articles", "notes"],
+                routes.clone(),
+                page_sources.clone(),
+                &[],
+                &body,
+                &entry,
+            )
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(
+            consumers_of(root.join("content/articles/a.md")),
+            std::collections::BTreeSet::from([pages.join("index.tsx"), pages.join("notes.tsx")]),
+            "every traced route conservatively consumes the bridge-owning collection"
+        );
+        assert_eq!(
+            consumers_of(root.join("content/notes/n.md")),
+            std::collections::BTreeSet::from([pages.join("notes.tsx")]),
+            "a collection without module specifiers keeps exact observations"
+        );
+    }
+
+    /// When the bundle emitted no bridge, the wrapper's placeholder bridge
+    /// records `Content` lookups. Replacing or removing it afterwards hides
+    /// later lookups, so every drain from then on reports not ready and the
+    /// session keeps its `All` fallback for that worker generation.
+    #[test]
+    fn dev_content_trace_wrapper_rejects_placeholder_bridge_replaced_or_removed() {
+        for (route, swap) in [
+            ("/__install-bridge", "replaced"),
+            ("/__remove-bridge", "removed"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let pages = root.join("pages");
+            std::fs::create_dir_all(&pages).unwrap();
+            for page in ["index.tsx", "bodies.tsx"] {
+                std::fs::write(pages.join(page), "export default () => null;\n").unwrap();
+            }
+            let inner_bytes = r#"
+const __zfb_ns = (globalThis.__zfb ??= {});
+__zfb_ns.contentSnapshot = {
+  collections: {
+    articles: [{ slug: "a", frontmatter: { title: "Alpha" }, body: "alpha", module_specifier: "spec-a" }],
+  },
+};
+const worker = {
+  fetch(request) {
+    const pathname = new URL(request.url).pathname;
+    if (pathname === "/__install-bridge") {
+      __zfb_ns.content = { get: (spec) => () => "compiled-" + spec };
+      return new Response("swapped");
+    }
+    if (pathname === "/__remove-bridge") {
+      delete __zfb_ns.content;
+      return new Response("swapped");
+    }
+    if (pathname === "/bodies") {
+      const renderer = globalThis.__zfb?.content?.get("spec-a");
+      return new Response("bodies:" + (typeof renderer === "function" ? renderer() : "alpha"));
+    }
+    return new Response("home");
+  },
+};
+export { worker as default };
+"#;
+            let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
+            let bodies = pages.join("bodies.tsx").to_string_lossy().into_owned();
+
+            assert_eq!(
+                host.dispatch_fetch("/bodies").unwrap().body,
+                b"bodies:alpha"
+            );
+            let body = drain_content_trace(host.as_mut(), &token);
+            assert_eq!(
+                crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body),
+                None,
+                "{swap}: the placeholder keeps the worker usable"
+            );
+            let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let placeholder_reads = payload["events"]
+                .as_array()
+                .expect("events")
+                .iter()
+                .filter(|event| {
+                    event["source"] == bodies.as_str()
+                        && event["kind"] == "read"
+                        && event["collection"] == "articles"
+                })
+                .count();
+            assert_eq!(placeholder_reads, 1, "{swap}: {payload:?}");
+
+            assert_eq!(host.dispatch_fetch(route).unwrap().body, b"swapped");
+            host.dispatch_fetch("/bodies").unwrap();
+            for drain in 0..2 {
+                let body = drain_content_trace(host.as_mut(), &token);
+                let error =
+                    crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body)
+                        .unwrap_or_else(|| {
+                            panic!("{swap}: drain {drain} after the swap must be rejected")
+                        });
+                assert!(
+                    error.contains(
+                        "content bridge installed or removed after trace install; \
+                         conservative fallback"
+                    ),
+                    "{swap}: {error}"
+                );
+                host.dispatch_fetch("/").unwrap();
+            }
+        }
+    }
+
+    /// Replacing the content bridge after install would hide `Content`
+    /// lookups. The next drain must report not ready so the session takes its
+    /// provenance-unavailable `All` fallback.
+    #[test]
+    fn dev_content_trace_wrapper_rejects_content_bridge_replaced_after_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let pages = root.join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(pages.join("index.tsx"), "export default () => null;\n").unwrap();
+        let inner_bytes = r#"
+const __zfb_ns = (globalThis.__zfb ??= {});
+__zfb_ns.contentSnapshot = {
+  collections: {
+    articles: [{ slug: "a", frontmatter: { title: "Alpha" }, body: "alpha", module_specifier: "spec-a" }],
+  },
+};
+__zfb_ns.content = { get: () => undefined };
+const worker = {
+  fetch(request) {
+    if (new URL(request.url).pathname === "/__swap-bridge") {
+      __zfb_ns.content = { get: () => undefined };
+    }
+    return new Response("ok");
+  },
+};
+export { worker as default };
+"#;
+        let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
+        host.dispatch_fetch("/").unwrap();
+        let body = drain_content_trace(host.as_mut(), &token);
+        assert_eq!(
+            crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body),
+            None,
+            "the untouched instrumented bridge keeps the worker usable"
+        );
+        host.dispatch_fetch("/__swap-bridge").unwrap();
+        let body = drain_content_trace(host.as_mut(), &token);
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["ready"], false, "{payload:?}");
+        let error = crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body)
+            .expect("the production decoder must reject a replaced bridge");
+        assert!(
+            error.contains("content bridge replaced after trace install; conservative fallback"),
+            "{error}"
+        );
+    }
+
+    /// Converted frontmatter keeps ordinary `[[Set]]` receiver semantics. A
+    /// write through a Proxy forwarding to it updates the shared value and
+    /// the tracking accessor is re-installed, so a later traced read still
+    /// records. A descriptor-copied clone writes only its own property,
+    /// including one made before its original was frozen, and never reverts
+    /// a later redefinition of the original. On sealed frontmatter a Proxy
+    /// write keeps tracking, and a clone made after sealing writes the shared
+    /// value (a documented dev-only limit). A frozen clone and a Proxy whose
+    /// `defineProperty` trap refuses both reject the write and leave the
+    /// shared value unchanged.
+    /// `Reflect.set` with an unrelated receiver writes the receiver's own
+    /// property, updating an existing writable one, and leaves the shared
+    /// value alone; a non-extensible receiver or a non-writable own property
+    /// on it rejects the write. The freeze patch installs once per realm.
+    #[test]
+    fn dev_content_trace_wrapper_keeps_tracking_after_proxy_and_reflect_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let pages = root.join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(pages.join("index.tsx"), "export default () => null;\n").unwrap();
+        let inner_bytes = r#"
+const __zfb_ns = (globalThis.__zfb ??= {});
+__zfb_ns.contentSnapshot = JSON.parse(JSON.stringify({
+  collections: {
+    articles: [
+      { slug: "a", frontmatter: { title: "Alpha" }, body: "alpha", module_specifier: "spec-a" },
+      { slug: "c", frontmatter: { title: "Gamma" }, body: "gamma", module_specifier: "spec-c" },
+      { slug: "d", frontmatter: { title: "Delta" }, body: "delta", module_specifier: "spec-d" },
+    ],
+    notes: [{ slug: "n", frontmatter: { title: "Note" }, body: "note", module_specifier: "spec-n" }],
+  },
+}));
+const [data, frozen, redefined] = __zfb_ns.contentSnapshot.collections.articles.map((e) => e.frontmatter);
+const sealed = __zfb_ns.contentSnapshot.collections.notes[0].frontmatter;
+const descriptorClone = (source) =>
+  Object.create(Object.getPrototypeOf(source), Object.getOwnPropertyDescriptors(source));
+const worker = {
+  fetch(request) {
+    if (new URL(request.url).pathname === "/__proxy-write") {
+      const results = [];
+      new Proxy(data, {}).title = "Via Proxy";
+      results.push(data.title, typeof Object.getOwnPropertyDescriptor(data, "title").get === "function");
+      const receiver = {};
+      results.push(Reflect.set(data, "title", "Via Reflect", receiver));
+      const own = Object.getOwnPropertyDescriptor(receiver, "title");
+      results.push(own.value, own.writable, own.enumerable, own.configurable, data.title);
+      results.push(Reflect.set(data, "title", "Again", receiver), receiver.title, data.title);
+      const derived = Object.create(data);
+      derived.title = "Derived";
+      results.push(Object.hasOwn(derived, "title"), derived.title, data.title);
+      const clone = Object.create(Object.getPrototypeOf(data), Object.getOwnPropertyDescriptors(data));
+      clone.title = "Clone";
+      const cloneOwn = Object.getOwnPropertyDescriptor(clone, "title");
+      results.push(cloneOwn.value, "value" in cloneOwn, cloneOwn.writable, data.title);
+      for (const target of [Object.preventExtensions({}), Object.defineProperty({}, "title", { value: "fixed" })]) {
+        try {
+          Reflect.set(data, "title", "X", target);
+          results.push("no error");
+        } catch (caught) {
+          results.push(caught instanceof TypeError);
+        }
+      }
+      results.push(typeof Object.getOwnPropertyDescriptor(data, "title").get === "function");
+      const marker = Symbol.for("zfb.devContentTrace.freeze");
+      results.push(typeof Object.freeze[marker] === "object");
+
+      Object.seal(sealed);
+      new Proxy(sealed, {}).title = "Sealed Proxy";
+      results.push(sealed.title, typeof Object.getOwnPropertyDescriptor(sealed, "title").get === "function");
+      descriptorClone(sealed).title = "Sealed Clone";
+      results.push(sealed.title);
+
+      const cloneBeforeFreeze = descriptorClone(frozen);
+      Object.freeze(frozen);
+      cloneBeforeFreeze.title = "Frozen Clone";
+      results.push(Object.getOwnPropertyDescriptor(cloneBeforeFreeze, "title").value, frozen.title);
+      try {
+        descriptorClone(frozen).title = "X";
+        results.push("no error");
+      } catch (caught) {
+        results.push(caught instanceof TypeError);
+      }
+
+      const cloneBeforeRedefine = descriptorClone(redefined);
+      Object.defineProperty(redefined, "title", { value: "Fixed" });
+      cloneBeforeRedefine.title = "Clone Write";
+      const redefinedOwn = Object.getOwnPropertyDescriptor(redefined, "title");
+      results.push(redefinedOwn.value, redefinedOwn.writable, "value" in redefinedOwn, cloneBeforeRedefine.title);
+
+      const shared = data.title;
+      const frozenClone = descriptorClone(data);
+      Object.freeze(frozenClone);
+      for (const write of [
+        () => { frozenClone.title = "Frozen Clone Write"; },
+        () => { new Proxy(data, { defineProperty: () => false }).title = "Refused"; },
+      ]) {
+        try {
+          write();
+          results.push("no error");
+        } catch (caught) {
+          results.push(caught instanceof TypeError);
+        }
+        results.push(data.title === shared);
+      }
+      return new Response(results.join("|"));
+    }
+    return new Response("home:" + data.title + "," + sealed.title);
+  },
+};
+export { worker as default };
+"#;
+        let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
+        assert_eq!(
+            String::from_utf8_lossy(&host.dispatch_fetch("/__proxy-write").unwrap().body),
+            "Via Proxy|true|true|Via Reflect|true|true|true|Via Proxy|\
+             true|Again|Via Proxy|true|Derived|Via Proxy|Clone|true|true|Via Proxy|\
+             true|true|true|true|\
+             Sealed Proxy|true|Sealed Clone|\
+             Frozen Clone|Gamma|true|\
+             Fixed|false|true|Clone Write|\
+             true|true|true|true"
+        );
+        assert_eq!(
+            host.dispatch_fetch("/").unwrap().body,
+            b"home:Via Proxy,Sealed Clone"
+        );
+        let body = drain_content_trace(host.as_mut(), &token);
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let home = pages.join("index.tsx").to_string_lossy().into_owned();
+        for collection in ["articles", "notes"] {
+            let reads = payload["events"]
+                .as_array()
+                .expect("events")
+                .iter()
+                .filter(|event| {
+                    event["source"] == home.as_str()
+                        && event["phase"] == "render"
+                        && event["kind"] == "read"
+                        && event["collection"] == collection
+                })
+                .count();
+            assert_eq!(reads, 1, "{collection}: {payload:?}");
+        }
+    }
+
+    /// A bridge object that had no `get` function at install is remembered
+    /// as instrumented; assigning `get` later must give the not-ready
+    /// conservative fallback, since those lookups were never traced.
+    #[test]
+    fn dev_content_trace_wrapper_rejects_bridge_get_assigned_after_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let pages = root.join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(pages.join("index.tsx"), "export default () => null;\n").unwrap();
+        let inner_bytes = r#"
+const __zfb_ns = (globalThis.__zfb ??= {});
+__zfb_ns.contentSnapshot = {
+  collections: {
+    articles: [{ slug: "a", frontmatter: { title: "Alpha" }, body: "alpha", module_specifier: "spec-a" }],
+  },
+};
+__zfb_ns.content = {};
+const worker = {
+  fetch(request) {
+    if (new URL(request.url).pathname === "/__assign-get") {
+      __zfb_ns.content.get = () => undefined;
+    }
+    return new Response("ok");
+  },
+};
+export { worker as default };
+"#;
+        let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
+        host.dispatch_fetch("/").unwrap();
+        let body = drain_content_trace(host.as_mut(), &token);
+        assert_eq!(
+            crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body),
+            None,
+            "a bridge without `get` is usable until `get` appears"
+        );
+        host.dispatch_fetch("/__assign-get").unwrap();
+        let body = drain_content_trace(host.as_mut(), &token);
+        let error = crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body)
+            .expect("the production decoder must reject a bridge whose get appeared later");
+        assert!(
+            error.contains("content bridge replaced after trace install; conservative fallback"),
+            "{error}"
+        );
+    }
+
+    fn run_memoized_collection_trace_case(with_bridge: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let pages = root.join("pages");
+        std::fs::create_dir_all(pages.join("articles")).unwrap();
+        std::fs::create_dir_all(pages.join("category")).unwrap();
+        for page in [
+            "index.tsx",
+            "independent.tsx",
+            "bodies.tsx",
+            "articles/[slug].tsx",
+            "category/[category].tsx",
+        ] {
+            std::fs::write(pages.join(page), "export default () => null;\n").unwrap();
+        }
+        std::fs::create_dir_all(root.join("content/articles")).unwrap();
+        let a_md = root.join("content/articles/a.md");
+        std::fs::write(&a_md, "---\ntitle: Alpha\ncategory: news\n---\n\nalpha\n").unwrap();
+        std::fs::write(
+            root.join("content/articles/b.md"),
+            "---\ntitle: Beta\ncategory: notes\n---\n\nbeta\n",
+        )
+        .unwrap();
+
+        // Mirrors `getCollection`, `entryFromSnapshot` and
+        // `buildContentComponent` from `packages/zfb/src/content.ts` plus the
+        // bundler's content bridge, then the user's exact memo helper.
+        let inner_bytes = r#"
+const __zfb_ns = (globalThis.__zfb ??= {});
+__zfb_ns.contentSnapshot = JSON.parse(JSON.stringify({
+  collections: {
+    articles: [
+      { slug: "b", frontmatter: { title: "Beta", category: "notes" }, body: "beta", module_specifier: "spec-b" },
+      { slug: "a", frontmatter: { title: "Alpha", category: "news" }, body: "alpha", module_specifier: "spec-a" },
+    ],
+  },
+}));
+__BRIDGE__
+function buildContentComponent(module_specifier, body) {
+  return function Content() {
+    const renderer = globalThis.__zfb?.content?.get(module_specifier);
+    return typeof renderer === "function" ? renderer() : body;
+  };
+}
+function getCollection(name) {
+  const list = globalThis.__zfb.contentSnapshot.collections[name] ?? [];
+  return list.map((entry) => ({
+    slug: entry.slug,
+    data: entry.frontmatter ?? {},
+    body: entry.body,
+    module_specifier: entry.module_specifier,
+    Content: buildContentComponent(entry.module_specifier, entry.body),
+  }));
+}
+let cached;
+function getIndex() {
+  if (cached) return cached;
+  const articles = getCollection("articles").sort((a, b) => a.slug.localeCompare(b.slug));
+  cached = { articles, bySlug: new Map(articles.map((article) => [article.slug, article])) };
+  return cached;
+}
+getIndex();
+const worker = {
+  fetch(request) {
+    const pathname = new URL(request.url).pathname;
+    if (pathname.startsWith("/__paths__/")) {
+      const template = decodeURIComponent(pathname.slice("/__paths__/".length));
+      const paths = template.startsWith("/category/")
+        ? [...new Set(getIndex().articles.map((e) => e.data.category))].map((category) => ({ params: { category } }))
+        : getIndex().articles.map((e) => ({ params: { slug: e.slug } }));
+      return new Response(JSON.stringify(paths), { status: 200 });
+    }
+    if (pathname === "/") {
+      const titles = getIndex().articles.map((article) => article.data.title);
+      return new Response("home:" + titles.join(","), { status: 200 });
+    }
+    if (pathname === "/bodies") {
+      const bodies = getIndex().articles.map((article) => article.Content());
+      return new Response("bodies:" + bodies.join(","), { status: 200 });
+    }
+    if (pathname.startsWith("/articles/")) {
+      const article = getIndex().bySlug.get(pathname.slice("/articles/".length));
+      return new Response("detail:" + article.data.title, { status: 200 });
+    }
+    if (pathname === "/independent") return new Response("independent", { status: 200 });
+    if (pathname === "/__frozen-write") {
+      const alpha = getIndex().bySlug.get("a").data;
+      const beta = getIndex().bySlug.get("b").data;
+      const results = [];
+      beta.title = "Beta Written";
+      results.push(beta.title);
+      const derived = Object.create(beta);
+      derived.title = "Derived";
+      const own = Object.getOwnPropertyDescriptor(derived, "title");
+      results.push(own.value + ":" + own.writable + own.enumerable + own.configurable + ":" + beta.title);
+      Object.seal(beta);
+      beta.title = "Beta Sealed";
+      results.push(beta.title);
+      beta.title = "Beta";
+      Object.freeze(alpha);
+      for (const target of [alpha, Object.create(alpha)]) {
+        try {
+          target.title = "Changed";
+          results.push("no error");
+        } catch (caught) {
+          results.push(caught instanceof TypeError ? caught.message : String(caught));
+        }
+      }
+      results.push(alpha.title, JSON.stringify(alpha));
+      return new Response(results.join("|"), { status: 200 });
+    }
+    return new Response("missing", { status: 404 });
+  },
+};
+export { worker as default };
+"#;
+        let bridge = if with_bridge {
+            r#"__zfb_ns.content = { get: (spec) => (spec.startsWith("spec-") ? () => "compiled-" + spec : undefined) };"#
+        } else {
+            ""
+        };
+        let inner_bytes = inner_bytes.replace("__BRIDGE__", bridge);
+        let bundle_path = root.join("bundle.mjs");
+        std::fs::write(&bundle_path, inner_bytes).unwrap();
+
+        let router = zfb_router::Router::scan(&pages).unwrap();
+        let template_of = |suffix: &str| {
+            router
+                .routes()
+                .iter()
+                .find(|route| route.source_path.ends_with(suffix))
+                .expect("dynamic route")
+                .template()
+                .replace('/', "%2F")
+                .replace(':', "%3A")
+        };
+        let detail_template = template_of("articles/[slug].tsx");
+        let category_template = template_of("category/[category].tsx");
+        let (token, wrapper_source) = crate::commands::dev::content_trace_wrapper_for_adapter_tests(
+            &bundle_path,
+            router.routes(),
+        );
+        let factory = make_v8_host_factory_with_dev_content_trace_wrapper(
+            PluginRegistryHooks::default(),
+            wrapper_source,
+        );
+        let mut host = factory(&bundle_path).expect("real content-trace wrapper boots");
+
+        for template in [&detail_template, &category_template] {
+            let paths = host
+                .dispatch_fetch(&format!("/__paths__/{template}"))
+                .expect("paths dispatch");
+            assert_eq!(
+                paths.status,
+                200,
+                "{:?}",
+                String::from_utf8_lossy(&paths.body)
+            );
+        }
+        let home = host.dispatch_fetch("/").expect("home dispatch");
+        assert_eq!(home.body, b"home:Alpha,Beta");
+        let bodies = host.dispatch_fetch("/bodies").expect("bodies dispatch");
+        let expected_bodies: &[u8] = if with_bridge {
+            b"bodies:compiled-spec-a,compiled-spec-b"
+        } else {
+            b"bodies:alpha,beta"
+        };
+        assert_eq!(bodies.body, expected_bodies);
+        let independent = host.dispatch_fetch("/independent").expect("independent");
+        assert_eq!(independent.body, b"independent");
+        let detail = host.dispatch_fetch("/articles/a").expect("detail dispatch");
+        assert_eq!(detail.body, b"detail:Alpha");
+        // Untraced path: converted frontmatter keeps build write semantics.
+        // Writes work, a write through `Object.create(data)` lands on the
+        // derived object only, a sealed object stays writable, and a frozen
+        // one (directly or through a derived object) rejects the write.
+        let frozen = host
+            .dispatch_fetch("/__frozen-write")
+            .expect("frozen write dispatch");
+        assert_eq!(
+            String::from_utf8_lossy(&frozen.body),
+            "Beta Written|Derived:truetruetrue:Beta Written|Beta Sealed|\
+             Cannot assign to read only property 'title' of object '#<Object>'|\
+             Cannot assign to read only property 'title' of object '#<Object>'|Alpha|\
+             {\"title\":\"Alpha\",\"category\":\"news\"}"
+        );
+
+        let headers = std::collections::BTreeMap::from([(
+            crate::commands::dev::DEV_CONTENT_TRACE_HEADER.to_string(),
+            token,
+        )]);
+        let drain = host
+            .dispatch_fetch_full_with_mode(
+                crate::commands::dev::DEV_CONTENT_TRACE_ENDPOINT,
+                "GET",
+                &headers,
+                &[],
+                zfb_build::renderer::DispatchMode::BuildTime,
+            )
+            .expect("trace drain");
+        assert_eq!(drain.status, 200);
+        let payload: serde_json::Value = serde_json::from_slice(&drain.body).unwrap();
+        assert_eq!(payload["ready"], true, "{payload:?}");
+        let events = payload["events"].as_array().expect("events");
+        let source_of = |page: &str| pages.join(page).to_string_lossy().into_owned();
+        let count = |page: &str, phase: &str, kind: &str| {
+            events
+                .iter()
+                .filter(|event| {
+                    event["source"] == source_of(page).as_str()
+                        && event["phase"] == phase
+                        && event["kind"] == kind
+                        && (kind == "visit" || event["collection"] == "articles")
+                })
+                .count()
+        };
+        for (page, phase, reads) in [
+            // Slugs are copied primitives: the cached detail paths() reads no data.
+            ("articles/[slug].tsx", "paths", 0),
+            ("category/[category].tsx", "paths", 1),
+            ("index.tsx", "render", 1),
+            ("bodies.tsx", "render", 1),
+            ("articles/[slug].tsx", "render", 1),
+            ("independent.tsx", "render", 0),
+        ] {
+            assert_eq!(count(page, phase, "visit"), 1, "{page} {phase}: {events:?}");
+            assert_eq!(
+                count(page, phase, "read"),
+                reads,
+                "{page} {phase}: one deduplicated aggregate read per request; {events:?}"
+            );
+        }
+        assert!(
+            !events.iter().any(
+                |event| event["source"] == source_of("independent.tsx").as_str()
+                    && event["kind"] == "read"
+            ),
+            "a route that reads nothing must record no read: {events:?}"
+        );
+
+        let home_source = pages.join("index.tsx");
+        let detail_source = pages.join("articles/[slug].tsx");
+        let category_source = pages.join("category/[category].tsx");
+        let bodies_source = pages.join("bodies.tsx");
+        let independent_source = pages.join("independent.tsx");
+        let routes = vec![
+            (home_source.clone(), vec![("/", "index.html", None)]),
+            (
+                bodies_source.clone(),
+                vec![("/bodies", "bodies.html", None)],
+            ),
+            (
+                independent_source.clone(),
+                vec![("/independent", "independent.html", None)],
+            ),
+            (
+                detail_source.clone(),
+                vec![
+                    ("/articles/a", "articles/a.html", Some("a")),
+                    ("/articles/b", "articles/b.html", Some("b")),
+                ],
+            ),
+            (
+                category_source.clone(),
+                vec![
+                    ("/category/news", "category/news.html", None),
+                    ("/category/notes", "category/notes.html", None),
+                ],
+            ),
+        ];
+        let page_sources: std::collections::HashSet<std::path::PathBuf> =
+            routes.iter().map(|(source, _)| source.clone()).collect();
+        for retained in [Vec::new(), vec![home_source.clone()]] {
+            let consumers = crate::commands::dev::content_consumers_from_trace_for_adapter_tests(
+                &root,
+                &["articles"],
+                routes.clone(),
+                page_sources.clone(),
+                &retained,
+                &drain.body,
+                &a_md,
+            );
+            for source in [
+                &home_source,
+                &detail_source,
+                &category_source,
+                &bodies_source,
+            ] {
+                assert!(
+                    consumers.contains(source),
+                    "{} must consume a.md (retained {retained:?}): {consumers:?}",
+                    source.display()
+                );
+            }
+            assert!(!consumers.contains(&independent_source), "{consumers:?}");
+        }
+    }
+
     /// Sub-issue #1764 follow-up (codex review finding): the generated dev
     /// content-trace wrapper's OWN `default` export is always well-shaped
     /// (`{ async fetch(request) { ... } }`) and only touches the imported

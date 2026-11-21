@@ -1,0 +1,44 @@
+{
+  "$id": "dev-browser-observe.receipt.v1",
+  "title": "dev-browser-observe run receipt (<out>/<label>/receipt.json)",
+  "type": "object",
+  "required": [
+    "schema",
+    "label",
+    "command",
+    "createdAt",
+    "productSha",
+    "harnessCapability",
+    "identity",
+    "host"
+  ],
+  "properties": {
+    "schema": { "const": "dev-browser-observe.receipt.v1" },
+    "label": { "type": "string" },
+    "command": { "enum": ["run", "calibrate"] },
+    "createdAt": { "type": "string" },
+    "productSha": { "type": "string" },
+    "productDirtyIdentity": { "type": ["string", "null"] },
+    "harnessCapability": {
+      "type": "object",
+      "required": ["sha", "harnessDirDirty"],
+      "properties": { "sha": { "type": "string" }, "harnessDirDirty": { "type": "boolean" } }
+    },
+    "buildReceipt": { "type": ["object", "null"] },
+    "identity": {
+      "type": "object",
+      "required": ["ok", "checks"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "checks": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "profile": { "type": "object" },
+    "profileSha256": { "type": "string" },
+    "fixture": { "type": ["object", "null"] },
+    "browser": { "type": ["object", "null"] },
+    "server": { "type": ["object", "null"] },
+    "host": { "type": "object" },
+    "macProbe": { "type": ["object", "null"] }
+  }
+}

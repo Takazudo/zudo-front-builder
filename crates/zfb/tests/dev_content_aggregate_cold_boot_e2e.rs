@@ -12,6 +12,10 @@
 //! assertion after discovery. With `ZFB_DEV_EAGER=1`, every check is an
 //! on-disk watcher-tick write; no HTTP request can make a stale route fresh.
 //!
+//! `dev-content-memo-helper` adds a cold-lazy case where the home page reads
+//! entries memoized by a module-level helper that a dynamic route's `paths()`
+//! populated first, so the home render never calls `getCollection()` itself.
+//!
 //! This is a real V8/esbuild dev E2E and therefore adopts both the in-process
 //! serial mutex and the cross-binary lock used by sibling dev tests.
 
@@ -197,6 +201,15 @@ enum DevMode {
 /// `None` keeps the pre-epic-#1806 default of removing the var entirely
 /// (Off), matching every pre-existing test in this binary.
 fn spawn_dev(root: PathBuf, mode: DevMode, boot_lazy: Option<&str>) -> DevSession {
+    spawn_dev_with_timing(root, mode, boot_lazy, false)
+}
+
+fn spawn_dev_with_timing(
+    root: PathBuf,
+    mode: DevMode,
+    boot_lazy: Option<&str>,
+    timing: bool,
+) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
@@ -220,6 +233,9 @@ fn spawn_dev(root: PathBuf, mode: DevMode, boot_lazy: Option<&str>) -> DevSessio
     }
     if let Some(value) = boot_lazy {
         command.env("ZFB_DEV_BOOT_LAZY", value);
+    }
+    if timing {
+        command.env("ZFB_DEV_TIMING", "1");
     }
     command.process_group(0);
 
@@ -1440,6 +1456,272 @@ async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
         Err(_) => panic!(
             "[watchdog] warm-restart content provenance dev E2E did not finish within {}s",
             OVERALL_DEADLINE.as_secs(),
+        ),
+    }
+}
+
+fn memo_helper_fixture_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dev-content-memo-helper")
+}
+
+/// Wait until stderr past `offset` holds a complete line accepted by
+/// `matches`, and return that line plus the stderr offset just after it.
+async fn wait_for_stderr_line_where(
+    session: &DevSession,
+    offset: usize,
+    matches: impl Fn(&str) -> bool,
+    description: &str,
+    phase: &str,
+) -> (String, usize) {
+    let start = Instant::now();
+    while start.elapsed() < SCENARIO_DEADLINE {
+        let stderr = read_log(&session.stderr_path);
+        let mut cursor = offset;
+        let tail = stderr.get(offset..).unwrap_or_default();
+        for line in tail.split_inclusive('\n') {
+            cursor += line.len();
+            if line.ends_with('\n') && matches(line) {
+                return (line.trim_end().to_string(), cursor);
+            }
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "[{phase}] no stderr line {description} within {}s.\n{}",
+        SCENARIO_DEADLINE.as_secs(),
+        session.logs(),
+    );
+}
+
+/// [`wait_for_stderr_line_where`] for a line containing every `needles`
+/// fragment.
+async fn wait_for_stderr_line(
+    session: &DevSession,
+    offset: usize,
+    needles: &[&str],
+    phase: &str,
+) -> (String, usize) {
+    wait_for_stderr_line_where(
+        session,
+        offset,
+        |line| needles.iter().all(|needle| line.contains(needle)),
+        &format!("containing {needles:?}"),
+        phase,
+    )
+    .await
+}
+
+/// A `[zfb-timing] tick()` line whose `kinds=[...]` list names `file_name`,
+/// with any change kind.
+fn is_tick_line_for(line: &str, file_name: &str) -> bool {
+    let Some(rest) = line.split("[zfb-timing] tick(): kinds=[").nth(1) else {
+        return false;
+    };
+    let Some((kinds, _)) = rest.split_once(']') else {
+        return false;
+    };
+    kinds.split(", ").any(|kind| {
+        kind.split_once(':')
+            .is_some_and(|(name, _)| name == file_name)
+    })
+}
+
+/// In-place title edits of a.md attempted before giving up on a narrowed tick.
+/// macOS FSEvents can report an in-place write as `Created`, which fails the
+/// orchestrator's `fan_out_safe` gate and selects every page.
+const MEMO_EDIT_ATTEMPTS: u32 = 3;
+
+/// A user helper memoizes `getCollection("articles")` at module level. Every
+/// fresh worker evaluates the dynamic route's `paths()` first, which fills the
+/// cache, so the home page later reads only the cached entries' `data`. Its
+/// render must still count as an `articles` reader: an in-place title write to
+/// a.md has to refresh `/`, while `/independent/`, which reads nothing, stays
+/// untouched. The `fan_out_safe=true` tick line proves the refresh comes from
+/// narrowed provenance, not the `All` fallback. When FSEvents reports the
+/// write as `Created`, that tick is un-narrowed and proves nothing, so the
+/// test re-renders every route and makes a new unique edit, up to
+/// [`MEMO_EDIT_ATTEMPTS`] times. It never passes without a narrowed tick whose
+/// plan holds exactly two pages (one without the fix).
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_memoized_collection_helper_title_edit_refreshes_home() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create tempdir for memo-helper fixture");
+    let root = temp
+        .path()
+        .canonicalize()
+        .expect("canonicalize memo-helper fixture root");
+    copy_dir(&memo_helper_fixture_dir(), &root).expect("copy memo-helper fixture");
+    assert!(!root.join(".zfb-build").exists(), "fixture must start cold");
+    fs::create_dir_all(root.join("data")).expect("create handshake-probe data directory");
+    let data_probe_path = root.join("data/handshake-probe.json");
+    fs::write(&data_probe_path, "{\"revision\":0}\n").expect("write initial handshake probe");
+
+    let mut session = spawn_dev_with_timing(root, DevMode::Lazy, Some("cold"), true);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some((base, client)) =
+            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+        else {
+            return ScenarioOutcome::Skipped;
+        };
+        let route_count = parse_cold_lazy_route_count(&read_log(&session.stdout_path));
+        assert!(
+            matches!(route_count, Some(n) if n > 0),
+            "cold-lazy boot was not confirmed; count {route_count:?}\n{}",
+            session.logs()
+        );
+
+        let home_url = format!("{base}/");
+        let detail_url = format!("{base}/articles/a/");
+        let independent_url = format!("{base}/independent/");
+        // Browser-like first visits: each route renders in the current worker
+        // and records its observation before the edit lands.
+        for (url, marker, phase) in [
+            (&home_url, "Alpha Memo V1", "home lists the initial title"),
+            (
+                &detail_url,
+                "Alpha Memo V1",
+                "detail serves the initial title",
+            ),
+            (
+                &independent_url,
+                "MEMO-INDEPENDENT",
+                "independent route renders",
+            ),
+        ] {
+            poll_until_response_contains(&client, url, marker, phase, &session).await;
+        }
+        let independent_file = session.html_root().join("independent/index.html");
+        let a_md = session.root.join("content/articles/a.md");
+        let mut narrowed: Option<(String, String, DiskSnapshot)> = None;
+        for attempt in 1..=MEMO_EDIT_ATTEMPTS {
+            drain_ticks_until_quiescent(&base).await;
+            let independent_before = snapshot_file(&independent_file);
+            let title = format!("Alpha Memo V{} attempt {attempt}", attempt + 1);
+            let offset = read_log(&session.stderr_path).len();
+            let sse = subscribe_sse(&base).await;
+            fs::write(&a_md, format!("---\ntitle: {title}\n---\n\nAlpha body.\n"))
+                .expect("edit a.md title in place");
+
+            match next_sse_event_name(sse, SSE_DEADLINE).await {
+                Ok(Some(name)) => assert_eq!(
+                    name.as_str(),
+                    "page",
+                    "a.md title edit broadcast an unexpected SSE event.\n{}",
+                    session.logs(),
+                ),
+                Ok(None) => eprintln!(
+                    "[content_aggregate_cold_boot_e2e] no SSE page event observed for the memo \
+                     helper edit; relying on the authoritative response and timing checks."
+                ),
+                Err(error) => panic!(
+                    "SSE read failed after the memo helper edit: {error:#}\n{}",
+                    session.logs(),
+                ),
+            }
+
+            let (tick, after_tick) = wait_for_stderr_line_where(
+                &session,
+                offset,
+                |line| is_tick_line_for(line, "a.md"),
+                "with a tick() naming a.md",
+                "a.md edit reached the orchestrator",
+            )
+            .await;
+            eprintln!("[content_aggregate_cold_boot_e2e] memo edit attempt {attempt}: {tick}");
+            if tick.contains("fan_out_safe=true") {
+                let (plan, _) = wait_for_stderr_line(
+                    &session,
+                    after_tick,
+                    &["[zfb-timing] lazy-render plan: pages="],
+                    "lazy-render plan after the narrowed a.md tick",
+                )
+                .await;
+                eprintln!("[content_aggregate_cold_boot_e2e] memo edit attempt {attempt}: {plan}");
+                narrowed = Some((title, plan, independent_before));
+                break;
+            }
+            // An un-narrowed tick selects every page, so it cannot show which
+            // routes provenance selected. Re-render every route in the current
+            // worker, as the first visits did, before the next unique edit.
+            for (url, marker, phase) in [
+                (&home_url, title.as_str(), "home after an un-narrowed tick"),
+                (
+                    &detail_url,
+                    title.as_str(),
+                    "detail after an un-narrowed tick",
+                ),
+                (
+                    &independent_url,
+                    "MEMO-INDEPENDENT",
+                    "independent after an un-narrowed tick",
+                ),
+            ] {
+                poll_until_response_contains(&client, url, marker, phase, &session).await;
+            }
+        }
+        let Some((title, plan, independent_before)) = narrowed else {
+            panic!(
+                "none of {MEMO_EDIT_ATTEMPTS} in-place a.md edits produced a fan_out_safe=true \
+                 tick, so the memoized provenance was never proven by a narrowed plan.\n{}",
+                session.logs(),
+            );
+        };
+        assert!(
+            plan.ends_with("pages=2"),
+            "the narrowed plan must hold exactly the detail route and the memoizing home page, \
+             and not /independent/: {plan}\n{}",
+            session.logs(),
+        );
+
+        poll_until_response_contains(
+            &client,
+            &home_url,
+            &title,
+            "home serves the edited title read through the memoized helper",
+            &session,
+        )
+        .await;
+        poll_until_response_contains(
+            &client,
+            &detail_url,
+            &title,
+            "detail serves the edited title",
+            &session,
+        )
+        .await;
+        poll_until_response_contains(
+            &client,
+            &independent_url,
+            "MEMO-INDEPENDENT",
+            "independent route still serves",
+            &session,
+        )
+        .await;
+        assert_snapshot_unchanged(
+            &independent_file,
+            &independent_before,
+            "a.md edit narrows past /independent/, which reads no content",
+            &session,
+        );
+        let logs = session.logs();
+        assert!(
+            !logs.contains("content provenance unavailable"),
+            "provenance must stay available for this scenario\n{logs}"
+        );
+
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] memo-helper content provenance dev E2E did not finish within {}s. \
+             Process group {pgid} will be killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
         ),
     }
 }

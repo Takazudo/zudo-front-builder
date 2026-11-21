@@ -1,0 +1,3 @@
+:root {
+  --fieldnotes-managed-marker: v0;
+}

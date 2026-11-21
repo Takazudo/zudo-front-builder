@@ -11,9 +11,10 @@ import { defaultExclude, defineConfig } from "vite-plus";
 // stays the hang guardrail everywhere except the suites that genuinely await
 // real child processes.
 //
-// Why only these five: they, and nothing else, reach child_process on an
-// awaited path (a transitive import-graph audit of the scripts/__tests__
-// files), so only they wait out multi-second subprocess phases. Under Vitest 2
+// Why only the suites listed below: they, and nothing else, reach
+// child_process on an awaited path (a transitive import-graph audit of the
+// suites under scripts/**/__tests__), so only they wait out multi-second
+// subprocess phases. Under Vitest 2
 // a suite that blocked on execFileSync was immune to testTimeout -- #3061
 // measured changelog-layout at 30.1 s on a saturated host, passing. Vitest 4+
 // also fails a test whose elapsed time reached the timeout once it returns, so
@@ -25,6 +26,7 @@ import { defaultExclude, defineConfig } from "vite-plus";
 // names a suite, so the two cannot start overlapping and run it twice.
 const SUBPROCESS_SUITES = [
   "scripts/__tests__/admit-darwin-artifacts-cli.test.mjs",
+  "scripts/dev-browser-observe/__tests__/process-control.test.mjs",
   "scripts/__tests__/docs-dev-supervisor.test.mjs",
   "scripts/__tests__/harvest-supervisor-timelines.test.mjs",
   "scripts/__tests__/install-playwright-linux.test.mjs",

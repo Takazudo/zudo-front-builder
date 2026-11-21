@@ -7343,14 +7343,7 @@ impl DevRenderSession {
             if response.status != 200 {
                 anyhow::bail!("content provenance drain returned HTTP {}", response.status);
             }
-            let payload: DevContentTracePayload = serde_json::from_slice(&response.body)
-                .context("decoding content provenance trace payload")?;
-            if !payload.ready {
-                anyhow::bail!("content provenance trace wrapper is not ready");
-            }
-            if let Some(error) = payload.error {
-                anyhow::bail!("content provenance trace wrapper failed: {error}");
-            }
+            let payload = decode_content_trace_payload(&response.body)?;
 
             let membership = collect_content_provenance_membership(
                 &self.inner.rebuild_inputs.cfg,
@@ -8558,9 +8551,9 @@ impl Drop for DevRenderInner {
 /// The generated wrapper rejects requests without the per-bundle nonce, so a
 /// normal browser request cannot read or alter the trace state.
 #[cfg(feature = "direct-v8")]
-const DEV_CONTENT_TRACE_ENDPOINT: &str = "/__zfb_internal/content-provenance";
+pub(crate) const DEV_CONTENT_TRACE_ENDPOINT: &str = "/__zfb_internal/content-provenance";
 #[cfg(feature = "direct-v8")]
-const DEV_CONTENT_TRACE_HEADER: &str = "x-zfb-content-provenance-token";
+pub(crate) const DEV_CONTENT_TRACE_HEADER: &str = "x-zfb-content-provenance-token";
 
 /// Each generated wrapper receives a fresh nonce. It is not a public API or
 /// an authentication mechanism; it prevents an ordinary dev-server request
@@ -8795,8 +8788,123 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// inner specifier (`file:///zfb/<bundle-basename>`), installs a transparent
 /// `getCollection()` observer over the shared content snapshot, and
 /// re-exports a `fetch` handler that delegates to the inner worker. For
-/// ordinary requests it returns the inner worker response unchanged. The
-/// wrapper is dev-only and exists solely to feed the dependency graph with
+/// ordinary requests it returns the inner worker response unchanged.
+///
+/// `getCollection()` hands each entry's snapshot `frontmatter` object to the
+/// caller by reference as `data`, so a helper that memoizes entries at module
+/// level keeps reading those same objects in later routes without calling
+/// `getCollection()` again. The wrapper therefore also turns each top-level
+/// frontmatter data property into an accessor, in place, that records the
+/// same aggregate read of every collection owning that object (once per
+/// request and collection). In-place conversion keeps object identity, so
+/// entries captured before the wrapper ran stay observed, and spread,
+/// `Object.keys`, `JSON.stringify` and `structuredClone` keep producing plain
+/// data. Writes follow the ordinary `[[Set]]` steps for the receiver: a write
+/// to the object itself updates the shared value, and rejects with a
+/// `TypeError` once the object was passed to `Object.freeze` (a sealed one
+/// still accepts it). Any other receiver (an `Object.create(data)` object,
+/// a descriptor-copied clone such as
+/// `Object.create(p, Object.getOwnPropertyDescriptors(data))`, `Reflect.set`
+/// with an unrelated receiver) gets or updates its own data property and the
+/// shared value is untouched; a receiver that only inherits from frozen
+/// frontmatter is rejected. A Proxy view and a clone both carry the tracking
+/// accessor and cannot be told apart, so the wrapper defines the data
+/// property on that receiver: a clone keeps it, while a Proxy view forwards
+/// it to the frontmatter object, over which the wrapper then re-installs
+/// the tracking accessor with the new value. When that define fails, the
+/// shared value is updated only if the original frontmatter is genuinely
+/// sealed (non-extensible, its tracking accessor non-configurable, not
+/// frozen); every other failure (a frozen original or clone, a Proxy whose
+/// `defineProperty` trap refuses) rejects the write with V8's read-only
+/// `TypeError`. The worker's
+/// `Object.freeze` is replaced once per realm (marked with
+/// `Symbol.for("zfb.devContentTrace.freeze")`, which also holds the
+/// tracking sets); each worker generation boots a fresh isolate and
+/// context (`ThreadedV8Host::new_with_dev_content_trace_wrapper` spawns a new
+/// host via `NativeHost::with_loader`), so nothing carries across
+/// generations. A cached entry's `Content` resolves its compiled body through
+/// `globalThis.__zfb.content.get(...)` at render time, so that lookup records
+/// a read of the owning collection too; when the bundle emitted no bridge, the
+/// wrapper installs one whose `get` only records and returns `undefined`, so
+/// `Content` keeps its body fallback.
+///
+/// Conservative fallbacks:
+/// - A collection with frontmatter that was already frozen or sealed when the
+///   wrapper installs (for example a helper that deep-freezes its cache
+///   during module evaluation) cannot be converted. That collection is
+///   treated as read by every traced request, `paths()` and render alike,
+///   so every visited route consumes it; other collections keep exact
+///   observations. One `console.warn` per such collection names it.
+/// - The same per-collection fallback covers a content bridge that cannot be
+///   instrumented at install (a frozen bridge, or a read-only `get` or
+///   bridge slot): every collection that owns a module specifier becomes
+///   read by every traced request, with its own warning.
+/// - If the bridge was the wrapper's own placeholder (the bundle emitted none)
+///   and it is later replaced, removed or set to `null`/`undefined`, or the
+///   `globalThis.__zfb` namespace itself is replaced, the next drain reports
+///   not ready ("content bridge installed or removed after trace install")
+///   for the rest of that worker generation, as for a replaced real bridge
+///   below. A bundle that installs its content bridge lazily therefore
+///   loses narrowing for that generation.
+/// - If a real instrumented bridge object or its `get` is replaced after
+///   install (including a bridge that had no `get` function at install), the
+///   next drain reports not ready ("content bridge replaced after trace
+///   install"). Any other instrumentation failure also leaves the wrapper not
+///   ready. [`decode_content_trace_payload`] rejects every drain from such a
+///   worker, its `Content` edges are cleared, and content edits take the
+///   unknown-path `All` selection.
+///
+/// Known limits:
+/// - Main remaining limit: a memo of COPIED values, such as
+///   `map((e) => ({ slug: e.slug, title: e.data.title }))`, records reads
+///   only in the request that fills the cache. Later consumers of those
+///   copies are unobserved, with no fallback and no warning. The same holds
+///   for any value copied out before the current request (a cached array of
+///   title strings, `slug`, `body`, a nested frontmatter object held
+///   separately), including a `paths()` that maps only cached `e.slug`
+///   values.
+/// - Frontmatter keys absent at install are plain properties: reading them,
+///   or probing an optional key with `in`, `hasOwnProperty` or `Object.keys`,
+///   records nothing. An entry with null frontmatter gets a fresh `{}` per
+///   `getCollection()` call, which has nothing to observe.
+/// - In dev only, `Object.isFrozen` and `Object.getOwnPropertyDescriptor`
+///   see accessors (a sealed converted object reports frozen), and
+///   redefining a key with `Object.defineProperty` without a `value` drops
+///   its value. `Object.defineProperty(data, key, { value })` over a tracked
+///   key leaves a non-writable, untracked data property, where build keeps
+///   the key writable. A descriptor-copied clone reads the shared value
+///   until it is written, where in build it holds a snapshot of the value
+///   at copy time. A clone made after the frontmatter was sealed cannot
+///   take its own property in dev, so its write changes the shared value,
+///   where build changes only the clone. Where a write must fail (frozen frontmatter, a non-writable or
+///   accessor own property on the receiver, a non-extensible receiver),
+///   `Reflect.set` throws in dev instead of returning `false`.
+/// - A freeze through an `Object.freeze` reference captured before the
+///   wrapper installed (for example `const freeze = Object.freeze` in the
+///   bundle) is not seen, so dev still accepts writes that build rejects.
+///   Only code that already throws in build is affected.
+/// - Exotic seal/freeze/clone/proxy combinations, which JS cannot tell apart
+///   from ordinary ones:
+///   - with a sealed original, a write through a frozen descriptor-copied
+///     clone, or through a Proxy whose `defineProperty` trap refuses,
+///     updates the shared value instead of throwing (it looks the same as a
+///     transparent Proxy of the sealed original);
+///   - a freeze applied through a Proxy view
+///     (`Object.freeze(new Proxy(data, {}))`) is not tracked, so later
+///     writes to the original still succeed;
+///   - `Reflect.set(a, key, v, b)` where `b` carries a different tracked
+///     frontmatter object's accessor throws in dev.
+/// - `__zfb_trace_state.current` is a single slot saved and restored around
+///   each awaited fetch. That is sound because the V8 host serves one
+///   dispatch at a time and awaits it before taking the next
+///   (`serve_v8_host_requests` in `v8_host_adapter.rs`). The trace drain
+///   (`reconcile_content_provenance`) is one more dispatch through that same
+///   loop, under the renderer mutex, so no route fetch is in flight while it
+///   runs. Async work a
+///   route leaves running after its response resolves is credited to
+///   whichever request is current then.
+///
+/// The wrapper is dev-only and exists solely to feed the dependency graph with
 /// observations made by the running worker.
 ///
 /// The inner bundle is registered under that same specifier in the V8 host's
@@ -8901,10 +9009,166 @@ function __zfb_trace_context(request) {{
       return undefined;
     }}
     const route = __zfb_trace_routes.find((candidate) => candidate.template === template);
-    return route ? {{ source: route.source, phase: "paths" }} : undefined;
+    return route ? {{ source: route.source, phase: "paths", reads: new Set() }} : undefined;
   }}
   const route = __zfb_pick_render_route(pathname);
-  return route ? {{ source: route.source, phase: "render" }} : undefined;
+  return route ? {{ source: route.source, phase: "render", reads: new Set() }} : undefined;
+}}
+
+function __zfb_record_collection_read(current, collection) {{
+  current.reads.add(collection);
+  __zfb_trace_state.events.push({{
+    source: current.source,
+    collection,
+    phase: current.phase,
+    kind: "read",
+  }});
+}}
+
+const __zfb_freeze_marker = Symbol.for("zfb.devContentTrace.freeze");
+let __zfb_tracked_frontmatter = new WeakSet();
+let __zfb_frozen_frontmatter = new WeakSet();
+
+function __zfb_install_freeze_patch() {{
+  let state = Object.freeze[__zfb_freeze_marker];
+  if (!state) {{
+    const originalFreeze = Object.freeze;
+    state = {{ tracked: new WeakSet(), frozen: new WeakSet() }};
+    const patchState = state;
+    const replacement = {{
+      freeze(target) {{
+        if (patchState.tracked.has(target)) patchState.frozen.add(target);
+        return originalFreeze(target);
+      }},
+    }}.freeze;
+    Object.defineProperty(replacement, __zfb_freeze_marker, {{ value: state }});
+    Object.freeze = replacement;
+  }}
+  __zfb_tracked_frontmatter = state.tracked;
+  __zfb_frozen_frontmatter = state.frozen;
+}}
+
+function __zfb_read_only_error(key) {{
+  return new TypeError(`Cannot assign to read only property '${{key}}' of object '#<Object>'`);
+}}
+const __zfb_untrackable_collections = new Set();
+let __zfb_instrumented_bridge;
+let __zfb_instrumented_bridge_get;
+let __zfb_bridge_is_placeholder = false;
+
+function __zfb_mark_untrackable(owners, reason) {{
+  for (const collection of owners) {{
+    if (__zfb_untrackable_collections.has(collection)) continue;
+    __zfb_untrackable_collections.add(collection);
+    console.warn(
+      `[zfb dev] content provenance: collection "${{collection}}" ${{reason}}; every route rendered in dev is treated as a reader of "${{collection}}"`,
+    );
+  }}
+}}
+
+function __zfb_record_owner_reads(current, owners) {{
+  for (const collection of owners) {{
+    if (!current.reads.has(collection)) __zfb_record_collection_read(current, collection);
+  }}
+}}
+
+function __zfb_frontmatter_is_convertible(frontmatter) {{
+  for (const key of Object.keys(frontmatter)) {{
+    const descriptor = Object.getOwnPropertyDescriptor(frontmatter, key);
+    if (descriptor && "value" in descriptor && !descriptor.configurable) return false;
+  }}
+  return true;
+}}
+
+function __zfb_track_frontmatter(frontmatter, owners) {{
+  __zfb_tracked_frontmatter.add(frontmatter);
+  for (const key of Object.keys(frontmatter)) {{
+    const descriptor = Object.getOwnPropertyDescriptor(frontmatter, key);
+    if (!descriptor || !("value" in descriptor)) continue;
+    let value = descriptor.value;
+    const writable = descriptor.writable;
+    const enumerable = descriptor.enumerable;
+    const getter = function () {{
+      const current = __zfb_trace_state.current;
+      if (current) __zfb_record_owner_reads(current, owners);
+      return value;
+    }};
+    const setter = function (next) {{
+      const receiver = this;
+      if (receiver === frontmatter) {{
+        if (__zfb_frozen_frontmatter.has(frontmatter)) throw __zfb_read_only_error(key);
+        value = next;
+        return;
+      }}
+      if (receiver === null || (typeof receiver !== "object" && typeof receiver !== "function")) {{
+        throw new TypeError(`Cannot create property '${{key}}' on ${{typeof receiver}} '${{String(receiver)}}'`);
+      }}
+      const existing = Reflect.getOwnPropertyDescriptor(receiver, key);
+      if (existing && existing.get === getter) {{
+        // A Proxy view of the frontmatter and a descriptor-copied clone look the same here.
+        const before = Reflect.getOwnPropertyDescriptor(frontmatter, key);
+        try {{
+          Object.defineProperty(receiver, key, {{
+            value: next,
+            writable: true,
+            enumerable: existing.enumerable,
+            configurable: true,
+          }});
+        }} catch (error) {{
+          if (!(error instanceof TypeError)) throw error;
+          const original = Reflect.getOwnPropertyDescriptor(frontmatter, key);
+          const sealedOriginal =
+            !Reflect.isExtensible(frontmatter) &&
+            original !== undefined &&
+            original.get === getter &&
+            !original.configurable &&
+            !__zfb_frozen_frontmatter.has(frontmatter);
+          if (!sealedOriginal) throw __zfb_read_only_error(key);
+          value = next;
+          return;
+        }}
+        const after = Reflect.getOwnPropertyDescriptor(frontmatter, key);
+        if (before && before.get === getter && after && "value" in after && after.configurable) {{
+          value = after.value;
+          install(after.enumerable);
+        }}
+        return;
+      }}
+      if (__zfb_frozen_frontmatter.has(frontmatter)) throw __zfb_read_only_error(key);
+      if (existing) {{
+        if (!("value" in existing)) {{
+          throw new TypeError(`Cannot redefine property: ${{key}}`);
+        }}
+        if (!existing.writable) throw __zfb_read_only_error(key);
+        Object.defineProperty(receiver, key, {{ value: next }});
+        return;
+      }}
+      if (!Object.isExtensible(receiver)) {{
+        throw new TypeError(`Cannot add property ${{key}}, object is not extensible`);
+      }}
+      Object.defineProperty(receiver, key, {{
+        value: next,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      }});
+    }};
+    const install = (isEnumerable) => {{
+      Object.defineProperty(frontmatter, key, {{
+        configurable: true,
+        enumerable: isEnumerable,
+        get: getter,
+        set: writable ? setter : undefined,
+      }});
+    }};
+    install(enumerable);
+  }}
+}}
+
+function __zfb_bridge_replaced() {{
+  if (__zfb_instrumented_bridge === undefined) return false;
+  const bridge = globalThis.__zfb?.content;
+  return bridge !== __zfb_instrumented_bridge || bridge.get !== __zfb_instrumented_bridge_get;
 }}
 
 try {{
@@ -8913,16 +9177,88 @@ try {{
     __zfb_trace_state.error = "content snapshot is unavailable";
   }} else {{
     const collections = snapshot.collections;
+    const frontmatterOwners = new Map();
+    const specifierCollections = new Map();
+    for (const collection of Object.keys(collections)) {{
+      const entries = collections[collection];
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {{
+        if (!entry || typeof entry !== "object") continue;
+        const frontmatter = entry.frontmatter;
+        if (frontmatter && typeof frontmatter === "object" && !Array.isArray(frontmatter)) {{
+          const owners = frontmatterOwners.get(frontmatter) ?? new Set();
+          owners.add(collection);
+          frontmatterOwners.set(frontmatter, owners);
+        }}
+        if (typeof entry.module_specifier === "string") {{
+          const owners = specifierCollections.get(entry.module_specifier) ?? new Set();
+          owners.add(collection);
+          specifierCollections.set(entry.module_specifier, owners);
+        }}
+      }}
+    }}
+    if (frontmatterOwners.size > 0) __zfb_install_freeze_patch();
+    for (const [frontmatter, owners] of frontmatterOwners) {{
+      if (__zfb_frontmatter_is_convertible(frontmatter)) {{
+        __zfb_track_frontmatter(frontmatter, owners);
+      }} else {{
+        __zfb_mark_untrackable(owners, "has frontmatter that was frozen or sealed before tracing started");
+      }}
+    }}
+    if (specifierCollections.size > 0) {{
+      const recordContentLookup = (specifier) => {{
+        const current = __zfb_trace_state.current;
+        const owners = current ? specifierCollections.get(specifier) : undefined;
+        if (owners) __zfb_record_owner_reads(current, owners);
+      }};
+      try {{
+        const namespace = globalThis.__zfb;
+        const contentBridge = namespace.content;
+        if (contentBridge === undefined || contentBridge === null) {{
+          const bridge = {{
+            get(specifier) {{
+              recordContentLookup(specifier);
+              return undefined;
+            }},
+          }};
+          namespace.content = bridge;
+          if (namespace.content !== bridge) throw new TypeError("content bridge slot is read-only");
+          __zfb_instrumented_bridge = bridge;
+          __zfb_instrumented_bridge_get = bridge.get;
+          __zfb_bridge_is_placeholder = true;
+        }} else if (typeof contentBridge.get === "function") {{
+          const bridgeGet = contentBridge.get;
+          const tracedGet = function (specifier) {{
+            recordContentLookup(specifier);
+            return bridgeGet.apply(this, arguments);
+          }};
+          contentBridge.get = tracedGet;
+          if (contentBridge.get !== tracedGet) throw new TypeError("content bridge get is read-only");
+          __zfb_instrumented_bridge = contentBridge;
+          __zfb_instrumented_bridge_get = tracedGet;
+        }} else {{
+          __zfb_instrumented_bridge = contentBridge;
+          __zfb_instrumented_bridge_get = contentBridge.get;
+        }}
+      }} catch (error) {{
+        __zfb_instrumented_bridge = undefined;
+        __zfb_instrumented_bridge_get = undefined;
+        __zfb_bridge_is_placeholder = false;
+        const owners = new Set();
+        for (const collectionsOwning of specifierCollections.values()) {{
+          for (const collection of collectionsOwning) owners.add(collection);
+        }}
+        __zfb_mark_untrackable(
+          owners,
+          `has a content bridge that could not be instrumented (${{String(error)}})`,
+        );
+      }}
+    }}
     snapshot.collections = new Proxy(collections, {{
       get(target, property, receiver) {{
         const current = __zfb_trace_state.current;
-        if (current && typeof property === "string") {{
-          __zfb_trace_state.events.push({{
-            source: current.source,
-            collection: property,
-            phase: current.phase,
-            kind: "read",
-          }});
+        if (current && typeof property === "string" && !current.reads.has(property)) {{
+          __zfb_record_collection_read(current, property);
         }}
         return Reflect.get(target, property, receiver);
       }},
@@ -8930,6 +9266,7 @@ try {{
     __zfb_trace_state.ready = true;
   }}
 }} catch (error) {{
+  __zfb_trace_state.ready = false;
   __zfb_trace_state.error = String(error);
 }}
 
@@ -8939,6 +9276,12 @@ export default {{
     if (pathname === __zfb_trace_endpoint) {{
       if (request.headers.get(__zfb_trace_header) !== __zfb_trace_token) {{
         return new Response("Not Found", {{ status: 404 }});
+      }}
+      if (__zfb_trace_state.ready && __zfb_bridge_replaced()) {{
+        __zfb_trace_state.ready = false;
+        __zfb_trace_state.error = __zfb_bridge_is_placeholder
+          ? "content bridge installed or removed after trace install; conservative fallback"
+          : "content bridge replaced after trace install; conservative fallback";
       }}
       const events = __zfb_trace_state.events.splice(0);
       return new Response(JSON.stringify({{
@@ -8955,6 +9298,7 @@ export default {{
     if (!current) return __zfb_inner_worker.fetch(request);
     const previous = __zfb_trace_state.current;
     __zfb_trace_state.current = current;
+    __zfb_record_owner_reads(current, __zfb_untrackable_collections);
     try {{
       const response = await __zfb_inner_worker.fetch(request);
       __zfb_trace_state.events.push({{
@@ -10592,6 +10936,25 @@ struct ClassifiedContentTrace {
     reads: BTreeMap<DevContentTraceObservation, Vec<TrackedContentRead>>,
 }
 
+/// Decode one trace drain. A wrapper that is not ready or reports an error
+/// makes this worker's provenance unusable; the caller then clears its
+/// `Content` edges so content edits take the unknown-path `All` fallback.
+#[cfg(feature = "direct-v8")]
+fn decode_content_trace_payload(body: &[u8]) -> Result<DevContentTracePayload> {
+    let payload: DevContentTracePayload =
+        serde_json::from_slice(body).context("decoding content provenance trace payload")?;
+    if !payload.ready {
+        match payload.error {
+            Some(error) => anyhow::bail!("content provenance trace wrapper is not ready: {error}"),
+            None => anyhow::bail!("content provenance trace wrapper is not ready"),
+        }
+    }
+    if let Some(error) = payload.error {
+        anyhow::bail!("content provenance trace wrapper failed: {error}");
+    }
+    Ok(payload)
+}
+
 /// Convert worker trace events into route observations and pure provenance
 /// reads. A visit is meaningful even when it made no `getCollection()` call:
 /// it is the positive evidence needed to drop that route phase's prior worker
@@ -11859,6 +12222,145 @@ fn colon_template_to_bracket(template: &str) -> String {
 
 const DEFAULT_DEV_HOST: &str = "localhost";
 const DEFAULT_DEV_PORT: u16 = 3000;
+
+/// Test-only access to the canonical generated content-trace wrapper, so the
+/// V8 adapter's test module (serialized by the nextest heavy group) can boot
+/// the real wrapper source around a hand-written inner bundle.
+#[cfg(all(test, feature = "direct-v8"))]
+pub(crate) fn content_trace_wrapper_for_adapter_tests(
+    bundle_path: &Path,
+    routes: &[zfb_router::Route],
+) -> (String, String) {
+    use zfb_build::bundler::BundleManifest;
+    let output = BundlerOutput {
+        bundle_path: bundle_path.to_path_buf(),
+        sourcemap_path: bundle_path.with_extension("mjs.map"),
+        manifest: BundleManifest {
+            bundle_basename: bundle_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            routes: Vec::new(),
+        },
+        route_module_deps: Vec::new(),
+        linked_package_snapshots: Vec::new(),
+        emitted_wasm_assets: Vec::new(),
+        content_bridge_fallback_pages: Vec::new(),
+        dropped_plain_css_inputs: Vec::new(),
+        node_modules_staging_stats: Default::default(),
+    };
+    wrap_dev_bundle_with_content_trace(&output, routes).expect("canonical wrapper generation")
+}
+
+/// Test-only: the error the production drain decoder reports for `body`, or
+/// `None` when the drain is usable.
+#[cfg(all(test, feature = "direct-v8"))]
+pub(crate) fn content_trace_payload_error_for_adapter_tests(body: &[u8]) -> Option<String> {
+    decode_content_trace_payload(body)
+        .err()
+        .map(|error| format!("{error:#}"))
+}
+
+/// One SSG route entry for [`content_consumers_from_trace_for_adapter_tests`]:
+/// `(url_path, output_path, slug param)`.
+#[cfg(all(test, feature = "direct-v8"))]
+pub(crate) type AdapterTestRouteEntry = (&'static str, &'static str, Option<&'static str>);
+
+/// Test-only: feed one real trace-endpoint drain through the production
+/// classifier, observation retirement and graph edge replacement, starting
+/// from `retained_render_readers` (prior-generation render readers of the
+/// first collection in `collections`),
+/// and return the consumers of `entry`.
+#[cfg(all(test, feature = "direct-v8"))]
+pub(crate) fn content_consumers_from_trace_for_adapter_tests(
+    project_root: &Path,
+    collections: &[&str],
+    routes: Vec<(PathBuf, Vec<AdapterTestRouteEntry>)>,
+    page_sources: HashSet<PathBuf>,
+    retained_render_readers: &[PathBuf],
+    trace_body: &[u8],
+    entry: &Path,
+) -> Vec<PathBuf> {
+    let cfg = config::Config {
+        collections: collections
+            .iter()
+            .map(|collection| config::CollectionDef {
+                name: (*collection).into(),
+                path: PathBuf::from("content").join(collection),
+                schema: None,
+                include: None,
+                exclude: None,
+                id_strip_suffix: None,
+                allow_outside_root: false,
+            })
+            .collect(),
+        ..config::Config::default()
+    };
+    let roots = resolve_roots(project_root, &cfg)
+        .collection_roots()
+        .to_vec();
+    let membership = collect_content_provenance_membership(&cfg, &roots).unwrap();
+    let routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>> = routes
+        .into_iter()
+        .map(|(source, entries)| {
+            let entries = entries
+                .into_iter()
+                .map(|(url, output, slug)| DevRouteEntry {
+                    entry: RouteUniverseEntry {
+                        url_path: url.into(),
+                        output_path: PathBuf::from(output),
+                        route_key: url.into(),
+                        static_html: false,
+                        source_path: None,
+                    },
+                    params: slug.map(|slug| crate::render_pipeline::ResolvedRouteParams {
+                        scalars: BTreeMap::from([("slug".to_string(), slug.to_string())]),
+                        arrays: BTreeMap::new(),
+                    }),
+                })
+                .collect();
+            (source, entries)
+        })
+        .collect();
+    let payload = decode_content_trace_payload(trace_body).expect("usable trace payload");
+    let classified = classify_content_trace_events(
+        payload.events,
+        &routes_by_source,
+        &page_sources,
+        &membership,
+        project_root,
+    )
+    .expect("classify current-worker trace");
+    let mut retained: BTreeMap<DevContentTraceObservation, Vec<TrackedContentRead>> =
+        retained_render_readers
+            .iter()
+            .map(|source| {
+                let consumer = PageId::new(source.clone());
+                (
+                    DevContentTraceObservation {
+                        consumer: consumer.clone(),
+                        phase: DevContentTracePhase::Render,
+                    },
+                    vec![TrackedContentRead::collection(consumer, collections[0])],
+                )
+            })
+            .collect();
+    apply_content_trace_observations(&mut retained, classified.observed.clone(), classified.reads);
+    demote_retained_paths_reads(&mut retained, &classified.observed, &membership.membership);
+    let mut graph = DependencyGraph::new();
+    replace_content_edges(
+        &mut graph,
+        ContentProvenance::from_reads(retained.into_values().flatten())
+            .edge_groups(&membership.membership)
+            .unwrap(),
+    );
+    graph
+        .consumers_of(entry)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|page| page.path().to_path_buf())
+        .collect()
+}
 
 /// Test-only stub session factory for the lazy render adapter's
 /// direct-invocation tests (issue #1026) — builds a [`DevRenderSession`]

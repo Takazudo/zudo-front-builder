@@ -1,0 +1,95 @@
+{
+  "schema": "dev-browser-observe.profile.v1",
+  "description": "Negative controls: the stale-predicate op must time out (declared), which counts as a control pass and still stops the batch.",
+  "mode": "source-built",
+  "diagnostic": false,
+  "productSha": "0000000000000000000000000000000000000000",
+  "productDirtyIdentity": null,
+  "buildReceipt": "/tmp/dev-browser-observe/build-receipt.json",
+  "fixture": {
+    "dir": "../fixtures/tiny-two-article",
+    "placement": "internal",
+    "adapter": "A0",
+    "trailingSlash": false
+  },
+  "pins": {
+    "harnessTreeSha256": null,
+    "fixtureTreeSha256": null,
+    "observerSha256": null,
+    "adapterSha256": null
+  },
+  "server": {
+    "port": {
+      "mode": "ephemeral"
+    },
+    "host": "127.0.0.1",
+    "readyTimeoutMs": 120000
+  },
+  "browser": {
+    "headless": true,
+    "args": [
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows"
+    ],
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "deviceScaleFactor": 1
+  },
+  "timeouts": {
+    "attemptMs": 10000,
+    "supplementalMs": 30000,
+    "restoreMs": 30000,
+    "stopTermMs": 5000,
+    "stopKillMs": 3000,
+    "quietMs": 1500
+  },
+  "limits": {
+    "rssCeilingKiB": 4194304,
+    "wallCeilingMs": 1800000,
+    "sampleEveryMs": 1000
+  },
+  "calibration": {
+    "repeats": 5,
+    "staleTimeoutMs": 2000,
+    "cells": [
+      "binding-round-trip",
+      "two-raf",
+      "synthetic-dom",
+      "synthetic-css",
+      "observer-init-after-navigation",
+      "stale-then-new-token",
+      "late-token",
+      "reload-survival-controller-triggered",
+      "native-reload-survival"
+    ]
+  },
+  "restoration": {
+    "writeMethod": "in-place"
+  },
+  "scenarios": [
+    {
+      "id": "neg-stale-predicate",
+      "set": "negative-controls",
+      "ops": [
+        {
+          "id": "stale-a",
+          "op": "stale-predicate",
+          "article": "a",
+          "expect": "timeout",
+          "writeMethod": "in-place"
+        },
+        {
+          "id": "never-reached",
+          "op": "edit-title",
+          "article": "b",
+          "writeMethod": "in-place"
+        }
+      ],
+      "warmOrder": "none"
+    }
+  ],
+  "outDir": "/tmp/dev-browser-observe"
+}
