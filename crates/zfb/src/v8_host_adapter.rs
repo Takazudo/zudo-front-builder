@@ -1260,10 +1260,11 @@ export { worker as default };
     }
 
     /// When the bundle emitted no bridge, the wrapper's placeholder bridge can
-    /// be replaced by a real one later. The next drain adopts and instruments
-    /// it, keeps the worker ready, treats bridge-owning collections as read
-    /// by every traced request from then on, and credits that read to visits
-    /// made while the bridge was uninstrumented. Replacing the adopted real
+    /// be replaced by a real one later. Requests since the last drain may have
+    /// used it uninstrumented, so that drain is rejected (the session takes
+    /// its `All` fallback). The wrapper adopts and instruments the new bridge,
+    /// treats bridge-owning collections as read by every traced request from
+    /// then on, and later drains are usable. Replacing the adopted real
     /// bridge afterwards still gives the not-ready fallback.
     #[test]
     fn dev_content_trace_wrapper_adopts_bridge_replacing_its_placeholder() {
@@ -1337,16 +1338,14 @@ export { worker as default };
             b"bodies:compiled-spec-a"
         );
         let body = drain_content_trace(host.as_mut(), &token);
-        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body),
-            None,
-            "adopting a bridge that replaced the placeholder keeps the worker ready"
-        );
-        assert_eq!(
-            render_reads(&payload, &bodies),
-            1,
-            "the uninstrumented lookup is credited conservatively: {payload:?}"
+        let error = crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body)
+            .expect("the drain that adopts the real bridge must be rejected");
+        assert!(
+            error.contains(
+                "content bridge installed after trace install; conservative fallback for this \
+                 generation's prior requests"
+            ),
+            "{error}"
         );
         let logs = host.drain_console_logs();
         assert!(
@@ -1431,7 +1430,11 @@ export { worker as default };
     /// Converted frontmatter keeps ordinary `[[Set]]` receiver semantics. A
     /// write through a Proxy forwarding to it updates the shared value and
     /// the tracking accessor is re-installed, so a later traced read still
-    /// records. A descriptor-copied clone writes only its own property.
+    /// records. A descriptor-copied clone writes only its own property,
+    /// including one made before its original was frozen, and never reverts
+    /// a later redefinition of the original. On sealed frontmatter a Proxy
+    /// write keeps tracking, and a clone made after sealing writes the shared
+    /// value (a documented dev-only limit).
     /// `Reflect.set` with an unrelated receiver writes the receiver's own
     /// property, updating an existing writable one, and leaves the shared
     /// value alone; a non-extensible receiver or a non-writable own property
@@ -1447,10 +1450,18 @@ export { worker as default };
 const __zfb_ns = (globalThis.__zfb ??= {});
 __zfb_ns.contentSnapshot = JSON.parse(JSON.stringify({
   collections: {
-    articles: [{ slug: "a", frontmatter: { title: "Alpha" }, body: "alpha", module_specifier: "spec-a" }],
+    articles: [
+      { slug: "a", frontmatter: { title: "Alpha" }, body: "alpha", module_specifier: "spec-a" },
+      { slug: "c", frontmatter: { title: "Gamma" }, body: "gamma", module_specifier: "spec-c" },
+      { slug: "d", frontmatter: { title: "Delta" }, body: "delta", module_specifier: "spec-d" },
+    ],
+    notes: [{ slug: "n", frontmatter: { title: "Note" }, body: "note", module_specifier: "spec-n" }],
   },
 }));
-const data = __zfb_ns.contentSnapshot.collections.articles[0].frontmatter;
+const [data, frozen, redefined] = __zfb_ns.contentSnapshot.collections.articles.map((e) => e.frontmatter);
+const sealed = __zfb_ns.contentSnapshot.collections.notes[0].frontmatter;
+const descriptorClone = (source) =>
+  Object.create(Object.getPrototypeOf(source), Object.getOwnPropertyDescriptors(source));
 const worker = {
   fetch(request) {
     if (new URL(request.url).pathname === "/__proxy-write") {
@@ -1480,9 +1491,32 @@ const worker = {
       results.push(typeof Object.getOwnPropertyDescriptor(data, "title").get === "function");
       const marker = Symbol.for("zfb.devContentTrace.freeze");
       results.push(typeof Object.freeze[marker] === "object");
+
+      Object.seal(sealed);
+      new Proxy(sealed, {}).title = "Sealed Proxy";
+      results.push(sealed.title, typeof Object.getOwnPropertyDescriptor(sealed, "title").get === "function");
+      descriptorClone(sealed).title = "Sealed Clone";
+      results.push(sealed.title);
+
+      const cloneBeforeFreeze = descriptorClone(frozen);
+      Object.freeze(frozen);
+      cloneBeforeFreeze.title = "Frozen Clone";
+      results.push(Object.getOwnPropertyDescriptor(cloneBeforeFreeze, "title").value, frozen.title);
+      try {
+        descriptorClone(frozen).title = "X";
+        results.push("no error");
+      } catch (caught) {
+        results.push(caught instanceof TypeError);
+      }
+
+      const cloneBeforeRedefine = descriptorClone(redefined);
+      Object.defineProperty(redefined, "title", { value: "Fixed" });
+      cloneBeforeRedefine.title = "Clone Write";
+      const redefinedOwn = Object.getOwnPropertyDescriptor(redefined, "title");
+      results.push(redefinedOwn.value, redefinedOwn.writable, "value" in redefinedOwn, cloneBeforeRedefine.title);
       return new Response(results.join("|"));
     }
-    return new Response("home:" + data.title);
+    return new Response("home:" + data.title + "," + sealed.title);
   },
 };
 export { worker as default };
@@ -1492,24 +1526,32 @@ export { worker as default };
             String::from_utf8_lossy(&host.dispatch_fetch("/__proxy-write").unwrap().body),
             "Via Proxy|true|true|Via Reflect|true|true|true|Via Proxy|\
              true|Again|Via Proxy|true|Derived|Via Proxy|Clone|true|true|Via Proxy|\
-             true|true|true|true"
+             true|true|true|true|\
+             Sealed Proxy|true|Sealed Clone|\
+             Frozen Clone|Gamma|true|\
+             Fixed|false|true|Clone Write"
         );
-        assert_eq!(host.dispatch_fetch("/").unwrap().body, b"home:Via Proxy");
+        assert_eq!(
+            host.dispatch_fetch("/").unwrap().body,
+            b"home:Via Proxy,Sealed Clone"
+        );
         let body = drain_content_trace(host.as_mut(), &token);
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let home = pages.join("index.tsx").to_string_lossy().into_owned();
-        let reads = payload["events"]
-            .as_array()
-            .expect("events")
-            .iter()
-            .filter(|event| {
-                event["source"] == home.as_str()
-                    && event["phase"] == "render"
-                    && event["kind"] == "read"
-                    && event["collection"] == "articles"
-            })
-            .count();
-        assert_eq!(reads, 1, "{payload:?}");
+        for collection in ["articles", "notes"] {
+            let reads = payload["events"]
+                .as_array()
+                .expect("events")
+                .iter()
+                .filter(|event| {
+                    event["source"] == home.as_str()
+                        && event["phase"] == "render"
+                        && event["kind"] == "read"
+                        && event["collection"] == collection
+                })
+                .count();
+            assert_eq!(reads, 1, "{collection}: {payload:?}");
+        }
     }
 
     /// A bridge object that had no `get` function at install is remembered

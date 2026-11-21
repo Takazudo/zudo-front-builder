@@ -8800,14 +8800,20 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// entries captured before the wrapper ran stay observed, and spread,
 /// `Object.keys`, `JSON.stringify` and `structuredClone` keep producing plain
 /// data. Writes follow the ordinary `[[Set]]` steps for the receiver: a write
-/// to the object itself updates the shared value. Any other receiver (an
-/// `Object.create(data)` object, a descriptor-copied clone such as
+/// to the object itself updates the shared value, and rejects with a
+/// `TypeError` once the object was passed to `Object.freeze` (a sealed one
+/// still accepts it). Any other receiver (an `Object.create(data)` object,
+/// a descriptor-copied clone such as
 /// `Object.create(p, Object.getOwnPropertyDescriptors(data))`, `Reflect.set`
 /// with an unrelated receiver) gets or updates its own data property and the
-/// shared value is untouched. A Proxy view defines that data property on its
-/// target, so the shared value changes; the wrapper then re-installs the
-/// tracking accessor over it, keeping later reads observed. A converted object passed to `Object.freeze` rejects writes
-/// with a `TypeError`, and a sealed one still accepts them. The worker's
+/// shared value is untouched; a receiver that only inherits from frozen
+/// frontmatter is rejected. A Proxy view and a clone both carry the tracking
+/// accessor and cannot be told apart, so the wrapper defines the data
+/// property on that receiver: a clone keeps it, while a Proxy view forwards
+/// it to the frontmatter object, over which the wrapper then re-installs
+/// the tracking accessor with the new value. When that define fails, a
+/// frozen target rejects the write and a sealed one updates the shared
+/// value. The worker's
 /// `Object.freeze` is replaced once per realm (marked with
 /// `Symbol.for("zfb.devContentTrace.freeze")`, which also holds the
 /// tracking sets); each worker generation boots a fresh isolate and
@@ -8831,11 +8837,14 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 ///   bridge slot): every collection that owns a module specifier becomes
 ///   read by every traced request, with its own warning.
 /// - If the bridge was the wrapper's own placeholder (the bundle emitted none)
-///   and the bundle installs a real bridge later, the next drain instruments
-///   the new bridge's `get`, treats every collection owning a module
-///   specifier as read by every traced request from then on (one warning
-///   each), and adds those reads to every visit in that drain, which may
-///   have used the uninstrumented bridge. The worker stays ready.
+///   and the bundle installs a real bridge later, requests since the last
+///   drain may have used the uninstrumented bridge. That drain reports not
+///   ready ("content bridge installed after trace install"), so the session
+///   clears this worker's `Content` edges and takes the `All` selection. The
+///   wrapper instruments the new bridge's `get` and treats every collection
+///   owning a module specifier as read by every traced request from then on
+///   (one warning each, naming any instrumentation error); later drains
+///   report ready.
 /// - If a real instrumented bridge object or its `get` is replaced after
 ///   install (including a bridge that had no `get` function at install), the
 ///   next drain reports not ready ("content bridge replaced after trace
@@ -8864,7 +8873,9 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 ///   key leaves a non-writable, untracked data property, where build keeps
 ///   the key writable. A descriptor-copied clone reads the shared value
 ///   until it is written, where in build it holds a snapshot of the value
-///   at copy time. Where a write must fail (frozen frontmatter, a non-writable or
+///   at copy time. A clone made after the frontmatter was sealed cannot
+///   take its own property in dev, so its write changes the shared value,
+///   where build changes only the clone. Where a write must fail (frozen frontmatter, a non-writable or
 ///   accessor own property on the receiver, a non-extensible receiver),
 ///   `Reflect.set` throws in dev instead of returning `false`.
 /// - A freeze through an `Object.freeze` reference captured before the
@@ -8876,7 +8887,10 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// - `__zfb_trace_state.current` is a single slot saved and restored around
 ///   each awaited fetch. That is sound because the V8 host serves one
 ///   dispatch at a time and awaits it before taking the next
-///   (`serve_v8_host_requests` in `v8_host_adapter.rs`). Async work a
+///   (`serve_v8_host_requests` in `v8_host_adapter.rs`). The trace drain
+///   (`reconcile_content_provenance`) is one more dispatch through that same
+///   loop, under the renderer mutex, so no route fetch is in flight while it
+///   runs. Async work a
 ///   route leaves running after its response resolves is credited to
 ///   whichever request is current then.
 ///
@@ -9074,27 +9088,22 @@ function __zfb_all_specifier_owners() {{
   return owners;
 }}
 
-function __zfb_adopt_bridge_replacing_placeholder(events) {{
+function __zfb_adopt_bridge_replacing_placeholder() {{
   __zfb_bridge_is_placeholder = false;
   __zfb_instrumented_bridge = undefined;
   __zfb_instrumented_bridge_get = undefined;
+  let reason = "had its content bridge installed after tracing started";
   const bridge = globalThis.__zfb?.content;
   if (bridge !== undefined && bridge !== null) {{
     try {{
       __zfb_instrument_bridge(bridge);
-    }} catch (_) {{
+    }} catch (error) {{
       __zfb_instrumented_bridge = undefined;
       __zfb_instrumented_bridge_get = undefined;
+      reason = `${{reason}} and could not be instrumented (${{String(error)}})`;
     }}
   }}
-  const owners = __zfb_all_specifier_owners();
-  __zfb_mark_untrackable(owners, "had its content bridge installed after tracing started");
-  for (const event of events.slice()) {{
-    if (event.kind !== "visit") continue;
-    for (const collection of owners) {{
-      events.push({{ source: event.source, collection, phase: event.phase, kind: "read" }});
-    }}
-  }}
+  __zfb_mark_untrackable(__zfb_all_specifier_owners(), reason);
 }}
 
 function __zfb_record_owner_reads(current, owners) {{
@@ -9126,8 +9135,8 @@ function __zfb_track_frontmatter(frontmatter, owners) {{
     }};
     const setter = function (next) {{
       const receiver = this;
-      if (__zfb_frozen_frontmatter.has(frontmatter)) throw __zfb_read_only_error(key);
       if (receiver === frontmatter) {{
+        if (__zfb_frozen_frontmatter.has(frontmatter)) throw __zfb_read_only_error(key);
         value = next;
         return;
       }}
@@ -9135,17 +9144,31 @@ function __zfb_track_frontmatter(frontmatter, owners) {{
         throw new TypeError(`Cannot create property '${{key}}' on ${{typeof receiver}} '${{String(receiver)}}'`);
       }}
       const existing = Reflect.getOwnPropertyDescriptor(receiver, key);
-      if (existing) {{
-        if (existing.get === getter) {{
+      if (existing && existing.get === getter) {{
+        // A Proxy view of the frontmatter and a descriptor-copied clone look the same here.
+        const before = Reflect.getOwnPropertyDescriptor(frontmatter, key);
+        try {{
           Object.defineProperty(receiver, key, {{
             value: next,
             writable: true,
             enumerable: existing.enumerable,
             configurable: true,
           }});
-          reinstallIfReplaced();
+        }} catch (error) {{
+          if (!(error instanceof TypeError)) throw error;
+          if (__zfb_frozen_frontmatter.has(frontmatter)) throw __zfb_read_only_error(key);
+          value = next;
           return;
         }}
+        const after = Reflect.getOwnPropertyDescriptor(frontmatter, key);
+        if (before && before.get === getter && after && "value" in after && after.configurable) {{
+          value = after.value;
+          install(after.enumerable);
+        }}
+        return;
+      }}
+      if (__zfb_frozen_frontmatter.has(frontmatter)) throw __zfb_read_only_error(key);
+      if (existing) {{
         if (!("value" in existing)) {{
           throw new TypeError(`Cannot redefine property: ${{key}}`);
         }}
@@ -9170,12 +9193,6 @@ function __zfb_track_frontmatter(frontmatter, owners) {{
         get: getter,
         set: writable ? setter : undefined,
       }});
-    }};
-    const reinstallIfReplaced = () => {{
-      const current = Reflect.getOwnPropertyDescriptor(frontmatter, key);
-      if (!current || current.get === getter || !("value" in current) || !current.configurable) return;
-      value = current.value;
-      install(current.enumerable);
     }};
     install(enumerable);
   }}
@@ -9274,19 +9291,26 @@ export default {{
       if (request.headers.get(__zfb_trace_header) !== __zfb_trace_token) {{
         return new Response("Not Found", {{ status: 404 }});
       }}
+      let drainReady = __zfb_trace_state.ready;
+      let drainError = __zfb_trace_state.error;
       if (__zfb_trace_state.ready && __zfb_bridge_replaced()) {{
         if (__zfb_bridge_is_placeholder) {{
-          __zfb_adopt_bridge_replacing_placeholder(__zfb_trace_state.events);
+          __zfb_adopt_bridge_replacing_placeholder();
+          drainReady = false;
+          drainError =
+            "content bridge installed after trace install; conservative fallback for this generation's prior requests";
         }} else {{
           __zfb_trace_state.ready = false;
           __zfb_trace_state.error = "content bridge replaced after trace install; conservative fallback";
+          drainReady = false;
+          drainError = __zfb_trace_state.error;
         }}
       }}
       const events = __zfb_trace_state.events.splice(0);
       return new Response(JSON.stringify({{
-        ready: __zfb_trace_state.ready,
+        ready: drainReady,
         events,
-        error: __zfb_trace_state.error,
+        error: drainError,
       }}), {{
         status: 200,
         headers: {{ "Content-Type": "application/json; charset=utf-8" }},
