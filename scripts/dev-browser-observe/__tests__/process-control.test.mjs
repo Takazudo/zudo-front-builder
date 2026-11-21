@@ -709,7 +709,7 @@ describe("execute (identity gate)", () => {
           process.kill(pid, signal);
         },
       });
-      expect(Date.now() - t0).toBeLessThan(10_000);
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(1500);
       expect(r).toMatchObject({ ok: false, timedOut: true, deadlineMs: 1500 });
       expect(r.children.map((c) => [c.role, c.killed, c.exitSeen])).toEqual([
         ["holder", true, true],
