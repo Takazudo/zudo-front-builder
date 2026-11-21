@@ -1264,7 +1264,9 @@ export { worker as default };
     /// used it uninstrumented, so that drain is rejected (the session takes
     /// its `All` fallback). The wrapper adopts and instruments the new bridge,
     /// treats bridge-owning collections as read by every traced request from
-    /// then on, and later drains are usable. Replacing the adopted real
+    /// then on, and later drains are usable. The rejected drain's visits are
+    /// replayed into the next ready drain with those reads, so a route
+    /// rendered only in that window still becomes a consumer. Replacing the adopted real
     /// bridge afterwards still gives the not-ready fallback.
     #[test]
     fn dev_content_trace_wrapper_adopts_bridge_replacing_its_placeholder() {
@@ -1272,9 +1274,12 @@ export { worker as default };
         let root = dir.path().canonicalize().unwrap();
         let pages = root.join("pages");
         std::fs::create_dir_all(&pages).unwrap();
-        for page in ["index.tsx", "bodies.tsx"] {
+        for page in ["index.tsx", "bodies.tsx", "window.tsx"] {
             std::fs::write(pages.join(page), "export default () => null;\n").unwrap();
         }
+        std::fs::create_dir_all(root.join("content/articles")).unwrap();
+        let a_md = root.join("content/articles/a.md");
+        std::fs::write(&a_md, "---\ntitle: Alpha\n---\n\nalpha\n").unwrap();
         let inner_bytes = r#"
 const __zfb_ns = (globalThis.__zfb ??= {});
 __zfb_ns.contentSnapshot = {
@@ -1301,6 +1306,7 @@ export { worker as default };
         let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
         let home = pages.join("index.tsx").to_string_lossy().into_owned();
         let bodies = pages.join("bodies.tsx").to_string_lossy().into_owned();
+        let window = pages.join("window.tsx").to_string_lossy().into_owned();
         let render_reads = |payload: &serde_json::Value, source: &str| {
             payload["events"]
                 .as_array()
@@ -1337,6 +1343,8 @@ export { worker as default };
             host.dispatch_fetch("/bodies").unwrap().body,
             b"bodies:compiled-spec-a"
         );
+        // Rendered only inside the adoption window and never revisited.
+        host.dispatch_fetch("/window").unwrap();
         let body = drain_content_trace(host.as_mut(), &token);
         let error = crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body)
             .expect("the drain that adopts the real bridge must be rejected");
@@ -1367,7 +1375,52 @@ export { worker as default };
             1,
             "an untrackable collection is read by every traced request: {payload:?}"
         );
-        assert_eq!(render_reads(&payload, &bodies), 1, "{payload:?}");
+        assert_eq!(
+            render_reads(&payload, &bodies),
+            2,
+            "the window visit is replayed beside the new one: {payload:?}"
+        );
+        assert_eq!(
+            render_reads(&payload, &window),
+            1,
+            "the window-only route is credited in the next ready drain: {payload:?}"
+        );
+        let routes: Vec<(
+            std::path::PathBuf,
+            Vec<crate::commands::dev::AdapterTestRouteEntry>,
+        )> = vec![
+            (pages.join("index.tsx"), vec![("/", "index.html", None)]),
+            (
+                pages.join("bodies.tsx"),
+                vec![("/bodies", "bodies.html", None)],
+            ),
+            (
+                pages.join("window.tsx"),
+                vec![("/window", "window.html", None)],
+            ),
+        ];
+        let page_sources: std::collections::HashSet<std::path::PathBuf> =
+            routes.iter().map(|(source, _)| source.clone()).collect();
+        let consumers = crate::commands::dev::content_consumers_from_trace_for_adapter_tests(
+            &root,
+            &["articles"],
+            routes,
+            page_sources,
+            &[],
+            &body,
+            &a_md,
+        );
+        assert!(
+            consumers.contains(&pages.join("window.tsx")),
+            "a route rendered only in the adoption window must consume a.md: {consumers:?}"
+        );
+        let body = drain_content_trace(host.as_mut(), &token);
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            render_reads(&payload, &window),
+            0,
+            "the replay is delivered once: {payload:?}"
+        );
 
         host.dispatch_fetch("/__install-bridge").unwrap();
         let body = drain_content_trace(host.as_mut(), &token);

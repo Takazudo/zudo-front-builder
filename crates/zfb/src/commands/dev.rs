@@ -8844,7 +8844,9 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 ///   wrapper instruments the new bridge's `get` and treats every collection
 ///   owning a module specifier as read by every traced request from then on
 ///   (one warning each, naming any instrumentation error); later drains
-///   report ready.
+///   report ready. The rejected drain's events are replayed in the next
+///   ready drain, each visit with a read of every untrackable collection, so
+///   a route rendered only in that window still becomes a consumer.
 /// - If a real instrumented bridge object or its `get` is replaced after
 ///   install (including a bridge that had no `get` function at install), the
 ///   next drain reports not ready ("content bridge replaced after trace
@@ -9045,6 +9047,7 @@ const __zfb_untrackable_collections = new Set();
 let __zfb_instrumented_bridge;
 let __zfb_instrumented_bridge_get;
 let __zfb_bridge_is_placeholder = false;
+let __zfb_deferred_events = [];
 let __zfb_specifier_collections = new Map();
 
 function __zfb_mark_untrackable(owners, reason) {{
@@ -9293,9 +9296,11 @@ export default {{
       }}
       let drainReady = __zfb_trace_state.ready;
       let drainError = __zfb_trace_state.error;
+      let events = __zfb_trace_state.events.splice(0);
       if (__zfb_trace_state.ready && __zfb_bridge_replaced()) {{
         if (__zfb_bridge_is_placeholder) {{
           __zfb_adopt_bridge_replacing_placeholder();
+          __zfb_deferred_events = __zfb_deferred_events.concat(events);
           drainReady = false;
           drainError =
             "content bridge installed after trace install; conservative fallback for this generation's prior requests";
@@ -9306,7 +9311,18 @@ export default {{
           drainError = __zfb_trace_state.error;
         }}
       }}
-      const events = __zfb_trace_state.events.splice(0);
+      if (drainReady && __zfb_deferred_events.length > 0) {{
+        const replay = [];
+        for (const event of __zfb_deferred_events) {{
+          replay.push(event);
+          if (event.kind !== "visit") continue;
+          for (const collection of __zfb_untrackable_collections) {{
+            replay.push({{ source: event.source, collection, phase: event.phase, kind: "read" }});
+          }}
+        }}
+        __zfb_deferred_events = [];
+        events = replay.concat(events);
+      }}
       return new Response(JSON.stringify({{
         ready: drainReady,
         events,
