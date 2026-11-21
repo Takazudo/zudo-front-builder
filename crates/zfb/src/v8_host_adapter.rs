@@ -1211,6 +1211,110 @@ export { worker as default };
         );
     }
 
+    /// A write through a Proxy around converted frontmatter, or through
+    /// `Reflect.set` with an unrelated receiver, must update the shared value
+    /// and keep the tracking accessor, so a later traced read still records.
+    #[test]
+    fn dev_content_trace_wrapper_keeps_tracking_after_proxy_and_reflect_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let pages = root.join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(pages.join("index.tsx"), "export default () => null;\n").unwrap();
+        let inner_bytes = r#"
+const __zfb_ns = (globalThis.__zfb ??= {});
+__zfb_ns.contentSnapshot = JSON.parse(JSON.stringify({
+  collections: {
+    articles: [{ slug: "a", frontmatter: { title: "Alpha" }, body: "alpha", module_specifier: "spec-a" }],
+  },
+}));
+const data = __zfb_ns.contentSnapshot.collections.articles[0].frontmatter;
+const worker = {
+  fetch(request) {
+    if (new URL(request.url).pathname === "/__proxy-write") {
+      new Proxy(data, {}).title = "Via Proxy";
+      const afterProxy = data.title;
+      const receiver = {};
+      const reflected = Reflect.set(data, "title", "Via Reflect", receiver);
+      const accessor = typeof Object.getOwnPropertyDescriptor(data, "title").get === "function";
+      return new Response(
+        [afterProxy, reflected, data.title, Object.hasOwn(receiver, "title"), accessor].join("|"),
+      );
+    }
+    return new Response("home:" + data.title);
+  },
+};
+export { worker as default };
+"#;
+        let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
+        assert_eq!(
+            String::from_utf8_lossy(&host.dispatch_fetch("/__proxy-write").unwrap().body),
+            "Via Proxy|true|Via Reflect|false|true"
+        );
+        assert_eq!(host.dispatch_fetch("/").unwrap().body, b"home:Via Reflect");
+        let body = drain_content_trace(host.as_mut(), &token);
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let home = pages.join("index.tsx").to_string_lossy().into_owned();
+        let reads = payload["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .filter(|event| {
+                event["source"] == home.as_str()
+                    && event["phase"] == "render"
+                    && event["kind"] == "read"
+                    && event["collection"] == "articles"
+            })
+            .count();
+        assert_eq!(reads, 1, "{payload:?}");
+    }
+
+    /// A bridge object that had no `get` function at install is remembered
+    /// as instrumented; assigning `get` later must give the not-ready
+    /// conservative fallback, since those lookups were never traced.
+    #[test]
+    fn dev_content_trace_wrapper_rejects_bridge_get_assigned_after_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let pages = root.join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(pages.join("index.tsx"), "export default () => null;\n").unwrap();
+        let inner_bytes = r#"
+const __zfb_ns = (globalThis.__zfb ??= {});
+__zfb_ns.contentSnapshot = {
+  collections: {
+    articles: [{ slug: "a", frontmatter: { title: "Alpha" }, body: "alpha", module_specifier: "spec-a" }],
+  },
+};
+__zfb_ns.content = {};
+const worker = {
+  fetch(request) {
+    if (new URL(request.url).pathname === "/__assign-get") {
+      __zfb_ns.content.get = () => undefined;
+    }
+    return new Response("ok");
+  },
+};
+export { worker as default };
+"#;
+        let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
+        host.dispatch_fetch("/").unwrap();
+        let body = drain_content_trace(host.as_mut(), &token);
+        assert_eq!(
+            crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body),
+            None,
+            "a bridge without `get` is usable until `get` appears"
+        );
+        host.dispatch_fetch("/__assign-get").unwrap();
+        let body = drain_content_trace(host.as_mut(), &token);
+        let error = crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body)
+            .expect("the production decoder must reject a bridge whose get appeared later");
+        assert!(
+            error.contains("content bridge replaced after trace install; conservative fallback"),
+            "{error}"
+        );
+    }
+
     fn run_memoized_collection_trace_case(with_bridge: bool) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
@@ -1393,8 +1497,8 @@ export { worker as default };
         assert_eq!(
             String::from_utf8_lossy(&frozen.body),
             "Beta Written|Derived:truetruetrue:Beta Written|Beta Sealed|\
-             Cannot assign to read only property 'title' of object|\
-             Cannot assign to read only property 'title' of object|Alpha|\
+             Cannot assign to read only property 'title' of object '#<Object>'|\
+             Cannot assign to read only property 'title' of object '#<Object>'|Alpha|\
              {\"title\":\"Alpha\",\"category\":\"news\"}"
         );
 

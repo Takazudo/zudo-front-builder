@@ -8816,7 +8816,8 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 ///   treated as read by every traced request, `paths()` and render alike,
 ///   so every visited route consumes it; other collections keep exact
 ///   observations. One `console.warn` per such collection names it.
-/// - If the content bridge object or its `get` is replaced after install, the
+/// - If the content bridge object or its `get` is replaced after install
+///   (including a bridge that had no `get` function at install), the
 ///   next drain reports not ready ("content bridge replaced after trace
 ///   install"). Any other instrumentation failure also leaves the wrapper not
 ///   ready. [`decode_content_trace_payload`] rejects every drain from such a
@@ -8824,10 +8825,14 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 ///   unknown-path `All` selection.
 ///
 /// Known limits:
-/// - Values copied out before the current request remain unobserved (a
-///   cached array of title strings, `slug`, `body`, a nested frontmatter
-///   object held separately), including a `paths()` that maps only cached
-///   `e.slug` values.
+/// - Main remaining limit: a memo of COPIED values, such as
+///   `map((e) => ({ slug: e.slug, title: e.data.title }))`, records reads
+///   only in the request that fills the cache. Later consumers of those
+///   copies are unobserved, with no fallback and no warning. The same holds
+///   for any value copied out before the current request (a cached array of
+///   title strings, `slug`, `body`, a nested frontmatter object held
+///   separately), including a `paths()` that maps only cached `e.slug`
+///   values.
 /// - Frontmatter keys absent at install are plain properties: reading them,
 ///   or probing an optional key with `in`, `hasOwnProperty` or `Object.keys`,
 ///   records nothing. An entry with null frontmatter gets a fresh `{}` per
@@ -8835,11 +8840,16 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// - In dev only, `Object.isFrozen` and `Object.getOwnPropertyDescriptor`
 ///   see accessors (a sealed converted object reports frozen), and
 ///   redefining a key with `Object.defineProperty` without a `value` drops
-///   its value.
+///   its value. `Reflect.set` on frozen frontmatter throws in dev instead of
+///   returning `false`.
+/// - A freeze through an `Object.freeze` reference captured before the
+///   wrapper installed (for example `const freeze = Object.freeze` in the
+///   bundle) is not seen, so dev still accepts writes that build rejects.
+///   Only code that already throws in build is affected.
 /// - `__zfb_trace_state.current` is a single slot saved and restored around
 ///   each awaited fetch. That is sound because the V8 host serves one
 ///   dispatch at a time and awaits it before taking the next
-///   (`serve_v8_host_requests`, `v8_host_adapter.rs:492-529`). Async work a
+///   (`serve_v8_host_requests` in `v8_host_adapter.rs`). Async work a
 ///   route leaves running after its response resolves is credited to
 ///   whichever request is current then.
 ///
@@ -9003,9 +9013,9 @@ function __zfb_track_frontmatter(frontmatter, owners) {{
       set: writable
         ? function (next) {{
             if (__zfb_frozen_frontmatter.has(frontmatter)) {{
-              throw new TypeError(`Cannot assign to read only property '${{key}}' of object`);
+              throw new TypeError(`Cannot assign to read only property '${{key}}' of object '#<Object>'`);
             }}
-            if (this !== frontmatter) {{
+            if (this !== frontmatter && Object.prototype.isPrototypeOf.call(frontmatter, this)) {{
               Object.defineProperty(this, key, {{
                 value: next,
                 writable: true,
@@ -9097,6 +9107,9 @@ try {{
           recordContentLookup(specifier);
           return bridgeGet.apply(this, arguments);
         }};
+        __zfb_instrumented_bridge = contentBridge;
+        __zfb_instrumented_bridge_get = contentBridge.get;
+      }} else {{
         __zfb_instrumented_bridge = contentBridge;
         __zfb_instrumented_bridge_get = contentBridge.get;
       }}
