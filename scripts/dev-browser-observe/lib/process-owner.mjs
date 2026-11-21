@@ -175,11 +175,11 @@ function remember(handle, p, source) {
   handle.onNewOwned?.(entry);
 }
 
-export function snapshotOwned(handle, psImpl) {
+export function snapshotOwned(handle, psImpl, platform = process.platform) {
   if (!handle.native) return [];
   let seen = ownedProcesses(psTable(psImpl), handle.native);
   if (handle.native.birthUnverifiable) {
-    const min = spawnSecondMs(handle.native);
+    const min = spawnSecondMs(handle.native, platform);
     seen = seen.filter(
       (p) => p.pgid === handle.native.pgid && (parseLstart(p.lstart) ?? -1) >= min,
     );
@@ -257,6 +257,7 @@ export async function stopOwned(
     killImpl = process.kill,
     psImpl,
     birthImpl = birthIdentity,
+    platform = process.platform,
   } = {},
 ) {
   const report = {
@@ -278,13 +279,15 @@ export async function stopOwned(
     };
   report.pgidScans = [];
   const unverifiable = root.birthUnverifiable === true;
-  const minLstartMs = unverifiable ? Math.floor(root.spawnWallMs / 1000) * 1000 : null;
+  const minLstartMs = unverifiable ? spawnSecondMs(root, platform) : null;
   if (unverifiable) {
     report.mode = "unverifiable-birth-pgid-scope";
     report.scope = {
       pgid: root.pgid,
       minLstartMs,
-      note: "root birth was never readable; only group members started at or after the spawn second are signalled, individually",
+      lstartSlackMs: lstartSlackMs(platform),
+      platform,
+      note: "root birth was never readable; only group members started at or after the spawn second (less the platform's lstart slack) are signalled, individually",
     };
   }
   const rootNow = handle.exit === null && !unverifiable ? birthImpl(root.pid) : null;
@@ -381,8 +384,20 @@ export function shouldRegisterOwned(native, p) {
   return Boolean(native) && (p.pid !== native.pid || native.birthUnverifiable === true);
 }
 
-export function spawnSecondMs(native) {
-  return Math.floor(native.spawnWallMs / 1000) * 1000;
+/**
+ * How much earlier than a process's real start its `ps -o lstart` can read.
+ * Linux procps prints btime + start_time/HZ, and /proc/stat's btime is the
+ * boot time truncated to whole seconds, so lstart can be up to 1 s early
+ * (by the boot time's fraction, constant per boot). macOS reports the real
+ * start time, truncated, which is never early.
+ */
+export function lstartSlackMs(platform = process.platform) {
+  return platform === "linux" ? 1000 : 0;
+}
+
+/** Earliest lstart (ms) a process started at or after `native`'s spawn can show on this platform. */
+export function spawnSecondMs(native, platform = process.platform) {
+  return Math.floor(native.spawnWallMs / 1000) * 1000 - lstartSlackMs(platform);
 }
 
 /**
@@ -390,12 +405,16 @@ export function spawnSecondMs(native) {
  * whose birth was unverifiable at spawn matches by pid + pgid with a start at
  * or after its spawn second.
  */
-export function liveOwnedFromRegistry(entries, birthImpl = birthIdentity) {
+export function liveOwnedFromRegistry(
+  entries,
+  birthImpl = birthIdentity,
+  platform = process.platform,
+) {
   return entries.filter((e) => {
     const now = birthImpl(e.pid);
     if (!now) return false;
     if (e.birthUnverifiable)
-      return now.pgid === e.pgid && (parseLstart(now.lstart) ?? -1) >= spawnSecondMs(e);
+      return now.pgid === e.pgid && (parseLstart(now.lstart) ?? -1) >= spawnSecondMs(e, platform);
     return sameBirth(e, now);
   });
 }
