@@ -988,6 +988,261 @@ mod tests {
         );
     }
 
+    /// A module-level memo helper caches `getCollection()` entries before any
+    /// route runs (here: at inner-module evaluation, before the wrapper
+    /// installs), so no route calls `getCollection()` while traced. Boots the
+    /// REAL generated wrapper and requires reads through the cached entries'
+    /// `data` (render and `paths()` phases) and `Content` to record the
+    /// collection, so an a.md edit keeps every such route a consumer, while a
+    /// route that reads nothing stays a visit without reads.
+    #[test]
+    fn dev_content_trace_wrapper_observes_memoized_collection_data_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let pages = root.join("pages");
+        std::fs::create_dir_all(pages.join("articles")).unwrap();
+        std::fs::create_dir_all(pages.join("category")).unwrap();
+        for page in [
+            "index.tsx",
+            "independent.tsx",
+            "bodies.tsx",
+            "articles/[slug].tsx",
+            "category/[category].tsx",
+        ] {
+            std::fs::write(pages.join(page), "export default () => null;\n").unwrap();
+        }
+        std::fs::create_dir_all(root.join("content/articles")).unwrap();
+        let a_md = root.join("content/articles/a.md");
+        std::fs::write(&a_md, "---\ntitle: Alpha\ncategory: news\n---\n\nalpha\n").unwrap();
+        std::fs::write(
+            root.join("content/articles/b.md"),
+            "---\ntitle: Beta\ncategory: notes\n---\n\nbeta\n",
+        )
+        .unwrap();
+
+        // Mirrors `getCollection`, `entryFromSnapshot` and
+        // `buildContentComponent` from `packages/zfb/src/content.ts` plus the
+        // bundler's content bridge, then the user's exact memo helper.
+        let inner_bytes = r#"
+const __zfb_ns = (globalThis.__zfb ??= {});
+__zfb_ns.contentSnapshot = JSON.parse(JSON.stringify({
+  collections: {
+    articles: [
+      { slug: "b", frontmatter: { title: "Beta", category: "notes" }, body: "beta", module_specifier: "spec-b" },
+      { slug: "a", frontmatter: { title: "Alpha", category: "news" }, body: "alpha", module_specifier: "spec-a" },
+    ],
+  },
+}));
+__zfb_ns.content = { get: (spec) => (spec.startsWith("spec-") ? () => "compiled-" + spec : undefined) };
+function buildContentComponent(module_specifier, body) {
+  return function Content() {
+    const renderer = globalThis.__zfb?.content?.get(module_specifier);
+    return typeof renderer === "function" ? renderer() : body;
+  };
+}
+function getCollection(name) {
+  const list = globalThis.__zfb.contentSnapshot.collections[name] ?? [];
+  return list.map((entry) => ({
+    slug: entry.slug,
+    data: entry.frontmatter ?? {},
+    body: entry.body,
+    module_specifier: entry.module_specifier,
+    Content: buildContentComponent(entry.module_specifier, entry.body),
+  }));
+}
+let cached;
+function getIndex() {
+  if (cached) return cached;
+  const articles = getCollection("articles").sort((a, b) => a.slug.localeCompare(b.slug));
+  cached = { articles, bySlug: new Map(articles.map((article) => [article.slug, article])) };
+  return cached;
+}
+getIndex();
+const worker = {
+  fetch(request) {
+    const pathname = new URL(request.url).pathname;
+    if (pathname.startsWith("/__paths__/")) {
+      const template = decodeURIComponent(pathname.slice("/__paths__/".length));
+      const paths = template.startsWith("/category/")
+        ? [...new Set(getIndex().articles.map((e) => e.data.category))].map((category) => ({ params: { category } }))
+        : getIndex().articles.map((e) => ({ params: { slug: e.slug } }));
+      return new Response(JSON.stringify(paths), { status: 200 });
+    }
+    if (pathname === "/") {
+      const titles = getIndex().articles.map((article) => article.data.title);
+      return new Response("home:" + titles.join(","), { status: 200 });
+    }
+    if (pathname === "/bodies") {
+      const bodies = getIndex().articles.map((article) => article.Content());
+      return new Response("bodies:" + bodies.join(","), { status: 200 });
+    }
+    if (pathname.startsWith("/articles/")) {
+      const article = getIndex().bySlug.get(pathname.slice("/articles/".length));
+      return new Response("detail:" + article.data.title, { status: 200 });
+    }
+    if (pathname === "/independent") return new Response("independent", { status: 200 });
+    return new Response("missing", { status: 404 });
+  },
+};
+export { worker as default };
+"#;
+        let bundle_path = root.join("bundle.mjs");
+        std::fs::write(&bundle_path, inner_bytes).unwrap();
+
+        let router = zfb_router::Router::scan(&pages).unwrap();
+        let template_of = |suffix: &str| {
+            router
+                .routes()
+                .iter()
+                .find(|route| route.source_path.ends_with(suffix))
+                .expect("dynamic route")
+                .template()
+                .replace('/', "%2F")
+                .replace(':', "%3A")
+        };
+        let detail_template = template_of("articles/[slug].tsx");
+        let category_template = template_of("category/[category].tsx");
+        let (token, wrapper_source) = crate::commands::dev::content_trace_wrapper_for_adapter_tests(
+            &bundle_path,
+            router.routes(),
+        );
+        let factory = make_v8_host_factory_with_dev_content_trace_wrapper(
+            PluginRegistryHooks::default(),
+            wrapper_source,
+        );
+        let mut host = factory(&bundle_path).expect("real content-trace wrapper boots");
+
+        for template in [&detail_template, &category_template] {
+            let paths = host
+                .dispatch_fetch(&format!("/__paths__/{template}"))
+                .expect("paths dispatch");
+            assert_eq!(
+                paths.status,
+                200,
+                "{:?}",
+                String::from_utf8_lossy(&paths.body)
+            );
+        }
+        let home = host.dispatch_fetch("/").expect("home dispatch");
+        assert_eq!(home.body, b"home:Alpha,Beta");
+        let bodies = host.dispatch_fetch("/bodies").expect("bodies dispatch");
+        assert_eq!(bodies.body, b"bodies:compiled-spec-a,compiled-spec-b");
+        let independent = host.dispatch_fetch("/independent").expect("independent");
+        assert_eq!(independent.body, b"independent");
+        let detail = host.dispatch_fetch("/articles/a").expect("detail dispatch");
+        assert_eq!(detail.body, b"detail:Alpha");
+
+        let headers = std::collections::BTreeMap::from([(
+            crate::commands::dev::DEV_CONTENT_TRACE_HEADER.to_string(),
+            token,
+        )]);
+        let drain = host
+            .dispatch_fetch_full_with_mode(
+                crate::commands::dev::DEV_CONTENT_TRACE_ENDPOINT,
+                "GET",
+                &headers,
+                &[],
+                zfb_build::renderer::DispatchMode::BuildTime,
+            )
+            .expect("trace drain");
+        assert_eq!(drain.status, 200);
+        let payload: serde_json::Value = serde_json::from_slice(&drain.body).unwrap();
+        assert_eq!(payload["ready"], true, "{payload:?}");
+        let events = payload["events"].as_array().expect("events");
+        let source_of = |page: &str| pages.join(page).to_string_lossy().into_owned();
+        let count = |page: &str, phase: &str, kind: &str| {
+            events
+                .iter()
+                .filter(|event| {
+                    event["source"] == source_of(page).as_str()
+                        && event["phase"] == phase
+                        && event["kind"] == kind
+                        && (kind == "visit" || event["collection"] == "articles")
+                })
+                .count()
+        };
+        for (page, phase, reads) in [
+            // Slugs are copied primitives: the cached detail paths() reads no data.
+            ("articles/[slug].tsx", "paths", 0),
+            ("category/[category].tsx", "paths", 1),
+            ("index.tsx", "render", 1),
+            ("bodies.tsx", "render", 1),
+            ("articles/[slug].tsx", "render", 1),
+            ("independent.tsx", "render", 0),
+        ] {
+            assert_eq!(count(page, phase, "visit"), 1, "{page} {phase}: {events:?}");
+            assert_eq!(
+                count(page, phase, "read"),
+                reads,
+                "{page} {phase}: one deduplicated aggregate read per request; {events:?}"
+            );
+        }
+        assert!(
+            !events.iter().any(
+                |event| event["source"] == source_of("independent.tsx").as_str()
+                    && event["kind"] == "read"
+            ),
+            "a route that reads nothing must record no read: {events:?}"
+        );
+
+        let home_source = pages.join("index.tsx");
+        let detail_source = pages.join("articles/[slug].tsx");
+        let category_source = pages.join("category/[category].tsx");
+        let bodies_source = pages.join("bodies.tsx");
+        let independent_source = pages.join("independent.tsx");
+        let routes = vec![
+            (home_source.clone(), vec![("/", "index.html", None)]),
+            (
+                bodies_source.clone(),
+                vec![("/bodies", "bodies.html", None)],
+            ),
+            (
+                independent_source.clone(),
+                vec![("/independent", "independent.html", None)],
+            ),
+            (
+                detail_source.clone(),
+                vec![
+                    ("/articles/a", "articles/a.html", Some("a")),
+                    ("/articles/b", "articles/b.html", Some("b")),
+                ],
+            ),
+            (
+                category_source.clone(),
+                vec![
+                    ("/category/news", "category/news.html", None),
+                    ("/category/notes", "category/notes.html", None),
+                ],
+            ),
+        ];
+        let page_sources: std::collections::HashSet<std::path::PathBuf> =
+            routes.iter().map(|(source, _)| source.clone()).collect();
+        for retained in [Vec::new(), vec![home_source.clone()]] {
+            let consumers = crate::commands::dev::content_consumers_from_trace_for_adapter_tests(
+                &root,
+                "articles",
+                routes.clone(),
+                page_sources.clone(),
+                &retained,
+                &drain.body,
+                &a_md,
+            );
+            for source in [
+                &home_source,
+                &detail_source,
+                &category_source,
+                &bodies_source,
+            ] {
+                assert!(
+                    consumers.contains(source),
+                    "{} must consume a.md (retained {retained:?}): {consumers:?}",
+                    source.display()
+                );
+            }
+            assert!(!consumers.contains(&independent_source), "{consumers:?}");
+        }
+    }
+
     /// Sub-issue #1764 follow-up (codex review finding): the generated dev
     /// content-trace wrapper's OWN `default` export is always well-shaped
     /// (`{ async fetch(request) { ... } }`) and only touches the imported

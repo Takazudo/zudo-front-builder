@@ -8558,9 +8558,9 @@ impl Drop for DevRenderInner {
 /// The generated wrapper rejects requests without the per-bundle nonce, so a
 /// normal browser request cannot read or alter the trace state.
 #[cfg(feature = "direct-v8")]
-const DEV_CONTENT_TRACE_ENDPOINT: &str = "/__zfb_internal/content-provenance";
+pub(crate) const DEV_CONTENT_TRACE_ENDPOINT: &str = "/__zfb_internal/content-provenance";
 #[cfg(feature = "direct-v8")]
-const DEV_CONTENT_TRACE_HEADER: &str = "x-zfb-content-provenance-token";
+pub(crate) const DEV_CONTENT_TRACE_HEADER: &str = "x-zfb-content-provenance-token";
 
 /// Each generated wrapper receives a fresh nonce. It is not a public API or
 /// an authentication mechanism; it prevents an ordinary dev-server request
@@ -8795,8 +8795,22 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// inner specifier (`file:///zfb/<bundle-basename>`), installs a transparent
 /// `getCollection()` observer over the shared content snapshot, and
 /// re-exports a `fetch` handler that delegates to the inner worker. For
-/// ordinary requests it returns the inner worker response unchanged. The
-/// wrapper is dev-only and exists solely to feed the dependency graph with
+/// ordinary requests it returns the inner worker response unchanged.
+///
+/// `getCollection()` hands each entry's snapshot `frontmatter` object to the
+/// caller by reference as `data`, so a helper that memoizes entries at module
+/// level keeps reading those same objects in later routes without calling
+/// `getCollection()` again. The wrapper therefore also turns each top-level
+/// frontmatter data property into an accessor, in place, that records the
+/// same aggregate collection read (once per request and collection). In-place
+/// conversion keeps object identity, so entries captured before the wrapper
+/// ran stay observed, and spread, `Object.keys`, `JSON.stringify` and
+/// `structuredClone` keep producing plain data. A cached entry's `Content`
+/// resolves its compiled body through `globalThis.__zfb.content.get(...)` at
+/// render time, so that lookup records a read of the owning collection too.
+/// Values copied out before the current request (a cached array of title
+/// strings, `slug`, `body`, a nested frontmatter object) remain unobserved.
+/// The wrapper is dev-only and exists solely to feed the dependency graph with
 /// observations made by the running worker.
 ///
 /// The inner bundle is registered under that same specifier in the V8 host's
@@ -8901,10 +8915,49 @@ function __zfb_trace_context(request) {{
       return undefined;
     }}
     const route = __zfb_trace_routes.find((candidate) => candidate.template === template);
-    return route ? {{ source: route.source, phase: "paths" }} : undefined;
+    return route ? {{ source: route.source, phase: "paths", reads: new Set() }} : undefined;
   }}
   const route = __zfb_pick_render_route(pathname);
-  return route ? {{ source: route.source, phase: "render" }} : undefined;
+  return route ? {{ source: route.source, phase: "render", reads: new Set() }} : undefined;
+}}
+
+function __zfb_record_collection_read(current, collection) {{
+  current.reads.add(collection);
+  __zfb_trace_state.events.push({{
+    source: current.source,
+    collection,
+    phase: current.phase,
+    kind: "read",
+  }});
+}}
+
+const __zfb_tracked_frontmatter = new WeakSet();
+
+function __zfb_track_frontmatter(collection, frontmatter) {{
+  if (!frontmatter || typeof frontmatter !== "object" || Array.isArray(frontmatter)) return;
+  if (__zfb_tracked_frontmatter.has(frontmatter)) return;
+  __zfb_tracked_frontmatter.add(frontmatter);
+  for (const key of Object.keys(frontmatter)) {{
+    const descriptor = Object.getOwnPropertyDescriptor(frontmatter, key);
+    if (!descriptor || !descriptor.configurable || !("value" in descriptor)) continue;
+    let value = descriptor.value;
+    Object.defineProperty(frontmatter, key, {{
+      configurable: true,
+      enumerable: descriptor.enumerable,
+      get() {{
+        const current = __zfb_trace_state.current;
+        if (current && !current.reads.has(collection)) {{
+          __zfb_record_collection_read(current, collection);
+        }}
+        return value;
+      }},
+      set: descriptor.writable
+        ? function (next) {{
+            value = next;
+          }}
+        : undefined,
+    }});
+  }}
 }}
 
 try {{
@@ -8913,16 +8966,40 @@ try {{
     __zfb_trace_state.error = "content snapshot is unavailable";
   }} else {{
     const collections = snapshot.collections;
+    const specifierCollections = new Map();
+    for (const collection of Object.keys(collections)) {{
+      const entries = collections[collection];
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {{
+        if (entry && typeof entry === "object") {{
+          __zfb_track_frontmatter(collection, entry.frontmatter);
+          if (typeof entry.module_specifier === "string") {{
+            const owners = specifierCollections.get(entry.module_specifier) ?? [];
+            owners.push(collection);
+            specifierCollections.set(entry.module_specifier, owners);
+          }}
+        }}
+      }}
+    }}
+    const contentBridge = globalThis.__zfb?.content;
+    if (contentBridge && typeof contentBridge.get === "function" && specifierCollections.size > 0) {{
+      const bridgeGet = contentBridge.get;
+      contentBridge.get = function (specifier) {{
+        const current = __zfb_trace_state.current;
+        const owners = current ? specifierCollections.get(specifier) : undefined;
+        if (owners) {{
+          for (const collection of owners) {{
+            if (!current.reads.has(collection)) __zfb_record_collection_read(current, collection);
+          }}
+        }}
+        return bridgeGet.apply(this, arguments);
+      }};
+    }}
     snapshot.collections = new Proxy(collections, {{
       get(target, property, receiver) {{
         const current = __zfb_trace_state.current;
         if (current && typeof property === "string") {{
-          __zfb_trace_state.events.push({{
-            source: current.source,
-            collection: property,
-            phase: current.phase,
-            kind: "read",
-          }});
+          __zfb_record_collection_read(current, property);
         }}
         return Reflect.get(target, property, receiver);
       }},
@@ -11859,6 +11936,137 @@ fn colon_template_to_bracket(template: &str) -> String {
 
 const DEFAULT_DEV_HOST: &str = "localhost";
 const DEFAULT_DEV_PORT: u16 = 3000;
+
+/// Test-only access to the canonical generated content-trace wrapper, so the
+/// V8 adapter's test module (serialized by the nextest heavy group) can boot
+/// the real wrapper source around a hand-written inner bundle.
+#[cfg(all(test, feature = "direct-v8"))]
+pub(crate) fn content_trace_wrapper_for_adapter_tests(
+    bundle_path: &Path,
+    routes: &[zfb_router::Route],
+) -> (String, String) {
+    use zfb_build::bundler::BundleManifest;
+    let output = BundlerOutput {
+        bundle_path: bundle_path.to_path_buf(),
+        sourcemap_path: bundle_path.with_extension("mjs.map"),
+        manifest: BundleManifest {
+            bundle_basename: bundle_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            routes: Vec::new(),
+        },
+        route_module_deps: Vec::new(),
+        linked_package_snapshots: Vec::new(),
+        emitted_wasm_assets: Vec::new(),
+        content_bridge_fallback_pages: Vec::new(),
+        dropped_plain_css_inputs: Vec::new(),
+        node_modules_staging_stats: Default::default(),
+    };
+    wrap_dev_bundle_with_content_trace(&output, routes).expect("canonical wrapper generation")
+}
+
+/// One SSG route entry for [`content_consumers_from_trace_for_adapter_tests`]:
+/// `(url_path, output_path, slug param)`.
+#[cfg(all(test, feature = "direct-v8"))]
+pub(crate) type AdapterTestRouteEntry = (&'static str, &'static str, Option<&'static str>);
+
+/// Test-only: feed one real trace-endpoint drain through the production
+/// classifier, observation retirement and graph edge replacement, starting
+/// from `retained` prior-generation reads (`(source, collection)` render
+/// readers), and return the consumers of `entry`.
+#[cfg(all(test, feature = "direct-v8"))]
+pub(crate) fn content_consumers_from_trace_for_adapter_tests(
+    project_root: &Path,
+    collection: &str,
+    routes: Vec<(PathBuf, Vec<AdapterTestRouteEntry>)>,
+    page_sources: HashSet<PathBuf>,
+    retained_render_readers: &[PathBuf],
+    trace_body: &[u8],
+    entry: &Path,
+) -> Vec<PathBuf> {
+    let cfg = config::Config {
+        collections: vec![config::CollectionDef {
+            name: collection.into(),
+            path: PathBuf::from("content").join(collection),
+            schema: None,
+            include: None,
+            exclude: None,
+            id_strip_suffix: None,
+            allow_outside_root: false,
+        }],
+        ..config::Config::default()
+    };
+    let roots = resolve_roots(project_root, &cfg)
+        .collection_roots()
+        .to_vec();
+    let membership = collect_content_provenance_membership(&cfg, &roots).unwrap();
+    let routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>> = routes
+        .into_iter()
+        .map(|(source, entries)| {
+            let entries = entries
+                .into_iter()
+                .map(|(url, output, slug)| DevRouteEntry {
+                    entry: RouteUniverseEntry {
+                        url_path: url.into(),
+                        output_path: PathBuf::from(output),
+                        route_key: url.into(),
+                        static_html: false,
+                        source_path: None,
+                    },
+                    params: slug.map(|slug| crate::render_pipeline::ResolvedRouteParams {
+                        scalars: BTreeMap::from([("slug".to_string(), slug.to_string())]),
+                        arrays: BTreeMap::new(),
+                    }),
+                })
+                .collect();
+            (source, entries)
+        })
+        .collect();
+    let payload: DevContentTracePayload =
+        serde_json::from_slice(trace_body).expect("trace endpoint payload");
+    assert!(
+        payload.ready,
+        "trace wrapper must be ready: {:?}",
+        payload.error
+    );
+    let classified = classify_content_trace_events(
+        payload.events,
+        &routes_by_source,
+        &page_sources,
+        &membership,
+        project_root,
+    )
+    .expect("classify current-worker trace");
+    let mut retained: BTreeMap<DevContentTraceObservation, Vec<TrackedContentRead>> =
+        retained_render_readers
+            .iter()
+            .map(|source| {
+                let consumer = PageId::new(source.clone());
+                (
+                    DevContentTraceObservation {
+                        consumer: consumer.clone(),
+                        phase: DevContentTracePhase::Render,
+                    },
+                    vec![TrackedContentRead::collection(consumer, collection)],
+                )
+            })
+            .collect();
+    apply_content_trace_observations(&mut retained, classified.observed, classified.reads);
+    let mut graph = DependencyGraph::new();
+    replace_content_edges(
+        &mut graph,
+        ContentProvenance::from_reads(retained.into_values().flatten())
+            .edge_groups(&membership.membership)
+            .unwrap(),
+    );
+    graph
+        .consumers_of(entry)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|page| page.path().to_path_buf())
+        .collect()
+}
 
 /// Test-only stub session factory for the lazy render adapter's
 /// direct-invocation tests (issue #1026) — builds a [`DevRenderSession`]
