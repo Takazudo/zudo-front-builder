@@ -103,6 +103,8 @@ async function runFinalState(ctx) {
     mark,
     startNs: tLast,
     quietMs: timeouts.quietMs ?? 1500,
+    requireNativeUpdate: true,
+    rule: "require-native-update",
     boundMs: timeouts.attemptMs,
   });
   const checks = [];
@@ -146,6 +148,8 @@ async function runExpectedNegative(ctx) {
     mark,
     startNs: tLast,
     quietMs: timeouts.quietMs ?? 1500,
+    requireNativeUpdate: true,
+    rule: "require-native-update",
     boundMs: op.settleMs ?? timeouts.restoreMs,
   });
   const observed = [];

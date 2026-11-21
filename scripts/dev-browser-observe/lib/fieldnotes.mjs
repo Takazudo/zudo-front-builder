@@ -749,6 +749,8 @@ export function fieldNotesOps(m, { restorationWriteMethod = "in-place" } = {}) {
     warmPaths: fnWarmPaths,
     route: m.route,
     calibrationArticle: "article-00002",
+    // zfb excludes the default public/ dir from dev watch roots (served from disk, #1165): no auto-update contract.
+    noAutoUpdatePaths: [dirname(m.publicCssPath)],
   };
 }
 

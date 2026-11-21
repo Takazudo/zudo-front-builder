@@ -51,7 +51,7 @@
     "restoreMs": 60000,
     "stopTermMs": 5000,
     "stopKillMs": 3000,
-    "quietMs": 1500
+    "quietMs": 3000
   },
   "limits": {
     "rssCeilingKiB": 4194304,

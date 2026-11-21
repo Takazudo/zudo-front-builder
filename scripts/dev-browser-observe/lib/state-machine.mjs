@@ -28,6 +28,24 @@ const ERROR_OUTCOMES = new Set(
   ),
 );
 
+/**
+ * Which settle rule a cleanup needs: if it wrote any file that has an
+ * auto-update contract, its own native update must be observed before the
+ * quiet window counts. Quiet alone ends the settle only when nothing was
+ * written, or every written path is under a declared no-auto-update root.
+ */
+export function settleRule(actions, noAutoUpdatePaths = []) {
+  const written = actions.filter((a) => !a.error).flatMap((a) => [a.path, a.from].filter(Boolean));
+  if (written.length === 0) return { requireNativeUpdate: false, rule: "quiet-only:no-writes" };
+  const covered = (p) =>
+    noAutoUpdatePaths.some(
+      (root) => p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`),
+    );
+  if (written.every(covered))
+    return { requireNativeUpdate: false, rule: "quiet-only:no-auto-update-contract" };
+  return { requireNativeUpdate: true, rule: "require-native-update" };
+}
+
 /** Declared outcome for each negative-control injection (allowed only in set "negative-controls"). */
 export const INJECT_EXPECT = {
   "kill-server-during-wait": "server-exit",
@@ -188,6 +206,7 @@ export async function runBatch({ scenarios, deps }) {
           startNs: restoreNs,
           quietMs: timeouts.quietMs ?? 1500,
           boundMs: timeouts.restoreMs,
+          ...settleRule(restore.actions ?? [], fs.noAutoUpdatePaths ?? []),
         });
       for (const check of fs.liveChecks(snapshot)) {
         try {

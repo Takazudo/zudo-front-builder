@@ -308,6 +308,8 @@ export class ObserverPage {
           armed: st ? st.armed : null,
           predicateNow: window.__dbo ? window.__dbo.evaluate(p) : null,
           bodyExcerpt: (document.body ? document.body.innerText : "").slice(0, 600),
+          notInCache:
+            (document.body ? document.body.innerText : "").indexOf("page not in cache") !== -1,
         };
       }, predicate);
     } catch (error) {
@@ -321,7 +323,21 @@ export class ObserverPage {
    * restore write or the last such event, bounded by `boundMs`. Records
    * whether the restore's own native update (page/css frame) was observed.
    */
-  async settle({ mark, startNs, quietMs, boundMs, stepMs = 50 }) {
+  /**
+   * Cleanup/after-write settle. With `requireNativeUpdate`, the settle ends only
+   * after the write's own native update is observed (a livereload page/css
+   * frame or a new document) followed by `quietMs` of quiet; otherwise
+   * `quietMs` of quiet alone suffices. Always bounded by `boundMs`.
+   */
+  async settle({
+    mark,
+    startNs,
+    quietMs,
+    boundMs,
+    requireNativeUpdate = false,
+    rule = null,
+    stepMs = 50,
+  }) {
     const begun = this.clock();
     for (;;) {
       const ev = this.since(mark, startNs);
@@ -332,15 +348,19 @@ export class ObserverPage {
       const now = this.clock();
       const quietFor = nsToMs(now - lastNs);
       const waitedMs = nsToMs(now - begun);
-      const nativeUpdateObserved = ev.wsFrames.some((f) => f.event === "page" || f.event === "css");
-      if (quietFor >= quietMs || waitedMs >= boundMs) {
+      const nativeUpdateObserved =
+        ev.wsFrames.some((f) => f.event === "page" || f.event === "css") || ev.newDocuments > 0;
+      const done = quietFor >= quietMs && (!requireNativeUpdate || nativeUpdateObserved);
+      if (done || waitedMs >= boundMs) {
         return {
-          settled: quietFor >= quietMs,
-          reason:
-            quietFor >= quietMs
-              ? nativeUpdateObserved
-                ? "native-update-observed-then-quiet"
-                : "no-frame-for-quietMs"
+          settled: done,
+          rule: rule ?? (requireNativeUpdate ? "require-native-update" : "quiet-only"),
+          reason: done
+            ? nativeUpdateObserved
+              ? "native-update-observed-then-quiet"
+              : "no-frame-for-quietMs"
+            : requireNativeUpdate && !nativeUpdateObserved
+              ? "bound-exceeded-without-native-update"
               : "bound-exceeded",
           nativeUpdateObserved,
           quietMs,
@@ -487,14 +507,17 @@ export class ObserverPage {
     if (!armed.armed && armed.precondition) {
       this.armedToken = null;
       const sinceNavigationMs = nsToMs(this.clock() - navStart);
+      const page = await this.failureSnapshot(predicate);
+      const transient = page?.notInCache === true;
       return {
-        ok: true,
+        ok: !transient,
         firstReadMatched: true,
         ...base,
         sinceNavigationMs,
         actual: armed.actual,
         evidence: this.since(m, navStart),
-        page: await this.failureSnapshot(predicate),
+        page,
+        ...(transient ? { transient: "transient-not-in-cache" } : {}),
       };
     }
     if (!armed.armed)
@@ -510,8 +533,11 @@ export class ObserverPage {
     const page = failure ?? (await this.failureSnapshot(predicate));
     if (waited.kind !== "notify") await this.disarm();
     this.armedToken = null;
+    // zfb dev's "404 — page not in cache … rebuild may still be in flight" is a transient state, never a pass.
+    const transient = page?.notInCache === true || failure?.notInCache === true;
     return {
-      ok: waited.kind === "notify",
+      ok: waited.kind === "notify" && !transient,
+      ...(transient ? { transient: "transient-not-in-cache" } : {}),
       firstReadMatched: false,
       ...base,
       sinceNavigationMs,
@@ -548,6 +574,7 @@ export class ObserverPage {
           url: location.href,
           title: document.title,
           containsMarker: marker ? text.indexOf(marker) !== -1 : null,
+          notInCache: text.indexOf("page not in cache") !== -1,
           bodyExcerpt: text.slice(0, 600),
         };
       }, markerText);
@@ -578,12 +605,14 @@ export class ObserverPage {
     return {
       ...view,
       kind: "gone",
-      ok: view.ok && statusOk && view.containsMarker !== true,
+      ok: view.ok && statusOk && view.containsMarker !== true && view.notInCache !== true,
       statusOk,
+      ...(view.notInCache ? { evidence: "transient-not-in-cache" } : {}),
     };
   }
 
   liveCheck(check, timeoutMs) {
+    if (check.kind === "gone") return this.goneCheck(check);
     return this.navigateAndAwait(check.path, check.predicate, timeoutMs, "restore");
   }
 
