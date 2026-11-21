@@ -1464,12 +1464,13 @@ fn memo_helper_fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dev-content-memo-helper")
 }
 
-/// Wait until stderr past `offset` holds a line containing every `needles`
-/// fragment, and return that line plus the stderr offset just after it.
-async fn wait_for_stderr_line(
+/// Wait until stderr past `offset` holds a complete line accepted by
+/// `matches`, and return that line plus the stderr offset just after it.
+async fn wait_for_stderr_line_where(
     session: &DevSession,
     offset: usize,
-    needles: &[&str],
+    matches: impl Fn(&str) -> bool,
+    description: &str,
     phase: &str,
 ) -> (String, usize) {
     let start = Instant::now();
@@ -1479,18 +1480,56 @@ async fn wait_for_stderr_line(
         let tail = stderr.get(offset..).unwrap_or_default();
         for line in tail.split_inclusive('\n') {
             cursor += line.len();
-            if line.ends_with('\n') && needles.iter().all(|needle| line.contains(needle)) {
+            if line.ends_with('\n') && matches(line) {
                 return (line.trim_end().to_string(), cursor);
             }
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     panic!(
-        "[{phase}] no stderr line containing {needles:?} within {}s.\n{}",
+        "[{phase}] no stderr line {description} within {}s.\n{}",
         SCENARIO_DEADLINE.as_secs(),
         session.logs(),
     );
 }
+
+/// [`wait_for_stderr_line_where`] for a line containing every `needles`
+/// fragment.
+async fn wait_for_stderr_line(
+    session: &DevSession,
+    offset: usize,
+    needles: &[&str],
+    phase: &str,
+) -> (String, usize) {
+    wait_for_stderr_line_where(
+        session,
+        offset,
+        |line| needles.iter().all(|needle| line.contains(needle)),
+        &format!("containing {needles:?}"),
+        phase,
+    )
+    .await
+}
+
+/// A `[zfb-timing] tick()` line whose `kinds=[...]` list names `file_name`,
+/// with any change kind.
+fn is_tick_line_for(line: &str, file_name: &str) -> bool {
+    let Some(rest) = line.split("[zfb-timing] tick(): kinds=[").nth(1) else {
+        return false;
+    };
+    let Some((kinds, _)) = rest.split_once(']') else {
+        return false;
+    };
+    kinds.split(", ").any(|kind| {
+        kind.split_once(':')
+            .is_some_and(|(name, _)| name == file_name)
+    })
+}
+
+/// In-place title edits of a.md attempted before giving up on a narrowed tick.
+/// macOS FSEvents can report an in-place write as `Created`, which fails the
+/// orchestrator's `fan_out_safe` gate and selects every page.
+const MEMO_EDIT_ATTEMPTS: u32 = 3;
 
 /// A user helper memoizes `getCollection("articles")` at module level. Every
 /// fresh worker evaluates the dynamic route's `paths()` first, which fills the
@@ -1498,7 +1537,11 @@ async fn wait_for_stderr_line(
 /// render must still count as an `articles` reader: an in-place title write to
 /// a.md has to refresh `/`, while `/independent/`, which reads nothing, stays
 /// untouched. The `fan_out_safe=true` tick line proves the refresh comes from
-/// narrowed provenance, not the `All` fallback.
+/// narrowed provenance, not the `All` fallback. When FSEvents reports the
+/// write as `Created`, that tick is un-narrowed and proves nothing, so the
+/// test re-renders every route and makes a new unique edit, up to
+/// [`MEMO_EDIT_ATTEMPTS`] times. It never passes without a narrowed tick whose
+/// plan holds exactly two pages (one without the fix).
 #[tokio::test(flavor = "multi_thread")]
 async fn cold_lazy_memoized_collection_helper_title_edit_refreshes_home() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
@@ -1550,65 +1593,93 @@ async fn cold_lazy_memoized_collection_helper_title_edit_refreshes_home() {
         ] {
             poll_until_response_contains(&client, url, marker, phase, &session).await;
         }
-        drain_ticks_until_quiescent(&base).await;
         let independent_file = session.html_root().join("independent/index.html");
-        let independent_before = snapshot_file(&independent_file);
+        let a_md = session.root.join("content/articles/a.md");
+        let mut narrowed: Option<(String, String, DiskSnapshot)> = None;
+        for attempt in 1..=MEMO_EDIT_ATTEMPTS {
+            drain_ticks_until_quiescent(&base).await;
+            let independent_before = snapshot_file(&independent_file);
+            let title = format!("Alpha Memo V{} attempt {attempt}", attempt + 1);
+            let offset = read_log(&session.stderr_path).len();
+            let sse = subscribe_sse(&base).await;
+            fs::write(&a_md, format!("---\ntitle: {title}\n---\n\nAlpha body.\n"))
+                .expect("edit a.md title in place");
 
-        let offset = read_log(&session.stderr_path).len();
-        let sse = subscribe_sse(&base).await;
-        fs::write(
-            session.root.join("content/articles/a.md"),
-            "---\ntitle: Alpha Memo V2\n---\n\nAlpha body.\n",
-        )
-        .expect("edit a.md title in place");
+            match next_sse_event_name(sse, SSE_DEADLINE).await {
+                Ok(Some(name)) => assert_eq!(
+                    name.as_str(),
+                    "page",
+                    "a.md title edit broadcast an unexpected SSE event.\n{}",
+                    session.logs(),
+                ),
+                Ok(None) => eprintln!(
+                    "[content_aggregate_cold_boot_e2e] no SSE page event observed for the memo \
+                     helper edit; relying on the authoritative response and timing checks."
+                ),
+                Err(error) => panic!(
+                    "SSE read failed after the memo helper edit: {error:#}\n{}",
+                    session.logs(),
+                ),
+            }
 
-        match next_sse_event_name(sse, SSE_DEADLINE).await {
-            Ok(Some(name)) => assert_eq!(
-                name.as_str(),
-                "page",
-                "a.md title edit broadcast an unexpected SSE event.\n{}",
-                session.logs(),
-            ),
-            Ok(None) => eprintln!(
-                "[content_aggregate_cold_boot_e2e] no SSE page event observed for the memo \
-                 helper edit; relying on the authoritative response and timing checks."
-            ),
-            Err(error) => panic!(
-                "SSE read failed after the memo helper edit: {error:#}\n{}",
-                session.logs(),
-            ),
+            let (tick, after_tick) = wait_for_stderr_line_where(
+                &session,
+                offset,
+                |line| is_tick_line_for(line, "a.md"),
+                "with a tick() naming a.md",
+                "a.md edit reached the orchestrator",
+            )
+            .await;
+            eprintln!("[content_aggregate_cold_boot_e2e] memo edit attempt {attempt}: {tick}");
+            if tick.contains("fan_out_safe=true") {
+                let (plan, _) = wait_for_stderr_line(
+                    &session,
+                    after_tick,
+                    &["[zfb-timing] lazy-render plan: pages="],
+                    "lazy-render plan after the narrowed a.md tick",
+                )
+                .await;
+                eprintln!("[content_aggregate_cold_boot_e2e] memo edit attempt {attempt}: {plan}");
+                narrowed = Some((title, plan, independent_before));
+                break;
+            }
+            // An un-narrowed tick selects every page, so it cannot show which
+            // routes provenance selected. Re-render every route in the current
+            // worker, as the first visits did, before the next unique edit.
+            for (url, marker, phase) in [
+                (&home_url, title.as_str(), "home after an un-narrowed tick"),
+                (
+                    &detail_url,
+                    title.as_str(),
+                    "detail after an un-narrowed tick",
+                ),
+                (
+                    &independent_url,
+                    "MEMO-INDEPENDENT",
+                    "independent after an un-narrowed tick",
+                ),
+            ] {
+                poll_until_response_contains(&client, url, marker, phase, &session).await;
+            }
         }
-
-        let (tick, after_tick) = wait_for_stderr_line(
-            &session,
-            offset,
-            &["[zfb-timing] tick(): kinds=[", "a.md:Modified"],
-            "a.md edit reached the orchestrator",
-        )
-        .await;
-        assert!(
-            tick.contains("fan_out_safe=true"),
-            "the a.md tick must be a narrowed content tick, not the All fallback: {tick}\n{}",
-            session.logs(),
-        );
-        let (plan, _) = wait_for_stderr_line(
-            &session,
-            after_tick,
-            &["[zfb-timing] lazy-render plan: pages="],
-            "lazy-render plan after the a.md tick",
-        )
-        .await;
+        let Some((title, plan, independent_before)) = narrowed else {
+            panic!(
+                "none of {MEMO_EDIT_ATTEMPTS} in-place a.md edits produced a fan_out_safe=true \
+                 tick, so the memoized provenance was never proven by a narrowed plan.\n{}",
+                session.logs(),
+            );
+        };
         assert!(
             plan.ends_with("pages=2"),
-            "the plan must hold exactly the detail route and the memoizing home page, and not \
-             /independent/: {plan}\n{}",
+            "the narrowed plan must hold exactly the detail route and the memoizing home page, \
+             and not /independent/: {plan}\n{}",
             session.logs(),
         );
 
         poll_until_response_contains(
             &client,
             &home_url,
-            "Alpha Memo V2",
+            &title,
             "home serves the edited title read through the memoized helper",
             &session,
         )
@@ -1616,7 +1687,7 @@ async fn cold_lazy_memoized_collection_helper_title_edit_refreshes_home() {
         poll_until_response_contains(
             &client,
             &detail_url,
-            "Alpha Memo V2",
+            &title,
             "detail serves the edited title",
             &session,
         )
