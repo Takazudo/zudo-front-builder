@@ -1259,6 +1259,127 @@ export { worker as default };
         );
     }
 
+    /// When the bundle emitted no bridge, the wrapper's placeholder bridge can
+    /// be replaced by a real one later. The next drain adopts and instruments
+    /// it, keeps the worker ready, treats bridge-owning collections as read
+    /// by every traced request from then on, and credits that read to visits
+    /// made while the bridge was uninstrumented. Replacing the adopted real
+    /// bridge afterwards still gives the not-ready fallback.
+    #[test]
+    fn dev_content_trace_wrapper_adopts_bridge_replacing_its_placeholder() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let pages = root.join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        for page in ["index.tsx", "bodies.tsx"] {
+            std::fs::write(pages.join(page), "export default () => null;\n").unwrap();
+        }
+        let inner_bytes = r#"
+const __zfb_ns = (globalThis.__zfb ??= {});
+__zfb_ns.contentSnapshot = {
+  collections: {
+    articles: [{ slug: "a", frontmatter: { title: "Alpha" }, body: "alpha", module_specifier: "spec-a" }],
+  },
+};
+const worker = {
+  fetch(request) {
+    const pathname = new URL(request.url).pathname;
+    if (pathname === "/__install-bridge") {
+      __zfb_ns.content = { get: (spec) => () => "compiled-" + spec };
+      return new Response("installed");
+    }
+    if (pathname === "/bodies") {
+      const renderer = globalThis.__zfb?.content?.get("spec-a");
+      return new Response("bodies:" + (typeof renderer === "function" ? renderer() : "alpha"));
+    }
+    return new Response("home");
+  },
+};
+export { worker as default };
+"#;
+        let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
+        let home = pages.join("index.tsx").to_string_lossy().into_owned();
+        let bodies = pages.join("bodies.tsx").to_string_lossy().into_owned();
+        let render_reads = |payload: &serde_json::Value, source: &str| {
+            payload["events"]
+                .as_array()
+                .expect("events")
+                .iter()
+                .filter(|event| {
+                    event["source"] == source
+                        && event["phase"] == "render"
+                        && event["kind"] == "read"
+                        && event["collection"] == "articles"
+                })
+                .count()
+        };
+
+        assert_eq!(
+            host.dispatch_fetch("/bodies").unwrap().body,
+            b"bodies:alpha"
+        );
+        let body = drain_content_trace(host.as_mut(), &token);
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            render_reads(&payload, &bodies),
+            1,
+            "placeholder lookup: {payload:?}"
+        );
+        let logs = host.drain_console_logs();
+        assert!(!logs.contains("content provenance"), "{logs}");
+
+        assert_eq!(
+            host.dispatch_fetch("/__install-bridge").unwrap().body,
+            b"installed"
+        );
+        assert_eq!(
+            host.dispatch_fetch("/bodies").unwrap().body,
+            b"bodies:compiled-spec-a"
+        );
+        let body = drain_content_trace(host.as_mut(), &token);
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body),
+            None,
+            "adopting a bridge that replaced the placeholder keeps the worker ready"
+        );
+        assert_eq!(
+            render_reads(&payload, &bodies),
+            1,
+            "the uninstrumented lookup is credited conservatively: {payload:?}"
+        );
+        let logs = host.drain_console_logs();
+        assert!(
+            logs.contains("collection \"articles\"")
+                && logs.contains("content bridge installed after tracing started"),
+            "{logs}"
+        );
+
+        host.dispatch_fetch("/").unwrap();
+        host.dispatch_fetch("/bodies").unwrap();
+        let body = drain_content_trace(host.as_mut(), &token);
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body),
+            None
+        );
+        assert_eq!(
+            render_reads(&payload, &home),
+            1,
+            "an untrackable collection is read by every traced request: {payload:?}"
+        );
+        assert_eq!(render_reads(&payload, &bodies), 1, "{payload:?}");
+
+        host.dispatch_fetch("/__install-bridge").unwrap();
+        let body = drain_content_trace(host.as_mut(), &token);
+        let error = crate::commands::dev::content_trace_payload_error_for_adapter_tests(&body)
+            .expect("replacing the adopted real bridge keeps the not-ready fallback");
+        assert!(
+            error.contains("content bridge replaced after trace install; conservative fallback"),
+            "{error}"
+        );
+    }
+
     /// Replacing the content bridge after install would hide `Content`
     /// lookups. The next drain must report not ready so the session takes its
     /// provenance-unavailable `All` fallback.
@@ -1309,7 +1430,8 @@ export { worker as default };
 
     /// Converted frontmatter keeps ordinary `[[Set]]` receiver semantics. A
     /// write through a Proxy forwarding to it updates the shared value and
-    /// keeps the tracking accessor, so a later traced read still records.
+    /// the tracking accessor is re-installed, so a later traced read still
+    /// records. A descriptor-copied clone writes only its own property.
     /// `Reflect.set` with an unrelated receiver writes the receiver's own
     /// property, updating an existing writable one, and leaves the shared
     /// value alone; a non-extensible receiver or a non-writable own property
@@ -1334,7 +1456,7 @@ const worker = {
     if (new URL(request.url).pathname === "/__proxy-write") {
       const results = [];
       new Proxy(data, {}).title = "Via Proxy";
-      results.push(data.title);
+      results.push(data.title, typeof Object.getOwnPropertyDescriptor(data, "title").get === "function");
       const receiver = {};
       results.push(Reflect.set(data, "title", "Via Reflect", receiver));
       const own = Object.getOwnPropertyDescriptor(receiver, "title");
@@ -1343,6 +1465,10 @@ const worker = {
       const derived = Object.create(data);
       derived.title = "Derived";
       results.push(Object.hasOwn(derived, "title"), derived.title, data.title);
+      const clone = Object.create(Object.getPrototypeOf(data), Object.getOwnPropertyDescriptors(data));
+      clone.title = "Clone";
+      const cloneOwn = Object.getOwnPropertyDescriptor(clone, "title");
+      results.push(cloneOwn.value, "value" in cloneOwn, cloneOwn.writable, data.title);
       for (const target of [Object.preventExtensions({}), Object.defineProperty({}, "title", { value: "fixed" })]) {
         try {
           Reflect.set(data, "title", "X", target);
@@ -1364,8 +1490,9 @@ export { worker as default };
         let (mut host, token) = boot_content_trace_host(&root, &pages, inner_bytes);
         assert_eq!(
             String::from_utf8_lossy(&host.dispatch_fetch("/__proxy-write").unwrap().body),
-            "Via Proxy|true|Via Reflect|true|true|true|Via Proxy|\
-             true|Again|Via Proxy|true|Derived|Via Proxy|true|true|true|true"
+            "Via Proxy|true|true|Via Reflect|true|true|true|Via Proxy|\
+             true|Again|Via Proxy|true|Derived|Via Proxy|Clone|true|true|Via Proxy|\
+             true|true|true|true"
         );
         assert_eq!(host.dispatch_fetch("/").unwrap().body, b"home:Via Proxy");
         let body = drain_content_trace(host.as_mut(), &token);

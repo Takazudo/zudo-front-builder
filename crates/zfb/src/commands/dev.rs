@@ -8800,11 +8800,13 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// entries captured before the wrapper ran stay observed, and spread,
 /// `Object.keys`, `JSON.stringify` and `structuredClone` keep producing plain
 /// data. Writes follow the ordinary `[[Set]]` steps for the receiver: a write
-/// to the object itself, or through a Proxy that forwards to its tracking
-/// accessor, updates the shared value and keeps tracking; any other receiver
-/// (an `Object.create(data)` object, `Reflect.set` with an unrelated
-/// receiver) gets or updates its own data property and the shared value is
-/// untouched. A converted object passed to `Object.freeze` rejects writes
+/// to the object itself updates the shared value. Any other receiver (an
+/// `Object.create(data)` object, a descriptor-copied clone such as
+/// `Object.create(p, Object.getOwnPropertyDescriptors(data))`, `Reflect.set`
+/// with an unrelated receiver) gets or updates its own data property and the
+/// shared value is untouched. A Proxy view defines that data property on its
+/// target, so the shared value changes; the wrapper then re-installs the
+/// tracking accessor over it, keeping later reads observed. A converted object passed to `Object.freeze` rejects writes
 /// with a `TypeError`, and a sealed one still accepts them. The worker's
 /// `Object.freeze` is replaced once per realm (marked with
 /// `Symbol.for("zfb.devContentTrace.freeze")`, which also holds the
@@ -8828,8 +8830,14 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 ///   instrumented at install (a frozen bridge, or a read-only `get` or
 ///   bridge slot): every collection that owns a module specifier becomes
 ///   read by every traced request, with its own warning.
-/// - If the content bridge object or its `get` is replaced after install
-///   (including a bridge that had no `get` function at install), the
+/// - If the bridge was the wrapper's own placeholder (the bundle emitted none)
+///   and the bundle installs a real bridge later, the next drain instruments
+///   the new bridge's `get`, treats every collection owning a module
+///   specifier as read by every traced request from then on (one warning
+///   each), and adds those reads to every visit in that drain, which may
+///   have used the uninstrumented bridge. The worker stays ready.
+/// - If a real instrumented bridge object or its `get` is replaced after
+///   install (including a bridge that had no `get` function at install), the
 ///   next drain reports not ready ("content bridge replaced after trace
 ///   install"). Any other instrumentation failure also leaves the wrapper not
 ///   ready. [`decode_content_trace_payload`] rejects every drain from such a
@@ -8852,7 +8860,11 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 /// - In dev only, `Object.isFrozen` and `Object.getOwnPropertyDescriptor`
 ///   see accessors (a sealed converted object reports frozen), and
 ///   redefining a key with `Object.defineProperty` without a `value` drops
-///   its value. Where a write must fail (frozen frontmatter, a non-writable or
+///   its value. `Object.defineProperty(data, key, { value })` over a tracked
+///   key leaves a non-writable, untracked data property, where build keeps
+///   the key writable. A descriptor-copied clone reads the shared value
+///   until it is written, where in build it holds a snapshot of the value
+///   at copy time. Where a write must fail (frozen frontmatter, a non-writable or
 ///   accessor own property on the receiver, a non-extensible receiver),
 ///   `Reflect.set` throws in dev instead of returning `false`.
 /// - A freeze through an `Object.freeze` reference captured before the
@@ -9018,6 +9030,72 @@ function __zfb_read_only_error(key) {{
 const __zfb_untrackable_collections = new Set();
 let __zfb_instrumented_bridge;
 let __zfb_instrumented_bridge_get;
+let __zfb_bridge_is_placeholder = false;
+let __zfb_specifier_collections = new Map();
+
+function __zfb_mark_untrackable(owners, reason) {{
+  for (const collection of owners) {{
+    if (__zfb_untrackable_collections.has(collection)) continue;
+    __zfb_untrackable_collections.add(collection);
+    console.warn(
+      `[zfb dev] content provenance: collection "${{collection}}" ${{reason}}; every route rendered in dev is treated as a reader of "${{collection}}"`,
+    );
+  }}
+}}
+
+function __zfb_record_content_lookup(specifier) {{
+  const current = __zfb_trace_state.current;
+  const owners = current ? __zfb_specifier_collections.get(specifier) : undefined;
+  if (owners) __zfb_record_owner_reads(current, owners);
+}}
+
+function __zfb_instrument_bridge(contentBridge) {{
+  if (typeof contentBridge.get === "function") {{
+    const bridgeGet = contentBridge.get;
+    const tracedGet = function (specifier) {{
+      __zfb_record_content_lookup(specifier);
+      return bridgeGet.apply(this, arguments);
+    }};
+    contentBridge.get = tracedGet;
+    if (contentBridge.get !== tracedGet) throw new TypeError("content bridge get is read-only");
+    __zfb_instrumented_bridge = contentBridge;
+    __zfb_instrumented_bridge_get = tracedGet;
+  }} else {{
+    __zfb_instrumented_bridge = contentBridge;
+    __zfb_instrumented_bridge_get = contentBridge.get;
+  }}
+}}
+
+function __zfb_all_specifier_owners() {{
+  const owners = new Set();
+  for (const collections of __zfb_specifier_collections.values()) {{
+    for (const collection of collections) owners.add(collection);
+  }}
+  return owners;
+}}
+
+function __zfb_adopt_bridge_replacing_placeholder(events) {{
+  __zfb_bridge_is_placeholder = false;
+  __zfb_instrumented_bridge = undefined;
+  __zfb_instrumented_bridge_get = undefined;
+  const bridge = globalThis.__zfb?.content;
+  if (bridge !== undefined && bridge !== null) {{
+    try {{
+      __zfb_instrument_bridge(bridge);
+    }} catch (_) {{
+      __zfb_instrumented_bridge = undefined;
+      __zfb_instrumented_bridge_get = undefined;
+    }}
+  }}
+  const owners = __zfb_all_specifier_owners();
+  __zfb_mark_untrackable(owners, "had its content bridge installed after tracing started");
+  for (const event of events.slice()) {{
+    if (event.kind !== "visit") continue;
+    for (const collection of owners) {{
+      events.push({{ source: event.source, collection, phase: event.phase, kind: "read" }});
+    }}
+  }}
+}}
 
 function __zfb_record_owner_reads(current, owners) {{
   for (const collection of owners) {{
@@ -9059,7 +9137,13 @@ function __zfb_track_frontmatter(frontmatter, owners) {{
       const existing = Reflect.getOwnPropertyDescriptor(receiver, key);
       if (existing) {{
         if (existing.get === getter) {{
-          value = next;
+          Object.defineProperty(receiver, key, {{
+            value: next,
+            writable: true,
+            enumerable: existing.enumerable,
+            configurable: true,
+          }});
+          reinstallIfReplaced();
           return;
         }}
         if (!("value" in existing)) {{
@@ -9079,12 +9163,21 @@ function __zfb_track_frontmatter(frontmatter, owners) {{
         configurable: true,
       }});
     }};
-    Object.defineProperty(frontmatter, key, {{
-      configurable: true,
-      enumerable,
-      get: getter,
-      set: writable ? setter : undefined,
-    }});
+    const install = (isEnumerable) => {{
+      Object.defineProperty(frontmatter, key, {{
+        configurable: true,
+        enumerable: isEnumerable,
+        get: getter,
+        set: writable ? setter : undefined,
+      }});
+    }};
+    const reinstallIfReplaced = () => {{
+      const current = Reflect.getOwnPropertyDescriptor(frontmatter, key);
+      if (!current || current.get === getter || !("value" in current) || !current.configurable) return;
+      value = current.value;
+      install(current.enumerable);
+    }};
+    install(enumerable);
   }}
 }}
 
@@ -9121,32 +9214,22 @@ try {{
       }}
     }}
     if (frontmatterOwners.size > 0) __zfb_install_freeze_patch();
-    const untrackableReasons = new Map();
-    const markUntrackable = (owners, reason) => {{
-      for (const collection of owners) {{
-        if (!untrackableReasons.has(collection)) untrackableReasons.set(collection, reason);
-      }}
-    }};
     for (const [frontmatter, owners] of frontmatterOwners) {{
       if (__zfb_frontmatter_is_convertible(frontmatter)) {{
         __zfb_track_frontmatter(frontmatter, owners);
       }} else {{
-        markUntrackable(owners, "has frontmatter that was frozen or sealed before tracing started");
+        __zfb_mark_untrackable(owners, "has frontmatter that was frozen or sealed before tracing started");
       }}
     }}
+    __zfb_specifier_collections = specifierCollections;
     if (specifierCollections.size > 0) {{
-      const recordContentLookup = (specifier) => {{
-        const current = __zfb_trace_state.current;
-        const owners = current ? specifierCollections.get(specifier) : undefined;
-        if (owners) __zfb_record_owner_reads(current, owners);
-      }};
       try {{
         const namespace = globalThis.__zfb;
         const contentBridge = namespace.content;
         if (contentBridge === undefined || contentBridge === null) {{
           const bridge = {{
             get(specifier) {{
-              recordContentLookup(specifier);
+              __zfb_record_content_lookup(specifier);
               return undefined;
             }},
           }};
@@ -9154,33 +9237,19 @@ try {{
           if (namespace.content !== bridge) throw new TypeError("content bridge slot is read-only");
           __zfb_instrumented_bridge = bridge;
           __zfb_instrumented_bridge_get = bridge.get;
-        }} else if (typeof contentBridge.get === "function") {{
-          const bridgeGet = contentBridge.get;
-          const tracedGet = function (specifier) {{
-            recordContentLookup(specifier);
-            return bridgeGet.apply(this, arguments);
-          }};
-          contentBridge.get = tracedGet;
-          if (contentBridge.get !== tracedGet) throw new TypeError("content bridge get is read-only");
-          __zfb_instrumented_bridge = contentBridge;
-          __zfb_instrumented_bridge_get = tracedGet;
+          __zfb_bridge_is_placeholder = true;
         }} else {{
-          __zfb_instrumented_bridge = contentBridge;
-          __zfb_instrumented_bridge_get = contentBridge.get;
+          __zfb_instrument_bridge(contentBridge);
         }}
       }} catch (error) {{
         __zfb_instrumented_bridge = undefined;
         __zfb_instrumented_bridge_get = undefined;
-        for (const owners of specifierCollections.values()) {{
-          markUntrackable(owners, `has a content bridge that could not be instrumented (${{String(error)}})`);
-        }}
+        __zfb_bridge_is_placeholder = false;
+        __zfb_mark_untrackable(
+          __zfb_all_specifier_owners(),
+          `has a content bridge that could not be instrumented (${{String(error)}})`,
+        );
       }}
-    }}
-    for (const [collection, reason] of untrackableReasons) {{
-      __zfb_untrackable_collections.add(collection);
-      console.warn(
-        `[zfb dev] content provenance: collection "${{collection}}" ${{reason}}; every route rendered in dev is treated as a reader of "${{collection}}"`,
-      );
     }}
     snapshot.collections = new Proxy(collections, {{
       get(target, property, receiver) {{
@@ -9206,8 +9275,12 @@ export default {{
         return new Response("Not Found", {{ status: 404 }});
       }}
       if (__zfb_trace_state.ready && __zfb_bridge_replaced()) {{
-        __zfb_trace_state.ready = false;
-        __zfb_trace_state.error = "content bridge replaced after trace install; conservative fallback";
+        if (__zfb_bridge_is_placeholder) {{
+          __zfb_adopt_bridge_replacing_placeholder(__zfb_trace_state.events);
+        }} else {{
+          __zfb_trace_state.ready = false;
+          __zfb_trace_state.error = "content bridge replaced after trace install; conservative fallback";
+        }}
       }}
       const events = __zfb_trace_state.events.splice(0);
       return new Response(JSON.stringify({{
@@ -12271,7 +12344,8 @@ pub(crate) fn content_consumers_from_trace_for_adapter_tests(
                 )
             })
             .collect();
-    apply_content_trace_observations(&mut retained, classified.observed, classified.reads);
+    apply_content_trace_observations(&mut retained, classified.observed.clone(), classified.reads);
+    demote_retained_paths_reads(&mut retained, &classified.observed, &membership.membership);
     let mut graph = DependencyGraph::new();
     replace_content_edges(
         &mut graph,
