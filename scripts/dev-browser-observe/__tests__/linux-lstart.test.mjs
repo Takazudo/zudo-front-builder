@@ -3,7 +3,9 @@ import {
   liveOwnedFromRegistry,
   lstartSlackMs,
   parsePsTable,
+  PidReuseError,
   pgidScopeSince,
+  sameBirth,
   scopeFloorMs,
   snapshotOwned,
   spawnSecondMs,
@@ -154,5 +156,78 @@ describe("Linux procps lstart can read up to 1 s before the real start", () => {
       expect(liveOwnedFromRegistry([rootRow], birthOf(PROCPS_ROW), "linux")).toHaveLength(1);
       expect(liveOwnedFromRegistry([memberRow], birthOf(STRAY_ROW), "linux")).toHaveLength(0);
     });
+  });
+});
+
+describe("birth identity does not depend on comm (Linux Node renames its main thread)", () => {
+  // procps rows for one process: `comm` reads "node" right after spawn and "MainThread"
+  // once Node calls prctl(PR_SET_NAME); pid, pgid, lstart and args do not change.
+  const ARGS = "/usr/bin/node -e setInterval(() => {}, 1000)";
+  const recorded = {
+    ...parsePsTable("    700       1     700 Sat Nov 21 03:10:31 2026 node")[0],
+    args: ARGS,
+  };
+  const observed = (row, args = ARGS) => ({ ...parsePsTable(row)[0], args });
+  const MAIN_THREAD = "    700       1     700 Sat Nov 21 03:10:31 2026 MainThread";
+
+  it("a MainThread observation against a recorded node is the same birth", () => {
+    expect(observed(MAIN_THREAD).comm).toBe("MainThread");
+    expect(sameBirth(recorded, observed(MAIN_THREAD))).toBe(true);
+    expect(sameBirth(recorded, { ...observed(MAIN_THREAD), args: "unavailable" })).toBe(true);
+    const tableRow = parsePsTable(MAIN_THREAD)[0];
+    expect(tableRow.args).toBeUndefined();
+    expect(sameBirth(recorded, tableRow)).toBe(true);
+  });
+
+  it("a differing lstart, pgid or args is still a different birth", () => {
+    expect(
+      sameBirth(recorded, observed("    700       1     700 Sat Nov 21 03:10:32 2026 MainThread")),
+    ).toBe(false);
+    expect(
+      sameBirth(recorded, observed("    700       1     701 Sat Nov 21 03:10:31 2026 node")),
+    ).toBe(false);
+    expect(sameBirth(recorded, observed(MAIN_THREAD, "/usr/bin/python3 other.py"))).toBe(false);
+    expect(
+      sameBirth(
+        recorded,
+        observed("    700       1     700 Sat Nov 21 03:10:31 2026 node", "/usr/bin/node other.js"),
+      ),
+    ).toBe(false);
+    expect(sameBirth(recorded, null)).toBe(false);
+  });
+
+  it("stop signals a root whose comm became MainThread, and refuses a reused pid", async () => {
+    const run = async (now) => {
+      let resolveExit;
+      const handle = { native: { ...recorded, spawnWallMs: 0 }, exit: null, known: new Map() };
+      handle.exited = new Promise((r) => {
+        resolveExit = r;
+      });
+      let alive = true;
+      const signals = [];
+      const report = stopOwned(handle, {
+        intWaitMs: 200,
+        termWaitMs: 200,
+        killWaitMs: 200,
+        platform: "linux",
+        birthImpl: () => (alive ? now : null),
+        psImpl: () => (alive ? `${MAIN_THREAD}\n` : ""),
+        killImpl: (pid, signal) => {
+          signals.push([pid, signal]);
+          alive = false;
+          handle.exit = { exitCode: null, signalCode: signal };
+          resolveExit(handle.exit);
+        },
+      });
+      return { report, signals };
+    };
+    const same = await run(observed(MAIN_THREAD));
+    expect((await same.report).absent).toBe(true);
+    expect(same.signals[0]).toEqual([-700, "SIGINT"]);
+    const reused = await run(
+      observed("    700       1     700 Sat Nov 21 04:00:00 2026 MainThread"),
+    );
+    await expect(reused.report).rejects.toBeInstanceOf(PidReuseError);
+    expect(reused.signals).toEqual([]);
   });
 });
