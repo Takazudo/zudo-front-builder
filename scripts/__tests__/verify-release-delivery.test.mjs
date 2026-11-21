@@ -1010,6 +1010,48 @@ describe("published WASM bytes", () => {
 });
 
 describe("workflow jobs, steps and attempts", () => {
+  describe("unexpanded reusable-workflow caller (#4777)", () => {
+    const EXPANDED = "smoke-clean-room / Clean-room smoke (ubuntu-latest, dist_tag=latest)";
+
+    it("reports a skipped caller as never expanded and keeps the check failed", async () => {
+      let callerId;
+      const { report } = await run((w) => {
+        const smoke = w.releaseJobs.find((j) => j.name === EXPANDED);
+        Object.assign(smoke, { name: "smoke-clean-room", conclusion: "skipped", steps: [] });
+        callerId = smoke.id;
+      });
+      const smokeCheck = check(report, "workflow", "job:smoke-clean-room");
+      expect(smokeCheck.status).toBe(STATUS.FAILED);
+      expect(smokeCheck.reason).toBe(
+        'required job "smoke-clean-room / " never expanded: its reusable-workflow caller "smoke-clean-room" concluded skipped',
+      );
+      expect(smokeCheck.evidence.caller).toEqual([
+        expect.objectContaining({ id: callerId, name: "smoke-clean-room", conclusion: "skipped" }),
+      ]);
+      expect(report.verdict).toBe(STATUS.FAILED);
+    });
+
+    it("still reports a genuinely missing job as absent", async () => {
+      const { report } = await run((w) => {
+        w.releaseJobs = w.releaseJobs.filter((j) => j.name !== EXPANDED);
+      });
+      const smokeCheck = check(report, "workflow", "job:smoke-clean-room");
+      expect(smokeCheck.status).toBe(STATUS.FAILED);
+      expect(smokeCheck.reason).toBe('required job "smoke-clean-room / " is absent from the run');
+    });
+
+    it("leaves expanded success and failure verdicts unchanged", async () => {
+      const ok = await run();
+      expect(check(ok.report, "workflow", "job:smoke-clean-room").status).toBe(STATUS.VERIFIED);
+      const bad = await run((w) => {
+        w.releaseJobs.find((j) => j.name === EXPANDED).conclusion = "failure";
+      });
+      const badCheck = check(bad.report, "workflow", "job:smoke-clean-room");
+      expect(badCheck.status).toBe(STATUS.FAILED);
+      expect(badCheck.reason).toBe(`job "${EXPANDED}" concluded failure`);
+    });
+  });
+
   it.each([
     ["failure", STATUS.FAILED],
     ["cancelled", STATUS.FAILED],
