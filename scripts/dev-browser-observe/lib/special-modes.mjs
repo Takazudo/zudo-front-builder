@@ -37,7 +37,10 @@ export function classifyNegative(view, { lastGood = null, empty = null, errorMar
   const excerpt = view.bodyExcerpt ?? "";
   const status = view.httpStatus ?? null;
   if ((status ?? 0) >= 500) return { state: "error", basis: `http-${status}` };
-  const marker = errorMarkers.find((m) => excerpt.includes(m) || (view.title ?? "").includes(m));
+  // markersFound is computed over the page's full innerText and title; the excerpt is only a fallback.
+  const marker = Array.isArray(view.markersFound)
+    ? errorMarkers.find((m) => view.markersFound.includes(m))
+    : errorMarkers.find((m) => excerpt.includes(m) || (view.title ?? "").includes(m));
   if (marker) return { state: "error", basis: `error-marker: ${marker} (http-${status})` };
   if (status === 404 && view.notInCache === true)
     return { state: "route-not-expanded", basis: "http-404 page not in cache" };
@@ -64,11 +67,45 @@ export function classifyNegativeState(view, lastGood, errorMarkers = [], empty =
  * `accessDelayMs` (not update latency), then navigate and time the first
  * correct display. Request evidence shows whether anything fetched it early.
  */
+export function pathnameOf(url) {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return null;
+  }
+}
+
+/** hidden-edit outcome from the navigation check's stage; stale only when a rendered document showed the old body. */
+export function hiddenOutcome(nav) {
+  if (nav.ok) return "success";
+  if (nav.stage === "transient") return "transient-not-rendered";
+  if (nav.stage === "arm") return "arm-error";
+  if (nav.stage === "navigation" || (nav.error && nav.stage === undefined)) return "prepare-error";
+  if (nav.stage === "wait") return "stale";
+  return "hidden-check-failed";
+}
+
 async function runHidden(ctx) {
   const { attempt, page, fs, clock, timeouts, recBase } = ctx;
+  // Run-time guard: our page must never have requested the hidden article before the edit.
+  const visited = (page.requests ?? []).filter((r) => pathnameOf(r.url) === attempt.hiddenPath);
+  if (visited.length > 0) {
+    return {
+      rec: {
+        ...recBase,
+        mode: "hidden",
+        outcome: "hidden-precondition-visited",
+        visitedRequests: visited,
+        writePerformed: false,
+      },
+      outcome: "hidden-precondition-visited",
+      writeDone: false,
+    };
+  }
   const mark = page.mark();
   const pre = ctx.preparedState ?? null;
   const { t0, steps } = await doWrites(fs, attempt.writes, clock);
+  ctx.writeDone = true;
   attempt.applied?.();
   await wait(attempt.observeMs);
   const activeEffects = page.since(mark, t0);
@@ -87,7 +124,7 @@ async function runHidden(ctx) {
     timeouts.attemptMs,
     "hidden",
   );
-  const outcome = nav.ok ? "success" : nav.error ? "prepare-error" : "stale";
+  const outcome = hiddenOutcome(nav);
   return {
     rec: {
       ...recBase,
@@ -120,6 +157,7 @@ async function runFinalState(ctx) {
   const { attempt, page, fs, clock, timeouts, recBase } = ctx;
   const mark = page.mark();
   const { t0, tLast, steps } = await doWrites(fs, attempt.writes, clock);
+  ctx.writeDone = true;
   attempt.applied?.();
   const settle = await page.settle({
     mark,
@@ -172,6 +210,7 @@ async function runExpectedNegative(ctx) {
   const { attempt, page, fs, clock, timeouts, recBase, op } = ctx;
   const mark = page.mark();
   const { t0, tLast, steps } = await doWrites(fs, attempt.writes, clock);
+  ctx.writeDone = true;
   const settle = await page.settle({
     mark,
     startNs: tLast,
@@ -182,7 +221,7 @@ async function runExpectedNegative(ctx) {
   });
   const observed = [];
   for (const o of attempt.observe) {
-    const view = await page.observePage(o.path);
+    const view = await page.observePage(o.path, { errorMarkers: attempt.errorMarkers });
     const probe = async (pred) => {
       if (!pred || !view.ok) return null;
       try {

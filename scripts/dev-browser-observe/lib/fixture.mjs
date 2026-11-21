@@ -421,7 +421,6 @@ export function defaultT0() {
   return hrtimeNs();
 }
 
-/** Exact bytes + sha256 of every workload-reachable file. */
 /** Exact bytes + sha256 of every file in `dirs` plus the listed `files`. */
 export function snapshotPaths({ dirs = [], files = [] }) {
   const out = {};

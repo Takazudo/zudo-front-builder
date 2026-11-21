@@ -284,7 +284,20 @@ export class ObserverPage {
     const started = this.clock();
     try {
       await this.page.waitForLoadState("load", { timeout: timeoutMs });
-      const state = await this.page.evaluate(() => (window.__dbo ? window.__dbo.state() : null));
+      // Same facts prepare() computes, so the transient re-read loop also applies after an abort.
+      const state = await this.page.evaluate(() => {
+        if (!window.__dbo) return null;
+        const nav = performance.getEntriesByType("navigation")[0];
+        return {
+          ...window.__dbo.state(),
+          notInCache:
+            (document.body ? document.body.innerText : "").indexOf("page not in cache") !== -1,
+          httpStatus:
+            nav && typeof nav.responseStatus === "number" && nav.responseStatus > 0
+              ? nav.responseStatus
+              : null,
+        };
+      });
       if (state?.armed) await this.page.evaluate(() => window.__dbo.disarm());
       return {
         ok: state !== null,
@@ -323,12 +336,6 @@ export class ObserverPage {
     }
   }
 
-  /**
-   * Cleanup settle: wait until nothing (livereload frame, main-frame
-   * navigation, new document) has happened for `quietMs`, measured from the
-   * restore write or the last such event, bounded by `boundMs`. Records
-   * whether the restore's own native update (page/css frame) was observed.
-   */
   /**
    * Cleanup/after-write settle. With `requireNativeUpdate`, the settle ends only
    * after the write's own native update is observed (a livereload page/css
@@ -484,6 +491,7 @@ export class ObserverPage {
         if (!aborted || i >= 1) {
           return {
             ok: false,
+            stage: "navigation",
             error: msg,
             recovery,
             evidence: this.since(m, navStart),
@@ -522,6 +530,7 @@ export class ObserverPage {
     if (state.notInCache) {
       return {
         ok: false,
+        stage: "transient",
         transient: "transient-not-in-cache",
         transientReads,
         httpStatus: state.httpStatus ?? null,
@@ -547,6 +556,7 @@ export class ObserverPage {
       const transient = page?.notInCache === true;
       return {
         ok: !transient,
+        stage: transient ? "transient" : "confirmed",
         firstReadMatched: true,
         ...base,
         sinceNavigationMs,
@@ -559,11 +569,14 @@ export class ObserverPage {
     if (!armed.armed)
       return {
         ok: false,
+        stage: "arm",
         error: armed.error ?? "arm failed",
         ...base,
         evidence: this.since(m, navStart),
       };
-    const waited = await this.waitNotify(token, timeoutMs, (p) => this.onStray(p));
+    // The wait gets what is left of the check budget after navigation and transient re-reads.
+    const remainingMs = Math.max(1, timeoutMs - nsToMs(this.clock() - navStart));
+    const waited = await this.waitNotify(token, remainingMs, (p) => this.onStray(p));
     const sinceNavigationMs = nsToMs(this.clock() - navStart);
     const failure = waited.kind === "notify" ? null : await this.failureSnapshot(predicate);
     const page = failure ?? (await this.failureSnapshot(predicate));
@@ -573,6 +586,14 @@ export class ObserverPage {
     const transient = page?.notInCache === true || failure?.notInCache === true;
     return {
       ok: waited.kind === "notify" && !transient,
+      stage:
+        waited.kind === "notify"
+          ? transient
+            ? "transient"
+            : "confirmed"
+          : transient
+            ? "transient"
+            : "wait",
       ...(transient ? { transient: "transient-not-in-cache" } : {}),
       firstReadMatched: false,
       ...base,
@@ -599,21 +620,27 @@ export class ObserverPage {
   }
 
   /** One fresh navigation and a read-only look at the result (status, title, excerpt, marker text). */
-  async observePage(path, { markerText = null } = {}) {
+  async observePage(path, { markerText = null, errorMarkers = [] } = {}) {
     const navStart = this.clock();
     try {
       await this.disarm();
       const response = await this.page.goto(this.url(path), { waitUntil: "load", timeout: 30000 });
-      const view = await this.page.evaluate((marker) => {
-        const text = document.body ? document.body.innerText : "";
-        return {
-          url: location.href,
-          title: document.title,
-          containsMarker: marker ? text.indexOf(marker) !== -1 : null,
-          notInCache: text.indexOf("page not in cache") !== -1,
-          bodyExcerpt: text.slice(0, 600),
-        };
-      }, markerText);
+      const view = await this.page.evaluate(
+        ([marker, markers]) => {
+          const text = document.body ? document.body.innerText : "";
+          return {
+            url: location.href,
+            title: document.title,
+            containsMarker: marker ? text.indexOf(marker) !== -1 : null,
+            markersFound: markers.filter(
+              (m) => text.indexOf(m) !== -1 || document.title.indexOf(m) !== -1,
+            ),
+            notInCache: text.indexOf("page not in cache") !== -1,
+            bodyExcerpt: text.slice(0, 600),
+          };
+        },
+        [markerText, errorMarkers],
+      );
       return {
         ok: true,
         path,
@@ -631,10 +658,6 @@ export class ObserverPage {
     }
   }
 
-  /**
-   * A removed URL must answer 404/410 AND must not still render the removed
-   * content: a 200 error page or a 200 last-good page is a failure.
-   */
   /**
    * A removed URL passes when it answers 404/410 without the removed content
    * (zfb dev's steady body for a removed URL is the generic "page not in

@@ -14,6 +14,12 @@ export const OUTCOMES = [
   "expected-negative-mismatch",
   "recovery-failed",
   "final-state-mismatch",
+  "transient-not-rendered",
+  "hidden-precondition-visited",
+  "hidden-check-failed",
+  "hidden-error",
+  "final-state-error",
+  "expected-negative-error",
   "write-error",
   "server-exit",
   "resource-limit",
@@ -419,7 +425,7 @@ export async function runBatch({ scenarios, deps }) {
 
         if (attempt.mode && attempt.mode !== "standard") {
           current.armedToken = attempt.token;
-          const special = await runSpecialMode(attempt.mode, {
+          const specialCtx = {
             attempt,
             op,
             recBase,
@@ -431,7 +437,29 @@ export async function runBatch({ scenarios, deps }) {
             timeouts,
             limits,
             preparedState,
-          });
+          };
+          let special;
+          try {
+            special = await runSpecialMode(attempt.mode, specialCtx);
+          } catch (error) {
+            // A throw after (some) writes must not lose that the workload changed the files.
+            const steps = error?.steps ?? specialCtx.writeSteps ?? null;
+            const wrote =
+              specialCtx.writeDone === true ||
+              (Array.isArray(error?.steps) && error.steps.length > 0);
+            special = {
+              rec: {
+                ...recBase,
+                mode: attempt.mode,
+                outcome: `${attempt.mode}-error`,
+                error: String(error?.stack ?? error),
+                writePerformed: wrote,
+                writeSteps: steps,
+              },
+              outcome: `${attempt.mode}-error`,
+              writeDone: wrote,
+            };
+          }
           current.writeDone = special.writeDone;
           const rec = special.rec;
           const outcome = special.outcome;
@@ -444,7 +472,11 @@ export async function runBatch({ scenarios, deps }) {
             acc.lastArmedUnknownOperation = null;
             continue;
           }
-          acc.lastArmedUnknownOperation = { ...where, token: attempt.token, writeCompleted: true };
+          acc.lastArmedUnknownOperation = {
+            ...where,
+            token: attempt.token,
+            writeCompleted: special.writeDone === true,
+          };
           acc.stoppedByClassifyTimeout =
             rec.expect === "classify" && (outcome === "timeout" || outcome === "stale");
           stop(outcome, where);

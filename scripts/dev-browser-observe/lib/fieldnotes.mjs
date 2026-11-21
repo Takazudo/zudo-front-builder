@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import {
   addArticle,
   breakFrontmatter,
@@ -25,6 +25,10 @@ import { newToken, performWrites, restoreSnapshot, snapshotPaths } from "./fixtu
 import { readJson, sha256, sha256File, treeHashDir } from "./util.mjs";
 
 export const FIELD_NOTES_SCHEMA = "field-notes-fixture.v1";
+
+/** Detail page every cleanup live-checks, and the article the calibration native-reload cell edits. */
+export const FN_CLEANUP_DETAIL = "article-00001";
+export const FN_CALIBRATION_ARTICLE = "article-00002";
 
 // writeMethod per op; the first entry is the default.
 export const FN_OP_WRITE_METHODS = {
@@ -124,7 +128,8 @@ export function materializeFieldNotes({
     mkdirSync(dirname(join(workDir, rel)), { recursive: true });
     cpSync(join(sourceDir, rel), join(workDir, rel), {
       recursive: true,
-      filter: (p) => !/\/(node_modules|dist|\.zfb|\.zfb-build)(\/|$)/.test(p),
+      // Judge only the part below the copied root, so a source dir that itself sits under e.g. /dist/ still copies.
+      filter: (p) => !isBuildOutputPath(relative(join(sourceDir, rel), p)),
     });
   }
   const appDir = join(workDir, src.app);
@@ -159,6 +164,25 @@ export function materializeFieldNotes({
     configFile: "zfb.config.ts",
     configProvenance: "source-dir",
   };
+}
+
+export function isBuildOutputPath(rel) {
+  return rel
+    .split(sep)
+    .some(
+      (part) =>
+        part === "node_modules" || part === "dist" || part === ".zfb" || part === ".zfb-build",
+    );
+}
+
+/** Next generated article number: max existing article-NNNNN number + 1 (gaps from deletes are never reused). */
+export function nextArticleNumber(model) {
+  let max = 0;
+  for (const a of model.articles) {
+    const m = /^article-(\d+)$/.exec(a.slug);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return max + 1;
 }
 
 export function fnRoute(key, slug) {
@@ -402,7 +426,7 @@ export function planFieldNotesOp(m, model, op, { token = newToken(), tokens = nu
       };
     }
     case "add-article": {
-      const n = idx.articles.length + 1;
+      const n = nextArticleNumber(model);
       const meta = {
         ...generatedMetadata(model, n),
         ...(op.category
@@ -619,7 +643,7 @@ export function planFieldNotesOp(m, model, op, { token = newToken(), tokens = nu
         };
       }
       if (variant === "add-then-delete") {
-        const n = idx.articles.length + 1;
+        const n = nextArticleNumber(model);
         const meta = {
           ...generatedMetadata(model, n),
           title: `A transient field note ${token}`,
@@ -677,7 +701,10 @@ export function liveRestoreChecks(model, touched = []) {
       },
     },
   ];
-  const details = new Set([idx.articles[0].slug, ...touched.filter((s) => idx.bySlug.has(s))]);
+  const details = new Set([
+    idx.bySlug.has(FN_CLEANUP_DETAIL) ? FN_CLEANUP_DETAIL : idx.articles[0].slug,
+    ...touched.filter((s) => idx.bySlug.has(s)),
+  ]);
   for (const s of details)
     checks.push({
       path: href(s),
@@ -762,7 +789,7 @@ export function fieldNotesOps(m, { restorationWriteMethod = "in-place" } = {}) {
     },
     warmPaths: fnWarmPaths,
     route: m.route,
-    calibrationArticle: "article-00002",
+    calibrationArticle: FN_CALIBRATION_ARTICLE,
     // zfb excludes the default public/ dir from dev watch roots (served from disk, #1165): no auto-update contract.
     noAutoUpdatePaths: [dirname(m.publicCssPath)],
   };

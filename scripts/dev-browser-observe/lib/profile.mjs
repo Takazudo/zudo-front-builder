@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
+  FN_CALIBRATION_ARTICLE,
+  FN_CLEANUP_DETAIL,
   FN_EXPECTED_NEGATIVE_OPS,
   FN_NEEDS_ARTICLE,
   FN_OP_WRITE_METHODS,
@@ -33,8 +35,16 @@ function fieldNotesErrors(profile) {
   const at = (s, i) => `$.scenarios[${s.id}].ops[${i}]`;
   if (!profile.fixture.source)
     errors.push("$.fixture.source is required for kind field-notes (dir + pinned tree hashes)");
+  // Paths the run may load before a hidden-edit, known statically: cleanup's default live-check detail page,
+  // the calibration article, and every warm path, target and article of earlier ops in profile order
+  // (any scenario may be selected into the same run). Planned supplementals depend on the dataset, so the
+  // run-time request-log guard (hidden-precondition-visited) is the complete check.
+  const visited = new Set([
+    `/articles/${FN_CLEANUP_DETAIL}/`,
+    `/articles/${FN_CALIBRATION_ARTICLE}/`,
+  ]);
   for (const s of profile.scenarios ?? []) {
-    const visited = new Set(fnWarmPaths(s));
+    for (const p of fnWarmPaths(s)) visited.add(p);
     for (const [i, op] of (s.ops ?? []).entries()) {
       const allowed = FN_OP_WRITE_METHODS[op.op];
       if (!allowed) {
@@ -77,6 +87,8 @@ function fieldNotesErrors(profile) {
       if (op.inject) errors.push(`${at(s, i)}: inject is not supported for field-notes ops`);
       if (op.targetPath) visited.add(op.targetPath);
       if (op.article) visited.add(`/articles/${op.article}/`);
+      if (op.article && (op.op === "rename-slug-change" || op.op === "rename-filename-only"))
+        visited.add(`/articles/${op.to ?? `${op.article}-renamed`}/`);
     }
   }
   return errors;
