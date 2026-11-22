@@ -3391,3 +3391,79 @@ async fn cold_lazy_edits_during_rejected_generation_survive_recovery() {
 async fn eager_edits_during_rejected_generation_survive_recovery() {
     run_edits_during_rejected_generation(DevMode::Eager, None).await;
 }
+
+/// A stylesheet edit coalesced into a tick whose content snapshot is rejected
+/// must still be published once the content is fixed. The rejected tick aborts
+/// at the renderer reload, before its CSS pass; the fixing tick's own change
+/// set holds only b.md, so the CSS edit has to be carried forward.
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_css_edit_in_rejected_tick_is_published_after_recovery() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create tempdir for memo-helper fixture");
+    let (root, data_probe_path) = memo_session_root(&temp);
+    let stylesheet = root.join("styles/global.css");
+    fs::create_dir_all(root.join("styles")).expect("create styles/");
+    fs::write(&stylesheet, ":root { --memo-css-marker: css-v1; }\n").expect("write global.css");
+    let mut session = spawn_dev_with_timing(root, DevMode::Lazy, Some("cold"), true);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some((base, client)) =
+            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+        else {
+            return ScenarioOutcome::Skipped;
+        };
+        let css_url = format!("{base}/assets/styles.css");
+        poll_until_response_contains(&client, &css_url, "css-v1", "baseline css", &session).await;
+        poll_until_response_contains(
+            &client,
+            &format!("{base}/"),
+            "Beta Memo V1",
+            "baseline",
+            &session,
+        )
+        .await;
+
+        let b_md = session.root.join("content/articles/b.md");
+        let original_b = fs::read(&b_md).expect("read original b.md");
+        let offset = read_log(&session.stderr_path).len();
+        write_in_place(&stylesheet, b":root { --memo-css-marker: css-v2; }\n");
+        write_in_place(&b_md, MEMO_INVALID_B);
+        let (_, after) =
+            wait_for_stderr_line(&session, offset, &["was not published"], "rejected tick").await;
+        let intake = read_log(&session.stderr_path)[offset..after]
+            .lines()
+            .filter(|line| line.contains("[zfb-timing] intake paths:"))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(
+            intake
+                .iter()
+                .any(|line| line.contains("global.css") && line.contains("b.md")),
+            "the stylesheet edit and the rejected b.md must share one tick: {intake:?}\n{}",
+            session.logs()
+        );
+
+        write_in_place(&b_md, &original_b);
+        poll_until_response_contains(
+            &client,
+            &css_url,
+            "css-v2",
+            "stylesheet edited in the rejected tick",
+            &session,
+        )
+        .await;
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] css edit in a rejected tick exceeded {}s; process group {pgid} will be \
+             killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
+        ),
+    }
+}
