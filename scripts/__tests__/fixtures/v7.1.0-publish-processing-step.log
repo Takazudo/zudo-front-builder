@@ -1,0 +1,85 @@
+2026-11-18T07:08:46.3446731Z ##[group]Run bash scripts/publish-npm-packages.sh mac-local
+2026-11-18T07:08:46.3447457Z [36;1mbash scripts/publish-npm-packages.sh mac-local[0m
+2026-11-18T07:12:35.8784055Z @takazudo/zfb-md-wasm@7.1.0 not visible on the registry yet (attempt 4/40); retrying in 15s
+2026-11-18T07:12:51.2454457Z @takazudo/zfb-md-wasm@7.1.0 not visible on the registry yet (attempt 5/40); retrying in 15s
+2026-11-18T07:13:06.6234444Z @takazudo/zfb-md-wasm@7.1.0 not visible on the registry yet (attempt 6/40); retrying in 15s
+2026-11-18T07:13:22.2871060Z .: 973c84725e2b4ffa99dec8d32855fa071719468f6e4b3dd518a0d9ecc8c16a17 (3423288 bytes)
+2026-11-18T07:13:22.2873217Z ./highlight: 3d7da9082cfaa0194b2ec39da2057ba7117f60d8b902c6ef66dd552ccd7e9366 (1545306 bytes)
+2026-11-18T07:13:22.2874892Z ./render: ab9278c1e9d7a1ef88786b244af41ed556f57b483842fd325b2bc2a8ea9f118c (2243722 bytes)
+2026-11-18T07:13:22.2876520Z ./parse: 2f2a7dfdc6130d800c3b76f9a9743f154d591e2043066f19fc07c84a31ec1e40 (735547 bytes)
+2026-11-18T07:13:22.2877914Z Verified all four published @takazudo/zfb-md-wasm@7.1.0 WASM digests.
+2026-11-18T07:13:22.2951146Z == Publish complete: every package is on the registry (newly published or already present). ==
+2026-11-18T07:13:22.3028608Z ##[group]Run set +e
+2026-11-18T07:13:22.3028925Z [36;1mset +e[0m
+2026-11-18T07:13:22.3029518Z [36;1mnode scripts/verify-npm-provenance-expectations.mjs --expectations "$EXPECTATIONS" | tee "$RUNNER_TEMP/verify-provenance.log"[0m
+2026-11-18T07:13:22.3030166Z [36;1mrc=${PIPESTATUS[0]}[0m
+2026-11-18T07:13:22.3030442Z [36;1mset -e[0m
+2026-11-18T07:13:22.3030677Z [36;1mif [[ "$rc" -eq 3 ]]; then[0m
+2026-11-18T07:13:22.3031194Z [36;1m  packages="$(sed -n 's/^PROCESSING_PACKAGES=//p' "$RUNNER_TEMP/verify-provenance.log" | tail -n1)"[0m
+2026-11-18T07:13:22.3031709Z [36;1m  {[0m
+2026-11-18T07:13:22.3031963Z [36;1m    echo "npm_processing=true"[0m
+2026-11-18T07:13:22.3032326Z [36;1m    echo "npm_processing_packages=${packages}"[0m
+2026-11-18T07:13:22.3032665Z [36;1m  } >> "$GITHUB_OUTPUT"[0m
+2026-11-18T07:13:22.3033997Z [36;1m  next_steps="Wait, then check the status API locally (GET /-/package/{name}/version/{version}/status, authenticated; \"validating\" means still processing). Contact npm support if it is still processing after 24 h. Once the versions are visible, dispatch: gh workflow run release.yml --ref main -f release_tag=${RELEASE_TAG} -f finalize_only=true"[0m
+2026-11-18T07:13:22.3035269Z [36;1m  {[0m
+2026-11-18T07:13:22.3035613Z [36;1m    echo "### :hourglass: npm accepted the publish but is still processing"[0m
+2026-11-18T07:13:22.3036018Z [36;1m    echo[0m
+2026-11-18T07:13:22.3036415Z [36;1m    echo "Packages accepted by npm and not yet visible (not dropped, not republished):"[0m
+2026-11-18T07:13:22.3036855Z [36;1m    echo[0m
+2026-11-18T07:13:22.3037526Z [36;1m    echo '```'[0m
+2026-11-18T07:13:22.3037792Z [36;1m    tr ',' '\n' <<<"$packages"[0m
+2026-11-18T07:13:22.3038085Z [36;1m    echo '```'[0m
+2026-11-18T07:13:22.3038313Z [36;1m    echo[0m
+2026-11-18T07:13:22.3038531Z [36;1m    echo "1. Wait."[0m
+2026-11-18T07:13:22.3039034Z [36;1m    echo "2. Check the status API locally: \`GET /-/package/{name}/version/{version}/status\` (authenticated)."[0m
+2026-11-18T07:13:22.3039651Z [36;1m    echo "3. Contact npm support if still processing after 24 h."[0m
+2026-11-18T07:13:22.3040293Z [36;1m    echo "4. Then run: \`gh workflow run release.yml --ref main -f release_tag=${RELEASE_TAG} -f finalize_only=true\`"[0m
+2026-11-18T07:13:22.3040830Z [36;1m    echo[0m
+2026-11-18T07:13:22.3041129Z [36;1m    echo "This job stays failed: pending is not passed."[0m
+2026-11-18T07:13:22.3041489Z [36;1m  } >> "$GITHUB_STEP_SUMMARY"[0m
+2026-11-18T07:13:22.3042009Z [36;1m  echo "::error title=npm still processing::${packages} accepted by npm but not yet visible. ${next_steps}"[0m
+2026-11-18T07:13:22.3042522Z [36;1mfi[0m
+2026-11-18T07:13:22.3042731Z [36;1mexit "$rc"[0m
+2026-11-18T07:13:22.3091068Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-11-18T07:13:22.3091424Z env:
+2026-11-18T07:13:22.3091638Z   DIST_TAG: latest
+2026-11-18T07:13:22.3091855Z   ALSO_LATEST: 
+2026-11-18T07:13:22.3092218Z   EXPECTATIONS: /home/runner/work/_temp/npm-provenance-expectations.tsv
+2026-11-18T07:13:22.3092636Z   NPM_PROVENANCE_VERIFY_ATTEMPTS: 9
+2026-11-18T07:13:22.3092915Z   RELEASE_TAG: v7.1.0
+2026-11-18T07:13:22.3095796Z   GH_TOKEN: ***
+2026-11-18T07:13:22.3096126Z   ZFB_RELEASE_SOURCE_COMMIT: 0cc567875e159f7251f89367cc475096aff5a6a8
+2026-11-18T07:13:22.3096517Z   ZFB_RELEASE_VERSION: 7.1.0
+2026-11-18T07:13:22.3096773Z ##[endgroup]
+2026-11-18T07:13:39.6616831Z   ✓ @takazudo/zfb-darwin-arm64@7.1.0: provenance none as expected.
+2026-11-18T07:13:56.0000359Z   ✓ @takazudo/zfb-darwin-x64@7.1.0: provenance none as expected.
+2026-11-18T07:35:15.2215630Z ##[error]@takazudo/zfb-linux-arm64-gnu@7.1.0: expected attested (publish outcome: publish-accepted) — accepted by npm, still processing — not dropped: Command failed: npm view @takazudo/zfb-linux-arm64-gnu@7.1.0 dist.attestations --json --prefer-online
+2026-11-18T07:35:15.2218647Z npm error code E404
+2026-11-18T07:35:15.2219233Z npm error 404 No match found for version 7.1.0
+2026-11-18T07:35:15.2220137Z npm error 404
+2026-11-18T07:35:15.2221193Z npm error 404  The requested resource '@takazudo/zfb-linux-arm64-gnu@7.1.0' could not be found or you do not have permission to access it.
+2026-11-18T07:35:15.2222311Z npm error 404
+2026-11-18T07:35:15.2222886Z npm error 404 Note that you can also install from a
+2026-11-18T07:35:15.2223654Z npm error 404 tarball, folder, http url, or git url.
+2026-11-18T07:35:15.2224938Z npm error A complete log of this run can be found in: /home/runner/.npm/_logs/2026-11-18T07_35_14_704Z-debug-0.log
+2026-11-18T07:35:15.2225701Z 
+2026-11-18T07:35:15.2225877Z {
+2026-11-18T07:35:15.2226350Z   "error": {
+2026-11-18T07:35:15.2226777Z     "code": "E404",
+2026-11-18T07:35:15.2227496Z     "summary": "No match found for version 7.1.0",
+2026-11-18T07:35:15.2229317Z     "detail": "The requested resource '@takazudo/zfb-linux-arm64-gnu@7.1.0' could not be found or you do not have permission to access it.\n\nNote that you can also install from a\ntarball, folder, http url, or git url."
+2026-11-18T07:35:15.2230816Z   }
+2026-11-18T07:35:15.2231165Z }
+2026-11-18T07:35:15.7022614Z   ✓ @takazudo/zfb-linux-x64-gnu@7.1.0: provenance attested as expected.
+2026-11-18T07:35:16.3329839Z   ✓ @takazudo/zfb-win32-x64-msvc@7.1.0: provenance attested as expected.
+2026-11-18T07:35:16.8901549Z   ✓ @takazudo/zfb-slugify@7.1.0: provenance attested as expected.
+2026-11-18T07:35:17.4351234Z   ✓ @takazudo/zfb@7.1.0: provenance attested as expected.
+2026-11-18T07:35:18.0160211Z   ✓ @takazudo/zfb-runtime@7.1.0: provenance attested as expected.
+2026-11-18T07:35:18.6388275Z   ✓ @takazudo/zfb-adapter-cloudflare@7.1.0: provenance attested as expected.
+2026-11-18T07:35:19.0090947Z   ✓ create-zfb@7.1.0: provenance attested as expected.
+2026-11-18T07:35:19.5846915Z   ✓ @takazudo/zfb-md-wasm@7.1.0: provenance attested as expected.
+2026-11-18T07:35:19.5848619Z Provenance expectations: 10/11 verified.
+2026-11-18T07:35:19.5849648Z PROCESSING_PACKAGES=@takazudo/zfb-linux-arm64-gnu@7.1.0
+2026-11-18T07:35:19.5963063Z ##[error]@takazudo/zfb-linux-arm64-gnu@7.1.0 accepted by npm but not yet visible. Wait, then check the status API locally (GET /-/package/{name}/version/{version}/status, authenticated; "validating" means still processing). Contact npm support if it is still processing after 24 h. Once the versions are visible, dispatch: gh workflow run release.yml --ref main -f release_tag=v7.1.0 -f finalize_only=true
+2026-11-18T07:35:19.5969710Z ##[error]Process completed with exit code 3.
+2026-11-18T07:35:19.6051694Z ##[group]Run actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

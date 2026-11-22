@@ -6,6 +6,7 @@
 // records every request so the read-only contract is asserted directly.
 
 import { createHash, generateKeyPairSync, sign as cryptoSign } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { gunzipSync, gzipSync } from "node:zlib";
 
 import { describe, expect, it } from "vite-plus/test";
@@ -28,6 +29,10 @@ import {
   npmPurl,
   parseArgs,
   parseTar,
+  INSTALLER_BYTES_PROTOCOL,
+  PROCESSING_FINALIZE_SUPERSEDED,
+  parseInstallerRecords,
+  processingProof,
   summarize,
   verifyReleaseDelivery,
 } from "../verify-release-delivery.mjs";
@@ -197,6 +202,10 @@ const INSTALLER_LOG = [
   "2026-11-06T07:28:43.0272196Z ==> All smoke assertions passed.",
 ].join("\n");
 
+const LEGACY_DOCKERFILE =
+  'FROM debian:bookworm-slim\nRUN curl -o "$s" https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh\n';
+const INSTALL_SH = "#!/bin/sh\necho install zfb\n";
+
 function buildPackages() {
   const wasmFiles = {};
   const artifacts = MD_WASM_PATHS.map(([entry, path], index) => {
@@ -298,6 +307,10 @@ function makeWorld(tweak = () => {}) {
     },
     installerJobs: installerJobs(),
     logs: { [jobIdOf(releaseJobs(), "smoke-clean-room")]: CLEAN_ROOM_LOG, 5000: INSTALLER_LOG },
+    sourceFiles: {
+      "tests/smoke/node-free/Dockerfile": LEGACY_DOCKERFILE,
+      "install.sh": INSTALL_SH,
+    },
     archives,
     packages,
     attestationAttempt: () => 1,
@@ -430,6 +443,17 @@ function makeFetch(world) {
     if (path === `${API}/contents/packages/zfb/package.json`) {
       return json({
         content: Buffer.from(JSON.stringify({ version: world.sourceVersion })).toString("base64"),
+      });
+    }
+    const contents = new RegExp(`^${API}/contents/(.+)$`).exec(path);
+    if (contents) {
+      const text = world.sourceFiles[contents[1]];
+      if (u.searchParams.get("ref") !== COMMIT || text === undefined)
+        return json({ message: "Not Found" }, 404);
+      return json({
+        type: "file",
+        encoding: "base64",
+        content: Buffer.from(text).toString("base64"),
       });
     }
     const attempt = new RegExp(`/actions/runs/${RELEASE_RUN}/attempts/(\\d+)$`).exec(path);
@@ -2310,4 +2334,494 @@ describe("finalizer Actions job-level guards", () => {
       );
       expect(report.exitCode).toBe(EXIT.failed);
     });
+});
+
+// ── Processing-then-finalize (#4779) ────────────────────────────────────────
+// The original publish log is a trimmed real capture of v7.1.0 release run
+// 44252644541, job 134639480950; the job and step shapes mirror that run and
+// finalize run 44393374160.
+const V71_PUBLISH_LOG = readFileSync(
+  new URL("./fixtures/v7.1.0-publish-processing-step.log", import.meta.url),
+  "utf8",
+);
+const cleaned = (text) =>
+  text
+    .replace(/^﻿/, "")
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z ?/, "").replace(/\x1b\[[0-9;]*m/g, ""));
+const PROCESSING_ENTRY = `@takazudo/zfb-linux-arm64-gnu@${VERSION}`;
+const V71_PUBLISH_STEPS = [
+  ["Set up job", "success"],
+  ["Run actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd", "success"],
+  ["Run actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444", "success"],
+  ["Install and assert pinned npm", "success"],
+  ["Download npm tarballs", "success"],
+  ["Download admitted Darwin inputs", "success"],
+  ["Download @takazudo/zfb-md-wasm manifest artifact", "success"],
+  ["Determine dist-tag", "success"],
+  ["Check if latest should also advance (prerelease dual-tag)", "success"],
+  ["Verify publish context (verified release tag required)", "success"],
+  ["Publish to npm", "success"],
+  ["Publish to npm (recovery — no provenance)", "skipped"],
+  ["Verify npm provenance expectations", "failure"],
+  ["Upload npm publish receipts", "success"],
+  ["Promote channel dist-tag (all packages verified)", "skipped"],
+  ["Sweep stale 'next' and 'release-pending' dist-tags", "success"],
+  ["Post Run actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444", "skipped"],
+  ["Post Run actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd", "success"],
+  ["Complete job", "success"],
+];
+const FINALIZE_JOB_ID = 12000;
+
+function withProcessingFinalizer(w) {
+  withFinalizer(w);
+  const skippedJob = (id, name) => ({
+    id,
+    name,
+    run_attempt: 1,
+    status: "completed",
+    conclusion: "skipped",
+    steps: [],
+  });
+  w.releaseJobs = w.releaseJobs.filter((j) => !j.name.startsWith("smoke-clean-room / "));
+  const publish = w.releaseJobs.find((j) => j.name === "publish");
+  publish.conclusion = "failure";
+  publish.steps = V71_PUBLISH_STEPS.map(([name, conclusion]) => step(name, conclusion));
+  const digest = w.releaseJobs.find((j) => j.name === "Upload MD/WASM digest asset");
+  digest.conclusion = "skipped";
+  digest.steps = [];
+  w.releaseJobs.push(
+    skippedJob(1900, "smoke-clean-room"),
+    skippedJob(1901, "Finalize published release"),
+    skippedJob(1902, "Finalize MD/WASM digest asset"),
+  );
+  w.logs[publish.id] = V71_PUBLISH_LOG.replaceAll("7.1.0", VERSION);
+  w.logs[FINALIZE_JOB_ID] = [
+    `Finalization cleared for ${TAG}: all source-policy packages present-verified, build assets complete.`,
+    ...PUBLISHED_PACKAGES.map(
+      (name) =>
+        `  ✓ ${name}@${VERSION}: provenance ${OWNER_MAC_CARRIERS[name] ? "none" : "attested"} as expected.`,
+    ),
+    `Provenance expectations: ${PUBLISHED_PACKAGES.length}/${PUBLISHED_PACKAGES.length} verified.`,
+  ].join("\n");
+}
+
+describe("processing proof from the publish log (#4779)", () => {
+  const opts = { version: "7.1.0", packages: PUBLISHED_PACKAGES };
+  it("admits the real v7.1.0 provenance step", () => {
+    const proof = processingProof(cleaned(V71_PUBLISH_LOG), opts);
+    expect(proof.reasons).toEqual([]);
+    expect(proof.ok).toBe(true);
+    expect(proof.evidence).toMatchObject({
+      processing: ["@takazudo/zfb-linux-arm64-gnu@7.1.0"],
+      verified: 10,
+      total: 11,
+    });
+  });
+  for (const [label, transform, options = opts] of [
+    [
+      "a non-processing verdict",
+      (t) =>
+        t.replace(
+          "accepted by npm, still processing — not dropped",
+          "version never became visible",
+        ),
+    ],
+    ["a missing PROCESSING_PACKAGES line", (t) => t.replace(/^\S+Z PROCESSING_PACKAGES=.*$/m, "")],
+    ["a non-3 exit", (t) => t.replace("exit code 3.", "exit code 1.")],
+    ["a missing exit line", (t) => t.replace(/^.*Process completed with exit code 3\.$/m, "")],
+    [
+      "an unrelated error",
+      (t) =>
+        t.replace(
+          "Provenance expectations: 10/11",
+          "##[error]create-zfb@7.1.0: expected attested (publish outcome: publish-accepted) — could not verify: E500\nProvenance expectations: 10/11",
+        ),
+    ],
+    [
+      "an ambiguous duplicated step",
+      (t) => {
+        const at = t.indexOf("##[group]Run set +e");
+        return t + "\n" + t.slice(at);
+      },
+    ],
+    ["a wrong version", (t) => t, { ...opts, version: "7.1.1" }],
+    ["a different package set", (t) => t, { ...opts, packages: PUBLISHED_PACKAGES.slice(1) }],
+    ["an unknown package set", (t) => t, { ...opts, packages: [] }],
+    [
+      "a processing count that disagrees with the summary",
+      (t) => t.replace("10/11 verified", "9/11 verified"),
+    ],
+  ])
+    it(`rejects ${label}`, () => {
+      const proof = processingProof(cleaned(transform(V71_PUBLISH_LOG)), options);
+      expect(proof.ok).toBe(false);
+      expect(proof.reasons.length).toBeGreaterThan(0);
+    });
+});
+
+describe("processing-then-finalize completion (#4779)", () => {
+  it("admits the v7.1.0 shape and keeps the original failures in the report", async () => {
+    const { report, calls } = await run(withProcessingFinalizer, { finalizeRunId: FINALIZER_RUN });
+    expect(report.aggregateDelivery.processingEligibility?.reasons).toEqual([]);
+    expect(report.verdict).toBe(STATUS.VERIFIED);
+    expect(report.exitCode).toBe(EXIT.verified);
+    expect(report.aggregateDelivery.supersession).toBe("processing-then-finalize");
+    expect(report.aggregateDelivery.supersededOriginalChecks).toEqual([
+      ...PROCESSING_FINALIZE_SUPERSEDED,
+    ]);
+    expect(report.sections.workflow.status).toBe(STATUS.FAILED);
+    for (const id of PROCESSING_FINALIZE_SUPERSEDED)
+      expect(check(report, "workflow", id).status).toBe(STATUS.FAILED);
+    expect(
+      report.aggregateDelivery.processingEligibility.evidence.processingProof.processing,
+    ).toEqual([PROCESSING_ENTRY]);
+    expect(calls.every((c) => c.method === "GET")).toBe(true);
+  });
+
+  it("does not reconcile without explicit finalizer selection", async () => {
+    const { report } = await run(withProcessingFinalizer);
+    expect(report.exitCode).toBe(EXIT.failed);
+    expect(report.aggregateDelivery.supersededOriginalChecks).toEqual([]);
+  });
+
+  const publishJob = (w) => w.releaseJobs.find((j) => j.name === "publish");
+  const publishStep = (w, name) => publishJob(w).steps.find((s) => s.name === name);
+  for (const [label, mutate] of [
+    [
+      "a failed original publish step",
+      (w) => (publishStep(w, "Publish to npm").conclusion = "failure"),
+    ],
+    [
+      "a skipped original publish step",
+      (w) => (publishStep(w, "Publish to npm").conclusion = "skipped"),
+    ],
+    [
+      "a recovery publication",
+      (w) => (publishStep(w, "Publish to npm (recovery — no provenance)").conclusion = "success"),
+    ],
+    [
+      "a non-processing provenance failure",
+      (w) =>
+        (w.logs[publishJob(w).id] = w.logs[publishJob(w).id].replace(
+          "accepted by npm, still processing — not dropped",
+          "version never became visible",
+        )),
+    ],
+    [
+      "missing processing proof",
+      (w) =>
+        (w.logs[publishJob(w).id] = w.logs[publishJob(w).id].replace(
+          /^\S+Z PROCESSING_PACKAGES=.*$/m,
+          "",
+        )),
+    ],
+    [
+      "ambiguous processing proof",
+      (w) => {
+        const t = w.logs[publishJob(w).id];
+        w.logs[publishJob(w).id] = t + "\n" + t.slice(t.indexOf("##[group]Run set +e"));
+      },
+    ],
+    [
+      "a promotion that ran in the original",
+      (w) =>
+        (publishStep(w, "Promote channel dist-tag (all packages verified)").conclusion = "failure"),
+    ],
+    [
+      "an unrelated failed publish-job step",
+      (w) => (publishStep(w, "Upload npm publish receipts").conclusion = "failure"),
+    ],
+    [
+      "an unrelated failed duty",
+      (w) =>
+        (w.releaseJobs.find((j) => j.name === "Upload GitHub Release assets").conclusion =
+          "failure"),
+    ],
+    [
+      "an independently failed digest upload",
+      (w) =>
+        (w.releaseJobs.find((j) => j.name === "Upload MD/WASM digest asset").conclusion =
+          "failure"),
+    ],
+    [
+      "an executed original clean-room",
+      (w) =>
+        w.releaseJobs.push({
+          ...releaseJobs().find((j) => j.name.startsWith("smoke-clean-room / ")),
+          id: 1950,
+          conclusion: "failure",
+        }),
+    ],
+    [
+      "a failed notify job",
+      (w) => (w.releaseJobs.find((j) => j.name === "notify").conclusion = "failure"),
+    ],
+    ["the wrong original source", (w) => (w.releaseRun.head_sha = CONTROL)],
+    ["a finalizer from another workflow", (w) => (w.finalizeRun.path = ".github/workflows/x.yml")],
+    [
+      "a finalizer for another source",
+      (w) =>
+        (w.logs[w.finalizeJobs[0].id] = w.logs[w.finalizeJobs[0].id].replaceAll(COMMIT, CONTROL)),
+    ],
+    [
+      "a later failed publish attempt hidden by the earlier processing stop",
+      (w) => {
+        w.releaseRun.run_attempt = 2;
+        w.attemptRuns[1] = { status: "completed", conclusion: "failure" };
+        const j = publishJob(w);
+        w.releaseJobs.push({
+          ...j,
+          id: 1960,
+          run_attempt: 2,
+          steps: j.steps.map((s) =>
+            s.name === "Publish to npm" ? { ...s, conclusion: "failure" } : s,
+          ),
+        });
+      },
+    ],
+    [
+      "a rerun whose consequence jobs belong to an older attempt",
+      (w) => {
+        w.releaseRun.run_attempt = 2;
+        w.attemptRuns[1] = { status: "completed", conclusion: "failure" };
+        const j = publishJob(w);
+        w.releaseJobs.push({ ...j, id: 1961, run_attempt: 2 });
+        w.logs[1961] = w.logs[j.id];
+      },
+    ],
+    [
+      "a missing finalizer duty",
+      (w) =>
+        (w.finalizeJobs = w.finalizeJobs.filter((j) => j.name !== "Finalize MD/WASM digest asset")),
+    ],
+    [
+      "a finalizer without promotion",
+      (w) =>
+        (w.finalizeJobs.find((j) => j.name === "Finalize published release").steps[2].conclusion =
+          "skipped"),
+    ],
+    [
+      "a finalizer that did not re-verify every package",
+      (w) => (w.logs[FINALIZE_JOB_ID] = w.logs[FINALIZE_JOB_ID].replace("11/11", "10/11")),
+    ],
+    [
+      "a finalizer that did not re-verify the processing package",
+      (w) =>
+        (w.logs[FINALIZE_JOB_ID] = w.logs[FINALIZE_JOB_ID].replace(`✓ ${PROCESSING_ENTRY}`, "x")),
+    ],
+    [
+      "skipped finalizer consumption",
+      (w) => {
+        const j = w.finalizeJobs.find((j) => j.name.startsWith("smoke-clean-room / "));
+        j.conclusion = "skipped";
+        j.steps = [];
+      },
+    ],
+  ])
+    it(`rejects ${label}`, async () => {
+      const { report } = await run(
+        (w) => {
+          withProcessingFinalizer(w);
+          mutate(w);
+        },
+        { finalizeRunId: FINALIZER_RUN },
+      );
+      expect(report.exitCode).not.toBe(EXIT.verified);
+      expect(report.aggregateDelivery.supersededOriginalChecks).not.toContain("job:publish");
+    });
+
+  for (const [label, jobId] of [
+    ["original publish", (w) => w.releaseJobs.find((j) => j.name === "publish").id],
+    ["finalizer", () => FINALIZE_JOB_ID],
+  ])
+    it(`keeps an unavailable ${label} log as missing evidence, never success`, async () => {
+      const { report } = await run(
+        (w) => {
+          withProcessingFinalizer(w);
+          delete w.logs[jobId(w)];
+        },
+        { finalizeRunId: FINALIZER_RUN },
+      );
+      expect(report.exitCode).toBe(EXIT.incomplete);
+      expect(report.aggregateDelivery.supersededOriginalChecks).toEqual([]);
+      expect(report.aggregateDelivery.processingEligibility.status).toBe(STATUS.INCOMPLETE);
+    });
+
+  it("keeps the clean-room-only finalization path", async () => {
+    const { report } = await run(withFinalizer, { finalizeRunId: FINALIZER_RUN });
+    expect(report.exitCode).toBe(EXIT.verified);
+    expect(report.aggregateDelivery.supersession).toBe("clean-room");
+    expect(report.aggregateDelivery.processingEligibility).toBeUndefined();
+  });
+});
+
+// ── Installer byte binding (#4784) ──────────────────────────────────────────
+const BOUND_DOCKERFILE = readFileSync(
+  new URL("../../tests/smoke/node-free/Dockerfile", import.meta.url),
+  "utf8",
+);
+const OTHER_SOURCE = "cccccccccccccccccccccccccccccccccccccccc";
+const installerRecord = (source = COMMIT, digest = sha256(INSTALL_SH)) =>
+  `2026-11-06T07:28:32.2400000Z #9 0.240 ${INSTALLER_BYTES_PROTOCOL} source=${source} path=install.sh sha256=${digest}`;
+const BOUND_RUN_ECHO =
+  '2026-11-06T07:28:32.0583830Z #9 [4/7] RUN set -eu;     if [ "$ZFB_SMOKE_MODE" = "released" ]; then         install_script="$(mktemp)";         curl -fsSL -o "$install_script" "https://raw.githubusercontent.com/Takazudo/zudo-front-builder/${ZFB_INSTALL_SOURCE_SHA}/install.sh";         install_digest="$(sha256sum "$install_script" | cut -d \' \' -f 1)";         echo "zfb-installer-bytes/v1 source=${ZFB_INSTALL_SOURCE_SHA} path=install.sh sha256=${install_digest}";         ZFB_VERSION="$ZFB_VERSION" sh "$install_script";     fi';
+
+function withBoundInstaller(w, records = [installerRecord()]) {
+  w.sourceFiles["tests/smoke/node-free/Dockerfile"] = BOUND_DOCKERFILE;
+  w.logs[5000] = INSTALLER_LOG.split("\n")
+    .flatMap((line) => (line.includes("RUN curl") ? [BOUND_RUN_ECHO, ...records] : [line]))
+    .join("\n");
+}
+
+describe("installer byte binding (#4784)", () => {
+  it("the checked-in smoke Dockerfile produces the record without a branch fallback", () => {
+    expect(BOUND_DOCKERFILE).toContain(INSTALLER_BYTES_PROTOCOL);
+    expect(BOUND_DOCKERFILE).toContain(
+      "https://raw.githubusercontent.com/Takazudo/zudo-front-builder/${ZFB_INSTALL_SOURCE_SHA}/install.sh",
+    );
+    expect(BOUND_DOCKERFILE).not.toMatch(/zudo-front-builder\/(?:main|v\d|refs\/)/);
+  });
+
+  it("parses one record and ignores BuildKit's echo of the RUN command", () => {
+    const { records, malformed } = parseInstallerRecords(
+      [BOUND_RUN_ECHO, installerRecord()].map((l) => l.replace(/^\S+Z /, "")),
+    );
+    expect(malformed).toEqual([]);
+    expect(records).toEqual([{ source: COMMIT, path: "install.sh", sha256: sha256(INSTALL_SH) }]);
+  });
+
+  it("verifies matching source and digest, re-hashed from install.sh at the source", async () => {
+    const { report, calls } = await run(withBoundInstaller);
+    const bytes = check(report, "consumption", "installer-bytes");
+    expect(bytes.status).toBe(STATUS.VERIFIED);
+    expect(bytes.evidence.actualSha256).toBe(sha256(INSTALL_SH));
+    const evidence = check(report, "consumption", "installer-evidence").evidence;
+    expect(evidence.installerBytes).toBe("bound");
+    expect(evidence.note).toBeUndefined();
+    expect(report.exitCode).toBe(EXIT.verified);
+    expect(calls.some((c) => c.url === `${API}/contents/install.sh?ref=${COMMIT}`)).toBe(true);
+  });
+
+  for (const [label, mutate] of [
+    ["a wrong digest", (w) => withBoundInstaller(w, [installerRecord(COMMIT, "0".repeat(64))])],
+    [
+      "a wrong source SHA even for identical bytes",
+      (w) => withBoundInstaller(w, [installerRecord(OTHER_SOURCE)]),
+    ],
+    ["a missing record", (w) => withBoundInstaller(w, [])],
+    [
+      "a malformed record",
+      (w) =>
+        withBoundInstaller(w, [
+          `#9 0.240 ${INSTALLER_BYTES_PROTOCOL} source=${COMMIT.slice(0, 12)} path=install.sh sha256=${sha256(INSTALL_SH)}`,
+        ]),
+    ],
+    [
+      "a record for another path",
+      (w) =>
+        withBoundInstaller(w, [
+          `#9 0.240 ${INSTALLER_BYTES_PROTOCOL} source=${COMMIT} path=evil.sh sha256=${sha256(INSTALL_SH)}`,
+        ]),
+    ],
+    [
+      "conflicting records",
+      (w) => withBoundInstaller(w, [installerRecord(), installerRecord(COMMIT, "1".repeat(64))]),
+    ],
+    ["repeated records", (w) => withBoundInstaller(w, [installerRecord(), installerRecord()])],
+    [
+      "a bound run that lost its checksum line",
+      (w) => {
+        withBoundInstaller(w);
+        w.logs[5000] = w.logs[5000].replace("checksum OK", "checksum skipped");
+      },
+    ],
+    [
+      "a bound run that installed another version",
+      (w) => {
+        withBoundInstaller(w);
+        w.logs[5000] = w.logs[5000].replace(`Installed zfb ${VERSION}`, "Installed zfb 0.0.1");
+      },
+    ],
+    [
+      "a bound run whose installer job was skipped",
+      (w) => {
+        withBoundInstaller(w);
+        w.installerJobs[0].conclusion = "skipped";
+      },
+    ],
+  ])
+    it(`fails ${label}`, async () => {
+      const { report } = await run(mutate);
+      expect(report.exitCode).toBe(EXIT.failed);
+    });
+
+  for (const [label, mutate] of [
+    [
+      "an unavailable source Dockerfile",
+      (w) => {
+        withBoundInstaller(w);
+        delete w.sourceFiles["tests/smoke/node-free/Dockerfile"];
+      },
+    ],
+    [
+      "a source Dockerfile read that errors",
+      (w) => {
+        withBoundInstaller(w);
+        w.overrides.set(
+          `${API}/contents/tests/smoke/node-free/Dockerfile?ref=${COMMIT}`,
+          () => new Response("boom", { status: 500 }),
+        );
+      },
+    ],
+    [
+      "an unavailable install.sh at the source",
+      (w) => {
+        withBoundInstaller(w);
+        delete w.sourceFiles["install.sh"];
+      },
+    ],
+  ])
+    it(`keeps ${label} incomplete, never legacy`, async () => {
+      const { report } = await run(mutate);
+      const bytes = check(report, "consumption", "installer-bytes");
+      expect(bytes.status).toBe(STATUS.INCOMPLETE);
+      expect(bytes.evidence.protocol).not.toBe("legacy-unbound");
+      expect(report.exitCode).toBe(EXIT.incomplete);
+    });
+
+  for (const [label, records] of [
+    ["verified", [installerRecord()]],
+    ["failed", [installerRecord(COMMIT, "0".repeat(64))]],
+  ])
+    it(`records the bound source, not a moving ref, for a ${label} new-protocol run`, async () => {
+      const { report } = await run((w) => withBoundInstaller(w, records));
+      const evidence = check(report, "consumption", "installer-evidence").evidence;
+      expect(evidence.installScriptRef).toBe(COMMIT);
+      expect(evidence.note).toBeUndefined();
+      expect(JSON.stringify(report.sections.consumption)).not.toContain("moving ref");
+      expect(JSON.stringify(report.sections.consumption)).not.toContain(
+        '"${ZFB_INSTALL_SOURCE_SHA}"',
+      );
+    });
+
+  it("keeps an unavailable installer log incomplete", async () => {
+    const { report } = await run((w) => {
+      withBoundInstaller(w);
+      delete w.logs[5000];
+    });
+    expect(check(report, "consumption", "installer-evidence").status).toBe(STATUS.INCOMPLETE);
+    expect(report.exitCode).toBe(EXIT.incomplete);
+  });
+
+  it("keeps a legacy source on its original receipt semantics with an explicit caveat", async () => {
+    const { report } = await run();
+    const bytes = check(report, "consumption", "installer-bytes");
+    expect(bytes.status).toBe(STATUS.OBSERVED);
+    expect(bytes.evidence.protocol).toBe("legacy-unbound");
+    const evidence = check(report, "consumption", "installer-evidence");
+    expect(evidence.status).toBe(STATUS.VERIFIED);
+    expect(evidence.evidence.note).toContain("installer bytes are unbound");
+    expect(report.exitCode).toBe(EXIT.verified);
+  });
 });

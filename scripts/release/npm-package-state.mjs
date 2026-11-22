@@ -20,7 +20,9 @@
 //                       non-published status (e.g. validating). Never absent,
 //                       never republished (E409 "previously staged").
 //   uncertain           a network/5xx/auth/parse failure; the original error is
-//                       kept in `error`. Fail closed.
+//                       kept in `error`. Fail closed. A status-API 401/403 is
+//                       uncertain too: a rejected credential proves nothing
+//                       about presence (#4719).
 //
 // Identity, in order:
 //   1. SLSA provenance: the attestation bundle's DSSE payload subject digest
@@ -238,6 +240,13 @@ async function absentOrProcessing(name, read, ctx) {
         name,
         state: "uncertain",
         error: `unknown npm version status ${JSON.stringify(String(status).slice(0, 40))}`,
+      };
+    }
+    if (response.status === 401 || response.status === 403) {
+      return {
+        name,
+        state: "uncertain",
+        error: `version status API rejected the local npm credential (NPM_TOKEN or the npm user config) with HTTP ${response.status}; an authentication failure does not prove the version is absent and is never grounds to republish. Sign in to npm again and re-run to obtain valid status evidence`,
       };
     }
     if (response.status !== 404) {

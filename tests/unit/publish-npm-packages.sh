@@ -245,6 +245,8 @@ case "$1" in
         # A real double-PUT conflict means the version IS on the registry.
         conflict) touch "$MOCK_PUBLISHED_MARKER"; echo 'EPUBLISHCONFLICT' >&2; exit 1 ;;
         lost) touch "$MOCK_PUBLISHED_MARKER"; echo 'ETIMEDOUT' >&2; exit 1 ;;
+        # The ACK is lost and nothing becomes visible on the registry.
+        lost-absent) echo 'ETIMEDOUT' >&2; exit 1 ;;
       esac
     fi
     exit 0
@@ -1417,6 +1419,28 @@ else
   fail "state: lost-ACK unverified rc=$LA_RC out=$(tail -6 "$LA_OUT" | tr '\n' ' ')"
 fi
 rm -f "$LA_OUT" "$PUBLISH_TARGET/la-marker"
+
+# #4719: an unacknowledged connection loss whose recheck reads absent stays a
+# failure, and nothing records an accepted outcome or acceptance time for it.
+LB_OUT=$(mktemp)
+LB_EXP=$(mktemp)
+LB_RC=0
+PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG=/dev/null MOCK_EXISTING="" \
+  MOCK_MD_RESULT=lost-absent MOCK_VERSION="$V" ZFB_PROVENANCE_EXPECTATIONS_FILE="$LB_EXP" \
+  PUBLISH_RECHECK_DELAY=0 \
+  bash "$SCRIPT" all-provenance >"$LB_OUT" 2>&1 || LB_RC=$?
+if [ "$LB_RC" -ne 0 ] && grep -Fq 'registry state after recheck: absent' "$LB_OUT" \
+   && grep -Fq '| ETIMEDOUT' "$LB_OUT" \
+   && ! grep -q '^@takazudo/zfb-md-wasm	' "$LB_EXP" \
+   && ! grep -Fq 'Publish complete' "$LB_OUT"; then
+  pass "state: lost ACK with an absent recheck fails and records no accepted outcome or time"
+else
+  fail "state: lost-ACK absent rc=$LB_RC exp=$(tr '\n' ' ' <"$LB_EXP") out=$(tail -6 "$LB_OUT" | tr '\n' ' ')"
+fi
+rm -f "$LB_OUT" "$LB_EXP"
+
+assert_exit 'classify: lost ACK + absent recheck leaves no accepted outcome or time' 0 \
+  'f=$(mktemp); printf "%s" "npm error code ECONNRESET socket hang up" >"$f"; package_state() { echo absent none; }; PUBLISH_RECHECK_DELAY=0 PUBLISH_RECHECK_ATTEMPTS=2 classify_publish_result foo 1.2.3 1 "$f" >/dev/null 2>&1; r=$?; rm -f "$f"; [ "$r" -ne 0 ] && [ -z "$PUBLISH_OUTCOME" ] && [ -z "$PUBLISH_ACCEPTED_AT" ]'
 
 # ── Publish re-inspects tarball content (#4690 NEW-m1) ───────────────────────
 # A tampered Darwin binary inside a self-consistent pack manifest (integrity
