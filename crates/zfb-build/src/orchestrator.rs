@@ -1675,6 +1675,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // the path-only fold would have produced an empty/no-op plan
         // (a brand-new content file has no reverse edge yet, exactly the
         // #659 symptom).
+        let mut discovery_error = None;
         let discovered: DiscoveryOutcome = match discover {
             Some(hook) => {
                 let mut created: Vec<PathBuf> = changes
@@ -1704,7 +1705,13 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                             }
                         }
                     }
-                    result?
+                    match result {
+                        Ok(outcome) => outcome,
+                        Err(error) => {
+                            discovery_error = Some(error);
+                            DiscoveryOutcome::default()
+                        }
+                    }
                 }
             }
             None => DiscoveryOutcome::default(),
@@ -1846,6 +1853,16 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             if self.config.policy.is_ssr_module_dependency(path) {
                 plan.mark_ssr_reload_needed();
             }
+        }
+
+        // A failed discovery aborts the tick before `apply`, and the caller
+        // drops its change set. Hand the tick's CSS work to the pipeline so a
+        // coalesced stylesheet edit still reaches the next CSS pass.
+        if let Some(error) = discovery_error {
+            if plan.rerun_css || !plan.css_changes.is_empty() {
+                self.pipeline.defer_css(plan.rerun_css, plan.css_changes);
+            }
+            return Err(error);
         }
 
         // Keep this precise discovery result separate from the plan's
@@ -2435,6 +2452,60 @@ mod tests {
         ));
         g.mark_global(PathBuf::from("/proj/zfb.config.ts"));
         Arc::new(Mutex::new(g))
+    }
+
+    #[derive(Default)]
+    struct DeferringPipeline {
+        applies: Mutex<usize>,
+        deferred: Mutex<Vec<(bool, crate::CssChangeSet)>>,
+    }
+
+    impl AssetPipeline for DeferringPipeline {
+        fn apply(&self, _plan: &RebuildPlan, _ctx: &BuildContext) -> Result<BuildOutcome> {
+            *self.applies.lock().unwrap() += 1;
+            Ok(BuildOutcome::default())
+        }
+
+        fn defer_css(&self, rerun_css: bool, changes: crate::CssChangeSet) {
+            self.deferred.lock().unwrap().push((rerun_css, changes));
+        }
+    }
+
+    #[test]
+    fn failed_discovery_defers_the_ticks_css_work_to_the_pipeline() {
+        let orch = make_orch(DeferringPipeline::default());
+        let stylesheet = PathBuf::from("/proj/styles/global.css");
+        let created = PathBuf::from("/proj/content/new.md");
+        let failing: DiscoveryHook = Arc::new(|_| anyhow::bail!("paths() failed"));
+        let dist = tempfile::tempdir().unwrap();
+        assert!(orch
+            .tick_with_kinds(
+                vec![
+                    (stylesheet.clone(), ChangeKind::Modified),
+                    (created.clone(), ChangeKind::Created),
+                ],
+                &noop_ctx(dist.path()),
+                Some(&failing),
+            )
+            .is_err());
+        assert_eq!(*orch.pipeline.applies.lock().unwrap(), 0);
+        let deferred = orch.pipeline.deferred.lock().unwrap().clone();
+        assert_eq!(deferred.len(), 1);
+        assert!(deferred[0].0, "a stylesheet edit requests a CSS pass");
+        assert!(deferred[0].1.upserted.contains(&stylesheet));
+
+        let succeeding: DiscoveryHook = Arc::new(|_| Ok(DiscoveryOutcome::default()));
+        orch.tick_with_kinds(
+            vec![
+                (stylesheet, ChangeKind::Modified),
+                (created, ChangeKind::Created),
+            ],
+            &noop_ctx(dist.path()),
+            Some(&succeeding),
+        )
+        .unwrap();
+        assert_eq!(orch.pipeline.deferred.lock().unwrap().len(), 1);
+        assert_eq!(*orch.pipeline.applies.lock().unwrap(), 1);
     }
 
     fn make_orch<P: AssetPipeline>(pipeline: P) -> BuildOrchestrator<P> {

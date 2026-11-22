@@ -1139,10 +1139,17 @@ impl AssetPipeline for DevAssetPipeline {
         let result = self.apply_tick(plan, ctx, &mut css_pass_reached);
         if result.is_err() && !css_pass_reached && (plan.rerun_css || !plan.css_changes.is_empty())
         {
-            *self.css_carry.lock().unwrap_or_else(|p| p.into_inner()) =
-                Some((plan.rerun_css, plan.css_changes.clone()));
+            self.defer_css(plan.rerun_css, plan.css_changes.clone());
         }
         result
+    }
+
+    fn defer_css(&self, rerun_css: bool, changes: CssChangeSet) {
+        let mut carry = self.css_carry.lock().unwrap_or_else(|p| p.into_inner());
+        let (carried_rerun, carried_changes) = carry.get_or_insert_with(Default::default);
+        *carried_rerun |= rerun_css;
+        carried_changes.upserted.extend(changes.upserted);
+        carried_changes.removed.extend(changes.removed);
     }
 }
 
@@ -2076,6 +2083,31 @@ mod tests {
             1,
             "the carry is consumed once"
         );
+    }
+
+    #[test]
+    fn css_work_deferred_by_the_orchestrator_runs_on_the_next_tick() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let ctx = css_carry_ctx(
+            dir.path(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&requests),
+        );
+        let mut changes = CssChangeSet::default();
+        changes.record_upsert(PathBuf::from("/proj/styles/global.css"));
+        pipeline.defer_css(true, changes);
+
+        pipeline.apply(&css_carry_plan(&[]), &ctx).unwrap();
+        let carried = requests.lock().unwrap().clone();
+        assert_eq!(carried.len(), 1);
+        assert!(carried[0].rerun_requested);
+        assert!(carried[0]
+            .changes
+            .upserted
+            .contains(&PathBuf::from("/proj/styles/global.css")));
     }
 
     #[test]

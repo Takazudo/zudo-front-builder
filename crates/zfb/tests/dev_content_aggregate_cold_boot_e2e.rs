@@ -3467,3 +3467,91 @@ async fn cold_lazy_css_edit_in_rejected_tick_is_published_after_recovery() {
         ),
     }
 }
+
+/// The discovery-path twin of the reload case above: a created entry whose
+/// slug disagrees with its filename fails `paths()` inside the discovery
+/// hook, which aborts the tick before the pipeline runs. A stylesheet edit
+/// coalesced into that tick must still be published once the entry is fixed.
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_css_edit_in_rejected_discovery_tick_is_published_after_recovery() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create slug-agreement fixture");
+    let (root, data_probe_path) = slug_session_root(&temp);
+    let stylesheet = root.join("styles/global.css");
+    fs::create_dir_all(root.join("styles")).expect("create styles/");
+    fs::write(&stylesheet, ":root { --slug-css-marker: css-v1; }\n").expect("write global.css");
+    let mut session = spawn_dev_with_timing(root, DevMode::Lazy, Some("cold"), true);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some((base, client)) =
+            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+        else {
+            return ScenarioOutcome::Skipped;
+        };
+        let css_url = format!("{base}/assets/styles.css");
+        poll_until_response_contains(&client, &css_url, "css-v1", "baseline css", &session).await;
+        // A tick still bundling when c.md lands can read it and turn its
+        // Created event into a Modified one, which skips discovery.
+        drain_ticks_until_quiescent(&base).await;
+
+        let created = session.root.join("content/articles/c.md");
+        let offset = read_log(&session.stderr_path).len();
+        write_in_place(&stylesheet, b":root { --slug-css-marker: css-v2; }\n");
+        fs::write(
+            &created,
+            "---\ntitle: Gamma Slug\nslug: not-c\n---\n\nGamma body.\n",
+        )
+        .expect("create c.md with a disagreeing slug");
+        let (_, after) = wait_for_stderr_line(
+            &session,
+            offset,
+            &["[zfb-timing] discovery: err"],
+            "created entry rejected by discovery",
+        )
+        .await;
+        let tick_log = read_log(&session.stderr_path)[offset..after].to_string();
+        assert!(
+            tick_log
+                .lines()
+                .any(|line| line.contains("[zfb-timing] intake paths:")
+                    && line.contains("global.css")
+                    && line.contains("c.md:Created")),
+            "the stylesheet edit and the created c.md must share one tick:\n{tick_log}\n{}",
+            session.logs()
+        );
+
+        write_in_place(
+            &created,
+            b"---\ntitle: Gamma Slug\nslug: c\n---\n\nGamma body.\n",
+        );
+        poll_until_response_contains(
+            &client,
+            &format!("{base}/articles/c/"),
+            "Gamma Slug",
+            "created entry fixed",
+            &session,
+        )
+        .await;
+        poll_until_response_contains(
+            &client,
+            &css_url,
+            "css-v2",
+            "stylesheet edited in the rejected discovery tick",
+            &session,
+        )
+        .await;
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] css edit in a rejected discovery tick exceeded {}s; process group \
+             {pgid} will be killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
+        ),
+    }
+}
