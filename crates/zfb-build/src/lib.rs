@@ -65,6 +65,8 @@ pub mod plugin_refresh;
 pub mod plugin_registries;
 pub mod plugin_runner;
 pub mod policy;
+/// Dev-only `ZFB_DEV_PROVENANCE_TRACE` structured trace (issue #4753).
+pub mod provenance_trace;
 pub mod raw_import_expand;
 // Re-exported so zfb-islands formats SWC parse errors without its own zfb-content edge (#4427).
 pub use zfb_content::swc_parse_error;
