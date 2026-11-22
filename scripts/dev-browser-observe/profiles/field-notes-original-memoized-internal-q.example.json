@@ -1,0 +1,206 @@
+{
+  "schema": "dev-browser-observe.profile.v1",
+  "description": "Q families, original-memoized helper, INTERNAL placement: the corpus is materialized into apps/zfb/content/articles with the derived config overlay (fixtures/field-notes/overlays/internal-placement). Source pins are still verified. Fill productSha, buildReceipt, outDir, pins and fixture.source.dir.",
+  "mode": "source-built",
+  "diagnostic": false,
+  "productSha": "0000000000000000000000000000000000000000",
+  "productDirtyIdentity": null,
+  "buildReceipt": "/tmp/dev-browser-observe/build-receipt.json",
+  "fixture": {
+    "kind": "field-notes",
+    "dir": "../fixtures/field-notes",
+    "adapter": "original-memoized",
+    "placement": "internal",
+    "managedCss": true,
+    "source": {
+      "dir": "/REPLACE/with/fieldnotes/src-100",
+      "appsZfbTreeSha256": "5e5580347095d9c5817faf3d4aa30529913e1a0c26a6b1b80905b5b01fa9ba36",
+      "contentTreeSha256": "22763056bd34e0a5dd6e4ac096e69de7e0278519235df88666124c801ea0b7a7",
+      "sharedTreeSha256": "f709ace99f2aad0d1c7c1d553c8693b66883f1055168855fb6807722b0cf226a",
+      "datasetSha256": "fcaa222e52caaedb411a4136f106d4ddb5eaa7334a3ef03f34ccd282f6bab58a"
+    }
+  },
+  "pins": {
+    "harnessTreeSha256": null,
+    "fixtureTreeSha256": null,
+    "observerSha256": null,
+    "adapterSha256": null
+  },
+  "server": {
+    "port": {
+      "mode": "ephemeral"
+    },
+    "host": "127.0.0.1",
+    "readyTimeoutMs": 180000
+  },
+  "browser": {
+    "headless": true,
+    "args": [
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows"
+    ],
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "deviceScaleFactor": 1
+  },
+  "timeouts": {
+    "attemptMs": 30000,
+    "supplementalMs": 30000,
+    "restoreMs": 60000,
+    "stopTermMs": 5000,
+    "stopKillMs": 3000,
+    "quietMs": 3000
+  },
+  "limits": {
+    "rssCeilingKiB": 4194304,
+    "wallCeilingMs": 1800000,
+    "sampleEveryMs": 1000
+  },
+  "calibration": {
+    "repeats": 3,
+    "staleTimeoutMs": 2000,
+    "cells": [
+      "binding-round-trip",
+      "two-raf",
+      "synthetic-dom",
+      "synthetic-css",
+      "observer-init-after-navigation",
+      "stale-then-new-token",
+      "late-token",
+      "reload-survival-controller-triggered",
+      "native-reload-survival"
+    ]
+  },
+  "restoration": {
+    "writeMethod": "in-place"
+  },
+  "scenarios": [
+    {
+      "id": "q-prop-description-detail",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "description-10-detail",
+          "op": "edit-prop",
+          "prop": "description",
+          "article": "article-00010",
+          "writeMethod": "in-place",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "q-prop-description-home",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "description-11-home",
+          "op": "edit-prop",
+          "prop": "description",
+          "article": "article-00011",
+          "writeMethod": "in-place",
+          "targetPath": "/",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "q-neg-rename-case-only-direct",
+      "set": "expected-negative",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "case-08-direct",
+          "op": "rename-case-only",
+          "article": "article-00008",
+          "writeMethod": "rename",
+          "caseRenameSteps": "direct",
+          "expectState": ["error", "last-good"]
+        }
+      ]
+    },
+    {
+      "id": "q-neg-rename-case-only-via-temp",
+      "set": "expected-negative",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "case-18-via-temp",
+          "op": "rename-case-only",
+          "article": "article-00018",
+          "writeMethod": "rename",
+          "caseRenameSteps": "via-temp",
+          "expectState": ["error", "last-good"]
+        }
+      ]
+    },
+    {
+      "id": "q-recovery-css-in-rejected-tick",
+      "set": "recovery",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "css-rejected-20",
+          "op": "css-in-rejected-tick",
+          "article": "article-00020",
+          "writeMethod": "in-place",
+          "expectState": ["error", "last-good"],
+          "requireSameTick": false
+        }
+      ]
+    },
+    {
+      "id": "q-recovery-css-in-rejected-discovery-tick",
+      "set": "recovery",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "css-discovery-21",
+          "op": "css-in-rejected-discovery-tick",
+          "article": "article-00021",
+          "invalid": "frontmatter",
+          "writeMethod": "in-place",
+          "expectState": ["error", "last-good"],
+          "requireSameTick": false
+        }
+      ]
+    },
+    {
+      "id": "q-recovery-css-in-rejected-discovery-slug-mismatch",
+      "set": "recovery",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "css-discovery-mismatch-22",
+          "op": "css-in-rejected-discovery-tick",
+          "article": "article-00022",
+          "invalid": "slug-mismatch",
+          "writeMethod": "in-place",
+          "expectState": ["error", "last-good"],
+          "requireSameTick": false
+        }
+      ]
+    },
+    {
+      "id": "q-recovery-edit-during-rejected",
+      "set": "recovery",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "edit-06-while-23-rejected",
+          "op": "edit-during-rejected",
+          "article": "article-00023",
+          "other": "article-00006",
+          "writeMethod": "in-place",
+          "expectState": ["error", "last-good"]
+        }
+      ]
+    }
+  ],
+  "outDir": "/tmp/dev-browser-observe"
+}

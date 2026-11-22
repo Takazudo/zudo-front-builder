@@ -91,6 +91,15 @@ export function setTitle(model, slug, title) {
   return m;
 }
 
+/** Set one plain frontmatter field the model carries (e.g. description). */
+export function setField(model, slug, key, value) {
+  const m = cloneModel(model);
+  const a = m.articles.find((x) => x.slug === slug);
+  if (!(key in a)) throw new Error(`model has no field ${key}`);
+  a[key] = value;
+  return m;
+}
+
 export function setCategory(model, slug, category) {
   const m = cloneModel(model);
   const a = m.articles.find((x) => x.slug === slug);

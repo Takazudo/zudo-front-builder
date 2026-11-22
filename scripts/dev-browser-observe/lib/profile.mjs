@@ -3,9 +3,12 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   FN_CALIBRATION_ARTICLE,
   FN_CLEANUP_DETAIL,
+  FN_EDITABLE_PROPS,
   FN_EXPECTED_NEGATIVE_OPS,
   FN_NEEDS_ARTICLE,
   FN_OP_WRITE_METHODS,
+  FN_RECOVERY_NEEDS_MANAGED_CSS,
+  FN_RECOVERY_OPS,
   fnWarmPaths,
 } from "./fieldnotes.mjs";
 import { OP_WRITE_METHODS } from "./fixture.mjs";
@@ -57,11 +60,57 @@ function fieldNotesErrors(profile) {
         );
       if (FN_NEEDS_ARTICLE.has(op.op) && !op.article)
         errors.push(`${at(s, i)}: ${op.op} needs article`);
-      const negative = FN_EXPECTED_NEGATIVE_OPS.has(op.op);
-      if (negative !== (s.set === "expected-negative"))
+      const recovery = FN_RECOVERY_OPS.has(op.op);
+      if (recovery !== (s.set === "recovery"))
         errors.push(
-          `${at(s, i)}: ${op.op} ${negative ? "is expected-invalid and must be in" : "must not be in"} a scenario with set "expected-negative"`,
+          `${at(s, i)}: ${op.op} ${recovery ? "is a recovery op and must be in" : "must not be in"} a scenario with set "recovery"`,
         );
+      if (op.op === "rename-case-only") {
+        // The expectation is declared up front, never inferred from what happened.
+        if (s.set === "expected-negative") {
+          if (!op.expectState)
+            errors.push(
+              `${at(s, i)}: rename-case-only in set "expected-negative" must declare expectState`,
+            );
+        } else if (s.set !== "recovery") {
+          if (op.expectState)
+            errors.push(
+              `${at(s, i)}: rename-case-only expectState belongs in set "expected-negative"`,
+            );
+          if (!op.targetPath || !op.predicate)
+            errors.push(
+              `${at(s, i)}: rename-case-only outside "expected-negative" must declare targetPath and predicate`,
+            );
+        }
+        if (i !== (s.ops ?? []).length - 1)
+          errors.push(`${at(s, i)}: rename-case-only must be the last op in its scenario`);
+      } else if (!recovery) {
+        const negative = FN_EXPECTED_NEGATIVE_OPS.has(op.op);
+        if (negative !== (s.set === "expected-negative"))
+          errors.push(
+            `${at(s, i)}: ${op.op} ${negative ? "is expected-invalid and must be in" : "must not be in"} a scenario with set "expected-negative"`,
+          );
+      }
+      if (recovery) {
+        if (!op.expectState)
+          errors.push(`${at(s, i)}: ${op.op} must declare expectState for the rejected generation`);
+        if (FN_RECOVERY_NEEDS_MANAGED_CSS.has(op.op) && profile.fixture.managedCss !== true)
+          errors.push(`${at(s, i)}: ${op.op} needs fixture.managedCss: true`);
+        if (op.op === "edit-during-rejected" && (!op.other || op.other === op.article))
+          errors.push(
+            `${at(s, i)}: edit-during-rejected needs other (an article other than article)`,
+          );
+        if (op.requireSameTick === true && profile.diagnostic !== true)
+          errors.push(
+            `${at(s, i)}: requireSameTick needs a diagnostic profile (ZFB_DEV_TIMING intake lines)`,
+          );
+        if (op.requireSameTick === true && op.op === "edit-during-rejected")
+          errors.push(`${at(s, i)}: edit-during-rejected has no same-tick premise`);
+        if (op.invalid && op.op !== "css-in-rejected-discovery-tick")
+          errors.push(`${at(s, i)}: invalid applies only to css-in-rejected-discovery-tick`);
+      }
+      if (op.op === "edit-prop" && !FN_EDITABLE_PROPS[op.prop ?? "description"])
+        errors.push(`${at(s, i)}: edit-prop cannot edit ${op.prop}`);
       if (op.op === "edit-managed-css" && profile.fixture.managedCss !== true)
         errors.push(`${at(s, i)}: edit-managed-css needs fixture.managedCss: true`);
       if (op.op === "edit-public-css" && op.expect !== "classify")
@@ -87,6 +136,7 @@ function fieldNotesErrors(profile) {
       if (op.inject) errors.push(`${at(s, i)}: inject is not supported for field-notes ops`);
       if (op.targetPath) visited.add(op.targetPath);
       if (op.article) visited.add(`/articles/${op.article}/`);
+      if (op.other) visited.add(`/articles/${op.other}/`);
       if (op.article && (op.op === "rename-slug-change" || op.op === "rename-filename-only"))
         visited.add(`/articles/${op.to ?? `${op.article}-renamed`}/`);
     }
@@ -100,6 +150,9 @@ export function semanticErrors(profile) {
   if (kind === "field-notes") errors.push(...fieldNotesErrors(profile));
   else if (!profile.fixture?.placement)
     errors.push("$.fixture.placement is required for kind tiny");
+  for (const s of profile.scenarios ?? [])
+    if (s.set === "recovery" && kind !== "field-notes")
+      errors.push(`$.scenarios[${s.id}]: set "recovery" is field-notes only`);
   if (kind !== "field-notes")
     for (const s of profile.scenarios ?? [])
       for (const [i, op] of (s.ops ?? []).entries())

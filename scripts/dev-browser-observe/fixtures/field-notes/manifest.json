@@ -67,5 +67,29 @@
     "customProperty": "--fieldnotes-managed-marker",
     "sha256": "113a9a7a3af24c84767d949363b82952e84e1b0369f8698b98b4bac3be22ea6f",
     "note": "declared fixture addition, used only with fixture.managedCss: true; zfb links styles/global.css into every page"
+  },
+  "placements": {
+    "external": {
+      "provenance": "source-dir",
+      "contentDest": "content/articles",
+      "collectionPath": "../../content/articles",
+      "allowOutsideRoot": true,
+      "note": "default: the original layout and the original apps/zfb/zfb.config.ts, unchanged"
+    },
+    "internal": {
+      "provenance": "derived",
+      "contentDest": "apps/zfb/content/articles",
+      "collectionPath": "content/articles",
+      "allowOutsideRoot": false,
+      "config": {
+        "target": "zfb.config.ts",
+        "overlay": "overlays/internal-placement/zfb.config.ts.overlay",
+        "baseSha256": "a68c2bdbee70c1958e1bafd00b8dc3805764d6e3b4cf3a84a56d943c0c97f915",
+        "overlaySha256": "ddce03ffa3720926466f2a4eea0870235ce3b683ae8ff4329444eaa9b96e161e",
+        "change": "the only change: collections[0].path ../../content/articles -> content/articles, and allowOutsideRoot removed",
+        "diff": "--- a/apps/zfb/zfb.config.ts\n+++ b/apps/zfb/zfb.config.ts\n@@ -8,8 +8,7 @@\n   collections: [\n     {\n       name: \"articles\",\n-      path: \"../../content/articles\",\n-      allowOutsideRoot: true,\n+      path: \"content/articles\",\n     },\n   ],\n });\n"
+      },
+      "note": "DERIVED fixture overlay: the corpus is copied into apps/zfb/content/articles and the source content/ dir is not copied. The source pins are still verified against fixture.source.dir."
+    }
   }
 }

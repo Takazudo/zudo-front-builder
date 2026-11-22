@@ -1,0 +1,211 @@
+{
+  "schema": "dev-browser-observe.profile.v1",
+  "description": "Tiny fixture, internal content, A0 helper: body observed on the detail page, category observed on the detail page and on the / home page, each under warmOrder index-first, detail-first and none. One op per scenario so a classify stop never hides another cell; run them with --scenario. Fill productSha, buildReceipt and pins.",
+  "mode": "source-built",
+  "diagnostic": false,
+  "productSha": "0000000000000000000000000000000000000000",
+  "productDirtyIdentity": null,
+  "buildReceipt": "/tmp/dev-browser-observe/build-receipt.json",
+  "fixture": {
+    "dir": "../fixtures/tiny-two-article",
+    "placement": "internal",
+    "adapter": "A0",
+    "trailingSlash": true,
+    "configFormat": "json"
+  },
+  "pins": {
+    "harnessTreeSha256": null,
+    "fixtureTreeSha256": null,
+    "observerSha256": null,
+    "adapterSha256": null
+  },
+  "server": {
+    "port": {
+      "mode": "ephemeral"
+    },
+    "host": "127.0.0.1",
+    "readyTimeoutMs": 120000
+  },
+  "browser": {
+    "headless": true,
+    "args": [
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows"
+    ],
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "deviceScaleFactor": 1
+  },
+  "timeouts": {
+    "attemptMs": 30000,
+    "supplementalMs": 30000,
+    "restoreMs": 30000,
+    "stopTermMs": 5000,
+    "stopKillMs": 3000,
+    "quietMs": 1500
+  },
+  "limits": {
+    "rssCeilingKiB": 4194304,
+    "wallCeilingMs": 1800000,
+    "sampleEveryMs": 1000
+  },
+  "calibration": {
+    "repeats": 5,
+    "staleTimeoutMs": 2000,
+    "cells": [
+      "binding-round-trip",
+      "two-raf",
+      "synthetic-dom",
+      "synthetic-css",
+      "observer-init-after-navigation",
+      "stale-then-new-token",
+      "late-token",
+      "reload-survival-controller-triggered",
+      "native-reload-survival"
+    ]
+  },
+  "restoration": {
+    "writeMethod": "in-place"
+  },
+  "scenarios": [
+    {
+      "id": "a0-index-first-body-a-detail",
+      "set": "workload",
+      "warmOrder": "index-first",
+      "warmDetail": "a",
+      "ops": [
+        {
+          "id": "body-a-detail",
+          "op": "edit-body",
+          "article": "a",
+          "writeMethod": "in-place",
+          "expect": "success"
+        }
+      ]
+    },
+    {
+      "id": "a0-index-first-category-b-detail",
+      "set": "workload",
+      "warmOrder": "index-first",
+      "warmDetail": "b",
+      "ops": [
+        {
+          "id": "category-b-detail",
+          "op": "edit-category",
+          "article": "b",
+          "writeMethod": "in-place",
+          "expect": "success"
+        }
+      ]
+    },
+    {
+      "id": "a0-index-first-category-b-home",
+      "set": "workload",
+      "warmOrder": "index-first",
+      "warmDetail": "b",
+      "ops": [
+        {
+          "id": "category-b-home",
+          "op": "edit-category",
+          "article": "b",
+          "writeMethod": "in-place",
+          "targetPath": "/",
+          "expect": "success"
+        }
+      ]
+    },
+    {
+      "id": "a0-detail-first-body-a-detail",
+      "set": "workload",
+      "warmOrder": "detail-first",
+      "warmDetail": "a",
+      "ops": [
+        {
+          "id": "body-a-detail",
+          "op": "edit-body",
+          "article": "a",
+          "writeMethod": "in-place",
+          "expect": "success"
+        }
+      ]
+    },
+    {
+      "id": "a0-detail-first-category-b-detail",
+      "set": "workload",
+      "warmOrder": "detail-first",
+      "warmDetail": "b",
+      "ops": [
+        {
+          "id": "category-b-detail",
+          "op": "edit-category",
+          "article": "b",
+          "writeMethod": "in-place",
+          "expect": "success"
+        }
+      ]
+    },
+    {
+      "id": "a0-detail-first-category-b-home",
+      "set": "workload",
+      "warmOrder": "detail-first",
+      "warmDetail": "b",
+      "ops": [
+        {
+          "id": "category-b-home",
+          "op": "edit-category",
+          "article": "b",
+          "writeMethod": "in-place",
+          "targetPath": "/",
+          "expect": "success"
+        }
+      ]
+    },
+    {
+      "id": "a0-none-body-a-detail",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "body-a-detail",
+          "op": "edit-body",
+          "article": "a",
+          "writeMethod": "in-place",
+          "expect": "success"
+        }
+      ]
+    },
+    {
+      "id": "a0-none-category-b-detail",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "category-b-detail",
+          "op": "edit-category",
+          "article": "b",
+          "writeMethod": "in-place",
+          "expect": "success"
+        }
+      ]
+    },
+    {
+      "id": "a0-none-category-b-home",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "category-b-home",
+          "op": "edit-category",
+          "article": "b",
+          "writeMethod": "in-place",
+          "targetPath": "/",
+          "expect": "success"
+        }
+      ]
+    }
+  ],
+  "outDir": "/tmp/dev-browser-observe"
+}

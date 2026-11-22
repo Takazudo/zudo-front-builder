@@ -6,6 +6,7 @@ import {
   fnAdapterPath,
   loadFieldNotesFixture,
   materializeFieldNotes,
+  overlayChecks,
   sourceTreeHashes,
 } from "./fieldnotes.mjs";
 import {
@@ -158,6 +159,17 @@ const fieldNotes = {
       expected: manifest.source.datasetSha256,
       actual: actual.datasetSha256,
     });
+    const placement = profile.fixture.placement ?? "external";
+    try {
+      checks.push(...overlayChecks(resolved.fixtureDir, dir, manifest, placement));
+    } catch (error) {
+      checks.push({
+        name: `placement:${placement}`,
+        ok: false,
+        expected: "declared placement",
+        actual: String(error?.message ?? error),
+      });
+    }
     if (profile.fixture.managedCss) {
       const a = sha256File(join(resolved.fixtureDir, manifest.managedCss.file));
       checks.push({
@@ -176,6 +188,7 @@ const fieldNotes = {
       workDir,
       adapter: profile.fixture.adapter,
       managedCss: profile.fixture.managedCss === true,
+      placement: profile.fixture.placement ?? "external",
     }),
   receiptFixture: (m, manifest, profile) => ({
     name: manifest.name,
@@ -193,9 +206,14 @@ const fieldNotes = {
         : { declaredAddition: false },
     publicCss: manifest.publicCss,
     trailingSlash: true,
+    placement: m.placement,
+    layout: m.layout,
+    materializedDatasetSha256: m.materializedDatasetSha256,
     configFile: m.configFile,
     configSha256: m.configSha256,
     configProvenance: m.configProvenance,
+    configBaseSha256: m.configBaseSha256,
+    configOverlay: m.configOverlay,
     workDir: m.workDir,
     appDir: m.appDir,
     contentDir: m.contentDir,

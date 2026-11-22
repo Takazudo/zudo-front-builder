@@ -17,12 +17,19 @@ import {
   removeArticle,
   renameSlug,
   setCategory,
+  setField,
   setFrontmatter,
   setTitle,
   tokenInFirstParagraph,
 } from "./fieldnotes-model.mjs";
-import { newToken, performWrites, restoreSnapshot, snapshotPaths } from "./fixture.mjs";
-import { readJson, sha256, sha256File, treeHashDir } from "./util.mjs";
+import {
+  newToken,
+  performWrites,
+  probeCaseSensitivity,
+  restoreSnapshot,
+  snapshotPaths,
+} from "./fixture.mjs";
+import { randomHex, readJson, sha256, sha256File, treeHashDir } from "./util.mjs";
 
 export const FIELD_NOTES_SCHEMA = "field-notes-fixture.v1";
 
@@ -46,6 +53,41 @@ export const FN_OP_WRITE_METHODS = {
   "hidden-edit": ["in-place", "atomic-rename"],
   burst: ["in-place", "atomic-rename"],
   "rapid-sequence": ["in-place", "atomic-rename", "create"],
+  "edit-prop": ["in-place", "atomic-rename"],
+  "rename-case-only": ["rename"],
+  // Recovery ops: the method applies to every in-place step (the discovery op's new file is always `create`).
+  "css-in-rejected-tick": ["in-place", "atomic-rename"],
+  "css-in-rejected-discovery-tick": ["in-place", "atomic-rename"],
+  "edit-during-rejected": ["in-place", "atomic-rename"],
+};
+
+/** Rejected-generation recovery ops: only in scenarios with set "recovery". */
+export const FN_RECOVERY_OPS = new Set([
+  "css-in-rejected-tick",
+  "css-in-rejected-discovery-tick",
+  "edit-during-rejected",
+]);
+export const FN_RECOVERY_NEEDS_MANAGED_CSS = new Set([
+  "css-in-rejected-tick",
+  "css-in-rejected-discovery-tick",
+]);
+
+/**
+ * Visible frontmatter props `edit-prop` may edit, declared before any run:
+ * the field, and where its value renders (detail selector, card selector).
+ */
+export const FN_EDITABLE_PROPS = {
+  description: {
+    detail: ".article-header .lede",
+    card: "the post card's description paragraph (.card-content > p:not(.card-meta))",
+    renderedOn: [
+      "detail page .lede (timed when targetPath is the detail page)",
+      "home card (when the article is among the first homeSize)",
+      "its archive page card",
+      "its category page card (when among the first categorySize)",
+      "the related cards on every referrer's detail page",
+    ],
+  },
 };
 
 export const FN_EXPECTED_NEGATIVE_OPS = new Set([
@@ -62,6 +104,9 @@ export const FN_NEEDS_ARTICLE = new Set([
   "edit-invalid-frontmatter",
   "hidden-edit",
   "burst",
+  "edit-prop",
+  "rename-case-only",
+  ...FN_RECOVERY_OPS,
 ]);
 
 export function loadFieldNotesFixture(fixtureDir) {
@@ -103,28 +148,77 @@ export function sourceTreeHashes(sourceDir, manifest) {
 
 /** scripts/generate.mjs datasetHash: sha256 over slug + "\0" + file bytes, in manifest order. */
 export function datasetSha256(contentDir) {
-  const m = readJson(join(contentDir, "manifest.json"));
+  return datasetSha256Of(readJson(join(contentDir, "manifest.json")), join(contentDir, "articles"));
+}
+
+/** The same dataset hash over an articles dir that may live elsewhere (internal placement). */
+export function datasetSha256Of(contentManifest, articlesDir) {
   const h = createHash("sha256");
-  for (const a of m.articles)
+  for (const a of contentManifest.articles)
     h.update(a.slug)
       .update("\0")
-      .update(readFileSync(join(contentDir, "articles", `${a.slug}.md`)));
+      .update(readFileSync(join(articlesDir, `${a.slug}.md`)));
   return h.digest("hex");
 }
 
-/** Copy S (apps/zfb, content, shared) into the work dir, install the adapter and the optional managed CSS. */
+export const FN_PLACEMENTS = ["external", "internal"];
+
+/** The manifest's declaration for a content placement (external = the source layout, unchanged). */
+export function fnPlacement(manifest, placement = "external") {
+  const p = manifest.placements?.[placement];
+  if (!p) throw new Error(`unknown field-notes placement ${placement}`);
+  return p;
+}
+
+/** Overlay provenance checks for a placement: the base config at the source and the overlay bytes. */
+export function overlayChecks(fixtureDir, sourceDir, manifest, placement) {
+  const p = fnPlacement(manifest, placement);
+  if (!p.config) return [];
+  const base = join(sourceDir, manifest.source.app, p.config.target);
+  const baseActual = existsSync(base) ? sha256File(base) : null;
+  const overlayActual = sha256File(join(fixtureDir, p.config.overlay));
+  return [
+    {
+      name: `placement-overlay:${placement}:base`,
+      ok: baseActual === p.config.baseSha256,
+      expected: p.config.baseSha256,
+      actual: baseActual,
+      provenance: p.provenance,
+    },
+    {
+      name: `placement-overlay:${placement}:overlay`,
+      ok: overlayActual === p.config.overlaySha256,
+      expected: p.config.overlaySha256,
+      actual: overlayActual,
+      provenance: p.provenance,
+    },
+  ];
+}
+
+/**
+ * Copy S (apps/zfb, content, shared) into the work dir, install the adapter and the optional managed CSS.
+ * Placement "internal" copies the articles into apps/zfb/content/articles instead and writes the
+ * versioned derived config overlay; both the base config and the overlay are hash-checked first.
+ */
 export function materializeFieldNotes({
   fixtureDir,
   sourceDir,
   workDir,
   adapter,
   managedCss = false,
+  placement = "external",
 }) {
   const manifest = loadFieldNotesFixture(fixtureDir);
+  const place = fnPlacement(manifest, placement);
   if (existsSync(workDir)) throw new Error(`work dir already exists: ${workDir}`);
-  mkdirSync(workDir, { recursive: true });
   const src = manifest.source;
-  for (const rel of [src.app, src.content, src.shared]) {
+  const failed = overlayChecks(fixtureDir, sourceDir, manifest, placement).filter((c) => !c.ok);
+  if (failed.length)
+    throw new Error(`placement ${placement} overlay identity mismatch: ${JSON.stringify(failed)}`);
+  mkdirSync(workDir, { recursive: true });
+  const roots =
+    placement === "internal" ? [src.app, src.shared] : [src.app, src.content, src.shared];
+  for (const rel of roots) {
     mkdirSync(dirname(join(workDir, rel)), { recursive: true });
     cpSync(join(sourceDir, rel), join(workDir, rel), {
       recursive: true,
@@ -141,17 +235,39 @@ export function materializeFieldNotes({
     mkdirSync(dirname(managedCssPath), { recursive: true });
     writeFileSync(managedCssPath, readFileSync(join(fixtureDir, manifest.managedCss.file)));
   }
-  const contentRoot = join(workDir, src.content);
-  const model = createModel(
-    readJson(join(contentRoot, "manifest.json")),
-    readJson(join(appDir, "lib", "spec.json")),
-  );
+  let contentDir;
+  let contentManifest;
+  const configPath = join(appDir, "zfb.config.ts");
+  if (placement === "internal") {
+    contentDir = join(workDir, place.contentDest);
+    if (existsSync(contentDir))
+      throw new Error(`internal content dir already exists: ${contentDir}`);
+    mkdirSync(dirname(contentDir), { recursive: true });
+    cpSync(join(sourceDir, src.content, "articles"), contentDir, { recursive: true });
+    contentManifest = readJson(join(sourceDir, src.content, "manifest.json"));
+    writeFileSync(configPath, readFileSync(join(fixtureDir, place.config.overlay)));
+  } else {
+    contentDir = join(workDir, src.content, "articles");
+    contentManifest = readJson(join(workDir, src.content, "manifest.json"));
+  }
+  const model = createModel(contentManifest, readJson(join(appDir, "lib", "spec.json")));
+  const configSha256 = sha256File(configPath);
   return {
     kind: "field-notes",
     manifest,
+    placement,
     workDir,
     appDir,
-    contentDir: join(contentRoot, "articles"),
+    contentDir,
+    layout: {
+      placement,
+      app: relative(workDir, appDir),
+      contentDir: relative(workDir, contentDir),
+      collectionPath: place.collectionPath,
+      allowOutsideRoot: place.allowOutsideRoot === true,
+      externalContentCopied: placement !== "internal",
+    },
+    materializedDatasetSha256: datasetSha256Of(contentManifest, contentDir),
     layoutPath: join(appDir, manifest.paths.layout),
     publicCssPath: join(appDir, manifest.paths.publicCss),
     managedCssPath,
@@ -160,9 +276,19 @@ export function materializeFieldNotes({
     trailingSlash: true,
     model,
     route: (key, slug) => fnRoute(key, slug),
-    configSha256: sha256File(join(appDir, "zfb.config.ts")),
+    configSha256,
     configFile: "zfb.config.ts",
-    configProvenance: "source-dir",
+    configProvenance: place.config ? "derived-overlay" : "source-dir",
+    configBaseSha256: place.config?.baseSha256 ?? configSha256,
+    configOverlay: place.config
+      ? {
+          file: place.config.overlay,
+          provenance: place.provenance,
+          baseSha256: place.config.baseSha256,
+          overlaySha256: place.config.overlaySha256,
+          diff: place.config.diff,
+        }
+      : null,
   };
 }
 
@@ -204,6 +330,11 @@ export const FN_SEL = {
   cardLink: (slug) => `.card-grid .post-card h3 a[href="${href(slug)}"]`,
   cardLinks: ".card-grid .post-card h3 a",
   cardMeta: (slug) => `.post-card:has(h3 a[href="${href(slug)}"]) .card-meta a`,
+  lede: ".article-header .lede",
+  cardDescription: (slug) =>
+    `.card-grid .post-card:has(h3 a[href="${href(slug)}"]) .card-content > p:not(.card-meta)`,
+  relatedDescription: (slug) =>
+    `section.related .post-card:has(h3 a[href="${href(slug)}"]) .card-content > p:not(.card-meta)`,
   heroCount: ".hero-stat strong",
   footerNote: ".site-footer > p",
 };
@@ -678,9 +809,297 @@ export function planFieldNotesOp(m, model, op, { token = newToken(), tokens = nu
       }
       throw new Error(`unknown rapid-sequence variant ${variant}`);
     }
+    case "edit-prop": {
+      const field = op.prop ?? "description";
+      if (!FN_EDITABLE_PROPS[field]) throw new Error(`edit-prop cannot edit ${field}`);
+      const old = idx.bySlug.get(slug);
+      const value = `${old[field]} ${token}`;
+      const next = setField(model, slug, field, value);
+      const p = placement(next, slug);
+      const target = op.targetPath ?? href(slug);
+      const cardText = (s) => text(s, "includes", token);
+      let predicate;
+      if (target === href(slug)) predicate = text(FN_SEL.lede, "includes", token);
+      else if (target === "/") {
+        if (!p.onHome)
+          throw new Error(
+            `edit-prop targetPath "/" needs ${slug} among the first ${model.spec.homeSize}`,
+          );
+        predicate = cardText(FN_SEL.cardDescription(slug));
+      } else predicate = cardText(FN_SEL.cardDescription(slug));
+      const sup = [];
+      if (target !== href(slug))
+        sup.push({ path: href(slug), predicate: text(FN_SEL.lede, "includes", token) });
+      if (p.onHome && target !== "/")
+        sup.push({ path: "/", predicate: cardText(FN_SEL.cardDescription(slug)) });
+      const archivePath = fnRoute("archive", String(p.archivePage));
+      if (target !== archivePath)
+        sup.push({ path: archivePath, predicate: cardText(FN_SEL.cardDescription(slug)) });
+      const categoryPath = fnRoute("category", p.category);
+      if (p.onCategoryPage && target !== categoryPath)
+        sup.push({ path: categoryPath, predicate: cardText(FN_SEL.cardDescription(slug)) });
+      for (const r of referrersOf(next, slug))
+        sup.push({ path: href(r), predicate: cardText(FN_SEL.relatedDescription(slug)) });
+      return {
+        ...base,
+        targetPath: target,
+        predicate,
+        supplemental: sup,
+        writes: [inPlace(articlePath(m, slug), setFrontmatter(readArticle(m, slug), field, value))],
+        nextModel: next,
+        declared: {
+          field,
+          from: old[field],
+          to: value,
+          timed: { path: target, predicate },
+          expectedRendered: [{ path: target, predicate }, ...sup],
+        },
+      };
+    }
+    case "rename-case-only":
+      return planCaseRename(m, model, op, { base, slug });
+    case "css-in-rejected-tick":
+    case "css-in-rejected-discovery-tick":
+    case "edit-during-rejected":
+      return planRecovery(m, model, op, { base, slug, method, token });
     default:
       throw new Error(`unknown field-notes op ${op.op}`);
   }
+}
+
+/** A case variant of a file name: the first letter flipped to upper case (e.g. Article-00008.md). */
+export function caseVariantName(name) {
+  const i = name.search(/[a-z]/i);
+  if (i < 0) throw new Error(`no letter to change case in ${name}`);
+  const c = name[i];
+  const flipped = c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase();
+  return name.slice(0, i) + flipped + name.slice(i + 1);
+}
+
+/** The write steps of a case-only rename: one direct rename, or two through a temp sibling. */
+export function caseRenameWrites(dir, fromName, toName, steps = "direct") {
+  const verifyEntries = { dir, present: [toName], absent: [fromName] };
+  const from = join(dir, fromName);
+  const to = join(dir, toName);
+  if (steps === "direct")
+    return [{ method: "rename", path: from, to, caseOnly: true, verifyEntries }];
+  if (steps !== "via-temp") throw new Error(`unknown caseRenameSteps ${steps}`);
+  const tmp = join(dir, `.${fromName}.dbo-case-${randomHex(4)}.tmp`);
+  return [
+    { method: "rename", path: from, to: tmp },
+    { method: "rename", path: tmp, to, verifyEntries },
+  ];
+}
+
+// The entry slug zfb-content derives from a file: the path relative to the collection root with the
+// .md/.mdx/.tsx extension stripped, case preserved (crates/zfb-content/src/collection.rs parse_entry).
+export const fnEntrySlugOf = (fileName) => fileName.replace(/\.(md|mdx|tsx)$/, "");
+
+function planCaseRename(m, model, op, { base, slug }) {
+  const fromName = `${slug}.md`;
+  const toName = op.toName ?? caseVariantName(fromName);
+  if (toName === fromName || toName.toLowerCase() !== fromName.toLowerCase())
+    throw new Error(`rename-case-only toName ${toName} is not a case variant of ${fromName}`);
+  const steps = op.caseRenameSteps ?? "direct";
+  // Untimed, before the attempt: the work dir's real case behaviour (never assumed from the platform).
+  const caseProbe = probeCaseSensitivity(m.workDir);
+  const declared = {
+    fromName,
+    toName,
+    steps,
+    caseProbe,
+    contentDir: m.contentDir,
+    entrySlugAfter: fnEntrySlugOf(toName),
+    frontmatterSlug: slug,
+    expectation: op.expectState
+      ? { set: "expected-negative", expectState: op.expectState }
+      : { set: "workload", targetPath: op.targetPath, predicate: op.predicate },
+  };
+  const writes = caseRenameWrites(m.contentDir, fromName, toName, steps);
+  const recovery = caseRenameWrites(m.contentDir, toName, fromName, steps);
+  if (op.expectState) {
+    const original = computeIndex(model);
+    return {
+      ...base,
+      mode: "expected-negative",
+      touched: [slug],
+      targetPath: "/",
+      writes,
+      expectState: op.expectState,
+      observe: [
+        {
+          path: "/",
+          lastGood: hrefList(
+            FN_SEL.cardLinks,
+            original.articles.slice(0, model.spec.homeSize).map((a) => href(a.slug)),
+          ),
+          empty: EMPTY_HOME_PROBE,
+        },
+        {
+          path: href(slug),
+          lastGood: text(FN_SEL.title, "equals", original.bySlug.get(slug).title),
+        },
+      ],
+      errorMarkers: ["Article slug mismatch"],
+      recovery,
+      recoveryChecks: liveRestoreChecks(model, [slug]),
+      nextModel: model,
+      declared,
+    };
+  }
+  if (!op.predicate || !op.targetPath)
+    throw new Error(
+      "rename-case-only outside expected-negative needs a declared targetPath and predicate",
+    );
+  return {
+    ...base,
+    touched: [slug],
+    targetPath: op.targetPath,
+    predicate: op.predicate,
+    supplemental: op.supplemental ?? [],
+    writes,
+    // The rendered model after a case rename is what the profile declared; later ops must not rely on it.
+    nextModel: model,
+    declared,
+  };
+}
+
+/** Last two path components, the part of a path zfb's `intake paths:` line ends with on any prefix. */
+export const pathTail = (p) => p.split(/[\\/]/).slice(-2).join("/");
+
+function planRecovery(m, model, op, { base, slug, method, token }) {
+  const idx = computeIndex(model);
+  const old = idx.bySlug.get(slug);
+  const inPlace = (path, bytes) => ({ method, path, bytes: Buffer.from(bytes) });
+  const common = {
+    ...base,
+    mode: "recovery",
+    variant: op.op,
+    expectState: op.expectState,
+    beforeRepair: op.beforeRepair ?? "must-be-absent",
+    requireSameTick: op.requireSameTick === true,
+    errorMarkers: op.errorMarkers ?? ["Article slug mismatch"],
+  };
+  if (op.op === "edit-during-rejected") {
+    const other = op.other;
+    if (!other || other === slug || !idx.bySlug.has(other))
+      throw new Error(
+        "edit-during-rejected needs `other`, an existing article other than `article`",
+      );
+    const original = readArticle(m, slug);
+    const y = idx.bySlug.get(other);
+    const yTitle = `${y.title} ${token}`;
+    const next = setTitle(model, other, yTitle);
+    const p = placement(next, other);
+    const yCard = p.onHome
+      ? { path: "/", predicate: text(FN_SEL.cardLink(other), "includes", token) }
+      : archiveCard(next, other, (s) => text(s, "includes", token));
+    return {
+      ...common,
+      touched: [slug, other],
+      targetPath: href(other),
+      rejectWrites: [inPlace(articlePath(m, slug), breakFrontmatter(original))],
+      rejectedObserve: {
+        kind: "paths",
+        observe: [
+          { path: href(slug), lastGood: text(FN_SEL.title, "equals", old.title) },
+          {
+            path: "/",
+            lastGood: text(FN_SEL.heroCount, "equals", heroText(idx.articles.length)),
+            empty: EMPTY_HOME_PROBE,
+          },
+        ],
+      },
+      duringWrites: [
+        inPlace(articlePath(m, other), setFrontmatter(readArticle(m, other), "title", yTitle)),
+      ],
+      repairWrites: [inPlace(articlePath(m, slug), original)],
+      predicate: text(FN_SEL.title, "includes", token),
+      recoveryChecks: [yCard, ...liveRestoreChecks(next, [slug])],
+      writes: [inPlace(articlePath(m, slug), breakFrontmatter(original))],
+      nextModel: next,
+      declared: {
+        broken: slug,
+        editedWhileRejected: other,
+        title: yTitle,
+        yHome: p.onHome,
+        timed: "other article's title on its open detail page after the repair",
+      },
+    };
+  }
+  if (!m.managedCssPath) throw new Error(`${op.op} needs fixture.managedCss: true`);
+  const prop = m.manifest.managedCss.customProperty;
+  const cssSrc = readFileSync(m.managedCssPath, "utf8");
+  const re = new RegExp(`${prop}: [^;]*;`);
+  if (!re.test(cssSrc)) throw new Error("managed css marker not found");
+  const cssWrite = inPlace(m.managedCssPath, cssSrc.replace(re, `${prop}: ${token};`));
+  const predicate = { kind: "computed-style", selector: ":root", property: prop, includes: token };
+  const rejectedObserve = {
+    kind: "open",
+    lastGood: text(FN_SEL.title, "equals", old.title),
+  };
+  if (op.op === "css-in-rejected-tick") {
+    const original = readArticle(m, slug);
+    const contentWrite = inPlace(articlePath(m, slug), breakFrontmatter(original));
+    return {
+      ...common,
+      targetPath: href(slug),
+      // CSS first, then content, as the Rust e2e does (cold_lazy_css_edit_in_rejected_tick_is_published_after_recovery).
+      rejectWrites: [cssWrite, contentWrite],
+      rejectedObserve,
+      sameTick: { tails: [pathTail(m.managedCssPath), pathTail(articlePath(m, slug))] },
+      repairWrites: [inPlace(articlePath(m, slug), original)],
+      predicate,
+      recoveryChecks: liveRestoreChecks(model, [slug]),
+      writes: [cssWrite, contentWrite],
+      nextModel: model,
+      declared: { open: href(slug), broken: slug, cssToken: token, order: ["css", "content"] },
+    };
+  }
+  // css-in-rejected-discovery-tick: a new article whose bytes are invalid, repaired in place.
+  const n = nextArticleNumber(model);
+  const meta = {
+    ...generatedMetadata(model, n),
+    title: `A recovery field note ${token}`,
+    description: `Field note ${n}: created invalid, then repaired, by dev-browser-observe.`,
+  };
+  if (idx.bySlug.has(meta.slug)) throw new Error(`${meta.slug} already exists`);
+  const invalid = op.invalid ?? "frontmatter";
+  const good = newArticleText(meta, token);
+  const bad =
+    invalid === "slug-mismatch"
+      ? setFrontmatter(good, "slug", `${meta.slug}-mismatch`)
+      : invalid === "frontmatter"
+        ? breakFrontmatter(good)
+        : null;
+  if (bad === null) throw new Error(`unknown invalid kind ${invalid}`);
+  const newPath = articlePath(m, meta.slug);
+  const createWrite = { method: "create", path: newPath, bytes: Buffer.from(bad) };
+  const next = addArticle(model, meta);
+  return {
+    ...common,
+    touched: [slug, meta.slug],
+    targetPath: href(slug),
+    rejectWrites: [cssWrite, createWrite],
+    rejectedObserve,
+    sameTick: { tails: [pathTail(m.managedCssPath), pathTail(newPath)] },
+    repairWrites: [inPlace(newPath, good)],
+    predicate,
+    recoveryChecks: [
+      { path: href(meta.slug), predicate: text(FN_SEL.body(meta.slug), "includes", token) },
+      ...liveRestoreChecks(next, [slug]),
+    ],
+    writes: [cssWrite, createWrite],
+    nextModel: next,
+    declared: {
+      open: href(slug),
+      created: meta.slug,
+      invalid,
+      cssToken: token,
+      order: ["css", "content"],
+      cleanup: "scenario restoration unlinks the created article",
+    },
+  };
 }
 
 /** Live checks that the original state is back: home, detail pages, every archive page, one category page, counts. */

@@ -17,8 +17,9 @@ export const READY_RE = /ready on (http:\/\/\S+)\s*$/;
 
 export const SERVER_LINES_KEPT = 20000;
 
-// Watch/tick diagnostics zfb prints only under ZFB_DEV_TIMING=1.
-export const DIAGNOSTIC_ENV = ["ZFB_DEV_TIMING"];
+// Diagnostics zfb prints only when these are set: watch/tick timing (ZFB_DEV_TIMING=1) and
+// `[zfb-prov] {json}` provenance lines (ZFB_DEV_PROVENANCE_TRACE).
+export const DIAGNOSTIC_ENV = ["ZFB_DEV_TIMING", "ZFB_DEV_PROVENANCE_TRACE"];
 
 export const SERVER_LOG_LINE_CAP = 400;
 
