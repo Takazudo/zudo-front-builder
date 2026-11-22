@@ -42,6 +42,7 @@
 //! not pull in `zfb-server`.
 
 pub mod assets_containment;
+pub mod dev_404_diagnostics;
 pub mod embed;
 pub mod embed_handlers;
 pub mod host_validation;
@@ -744,6 +745,10 @@ pub type IslandsBundleUrl = Arc<RwLock<DevPublicationState>>;
 /// the right shape (not a plain `Mutex`).
 pub type CssBundleUrl = Arc<RwLock<Option<String>>>;
 
+pub use dev_404_diagnostics::{
+    DevRouteDiagnosis, DevRouteDiagnostics, DevRouteDiagnosticsHandle, RenderActivity,
+    DEV_404_REASON_HEADER,
+};
 pub use embed::{Server, ServerBuilder, ServerHandle, ServerMode};
 pub use embed_handlers::{
     EmbedHandler, EmbedHandlerFn, EmbedHandlerFuture, EmbedHandlerSet, RouteParams,
@@ -997,6 +1002,12 @@ pub struct ServeOpts {
     /// missing) and rewrites the handle in place whenever its targeted
     /// watch observes a create/edit/delete of that file.
     pub redirects: Option<crate::RedirectsHandle>,
+
+    /// Read-only route diagnosis for the dev waterfall's final 404 (issue
+    /// #4783). `zfb dev` always sets it; `None` (Preview / Embed / tests)
+    /// keeps that 404 byte-identical to the historical body. See
+    /// [`crate::dev_404_diagnostics`].
+    pub dev_route_diagnostics: Option<crate::DevRouteDiagnosticsHandle>,
 }
 
 impl ServeOpts {
@@ -1101,6 +1112,7 @@ where
         css_bundle_url: opts.css_bundle_url,
         host_validation,
         render_on_request_hook: opts.render_on_request_hook,
+        dev_route_diagnostics: opts.dev_route_diagnostics,
         redirects: opts.redirects,
         // Perf #1145-3: pre-canonicalize stable root paths once at startup so
         // resolve_within_root skips the tokio::fs::canonicalize(root) syscall

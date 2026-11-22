@@ -184,6 +184,7 @@ async fn boot(
         allowed_hosts: opts.allowed_hosts,
         bound_host: opts.bound_host,
         render_on_request_hook: None,
+        dev_route_diagnostics: None,
         redirects: None,
     };
     let server = tokio::spawn(async move {

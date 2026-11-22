@@ -1511,7 +1511,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // to the eager pre-bind renderer (no SSR-only 404 window). Decided here (before
     // `boot_dev_renderer`) so the scaffold-vs-eager choice and the deferred task
     // agree on one value.
-    let defer_dev_bundle = defer_dev_bundle_decision(
+    let mut defer_dev_bundle = defer_dev_bundle_decision(
         lazy_dev_render_enabled(),
         std::env::var("ZFB_DEV_BOOT_LAZY").ok().as_deref(),
         dist_seed.as_deref().is_some_and(dist_is_servable_seed),
@@ -1542,29 +1542,58 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     //    noop renderer so the dev server still boots — the user can
     //    still poke at the dev URL while they fix the underlying
     //    bundler / runtime issue.
-    let dev_session = match boot_dev_renderer(
-        &project_root,
-        &cfg,
-        scratch_paths.bundle_outdir.clone(),
-        // #1550 — the per-collection resolved roots the renderer's content
-        // sites (frontmatter-hash seeding, tick narrowing, created-file
-        // discovery) key on; canonical for out-of-root collections.
-        root_inventory.collection_roots(),
-        v8_plugin_hooks,
-        dev_plugin_alias_entries.clone(),
-        dev_plugin_virtual_modules.clone(),
-        // Issue #2168 — the shared refresh state constructed above, stashed
-        // on `DevRebuildInputs` so it is reachable from the same struct the
-        // three plugin-data consumers below already read from.
-        plugin_refresh.clone(),
-        // S2 (#1230) — the package-owned injected routes registered during
-        // setup. Boot materialises the survivor set into a session-lifetime
-        // staging dir and threads it into the dev bundler so the injected
-        // entrypoints land in the dev bundle. Empty on the parity path.
-        setup_registries.injected_routes.as_slice(),
-        defer_dev_bundle,
-    ) {
+    let boot_renderer = |defer: bool| {
+        boot_dev_renderer(
+            &project_root,
+            &cfg,
+            scratch_paths.bundle_outdir.clone(),
+            // #1550 — the per-collection resolved roots the renderer's content
+            // sites (frontmatter-hash seeding, tick narrowing, created-file
+            // discovery) key on; canonical for out-of-root collections.
+            root_inventory.collection_roots(),
+            v8_plugin_hooks.clone(),
+            dev_plugin_alias_entries.clone(),
+            dev_plugin_virtual_modules.clone(),
+            // Issue #2168 — the shared refresh state constructed above, stashed
+            // on `DevRebuildInputs` so it is reachable from the same struct the
+            // three plugin-data consumers below already read from.
+            plugin_refresh.clone(),
+            // S2 (#1230) — the package-owned injected routes registered during
+            // setup. Boot materialises the survivor set into a session-lifetime
+            // staging dir and threads it into the dev bundler so the injected
+            // entrypoints land in the dev bundle. Empty on the parity path.
+            setup_registries.injected_routes.as_slice(),
+            defer,
+        )
+    };
+    // Issues #4781/#4782 — an eager boot whose content snapshot or
+    // `paths()` fails has no last good generation to keep. Fall back to the deferred scaffold (route
+    // tables unpublished, so dev 404s say `unavailable`) and arm the
+    // bootstrap recovery latch, so a later successful refresh publishes and
+    // seeds the session without a restart.
+    let mut content_boot_fell_back = false;
+    let dev_session = match boot_renderer(defer_dev_bundle) {
         Ok(s) => Some(s),
+        Err(err) if err.downcast_ref::<DevCandidateRejected>().is_some() => {
+            match boot_renderer(true) {
+                Ok(s) => {
+                    output::error(format!(
+                        "dev generation rejected at boot — no route is published until \
+                         the source is fixed; the dev server keeps watching: {err:#}",
+                    ));
+                    defer_dev_bundle = true;
+                    content_boot_fell_back = true;
+                    Some(s)
+                }
+                Err(scaffold_err) => {
+                    output::warn(format!(
+                        "renderer disabled — falling back to empty page cache: {err:#}; \
+                         scaffold fallback also failed: {scaffold_err:#}",
+                    ));
+                    None
+                }
+            }
+        }
         Err(err) => {
             output::warn(format!(
                 "renderer disabled — falling back to empty page cache: {err:#}",
@@ -1572,6 +1601,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             None
         }
     };
+    let defer_dev_bundle = defer_dev_bundle;
 
     // Issue #1808 — Cold's non-deferred path: `boot_dev_renderer` above
     // already built the route tables + renderer EAGERLY (since
@@ -3157,6 +3187,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         render_on_request_hook,
         // Issue #1546 — see `spawn_redirects_watch` above.
         redirects: Some(redirects_handle),
+        // Issue #4783 — eager and lazy alike; read-only.
+        dev_route_diagnostics: Some(Arc::new(SessionRouteDiagnostics(dev_session.clone()))),
     };
 
     // 7. Bind the TCP listener FIRST — before the manifest-digest walk,
@@ -3206,7 +3238,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     //     the controlled
     //     `DEV_404_BODY` — a complete, well-formed HTML page carrying the
     //     live-reload script that auto-upgrades the moment the real render
-    //     lands. It is NEVER a wrong/empty/partial body. This matches the
+    //     lands. Its #4783 diagnosis says the route is known but not
+    //     rendered yet (`boot_render_returned` is still false), never a render
+    //     error. It is NEVER a wrong/empty/partial body. This matches the
     //     boot-lazy contract (#1057), which seeds `dist/` and re-renders
     //     on first request via the render-on-request hook installed in
     //     `ServeOpts` above (already live before the first accept, so a
@@ -3465,11 +3499,21 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                             }
                         }
                         Err(e) => {
-                            let msg = deferred_bundle_failure_message(
-                                boot_lazy_mode_now,
-                                &format!("{e:#}"),
-                            );
-                            if arm_cold_bootstrap_recovery_decision(boot_lazy_mode_now) {
+                            let msg = if content_boot_fell_back {
+                                format!(
+                                    "dev generation still rejected — no route is \
+                                     published until the next renderer-relevant edit fixes \
+                                     the source, or `zfb dev` is restarted: {e:#}"
+                                )
+                            } else {
+                                deferred_bundle_failure_message(
+                                    boot_lazy_mode_now,
+                                    &format!("{e:#}"),
+                                )
+                            };
+                            if arm_cold_bootstrap_recovery_decision(boot_lazy_mode_now)
+                                || content_boot_fell_back
+                            {
                                 // Issue #1809 — Cold has NO seed to degrade to:
                                 // the tables stay the empty scaffold while
                                 // `run_boot_render` (below in this same hook)
@@ -3567,6 +3611,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 boot_render.boundary = BootDocumentBoundary::Failed;
             }
             boot_publication_guard.store(false, Ordering::SeqCst);
+            if let Some(session) = dev_session_for_boot.as_ref() {
+                session
+                    .inner
+                    .boot_render_returned
+                    .store(true, Ordering::SeqCst);
+            }
             use zfb_build::pipeline::dev::DocumentPublicationEvent;
             match boot_render.boundary {
                 BootDocumentBoundary::Published => {
@@ -5341,6 +5391,38 @@ fn prune_dev_companions(
 // Renderer plumbing
 // ---------------------------------------------------------------------------
 
+/// Counts one running route refresh for the dev 404 diagnosis (#4783).
+#[cfg(any(feature = "direct-v8", test))]
+struct RouteRefreshInFlight<'a>(&'a std::sync::atomic::AtomicUsize);
+
+#[cfg(any(feature = "direct-v8", test))]
+impl<'a> RouteRefreshInFlight<'a> {
+    fn enter(counter: &'a std::sync::atomic::AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+#[cfg(any(feature = "direct-v8", test))]
+impl Drop for RouteRefreshInFlight<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Dev 404 diagnosis provider (#4783). `None` when no renderer session
+/// exists, which can only answer [`zfb_server::DevRouteDiagnosis::Unavailable`].
+pub(crate) struct SessionRouteDiagnostics(pub(crate) Option<DevRenderSession>);
+
+impl zfb_server::DevRouteDiagnostics for SessionRouteDiagnostics {
+    fn diagnose(&self, url_path: &str) -> zfb_server::DevRouteDiagnosis {
+        match &self.0 {
+            Some(session) => session.diagnose_route(url_path),
+            None => zfb_server::DevRouteDiagnosis::Unavailable,
+        }
+    }
+}
+
 /// Long-lived dev-session state that owns the renderer subprocess and
 /// the route table. Cloned by the [`PageRenderer`] callback so each
 /// orchestrator tick can map page ids → URLs.
@@ -5860,6 +5942,18 @@ impl DevRenderInner {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
+    #[cfg(feature = "direct-v8")]
+    fn arm_generation_rejected(&self) {
+        self.generation_rejected
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(feature = "direct-v8")]
+    fn take_generation_rejected(&self) -> bool {
+        self.generation_rejected
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Raise the one-shot "re-run the rewrite pre-warm" flag (issue
     /// #2004). Stored, never swapped, so repeated raisings before a
     /// drain are idempotent — the drain is what makes it one-shot.
@@ -6249,6 +6343,10 @@ struct DevRouteTables {
     /// already live in `routes_by_source`, so classification resolves them
     /// there and never consults this set.
     page_sources: HashSet<PathBuf>,
+    /// Whether these tables came from a real router scan (issue #4783).
+    /// `false` only for the deferred-bundle scaffold's empty tables, whose
+    /// absence of a URL proves nothing; set by the first P4 swap.
+    published: bool,
 }
 
 /// Boot-time inputs stashed so a watch-ADD (#659) can re-bundle the SSR
@@ -6573,6 +6671,12 @@ struct DevRenderInner {
     #[cfg(feature = "direct-v8")]
     cold_bootstrap_pending: std::sync::atomic::AtomicBool,
 
+    /// Set by a failed [`DevRenderSession::refresh_bundle_and_routes`];
+    /// consumed by the next successful one (see
+    /// [`DevRenderSession::recover_rejected_generation_after_publish`]).
+    #[cfg(feature = "direct-v8")]
+    generation_rejected: std::sync::atomic::AtomicBool,
+
     /// Discovery publication coordination is one mutex-protected state word
     /// because request commits hold the server publication lock while
     /// discovery raises its gate immediately before waiting on that lock. The
@@ -6625,6 +6729,16 @@ struct DevRenderInner {
     /// `DevRenderSession::recover_cold_bootstrap_after_publish` — so
     /// neither path self-heals better than the other.
     ssr_routes_published: std::sync::atomic::AtomicBool,
+
+    /// Number of [`DevRenderSession::refresh_bundle_and_routes`] calls
+    /// running right now (issue #4783). Read only by the dev 404 diagnosis
+    /// so it can say a route refresh is in progress exactly when one is.
+    route_refreshes_in_flight: std::sync::atomic::AtomicUsize,
+
+    /// Set once the boot task's boot render returned (issue #4783). Until
+    /// then an eager boot can serve a known route that simply has not been
+    /// rendered yet, so the dev 404 must not blame a render error.
+    boot_render_returned: std::sync::atomic::AtomicBool,
 
     /// One-shot per-tick flag: this session's P4 route-table swap
     /// re-staled at least one previously-rendered DYNAMIC injected route
@@ -7701,6 +7815,33 @@ impl DevRenderSession {
         None
     }
 
+    /// Read-only dev 404 diagnosis (issue #4783) over the same live
+    /// `url_index` normalization [`Self::lookup_by_url`] uses. Never claims,
+    /// renders, or marks anything; the route lock is held only for the
+    /// lookup itself.
+    pub(crate) fn diagnose_route(&self, request_path: &str) -> zfb_server::DevRouteDiagnosis {
+        let published = self
+            .inner
+            .routes
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .published;
+        if !published {
+            return zfb_server::DevRouteDiagnosis::Unavailable;
+        }
+        if self.lookup_by_url(request_path).is_none() {
+            return zfb_server::DevRouteDiagnosis::NotInRouteTable;
+        }
+        let activity = if self.inner.route_refreshes_in_flight.load(Ordering::SeqCst) > 0 {
+            zfb_server::RenderActivity::RefreshInProgress
+        } else if !self.inner.boot_render_returned.load(Ordering::SeqCst) {
+            zfb_server::RenderActivity::BootRenderPending
+        } else {
+            zfb_server::RenderActivity::Idle
+        };
+        zfb_server::DevRouteDiagnosis::RouteKnownNotRendered { activity }
+    }
+
     /// Return all known page IDs (source paths) from the router scan.
     /// Used to seed the dependency graph so incremental rebuilds have a
     /// non-empty page set to resolve against.
@@ -8017,6 +8158,56 @@ impl DevRenderSession {
     /// `paths()` runtime eval need the embedded V8 host.
     #[cfg(feature = "direct-v8")]
     fn refresh_bundle_and_routes(&self) -> Result<BundleRefresh> {
+        match self.refresh_bundle_and_routes_unlatched() {
+            Err(error) => {
+                self.inner.arm_generation_rejected();
+                Err(error)
+            }
+            Ok(BundleRefresh::Skipped) => {
+                self.inner.take_generation_rejected();
+                Ok(BundleRefresh::Skipped)
+            }
+            Ok(BundleRefresh::Refreshed {
+                mut changed,
+                vanished,
+            }) => {
+                if let Some(n) = self.recover_rejected_generation_after_publish(&mut changed) {
+                    output::info(format!(
+                        "dev: generation recovered after a rejected refresh — {n} route \
+                         source(s) reselected so edits made while it was rejected are served"
+                    ));
+                }
+                Ok(BundleRefresh::Refreshed { changed, vanished })
+            }
+        }
+    }
+
+    /// Fold every published route source into `changed` once after a
+    /// rejected refresh (#4781/#4782 review). A rejected tick aborts before
+    /// its pages are selected, so its edits reach the next published bundle
+    /// without any consumer being rendered or marked stale. Selecting every
+    /// source makes the eager path re-render and the lazy path re-stale them.
+    /// A `Skipped` refresh consumes the latch without this: its bundle equals
+    /// the last published one, so the retained pages already match.
+    #[cfg(feature = "direct-v8")]
+    fn recover_rejected_generation_after_publish(
+        &self,
+        changed: &mut Vec<PageId>,
+    ) -> Option<usize> {
+        if !self.inner.take_generation_rejected() {
+            return None;
+        }
+        let sources = self.page_ids();
+        let n = sources.len();
+        let known: HashSet<PageId> = changed.iter().cloned().collect();
+        changed.extend(sources.into_iter().filter(|id| !known.contains(id)));
+        self.note_ssr_routes_published();
+        Some(n)
+    }
+
+    #[cfg(feature = "direct-v8")]
+    fn refresh_bundle_and_routes_unlatched(&self) -> Result<BundleRefresh> {
+        let _in_flight = RouteRefreshInFlight::enter(&self.inner.route_refreshes_in_flight);
         let project_root = &self.inner.project_root;
         let inputs = &self.inner.rebuild_inputs;
 
@@ -8318,6 +8509,7 @@ impl DevRenderSession {
             // qualifies: a page added/removed by this scan must not be
             // judged against the previous generation's set.
             tables.page_sources = published_page_sources.clone();
+            tables.published = true;
         }
         self.publish_known_page_sources(&published_page_sources);
         // Issue #1025 — the route tables just moved: advance the stale
@@ -9449,6 +9641,24 @@ struct AssembledBundleResult {
     content_files: std::collections::BTreeSet<PathBuf>,
 }
 
+/// A dev generation candidate rejected before publication: its content
+/// snapshot failed to build or serialize (issue #4781), or a dynamic SSG
+/// route's `paths()` failed (issue #4782). Carried through `anyhow` so the
+/// boot path can tell it apart from other renderer boot failures.
+#[cfg(feature = "direct-v8")]
+#[derive(Debug)]
+pub(crate) struct DevCandidateRejected(pub(crate) String);
+
+#[cfg(feature = "direct-v8")]
+impl std::fmt::Display for DevCandidateRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[cfg(feature = "direct-v8")]
+impl std::error::Error for DevCandidateRejected {}
+
 /// Assemble the dev-mode bundler input and run the bundler, returning the
 /// fresh [`BundlerOutput`] wrapped in [`AssembledBundleResult`] (issue #659
 /// — extracted from `boot_dev_renderer` so the watch-ADD re-bundle reuses
@@ -9521,13 +9731,22 @@ fn assemble_and_bundle_dev(
     } else {
         None
     };
+    // Issue #4781: a failed snapshot is not an empty one. Rejecting it here
+    // aborts the refresh before P4, so the last successful renderer, route
+    // tables, outputs and provenance stay published.
     let (content_snapshot_json, content_files) =
-        match crate::commands::build::build_content_snapshot_json(project_root, cfg) {
-            Some((json, snapshot)) => (
+        match crate::commands::build::dev_content_snapshot_json(project_root, cfg) {
+            crate::commands::build::DevContentSnapshot::Built { json, snapshot } => (
                 Some(json),
                 content_snapshot_files(project_root, cfg, &snapshot),
             ),
-            None => (None, std::collections::BTreeSet::new()),
+            crate::commands::build::DevContentSnapshot::NoCollections => {
+                (None, std::collections::BTreeSet::new())
+            }
+            crate::commands::build::DevContentSnapshot::Failed(message) => {
+                crate::commands::build::warn_dev_content_snapshot_rejected(&message);
+                return Err(anyhow::Error::new(DevCandidateRejected(message)));
+            }
         };
     let snapshot_ms = snap_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
@@ -10136,11 +10355,29 @@ fn build_dev_route_tables_inner(
         // as warnings so the user knows why a `[slug]` route didn't appear —
         // mirrors the build-side diagnostics. These are silently dropped from
         // `dist/` otherwise.
-        for d in &runtime_expansion.deferred {
-            crate::output::warn(format!(
-                "dynamic SSG route {} not expanded in dev: {}",
-                d.template, d.reason
-            ));
+        //
+        // Issue #4782: after both phases every remaining entry is a failed
+        // `paths()` (a throw, a non-2xx dispatch or an invalid result), not a
+        // successful `[]`. Publishing the table without its URLs would turn a
+        // source error into "this URL was removed", so dev rejects the whole
+        // candidate and keeps the last successful route table.
+        if !runtime_expansion.deferred.is_empty() {
+            let failures: Vec<String> = runtime_expansion
+                .deferred
+                .iter()
+                .map(|d| format!("{}: {}", d.template, d.reason))
+                .collect();
+            for failure in &failures {
+                crate::output::error(format!(
+                    "dynamic SSG route paths() failed in dev ({failure}); this route table \
+                     was not published: the dev server keeps serving its last successful \
+                     generation, if any, until the source is fixed"
+                ));
+            }
+            return Err(anyhow::Error::new(DevCandidateRejected(format!(
+                "paths() failed for {} route(s), reported above",
+                failures.len()
+            ))));
         }
 
         // File every resolved concrete-URL entry under its dynamic source's
@@ -10664,6 +10901,7 @@ fn boot_dev_renderer(
                 ssr_routes,
                 url_index,
                 page_sources,
+                published: !defer_bundle,
             }),
             known_page_sources: Mutex::new(None),
             renderer,
@@ -10698,9 +10936,12 @@ fn boot_dev_renderer(
             boot_render_done: std::sync::atomic::AtomicBool::new(false),
             // Issue #1809 — armed only by a Cold deferred-bundle failure.
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
+            generation_rejected: std::sync::atomic::AtomicBool::new(false),
             discovery_publication: Mutex::new(DiscoveryPublicationState::default()),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            route_refreshes_in_flight: std::sync::atomic::AtomicUsize::new(0),
+            boot_render_returned: std::sync::atomic::AtomicBool::new(false),
             dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "direct-v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
@@ -12399,6 +12640,7 @@ pub(crate) fn stub_session_for_adapter_tests(
                 routes_by_source,
                 ssr_routes: Vec::new(),
                 url_index,
+                published: true,
             }),
             known_page_sources: Mutex::new(None),
             renderer,
@@ -12432,9 +12674,12 @@ pub(crate) fn stub_session_for_adapter_tests(
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
             // Issue #1809 — armed only by a Cold deferred-bundle failure.
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
+            generation_rejected: std::sync::atomic::AtomicBool::new(false),
             discovery_publication: Mutex::new(DiscoveryPublicationState::default()),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            route_refreshes_in_flight: std::sync::atomic::AtomicUsize::new(0),
+            boot_render_returned: std::sync::atomic::AtomicBool::new(true),
             dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "direct-v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
@@ -15319,6 +15564,7 @@ mod tests {
                 routes_by_source,
                 ssr_routes,
                 url_index,
+                published: true,
             }),
             known_page_sources: Mutex::new(None),
             renderer: Arc::new(Mutex::new(None)),
@@ -15351,9 +15597,12 @@ mod tests {
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
             // Issue #1809 — armed only by a Cold deferred-bundle failure.
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
+            generation_rejected: std::sync::atomic::AtomicBool::new(false),
             discovery_publication: Mutex::new(DiscoveryPublicationState::default()),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            route_refreshes_in_flight: std::sync::atomic::AtomicUsize::new(0),
+            boot_render_returned: std::sync::atomic::AtomicBool::new(true),
             dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "direct-v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
@@ -16131,6 +16380,7 @@ mod tests {
                 routes_by_source,
                 ssr_routes,
                 url_index,
+                published: true,
             }),
             known_page_sources: Mutex::new(None),
             renderer: Arc::new(Mutex::new(None)),
@@ -16141,6 +16391,8 @@ mod tests {
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            route_refreshes_in_flight: std::sync::atomic::AtomicUsize::new(0),
+            boot_render_returned: std::sync::atomic::AtomicBool::new(true),
             dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "direct-v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
@@ -22275,6 +22527,63 @@ mod tests {
         let session = session_with_route("/");
         assert_lookup(&session, "/", "/");
         assert_lookup(&session, "/index.html", "/");
+    }
+
+    /// Issue #4783: the dev 404 diagnosis reads the live `url_index` with the
+    /// same normalization as `lookup_by_url`, says "unavailable" before the
+    /// first real table publish, follows table swaps, and reports a refresh
+    /// only while one is actually counted in flight.
+    #[test]
+    fn diagnose_route_reads_live_route_table() {
+        use zfb_server::DevRouteDiagnosis as D;
+        let session = session_with_route("/posts/caf%C3%A9");
+        use zfb_server::RenderActivity as A;
+        let known = D::RouteKnownNotRendered { activity: A::Idle };
+        assert_eq!(session.diagnose_route("/posts/caf%C3%A9"), known);
+        assert_eq!(session.diagnose_route("/posts/caf%C3%A9/"), known);
+        assert_eq!(session.diagnose_route("/posts/caf%C3%A9/index.html"), known);
+        assert_eq!(session.diagnose_route("/posts/café?x=1"), known);
+        assert_eq!(session.diagnose_route("/posts/gone"), D::NotInRouteTable);
+
+        {
+            let _refresh = RouteRefreshInFlight::enter(&session.inner.route_refreshes_in_flight);
+            assert_eq!(
+                session.diagnose_route("/posts/caf%C3%A9"),
+                D::RouteKnownNotRendered {
+                    activity: A::RefreshInProgress
+                }
+            );
+            assert_eq!(session.diagnose_route("/posts/gone"), D::NotInRouteTable);
+        }
+        assert_eq!(session.diagnose_route("/posts/caf%C3%A9"), known);
+
+        session
+            .inner
+            .boot_render_returned
+            .store(false, Ordering::SeqCst);
+        assert_eq!(
+            session.diagnose_route("/posts/caf%C3%A9"),
+            D::RouteKnownNotRendered {
+                activity: A::BootRenderPending
+            }
+        );
+        assert_eq!(session.diagnose_route("/posts/gone"), D::NotInRouteTable);
+        session
+            .inner
+            .boot_render_returned
+            .store(true, Ordering::SeqCst);
+
+        session.inner.routes.write().unwrap().url_index.clear();
+        assert_eq!(
+            session.diagnose_route("/posts/caf%C3%A9"),
+            D::NotInRouteTable
+        );
+
+        session.inner.routes.write().unwrap().published = false;
+        assert_eq!(session.diagnose_route("/posts/gone"), D::Unavailable);
+
+        use zfb_server::DevRouteDiagnostics as _;
+        assert_eq!(SessionRouteDiagnostics(None).diagnose("/x"), D::Unavailable);
     }
 
     /// `/posts/a` and `/posts/a/` resolve to the same entry (trailing-slash

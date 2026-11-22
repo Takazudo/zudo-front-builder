@@ -76,6 +76,7 @@ impl Harness {
             allowed_hosts: Vec::new(),
             bound_host: None,
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
         };
 
