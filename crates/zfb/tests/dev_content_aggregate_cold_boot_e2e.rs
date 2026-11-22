@@ -210,6 +210,16 @@ fn spawn_dev_with_timing(
     boot_lazy: Option<&str>,
     timing: bool,
 ) -> DevSession {
+    spawn_dev_with_env(root, mode, boot_lazy, timing, &[])
+}
+
+fn spawn_dev_with_env(
+    root: PathBuf,
+    mode: DevMode,
+    boot_lazy: Option<&str>,
+    timing: bool,
+    extra_env: &[(&str, &str)],
+) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
@@ -236,6 +246,9 @@ fn spawn_dev_with_timing(
     }
     if timing {
         command.env("ZFB_DEV_TIMING", "1");
+    }
+    for (key, value) in extra_env {
+        command.env(key, value);
     }
     command.process_group(0);
 
@@ -1779,6 +1792,20 @@ async fn poll_sequence_index_without_slug(
     ))
 }
 
+/// Issue #4783: a removed URL must 404 *because* it left the live route
+/// table, not because a still-known route failed to render.
+fn removed_route_observation(response: &reqwest::Response) -> Result<(), String> {
+    let status = response.status().as_u16();
+    let reason = response
+        .headers()
+        .get("x-zfb-dev-404-reason")
+        .and_then(|v| v.to_str().ok());
+    match (status, reason) {
+        (404, Some("not-in-route-table")) => Ok(()),
+        (status, reason) => Err(format!("status {status}, x-zfb-dev-404-reason {reason:?}")),
+    }
+}
+
 async fn poll_sequence_deleted_detail(client: &reqwest::Client, url: &str) -> Result<u16, String> {
     let start = Instant::now();
     let mut attempts = 0;
@@ -1786,20 +1813,22 @@ async fn poll_sequence_deleted_detail(client: &reqwest::Client, url: &str) -> Re
     while start.elapsed() < SCENARIO_DEADLINE {
         attempts += 1;
         match client.get(url).send().await {
-            Ok(response) if response.status().as_u16() == 404 => {
-                eprintln!(
-                    "[deletion-sequence] deleted detail returned 404 after {attempts} requests in {:?}",
-                    start.elapsed()
-                );
-                return Ok(404);
-            }
-            Ok(response) => last = format!("status {}", response.status().as_u16()),
+            Ok(response) => match removed_route_observation(&response) {
+                Ok(()) => {
+                    eprintln!(
+                        "[deletion-sequence] deleted detail returned 404 not-in-route-table after {attempts} requests in {:?}",
+                        start.elapsed()
+                    );
+                    return Ok(404);
+                }
+                Err(observation) => last = observation,
+            },
             Err(error) => last = format!("request error: {error}"),
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     Err(format!(
-        "deleted detail did not return 404 after {attempts} requests in {:?}; last observation: {last}",
+        "deleted detail did not return 404 not-in-route-table after {attempts} requests in {:?}; last observation: {last}",
         start.elapsed()
     ))
 }
@@ -2062,15 +2091,18 @@ async fn cold_lazy_deleted_entry_title_only() {
     run_deleted_collection_entry_sequence(DeletionSequence::TitleOnly).await;
 }
 
-/// Poll until `url` answers 404. Used for routes that a collection change
-/// legitimately removed; returns the last observation on timeout.
+/// Poll until `url` answers 404 with the `not-in-route-table` reason. Used
+/// for routes that a collection change legitimately removed; returns the last
+/// observation on timeout.
 async fn poll_until_status_404(client: &reqwest::Client, url: &str) -> Result<(), String> {
     let start = Instant::now();
     let mut last = String::from("no response");
     while start.elapsed() < SCENARIO_DEADLINE {
         match client.get(url).send().await {
-            Ok(response) if response.status().as_u16() == 404 => return Ok(()),
-            Ok(response) => last = format!("status {}", response.status().as_u16()),
+            Ok(response) => match removed_route_observation(&response) {
+                Ok(()) => return Ok(()),
+                Err(observation) => last = observation,
+            },
             Err(error) => last = format!("request error: {error}"),
         }
         tokio::time::sleep(POLL_INTERVAL).await;
@@ -2150,13 +2182,11 @@ fn write_atomic(path: &Path, bytes: &[u8]) {
     fs::rename(&tmp, path).expect("rename temp sibling over target");
 }
 
-/// Issue #4764: an in-place invalid-frontmatter edit empties the collection
-/// (ZB024), so every `paths()` route over it shrinks to zero. Restoring the
-/// exact original bytes in place must bring each paginated URL back with its
-/// original membership on the next request. Before the fix, the edit-tick
-/// refresh re-expanded `posts/page/[page]` but only cleared narrowing with the
-/// changed source instead of selecting it, so its returning routes were never
-/// marked stale and cold-lazy answered 404 for them.
+/// Issue #4764: an in-place invalid-frontmatter edit used to empty the
+/// collection (ZB024), and restoring the original bytes had to bring each
+/// paginated URL back with its original membership. Since #4781 the failed
+/// snapshot is rejected and the last good generation keeps serving, so the
+/// invalid phase asserts that instead; the restore assertions are unchanged.
 ///
 /// The same session then proves an ordinary edit still propagates to the
 /// returned pages and that a genuine deletion still shrinks the pagination.
@@ -2232,43 +2262,55 @@ async fn run_empty_collection_recovery(variant: EmptyCollectionRecovery) {
         )
         .await;
 
-        // In-place invalid YAML: the whole collection becomes empty (the
-        // existing ZB024 policy, deliberately unchanged here).
+        // Invalid YAML fails the content snapshot (ZB024). Issue #4781: the
+        // failed candidate is rejected, so the last successful generation
+        // keeps serving instead of an empty collection. An in-place write can
+        // surface its truncation as a separate, valid tick, so beta's own
+        // title may be the truncated generation's; alpha and the three
+        // pagination routes prove the collection never emptied.
         let beta_path = session.root.join("content/posts/beta.md");
         let original_beta = fs::read(&beta_path).expect("read original beta bytes");
+        let offset = read_log(&session.stderr_path).len();
         write(
             &beta_path,
             b"---\ntitle: [unclosed\ndate: 2026-01-01\n---\n\nbroken\n",
         );
-        poll_until_body_matches(&client, &index_url, |body| {
-            body.contains("Post index") && !body.contains("Alpha V1 Frontmatter")
-        })
-        .await
-        .unwrap_or_else(|last| {
-            panic!(
-                "[{variant:?}] the invalid edit never emptied the post index: {last}\n{}",
-                session.logs()
-            )
-        });
+        wait_for_stderr_line(
+            &session,
+            offset,
+            &["was not published"],
+            "invalid beta rejected as a content candidate",
+        )
+        .await;
         assert!(
-            read_log(&session.stdout_path).contains("ZB024")
-                || read_log(&session.stderr_path).contains("ZB024"),
-            "[{variant:?}] expected the ZB024 empty-collection diagnostic\n{}",
+            read_log(&session.stderr_path)[offset..].contains("ZB024"),
+            "[{variant:?}] the rejected snapshot must be reported as ZB024\n{}",
             session.logs()
         );
-        // `paginate([])` keeps one empty page, so pages 2 and 3 are the ones
-        // that leave the route table while the collection is empty.
-        for url in &page_urls[1..] {
-            poll_until_status_404(&client, url)
-                .await
-                .unwrap_or_else(|last| {
-                    panic!(
-                        "[{variant:?}] {url} should vanish while the collection is empty: \
-                         {last}\n{}",
-                        session.logs()
-                    )
-                });
+        drain_ticks_until_quiescent(&base).await;
+        let response = client.get(&index_url).send().await.expect("GET index");
+        let status = response.status().as_u16();
+        let text = response.text().await.unwrap_or_default();
+        assert!(
+            status == 200 && text.contains("Alpha V1 Frontmatter"),
+            "[{variant:?}] the post index must keep the last good generation: {status}\n\
+             {text}\n{}",
+            session.logs()
+        );
+        for url in &page_urls {
+            let response = client.get(url).send().await.expect("GET page");
+            assert_eq!(
+                response.status().as_u16(),
+                200,
+                "[{variant:?}] {url} must stay in the last good route table\n{}",
+                session.logs()
+            );
         }
+        assert!(
+            !read_log(&session.stderr_path).contains("will see empty collections"),
+            "[{variant:?}] dev must not publish an empty generation\n{}",
+            session.logs()
+        );
 
         // Restore the exact original bytes, in place.
         write(&beta_path, &original_beta);
@@ -2553,4 +2595,799 @@ async fn cold_lazy_valid_tag_edits_swap_empty_and_restore_routes_across_restart(
             session.logs()
         ),
     }
+}
+
+const MEMO_INVALID_B: &[u8] = b"---\ntitle: [unclosed\n---\n\nBeta body.\n";
+
+fn memo_session_root(temp: &tempfile::TempDir) -> (PathBuf, PathBuf) {
+    let root = temp
+        .path()
+        .canonicalize()
+        .expect("canonicalize memo-helper fixture root");
+    copy_dir(&memo_helper_fixture_dir(), &root).expect("copy memo-helper fixture");
+    fs::create_dir_all(root.join("data")).expect("create handshake-probe data directory");
+    let data_probe_path = root.join("data/handshake-probe.json");
+    fs::write(&data_probe_path, "{\"revision\":0}\n").expect("write initial handshake probe");
+    (root, data_probe_path)
+}
+
+fn home_lists(body: &str, titles: &[&str]) -> bool {
+    body.contains("MEMO-HOME") && titles.iter().all(|title| body.contains(title))
+}
+
+/// Issues #4781 / #4776: the home page reads entries through a module-level
+/// memo that a dynamic route's `paths()` fills. An in-place invalid
+/// frontmatter write to b.md fails the content snapshot (ZB024). The failed
+/// candidate is rejected, so the last successful generation keeps serving:
+/// home keeps both titles and `/articles/b/` keeps its route. Restoring the
+/// original bytes changes nothing visible, and a later valid, different
+/// title reaches home and the detail page without a restart, which is the
+/// recovery the memoized helper used to lose after an empty generation.
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_memoized_helper_invalid_frontmatter_keeps_last_good_and_recovers() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create tempdir for memo-helper fixture");
+    let (root, data_probe_path) = memo_session_root(&temp);
+    let mut session = spawn_dev_with_timing(root, DevMode::Lazy, Some("cold"), true);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some((base, client)) =
+            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+        else {
+            return ScenarioOutcome::Skipped;
+        };
+        let home_url = format!("{base}/");
+        let detail_a = format!("{base}/articles/a/");
+        let detail_b = format!("{base}/articles/b/");
+        for (url, marker, phase) in [
+            (&home_url, "Beta Memo V1", "baseline home"),
+            (&detail_a, "Alpha Memo V1", "baseline detail a"),
+            (&detail_b, "Beta Memo V1", "baseline detail b"),
+        ] {
+            poll_until_response_contains(&client, url, marker, phase, &session).await;
+        }
+
+        let b_md = session.root.join("content/articles/b.md");
+        let original_b = fs::read(&b_md).expect("read original b.md");
+        let offset = read_log(&session.stderr_path).len();
+        write_in_place(&b_md, MEMO_INVALID_B);
+        wait_for_stderr_line(
+            &session,
+            offset,
+            &["was not published"],
+            "invalid b.md rejected as a content candidate",
+        )
+        .await;
+        assert!(
+            read_log(&session.stderr_path)[offset..].contains("ZB024"),
+            "the rejected snapshot must be reported as ZB024\n{}",
+            session.logs()
+        );
+        drain_ticks_until_quiescent(&base).await;
+        for (url, marker) in [
+            (&home_url, "Alpha Memo V1"),
+            (&home_url, "Beta Memo V1"),
+            (&detail_b, "Beta Memo V1"),
+        ] {
+            let response = client.get(url).send().await.expect("GET during failure");
+            let status = response.status().as_u16();
+            let text = response.text().await.unwrap_or_default();
+            assert!(
+                status == 200 && text.contains(marker),
+                "{url} must keep the last good generation ({marker}) while the snapshot \
+                 fails; got {status}:\n{text}\n{}",
+                session.logs()
+            );
+        }
+        assert!(
+            !read_log(&session.stderr_path).contains("will see empty collections"),
+            "dev must not publish an empty generation for a failed snapshot\n{}",
+            session.logs()
+        );
+
+        write_in_place(&b_md, &original_b);
+        drain_ticks_until_quiescent(&base).await;
+        poll_until_body_matches(&client, &home_url, |body| {
+            home_lists(body, &["Alpha Memo V1", "Beta Memo V1"])
+        })
+        .await
+        .unwrap_or_else(|last| {
+            panic!(
+                "home lost its titles after the original bytes were restored: {last}\n{}",
+                session.logs()
+            )
+        });
+
+        write_in_place(&b_md, MEMO_INVALID_B);
+        write_in_place(
+            &b_md,
+            b"---\ntitle: Beta Memo Repaired\n---\n\nBeta body.\n",
+        );
+        poll_until_body_matches(&client, &home_url, |body| {
+            home_lists(body, &["Alpha Memo V1", "Beta Memo Repaired"])
+        })
+        .await
+        .unwrap_or_else(|last| {
+            panic!(
+                "home never showed the repaired b.md title through the memoized helper: \
+                 {last}\n{}",
+                session.logs()
+            )
+        });
+        poll_until_response_contains(
+            &client,
+            &detail_b,
+            "Beta Memo Repaired",
+            "detail b after repair",
+            &session,
+        )
+        .await;
+
+        write_in_place(
+            &session.root.join("content/articles/a.md"),
+            b"---\ntitle: Alpha After Recovery\n---\n\nAlpha body.\n",
+        );
+        poll_until_body_matches(&client, &home_url, |body| {
+            home_lists(body, &["Alpha After Recovery", "Beta Memo Repaired"])
+        })
+        .await
+        .unwrap_or_else(|last| {
+            panic!(
+                "a later title edit did not reach home after recovery: {last}\n{}",
+                session.logs()
+            )
+        });
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] memo-helper last-good dev E2E exceeded {}s; process group {pgid} will \
+             be killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
+        ),
+    }
+}
+
+/// Issue #4781: a legitimately empty collection is a successful snapshot.
+/// Removing every entry removes their URLs, and adding one back restores its
+/// URL and the aggregate, all without a restart and without ZB024.
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_successful_empty_collection_removes_and_restores_urls() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create empty-collection fixture");
+    let root = temp
+        .path()
+        .canonicalize()
+        .expect("canonicalize empty-collection fixture");
+    copy_dir(&fixture_dir(), &root).expect("copy empty-collection fixture");
+    fs::create_dir_all(root.join("data")).expect("create handshake-probe data directory");
+    let data_probe_path = root.join("data/handshake-probe.json");
+    fs::write(&data_probe_path, "{\"revision\":0}\n").expect("write initial handshake probe");
+    let posts = root.join("content/posts");
+    let entries: Vec<(PathBuf, Vec<u8>)> = fs::read_dir(&posts)
+        .expect("list posts")
+        .map(|entry| {
+            let path = entry.expect("post entry").path();
+            let bytes = fs::read(&path).expect("read post");
+            (path, bytes)
+        })
+        .collect();
+
+    let mut session = spawn_dev_with_timing(root, DevMode::Lazy, Some("cold"), true);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some((base, client)) =
+            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+        else {
+            return ScenarioOutcome::Skipped;
+        };
+        let index_url = format!("{base}/posts/");
+        let beta_url = format!("{base}/posts/beta/");
+        poll_until_response_contains(&client, &beta_url, "V1-BODY-BETA", "baseline", &session)
+            .await;
+        poll_until_response_contains(
+            &client,
+            &index_url,
+            "Beta Frontmatter",
+            "baseline index",
+            &session,
+        )
+        .await;
+
+        for (path, _) in &entries {
+            fs::remove_file(path).expect("remove post");
+        }
+        poll_until_status_404(&client, &beta_url)
+            .await
+            .unwrap_or_else(|last| {
+                panic!(
+                    "beta survived an empty collection: {last}\n{}",
+                    session.logs()
+                )
+            });
+        poll_until_body_matches(&client, &index_url, |body| {
+            body.contains("Post index") && !body.contains("Beta Frontmatter")
+        })
+        .await
+        .unwrap_or_else(|last| {
+            panic!("the index kept a removed entry: {last}\n{}", session.logs())
+        });
+
+        let (beta_path, beta_bytes) = entries
+            .iter()
+            .find(|(path, _)| path.ends_with("beta.md"))
+            .expect("fixture has beta.md");
+        fs::write(beta_path, beta_bytes).expect("recreate beta");
+        poll_until_response_contains(&client, &beta_url, "V1-BODY-BETA", "beta returns", &session)
+            .await;
+        poll_until_response_contains(
+            &client,
+            &index_url,
+            "Beta Frontmatter",
+            "index lists beta again",
+            &session,
+        )
+        .await;
+        let logs = session.logs();
+        assert!(
+            !logs.contains("ZB024"),
+            "an empty collection is not a snapshot failure\n{logs}"
+        );
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] successful empty collection E2E exceeded {}s; process group {pgid} \
+             will be killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
+        ),
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FirstBootShape {
+    /// Default cold-lazy boot: the bundle is deferred past bind.
+    ColdDeferred,
+    /// `ZFB_DEV_DEFER_BUNDLE=0`: the eager pre-bind boot falls back to the scaffold.
+    ColdEagerBoot,
+    /// `ZFB_DEV_EAGER=1`: no request-time render hook at all.
+    Eager,
+}
+
+/// Issue #4781: when the very first content snapshot fails there is no last
+/// good generation. The server stays up with unpublished routes, so a dev
+/// 404 says `unavailable` rather than claiming the URL is gone, and fixing
+/// the source publishes the routes without a restart.
+async fn run_first_boot_content_failure(shape: FirstBootShape) {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create tempdir for memo-helper fixture");
+    let (root, _) = memo_session_root(&temp);
+    let b_md = root.join("content/articles/b.md");
+    fs::write(&b_md, MEMO_INVALID_B).expect("break b.md before boot");
+
+    let (mode, boot_lazy) = match shape {
+        FirstBootShape::Eager => (DevMode::Eager, None),
+        _ => (DevMode::Lazy, Some("cold")),
+    };
+    let extra: &[(&str, &str)] = match shape {
+        FirstBootShape::ColdEagerBoot => &[("ZFB_DEV_DEFER_BUNDLE", "0")],
+        _ => &[],
+    };
+    let mut session = spawn_dev_with_env(root, mode, boot_lazy, true, extra);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some(port) = wait_for_listening_port(&mut session).await else {
+            return ScenarioOutcome::Skipped;
+        };
+        let base = format!("http://localhost:{port}");
+        let client = build_reqwest_client();
+        // The boot hook runs after the watcher is armed, so an edit made
+        // after this line is observed.
+        wait_for_stderr_line(
+            &session,
+            0,
+            &["[zfb-timing] boot: render complete"],
+            "boot hook finished",
+        )
+        .await;
+        assert_ready_banner(&session, false, "rejected first generation");
+        let logs = session.logs();
+        assert!(
+            logs.contains("ZB024"),
+            "[{shape:?}] the failed first snapshot must report ZB024\n{logs}"
+        );
+        assert!(
+            !logs.contains("renderer disabled"),
+            "[{shape:?}] a content failure must keep a recoverable session\n{logs}"
+        );
+        for url in [format!("{base}/"), format!("{base}/articles/a/")] {
+            let response = client.get(&url).send().await.expect("GET before repair");
+            assert_eq!(response.status().as_u16(), 404, "[{shape:?}] {url}");
+            assert_eq!(
+                response
+                    .headers()
+                    .get("x-zfb-dev-404-reason")
+                    .and_then(|v| v.to_str().ok()),
+                Some("unavailable"),
+                "[{shape:?}] {url} has no published route table yet\n{}",
+                session.logs()
+            );
+        }
+
+        write_in_place(&b_md, b"---\ntitle: Beta Memo Fixed\n---\n\nBeta body.\n");
+        poll_until_body_matches(&client, &format!("{base}/"), |body| {
+            home_lists(body, &["Alpha Memo V1", "Beta Memo Fixed"])
+        })
+        .await
+        .unwrap_or_else(|last| {
+            panic!(
+                "[{shape:?}] home never recovered after the source was fixed: {last}\n{}",
+                session.logs()
+            )
+        });
+        poll_until_response_contains(
+            &client,
+            &format!("{base}/articles/b/"),
+            "Beta Memo Fixed",
+            "detail b after first-boot repair",
+            &session,
+        )
+        .await;
+        wait_for_ready_banner(&session, "first-boot content repair").await;
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] first-boot content failure {shape:?} exceeded {}s; process group \
+             {pgid} will be killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
+        ),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn first_boot_content_failure_recovers_cold_deferred() {
+    run_first_boot_content_failure(FirstBootShape::ColdDeferred).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn first_boot_content_failure_recovers_cold_eager_boot() {
+    run_first_boot_content_failure(FirstBootShape::ColdEagerBoot).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn first_boot_content_failure_recovers_eager() {
+    run_first_boot_content_failure(FirstBootShape::Eager).await;
+}
+
+/// The bind line's port. A rejected first generation withholds the `ready on`
+/// banner (#4261: it announces published routes), so first-boot failure
+/// tests find the port here and expect the banner only after recovery.
+async fn wait_for_listening_port(session: &mut DevSession) -> Option<u16> {
+    let start = Instant::now();
+    loop {
+        let stdout = read_log(&session.stdout_path);
+        if let Some(port) = stdout
+            .lines()
+            .filter_map(|line| line.split("listening on ").nth(1))
+            .filter_map(|rest| rest.split_whitespace().next())
+            .filter_map(|addr| addr.rsplit_once(':'))
+            .find_map(|(_, port)| port.parse().ok())
+        {
+            return Some(port);
+        }
+        if session.guard.try_exit_status().is_some() {
+            panic!("`zfb dev` exited before binding.\n{}", session.logs());
+        }
+        assert!(
+            start.elapsed() < BOOT_DEADLINE,
+            "`zfb dev` never printed its bind line.\n{}",
+            session.logs()
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+async fn wait_for_ready_banner(session: &DevSession, phase: &str) {
+    let start = Instant::now();
+    while parse_ready_port(&read_log(&session.stdout_path)).is_none() {
+        assert!(
+            start.elapsed() < SCENARIO_DEADLINE,
+            "[{phase}] the ready banner never followed recovery\n{}",
+            session.logs()
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+fn assert_ready_banner(session: &DevSession, expected: bool, phase: &str) {
+    let ready = parse_ready_port(&read_log(&session.stdout_path)).is_some();
+    assert_eq!(
+        ready,
+        expected,
+        "[{phase}] ready banner presence\n{}",
+        session.logs()
+    );
+}
+
+fn slug_agreement_fixture_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dev-paths-slug-agreement")
+}
+
+fn slug_session_root(temp: &tempfile::TempDir) -> (PathBuf, PathBuf) {
+    let root = temp
+        .path()
+        .canonicalize()
+        .expect("canonicalize slug-agreement fixture root");
+    copy_dir(&slug_agreement_fixture_dir(), &root).expect("copy slug-agreement fixture");
+    fs::create_dir_all(root.join("data")).expect("create handshake-probe data directory");
+    let data_probe_path = root.join("data/handshake-probe.json");
+    fs::write(&data_probe_path, "{\"revision\":0}\n").expect("write initial handshake probe");
+    (root, data_probe_path)
+}
+
+async fn get_status_and_body(client: &reqwest::Client, url: &str) -> (u16, Option<String>, String) {
+    let response = client.get(url).send().await.expect("GET");
+    let status = response.status().as_u16();
+    let reason = response
+        .headers()
+        .get("x-zfb-dev-404-reason")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    (status, reason, response.text().await.unwrap_or_default())
+}
+
+/// Issue #4782: the fixture's helper throws when an entry's filename slug
+/// disagrees with its frontmatter `slug`, as the Field Notes original helper
+/// does. A filename-only rename makes `paths()` throw. Dev rejects that
+/// candidate route table instead of publishing one without the article URLs,
+/// so the last good routes keep serving; restoring the filename and later
+/// valid edits recover without a restart. Controls: a valid slug rename moves
+/// the URL (old `not-in-route-table`, new 200), a deletion removes a URL, and
+/// a successful empty `paths()` result removes every article URL.
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_failed_paths_keeps_last_good_route_table() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create slug-agreement fixture");
+    let (root, data_probe_path) = slug_session_root(&temp);
+    let mut session = spawn_dev_with_timing(root, DevMode::Lazy, Some("cold"), true);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some((base, client)) =
+            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+        else {
+            return ScenarioOutcome::Skipped;
+        };
+        let home = format!("{base}/");
+        let url = |slug: &str| format!("{base}/articles/{slug}/");
+        for (target, marker) in [
+            (home.clone(), "Beta Slug"),
+            (url("a"), "Alpha Slug"),
+            (url("b"), "Beta Slug"),
+        ] {
+            poll_until_response_contains(&client, &target, marker, "baseline", &session).await;
+        }
+
+        let articles = session.root.join("content/articles");
+        let (a_md, renamed) = (articles.join("a.md"), articles.join("a-renamed.md"));
+        let offset = read_log(&session.stderr_path).len();
+        fs::rename(&a_md, &renamed).expect("filename-only rename");
+        wait_for_stderr_line(
+            &session,
+            offset,
+            &["paths() failed in dev", "was not published"],
+            "filename-only rename rejected",
+        )
+        .await;
+        drain_ticks_until_quiescent(&base).await;
+        for (target, marker) in [
+            (url("a"), "Alpha Slug"),
+            (url("b"), "Beta Slug"),
+            (home.clone(), "Alpha Slug"),
+        ] {
+            let (status, _, text) = get_status_and_body(&client, &target).await;
+            assert!(
+                status == 200 && text.contains(marker),
+                "{target} must keep the last good route ({marker}) while paths() fails; got \
+                 {status}:\n{text}\n{}",
+                session.logs()
+            );
+        }
+        let (status, reason, _) = get_status_and_body(&client, &url("a-renamed")).await;
+        assert_eq!(
+            (status, reason.as_deref()),
+            (404, Some("not-in-route-table")),
+            "the rejected candidate's URL must not be published\n{}",
+            session.logs()
+        );
+        assert!(
+            !read_log(&session.stderr_path).contains("not expanded in dev"),
+            "a failed paths() must not publish a partial route table\n{}",
+            session.logs()
+        );
+
+        fs::rename(&renamed, &a_md).expect("restore the filename");
+        write_in_place(
+            &articles.join("b.md"),
+            b"---\ntitle: Beta Slug Edited\nslug: b\n---\n\nBeta body.\n",
+        );
+        poll_until_body_matches(&client, &home, |body| {
+            body.contains("Alpha Slug") && body.contains("Beta Slug Edited")
+        })
+        .await
+        .unwrap_or_else(|last| panic!("home did not recover: {last}\n{}", session.logs()));
+        poll_until_response_contains(
+            &client,
+            &url("b"),
+            "Beta Slug Edited",
+            "detail b after recovery",
+            &session,
+        )
+        .await;
+
+        let c_md = articles.join("c.md");
+        fs::write(
+            &c_md,
+            b"---\ntitle: Alpha Slug\nslug: c\n---\n\nAlpha body.\n",
+        )
+        .expect("write the renamed entry");
+        fs::remove_file(&a_md).expect("remove the old entry");
+        poll_until_response_contains(&client, &url("c"), "Alpha Slug", "valid rename", &session)
+            .await;
+        poll_until_status_404(&client, &url("a"))
+            .await
+            .unwrap_or_else(|last| {
+                panic!(
+                    "the old URL survived a valid rename: {last}\n{}",
+                    session.logs()
+                )
+            });
+
+        fs::remove_file(articles.join("b.md")).expect("delete b");
+        poll_until_status_404(&client, &url("b"))
+            .await
+            .unwrap_or_else(|last| panic!("b survived its deletion: {last}\n{}", session.logs()));
+
+        fs::remove_file(&c_md).expect("delete the last entry");
+        poll_until_status_404(&client, &url("c"))
+            .await
+            .unwrap_or_else(|last| {
+                panic!(
+                    "c survived an empty paths() result: {last}\n{}",
+                    session.logs()
+                )
+            });
+        poll_until_body_matches(&client, &home, |body| {
+            body.contains("SLUG-HOME") && !body.contains("Alpha Slug")
+        })
+        .await
+        .unwrap_or_else(|last| panic!("home kept a removed entry: {last}\n{}", session.logs()));
+        assert!(
+            !read_log(&session.stderr_path)[offset..]
+                .lines()
+                .filter(|line| line.contains("paths() failed in dev"))
+                .any(|line| !line.contains("a-renamed")),
+            "only the filename-only rename is a paths() failure\n{}",
+            session.logs()
+        );
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] failed paths() dev E2E exceeded {}s; process group {pgid} will be \
+             killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
+        ),
+    }
+}
+
+/// Issue #4782 at first boot: `paths()` fails before any route table was
+/// published, so dev 404s say `unavailable`, and fixing the filename
+/// publishes the routes without a restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn first_boot_failed_paths_recovers_without_restart() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create slug-agreement fixture");
+    let (root, _) = slug_session_root(&temp);
+    let articles = root.join("content/articles");
+    fs::rename(articles.join("a.md"), articles.join("a-renamed.md")).expect("break a.md");
+    let mut session = spawn_dev_with_timing(root, DevMode::Lazy, Some("cold"), true);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some(port) = wait_for_listening_port(&mut session).await else {
+            return ScenarioOutcome::Skipped;
+        };
+        let base = format!("http://localhost:{port}");
+        let client = build_reqwest_client();
+        wait_for_stderr_line(
+            &session,
+            0,
+            &["[zfb-timing] boot: render complete"],
+            "boot hook finished",
+        )
+        .await;
+        assert_ready_banner(&session, false, "rejected first generation");
+        assert!(
+            read_log(&session.stderr_path).contains("paths() failed in dev"),
+            "the first route table must be rejected\n{}",
+            session.logs()
+        );
+        for target in [format!("{base}/"), format!("{base}/articles/b/")] {
+            let (status, reason, _) = get_status_and_body(&client, &target).await;
+            assert_eq!(
+                (status, reason.as_deref()),
+                (404, Some("unavailable")),
+                "{target} has no published route table yet\n{}",
+                session.logs()
+            );
+        }
+        fs::rename(articles.join("a-renamed.md"), articles.join("a.md")).expect("fix a.md");
+        poll_until_response_contains(
+            &client,
+            &format!("{base}/articles/a/"),
+            "Alpha Slug",
+            "first-boot paths recovery",
+            &session,
+        )
+        .await;
+        poll_until_response_contains(&client, &format!("{base}/"), "Beta Slug", "home", &session)
+            .await;
+        wait_for_ready_banner(&session, "first-boot paths repair").await;
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] first-boot paths() failure exceeded {}s; process group {pgid} will be \
+             killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
+        ),
+    }
+}
+
+/// Edits made while a generation is rejected must not be lost after the
+/// recovering publish. While b.md is invalid, `/independent/`'s page source
+/// and a.md's title change; both ticks are rejected. Fixing b.md publishes a
+/// generation that contains both edits, so `/independent/` and
+/// `/articles/a/`, which b.md's consumers do not include, must serve them.
+async fn run_edits_during_rejected_generation(mode: DevMode, boot_lazy: Option<&str>) {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create tempdir for memo-helper fixture");
+    let (root, data_probe_path) = memo_session_root(&temp);
+    let mut session = spawn_dev_with_timing(root, mode, boot_lazy, true);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let handshake = if matches!(mode, DevMode::Eager) {
+            // Eager renders nothing for a data probe, so no SSE event would
+            // prove the watcher live; the boot hook runs after it is armed.
+            match wait_for_ready_port(&mut session).await {
+                Some(port) => {
+                    wait_for_stderr_line(
+                        &session,
+                        0,
+                        &["[zfb-timing] boot: render complete"],
+                        "eager boot hook finished",
+                    )
+                    .await;
+                    Some((format!("http://localhost:{port}"), build_reqwest_client()))
+                }
+                None => None,
+            }
+        } else {
+            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+        };
+        let Some((base, client)) = handshake else {
+            return ScenarioOutcome::Skipped;
+        };
+        let independent = format!("{base}/independent/");
+        let detail_a = format!("{base}/articles/a/");
+        for (url, marker) in [
+            (&independent, "MEMO-INDEPENDENT"),
+            (&detail_a, "Alpha Memo V1"),
+            (&format!("{base}/"), "Beta Memo V1"),
+        ] {
+            poll_until_response_contains(&client, url, marker, "baseline", &session).await;
+        }
+
+        let b_md = session.root.join("content/articles/b.md");
+        let original_b = fs::read(&b_md).expect("read original b.md");
+        let offset = read_log(&session.stderr_path).len();
+        write_in_place(&b_md, MEMO_INVALID_B);
+        let (_, after) =
+            wait_for_stderr_line(&session, offset, &["was not published"], "b.md rejected").await;
+
+        let independent_tsx = session.root.join("pages/independent.tsx");
+        let page = fs::read_to_string(&independent_tsx).expect("read independent page");
+        write_in_place(
+            &independent_tsx,
+            page.replace("MEMO-INDEPENDENT", "INDEPENDENT-EDITED-WHILE-REJECTED")
+                .as_bytes(),
+        );
+        let (_, after) = wait_for_stderr_line(
+            &session,
+            after,
+            &["was not published"],
+            "page edit rejected with the still-invalid b.md",
+        )
+        .await;
+        write_in_place(
+            &session.root.join("content/articles/a.md"),
+            b"---\ntitle: Alpha Edited While Rejected\n---\n\nAlpha body.\n",
+        );
+        wait_for_stderr_line(
+            &session,
+            after,
+            &["was not published"],
+            "a.md edit rejected with the still-invalid b.md",
+        )
+        .await;
+
+        write_in_place(&b_md, &original_b);
+        for (url, marker, phase) in [
+            (
+                &independent,
+                "INDEPENDENT-EDITED-WHILE-REJECTED",
+                "page edited during the rejection",
+            ),
+            (
+                &detail_a,
+                "Alpha Edited While Rejected",
+                "entry edited during the rejection",
+            ),
+        ] {
+            poll_until_response_contains(&client, url, marker, phase, &session).await;
+        }
+        poll_until_body_matches(&client, &format!("{base}/"), |body| {
+            home_lists(body, &["Alpha Edited While Rejected", "Beta Memo V1"])
+        })
+        .await
+        .unwrap_or_else(|last| panic!("home missed the edits: {last}\n{}", session.logs()));
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] edits during a rejected generation exceeded {}s; process group {pgid} \
+             will be killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
+        ),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_edits_during_rejected_generation_survive_recovery() {
+    run_edits_during_rejected_generation(DevMode::Lazy, Some("cold")).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn eager_edits_during_rejected_generation_survive_recovery() {
+    run_edits_during_rejected_generation(DevMode::Eager, None).await;
 }

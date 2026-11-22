@@ -145,6 +145,7 @@ async fn boot_with_dispatcher(
         allowed_hosts: Vec::new(),
         bound_host: None,
         render_on_request_hook: None,
+        dev_route_diagnostics: None,
         redirects: None,
     };
     let server = tokio::spawn(async move {
@@ -467,6 +468,7 @@ async fn boot_with_failing_dispatcher(
         allowed_hosts: Vec::new(),
         bound_host: None,
         render_on_request_hook: None,
+        dev_route_diagnostics: None,
         redirects: None,
     };
     let server = tokio::spawn(async move {

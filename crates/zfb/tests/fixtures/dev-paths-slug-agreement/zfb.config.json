@@ -1,0 +1,8 @@
+{
+  "collections": [
+    {
+      "name": "articles",
+      "path": "content/articles"
+    }
+  ]
+}

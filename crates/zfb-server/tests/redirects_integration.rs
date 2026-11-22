@@ -135,6 +135,7 @@ async fn boot(
         allowed_hosts: Vec::new(),
         bound_host: None,
         render_on_request_hook: None,
+        dev_route_diagnostics: None,
         redirects: opts.redirects,
     };
     let server = tokio::spawn(async move {

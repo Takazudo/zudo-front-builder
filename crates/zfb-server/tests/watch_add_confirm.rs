@@ -344,6 +344,7 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
         allowed_hosts: Vec::new(),
         bound_host: None,
         render_on_request_hook: None,
+        dev_route_diagnostics: None,
         redirects: None,
     };
     let server = tasks.spawn("server", async move {
@@ -604,6 +605,7 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
         allowed_hosts: Vec::new(),
         bound_host: None,
         render_on_request_hook: None,
+        dev_route_diagnostics: None,
         redirects: None,
     };
     let server = tasks.spawn("server", async move {
@@ -861,6 +863,7 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
         allowed_hosts: Vec::new(),
         bound_host: None,
         render_on_request_hook: None,
+        dev_route_diagnostics: None,
         redirects: None,
     };
     let server = tasks.spawn("server", async move {

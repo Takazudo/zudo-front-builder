@@ -166,6 +166,7 @@ async fn gap1_ssr_and_gap2_watcher_work_together() {
         allowed_hosts: Vec::new(),
         bound_host: None,
         render_on_request_hook: None,
+        dev_route_diagnostics: None,
         redirects: None,
     };
     let server = tokio::spawn(async move {

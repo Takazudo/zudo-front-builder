@@ -86,6 +86,7 @@ impl Harness {
             allowed_hosts: Vec::new(),
             bound_host: None,
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
         };
 
@@ -496,6 +497,7 @@ async fn serve_returns_error_when_port_is_occupied() {
         allowed_hosts: Vec::new(),
         bound_host: None,
         render_on_request_hook: None,
+        dev_route_diagnostics: None,
         redirects: None,
     };
 
