@@ -3488,13 +3488,33 @@ async fn assert_css_lacks(
     );
 }
 
+/// Overwrite `path` in place without truncating it, so the edit reaches the
+/// watcher as a single modification. `bytes` must match the current length.
+fn overwrite_same_length(path: &Path, bytes: &[u8]) {
+    use std::io::Write;
+    let current = fs::metadata(path).expect("stat before overwrite").len();
+    assert_eq!(
+        current,
+        bytes.len() as u64,
+        "{} must keep its length so the overwrite needs no truncate",
+        path.display()
+    );
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open existing file for overwrite");
+    file.write_all(bytes).expect("overwrite in place");
+    file.sync_all().expect("fsync overwrite");
+}
+
 /// A stylesheet edit coalesced into a tick whose content snapshot is rejected
 /// must still be published once the content is fixed. The rejected tick aborts
 /// at the renderer reload, before its CSS pass; the fixing tick's own change
 /// set holds only b.md, so the CSS edit has to be carried forward. Ticks are
-/// drained first so one already in flight cannot split the pair, and the
+/// drained first so one already in flight cannot split the pair. The first
 /// repair writes a new valid title so the repaired detail page proves the
-/// recovering generation itself was published.
+/// recovering generation itself was published; the second restores the
+/// last-good bytes, where the content alone changes nothing.
 async fn run_css_edit_in_rejected_tick(mode: DevMode, boot_lazy: Option<&str>) {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
@@ -3529,7 +3549,7 @@ async fn run_css_edit_in_rejected_tick(mode: DevMode, boot_lazy: Option<&str>) {
 
         let b_md = session.root.join("content/articles/b.md");
         let offset = read_log(&session.stderr_path).len();
-        write_in_place(&stylesheet, b":root { --memo-css-marker: css-v2; }\n");
+        overwrite_same_length(&stylesheet, b":root { --memo-css-marker: css-v2; }\n");
         write_in_place(&b_md, MEMO_INVALID_B);
         let (_, rejected_end) =
             wait_for_stderr_line(&session, offset, &["was not published"], "rejected tick").await;
@@ -3562,6 +3582,59 @@ async fn run_css_edit_in_rejected_tick(mode: DevMode, boot_lazy: Option<&str>) {
         )
         .await;
         assert_no_stylesheet_intake_after(rejected_end, "carried stylesheet", &session);
+
+        // Second cycle: the repair restores b.md to exactly the bytes of the
+        // last good generation, so the recovering content equals what is
+        // already served and only the carried CSS work can change output.
+        drain_ticks_until_quiescent(&base).await;
+        let last_good_b = fs::read(&b_md).expect("read last-good b.md");
+        let offset = read_log(&session.stderr_path).len();
+        overwrite_same_length(&stylesheet, b":root { --memo-css-marker: css-v3; }\n");
+        write_in_place(&b_md, MEMO_INVALID_B);
+        let (_, rejected_end) = wait_for_stderr_line(
+            &session,
+            offset,
+            &["was not published"],
+            "second rejected tick",
+        )
+        .await;
+        assert_stylesheet_shares_rejected_intake(
+            &read_log(&session.stderr_path)[offset..rejected_end],
+            "articles/b.md:",
+            "second rejected tick",
+            &session,
+        );
+        assert_css_lacks(
+            &client,
+            &css_url,
+            "css-v3",
+            "after the second rejection",
+            &session,
+        )
+        .await;
+
+        write_in_place(&b_md, &last_good_b);
+        poll_until_response_contains(
+            &client,
+            &css_url,
+            "css-v3",
+            "stylesheet edited in the tick rejected before a last-good restore",
+            &session,
+        )
+        .await;
+        poll_until_response_contains(
+            &client,
+            &detail_b,
+            "Beta Repaired After Rejection",
+            "last-good content restored",
+            &session,
+        )
+        .await;
+        assert_no_stylesheet_intake_after(
+            rejected_end,
+            "carried stylesheet after a last-good restore",
+            &session,
+        );
         ScenarioOutcome::Completed
     };
 
@@ -3615,7 +3688,7 @@ async fn run_css_edit_in_rejected_discovery_tick(mode: DevMode, boot_lazy: Optio
 
         let created = session.root.join("content/articles/c.md");
         let offset = read_log(&session.stderr_path).len();
-        write_in_place(&stylesheet, b":root { --slug-css-marker: css-v2; }\n");
+        overwrite_same_length(&stylesheet, b":root { --slug-css-marker: css-v2; }\n");
         fs::write(
             &created,
             "---\ntitle: Gamma Slug\nslug: not-c\n---\n\nGamma body.\n",
