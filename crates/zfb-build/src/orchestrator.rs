@@ -55,6 +55,7 @@ use crate::policy::{
     classify_change_with_content_roots, is_css_config_path, GranularityPolicy, PathClass,
     PACKAGE_ROOT_TRAVERSED_DIR_NAMES,
 };
+use crate::provenance_trace as prov;
 
 trait DynamicWatchRegistrar: Send + 'static {
     fn watch_additional_files(&mut self, paths: BTreeSet<PathBuf>) -> Vec<PathBuf>;
@@ -238,6 +239,36 @@ fn dev_timing_enabled() -> bool {
             t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
         })
         .unwrap_or(false)
+}
+
+/// Emit the `select` provenance event. `selected` is the resolved page set
+/// (`None` when the tick ended before resolution); `noop` marks a tick that
+/// returned without reaching the pipeline.
+///
+/// `select`: `{changes: [{path, kind, watcher_kind?, class, removed? |
+/// graph_known, dirty|dirty_all}], all_pages, all_reasons: [{reason, path?}],
+/// removed_consumers, discovered, discovery_refresh, eager_hint,
+/// fan_out_safe, changed_content?, selected, noop}`
+fn emit_select(
+    fields: Option<serde_json::Map<String, serde_json::Value>>,
+    selected: Option<&PageSelection>,
+    noop: bool,
+) {
+    let Some(mut fields) = fields else {
+        return;
+    };
+    match selected {
+        Some(PageSelection::Specific(set)) => {
+            prov::insert_capped(&mut fields, "selected", set.iter(), |id| {
+                prov::path_value(id.path())
+            });
+        }
+        Some(PageSelection::All) | None => {
+            fields.insert("selected".into(), serde_json::Value::Null);
+        }
+    }
+    fields.insert("noop".into(), serde_json::json!(noop));
+    prov::emit("select", serde_json::Value::Object(fields));
 }
 
 /// Comparison spelling for the `ZFB_DEV_TEST_FORCE_CREATED_FOR_PAGE_SOURCE`
@@ -1476,6 +1507,8 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         ctx: &BuildContext,
         discover: Option<&DiscoveryHook>,
     ) -> Result<Option<BuildOutcome>> {
+        let prov_raw_changes: Option<Vec<(PathBuf, ChangeKind)>> =
+            prov::enabled().then(|| changes.clone());
         // Issue #1581 — a `Removed` path is no longer a known collection
         // entry, so forget it (and, for a removed directory, everything
         // beneath it) BEFORE the `Created` normalization below reads the
@@ -1732,6 +1765,8 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // Fold former consumers of removed files into the plan so the tick
         // is non-noop even when deletion is the only change. This lets
         // reload_renderer fire and prune the now-vanished HTML.
+        let prov_removed_consumers: Option<Vec<PageId>> =
+            prov::enabled().then(|| removed_consumers.iter().cloned().collect());
         if !removed_consumers.is_empty() {
             plan.mark_pages(PageSelection::Specific(removed_consumers));
         }
@@ -1859,6 +1894,16 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // drops its change set. Hand the tick's CSS work to the pipeline so a
         // coalesced stylesheet edit still reaches the next CSS pass.
         if let Some(error) = discovery_error {
+            if prov::enabled() {
+                prov::emit(
+                    "reject",
+                    serde_json::json!({
+                        "stage": "discovery",
+                        "error": format!("{error:#}"),
+                        "retained": prov::current_generation().map(prov::Generation::to_json),
+                    }),
+                );
+            }
             if plan.rerun_css || !plan.css_changes.is_empty() {
                 self.pipeline.defer_css(plan.rerun_css, plan.css_changes);
             }
@@ -1873,6 +1918,8 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         if discovery_refresh_completed {
             plan.mark_renderer_fresh();
         }
+        let prov_discovered: Option<Vec<PageId>> =
+            prov::enabled().then(|| discovered.pages.clone());
         if !discovered.pages.is_empty() {
             let set: std::collections::BTreeSet<PageId> = discovered.pages.into_iter().collect();
             plan.mark_pages(PageSelection::Specific(set));
@@ -1985,7 +2032,19 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             );
         }
 
+        let mut prov_select = prov_raw_changes.map(|raw| {
+            self.prov_select_fields(
+                &raw,
+                &changes,
+                &plan,
+                prov_removed_consumers.unwrap_or_default(),
+                unknown_removed_content,
+                prov_discovered.unwrap_or_default(),
+                discovery_refresh_completed,
+            )
+        });
         if plan.is_noop() && !discovery_refresh_completed {
+            emit_select(prov_select.take(), None, true);
             return Ok(None);
         }
         self.resolve_all(&mut plan);
@@ -1997,10 +2056,139 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             && plan.prune_paths.is_empty()
             && !discovery_refresh_completed
         {
+            emit_select(prov_select.take(), Some(&plan.pages), true);
             return Ok(None);
         }
+        emit_select(prov_select.take(), Some(&plan.pages), false);
         let outcome = self.pipeline.apply(&plan, ctx)?;
         Ok(Some(outcome))
+    }
+
+    /// Fields of the `select` provenance event (see
+    /// [`crate::provenance_trace`]). Observation only: it re-reads the same
+    /// classifier and graph queries `plan_for_changes` used, after the plan
+    /// was built, and never mutates the plan or graph.
+    #[allow(clippy::too_many_arguments)]
+    fn prov_select_fields(
+        &self,
+        raw_changes: &[(PathBuf, ChangeKind)],
+        changes: &[(PathBuf, ChangeKind)],
+        plan: &RebuildPlan,
+        removed_consumers: Vec<PageId>,
+        unknown_removed_content: bool,
+        discovered: Vec<PageId>,
+        discovery_refresh_completed: bool,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        use serde_json::{json, Map, Value};
+        let mut fields = Map::new();
+        let mut all_reasons: Vec<Value> = Vec::new();
+        let mut per_path: Vec<Value> = Vec::new();
+        {
+            let graph = self.graph.lock().unwrap_or_else(|p| p.into_inner());
+            for (index, (path, kind)) in changes.iter().enumerate() {
+                let raw_kind = raw_changes.get(index).map(|(_, kind)| *kind);
+                let class = classify_change_with_content_roots(
+                    path,
+                    &self.config.project_root,
+                    &self.config.policy.content_roots,
+                    |p| graph.is_global(p),
+                );
+                let mut entry = Map::new();
+                entry.insert("path".into(), prov::path_value(path));
+                entry.insert("kind".into(), json!(format!("{kind:?}")));
+                if raw_kind.is_some_and(|raw| raw != *kind) {
+                    entry.insert(
+                        "watcher_kind".into(),
+                        json!(format!("{:?}", raw_kind.unwrap())),
+                    );
+                }
+                entry.insert("class".into(), json!(format!("{class:?}")));
+                if *kind == ChangeKind::Removed {
+                    entry.insert("removed".into(), json!(true));
+                } else {
+                    let dirty: PageSelection = graph.dirty_pages(path).into();
+                    let known = graph.knows(path);
+                    entry.insert("graph_known".into(), json!(known));
+                    match &dirty {
+                        PageSelection::All => {
+                            entry.insert("dirty_all".into(), json!(true));
+                        }
+                        PageSelection::Specific(set) => {
+                            prov::insert_capped(&mut entry, "dirty", set.iter(), |id| {
+                                prov::path_value(id.path())
+                            })
+                        }
+                    }
+                    let reason = match class {
+                        PathClass::Global => Some("global"),
+                        PathClass::External => Some("external"),
+                        PathClass::Page
+                        | PathClass::Module
+                        | PathClass::Content
+                        | PathClass::Data
+                            if dirty.is_empty() && !known =>
+                        {
+                            Some("unknown_path")
+                        }
+                        _ => None,
+                    };
+                    let reason = reason.or_else(|| {
+                        self.config
+                            .policy
+                            .is_plugin_watch_target(path)
+                            .then_some("plugin_watch")
+                    });
+                    if let Some(reason) = reason {
+                        all_reasons
+                            .push(json!({ "reason": reason, "path": prov::path_value(path) }));
+                    }
+                }
+                per_path.push(Value::Object(entry));
+            }
+        }
+        if unknown_removed_content {
+            all_reasons.push(json!({ "reason": "unknown_removed_content" }));
+        }
+        fields.insert("changes".into(), Value::Array(per_path));
+        let all_pages = plan.pages.is_all();
+        fields.insert("all_pages".into(), json!(all_pages));
+        if all_pages && all_reasons.is_empty() {
+            all_reasons.push(json!({ "reason": "unattributed" }));
+        }
+        fields.insert(
+            "all_reasons".into(),
+            Value::Array(if all_pages { all_reasons } else { Vec::new() }),
+        );
+        prov::insert_capped(
+            &mut fields,
+            "removed_consumers",
+            removed_consumers.iter(),
+            |id| prov::path_value(id.path()),
+        );
+        prov::insert_capped(&mut fields, "discovered", discovered.iter(), |id| {
+            prov::path_value(id.path())
+        });
+        fields.insert(
+            "discovery_refresh".into(),
+            json!(discovery_refresh_completed),
+        );
+        match &plan.content_narrowing {
+            Some(narrowing) => {
+                fields.insert("eager_hint".into(), json!(true));
+                fields.insert("fan_out_safe".into(), json!(narrowing.fan_out_safe));
+                prov::insert_capped(
+                    &mut fields,
+                    "changed_content",
+                    narrowing.changed_content.iter(),
+                    |p| prov::path_value(p),
+                );
+            }
+            None => {
+                fields.insert("eager_hint".into(), json!(false));
+                fields.insert("fan_out_safe".into(), json!(false));
+            }
+        }
+        fields
     }
 
     /// Eager initial render of **every** page in the graph, run once at
@@ -2322,6 +2510,27 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             if changes.is_empty() {
                 continue;
             }
+            let prov_tick = prov::next_tick_id();
+            if let Some(tick) = prov_tick {
+                let mut fields = serde_json::Map::new();
+                fields.insert("tick".into(), serde_json::json!(tick));
+                fields.insert(
+                    "intake_id".into(),
+                    if dev_timing_enabled() {
+                        serde_json::json!(handoff_intake_id)
+                    } else {
+                        serde_json::Value::Null
+                    },
+                );
+                prov::insert_capped(
+                    &mut fields,
+                    "paths",
+                    changes.iter(),
+                    |(path, kind)| serde_json::json!({ "path": prov::path_value(path), "kind": format!("{kind:?}") }),
+                );
+                fields.insert("suppressed".into(), serde_json::json!(suppressed));
+                prov::emit("intake", serde_json::Value::Object(fields));
+            }
             // These edits are handled by this tick, so the watch-arm
             // reconcile must not report them again later.
             this.config
@@ -2349,6 +2558,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     eprintln!("[zfb-timing] fault fired: ZFB_DEV_TEST_ORCH_PANIC_ON_TICK");
                     panic!("ZFB_DEV_TEST_ORCH_PANIC_ON_TICK fault injection");
                 }
+                let _prov_tick = prov::TickScope::enter(prov_tick);
                 let result = this.tick_with_kinds(changes, &ctx, discover.as_ref());
                 (result, this, ctx, discover)
             })

@@ -397,8 +397,12 @@ impl LazyRenderAdapter {
             }
         };
 
-        let (claim, bytes) = match rendered {
-            Ok(RenderUnderLock::Rendered { claim, bytes }) => (claim, bytes),
+        let (claim, bytes, prov_generation) = match rendered {
+            Ok(RenderUnderLock::Rendered {
+                claim,
+                bytes,
+                generation,
+            }) => (claim, bytes, generation),
             Ok(RenderUnderLock::RendererUnavailable) => {
                 return LazyRenderOutcome::RendererUnavailable;
             }
@@ -449,6 +453,23 @@ impl LazyRenderAdapter {
             },
         ) {
             Ok(GuardedWriteOutcome::Written(outcome)) => {
+                // `publish` (lazy): `{mode: "lazy", url, output, written,
+                // generation, drain, provenance_current}`. `drain` is the
+                // content-trace drain this thread ran right after the render.
+                if zfb_build::provenance_trace::enabled() {
+                    zfb_build::provenance_trace::emit(
+                        "publish",
+                        serde_json::json!({
+                            "mode": "lazy",
+                            "url": url_path,
+                            "output": zfb_build::provenance_trace::path_value(&entry.output_path),
+                            "written": outcome.written,
+                            "generation": prov_generation.map(zfb_build::provenance_trace::Generation::to_json),
+                            "drain": zfb_build::provenance_trace::last_drain_on_thread(),
+                            "provenance_current": provenance_current,
+                        }),
+                    );
+                }
                 if timing {
                     eprintln!(
                         "{}",
@@ -520,7 +541,13 @@ impl LazyRenderAdapter {
         // bodies) render through the exact same path as HTML.
         let bytes = std::fs::read(&written)
             .with_context(|| format!("failed to read rendered page {}", written.display()))?;
-        Ok(RenderUnderLock::Rendered { claim, bytes })
+        // Sampled under the renderer mutex the host swap adopts under.
+        let generation = zfb_build::provenance_trace::current_generation();
+        Ok(RenderUnderLock::Rendered {
+            claim,
+            bytes,
+            generation,
+        })
     }
 }
 
@@ -604,7 +631,13 @@ fn hex_digit(byte: u8) -> Option<u8> {
 /// Result of [`LazyRenderAdapter::render_claimed_entry`] — what happened
 /// under the renderer mutex.
 enum RenderUnderLock {
-    Rendered { claim: StaleClaim, bytes: Vec<u8> },
+    Rendered {
+        claim: StaleClaim,
+        bytes: Vec<u8>,
+        /// Provenance-trace generation of the host that rendered `bytes`
+        /// (`None` while `ZFB_DEV_PROVENANCE_TRACE` is off).
+        generation: Option<zfb_build::provenance_trace::Generation>,
+    },
     RendererUnavailable,
     Raced,
 }
