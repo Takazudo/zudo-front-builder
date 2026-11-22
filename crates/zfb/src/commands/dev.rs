@@ -7598,7 +7598,9 @@ impl DevRenderSession {
         })();
 
         let cleared = result.is_err() && self.clear_content_edges_if_current(&token);
-        if let Some(event) = prov_pending {
+        // A failed graph write after the event was built makes the drain a
+        // failure: report only `drain_failed`, never both.
+        if let (Some(event), true) = (prov_pending, result.is_ok()) {
             event.emit();
         }
         if let (Some(drain), Err(error)) = (prov_drain, result.as_ref()) {

@@ -458,7 +458,9 @@ impl LazyRenderAdapter {
                 // provenance_current}`. `drain` is the content-trace drain
                 // this thread ran right after the render. Another thread can
                 // drain this render's trace first, so `drain_contains_page`
-                // says whether that drain reported a slot for `page`
+                // says whether that drain reported ANY slot for `page`; the
+                // slot may come from another render of the same page, so it
+                // is presence, not proof that these bytes produced it
                 // (`null` when the page or the drain is unknown).
                 if zfb_build::provenance_trace::enabled() {
                     let page = self.session.source_for_output_path(&entry.output_path);
