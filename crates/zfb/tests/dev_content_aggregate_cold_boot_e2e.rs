@@ -3268,3 +3268,126 @@ async fn first_boot_failed_paths_recovers_without_restart() {
         ),
     }
 }
+
+/// Edits made while a generation is rejected must not be lost after the
+/// recovering publish. While b.md is invalid, `/independent/`'s page source
+/// and a.md's title change; both ticks are rejected. Fixing b.md publishes a
+/// generation that contains both edits, so `/independent/` and
+/// `/articles/a/`, which b.md's consumers do not include, must serve them.
+async fn run_edits_during_rejected_generation(mode: DevMode, boot_lazy: Option<&str>) {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create tempdir for memo-helper fixture");
+    let (root, data_probe_path) = memo_session_root(&temp);
+    let mut session = spawn_dev_with_timing(root, mode, boot_lazy, true);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let handshake = if matches!(mode, DevMode::Eager) {
+            // Eager renders nothing for a data probe, so no SSE event would
+            // prove the watcher live; the boot hook runs after it is armed.
+            match wait_for_ready_port(&mut session).await {
+                Some(port) => {
+                    wait_for_stderr_line(
+                        &session,
+                        0,
+                        &["[zfb-timing] boot: render complete"],
+                        "eager boot hook finished",
+                    )
+                    .await;
+                    Some((format!("http://localhost:{port}"), build_reqwest_client()))
+                }
+                None => None,
+            }
+        } else {
+            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+        };
+        let Some((base, client)) = handshake else {
+            return ScenarioOutcome::Skipped;
+        };
+        let independent = format!("{base}/independent/");
+        let detail_a = format!("{base}/articles/a/");
+        for (url, marker) in [
+            (&independent, "MEMO-INDEPENDENT"),
+            (&detail_a, "Alpha Memo V1"),
+            (&format!("{base}/"), "Beta Memo V1"),
+        ] {
+            poll_until_response_contains(&client, url, marker, "baseline", &session).await;
+        }
+
+        let b_md = session.root.join("content/articles/b.md");
+        let original_b = fs::read(&b_md).expect("read original b.md");
+        let offset = read_log(&session.stderr_path).len();
+        write_in_place(&b_md, MEMO_INVALID_B);
+        let (_, after) =
+            wait_for_stderr_line(&session, offset, &["was not published"], "b.md rejected").await;
+
+        let independent_tsx = session.root.join("pages/independent.tsx");
+        let page = fs::read_to_string(&independent_tsx).expect("read independent page");
+        write_in_place(
+            &independent_tsx,
+            page.replace("MEMO-INDEPENDENT", "INDEPENDENT-EDITED-WHILE-REJECTED")
+                .as_bytes(),
+        );
+        let (_, after) = wait_for_stderr_line(
+            &session,
+            after,
+            &["was not published"],
+            "page edit rejected with the still-invalid b.md",
+        )
+        .await;
+        write_in_place(
+            &session.root.join("content/articles/a.md"),
+            b"---\ntitle: Alpha Edited While Rejected\n---\n\nAlpha body.\n",
+        );
+        wait_for_stderr_line(
+            &session,
+            after,
+            &["was not published"],
+            "a.md edit rejected with the still-invalid b.md",
+        )
+        .await;
+
+        write_in_place(&b_md, &original_b);
+        for (url, marker, phase) in [
+            (
+                &independent,
+                "INDEPENDENT-EDITED-WHILE-REJECTED",
+                "page edited during the rejection",
+            ),
+            (
+                &detail_a,
+                "Alpha Edited While Rejected",
+                "entry edited during the rejection",
+            ),
+        ] {
+            poll_until_response_contains(&client, url, marker, phase, &session).await;
+        }
+        poll_until_body_matches(&client, &format!("{base}/"), |body| {
+            home_lists(body, &["Alpha Edited While Rejected", "Beta Memo V1"])
+        })
+        .await
+        .unwrap_or_else(|last| panic!("home missed the edits: {last}\n{}", session.logs()));
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] edits during a rejected generation exceeded {}s; process group {pgid} \
+             will be killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
+        ),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_edits_during_rejected_generation_survive_recovery() {
+    run_edits_during_rejected_generation(DevMode::Lazy, Some("cold")).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn eager_edits_during_rejected_generation_survive_recovery() {
+    run_edits_during_rejected_generation(DevMode::Eager, None).await;
+}

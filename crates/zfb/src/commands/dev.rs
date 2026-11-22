@@ -5942,6 +5942,18 @@ impl DevRenderInner {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
+    #[cfg(feature = "direct-v8")]
+    fn arm_generation_rejected(&self) {
+        self.generation_rejected
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(feature = "direct-v8")]
+    fn take_generation_rejected(&self) -> bool {
+        self.generation_rejected
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Raise the one-shot "re-run the rewrite pre-warm" flag (issue
     /// #2004). Stored, never swapped, so repeated raisings before a
     /// drain are idempotent — the drain is what makes it one-shot.
@@ -6658,6 +6670,12 @@ struct DevRenderInner {
     /// later failure may re-arm it.
     #[cfg(feature = "direct-v8")]
     cold_bootstrap_pending: std::sync::atomic::AtomicBool,
+
+    /// Set by a failed [`DevRenderSession::refresh_bundle_and_routes`];
+    /// consumed by the next successful one (see
+    /// [`DevRenderSession::recover_rejected_generation_after_publish`]).
+    #[cfg(feature = "direct-v8")]
+    generation_rejected: std::sync::atomic::AtomicBool,
 
     /// Discovery publication coordination is one mutex-protected state word
     /// because request commits hold the server publication lock while
@@ -8140,6 +8158,55 @@ impl DevRenderSession {
     /// `paths()` runtime eval need the embedded V8 host.
     #[cfg(feature = "direct-v8")]
     fn refresh_bundle_and_routes(&self) -> Result<BundleRefresh> {
+        match self.refresh_bundle_and_routes_unlatched() {
+            Err(error) => {
+                self.inner.arm_generation_rejected();
+                Err(error)
+            }
+            Ok(BundleRefresh::Skipped) => {
+                self.inner.take_generation_rejected();
+                Ok(BundleRefresh::Skipped)
+            }
+            Ok(BundleRefresh::Refreshed {
+                mut changed,
+                vanished,
+            }) => {
+                if let Some(n) = self.recover_rejected_generation_after_publish(&mut changed) {
+                    output::info(format!(
+                        "dev: generation recovered after a rejected refresh — {n} route \
+                         source(s) reselected so edits made while it was rejected are served"
+                    ));
+                }
+                Ok(BundleRefresh::Refreshed { changed, vanished })
+            }
+        }
+    }
+
+    /// Fold every published route source into `changed` once after a
+    /// rejected refresh (#4781/#4782 review). A rejected tick aborts before
+    /// its pages are selected, so its edits reach the next published bundle
+    /// without any consumer being rendered or marked stale. Selecting every
+    /// source makes the eager path re-render and the lazy path re-stale them.
+    /// A `Skipped` refresh consumes the latch without this: its bundle equals
+    /// the last published one, so the retained pages already match.
+    #[cfg(feature = "direct-v8")]
+    fn recover_rejected_generation_after_publish(
+        &self,
+        changed: &mut Vec<PageId>,
+    ) -> Option<usize> {
+        if !self.inner.take_generation_rejected() {
+            return None;
+        }
+        let sources = self.page_ids();
+        let n = sources.len();
+        let known: HashSet<PageId> = changed.iter().cloned().collect();
+        changed.extend(sources.into_iter().filter(|id| !known.contains(id)));
+        self.note_ssr_routes_published();
+        Some(n)
+    }
+
+    #[cfg(feature = "direct-v8")]
+    fn refresh_bundle_and_routes_unlatched(&self) -> Result<BundleRefresh> {
         let _in_flight = RouteRefreshInFlight::enter(&self.inner.route_refreshes_in_flight);
         let project_root = &self.inner.project_root;
         let inputs = &self.inner.rebuild_inputs;
@@ -10308,8 +10375,8 @@ fn build_dev_route_tables_inner(
                 ));
             }
             return Err(anyhow::Error::new(DevCandidateRejected(format!(
-                "paths() failed for {}",
-                failures.join("; ")
+                "paths() failed for {} route(s), reported above",
+                failures.len()
             ))));
         }
 
@@ -10869,6 +10936,7 @@ fn boot_dev_renderer(
             boot_render_done: std::sync::atomic::AtomicBool::new(false),
             // Issue #1809 — armed only by a Cold deferred-bundle failure.
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
+            generation_rejected: std::sync::atomic::AtomicBool::new(false),
             discovery_publication: Mutex::new(DiscoveryPublicationState::default()),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
@@ -12606,6 +12674,7 @@ pub(crate) fn stub_session_for_adapter_tests(
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
             // Issue #1809 — armed only by a Cold deferred-bundle failure.
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
+            generation_rejected: std::sync::atomic::AtomicBool::new(false),
             discovery_publication: Mutex::new(DiscoveryPublicationState::default()),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
@@ -15528,6 +15597,7 @@ mod tests {
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
             // Issue #1809 — armed only by a Cold deferred-bundle failure.
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
+            generation_rejected: std::sync::atomic::AtomicBool::new(false),
             discovery_publication: Mutex::new(DiscoveryPublicationState::default()),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
