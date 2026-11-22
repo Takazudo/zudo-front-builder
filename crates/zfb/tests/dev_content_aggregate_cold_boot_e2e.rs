@@ -3626,7 +3626,7 @@ async fn run_css_edit_in_rejected_tick(mode: DevMode, boot_lazy: Option<&str>) {
             &client,
             &detail_b,
             "Beta Repaired After Rejection",
-            "last-good content restored",
+            "last-good content still served after the second recovery",
             &session,
         )
         .await;
