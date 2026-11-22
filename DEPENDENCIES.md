@@ -536,8 +536,8 @@ declaration is removable even if its package remains in `Cargo.lock`.
   section below.
   **Next trigger:** the next published lockstep pair, a yank of either
   adopted version, or a new advisory against 0.0.58. Later pairs 0.0.60
-  and 0.0.62 were evaluated and kept at 0.0.58 (see their KEEP sections
-  below); the complete 0.0.63 pair is awaiting evaluation (#4758).
+  0.0.62 and 0.0.63 were evaluated and kept at 0.0.58 (see their KEEP
+  sections below); the watcher baseline refresh for #4758 is still pending.
 
   Earlier rounds decided the other way, and that history stands. The released
   candidates evaluated in #2787 and #2788 each diverged from the committed
@@ -3042,6 +3042,34 @@ Every artifact stays under its historical ceiling; render-only is the tightest, 
 - publish/tag/Release of 0.0.63 on both crates. **`noyalib-serde-yaml 0.0.63`** was published at 2026-11-20T19:22:29Z (checksum `3fe1f06cc7c5b210f20f0046398b582d079ceb94973dfa0a75bda6d4ae0e311a`) and pins core `=0.0.63` with `std` and `compat-serde-yaml`, alongside `noyalib 0.0.63` (2026-11-19T23:26:39Z, `f132f5ea38d74a519b65995b2f7dc7714a8b34df53952eb744107af7c1645a87`). 0.0.63 is therefore a complete, unevaluated lockstep pair.
 
 There were no yanks, unyanks or archive changes. No advisory affects 0.0.58: RustSec and the repository advisories still cover only `<= 0.0.54`. Neither upstream repository had an open pull request. The other deltas were informational: branch churn on both repositories, saphyr branch churn, and serde-saphyr 2.2.0 and 3.0.0-rc.1. A full snapshot would absorb the unevaluated 0.0.63 trigger, so the baseline and `pendingReleasePr` (still `521`) are deliberately not refreshed, and the watch stays red on #4758. **Next trigger:** evaluate the newest complete lockstep pair (currently 0.0.63; a later pair covers it cumulatively), then refresh the baseline and `pendingReleasePr` in that recorded triage. Separately, watch for a yank of either 0.0.58 crate or a new advisory against 0.0.58.
+
+##### `noyalib 0.0.63` / `noyalib-serde-yaml 0.0.63` released differential evaluation (#4787) — KEEP
+
+**Verdict: KEEP — retain production noyalib / noyalib-serde-yaml =0.0.58; evaluated 0.0.63 is not adopted.** Evaluation child [#4787](https://github.com/Takazudo/zudo-front-builder/issues/4787) of the Cloud sweep #4785, for the #4758 trigger recorded above. The decision was made by the sweep manager under the owner's 2026-11-22 delegation of ordinary dependency-adoption decisions. The probe (local branch `topic/cloud-sweep-yaml`, commit `d77c62a`) changed only the `Cargo.toml` pins and the two pair records in `Cargo.lock`, and was never integrated.
+
+**Inputs.** `noyalib 0.0.63` (published 2026-11-19T23:26:39Z, checksum `f132f5ea38d74a519b65995b2f7dc7714a8b34df53952eb744107af7c1645a87`) and `noyalib-serde-yaml 0.0.63` (2026-11-20T19:22:29Z, `3fe1f06cc7c5b210f20f0046398b582d079ceb94973dfa0a75bda6d4ae0e311a`, pinning core `=0.0.63` with `std` and `compat-serde-yaml`); both non-yanked, MIT OR Apache-2.0, MSRV 1.89.0. It was the newest complete pair on crates.io at 2026-11-22. Upstream tags: noyalib `v0.0.63^{}` = `5209a6522a27bee03eaf93554890dcff6ece2059`, alias `v0.0.63^{}` = `9f1f73d69f8f85ca1d176e8424bc4d324fb1c697`. The RustSec database (2026-11-21) lists only RUSTSEC-2026-0333 against noyalib, patched in `>= 0.0.53`.
+
+**Behavior (Linux x86_64, rustc 1.97.0, first runs).** Differential harness 4/4 with the 18 baseline observations unchanged, resource budgets 5/5, error messages 2/2, `zfb-content` 1,135/1,135, md-wasm API/AST pins 33/33 + 26/26, CLI diagnostics 11/11, `cargo check -p zfb-md-wasm --target wasm32-unknown-unknown` ok, detector unit tests 78/78. `cargo deny check` (0.22.0) passed at both pins with identical warnings. The dependency closure changed only the two pair versions; the wasm32 closure also drops `libm 0.2.16` (MIT).
+
+**Size (measured locally in the Cloud container with the health.yml `wasm-md` pipeline: rustc 1.100.0, wasm-bindgen-cli 0.2.121, binaryen 130.0.0, version stamp 7.1.0; control = main `b839b17` lock).** Only the dependency closure differed between the two sides; every build, export, packed, release and budget assertion and the npm tests (295) passed on both.
+
+| Artifact | finalWasm Δ | gzip9 Δ | Candidate gzip9 |
+| --- | ---: | ---: | ---: |
+| default | +16,769 | +7,505 | 1,543,855 |
+| highlight-only | 0 | −4 | 822,408 |
+| render-only | +17,832 | +5,754 | 1,121,365 |
+| parse-only | +16,705 | +5,998 | 306,954 |
+| packed tarball | +22,687 | n/a | n/a |
+
+These are local, not GitHub-runner, bytes; the deltas match the 0.0.62 CI pair above. Sizes are informational since #4729.
+
+**Upstream changes 0.0.58 → 0.0.63.** 0.0.63 over 0.0.62 is a `cst::Document::insert_entry_value` fix (noyalib#533) and a release-packaging fix; the alias does not re-export the CST API and zfb does not use it. 0.0.62's parse-strictness and error-path changes show no observable difference on zfb's surface. 0.0.59's security entries are in optional `jsonschema`/`tokio` features that zfb does not enable.
+
+**Decision.** All required behavior contracts pass, but no correctness, security or maintenance benefit for zfb is demonstrated, and the measured cost (about 17 KB raw and 6–7.5 KB gzip on three artifacts, render-only within about 3.6 KB of its historical ceiling, plus a `REVIEWED_WIND_SOURCE_DIGEST` refresh) is the same as the 0.0.62 cost the owner rejected. This pair was evaluated on its own merits; the 0.0.62 decision is precedent, not an automatic rejection.
+
+**Downstream contract.** `Cargo.toml`, `Cargo.lock`, the harness label and corpus, `shipped-sizes.json`, the detector and the YAML candidate baseline are unchanged.
+
+**Baseline refresh still held.** From the Cloud container the live detector exits 1 (`operational-failure`): api.github.com answers 401 with the session token and 403 without one for the upstream repositories, so no `--snapshot` could be taken and `pendingReleasePr` (`521`) could not be re-proven. The refresh (write the snapshot to a new temporary file, validate it, then copy it over `scripts/yaml-candidate-baseline.json`) needs an environment with authenticated upstream API access, and must first confirm that no newer unevaluated pair or other triage delta has appeared. #4758 closes only on a genuine main watch with rc=0.
 
 ##### `serde-saphyr 1.2.0` differential evaluation (#2788) — KEEP
 
