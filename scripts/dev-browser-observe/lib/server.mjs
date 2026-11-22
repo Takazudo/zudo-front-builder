@@ -17,10 +17,16 @@ export const READY_RE = /ready on (http:\/\/\S+)\s*$/;
 
 export const SERVER_LINES_KEPT = 20000;
 
-// Watch/tick diagnostics zfb prints only under ZFB_DEV_TIMING=1.
-export const DIAGNOSTIC_ENV = ["ZFB_DEV_TIMING"];
+// Diagnostics zfb prints only when these are set: watch/tick timing (ZFB_DEV_TIMING=1) and
+// `[zfb-prov] {json}` provenance lines (ZFB_DEV_PROVENANCE_TRACE).
+export const DIAGNOSTIC_ENV = ["ZFB_DEV_TIMING", "ZFB_DEV_PROVENANCE_TRACE"];
 
 export const SERVER_LOG_LINE_CAP = 400;
+
+// `[zfb-prov]` trace lines get their own buffer, so neither the 400-line record
+// cap nor the general line cap can drop them silently; any drop is reported.
+export const PROV_LINES_KEPT = 500000;
+const PROV_MARKER = "[zfb-prov] ";
 
 /** Ready URL from complete lines of `text` (an unterminated last line is ignored). */
 export function parseReadyUrl(text) {
@@ -143,12 +149,22 @@ export function startDevServer({
   const effective = serverEnv(process.env, env, diagnostic);
   const lines = [];
   let linesBase = 0;
+  const provLines = [];
+  let provBase = 0;
   let resolveReady = null;
   const splitters = { stdout: new LineSplitter(), stderr: new LineSplitter() };
   const take = (stream, line, ns) => {
     log.write(`[${isoNow()}] [${stream}] ${line}\n`);
     const text = stripAnsi(line);
     lines.push({ ns, stream, text });
+    if (text.includes(PROV_MARKER)) {
+      provLines.push({ ns, stream, text });
+      if (provLines.length > PROV_LINES_KEPT) {
+        const drop = provLines.length - PROV_LINES_KEPT;
+        provLines.splice(0, drop);
+        provBase += drop;
+      }
+    }
     if (lines.length > SERVER_LINES_KEPT) {
       const drop = lines.length - SERVER_LINES_KEPT;
       lines.splice(0, drop);
@@ -229,6 +245,15 @@ export function startDevServer({
     },
     injectKill: () => injectKillOwned(handle),
     logMark: () => linesBase + lines.length,
+    provMark: () => provBase + provLines.length,
+    /** Every `[zfb-prov]` line since `mark` (uncapped); droppedBeforeMark counts buffer loss. */
+    provSince: (mark) => {
+      const start = mark - provBase;
+      return {
+        lines: provLines.slice(Math.max(start, 0)).map((l) => ({ ns: l.ns, text: l.text })),
+        droppedBeforeMark: start < 0 ? -start : 0,
+      };
+    },
     /** Server output lines since `mark`, each with ms relative to the attempt's t0 (server.log has them all). */
     logSince: (mark, t0) => {
       const start = mark - linesBase;

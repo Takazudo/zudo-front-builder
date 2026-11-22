@@ -173,8 +173,9 @@ describe("expected-negative classification with basis", () => {
   it("the declared expectation stays [error, last-good]; '/' carries the empty probe for both expected-negative ops", () => {
     const root = mkdtempSync(join(tmpdir(), "dbo-fn2-"));
     try {
-      makeFakeSource(join(root, "src"));
+      const { datasetSha256: ds } = makeFakeSource(join(root, "src"));
       const m = materializeFieldNotes({
+        expectedDatasetSha256: ds,
         fixtureDir: join(HARNESS_DIR, "fixtures", "field-notes"),
         sourceDir: join(root, "src"),
         workDir: join(root, "work"),

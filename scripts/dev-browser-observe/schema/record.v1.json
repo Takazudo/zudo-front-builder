@@ -58,7 +58,16 @@
         "expected-negative-observed",
         "expected-negative-mismatch",
         "recovery-failed",
-        "final-state-mismatch"
+        "final-state-mismatch",
+        "hidden-precondition-visited",
+        "rename-noop",
+        "recovery-observed",
+        "recovery-state-mismatch",
+        "not-same-tick",
+        "same-tick-unknown",
+        "recovery-error",
+        "rejection-not-observed",
+        "open-page-replaced"
       ]
     },
     "latencyMs": {
@@ -76,6 +85,98 @@
         "server-restart",
         "unclassified"
       ]
+    },
+    "provenance": {
+      "type": "object",
+      "description": "Diagnostic profiles only: the [zfb-prov] trace for this attempt (ZFB_DEV_PROVENANCE_TRACE=1). A failure while building it is recorded as {error} instead.",
+      "properties": {
+        "traceEnabled": {
+          "type": "boolean"
+        },
+        "linesSeen": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "traceMissing": {
+          "type": "boolean",
+          "description": "gate on in the effective env but zero [zfb-prov] lines since arming"
+        },
+        "droppedBeforeMark": {
+          "type": ["integer", "null"]
+        },
+        "lossNote": {
+          "type": ["string", "null"]
+        },
+        "parseErrors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["index", "text", "error"]
+          }
+        },
+        "seqViolations": {
+          "type": "array"
+        },
+        "truncatedLists": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["ev", "seq", "field", "omitted"]
+          }
+        },
+        "targetConsumer": {
+          "type": ["string", "null"]
+        },
+        "chainComplete": {
+          "type": "boolean"
+        },
+        "causalChain": {
+          "type": "object",
+          "required": ["tick", "rejected", "links", "required", "missing", "chainComplete"],
+          "properties": {
+            "links": {
+              "type": "object",
+              "description": "intake, select, generation, render_plan, stale, observations, edges, publish, dom; each {status: observed|missing|unverified|failed|not-written, ...}. Only observed counts."
+            }
+          }
+        },
+        "events": {
+          "type": "array"
+        },
+        "chainEventsOnly": {
+          "type": "boolean",
+          "description": "every required link observed but some link lacks evidence about the target (causalChain.lackingTarget); never complete"
+        },
+        "recoveryChain": {
+          "type": ["object", "null"],
+          "description": "chain for the expected-negative recovery writes, kept apart from the timed writes"
+        },
+        "targetPageStrings": {
+          "type": "object",
+          "description": "raw page strings the trace emitted for the target: matched aliases and same-basename strings that did not match"
+        },
+        "renderMode": {
+          "type": ["object", "null"],
+          "description": "{lazy, source}: zfb dev lazy-render switch resolved from the effective server env (ZFB_LAZY_DEV_RENDER, ZFB_DEV_EAGER, default lazy)"
+        },
+        "chainConsumerLevel": {
+          "type": "boolean",
+          "description": "events and target evidence present, but the evidence drain is the first-drain-after-render-plan fallback, not the target own drain; never complete"
+        },
+        "evidenceVia": {
+          "type": ["string", "null"],
+          "enum": [
+            "lazy-publish-drain",
+            "same-tick-drain-after-render-plan",
+            "first-drain-after-render-plan",
+            null
+          ]
+        },
+        "seqGaps": {
+          "type": "array",
+          "description": "seq jumps > 1 inside the attempt window; any gap makes causalChain.integrity unverified and chainComplete false"
+        }
+      }
     }
   }
 }

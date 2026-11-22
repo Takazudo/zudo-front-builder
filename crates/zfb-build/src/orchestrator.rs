@@ -55,6 +55,7 @@ use crate::policy::{
     classify_change_with_content_roots, is_css_config_path, GranularityPolicy, PathClass,
     PACKAGE_ROOT_TRAVERSED_DIR_NAMES,
 };
+use crate::provenance_trace as prov;
 
 trait DynamicWatchRegistrar: Send + 'static {
     fn watch_additional_files(&mut self, paths: BTreeSet<PathBuf>) -> Vec<PathBuf>;
@@ -238,6 +239,196 @@ fn dev_timing_enabled() -> bool {
             t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
         })
         .unwrap_or(false)
+}
+
+/// What the plan fold applied for one changed path (provenance trace,
+/// issue #4753). Recorded at the decision site, under the graph lock the
+/// fold used, so it is the verdict the plan was built from, not a re-query.
+#[derive(Debug, Clone, Default)]
+struct PathVerdict {
+    /// `None` for paths swallowed by an earlier `Global` full rebuild.
+    class: Option<PathClass>,
+    /// `graph.knows(path)` where the fold consulted it.
+    graph_known: Option<bool>,
+    /// The page selection this path contributed (graph dirty set,
+    /// external-override verdict, or a removed path's former consumers).
+    dirty: Option<PageSelection>,
+    /// The additive SSR-module-dependency selection (#3162), if any.
+    ssr_module_dependency: Option<PageSelection>,
+    /// An `external_invalidation` hook verdict replaced the class arm.
+    external_override: bool,
+    /// The change was a removal (excluded from `plan_for_changes`).
+    removed: bool,
+    /// Why this path forced `PageSelection::All`, if it did.
+    all_reasons: Vec<&'static str>,
+}
+
+/// Inputs of the `select` provenance event.
+struct SelectInputs<'a> {
+    raw_changes: &'a [(PathBuf, ChangeKind)],
+    changes: &'a [(PathBuf, ChangeKind)],
+    verdicts: Vec<(PathBuf, PathVerdict)>,
+    plan: &'a RebuildPlan,
+    removed_consumers: Vec<PageId>,
+    discovered: Vec<PageId>,
+    discovery_refresh_completed: bool,
+}
+
+fn selection_value(
+    into: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    selection: &PageSelection,
+) {
+    match selection {
+        PageSelection::All => {
+            into.insert(key.into(), serde_json::json!("all"));
+        }
+        PageSelection::Specific(set) => {
+            prov::insert_capped(into, key, set.iter(), |id| prov::path_value(id.path()))
+        }
+    }
+}
+
+/// Fields of the `select` provenance event, built from the verdicts the
+/// fold recorded. `all_reasons` collects every path's reasons and is
+/// `unattributed` only when the plan is `All` and no verdict explains it.
+fn select_fields(inputs: &SelectInputs<'_>) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::{json, Map, Value};
+    let mut fields = Map::new();
+    let mut all_reasons: Vec<Value> = Vec::new();
+    let mut per_path: Vec<Value> = Vec::new();
+    let mut used = vec![false; inputs.verdicts.len()];
+    for (index, (path, kind)) in inputs.changes.iter().enumerate() {
+        let mut entry = Map::new();
+        entry.insert("path".into(), prov::path_value(path));
+        entry.insert("kind".into(), json!(format!("{kind:?}")));
+        if let Some((_, raw)) = inputs.raw_changes.get(index).filter(|(_, raw)| raw != kind) {
+            entry.insert("watcher_kind".into(), json!(format!("{raw:?}")));
+        }
+        let found = inputs
+            .verdicts
+            .iter()
+            .enumerate()
+            .position(|(i, (p, verdict))| {
+                !used[i] && p == path && verdict.removed == (*kind == ChangeKind::Removed)
+            });
+        match found {
+            Some(i) => {
+                used[i] = true;
+                let verdict = &inputs.verdicts[i].1;
+                entry.insert(
+                    "class".into(),
+                    verdict
+                        .class
+                        .map(|class| json!(format!("{class:?}")))
+                        .unwrap_or(Value::Null),
+                );
+                if verdict.removed {
+                    entry.insert("removed".into(), json!(true));
+                }
+                if let Some(known) = verdict.graph_known {
+                    entry.insert("graph_known".into(), json!(known));
+                }
+                if let Some(dirty) = &verdict.dirty {
+                    selection_value(&mut entry, "dirty", dirty);
+                }
+                if let Some(ssr) = &verdict.ssr_module_dependency {
+                    selection_value(&mut entry, "ssr_module_dependency", ssr);
+                }
+                if verdict.external_override {
+                    entry.insert("external_override".into(), json!(true));
+                }
+                entry.insert("all_reasons".into(), json!(verdict.all_reasons));
+                for reason in &verdict.all_reasons {
+                    all_reasons.push(json!({ "reason": reason, "path": prov::path_value(path) }));
+                }
+            }
+            None => {
+                // No fold verdict (e.g. a path the fold never visited).
+                entry.insert("class".into(), Value::Null);
+            }
+        }
+        per_path.push(Value::Object(entry));
+    }
+    prov::insert_capped(&mut fields, "changes", per_path, |v| v);
+    let all_pages = inputs.plan.pages.is_all();
+    fields.insert("all_pages".into(), json!(all_pages));
+    if all_pages && all_reasons.is_empty() {
+        all_reasons.push(json!({ "reason": "unattributed" }));
+    }
+    fields.insert(
+        "all_reasons".into(),
+        Value::Array(if all_pages { all_reasons } else { Vec::new() }),
+    );
+    prov::insert_capped(
+        &mut fields,
+        "removed_consumers",
+        inputs.removed_consumers.iter(),
+        |id| prov::path_value(id.path()),
+    );
+    prov::insert_capped(&mut fields, "discovered", inputs.discovered.iter(), |id| {
+        prov::path_value(id.path())
+    });
+    fields.insert(
+        "discovery_refresh".into(),
+        json!(inputs.discovery_refresh_completed),
+    );
+    match &inputs.plan.content_narrowing {
+        Some(narrowing) => {
+            fields.insert("eager_hint".into(), json!(true));
+            fields.insert("fan_out_safe".into(), json!(narrowing.fan_out_safe));
+            prov::insert_capped(
+                &mut fields,
+                "changed_content",
+                narrowing.changed_content.iter(),
+                |p| prov::path_value(p),
+            );
+        }
+        None => {
+            fields.insert("eager_hint".into(), json!(false));
+            fields.insert("fan_out_safe".into(), json!(false));
+        }
+    }
+    fields
+}
+
+/// Emit the `select` provenance event. `selected` is the resolved page set
+/// (`None` when the tick ended before resolution); `noop` marks a tick that
+/// returned without reaching the pipeline.
+///
+/// `select`: `{changes: [{path, kind, watcher_kind?, class, removed?,
+/// graph_known?, dirty?, ssr_module_dependency?, external_override?,
+/// all_reasons}], all_pages, all_reasons: [{reason, path?}],
+/// removed_consumers, discovered, discovery_refresh, eager_hint,
+/// fan_out_safe, changed_content?, selected, noop}`. A `dirty` value is a
+/// page list or the string `"all"`. Reasons: `global`,
+/// `global_full_rebuild`, `external`, `unknown_path`, `plugin_watch`,
+/// `unknown_removed_content`, `removed_global`, `removed_plugin_watch`,
+/// `unattributed`.
+fn emit_select(
+    fields: Option<serde_json::Map<String, serde_json::Value>>,
+    selected: Option<&PageSelection>,
+    noop: bool,
+    out: Option<&mut Option<serde_json::Map<String, serde_json::Value>>>,
+) {
+    let Some(mut fields) = fields else {
+        return;
+    };
+    match selected {
+        Some(PageSelection::Specific(set)) => {
+            prov::insert_capped(&mut fields, "selected", set.iter(), |id| {
+                prov::path_value(id.path())
+            });
+        }
+        Some(PageSelection::All) | None => {
+            fields.insert("selected".into(), serde_json::Value::Null);
+        }
+    }
+    fields.insert("noop".into(), serde_json::json!(noop));
+    if let Some(out) = out {
+        *out = Some(fields.clone());
+    }
+    prov::emit("select", serde_json::Value::Object(fields));
 }
 
 /// Comparison spelling for the `ZFB_DEV_TEST_FORCE_CREATED_FOR_PAGE_SOURCE`
@@ -1080,6 +1271,22 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         I: IntoIterator<Item = P2>,
         P2: Into<PathBuf>,
     {
+        self.plan_for_changes_traced(changes, None)
+    }
+
+    /// [`Self::plan_for_changes`] that also records, per path, the verdict
+    /// the fold actually applied (under the same graph lock) into `sink`.
+    /// `sink` is `Some` only while the provenance trace is enabled; it never
+    /// influences the plan.
+    fn plan_for_changes_traced<I, P2>(
+        &self,
+        changes: I,
+        mut sink: Option<&mut Vec<(PathBuf, PathVerdict)>>,
+    ) -> RebuildPlan
+    where
+        I: IntoIterator<Item = P2>,
+        P2: Into<PathBuf>,
+    {
         let mut plan = RebuildPlan::empty();
 
         // Materialise the change set so we can run the external-invalidation
@@ -1226,6 +1433,18 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 // would need does not exist in the graph. See
                 // [`Self::apply_plugin_watch_invalidation`].
                 self.apply_plugin_watch_invalidation(&mut plan, &path);
+                if let Some(sink) = sink.as_deref_mut() {
+                    let mut verdict = PathVerdict {
+                        class: Some(class),
+                        dirty: Some(selection.clone()),
+                        external_override: true,
+                        ..PathVerdict::default()
+                    };
+                    if self.config.policy.is_plugin_watch_target(&path) {
+                        verdict.all_reasons.push("plugin_watch");
+                    }
+                    sink.push((path.clone(), verdict));
+                }
                 continue;
             }
 
@@ -1236,6 +1455,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 |p| graph.is_global(p),
             );
 
+            let mut verdict = PathVerdict {
+                class: Some(class),
+                ..PathVerdict::default()
+            };
+            let tracing = sink.is_some();
             match class {
                 PathClass::Global => {
                     // Nuke and pave: every page, every sub-pipeline.
@@ -1251,10 +1475,29 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     let mut full = RebuildPlan::full_rebuild();
                     full.triggers = std::mem::take(&mut plan.triggers);
                     full.css_changes = std::mem::take(&mut plan.css_changes);
+                    if let Some(sink) = sink.as_deref_mut() {
+                        sink.push((
+                            path.clone(),
+                            PathVerdict {
+                                class: Some(class),
+                                all_reasons: vec!["global"],
+                                ..PathVerdict::default()
+                            },
+                        ));
+                    }
                     let _ = path;
                     for remaining in changes_iter {
                         full.triggers.push(remaining.clone());
                         full.css_changes.record_upsert(remaining.clone());
+                        if let Some(sink) = sink.as_deref_mut() {
+                            sink.push((
+                                remaining.clone(),
+                                PathVerdict {
+                                    all_reasons: vec!["global_full_rebuild"],
+                                    ..PathVerdict::default()
+                                },
+                            ));
+                        }
                     }
                     return full;
                 }
@@ -1272,11 +1515,19 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     // imprecise whole-site re-render the metafile edges remove.
                     // `PageSelection::All` is still expanded by `resolve_all` to
                     // the known page list before the pipeline runs.
-                    let effective = if dirty.is_empty() && !graph.knows(&path) {
+                    let known = graph.knows(&path);
+                    let effective = if dirty.is_empty() && !known {
                         PageSelection::All
                     } else {
                         dirty
                     };
+                    if tracing {
+                        verdict.graph_known = Some(known);
+                        if effective.is_all() {
+                            verdict.all_reasons.push("unknown_path");
+                        }
+                        verdict.dirty = Some(effective.clone());
+                    }
                     plan.mark_pages(effective);
                     // Content/Page/Module/Data changes may affect SSR output —
                     // flag the plan so the pipeline reloads the V8 host even
@@ -1312,6 +1563,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     // (CSS Modules imported from a .tsx). Honour the
                     // graph for those.
                     let dirty: PageSelection = graph.dirty_pages(&path).into();
+                    if tracing {
+                        verdict.dirty = Some(dirty.clone());
+                    }
                     plan.mark_pages(dirty);
                 }
                 PathClass::Asset => {
@@ -1325,6 +1579,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     // via an explicit dep. If so, dirty those pages; if
                     // not, do nothing.
                     let dirty: PageSelection = graph.dirty_pages(&path).into();
+                    if tracing {
+                        verdict.dirty = Some(dirty.clone());
+                    }
                     plan.mark_pages(dirty);
                 }
                 PathClass::External => {
@@ -1343,6 +1600,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     // (not only the non-whitelisted-extension ones that
                     // reach this arm), so a whitelisted external file like
                     // `skills/foo.mdx` is also narrowable.
+                    if tracing {
+                        verdict.all_reasons.push("external");
+                    }
                     plan.mark_pages(PageSelection::All);
                     plan.mark_ssr_reload_needed();
                     // #1819 (epic #1995) — a whole-site page re-render does
@@ -1387,6 +1647,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // of how the path itself classifies. See
             // [`Self::apply_plugin_watch_invalidation`].
             self.apply_plugin_watch_invalidation(&mut plan, &path);
+            if tracing && self.config.policy.is_plugin_watch_target(&path) {
+                verdict.all_reasons.push("plugin_watch");
+            }
             // Issue #3162 — a file the live SSR bundle imports must re-bundle
             // the SSR host whatever it classifies as: an in-root
             // `packages/...` dependency can land in `Unclassified` or
@@ -1395,7 +1658,14 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // selected at least these pages.
             if self.config.policy.is_ssr_module_dependency(&path) {
                 plan.mark_ssr_reload_needed();
-                plan.mark_pages(graph.dirty_pages(&path).into());
+                let ssr_dirty: PageSelection = graph.dirty_pages(&path).into();
+                if tracing {
+                    verdict.ssr_module_dependency = Some(ssr_dirty.clone());
+                }
+                plan.mark_pages(ssr_dirty);
+            }
+            if let Some(sink) = sink.as_deref_mut() {
+                sink.push((path, verdict));
             }
         }
 
@@ -1476,6 +1746,21 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         ctx: &BuildContext,
         discover: Option<&DiscoveryHook>,
     ) -> Result<Option<BuildOutcome>> {
+        self.tick_with_kinds_traced(changes, ctx, discover, prov::enabled(), None)
+    }
+
+    /// [`Self::tick_with_kinds`] with the provenance `select` verdicts
+    /// collected when `tracing`; `select_out` additionally receives the
+    /// final `select` fields (tests). Tracing never changes the plan.
+    fn tick_with_kinds_traced(
+        &self,
+        changes: Vec<(PathBuf, ChangeKind)>,
+        ctx: &BuildContext,
+        discover: Option<&DiscoveryHook>,
+        tracing: bool,
+        mut select_out: Option<&mut Option<serde_json::Map<String, serde_json::Value>>>,
+    ) -> Result<Option<BuildOutcome>> {
+        let prov_raw_changes: Option<Vec<(PathBuf, ChangeKind)>> = tracing.then(|| changes.clone());
         // Issue #1581 — a `Removed` path is no longer a known collection
         // entry, so forget it (and, for a removed directory, everything
         // beneath it) BEFORE the `Created` normalization below reads the
@@ -1631,6 +1916,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             .filter(|(_, kind)| *kind == ChangeKind::Removed)
             .map(|(p, _)| p.clone())
             .collect();
+        // Provenance trace (issue #4753): per removed path, the pre-removal
+        // verdict the fold below applies, index-aligned with `removed`.
+        let mut prov_removed: Option<Vec<(PathBuf, PathVerdict)>> = tracing.then(Vec::new);
         let (removed_consumers, unknown_removed_content): (
             std::collections::BTreeSet<PageId>,
             bool,
@@ -1661,9 +1949,38 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     let dirty: PageSelection = graph.dirty_pages(path).into();
                     class == PathClass::Content && dirty.is_empty() && !graph.knows(path)
                 });
+                if let Some(sink) = prov_removed.as_mut() {
+                    for path in &removed {
+                        let class = classify_change_with_content_roots(
+                            path,
+                            &self.config.project_root,
+                            &self.config.policy.content_roots,
+                            |p| graph.is_global(p),
+                        );
+                        let dirty: PageSelection = graph.dirty_pages(path).into();
+                        let known = graph.knows(path);
+                        let mut verdict = PathVerdict {
+                            class: Some(class),
+                            graph_known: Some(known),
+                            removed: true,
+                            ..PathVerdict::default()
+                        };
+                        if class == PathClass::Content && dirty.is_empty() && !known {
+                            verdict.all_reasons.push("unknown_removed_content");
+                        }
+                        sink.push((path.clone(), verdict));
+                    }
+                }
                 let mut affected = std::collections::BTreeSet::new();
-                for path in &removed {
-                    affected.extend(graph.remove_node(path));
+                for (index, path) in removed.iter().enumerate() {
+                    let consumers = graph.remove_node(path);
+                    if let Some((_, verdict)) =
+                        prov_removed.as_mut().and_then(|sink| sink.get_mut(index))
+                    {
+                        verdict.dirty =
+                            Some(PageSelection::Specific(consumers.iter().cloned().collect()));
+                    }
+                    affected.extend(consumers);
                 }
                 (affected, unknown_content)
             }
@@ -1727,11 +2044,14 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             .filter(|(_, kind)| *kind != ChangeKind::Removed)
             .map(|(p, _)| p.clone())
             .collect();
-        let mut plan = self.plan_for_changes(plan_paths);
+        let mut prov_plan_verdicts: Option<Vec<(PathBuf, PathVerdict)>> = tracing.then(Vec::new);
+        let mut plan = self.plan_for_changes_traced(plan_paths, prov_plan_verdicts.as_mut());
 
         // Fold former consumers of removed files into the plan so the tick
         // is non-noop even when deletion is the only change. This lets
         // reload_renderer fire and prune the now-vanished HTML.
+        let prov_removed_consumers: Option<Vec<PageId>> =
+            tracing.then(|| removed_consumers.iter().cloned().collect());
         if !removed_consumers.is_empty() {
             plan.mark_pages(PageSelection::Specific(removed_consumers));
         }
@@ -1750,7 +2070,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // — NOT the page fallback, which the pre-removal graph fold already
         // handled. Without this, a deletion-only tick leaves CSS /
         // islands / SSR stale until the next non-removed edit.
-        for path in &removed {
+        for (removed_index, path) in removed.iter().enumerate() {
+            let mut prov_verdict = prov_removed
+                .as_mut()
+                .and_then(|sink| sink.get_mut(removed_index))
+                .map(|(_, verdict)| verdict);
             if self.config.policy.refresh_browser_graph {
                 plan.mark_islands();
                 plan.mark_ssr_reload_needed();
@@ -1783,6 +2107,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     // A deleted global file invalidates everything. Mirror
                     // `RebuildPlan::full_rebuild`'s sub-pipeline flags; pages
                     // come from `resolve_all` over the (post-removal) graph.
+                    if let Some(verdict) = prov_verdict.as_mut() {
+                        verdict.all_reasons.push("removed_global");
+                    }
                     plan.mark_pages(PageSelection::All);
                     plan.mark_css();
                     plan.mark_islands();
@@ -1845,6 +2172,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // edge-less watch file has none). See
             // [`Self::apply_plugin_watch_invalidation`].
             self.apply_plugin_watch_invalidation(&mut plan, path);
+            if let Some(verdict) = prov_verdict.as_mut() {
+                if self.config.policy.is_plugin_watch_target(path) {
+                    verdict.all_reasons.push("removed_plugin_watch");
+                }
+            }
             // Issue #3162 — a deleted SSR module dependency changes what the
             // SSR bundle resolves, whatever the path classifies as; its
             // former consumers are already in `removed_consumers`. The
@@ -1859,6 +2191,16 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // drops its change set. Hand the tick's CSS work to the pipeline so a
         // coalesced stylesheet edit still reaches the next CSS pass.
         if let Some(error) = discovery_error {
+            if prov::enabled() {
+                prov::emit(
+                    "reject",
+                    serde_json::json!({
+                        "stage": "discovery",
+                        "error": format!("{error:#}"),
+                        "retained": prov::current_generation().map(prov::Generation::to_json),
+                    }),
+                );
+            }
             if plan.rerun_css || !plan.css_changes.is_empty() {
                 self.pipeline.defer_css(plan.rerun_css, plan.css_changes);
             }
@@ -1873,6 +2215,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         if discovery_refresh_completed {
             plan.mark_renderer_fresh();
         }
+        let prov_discovered: Option<Vec<PageId>> = tracing.then(|| discovered.pages.clone());
         if !discovered.pages.is_empty() {
             let set: std::collections::BTreeSet<PageId> = discovered.pages.into_iter().collect();
             plan.mark_pages(PageSelection::Specific(set));
@@ -1985,7 +2328,21 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             );
         }
 
+        let mut prov_select = prov_raw_changes.map(|raw| {
+            let mut verdicts = prov_plan_verdicts.unwrap_or_default();
+            verdicts.extend(prov_removed.unwrap_or_default());
+            select_fields(&SelectInputs {
+                raw_changes: &raw,
+                changes: &changes,
+                verdicts,
+                plan: &plan,
+                removed_consumers: prov_removed_consumers.unwrap_or_default(),
+                discovered: prov_discovered.unwrap_or_default(),
+                discovery_refresh_completed,
+            })
+        });
         if plan.is_noop() && !discovery_refresh_completed {
+            emit_select(prov_select.take(), None, true, select_out.as_deref_mut());
             return Ok(None);
         }
         self.resolve_all(&mut plan);
@@ -1997,8 +2354,15 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             && plan.prune_paths.is_empty()
             && !discovery_refresh_completed
         {
+            emit_select(
+                prov_select.take(),
+                Some(&plan.pages),
+                true,
+                select_out.as_deref_mut(),
+            );
             return Ok(None);
         }
+        emit_select(prov_select.take(), Some(&plan.pages), false, select_out);
         let outcome = self.pipeline.apply(&plan, ctx)?;
         Ok(Some(outcome))
     }
@@ -2322,6 +2686,27 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             if changes.is_empty() {
                 continue;
             }
+            let prov_tick = prov::next_tick_id();
+            if let Some(tick) = prov_tick {
+                let mut fields = serde_json::Map::new();
+                fields.insert("tick".into(), serde_json::json!(tick));
+                fields.insert(
+                    "intake_id".into(),
+                    if dev_timing_enabled() {
+                        serde_json::json!(handoff_intake_id)
+                    } else {
+                        serde_json::Value::Null
+                    },
+                );
+                prov::insert_capped(
+                    &mut fields,
+                    "paths",
+                    changes.iter(),
+                    |(path, kind)| serde_json::json!({ "path": prov::path_value(path), "kind": format!("{kind:?}") }),
+                );
+                fields.insert("suppressed".into(), serde_json::json!(suppressed));
+                prov::emit("intake", serde_json::Value::Object(fields));
+            }
             // These edits are handled by this tick, so the watch-arm
             // reconcile must not report them again later.
             this.config
@@ -2349,6 +2734,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     eprintln!("[zfb-timing] fault fired: ZFB_DEV_TEST_ORCH_PANIC_ON_TICK");
                     panic!("ZFB_DEV_TEST_ORCH_PANIC_ON_TICK fault injection");
                 }
+                let _prov_tick = prov::TickScope::enter(prov_tick);
                 let result = this.tick_with_kinds(changes, &ctx, discover.as_ref());
                 (result, this, ctx, discover)
             })
@@ -2754,6 +3140,201 @@ mod tests {
         assert!(
             plan.rerun_css,
             "an out-of-root Module change must still rerun the CSS content scan (#1288)"
+        );
+    }
+
+    /// Issue #4753 — run the fold traced and untraced on identical fresh
+    /// orchestrators; the traced plan must equal the untraced one exactly.
+    fn traced_plan_matches_untraced(
+        make: impl Fn() -> BuildOrchestrator<CountingPipeline>,
+        paths: Vec<PathBuf>,
+    ) -> (RebuildPlan, Vec<(PathBuf, PathVerdict)>) {
+        let untraced = make().plan_for_changes(paths.clone());
+        let mut sink = Vec::new();
+        let traced = make().plan_for_changes_traced(paths, Some(&mut sink));
+        assert_eq!(traced, untraced, "tracing must not change the plan");
+        (traced, sink)
+    }
+
+    fn page_set(pages: &[&str]) -> PageSelection {
+        PageSelection::Specific(pages.iter().map(|p| pid(p)).collect())
+    }
+
+    /// Issue #4753 — the `select` verdicts are recorded by the fold itself,
+    /// so each one is exactly what the plan applied, across every arm that
+    /// can select pages or force `All`.
+    #[test]
+    fn select_verdicts_match_the_plan_the_fold_built() {
+        // Known content path: the verdict's dirty set IS the plan's pages.
+        let (plan, sink) = traced_plan_matches_untraced(
+            || make_orch(CountingPipeline::default()),
+            vec![PathBuf::from("/proj/content/post.md")],
+        );
+        assert_eq!(plan.pages, page_set(&["/proj/pages/c.tsx"]));
+        assert_eq!(sink[0].1.class, Some(PathClass::Content));
+        assert_eq!(sink[0].1.graph_known, Some(true));
+        assert_eq!(sink[0].1.dirty.as_ref(), Some(&plan.pages));
+        assert!(sink[0].1.all_reasons.is_empty());
+
+        // Unknown content path: the conservative All fallback.
+        let (plan, sink) = traced_plan_matches_untraced(
+            || make_orch(CountingPipeline::default()),
+            vec![PathBuf::from("/proj/content/new.md")],
+        );
+        assert!(plan.pages.is_all());
+        assert_eq!(sink[0].1.graph_known, Some(false));
+        assert_eq!(sink[0].1.all_reasons, vec!["unknown_path"]);
+
+        // Global early return: the trailing path is swallowed, not classified.
+        let (plan, sink) = traced_plan_matches_untraced(
+            || make_orch(CountingPipeline::default()),
+            vec![
+                PathBuf::from("/proj/zfb.config.ts"),
+                PathBuf::from("/proj/content/post.md"),
+            ],
+        );
+        assert!(plan.pages.is_all());
+        assert_eq!(sink.len(), 2);
+        assert_eq!(sink[0].1.class, Some(PathClass::Global));
+        assert_eq!(sink[0].1.all_reasons, vec!["global"]);
+        assert_eq!(sink[1].1.class, None);
+        assert_eq!(sink[1].1.all_reasons, vec!["global_full_rebuild"]);
+
+        // External override: the hook verdict, not the External All arm.
+        let hook: ExternalInvalidationHook = Arc::new(|_| Some(vec![pid("/proj/pages/b.tsx")]));
+        let (plan, sink) = traced_plan_matches_untraced(
+            || make_orch_with_external_hook(CountingPipeline::default(), hook.clone()),
+            vec![PathBuf::from("/ext/skills/foo.mdx")],
+        );
+        assert_eq!(plan.pages, page_set(&["/proj/pages/b.tsx"]));
+        assert!(sink[0].1.external_override);
+        assert_eq!(sink[0].1.dirty.as_ref(), Some(&plan.pages));
+        assert!(sink[0].1.all_reasons.is_empty());
+
+        // Plugin-watch invalidation forces All whatever the path classifies as.
+        let watched = PathBuf::from("/proj/data/watched.json");
+        let (plan, sink) = traced_plan_matches_untraced(
+            || {
+                BuildOrchestrator::new(
+                    OrchestratorConfig::new(
+                        "/proj",
+                        vec![PathBuf::from("pages"), PathBuf::from("content")],
+                    )
+                    .with_policy(policy_with_plugin_watch_files([watched.clone()])),
+                    make_graph(),
+                    CountingPipeline::default(),
+                )
+            },
+            vec![watched.clone()],
+        );
+        assert!(plan.pages.is_all());
+        assert!(sink[0].1.all_reasons.contains(&"plugin_watch"));
+
+        // SSR module dependency (#3162): the additive Module-edge selection.
+        let dep = PathBuf::from("/proj/packages/data/value.json");
+        let (plan, sink) = traced_plan_matches_untraced(
+            || {
+                let invalidation = crate::policy::RawImportInvalidation::default();
+                invalidation.replace_ssr_module_deps([dep.clone()]);
+                let mut g = DependencyGraph::new();
+                g.upsert(PageDeps::new(
+                    pid("/proj/pages/a.tsx"),
+                    vec![(dep.clone(), DepKind::Module)],
+                ));
+                BuildOrchestrator::new(
+                    OrchestratorConfig::new(
+                        "/proj",
+                        vec![PathBuf::from("pages"), PathBuf::from("content")],
+                    )
+                    .with_policy(
+                        GranularityPolicy::default().with_raw_import_invalidation(invalidation),
+                    ),
+                    Arc::new(Mutex::new(g)),
+                    CountingPipeline::default(),
+                )
+            },
+            vec![dep.clone()],
+        );
+        assert!(plan.ssr_reload_needed);
+        assert_eq!(
+            sink[0].1.ssr_module_dependency,
+            Some(page_set(&["/proj/pages/a.tsx"]))
+        );
+        assert!(matches!(
+            &plan.pages,
+            PageSelection::Specific(set) if set.contains(&pid("/proj/pages/a.tsx"))
+        ));
+    }
+
+    /// Issue #4753 — removal verdicts come from the real `tick_with_kinds`
+    /// fold. Removal mutates the graph, so traced and untraced ticks run on
+    /// two identical fresh orchestrators and must apply the same plan. A
+    /// Removed and a re-reported path in one tick keep their own verdicts.
+    #[test]
+    fn select_removal_verdicts_come_from_the_real_tick() {
+        let post = PathBuf::from("/proj/content/post.md");
+        let changes = vec![
+            (post.clone(), ChangeKind::Removed),
+            (post.clone(), ChangeKind::Created),
+        ];
+        let dist = tempfile::tempdir().unwrap();
+        let run = |tracing: bool| {
+            let orch = make_orch(CountingPipeline::default());
+            let applies = orch.pipeline.applies.clone();
+            let mut select = None;
+            orch.tick_with_kinds_traced(
+                changes.clone(),
+                &noop_ctx(dist.path()),
+                None,
+                tracing,
+                Some(&mut select),
+            )
+            .unwrap();
+            let applied = applies.lock().unwrap().clone();
+            (applied, select)
+        };
+        let (untraced, none) = run(false);
+        let (traced, select) = run(true);
+        assert!(none.is_none(), "an untraced tick builds no select event");
+        assert_eq!(traced, untraced, "tracing must not change the applied plan");
+
+        let select = select.expect("a traced tick records its select event");
+        let removed = &select["changes"][0];
+        assert_eq!(removed["kind"], "Removed");
+        assert_eq!(removed["removed"], true);
+        assert_eq!(removed["class"], "Content");
+        assert_eq!(removed["graph_known"], true);
+        assert_eq!(removed["dirty"], serde_json::json!(["/proj/pages/c.tsx"]));
+        assert_eq!(removed["all_reasons"], serde_json::json!([]));
+        let upsert = &select["changes"][1];
+        assert!(upsert.get("removed").is_none(), "{upsert}");
+        // After `remove_node` the re-reported path is unknown to the graph.
+        assert_eq!(upsert["dirty"], "all");
+        assert_eq!(upsert["all_reasons"], serde_json::json!(["unknown_path"]));
+        assert_eq!(select["all_pages"], true);
+        assert_eq!(select["noop"], false);
+    }
+
+    /// Issue #4753 — a removed Global file that forces `All` is attributed
+    /// `removed_global`, not `unattributed`.
+    #[test]
+    fn select_attributes_a_removed_global_file() {
+        let dist = tempfile::tempdir().unwrap();
+        let orch = make_orch(CountingPipeline::default());
+        let mut select = None;
+        orch.tick_with_kinds_traced(
+            vec![(PathBuf::from("/proj/zfb.config.ts"), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+            true,
+            Some(&mut select),
+        )
+        .unwrap();
+        let select = select.unwrap();
+        assert_eq!(select["changes"][0]["removed"], true);
+        assert_eq!(
+            select["all_reasons"],
+            serde_json::json!([{"reason": "removed_global", "path": "/proj/zfb.config.ts"}])
         );
     }
 

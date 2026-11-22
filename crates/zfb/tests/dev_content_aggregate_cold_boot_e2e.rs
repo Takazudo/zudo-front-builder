@@ -3392,12 +3392,130 @@ async fn eager_edits_during_rejected_generation_survive_recovery() {
     run_edits_during_rejected_generation(DevMode::Eager, None).await;
 }
 
+/// Boot handshake shared by the eager and cold-lazy variants of the
+/// rejected-tick CSS scenarios below. Eager renders nothing for a data probe,
+/// so no SSE event would prove the watcher live; the boot hook runs after it
+/// is armed. Skips only through [`wait_for_ready_port`]'s known-unavailable
+/// dependency check, like every other scenario in this file.
+async fn boot_handshake_for_mode(
+    session: &mut DevSession,
+    mode: DevMode,
+    data_probe_path: &Path,
+) -> Option<(String, reqwest::Client)> {
+    match mode {
+        DevMode::Eager => {
+            let port = wait_for_ready_port(session).await?;
+            wait_for_stderr_line(
+                session,
+                0,
+                &["[zfb-timing] boot: render complete"],
+                "eager boot hook finished",
+            )
+            .await;
+            Some((format!("http://localhost:{port}"), build_reqwest_client()))
+        }
+        DevMode::Lazy => boot_and_handshake_banner_only(session, data_probe_path).await,
+    }
+}
+
+/// The `[zfb-timing] intake paths:` lines of `window`.
+fn intake_lines(window: &str) -> Vec<&str> {
+    window
+        .lines()
+        .filter(|line| line.contains("[zfb-timing] intake paths:"))
+        .collect()
+}
+
+/// Proves the stylesheet edit reached the rejected tick itself: within
+/// `window` (from just before the writes to the end of the rejection line),
+/// the last intake batch naming the stylesheet must also name
+/// `content_needle`. An in-place write may surface its truncate as an earlier
+/// stylesheet-only batch; the caller's served-CSS check before the repair
+/// proves no such batch published the new marker.
+fn assert_stylesheet_shares_rejected_intake(
+    window: &str,
+    content_needle: &str,
+    phase: &str,
+    session: &DevSession,
+) {
+    let intake = intake_lines(window);
+    let last_stylesheet_batch = intake
+        .iter()
+        .rev()
+        .find(|line| line.contains("styles/global.css:"));
+    assert!(
+        last_stylesheet_batch.is_some_and(|line| line.contains(content_needle)),
+        "[{phase}] the stylesheet edit and {content_needle:?} must share the rejected intake \
+         tick; intake lines before the rejection: {intake:#?}\n{}",
+        session.logs()
+    );
+}
+
+/// After the content repair publishes the stylesheet, prove the CSS came from
+/// the carried work: no intake batch after the rejection named the
+/// stylesheet, so the publishing tick's own change set held only content.
+fn assert_no_stylesheet_intake_after(offset: usize, phase: &str, session: &DevSession) {
+    let stderr = read_log(&session.stderr_path);
+    let after = stderr.get(offset..).unwrap_or_default();
+    let stray = intake_lines(after)
+        .into_iter()
+        .filter(|line| line.contains("styles/global.css:"))
+        .collect::<Vec<_>>();
+    assert!(
+        stray.is_empty(),
+        "[{phase}] a later intake batch named the stylesheet, so the publish does not prove \
+         the rejected tick's CSS work was carried: {stray:#?}\n{}",
+        session.logs()
+    );
+}
+
+/// The stylesheet must still be unpublished after the rejection: the rejected
+/// tick aborted before its CSS pass and no other tick published it.
+async fn assert_css_lacks(
+    client: &reqwest::Client,
+    css_url: &str,
+    marker: &str,
+    phase: &str,
+    session: &DevSession,
+) {
+    let (status, _, body) = get_status_and_body(client, css_url).await;
+    assert!(
+        status == 200 && !body.contains(marker),
+        "[{phase}] {css_url} must keep serving the pre-rejection stylesheet (status {status}, \
+         contains {marker:?}: {})\n{}",
+        body.contains(marker),
+        session.logs()
+    );
+}
+
+/// Overwrite `path` in place without truncating it, so the edit reaches the
+/// watcher as a single modification. `bytes` must match the current length.
+fn overwrite_same_length(path: &Path, bytes: &[u8]) {
+    use std::io::Write;
+    let current = fs::metadata(path).expect("stat before overwrite").len();
+    assert_eq!(
+        current,
+        bytes.len() as u64,
+        "{} must keep its length so the overwrite needs no truncate",
+        path.display()
+    );
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open existing file for overwrite");
+    file.write_all(bytes).expect("overwrite in place");
+    file.sync_all().expect("fsync overwrite");
+}
+
 /// A stylesheet edit coalesced into a tick whose content snapshot is rejected
 /// must still be published once the content is fixed. The rejected tick aborts
 /// at the renderer reload, before its CSS pass; the fixing tick's own change
-/// set holds only b.md, so the CSS edit has to be carried forward.
-#[tokio::test(flavor = "multi_thread")]
-async fn cold_lazy_css_edit_in_rejected_tick_is_published_after_recovery() {
+/// set holds only b.md, so the CSS edit has to be carried forward. Ticks are
+/// drained first so one already in flight cannot split the pair. The first
+/// repair writes a new valid title so the repaired detail page proves the
+/// recovering generation itself was published; the second restores the
+/// last-good bytes, where the content alone changes nothing.
+async fn run_css_edit_in_rejected_tick(mode: DevMode, boot_lazy: Option<&str>) {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
 
@@ -3406,15 +3524,16 @@ async fn cold_lazy_css_edit_in_rejected_tick_is_published_after_recovery() {
     let stylesheet = root.join("styles/global.css");
     fs::create_dir_all(root.join("styles")).expect("create styles/");
     fs::write(&stylesheet, ":root { --memo-css-marker: css-v1; }\n").expect("write global.css");
-    let mut session = spawn_dev_with_timing(root, DevMode::Lazy, Some("cold"), true);
+    let mut session = spawn_dev_with_timing(root, mode, boot_lazy, true);
     let pgid = session.guard.pgid;
     let body = async {
         let Some((base, client)) =
-            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+            boot_handshake_for_mode(&mut session, mode, &data_probe_path).await
         else {
             return ScenarioOutcome::Skipped;
         };
         let css_url = format!("{base}/assets/styles.css");
+        let detail_b = format!("{base}/articles/b/");
         poll_until_response_contains(&client, &css_url, "css-v1", "baseline css", &session).await;
         poll_until_response_contains(
             &client,
@@ -3424,28 +3543,36 @@ async fn cold_lazy_css_edit_in_rejected_tick_is_published_after_recovery() {
             &session,
         )
         .await;
+        poll_until_response_contains(&client, &detail_b, "Beta Memo V1", "baseline", &session)
+            .await;
+        drain_ticks_until_quiescent(&base).await;
 
         let b_md = session.root.join("content/articles/b.md");
-        let original_b = fs::read(&b_md).expect("read original b.md");
         let offset = read_log(&session.stderr_path).len();
-        write_in_place(&stylesheet, b":root { --memo-css-marker: css-v2; }\n");
+        overwrite_same_length(&stylesheet, b":root { --memo-css-marker: css-v2; }\n");
         write_in_place(&b_md, MEMO_INVALID_B);
-        let (_, after) =
+        let (_, rejected_end) =
             wait_for_stderr_line(&session, offset, &["was not published"], "rejected tick").await;
-        let intake = read_log(&session.stderr_path)[offset..after]
-            .lines()
-            .filter(|line| line.contains("[zfb-timing] intake paths:"))
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        assert!(
-            intake
-                .iter()
-                .any(|line| line.contains("global.css") && line.contains("b.md")),
-            "the stylesheet edit and the rejected b.md must share one tick: {intake:?}\n{}",
-            session.logs()
+        assert_stylesheet_shares_rejected_intake(
+            &read_log(&session.stderr_path)[offset..rejected_end],
+            "articles/b.md:",
+            "rejected tick",
+            &session,
         );
+        assert_css_lacks(&client, &css_url, "css-v2", "after the rejection", &session).await;
 
-        write_in_place(&b_md, &original_b);
+        write_in_place(
+            &b_md,
+            b"---\ntitle: Beta Repaired After Rejection\n---\n\nBeta body.\n",
+        );
+        poll_until_response_contains(
+            &client,
+            &detail_b,
+            "Beta Repaired After Rejection",
+            "content repaired after the rejected tick",
+            &session,
+        )
+        .await;
         poll_until_response_contains(
             &client,
             &css_url,
@@ -3454,6 +3581,60 @@ async fn cold_lazy_css_edit_in_rejected_tick_is_published_after_recovery() {
             &session,
         )
         .await;
+        assert_no_stylesheet_intake_after(rejected_end, "carried stylesheet", &session);
+
+        // Second cycle: the repair restores b.md to exactly the bytes of the
+        // last good generation, so the recovering content equals what is
+        // already served and only the carried CSS work can change output.
+        drain_ticks_until_quiescent(&base).await;
+        let last_good_b = fs::read(&b_md).expect("read last-good b.md");
+        let offset = read_log(&session.stderr_path).len();
+        overwrite_same_length(&stylesheet, b":root { --memo-css-marker: css-v3; }\n");
+        write_in_place(&b_md, MEMO_INVALID_B);
+        let (_, rejected_end) = wait_for_stderr_line(
+            &session,
+            offset,
+            &["was not published"],
+            "second rejected tick",
+        )
+        .await;
+        assert_stylesheet_shares_rejected_intake(
+            &read_log(&session.stderr_path)[offset..rejected_end],
+            "articles/b.md:",
+            "second rejected tick",
+            &session,
+        );
+        assert_css_lacks(
+            &client,
+            &css_url,
+            "css-v3",
+            "after the second rejection",
+            &session,
+        )
+        .await;
+
+        write_in_place(&b_md, &last_good_b);
+        poll_until_response_contains(
+            &client,
+            &css_url,
+            "css-v3",
+            "stylesheet edited in the tick rejected before a last-good restore",
+            &session,
+        )
+        .await;
+        poll_until_response_contains(
+            &client,
+            &detail_b,
+            "Beta Repaired After Rejection",
+            "last-good content still served after the second recovery",
+            &session,
+        )
+        .await;
+        assert_no_stylesheet_intake_after(
+            rejected_end,
+            "carried stylesheet after a last-good restore",
+            &session,
+        );
         ScenarioOutcome::Completed
     };
 
@@ -3468,12 +3649,21 @@ async fn cold_lazy_css_edit_in_rejected_tick_is_published_after_recovery() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_css_edit_in_rejected_tick_is_published_after_recovery() {
+    run_css_edit_in_rejected_tick(DevMode::Lazy, Some("cold")).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn eager_css_edit_in_rejected_tick_is_published_after_recovery() {
+    run_css_edit_in_rejected_tick(DevMode::Eager, None).await;
+}
+
 /// The discovery-path twin of the reload case above: a created entry whose
 /// slug disagrees with its filename fails `paths()` inside the discovery
 /// hook, which aborts the tick before the pipeline runs. A stylesheet edit
 /// coalesced into that tick must still be published once the entry is fixed.
-#[tokio::test(flavor = "multi_thread")]
-async fn cold_lazy_css_edit_in_rejected_discovery_tick_is_published_after_recovery() {
+async fn run_css_edit_in_rejected_discovery_tick(mode: DevMode, boot_lazy: Option<&str>) {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
 
@@ -3482,11 +3672,11 @@ async fn cold_lazy_css_edit_in_rejected_discovery_tick_is_published_after_recove
     let stylesheet = root.join("styles/global.css");
     fs::create_dir_all(root.join("styles")).expect("create styles/");
     fs::write(&stylesheet, ":root { --slug-css-marker: css-v1; }\n").expect("write global.css");
-    let mut session = spawn_dev_with_timing(root, DevMode::Lazy, Some("cold"), true);
+    let mut session = spawn_dev_with_timing(root, mode, boot_lazy, true);
     let pgid = session.guard.pgid;
     let body = async {
         let Some((base, client)) =
-            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+            boot_handshake_for_mode(&mut session, mode, &data_probe_path).await
         else {
             return ScenarioOutcome::Skipped;
         };
@@ -3498,29 +3688,42 @@ async fn cold_lazy_css_edit_in_rejected_discovery_tick_is_published_after_recove
 
         let created = session.root.join("content/articles/c.md");
         let offset = read_log(&session.stderr_path).len();
-        write_in_place(&stylesheet, b":root { --slug-css-marker: css-v2; }\n");
+        overwrite_same_length(&stylesheet, b":root { --slug-css-marker: css-v2; }\n");
         fs::write(
             &created,
             "---\ntitle: Gamma Slug\nslug: not-c\n---\n\nGamma body.\n",
         )
         .expect("create c.md with a disagreeing slug");
-        let (_, after) = wait_for_stderr_line(
+        let (_, rejected_end) = wait_for_stderr_line(
             &session,
             offset,
             &["[zfb-timing] discovery: err"],
             "created entry rejected by discovery",
         )
         .await;
-        let tick_log = read_log(&session.stderr_path)[offset..after].to_string();
+        let tick_log = read_log(&session.stderr_path)[offset..rejected_end].to_string();
+        assert_stylesheet_shares_rejected_intake(
+            &tick_log,
+            "c.md:Created",
+            "rejected discovery tick",
+            &session,
+        );
         assert!(
             tick_log
                 .lines()
-                .any(|line| line.contains("[zfb-timing] intake paths:")
-                    && line.contains("global.css")
-                    && line.contains("c.md:Created")),
-            "the stylesheet edit and the created c.md must share one tick:\n{tick_log}\n{}",
+                .any(|line| line.contains("[zfb-timing] discovery: created=")
+                    && line.contains("c.md")),
+            "the rejected discovery must be the one that saw c.md:\n{tick_log}\n{}",
             session.logs()
         );
+        assert_css_lacks(
+            &client,
+            &css_url,
+            "css-v2",
+            "after the rejected discovery",
+            &session,
+        )
+        .await;
 
         write_in_place(
             &created,
@@ -3542,6 +3745,11 @@ async fn cold_lazy_css_edit_in_rejected_discovery_tick_is_published_after_recove
             &session,
         )
         .await;
+        assert_no_stylesheet_intake_after(
+            rejected_end,
+            "carried stylesheet after discovery",
+            &session,
+        );
         ScenarioOutcome::Completed
     };
 
@@ -3554,4 +3762,14 @@ async fn cold_lazy_css_edit_in_rejected_discovery_tick_is_published_after_recove
             session.logs(),
         ),
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_css_edit_in_rejected_discovery_tick_is_published_after_recovery() {
+    run_css_edit_in_rejected_discovery_tick(DevMode::Lazy, Some("cold")).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn eager_css_edit_in_rejected_discovery_tick_is_published_after_recovery() {
+    run_css_edit_in_rejected_discovery_tick(DevMode::Eager, None).await;
 }

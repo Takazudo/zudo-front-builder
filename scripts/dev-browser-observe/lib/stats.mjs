@@ -41,5 +41,60 @@ export function summarize(records, accounting) {
       acc[r.mechanism] = (acc[r.mechanism] ?? 0) + 1;
       return acc;
     }, {}),
+    // Diagnostic attempts: whether the provenance trace proved the causal chain, and what is missing.
+    provenance: records
+      .filter((r) => r.type === "attempt" && r.provenance)
+      .map((r) => ({
+        scenario: r.scenario,
+        opId: r.opId,
+        outcome: r.outcome,
+        traceEnabled: r.provenance.traceEnabled ?? null,
+        traceMissing: r.provenance.traceMissing ?? null,
+        chainComplete: r.provenance.chainComplete ?? false,
+        chainEventsOnly: r.provenance.chainEventsOnly ?? false,
+        chainConsumerLevel: r.provenance.chainConsumerLevel ?? false,
+        evidenceVia: r.provenance.evidenceVia ?? null,
+        reasons: r.provenance.causalChain?.reasons ?? null,
+        integrity: r.provenance.causalChain?.integrity?.status ?? null,
+        lackingTarget: r.provenance.causalChain?.lackingTarget ?? null,
+        missing: r.provenance.causalChain?.missing ?? null,
+        parseErrors: r.provenance.parseErrors?.length ?? null,
+      })),
+    // Counts over the diagnostic attempts; chainEventsOnly and incomplete are never complete.
+    provenanceCounts: (() => {
+      const ps = records
+        .filter((r) => r.type === "attempt" && r.provenance)
+        .map((r) => r.provenance);
+      return {
+        attempts: ps.length,
+        chainComplete: ps.filter((p) => p.chainComplete === true).length,
+        chainEventsOnly: ps.filter((p) => p.chainEventsOnly === true).length,
+        chainConsumerLevel: ps.filter((p) => p.chainConsumerLevel === true).length,
+        incomplete: ps.filter(
+          (p) =>
+            p.chainComplete !== true && p.chainEventsOnly !== true && p.chainConsumerLevel !== true,
+        ).length,
+        traceIntegrityUnverified: ps.filter(
+          (p) => p.causalChain?.integrity?.status === "unverified",
+        ).length,
+        byEvidenceVia: ps.reduce((acc, p) => {
+          const k = p.evidenceVia ?? "none";
+          acc[k] = (acc[k] ?? 0) + 1;
+          return acc;
+        }, {}),
+        traceMissing: ps.filter((p) => p.traceMissing === true).length,
+      };
+    })(),
+    // Recovery attempts, each with whether its same tick was proven (true), disproven (false) or neither (null).
+    recovery: records
+      .filter((r) => r.type === "attempt" && r.mode === "recovery")
+      .map((r) => ({
+        scenario: r.scenario,
+        opId: r.opId,
+        op: r.op,
+        outcome: r.outcome,
+        sameTickProven: r.sameTickProven ?? null,
+        latencyMs: typeof r.latencyMs === "number" ? r.latencyMs : null,
+      })),
   };
 }

@@ -7,6 +7,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -411,11 +412,40 @@ export function performWrite(write, onT0, fsImpl = REAL_FS) {
       break;
     case "rename":
       if (ev.inodeBefore === null) throw new Error(`rename source missing: ${write.path}`);
-      if (existsSync(write.to)) throw new Error(`rename destination exists: ${write.to}`);
+      if (write.caseOnly) {
+        if (write.path === write.to || write.path.toLowerCase() !== write.to.toLowerCase())
+          throw new Error(
+            `case-only rename needs a case variant of ${write.path} (got ${write.to})`,
+          );
+        // On a case-insensitive volume the destination name resolves to the source itself.
+        const destIno = inode(write.to);
+        if (destIno !== null && destIno !== ev.inodeBefore)
+          throw new Error(`rename destination exists as a different file: ${write.to}`);
+        ev.caseOnly = true;
+        ev.destinationResolvedToSource = destIno !== null;
+      } else if (existsSync(write.to)) throw new Error(`rename destination exists: ${write.to}`);
+      if (write.verifyEntries) ev.readdirBefore = dirEntries(write.verifyEntries.dir);
       t0 = onT0();
       fsImpl.renameSync(write.path, write.to);
       ev.to = write.to;
       ev.inodeAfterTo = inode(write.to);
+      if (write.verifyEntries) {
+        const v = write.verifyEntries;
+        ev.readdirAfter = dirEntries(v.dir);
+        const missing = (v.present ?? []).filter((n) => !ev.readdirAfter.includes(n));
+        const stillThere = (v.absent ?? []).filter((n) => ev.readdirAfter.includes(n));
+        ev.entryCheck = { present: v.present ?? [], absent: v.absent ?? [], missing, stillThere };
+        if (missing.length || stillThere.length) {
+          ev.inodeAfter = inode(write.path);
+          write.evidence = ev;
+          const e = new Error(
+            `rename-noop: directory entries after the rename do not show it (missing ${JSON.stringify(missing)}, still present ${JSON.stringify(stillThere)})`,
+          );
+          e.code = RENAME_NOOP;
+          e.evidence = ev;
+          throw e;
+        }
+      }
       break;
     default:
       throw new Error(`unknown write method ${write.method}`);
@@ -423,6 +453,47 @@ export function performWrite(write, onT0, fsImpl = REAL_FS) {
   ev.inodeAfter = inode(write.path);
   write.evidence = ev;
   return t0;
+}
+
+export const RENAME_NOOP = "rename-noop";
+
+/** Exact directory entry names (sorted), as readdir returns them. */
+export function dirEntries(dir) {
+  return readdirSync(dir).sort();
+}
+
+/**
+ * Probe the volume's case sensitivity on `dir` at run time: create a
+ * lower-case probe file, stat its upper-case variant, compare inodes, then
+ * remove the probe. Nothing is assumed from the platform.
+ */
+export function probeCaseSensitivity(dir) {
+  const name = `.dbo-case-probe-${randomHex(4)}`;
+  const probe = join(dir, name);
+  const variantName = name.toUpperCase();
+  writeFileSync(probe, "", { flag: "wx" });
+  try {
+    const a = statSync(probe);
+    let v = null;
+    try {
+      v = statSync(join(dir, variantName));
+    } catch {
+      v = null;
+    }
+    const sameInode = v !== null && v.ino === a.ino && v.dev === a.dev;
+    return {
+      method: "create lower-case probe; stat upper-case variant; compare dev+inode; unlink probe",
+      dir,
+      probe: name,
+      variant: variantName,
+      variantFound: v !== null,
+      sameInode,
+      caseSensitive: !sameInode,
+      dev: a.dev,
+    };
+  } finally {
+    unlinkSync(probe);
+  }
 }
 
 export function defaultT0() {
@@ -456,9 +527,24 @@ export function snapshotSources(materialized) {
 
 export function verifySnapshot(snapshot) {
   const mismatches = [];
+  const entries = new Map();
+  const namesIn = (dir) => {
+    if (!entries.has(dir)) entries.set(dir, existsSync(dir) ? readdirSync(dir) : []);
+    return entries.get(dir);
+  };
   for (const [path, { sha256: want }] of Object.entries(snapshot.files)) {
     const got = existsSync(path) ? sha256(readFileSync(path)) : null;
     if (got !== want) mismatches.push({ path, want, got });
+    // A case-insensitive volume resolves a case variant to the same file: compare the exact entry name too.
+    else if (got !== null && !namesIn(dirname(path)).includes(basename(path)))
+      mismatches.push({
+        path,
+        want: basename(path),
+        got: "name-case-mismatch",
+        entries: namesIn(dirname(path)).filter(
+          (n) => n.toLowerCase() === basename(path).toLowerCase(),
+        ),
+      });
   }
   for (const dir of snapshot.dirs) {
     for (const f of walkFiles(dir))
@@ -466,6 +552,124 @@ export function verifySnapshot(snapshot) {
         mismatches.push({ path: f.abs, want: null, got: "unexpected-file" });
   }
   return mismatches;
+}
+
+/**
+ * A predicate for extra files restoration must never unlink: an entry whose
+ * lower-cased name equals a snapshot file's in the same dir, or whose
+ * dev+inode is a snapshot file's (a case alias of it).
+ */
+export function aliasGuard(snapshot) {
+  const names = new Map();
+  const inodes = new Map();
+  for (const p of Object.keys(snapshot.files)) {
+    names.set(`${dirname(p)}\0${basename(p).toLowerCase()}`, p);
+    try {
+      const st = statSync(p);
+      inodes.set(`${st.dev}:${st.ino}`, p);
+    } catch {
+      // missing now: nothing to alias
+    }
+  }
+  return (path) => {
+    const byName = names.get(`${dirname(path)}\0${basename(path).toLowerCase()}`);
+    if (byName) return { reason: "case variant of snapshot file", of: byName };
+    try {
+      const st = statSync(path);
+      const byInode = inodes.get(`${st.dev}:${st.ino}`);
+      if (byInode) return { reason: "same dev+inode as snapshot file", of: byInode };
+    } catch {
+      return null;
+    }
+    return null;
+  };
+}
+
+/**
+ * Revert case-only renames before anything else: an entry whose name differs
+ * from a snapshot file's name only by case (and whose exact name is gone) is
+ * renamed back. Without this a case-insensitive volume would report the
+ * snapshot file as present and the variant as an extra file, and the unlink
+ * pass would delete the article itself. A direct rename that leaves the entry
+ * name unchanged is retried through a temp sibling; both steps are recorded.
+ */
+export function revertCaseRenames(snapshot, fsImpl = REAL_FS) {
+  const actions = [];
+  const byDir = new Map();
+  for (const p of Object.keys(snapshot.files)) {
+    const d = dirname(p);
+    if (!byDir.has(d)) byDir.set(d, []);
+    byDir.get(d).push(basename(p));
+  }
+  for (const [dir, wanted] of byDir) {
+    if (!existsSync(dir)) continue;
+    const names = readdirSync(dir);
+    for (const want of wanted) {
+      if (names.includes(want)) continue;
+      const variant = names.find(
+        (n) => n !== want && !wanted.includes(n) && n.toLowerCase() === want.toLowerCase(),
+      );
+      if (!variant) continue;
+      const verifyEntries = { dir, present: [want], absent: [variant] };
+      const direct = {
+        method: "rename",
+        path: join(dir, variant),
+        to: join(dir, want),
+        caseOnly: true,
+        verifyEntries,
+      };
+      try {
+        performWrite(direct, () => 0n, fsImpl);
+        actions.push({
+          path: direct.to,
+          from: direct.path,
+          method: "rename",
+          caseOnly: true,
+          evidence: direct.evidence,
+        });
+        continue;
+      } catch (error) {
+        actions.push({
+          path: direct.to,
+          from: direct.path,
+          method: "rename",
+          caseOnly: true,
+          error: String(error?.message ?? error),
+          evidence: error?.evidence ?? direct.evidence ?? null,
+        });
+        if (error?.code !== RENAME_NOOP) continue;
+      }
+      const tmp = join(dir, `.${want}.dbo-case-${randomHex(4)}.tmp`);
+      const steps = [
+        { method: "rename", path: join(dir, variant), to: tmp },
+        { method: "rename", path: tmp, to: join(dir, want), verifyEntries },
+      ];
+      for (const step of steps) {
+        try {
+          performWrite(step, () => 0n, fsImpl);
+          actions.push({
+            path: step.to,
+            from: step.path,
+            method: "rename",
+            caseOnly: true,
+            viaTemp: true,
+            evidence: step.evidence,
+          });
+        } catch (error) {
+          actions.push({
+            path: step.to,
+            from: step.path,
+            method: "rename",
+            caseOnly: true,
+            viaTemp: true,
+            error: String(error?.message ?? error),
+          });
+          break;
+        }
+      }
+    }
+  }
+  return actions;
 }
 
 /**
@@ -482,6 +686,7 @@ export function restoreSnapshot(
     throw new Error(`restoration writeMethod ${writeMethod} not allowed`);
   const actions = [];
   const untimed = () => 0n;
+  if (renameRevert) actions.push(...revertCaseRenames(snapshot, fsImpl));
   if (renameRevert) {
     // A renamed file is reverted with a rename (then fixed in place if its bytes differ):
     // pair each missing snapshot file with an extra file in the same dir, by equal
@@ -537,9 +742,22 @@ export function restoreSnapshot(
       actions.push({ path, method: write.method, error: String(error?.message ?? error) });
     }
   }
+  const guard = aliasGuard(snapshot);
   for (const dir of snapshot.dirs) {
     for (const f of walkFiles(dir)) {
       if (f.abs in snapshot.files) continue;
+      const alias = guard(f.abs);
+      if (alias) {
+        // On a case-insensitive volume this entry may be the only inode of a snapshot file:
+        // never unlink it. It stays for inspection and verification reports the mismatch.
+        actions.push({
+          path: f.abs,
+          method: "unlink",
+          skipped: true,
+          error: `refused: ${alias.reason} ${alias.of}`,
+        });
+        continue;
+      }
       const write = { method: "unlink", path: f.abs };
       try {
         performWrite(write, untimed, fsImpl);
@@ -666,6 +884,7 @@ export async function performWrites(
     } catch (error) {
       error.steps = done;
       error.failedStep = i;
+      error.failedStepEvidence = step.evidence ?? null;
       throw error;
     }
   }

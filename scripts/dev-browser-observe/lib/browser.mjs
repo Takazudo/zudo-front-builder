@@ -605,6 +605,38 @@ export class ObserverPage {
     };
   }
 
+  /**
+   * Read-only look at the OPEN document, with no navigation, reload or HTTP
+   * request: URL, title, docUUID, declared error markers, and the status of
+   * the document's original navigation (labelled as such; null when unknown).
+   */
+  async inspectOpen({ errorMarkers = [] } = {}) {
+    try {
+      const view = await this.page.evaluate((markers) => {
+        const text = document.body ? document.body.innerText : "";
+        const nav = performance.getEntriesByType("navigation")[0];
+        return {
+          url: location.href,
+          title: document.title,
+          markersFound: markers.filter(
+            (m) => text.indexOf(m) !== -1 || document.title.indexOf(m) !== -1,
+          ),
+          notInCache: text.indexOf("page not in cache") !== -1,
+          bodyExcerpt: text.slice(0, 600),
+          // The status of this document's original navigation, before any edit: not evidence of a later state.
+          originalNavigationStatus:
+            nav && typeof nav.responseStatus === "number" && nav.responseStatus > 0
+              ? nav.responseStatus
+              : null,
+          docUUID: window.__dbo ? window.__dbo.state().docUUID : null,
+        };
+      }, errorMarkers);
+      return { ok: true, open: true, ...view };
+    } catch (error) {
+      return { ok: false, open: true, error: String(error?.message ?? error) };
+    }
+  }
+
   /** Read-only predicate evaluation in the current document (no arming). */
   async evaluateNow(predicate) {
     return this.page.evaluate(

@@ -75,14 +75,162 @@ its method.
 
 ## Diagnostic profiles
 
-`ZFB_DEV_TIMING` is allowed in `server.env` only when the profile sets
-`diagnostic: true`. Outside a diagnostic profile, the harness also strips an
-inherited `ZFB_DEV_TIMING` from the server's environment. The receipt records
+`ZFB_DEV_TIMING` and `ZFB_DEV_PROVENANCE_TRACE` are allowed in `server.env`
+only when the profile sets `diagnostic: true`. Outside a diagnostic profile,
+the harness also strips either one when inherited from the server's
+environment. `ZFB_DEV_PROVENANCE_TRACE` turns on the `[zfb-prov]` trace (see
+below). The receipt records
 every effective `ZFB_*` variable and any variable that was removed. Every
 attempt record carries the server output lines printed from arming until the
 attempt ends, each with milliseconds relative to `t0`; `server.log` holds all
 lines. `profiles/tiny-internal-a0-diagnostic.example.json` compares an
 in-place title edit with an atomic-rename one.
+
+## Provenance trace (`[zfb-prov]`)
+
+In a diagnostic profile with `ZFB_DEV_PROVENANCE_TRACE: "1"` in `server.env`,
+zfb prints one `[zfb-prov] {json}` stderr line per event. Each line has `ev`,
+`seq` (strictly increasing), `ms` and, inside a tick, `tick`. The harness keeps
+these lines in their own buffer, so neither the 400-line `serverLog` cap nor the
+general line cap can drop them. Any buffer loss before an attempt's mark is
+recorded in `droppedBeforeMark` and `lossNote`.
+
+Every attempt record in a diagnostic run carries `provenance`:
+
+- `traceEnabled` (from the effective server env), `linesSeen`, and
+  `traceMissing`, which is true when the gate is on but no line arrived since
+  arming.
+- `parseErrors`: malformed lines are kept here, never dropped. Also
+  `seqViolations`, and `truncatedLists`, which lists every `x_truncated: n`
+  cut at the source.
+- `events`: the parsed events. `targetConsumer` is the page source file for
+  `targetPath`, from the fixture's route table.
+- `causalChain` and `chainComplete`.
+
+The chain uses the trace's own ids only, never HTTP order or controller
+labels. The deciding tick is the last `intake` tick that names a path the
+attempt wrote, compared as absolute paths in raw and realpath forms. Renames
+count both `from` and `to`. Each link is `observed` or `missing`:
+
+1. `intake`: every matching intake, with its tick and the matched paths.
+2. `select` for that tick: `selected`, `all_pages` with `all_reasons`,
+   `fan_out_safe`, `noop`, and the changes for the written paths.
+3. `generation`: `adopted` (refresh `refreshed`, or a worker), `unchanged`
+   (refresh `skipped`), or `retained` (a `reject`, with its stage and the
+   retained generation). The snapshot outcome is recorded too.
+4. `render_plan` (whether the target page was planned) and `stale`.
+5. `observations`: the first event after the adoption whose generation equals
+   the adopted one. Recorded: its `first_reader`, and whether the target
+   consumer read the written entry.
+6. `edges`: the event for the same drain. Recorded: the target consumer's slot
+   statuses (`replaced`, `retired`, `retained`, ...) and whether a group links
+   the target consumer to the written entry.
+7. `publish` of the target with that generation: lazy by `url`, eager by
+   its per-URL output path. The eager `page` field is not used to match: zfb
+   can report an output-keyed id there instead of the page source.
+8. `dom`: the outcome the harness observed (`t1`, latency).
+
+`observations` counts only a drain flagged `first_drain_of_generation: true`.
+Drains flagged `false` are skipped and listed in `notFirstDrains`. If every
+drain of the generation is flagged `false`, the link is `missing` with a
+`not-first-drain` reason. A lazy `publish` links to its drain only when
+`drain_contains_page` is `true`; one flagged `false` is kept under `unlinked`.
+If an older binary omits either flag, the link is `unverified`: it is never
+`observed` and the chain is not complete (`causalChain.unverified`). Per-path
+`select` fields, such as a `global_removed` reason or `external_override`, and
+any unknown extra fields pass through unchanged.
+
+Contract 1e493c9bc adds these rules:
+
+- **`first_drain_of_generation`:** `null` means no generation was known, so
+  the link is `unverified`.
+- **`graph_written`:** an `edges` group counts as a graph edge only when this
+  is `true`. The group check is `groupLinksTargetToEntry`, and
+  `groupNamesTargetAndEntry` records the group's contents regardless.
+  Without the flag, the edges link is `unverified`.
+- **Lazy `publish` page:** a lazy publish that names its `page` must name the
+  target page and URL. With `page: null`, the URL alone decides.
+- **`select` dirty pages:** `targetDirty` reads each written path's `dirty`,
+  which is a page list or `"all"`.
+- **Ordering:** downstream events are tied to the attempt by generation ids,
+  not by `seq` adjacency. A `worker` line can be printed after the events it
+  enabled. The only order used is that nothing for a tick comes before its
+  intake.
+
+Review hardening:
+
+- **`edges`:** observed only when `applied: true` and `graph_written: true`.
+  `applied: false` (`token_superseded`, `drain_failed`) is `failed` with its
+  reason. If two edges events share a drain id, the failure wins.
+  `graph_written: false` is `not-written`.
+- **Eager `publish.output`:** relative to the dist root (`index.html`,
+  `articles/a/index.html`). Both sides are normalised before matching.
+- **Timing against `t1`:** the deciding intake is the last one at or before
+  `t1`, and a publish after `t1` does not count. Expected-negative recovery
+  writes are not part of the timed write set; they get their own
+  `recoveryChain`.
+- **Target evidence:** a chain whose events are all observed must also show
+  that each link concerns the target. Otherwise it is `chainEventsOnly`, never
+  complete, and `lackingTarget` names what is missing. The evidence per link
+  is:
+  - select: `targetDirty` or `all_pages`.
+  - render plan: `targetPlanned`; in lazy mode the target's output must also
+    be in `stale`.
+  - observations: the target consumer read the written entry or the
+    aggregate. Every article shares `[slug].tsx`, so a read of another entry
+    is not evidence.
+  - edges: a written graph edge links the target to the entry.
+- **Render mode:** taken from the server's effective env, the way zfb dev
+  resolves it: `ZFB_LAZY_DEV_RENDER`, then `ZFB_DEV_EAGER`, else lazy by
+  default. It is recorded as `provenance.renderMode` with its source. A lazy
+  tick renders the edited entries' own routes eagerly; those are published
+  in-tick with mode `eager` and never appear in `stale.outputs`. So the lazy
+  render-plan evidence is `targetPlanned` plus either the target's stale
+  output or an in-tick publish of it with this generation. Eager mode needs
+  only `targetPlanned`. An unknown mode gets the lazy rule.
+- **Evidence drain:** observation and edge evidence come from a drain tied to
+  the target's publish, recorded as `observations.evidence` and
+  `edges.evidence`. For a lazy publish it is that publish's drain, which must
+  have `drain_contains_page: true`. For an eager publish it is the first drain
+  of the generation after this tick's `render_plan`, preferring a drain
+  tagged with the same `tick` (`via` says which). A sibling article
+  rendered through the shared `[slug].tsx` in another drain does not count.
+  Aggregate reads count only for the written entry's collection. Only
+  `Render`-phase reads count; a `Paths` read of the shared page reads every
+  entry. The phases seen are recorded.
+- **Own drain required:** only `lazy-publish-drain` and
+  `same-tick-drain-after-render-plan` evidence can make a chain complete.
+  Evidence from the `first-drain-after-render-plan` fallback may come from a
+  later tick or another article. Such a chain is `chainConsumerLevel`, never
+  complete, and the reason is recorded. Summary rows and `provenanceCounts`
+  report `evidenceVia`.
+- **Rejected deciding tick:** this explains the attempt only when the DOM
+  outcome is `expected-negative-observed`. A DOM success or
+  `recovery-observed` "explained" by a rejected tick is incomplete with the
+  reason `deciding-tick-rejected`.
+- **Trace integrity:** these make the chain's `integrity` `unverified` and
+  `chainComplete` false: parse errors, `seq` gaps (a jump greater than 1,
+  meaning a line never arrived, listed in `seqGaps`), `seq` order violations,
+  or buffer loss before the mark.
+- **Raw page strings:** `targetPageStrings` records the page strings as
+  emitted, including same-basename strings that did not match, so a native
+  run can confirm the absolute `PageId` form.
+- **Observation reasons:** an unchanged generation (refresh skipped) gives
+  `generation-not-adopted-this-tick`, and `first_drain_of_generation: null`
+  gives `no-current-generation`.
+- **Summary counts:** `summary.json` has `provenanceCounts` with
+  `chainComplete`, `chainEventsOnly`, `incomplete` and `traceMissing`.
+
+`chainComplete` requires every link except `stale`, which is recorded only.
+When the deciding tick was rejected, only intake,
+select and generation are required, and `rejected: true` is set.
+`summary.json` lists each attempt's `chainComplete`, `missing` and
+`traceMissing`.
+
+Examples: `profiles/tiny-{internal,external}-a1-provenance-diagnostic.example.json`
+cover A1, the original helper, with title and body edits under every warm
+order. `profiles/field-notes-original-memoized-provenance-diagnostic.example.json`
+is the Field Notes version.
 
 ## Measurement
 
@@ -317,6 +465,11 @@ replace `apps/zfb/lib/content.ts`. Their provenance is recorded in
 | `hidden-edit` | body of an unvisited article | none while elsewhere; see below | none |
 | `burst` | `count` titles at `spacingMs` | latest token only | none |
 | `rapid-sequence` | title then category, or add then delete | both, or the final state after settle | as `edit-category`, or the final-state checks |
+| `edit-prop` | `description` + token (`prop`, only `description`) | detail `.lede`, or the home card description | home card, archive card, category card, related cards of the referrers |
+| `rename-case-only` | `rename` to a case variant (`Article-000NN.md`) | declared in the profile (see below) | `expected-negative`: observe, rename back, require live restore |
+| `css-in-rejected-tick` | managed CSS, then broken frontmatter (`set: "recovery"`) | CSS computed style on the open page after the repair | the article restored live |
+| `css-in-rejected-discovery-tick` | managed CSS, then a new invalid article (`invalid`) | CSS computed style on the open page after the repair | the new article's body, then the lists |
+| `edit-during-rejected` | break `article`, edit `other`'s title, repair | `other`'s title on its open detail page | `other` on home (or its archive card), `article` restored |
 
 Notes on the special ops:
 
@@ -332,12 +485,107 @@ Notes on the special ops:
   recovery restores live behaviour. Anything else is
   `expected-negative-mismatch` or `recovery-failed`: an error and a stop.
 
+**`edit-prop`** records `declared` before the write: the field, the old and
+new value, the timed predicate and every rendered output it will check.
+
+**`rename-case-only`** renames `<slug>.md` to `toName` (default: first letter
+flipped). `caseRenameSteps: "direct"` is one `rename`; `"via-temp"` renames
+through a dot-temp sibling and records both steps. Before the attempt the
+harness probes the work dir's case behaviour: it creates a lower-case probe,
+stats the upper-case variant, compares dev and inode, and removes the probe.
+Nothing is assumed from the platform. Each rename records `readdirBefore`,
+`readdirAfter` and the inodes. When the entry name did not change, the outcome
+is `rename-noop`, an error that stops the batch. The expectation is never
+inferred. In `set: "expected-negative"` it must declare `expectState`. In a
+workload scenario it must declare `targetPath` and `predicate`, and it must be
+the scenario's last op. zfb-content derives the entry slug from the file path
+with the extension stripped and the case kept, so `Article-00008.md` becomes the
+slug `Article-00008`. Its frontmatter `slug` stays `article-00008`, and the
+Field Notes helpers throw `Article slug mismatch`. Restoration renames the
+variant back on the same inode, then checks the exact entry names, hashes and
+live pages. Restoration never unlinks an extra file whose lower-cased name, or
+whose dev and inode, matches a snapshot file. On a case-insensitive volume that
+file can be the article's only inode. It is left in place for inspection, and
+the cleanup reports `restoration-failed`.
+
+**Recovery ops** run only in `set: "recovery"` and must declare
+`expectState` for the rejected generation. The steps are:
+
+1. Write CSS first, then content, as the Rust e2e does.
+2. Wait, bounded by `rejectionWaitMs`, for a rejection line (`was not
+   published`, or `[zfb] rebuild tick failed`) printed after the broken write.
+   Without one the outcome is `rejection-not-observed` and nothing is repaired.
+   Otherwise the repair could join the broken write in one valid tick. Then
+   wait for a quiet window.
+3. Classify the rejected state. For the CSS ops this reads the open page in
+   place: markers and the last-good predicate. First it checks that the page
+   is still the prepared document: the same docUUID, no new document, no
+   main-frame navigation, and a settle that reached quiet. If not, the outcome
+   is `open-page-replaced`. The document's original navigation status is
+   recorded as `originalNavigationStatus` and is not used as evidence. For
+   `edit-during-rejected` it observes the declared paths, then navigates back
+   once.
+4. Make any writes declared for the rejected state. After them the open page
+   gets the same unchanged-document check.
+5. Arm on the open page.
+6. Repair: `t0` is this write.
+7. Wait for the armed notify (`t1`), then run the declared checks.
+
+The controller never reloads or navigates the open page between the arm and
+`t1`. A predicate that is already true at the arm is `precondition-failed`,
+unless the op declares `beforeRepair: "may-be-present"`; then no latency is
+claimed.
+
+The CSS ops parse the server lines from the first write to the rejection for
+`[zfb-timing] intake paths:`. Lines from before the first write are dropped,
+and only the last intake line before the rejection decides. This gives
+`sameTick`:
+
+- `true`: the last intake line names both paths.
+- `false`: the paths were in different intakes. The outcome is
+  `not-same-tick`, and the batch stops.
+- `unknown`: there was no timing line, or the server log was truncated.
+
+With `requireSameTick: true` (diagnostic profiles with
+`server.env.ZFB_DEV_TIMING: "1"` only), `unknown` stops as
+`same-tick-unknown`. Without it, an otherwise good `recovery-observed` is counted
+in `recoveryUnprovenTick`, never in `recoveryPasses`. Every recovery record
+carries `sameTickProven` (`true`, `false`, or `null` when the op has no tick
+premise or it is unknown), and so does the `recovery` list in `summary.json`.
+Passes are split into `recoverySameTickProvenPasses` and
+`recoveryNoTickPremisePasses`. These outcomes are errors that stop the batch:
+`rejection-not-observed`, `open-page-replaced`, `recovery-state-mismatch`,
+`recovery-failed`, `not-same-tick` and `same-tick-unknown`. A timeout after the repair stays `timeout`.
+
+Exit 0 for a recovery scenario without `requireSameTick` does not mean the
+same tick was proven. Read `sameTickProven` on the record, and
+`recoverySameTickProvenPasses` against `recoveryUnprovenTick` in the
+accounting.
+
+**`fixture.placement`** (Field Notes): `external` is the default and copies
+the source layout exactly. `internal` is a versioned derived overlay. The
+articles are copied into `apps/zfb/content/articles` and the source `content/`
+dir is not copied. `apps/zfb/zfb.config.ts` is replaced by
+`fixtures/field-notes/overlays/internal-placement/zfb.config.ts.overlay`; the
+only change is the collection `path` (`content/articles`, no
+`allowOutsideRoot`). `manifest.json` `placements.internal` records the
+provenance (`derived`), the base sha256 (`a68c2bdb…f915`), the overlay sha256
+(`ddce03ff…161e`) and the exact diff. `verify-identity` and materialization
+reject a different base or overlay. The source pins are still verified.
+Materialization also refuses a source whose `datasetSha256` is not the
+manifest's, and a materialized copy whose dataset hash differs.
+Receipts record `placement`, `layout`, `configSha256`, `configBaseSha256` and
+`materializedDatasetSha256`. Every op follows the materialized content dir.
+
 After each scenario, restoration reverts renames with `rename`, removes
 created files and restores bytes. It then live-checks the home page and
 counts, the touched detail pages, every archive page and a category page.
 
 `run --scenario id[,id]` runs selected families, so one classify stop does not
 hide the others. The matrices are in `profiles/field-notes-*.example.json`.
+For each adapter, `*-q.example.json` (external), `*-internal-q.example.json`
+and `*-recovery-diagnostic-q.example.json` (`ZFB_DEV_TIMING=1`,
+`requireSameTick`) cover the new families.
 
 ## Restoration and processes
 
@@ -381,6 +629,12 @@ detail route's `paths()` all call the same `getIndex()` from `lib/content.ts`. T
 which zfb links into every page; its custom property is
 `--observe-css-marker`. A plain `.css` import from a page is not supported
 because zfb does not emit those bytes.
+
+`profiles/tiny-{internal,external}-a{0,1,2,3}-body-category.example.json`
+cover A0–A3 in both placements. Each warm order (`index-first`,
+`detail-first`, `none`) has three cells: body on the detail page, category on
+the detail page, and category on `/`. Each cell is its own scenario. A1
+remains exactly the original helper.
 
 ## Not implemented
 

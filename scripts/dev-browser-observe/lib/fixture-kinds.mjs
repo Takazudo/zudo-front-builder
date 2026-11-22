@@ -6,6 +6,7 @@ import {
   fnAdapterPath,
   loadFieldNotesFixture,
   materializeFieldNotes,
+  overlayChecks,
   sourceTreeHashes,
 } from "./fieldnotes.mjs";
 import {
@@ -101,6 +102,7 @@ const tiny = {
     restore: (s) => restoreSnapshot(s, { writeMethod: profile.restoration.writeMethod }),
     liveChecks: (s) => originalLiveChecks(m, s),
     warmPaths: (scenario) => warmPaths(m, scenario),
+    pageFor: (url) => tinyPageFor(m, url),
     route: m.route,
     ...injectionFsHelpers,
   }),
@@ -158,6 +160,17 @@ const fieldNotes = {
       expected: manifest.source.datasetSha256,
       actual: actual.datasetSha256,
     });
+    const placement = profile.fixture.placement ?? "external";
+    try {
+      checks.push(...overlayChecks(resolved.fixtureDir, dir, manifest, placement));
+    } catch (error) {
+      checks.push({
+        name: `placement:${placement}`,
+        ok: false,
+        expected: "declared placement",
+        actual: String(error?.message ?? error),
+      });
+    }
     if (profile.fixture.managedCss) {
       const a = sha256File(join(resolved.fixtureDir, manifest.managedCss.file));
       checks.push({
@@ -176,6 +189,7 @@ const fieldNotes = {
       workDir,
       adapter: profile.fixture.adapter,
       managedCss: profile.fixture.managedCss === true,
+      placement: profile.fixture.placement ?? "external",
     }),
   receiptFixture: (m, manifest, profile) => ({
     name: manifest.name,
@@ -193,9 +207,14 @@ const fieldNotes = {
         : { declaredAddition: false },
     publicCss: manifest.publicCss,
     trailingSlash: true,
+    placement: m.placement,
+    layout: m.layout,
+    materializedDatasetSha256: m.materializedDatasetSha256,
     configFile: m.configFile,
     configSha256: m.configSha256,
     configProvenance: m.configProvenance,
+    configBaseSha256: m.configBaseSha256,
+    configOverlay: m.configOverlay,
     workDir: m.workDir,
     appDir: m.appDir,
     contentDir: m.contentDir,
@@ -207,9 +226,30 @@ const fieldNotes = {
   ops: (m, profile) => ({
     ...injectionFsHelpers,
     ...fieldNotesOps(m, { restorationWriteMethod: profile.restoration.writeMethod }),
+    pageFor: (url) => fnPageFor(m, url),
   }),
   calibrationPage: () => "/archive/1/",
 };
+
+/** The tiny app's page source for a route (app/pages/*), used to name the trace consumer. */
+export function tinyPageFor(m, url) {
+  if (!url) return null;
+  const u = url.replace(/\/$/, "") || "/";
+  if (u === "/") return join(m.appDir, "pages", "index.tsx");
+  if (u === "/independent") return join(m.appDir, "pages", "independent.tsx");
+  if (u.startsWith("/articles/")) return join(m.appDir, "pages", "articles", "[slug].tsx");
+  return null;
+}
+
+/** The Field Notes page source for a route (apps/zfb/pages/*). */
+export function fnPageFor(m, url) {
+  if (!url) return null;
+  if (url === "/") return join(m.appDir, "pages", "index.tsx");
+  if (url.startsWith("/articles/")) return join(m.appDir, "pages", "articles", "[slug].tsx");
+  if (url.startsWith("/archive/")) return join(m.appDir, "pages", "archive", "[page].tsx");
+  if (url.startsWith("/category/")) return join(m.appDir, "pages", "category", "[category].tsx");
+  return null;
+}
 
 export const FIXTURE_KINDS = { tiny, "field-notes": fieldNotes };
 

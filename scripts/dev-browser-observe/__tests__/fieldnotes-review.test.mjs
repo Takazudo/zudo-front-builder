@@ -269,8 +269,9 @@ describe("#5 new article numbers come from max(existing)+1", () => {
     expect(afterDelete.articles).toHaveLength(19);
     expect(nextArticleNumber(afterDelete)).toBe(21);
     const root = tmp();
-    makeFakeSource(join(root, "src"));
+    const { datasetSha256: ds } = makeFakeSource(join(root, "src"));
     const m = materializeFieldNotes({
+      expectedDatasetSha256: ds,
       fixtureDir: join(HARNESS_DIR, "fixtures", "field-notes"),
       sourceDir: join(root, "src"),
       workDir: join(root, "w"),
@@ -319,8 +320,9 @@ describe("nits", () => {
     expect(isBuildOutputPath(join("components", "Layout.tsx"))).toBe(false);
     expect(isBuildOutputPath(join("node_modules", "x"))).toBe(true);
     const root = tmp();
-    makeFakeSource(join(root, "dist", "src"));
+    const { datasetSha256: ds } = makeFakeSource(join(root, "dist", "src"));
     const m = materializeFieldNotes({
+      expectedDatasetSha256: ds,
       fixtureDir: join(HARNESS_DIR, "fixtures", "field-notes"),
       sourceDir: join(root, "dist", "src"),
       workDir: join(root, "w"),

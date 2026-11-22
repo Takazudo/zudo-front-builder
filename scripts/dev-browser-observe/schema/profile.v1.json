@@ -31,7 +31,7 @@
     },
     "diagnostic": {
       "type": "boolean",
-      "description": "true only for diagnostic profiles; required for ZFB_DEV_TIMING in server.env. Non-diagnostic runs strip it from the inherited env."
+      "description": "true only for diagnostic profiles; required for ZFB_DEV_TIMING or ZFB_DEV_PROVENANCE_TRACE in server.env. Non-diagnostic runs strip both from the inherited env."
     },
     "productSha": {
       "type": "string",
@@ -54,7 +54,7 @@
         },
         "placement": {
           "enum": ["internal", "external"],
-          "description": "tiny only."
+          "description": "tiny: required (internal | external). field-notes: optional, default external (the source layout, unchanged); internal materializes the corpus into apps/zfb/content/articles with the versioned derived config overlay (fixtures/field-notes/overlays/internal-placement)."
         },
         "adapter": {
           "type": "string",
@@ -295,7 +295,7 @@
             "minLength": 1
           },
           "set": {
-            "enum": ["workload", "negative-controls", "expected-negative"]
+            "enum": ["workload", "negative-controls", "expected-negative", "recovery"]
           },
           "ops": {
             "type": "array",
@@ -312,18 +312,23 @@
                     "add-article",
                     "burst",
                     "create-article",
+                    "css-in-rejected-discovery-tick",
+                    "css-in-rejected-tick",
                     "delete-article",
                     "edit-body",
                     "edit-category",
                     "edit-css",
+                    "edit-during-rejected",
                     "edit-invalid-frontmatter",
                     "edit-managed-css",
+                    "edit-prop",
                     "edit-public-css",
                     "edit-shared-component",
                     "edit-title",
                     "hidden-edit",
                     "rapid-sequence",
                     "rename-article",
+                    "rename-case-only",
                     "rename-filename-only",
                     "rename-slug-change",
                     "stale-predicate"
@@ -410,7 +415,49 @@
                       "other"
                     ]
                   },
-                  "description": "Declared acceptable states (default [error, last-good]); route-not-expanded and empty-collection are classified explicitly and are NOT expected unless declared."
+                  "description": "Declared acceptable states. expected-negative ops default to [error, last-good]; rename-case-only (expected-negative) and recovery ops must declare it. route-not-expanded and empty-collection are classified explicitly and are NOT expected unless declared."
+                },
+                "prop": {
+                  "enum": ["description"],
+                  "description": "edit-prop: the visible frontmatter prop to edit (default description)."
+                },
+                "toName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "rename-case-only: the case-variant file name (default: first letter flipped, e.g. Article-00008.md)."
+                },
+                "caseRenameSteps": {
+                  "enum": ["direct", "via-temp"],
+                  "description": "rename-case-only: one direct rename (default) or two renames through a temp sibling; every step is recorded."
+                },
+                "other": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "edit-during-rejected: the article whose title is edited while article is rejected."
+                },
+                "invalid": {
+                  "enum": ["frontmatter", "slug-mismatch"],
+                  "description": "css-in-rejected-discovery-tick: how the created article is invalid (default frontmatter)."
+                },
+                "requireSameTick": {
+                  "type": "boolean",
+                  "description": "css-in-rejected-*: stop with same-tick-unknown unless the [zfb-timing] intake lines prove the CSS and content edits shared one tick (diagnostic profiles only). A proven different tick is always not-same-tick. Requires diagnostic: true and server.env.ZFB_DEV_TIMING \"1\"."
+                },
+                "beforeRepair": {
+                  "enum": ["must-be-absent", "may-be-present"],
+                  "description": "recovery ops: whether the timed predicate may already hold before the repair (default must-be-absent: precondition-failed)."
+                },
+                "errorMarkers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "recovery ops: page text marking the error state (default [\"Article slug mismatch\"])."
+                },
+                "rejectionWaitMs": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "recovery ops: bound on waiting for the rejection server line after the broken write (default settleMs or restoreMs); no line in time is rejection-not-observed."
                 }
               }
             }

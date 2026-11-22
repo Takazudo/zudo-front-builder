@@ -1,0 +1,14 @@
+import { defineConfig } from "@takazudo/zfb/config";
+
+export default defineConfig({
+  outDir: "dist",
+  publicDir: "public",
+  trailingSlash: true,
+  wind: false,
+  collections: [
+    {
+      name: "articles",
+      path: "content/articles",
+    },
+  ],
+});

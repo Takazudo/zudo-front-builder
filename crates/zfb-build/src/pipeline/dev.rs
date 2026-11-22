@@ -1153,6 +1153,51 @@ impl AssetPipeline for DevAssetPipeline {
     }
 }
 
+/// Emit the `render_plan` provenance event: the page set handed to the
+/// render callback after the in-apply renderer refresh, plus the final
+/// narrowing flags (G5/G6 may have cleared `fan_out_safe`).
+///
+/// `render_plan`: `{pages, eager_hint, fan_out_safe, changed_content?,
+/// renderer_fresh, renderer_refreshed, refresh_skipped, route_structure_moved}`
+fn emit_render_plan(
+    pages: &[PageId],
+    narrowing: Option<&crate::ContentNarrowing>,
+    renderer_fresh: bool,
+    renderer_refreshed: bool,
+    refresh_skipped: bool,
+    route_structure_moved: bool,
+) {
+    use crate::provenance_trace as prov;
+    let mut fields = serde_json::Map::new();
+    prov::insert_capped(&mut fields, "pages", pages.iter(), |id| {
+        prov::path_value(id.path())
+    });
+    fields.insert("eager_hint".into(), serde_json::json!(narrowing.is_some()));
+    fields.insert(
+        "fan_out_safe".into(),
+        serde_json::json!(narrowing.is_some_and(|n| n.fan_out_safe)),
+    );
+    if let Some(n) = narrowing {
+        prov::insert_capped(
+            &mut fields,
+            "changed_content",
+            n.changed_content.iter(),
+            |p| prov::path_value(p),
+        );
+    }
+    fields.insert("renderer_fresh".into(), serde_json::json!(renderer_fresh));
+    fields.insert(
+        "renderer_refreshed".into(),
+        serde_json::json!(renderer_refreshed),
+    );
+    fields.insert("refresh_skipped".into(), serde_json::json!(refresh_skipped));
+    fields.insert(
+        "route_structure_moved".into(),
+        serde_json::json!(route_structure_moved),
+    );
+    prov::emit("render_plan", serde_json::Value::Object(fields));
+}
+
 impl DevAssetPipeline {
     fn apply_tick(
         &self,
@@ -1479,10 +1524,21 @@ impl DevAssetPipeline {
         // move, so nothing vanished there.
         let mut prune_candidates: Vec<PathBuf> = Vec::new();
         let mut live_dests: HashSet<PathBuf> = HashSet::new();
+        if crate::provenance_trace::enabled() {
+            emit_render_plan(
+                &pages,
+                narrowing.as_ref(),
+                plan.renderer_fresh,
+                renderer_refreshed,
+                renderer_refresh_skipped,
+                route_structure_moved,
+            );
+        }
         if !pages.is_empty() {
             publication.document_mutation_started();
             let rendered = (ctx.render_pages)(&pages, narrowing.as_ref())?;
             outcome.pages_rendered = rendered.len();
+            let prov_generation = crate::provenance_trace::current_generation();
 
             // Collect prune candidates and the live dest set during the
             // write loop; the actual deletes are deferred to after the
@@ -1519,6 +1575,18 @@ impl DevAssetPipeline {
                 }
                 if wo.written {
                     outcome.pages_written.push(r.page.clone());
+                }
+                if crate::provenance_trace::enabled() {
+                    crate::provenance_trace::emit(
+                        "publish",
+                        serde_json::json!({
+                            "mode": "eager",
+                            "page": crate::provenance_trace::path_value(r.page.path()),
+                            "output": crate::provenance_trace::path_value(r.output_path.as_path()),
+                            "written": wo.written,
+                            "generation": prov_generation.map(crate::provenance_trace::Generation::to_json),
+                        }),
+                    );
                 }
             }
             if dev_timing_enabled() {
@@ -1733,6 +1801,22 @@ impl DevAssetPipeline {
         // `on_outcome`. Empty on every tick while the lazy switch is off.
         if let Some(probe) = &self.stale_probe {
             outcome.pages_stale = probe();
+            if crate::provenance_trace::enabled() {
+                let mut fields = serde_json::Map::new();
+                crate::provenance_trace::insert_capped(
+                    &mut fields,
+                    "outputs",
+                    outcome.pages_stale.iter(),
+                    |p| crate::provenance_trace::path_value(p),
+                );
+                fields.insert(
+                    "generation".into(),
+                    crate::provenance_trace::current_generation()
+                        .map(crate::provenance_trace::Generation::to_json)
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                crate::provenance_trace::emit("stale", serde_json::Value::Object(fields));
+            }
         }
 
         // 4. SSR route publication (issue #1826 — Dev Self Heal epic

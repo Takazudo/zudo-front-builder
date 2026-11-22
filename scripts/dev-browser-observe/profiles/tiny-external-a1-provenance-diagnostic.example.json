@@ -1,0 +1,215 @@
+{
+  "schema": "dev-browser-observe.profile.v1",
+  "description": "Provenance diagnostic, tiny fixture, external content, A1 (exactly the original memoized helper): title and body edits under warmOrder index-first, detail-first and none, with ZFB_DEV_TIMING=1 and ZFB_DEV_PROVENANCE_TRACE=1. Each attempt record carries provenance.causalChain (intake -> select -> generation -> render_plan -> observations/edges -> publish -> DOM). One op per scenario; run them with --scenario. Fill productSha, buildReceipt and pins.",
+  "mode": "source-built",
+  "diagnostic": true,
+  "productSha": "0000000000000000000000000000000000000000",
+  "productDirtyIdentity": null,
+  "buildReceipt": "/tmp/dev-browser-observe/build-receipt.json",
+  "fixture": {
+    "dir": "../fixtures/tiny-two-article",
+    "placement": "external",
+    "adapter": "A1",
+    "trailingSlash": true,
+    "configFormat": "ts"
+  },
+  "pins": {
+    "harnessTreeSha256": null,
+    "fixtureTreeSha256": null,
+    "observerSha256": null,
+    "adapterSha256": null
+  },
+  "server": {
+    "port": {
+      "mode": "ephemeral"
+    },
+    "host": "127.0.0.1",
+    "readyTimeoutMs": 120000,
+    "env": {
+      "ZFB_DEV_TIMING": "1",
+      "ZFB_DEV_PROVENANCE_TRACE": "1"
+    }
+  },
+  "browser": {
+    "headless": true,
+    "args": [
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows"
+    ],
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "deviceScaleFactor": 1
+  },
+  "timeouts": {
+    "attemptMs": 30000,
+    "supplementalMs": 30000,
+    "restoreMs": 30000,
+    "stopTermMs": 5000,
+    "stopKillMs": 3000,
+    "quietMs": 1500
+  },
+  "limits": {
+    "rssCeilingKiB": 4194304,
+    "wallCeilingMs": 1800000,
+    "sampleEveryMs": 1000
+  },
+  "calibration": {
+    "repeats": 5,
+    "staleTimeoutMs": 2000,
+    "cells": [
+      "binding-round-trip",
+      "two-raf",
+      "synthetic-dom",
+      "synthetic-css",
+      "observer-init-after-navigation",
+      "stale-then-new-token",
+      "late-token",
+      "reload-survival-controller-triggered",
+      "native-reload-survival"
+    ]
+  },
+  "restoration": {
+    "writeMethod": "in-place"
+  },
+  "scenarios": [
+    {
+      "id": "a1-prov-index-first-title-a-detail",
+      "set": "workload",
+      "warmOrder": "index-first",
+      "warmDetail": "a",
+      "ops": [
+        {
+          "id": "title-a-detail",
+          "op": "edit-title",
+          "article": "a",
+          "writeMethod": "in-place",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "a1-prov-index-first-title-a-home",
+      "set": "workload",
+      "warmOrder": "index-first",
+      "warmDetail": "a",
+      "ops": [
+        {
+          "id": "title-a-home",
+          "op": "edit-title",
+          "article": "a",
+          "writeMethod": "in-place",
+          "targetPath": "/",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "a1-prov-index-first-body-a-detail",
+      "set": "workload",
+      "warmOrder": "index-first",
+      "warmDetail": "a",
+      "ops": [
+        {
+          "id": "body-a-detail",
+          "op": "edit-body",
+          "article": "a",
+          "writeMethod": "in-place",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "a1-prov-detail-first-title-a-detail",
+      "set": "workload",
+      "warmOrder": "detail-first",
+      "warmDetail": "a",
+      "ops": [
+        {
+          "id": "title-a-detail",
+          "op": "edit-title",
+          "article": "a",
+          "writeMethod": "in-place",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "a1-prov-detail-first-title-a-home",
+      "set": "workload",
+      "warmOrder": "detail-first",
+      "warmDetail": "a",
+      "ops": [
+        {
+          "id": "title-a-home",
+          "op": "edit-title",
+          "article": "a",
+          "writeMethod": "in-place",
+          "targetPath": "/",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "a1-prov-detail-first-body-a-detail",
+      "set": "workload",
+      "warmOrder": "detail-first",
+      "warmDetail": "a",
+      "ops": [
+        {
+          "id": "body-a-detail",
+          "op": "edit-body",
+          "article": "a",
+          "writeMethod": "in-place",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "a1-prov-none-title-a-detail",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "title-a-detail",
+          "op": "edit-title",
+          "article": "a",
+          "writeMethod": "in-place",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "a1-prov-none-title-a-home",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "title-a-home",
+          "op": "edit-title",
+          "article": "a",
+          "writeMethod": "in-place",
+          "targetPath": "/",
+          "expect": "classify"
+        }
+      ]
+    },
+    {
+      "id": "a1-prov-none-body-a-detail",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "body-a-detail",
+          "op": "edit-body",
+          "article": "a",
+          "writeMethod": "in-place",
+          "expect": "classify"
+        }
+      ]
+    }
+  ],
+  "outDir": "/tmp/dev-browser-observe"
+}
