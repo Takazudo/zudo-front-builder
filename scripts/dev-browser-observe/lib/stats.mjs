@@ -41,6 +41,34 @@ export function summarize(records, accounting) {
       acc[r.mechanism] = (acc[r.mechanism] ?? 0) + 1;
       return acc;
     }, {}),
+    // Diagnostic attempts: whether the provenance trace proved the causal chain, and what is missing.
+    provenance: records
+      .filter((r) => r.type === "attempt" && r.provenance)
+      .map((r) => ({
+        scenario: r.scenario,
+        opId: r.opId,
+        outcome: r.outcome,
+        traceEnabled: r.provenance.traceEnabled ?? null,
+        traceMissing: r.provenance.traceMissing ?? null,
+        chainComplete: r.provenance.chainComplete ?? false,
+        chainEventsOnly: r.provenance.chainEventsOnly ?? false,
+        lackingTarget: r.provenance.causalChain?.lackingTarget ?? null,
+        missing: r.provenance.causalChain?.missing ?? null,
+        parseErrors: r.provenance.parseErrors?.length ?? null,
+      })),
+    // Counts over the diagnostic attempts; chainEventsOnly and incomplete are never complete.
+    provenanceCounts: (() => {
+      const ps = records
+        .filter((r) => r.type === "attempt" && r.provenance)
+        .map((r) => r.provenance);
+      return {
+        attempts: ps.length,
+        chainComplete: ps.filter((p) => p.chainComplete === true).length,
+        chainEventsOnly: ps.filter((p) => p.chainEventsOnly === true).length,
+        incomplete: ps.filter((p) => p.chainComplete !== true && p.chainEventsOnly !== true).length,
+        traceMissing: ps.filter((p) => p.traceMissing === true).length,
+      };
+    })(),
     // Recovery attempts, each with whether its same tick was proven (true), disproven (false) or neither (null).
     recovery: records
       .filter((r) => r.type === "attempt" && r.mode === "recovery")

@@ -1,5 +1,6 @@
 import { runSpecialMode } from "./special-modes.mjs";
 import { RENAME_NOOP } from "./fixture.mjs";
+import { attemptProvenance } from "./provenance.mjs";
 import { NO_WRITE_STEPS, noWriteStepsError, nsToMs } from "./util.mjs";
 
 export const OUTCOMES = [
@@ -451,6 +452,25 @@ export async function runBatch({ scenarios, deps }) {
           declared: attempt.declared ?? null,
         };
 
+        // Diagnostic profiles only: trace lines from here on belong to this attempt's causal chain.
+        const provMark = deps.provenance && server.provMark ? server.provMark() : null;
+        const withProvenance = (rec) => {
+          if (provMark === null) return;
+          try {
+            rec.provenance = attemptProvenance({
+              server,
+              mark: provMark,
+              attempt,
+              rec,
+              pageFor: deps.provenance.pageFor ?? fs.pageFor ?? null,
+              traceEnabled: deps.provenance.traceEnabled === true,
+              renderMode: deps.provenance.renderMode ?? null,
+            });
+          } catch (error) {
+            rec.provenance = { error: String(error?.stack ?? error) };
+          }
+        };
+
         if (attempt.mode && attempt.mode !== "standard") {
           current.armedToken = attempt.token;
           const specialCtx = {
@@ -500,6 +520,7 @@ export async function runBatch({ scenarios, deps }) {
           if (rec.expect === "classify" && (outcome === "timeout" || outcome === "stale"))
             acc.expectedTimeouts += 1;
           rec.sampleAfter = server.sampleResources();
+          withProvenance(rec);
           append(rec);
           count(acc, outcome, rec);
           if (PASS_OUTCOMES.has(outcome)) {
@@ -758,6 +779,7 @@ export async function runBatch({ scenarios, deps }) {
           }
         }
         rec.sampleAfter = server.sampleResources();
+        withProvenance(rec);
         append(rec);
         count(acc, outcome);
         if (op.inject && op.inject !== "restore-blocked" && rec.controlPass !== true) {

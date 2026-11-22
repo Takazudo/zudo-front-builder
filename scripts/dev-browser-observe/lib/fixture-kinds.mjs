@@ -102,6 +102,7 @@ const tiny = {
     restore: (s) => restoreSnapshot(s, { writeMethod: profile.restoration.writeMethod }),
     liveChecks: (s) => originalLiveChecks(m, s),
     warmPaths: (scenario) => warmPaths(m, scenario),
+    pageFor: (url) => tinyPageFor(m, url),
     route: m.route,
     ...injectionFsHelpers,
   }),
@@ -225,9 +226,30 @@ const fieldNotes = {
   ops: (m, profile) => ({
     ...injectionFsHelpers,
     ...fieldNotesOps(m, { restorationWriteMethod: profile.restoration.writeMethod }),
+    pageFor: (url) => fnPageFor(m, url),
   }),
   calibrationPage: () => "/archive/1/",
 };
+
+/** The tiny app's page source for a route (app/pages/*), used to name the trace consumer. */
+export function tinyPageFor(m, url) {
+  if (!url) return null;
+  const u = url.replace(/\/$/, "") || "/";
+  if (u === "/") return join(m.appDir, "pages", "index.tsx");
+  if (u === "/independent") return join(m.appDir, "pages", "independent.tsx");
+  if (u.startsWith("/articles/")) return join(m.appDir, "pages", "articles", "[slug].tsx");
+  return null;
+}
+
+/** The Field Notes page source for a route (apps/zfb/pages/*). */
+export function fnPageFor(m, url) {
+  if (!url) return null;
+  if (url === "/") return join(m.appDir, "pages", "index.tsx");
+  if (url.startsWith("/articles/")) return join(m.appDir, "pages", "articles", "[slug].tsx");
+  if (url.startsWith("/archive/")) return join(m.appDir, "pages", "archive", "[page].tsx");
+  if (url.startsWith("/category/")) return join(m.appDir, "pages", "category", "[category].tsx");
+  return null;
+}
 
 export const FIXTURE_KINDS = { tiny, "field-notes": fieldNotes };
 

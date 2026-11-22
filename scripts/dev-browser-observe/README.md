@@ -78,13 +78,141 @@ its method.
 `ZFB_DEV_TIMING` and `ZFB_DEV_PROVENANCE_TRACE` are allowed in `server.env`
 only when the profile sets `diagnostic: true`. Outside a diagnostic profile,
 the harness also strips either one when inherited from the server's
-environment. `ZFB_DEV_PROVENANCE_TRACE` is for `[zfb-prov] {json}` lines; the
-harness keeps them with every other server line but does not parse them yet. The receipt records
+environment. `ZFB_DEV_PROVENANCE_TRACE` turns on the `[zfb-prov]` trace (see
+below). The receipt records
 every effective `ZFB_*` variable and any variable that was removed. Every
 attempt record carries the server output lines printed from arming until the
 attempt ends, each with milliseconds relative to `t0`; `server.log` holds all
 lines. `profiles/tiny-internal-a0-diagnostic.example.json` compares an
 in-place title edit with an atomic-rename one.
+
+## Provenance trace (`[zfb-prov]`)
+
+In a diagnostic profile with `ZFB_DEV_PROVENANCE_TRACE: "1"` in `server.env`,
+zfb prints one `[zfb-prov] {json}` stderr line per event. Each line has `ev`,
+`seq` (strictly increasing), `ms` and, inside a tick, `tick`. The harness keeps
+these lines in their own buffer, so neither the 400-line `serverLog` cap nor the
+general line cap can drop them. Any buffer loss before an attempt's mark is
+recorded in `droppedBeforeMark` and `lossNote`.
+
+Every attempt record in a diagnostic run carries `provenance`:
+
+- `traceEnabled` (from the effective server env), `linesSeen`, and
+  `traceMissing`, which is true when the gate is on but no line arrived since
+  arming.
+- `parseErrors`: malformed lines are kept here, never dropped. Also
+  `seqViolations`, and `truncatedLists`, which lists every `x_truncated: n`
+  cut at the source.
+- `events`: the parsed events. `targetConsumer` is the page source file for
+  `targetPath`, from the fixture's route table.
+- `causalChain` and `chainComplete`.
+
+The chain uses the trace's own ids only, never HTTP order or controller
+labels. The deciding tick is the last `intake` tick that names a path the
+attempt wrote, compared as absolute paths in raw and realpath forms. Renames
+count both `from` and `to`. Each link is `observed` or `missing`:
+
+1. `intake`: every matching intake, with its tick and the matched paths.
+2. `select` for that tick: `selected`, `all_pages` with `all_reasons`,
+   `fan_out_safe`, `noop`, and the changes for the written paths.
+3. `generation`: `adopted` (refresh `refreshed`, or a worker), `unchanged`
+   (refresh `skipped`), or `retained` (a `reject`, with its stage and the
+   retained generation). The snapshot outcome is recorded too.
+4. `render_plan` (whether the target page was planned) and `stale`.
+5. `observations`: the first event after the adoption whose generation equals
+   the adopted one. Recorded: its `first_reader`, and whether the target
+   consumer read the written entry.
+6. `edges`: the event for the same drain. Recorded: the target consumer's slot
+   statuses (`replaced`, `retired`, `retained`, ...) and whether a group links
+   the target consumer to the written entry.
+7. `publish` of the target with that generation: lazy by `url`, eager by
+   `page` plus the output suffix.
+8. `dom`: the outcome the harness observed (`t1`, latency).
+
+`observations` counts only a drain flagged `first_drain_of_generation: true`.
+Drains flagged `false` are skipped and listed in `notFirstDrains`. If every
+drain of the generation is flagged `false`, the link is `missing` with a
+`not-first-drain` reason. A lazy `publish` links to its drain only when
+`drain_contains_page` is `true`; one flagged `false` is kept under `unlinked`.
+If an older binary omits either flag, the link is `unverified`: it is never
+`observed` and the chain is not complete (`causalChain.unverified`). Per-path
+`select` fields, such as a `global_removed` reason or `external_override`, and
+any unknown extra fields pass through unchanged.
+
+Contract 1e493c9bc adds these rules:
+
+- **`first_drain_of_generation`:** `null` means no generation was known, so
+  the link is `unverified`.
+- **`graph_written`:** an `edges` group counts as a graph edge only when this
+  is `true`. The group check is `groupLinksTargetToEntry`, and
+  `groupNamesTargetAndEntry` records the group's contents regardless.
+  Without the flag, the edges link is `unverified`.
+- **Lazy `publish` page:** a lazy publish that names its `page` must name the
+  target page and URL. With `page: null`, the URL alone decides.
+- **`select` dirty pages:** `targetDirty` reads each written path's `dirty`,
+  which is a page list or `"all"`.
+- **Ordering:** downstream events are tied to the attempt by generation ids,
+  not by `seq` adjacency. A `worker` line can be printed after the events it
+  enabled. The only order used is that nothing for a tick comes before its
+  intake.
+
+Review hardening:
+
+- **`edges`:** observed only when `applied: true` and `graph_written: true`.
+  `applied: false` (`token_superseded`, `drain_failed`) is `failed` with its
+  reason. If two edges events share a drain id, the failure wins.
+  `graph_written: false` is `not-written`.
+- **Eager `publish.output`:** relative to the dist root (`index.html`,
+  `articles/a/index.html`). Both sides are normalised before matching.
+- **Timing against `t1`:** the deciding intake is the last one at or before
+  `t1`, and a publish after `t1` does not count. Expected-negative recovery
+  writes are not part of the timed write set; they get their own
+  `recoveryChain`.
+- **Target evidence:** a chain whose events are all observed must also show
+  that each link concerns the target. Otherwise it is `chainEventsOnly`, never
+  complete, and `lackingTarget` names what is missing. The evidence per link
+  is:
+  - select: `targetDirty` or `all_pages`.
+  - render plan: `targetPlanned`; in lazy mode the target's output must also
+    be in `stale`.
+  - observations: the target consumer read the written entry or the
+    aggregate. Every article shares `[slug].tsx`, so a read of another entry
+    is not evidence.
+  - edges: a written graph edge links the target to the entry.
+- **Render mode:** taken from the server's effective env, the way zfb dev
+  resolves it: `ZFB_LAZY_DEV_RENDER`, then `ZFB_DEV_EAGER`, else lazy by
+  default. It is recorded as `provenance.renderMode` with its source. A lazy
+  tick renders the edited entries' own routes eagerly; those are published
+  in-tick with mode `eager` and never appear in `stale.outputs`. So the lazy
+  render-plan evidence is `targetPlanned` plus either the target's stale
+  output or an in-tick publish of it with this generation. Eager mode needs
+  only `targetPlanned`. An unknown mode gets the lazy rule.
+- **Evidence drain:** observation and edge evidence come from a drain tied to
+  the target's publish, recorded as `observations.evidence` and
+  `edges.evidence`. For a lazy publish it is that publish's drain, which must
+  have `drain_contains_page: true`. For an eager publish it is the first drain
+  of the generation after this tick's `render_plan`. A sibling article
+  rendered through the shared `[slug].tsx` in another drain does not count.
+  Aggregate reads count only for the written entry's collection.
+- **Raw page strings:** `targetPageStrings` records the page strings as
+  emitted, including same-basename strings that did not match, so a native
+  run can confirm the absolute `PageId` form.
+- **Observation reasons:** an unchanged generation (refresh skipped) gives
+  `generation-not-adopted-this-tick`, and `first_drain_of_generation: null`
+  gives `no-current-generation`.
+- **Summary counts:** `summary.json` has `provenanceCounts` with
+  `chainComplete`, `chainEventsOnly`, `incomplete` and `traceMissing`.
+
+`chainComplete` requires every link except `stale`, which is recorded only.
+When the deciding tick was rejected, only intake,
+select and generation are required, and `rejected: true` is set.
+`summary.json` lists each attempt's `chainComplete`, `missing` and
+`traceMissing`.
+
+Examples: `profiles/tiny-{internal,external}-a1-provenance-diagnostic.example.json`
+cover A1, the original helper, with title and body edits under every warm
+order. `profiles/field-notes-original-memoized-provenance-diagnostic.example.json`
+is the Field Notes version.
 
 ## Measurement
 
