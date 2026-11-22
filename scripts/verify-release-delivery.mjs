@@ -37,7 +37,9 @@ import { policyFromSourceFiles } from "./release/npm-publication-policy.mjs";
  *                tarball against its dist/shipped-artifacts.json and the
  *                zfb-md-wasm-<version>-shipped-artifacts.json Release asset
  *   consumption  the release run's clean-room smoke job and the selected
- *                installer run's "Smoke released (install.sh)" job, from their logs
+ *                installer run's "Smoke released (install.sh)" job, from their logs;
+ *                for a release source whose smoke Dockerfile produces
+ *                zfb-installer-bytes/v1, the install.sh bytes at that source
  *   channels     GitHub Latest, npm dist-tags and Homebrew. These are mutable and are
  *                only observed unless an --expect-* flag asks for a value. One check is
  *                always enforced: no package still carries the `release-pending`
@@ -1908,6 +1910,113 @@ async function readJobLog(ctx, repo, job) {
   );
 }
 
+// ── Installer byte binding (#4784) ──────────────────────────────────────────
+
+export const INSTALLER_BYTES_PROTOCOL = "zfb-installer-bytes/v1";
+export const INSTALLER_DOCKERFILE_PATH = "tests/smoke/node-free/Dockerfile";
+const INSTALLER_RECORD_RE =
+  /(?:^|\s)zfb-installer-bytes\/v1 source=([0-9a-f]{40}) path=install\.sh sha256=([0-9a-f]{64})$/;
+
+/**
+ * Pure: the zfb-installer-bytes/v1 records printed in an installer job log.
+ * BuildKit's echo of the RUN command is not a record; any other line naming
+ * the protocol that is not a whole record is malformed.
+ */
+export function parseInstallerRecords(lines) {
+  const records = [];
+  const malformed = [];
+  for (const line of lines) {
+    if (!/(?:^|\s)zfb-installer-bytes\/v1(?:\s|$)/.test(line)) continue;
+    if (/(?:^|\s)#\d+ \[[^\]]*\] RUN /.test(line)) continue;
+    const match = INSTALLER_RECORD_RE.exec(line);
+    if (match) records.push({ source: match[1], path: "install.sh", sha256: match[2] });
+    else malformed.push(line.trim().slice(0, 300));
+  }
+  return { records, malformed };
+}
+
+async function sourceFileBytes(ctx, path) {
+  const file = await ctx.http.getJson(
+    `${GITHUB_API}/repos/${ctx.repo}/contents/${path}?ref=${ctx.commit}`,
+  );
+  if (file?.type !== "file" || file.encoding !== "base64" || typeof file.content !== "string")
+    throw new FetchError("malformed", `${path} at ${ctx.commit} is not a base64 file`);
+  return Buffer.from(file.content, "base64");
+}
+
+/**
+ * The release source's own smoke Dockerfile decides the protocol: a source
+ * whose Dockerfile produces zfb-installer-bytes/v1 must carry one matching
+ * record, re-hashed here from install.sh at that commit. Only a retrieved
+ * Dockerfile without the producer is legacy; a retrieval failure is not.
+ * Returns "bound", "legacy-unbound" or null (protocol undetermined).
+ */
+async function verifyInstallerBytes(ctx, section, lines) {
+  const id = "installer-bytes";
+  const base = { source: ctx.commit, producer: INSTALLER_DOCKERFILE_PATH };
+  let dockerfile;
+  try {
+    dockerfile = (await sourceFileBytes(ctx, INSTALLER_DOCKERFILE_PATH)).toString("utf8");
+  } catch (error) {
+    section.error(id, error, base, { missingIsFailure: false });
+    return null;
+  }
+  if (!dockerfile.includes(INSTALLER_BYTES_PROTOCOL)) {
+    section.add(id, STATUS.OBSERVED, {
+      ...base,
+      protocol: "legacy-unbound",
+      caveat: `the release source predates ${INSTALLER_BYTES_PROTOCOL}; installer bytes are not bound`,
+    });
+    return "legacy-unbound";
+  }
+  const { records, malformed } = parseInstallerRecords(lines);
+  const evidence = { ...base, protocol: INSTALLER_BYTES_PROTOCOL, records, malformed };
+  if (malformed.length) {
+    section.failed(
+      id,
+      `malformed ${INSTALLER_BYTES_PROTOCOL} record in the installer log`,
+      evidence,
+    );
+    return null;
+  }
+  if (records.length !== 1) {
+    section.failed(
+      id,
+      records.length
+        ? `${records.length} ${INSTALLER_BYTES_PROTOCOL} records in the installer log, expected one`
+        : `the release source produces ${INSTALLER_BYTES_PROTOCOL} but the installer log has no record`,
+      evidence,
+    );
+    return null;
+  }
+  const [record] = records;
+  if (record.source !== ctx.commit) {
+    section.failed(
+      id,
+      `installer fetched install.sh at ${record.source}, not the release source`,
+      evidence,
+    );
+    return null;
+  }
+  try {
+    const actual = sha("sha256", await sourceFileBytes(ctx, "install.sh"));
+    evidence.actualSha256 = actual;
+    if (actual !== record.sha256) {
+      section.failed(
+        id,
+        `install.sh at ${ctx.commit} hashes to ${actual}, not the recorded ${record.sha256}`,
+        evidence,
+      );
+      return null;
+    }
+  } catch (error) {
+    section.error(id, error, evidence, { missingIsFailure: false });
+    return null;
+  }
+  section.verified(id, evidence);
+  return "bound";
+}
+
 async function verifyConsumption(ctx) {
   const section = new Section("consumption");
   const { http, repo, version, tag } = ctx;
@@ -2067,13 +2176,23 @@ async function verifyConsumption(ctx) {
     const scriptRef = /raw\.githubusercontent\.com\/[^/]+\/[^/]+\/([^/ ]+)\/install\.sh/.exec(
       scriptLine ?? "",
     )?.[1];
+    const binding = await verifyInstallerBytes(ctx, section, lines);
+    const movingRef =
+      scriptRef && !/^[0-9a-f]{40}$/.test(scriptRef)
+        ? `install.sh was fetched from the moving ref "${scriptRef}"; `
+        : "";
     const evidence = {
       found,
       installScriptRef: scriptRef ?? null,
+      installerBytes: binding,
       note:
-        scriptRef && !/^[0-9a-f]{40}$/.test(scriptRef)
-          ? `install.sh was fetched from the moving ref "${scriptRef}"; this proves exact-version installer behavior, not immutable installer-script bytes`
-          : undefined,
+        binding === "bound"
+          ? undefined
+          : binding === "legacy-unbound"
+            ? `${movingRef}installer bytes are unbound (release source ${ctx.commit} predates ${INSTALLER_BYTES_PROTOCOL}): this proves exact-version installer behavior, not immutable installer-script bytes`
+            : movingRef
+              ? `${movingRef}this proves exact-version installer behavior, not immutable installer-script bytes`
+              : undefined,
     };
     if (missing.length)
       section.failed(

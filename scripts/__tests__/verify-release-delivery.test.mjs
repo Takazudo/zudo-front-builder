@@ -29,7 +29,9 @@ import {
   npmPurl,
   parseArgs,
   parseTar,
+  INSTALLER_BYTES_PROTOCOL,
   PROCESSING_FINALIZE_SUPERSEDED,
+  parseInstallerRecords,
   processingProof,
   summarize,
   verifyReleaseDelivery,
@@ -200,6 +202,10 @@ const INSTALLER_LOG = [
   "2026-11-06T07:28:43.0272196Z ==> All smoke assertions passed.",
 ].join("\n");
 
+const LEGACY_DOCKERFILE =
+  'FROM debian:bookworm-slim\nRUN curl -o "$s" https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh\n';
+const INSTALL_SH = "#!/bin/sh\necho install zfb\n";
+
 function buildPackages() {
   const wasmFiles = {};
   const artifacts = MD_WASM_PATHS.map(([entry, path], index) => {
@@ -301,6 +307,10 @@ function makeWorld(tweak = () => {}) {
     },
     installerJobs: installerJobs(),
     logs: { [jobIdOf(releaseJobs(), "smoke-clean-room")]: CLEAN_ROOM_LOG, 5000: INSTALLER_LOG },
+    sourceFiles: {
+      "tests/smoke/node-free/Dockerfile": LEGACY_DOCKERFILE,
+      "install.sh": INSTALL_SH,
+    },
     archives,
     packages,
     attestationAttempt: () => 1,
@@ -433,6 +443,17 @@ function makeFetch(world) {
     if (path === `${API}/contents/packages/zfb/package.json`) {
       return json({
         content: Buffer.from(JSON.stringify({ version: world.sourceVersion })).toString("base64"),
+      });
+    }
+    const contents = new RegExp(`^${API}/contents/(.+)$`).exec(path);
+    if (contents) {
+      const text = world.sourceFiles[contents[1]];
+      if (u.searchParams.get("ref") !== COMMIT || text === undefined)
+        return json({ message: "Not Found" }, 404);
+      return json({
+        type: "file",
+        encoding: "base64",
+        content: Buffer.from(text).toString("base64"),
       });
     }
     const attempt = new RegExp(`/actions/runs/${RELEASE_RUN}/attempts/(\\d+)$`).exec(path);
@@ -2632,5 +2653,160 @@ describe("processing-then-finalize completion (#4779)", () => {
     expect(report.exitCode).toBe(EXIT.verified);
     expect(report.aggregateDelivery.supersession).toBe("clean-room");
     expect(report.aggregateDelivery.processingEligibility).toBeUndefined();
+  });
+});
+
+// ── Installer byte binding (#4784) ──────────────────────────────────────────
+const BOUND_DOCKERFILE = readFileSync(
+  new URL("../../tests/smoke/node-free/Dockerfile", import.meta.url),
+  "utf8",
+);
+const OTHER_SOURCE = "cccccccccccccccccccccccccccccccccccccccc";
+const installerRecord = (source = COMMIT, digest = sha256(INSTALL_SH)) =>
+  `2026-11-06T07:28:32.2400000Z #9 0.240 ${INSTALLER_BYTES_PROTOCOL} source=${source} path=install.sh sha256=${digest}`;
+const BOUND_RUN_ECHO =
+  '2026-11-06T07:28:32.0583830Z #9 [4/7] RUN set -eu;     if [ "$ZFB_SMOKE_MODE" = "released" ]; then         install_script="$(mktemp)";         curl -fsSL -o "$install_script" "https://raw.githubusercontent.com/Takazudo/zudo-front-builder/${ZFB_INSTALL_SOURCE_SHA}/install.sh";         install_digest="$(sha256sum "$install_script" | cut -d \' \' -f 1)";         echo "zfb-installer-bytes/v1 source=${ZFB_INSTALL_SOURCE_SHA} path=install.sh sha256=${install_digest}";         ZFB_VERSION="$ZFB_VERSION" sh "$install_script";     fi';
+
+function withBoundInstaller(w, records = [installerRecord()]) {
+  w.sourceFiles["tests/smoke/node-free/Dockerfile"] = BOUND_DOCKERFILE;
+  w.logs[5000] = INSTALLER_LOG.split("\n")
+    .flatMap((line) => (line.includes("RUN curl") ? [BOUND_RUN_ECHO, ...records] : [line]))
+    .join("\n");
+}
+
+describe("installer byte binding (#4784)", () => {
+  it("the checked-in smoke Dockerfile produces the record without a branch fallback", () => {
+    expect(BOUND_DOCKERFILE).toContain(INSTALLER_BYTES_PROTOCOL);
+    expect(BOUND_DOCKERFILE).toContain(
+      "https://raw.githubusercontent.com/Takazudo/zudo-front-builder/${ZFB_INSTALL_SOURCE_SHA}/install.sh",
+    );
+    expect(BOUND_DOCKERFILE).not.toMatch(/zudo-front-builder\/(?:main|v\d|refs\/)/);
+  });
+
+  it("parses one record and ignores BuildKit's echo of the RUN command", () => {
+    const { records, malformed } = parseInstallerRecords(
+      [BOUND_RUN_ECHO, installerRecord()].map((l) => l.replace(/^\S+Z /, "")),
+    );
+    expect(malformed).toEqual([]);
+    expect(records).toEqual([{ source: COMMIT, path: "install.sh", sha256: sha256(INSTALL_SH) }]);
+  });
+
+  it("verifies matching source and digest, re-hashed from install.sh at the source", async () => {
+    const { report, calls } = await run(withBoundInstaller);
+    const bytes = check(report, "consumption", "installer-bytes");
+    expect(bytes.status).toBe(STATUS.VERIFIED);
+    expect(bytes.evidence.actualSha256).toBe(sha256(INSTALL_SH));
+    const evidence = check(report, "consumption", "installer-evidence").evidence;
+    expect(evidence.installerBytes).toBe("bound");
+    expect(evidence.note).toBeUndefined();
+    expect(report.exitCode).toBe(EXIT.verified);
+    expect(calls.some((c) => c.url === `${API}/contents/install.sh?ref=${COMMIT}`)).toBe(true);
+  });
+
+  for (const [label, mutate] of [
+    ["a wrong digest", (w) => withBoundInstaller(w, [installerRecord(COMMIT, "0".repeat(64))])],
+    [
+      "a wrong source SHA even for identical bytes",
+      (w) => withBoundInstaller(w, [installerRecord(OTHER_SOURCE)]),
+    ],
+    ["a missing record", (w) => withBoundInstaller(w, [])],
+    [
+      "a malformed record",
+      (w) =>
+        withBoundInstaller(w, [
+          `#9 0.240 ${INSTALLER_BYTES_PROTOCOL} source=${COMMIT.slice(0, 12)} path=install.sh sha256=${sha256(INSTALL_SH)}`,
+        ]),
+    ],
+    [
+      "a record for another path",
+      (w) =>
+        withBoundInstaller(w, [
+          `#9 0.240 ${INSTALLER_BYTES_PROTOCOL} source=${COMMIT} path=evil.sh sha256=${sha256(INSTALL_SH)}`,
+        ]),
+    ],
+    [
+      "conflicting records",
+      (w) => withBoundInstaller(w, [installerRecord(), installerRecord(COMMIT, "1".repeat(64))]),
+    ],
+    ["repeated records", (w) => withBoundInstaller(w, [installerRecord(), installerRecord()])],
+    [
+      "a bound run that lost its checksum line",
+      (w) => {
+        withBoundInstaller(w);
+        w.logs[5000] = w.logs[5000].replace("checksum OK", "checksum skipped");
+      },
+    ],
+    [
+      "a bound run that installed another version",
+      (w) => {
+        withBoundInstaller(w);
+        w.logs[5000] = w.logs[5000].replace(`Installed zfb ${VERSION}`, "Installed zfb 0.0.1");
+      },
+    ],
+    [
+      "a bound run whose installer job was skipped",
+      (w) => {
+        withBoundInstaller(w);
+        w.installerJobs[0].conclusion = "skipped";
+      },
+    ],
+  ])
+    it(`fails ${label}`, async () => {
+      const { report } = await run(mutate);
+      expect(report.exitCode).toBe(EXIT.failed);
+    });
+
+  for (const [label, mutate] of [
+    [
+      "an unavailable source Dockerfile",
+      (w) => {
+        withBoundInstaller(w);
+        delete w.sourceFiles["tests/smoke/node-free/Dockerfile"];
+      },
+    ],
+    [
+      "a source Dockerfile read that errors",
+      (w) => {
+        withBoundInstaller(w);
+        w.overrides.set(
+          `${API}/contents/tests/smoke/node-free/Dockerfile?ref=${COMMIT}`,
+          () => new Response("boom", { status: 500 }),
+        );
+      },
+    ],
+    [
+      "an unavailable install.sh at the source",
+      (w) => {
+        withBoundInstaller(w);
+        delete w.sourceFiles["install.sh"];
+      },
+    ],
+  ])
+    it(`keeps ${label} incomplete, never legacy`, async () => {
+      const { report } = await run(mutate);
+      const bytes = check(report, "consumption", "installer-bytes");
+      expect(bytes.status).toBe(STATUS.INCOMPLETE);
+      expect(bytes.evidence.protocol).not.toBe("legacy-unbound");
+      expect(report.exitCode).toBe(EXIT.incomplete);
+    });
+
+  it("keeps an unavailable installer log incomplete", async () => {
+    const { report } = await run((w) => {
+      withBoundInstaller(w);
+      delete w.logs[5000];
+    });
+    expect(check(report, "consumption", "installer-evidence").status).toBe(STATUS.INCOMPLETE);
+    expect(report.exitCode).toBe(EXIT.incomplete);
+  });
+
+  it("keeps a legacy source on its original receipt semantics with an explicit caveat", async () => {
+    const { report } = await run();
+    const bytes = check(report, "consumption", "installer-bytes");
+    expect(bytes.status).toBe(STATUS.OBSERVED);
+    expect(bytes.evidence.protocol).toBe("legacy-unbound");
+    const evidence = check(report, "consumption", "installer-evidence");
+    expect(evidence.status).toBe(STATUS.VERIFIED);
+    expect(evidence.evidence.note).toContain("installer bytes are unbound");
+    expect(report.exitCode).toBe(EXIT.verified);
   });
 });

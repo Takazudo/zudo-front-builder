@@ -123,6 +123,16 @@ describe("node-free-smoke.yml: tag-bound installer dispatch", () => {
     expect(job.steps[0].with.ref).toMatch(/github\.sha/);
   });
 
+  it("passes the full checked-out source commit to the released image (#4784)", () => {
+    const build = smoke.jobs["smoke-released"].steps.find(
+      (s) => s.name === "Build smoke image (released mode)",
+    );
+    expect(build.run).toMatch(/INSTALL_SOURCE_SHA="\$\(git rev-parse HEAD\)"/);
+    expect(build.run).toContain("^[0-9a-f]{40}$");
+    expect(build.run).toContain('--build-arg "ZFB_INSTALL_SOURCE_SHA=${INSTALL_SOURCE_SHA}"');
+    expect(build.run).not.toContain("main/install.sh");
+  });
+
   it("does not let a dispatch start the PR/main jobs or the showcase deploy", () => {
     expect(smoke.jobs["build-binary"].if).toMatch(
       /pull_request' \|\| github\.event_name == 'push'/,

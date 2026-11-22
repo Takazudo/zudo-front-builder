@@ -773,6 +773,11 @@ head branch `v<version>`.
    the run whose `Smoke released (install.sh)` job installed the exact tag. After a rerun, use the
    run the final attempt triggered.
 
+   The job fetches `install.sh` at the full release source commit it checked out, never at
+   `main` or a tag, with no fallback. It logs one
+   `zfb-installer-bytes/v1 source=<sha> path=install.sh sha256=<digest>` line, then runs that
+   same file. Record the line with the run ID.
+
    **Actions route:** it is not established whether `workflow_run` follows a `release.yml` run that
    `GITHUB_TOKEN` dispatched. If no `workflow_run` installer for the tag appears a few minutes
    after the Release run succeeds, dispatch it at the tag, once:
@@ -877,6 +882,18 @@ acceptance and failure rules are unchanged.
 The separately selected installer must execute successfully and retain exact source/version,
 checksum and smoke assertions. A green workflow with a skipped installer does not qualify. A
 correctly bound installer may precede finalization; no after-finalizer ordering is required.
+
+The verifier binds the installer bytes (`installer-bytes`, #4784). It reads
+`tests/smoke/node-free/Dockerfile` at the release source commit. When that file produces
+`zfb-installer-bytes/v1`, the source is a new-protocol source. Its installer log must then carry
+exactly one well-formed record whose source is the release commit. The verifier fetches
+`install.sh` at that commit, hashes the bytes itself and compares the digest. A missing,
+malformed, repeated or conflicting record, another source SHA (even for identical bytes) or a
+digest mismatch fails. An unreadable Dockerfile, `install.sh` or installer log is incomplete, never
+legacy. Only a Dockerfile that was read and has no producer marks a legacy source, such as v7.1.0
+and earlier. Such a source keeps its original receipt: `installer-bytes` is observed with the
+`legacy-unbound` caveat, and the installer evidence notes that the installer bytes are unbound.
+
 This audit performs only GETs and does not authorize dispatch, publication or channel changes.
 
 Per-package npm identity can be checked independently:
