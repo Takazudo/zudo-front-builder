@@ -49,7 +49,9 @@
 //! `<html_root>/<path>/index.html` on disk, then `<public_root>/<path>`
 //! as a verbatim static-file read, then — in Dev only — the prebuilt
 //! `<dist_root>/<path>` / `<dist_root>/<path>/index.html` boot-lazy seed.
-//! Only after all layers miss do we return [`DEV_404_BODY`].
+//! Only after all layers miss do we return [`DEV_404_BODY`]. In Dev with a
+//! [`crate::dev_404_diagnostics`] provider, that 404 also carries an
+//! `x-zfb-dev-404-reason` header and a matching body paragraph.
 //!
 //! Precedence (highest first): plugin dev-middleware → page cache →
 //! html_root → public directory → dist_root (Dev-only boot-lazy seed) →
@@ -537,6 +539,11 @@ pub struct AppState {
     /// most tests) — [`serve_page`] skips the leg entirely. See
     /// [`crate::ServeOpts::redirects`] for the full precedence contract.
     pub redirects: Option<crate::RedirectsHandle>,
+
+    /// Dev 404 route diagnosis provider (issue #4783). Consulted only by
+    /// the waterfall's final 404 in [`crate::ServerMode::Dev`]; `None`
+    /// keeps that 404 byte-identical.
+    pub dev_route_diagnostics: Option<crate::DevRouteDiagnosticsHandle>,
 
     /// Pre-canonicalized forms of the three root paths, computed once at
     /// server startup (perf item #1145-3).  `resolve_within_root` re-
@@ -1637,10 +1644,20 @@ async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) 
     }
 
     // 404 is always the dev HTML body so the page is replaced once
-    // a real one lands. The live-reload script gets injected.
-    page_response_bytes(
+    // a real one lands. The live-reload script gets injected. In Dev with
+    // a diagnosis provider (issue #4783) the body and a header also say
+    // whether the live route table knows this URL.
+    let diagnosis = diagnose_dev_404(state, &canonical);
+    let body = match diagnosis {
+        Some(diagnosis) => {
+            crate::dev_404_diagnostics::dev_404_body_with_diagnosis(DEV_404_BODY, diagnosis)
+                .into_bytes()
+        }
+        None => DEV_404_BODY.as_bytes().to_vec(),
+    };
+    let mut response = page_response_bytes(
         StatusCode::NOT_FOUND,
-        DEV_404_BODY.as_bytes().to_vec(),
+        body,
         "text/html; charset=utf-8",
         true,
         lr_prefix,
@@ -1649,7 +1666,33 @@ async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) 
         true,
         state.islands_bundle_url.as_ref(),
         current_css_bundle_url(&state.css_bundle_url).as_deref(),
-    )
+    );
+    if let Some(diagnosis) = diagnosis {
+        response.headers_mut().insert(
+            crate::dev_404_diagnostics::DEV_404_REASON_HEADER,
+            HeaderValue::from_static(diagnosis.reason()),
+        );
+    }
+    response
+}
+
+/// Ask the configured provider why the waterfall missed (issue #4783).
+/// `canonical` is the encoded, base-stripped lookup path without a leading
+/// slash. A panicking provider degrades to the neutral `Unavailable`.
+fn diagnose_dev_404(
+    state: &AppState,
+    canonical: &str,
+) -> Option<crate::dev_404_diagnostics::DevRouteDiagnosis> {
+    if !matches!(state.mode, crate::ServerMode::Dev) {
+        return None;
+    }
+    let provider = state.dev_route_diagnostics.as_ref()?;
+    let url_path = format!("/{canonical}");
+    let diagnosis = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        provider.diagnose(&url_path)
+    }))
+    .unwrap_or(crate::dev_404_diagnostics::DevRouteDiagnosis::Unavailable);
+    Some(diagnosis)
 }
 
 /// Build a redirect response for a matched `_redirects` rule
@@ -2543,6 +2586,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             // Tests use bogus/temp paths — canonical roots are not precomputed.
             canonical_html_root: None,
@@ -2573,6 +2617,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -2797,6 +2842,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -2875,6 +2921,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -2943,6 +2990,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -3116,6 +3164,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -3218,6 +3267,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -3312,6 +3362,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -4363,6 +4414,7 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -4433,6 +4485,7 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -4484,6 +4537,7 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -4598,6 +4652,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -5970,6 +6025,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -6033,6 +6089,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -6098,6 +6155,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -6157,6 +6215,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -6211,6 +6270,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -6269,6 +6329,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -6334,6 +6395,7 @@ mod tests {
                 mode,
             ),
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -6534,5 +6596,203 @@ mod tests {
             StatusCode::PAYLOAD_TOO_LARGE,
             "POST body exceeding 2 MiB cap must be rejected with 413"
         );
+    }
+
+    mod dev_404_diagnosis {
+        use super::*;
+        use crate::dev_404_diagnostics::{DevRouteDiagnosis, DevRouteDiagnostics};
+        use std::collections::HashSet;
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct FakeRoutes {
+            known: RwLock<HashSet<String>>,
+            refreshing: std::sync::atomic::AtomicBool,
+            unavailable: std::sync::atomic::AtomicBool,
+            seen: Mutex<Vec<String>>,
+        }
+
+        impl FakeRoutes {
+            fn with(urls: &[&str]) -> Arc<Self> {
+                let fake = Self::default();
+                fake.known
+                    .write()
+                    .unwrap()
+                    .extend(urls.iter().map(|u| (*u).to_string()));
+                Arc::new(fake)
+            }
+
+            fn seen(&self) -> Vec<String> {
+                self.seen.lock().unwrap().clone()
+            }
+        }
+
+        impl DevRouteDiagnostics for FakeRoutes {
+            fn diagnose(&self, url_path: &str) -> DevRouteDiagnosis {
+                use std::sync::atomic::Ordering;
+                self.seen.lock().unwrap().push(url_path.to_string());
+                if self.unavailable.load(Ordering::SeqCst) {
+                    return DevRouteDiagnosis::Unavailable;
+                }
+                if self.known.read().unwrap().contains(url_path) {
+                    DevRouteDiagnosis::RouteKnownNotRendered {
+                        refresh_in_progress: self.refreshing.load(Ordering::SeqCst),
+                    }
+                } else {
+                    DevRouteDiagnosis::NotInRouteTable
+                }
+            }
+        }
+
+        fn router_with(mut state: AppState, fake: &Arc<FakeRoutes>) -> Router {
+            state.dev_route_diagnostics = Some(fake.clone() as crate::DevRouteDiagnosticsHandle);
+            build_router(state)
+        }
+
+        async fn request(router: &Router, method: &str, uri: &str) -> Response {
+            router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+
+        fn reason(resp: &Response) -> Option<String> {
+            resp.headers()
+                .get("x-zfb-dev-404-reason")
+                .map(|v| v.to_str().unwrap().to_string())
+        }
+
+        #[tokio::test]
+        async fn known_and_absent_routes_report_distinct_reasons() {
+            let fake = FakeRoutes::with(&["/blog/known"]);
+            let router = router_with(test_state(), &fake);
+
+            let known = request(&router, "GET", "/blog/known").await;
+            assert_eq!(known.status(), StatusCode::NOT_FOUND);
+            assert_eq!(reason(&known).as_deref(), Some("route-known-not-rendered"));
+            assert_eq!(
+                known.headers().get(header::CACHE_CONTROL).unwrap(),
+                "no-store"
+            );
+            let body = body_string(known).await;
+            assert!(body.contains("404 — page not in cache"), "{body}");
+            assert!(body.contains("The dev server has no rendered HTML for this URL."));
+            assert!(body.contains("is in the dev server's current route table"));
+            assert!(!body.contains("refresh is in progress"), "{body}");
+            assert!(body.contains(LIVERELOAD_TAG), "{body}");
+
+            let gone = request(&router, "GET", "/blog/gone").await;
+            assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+            assert_eq!(reason(&gone).as_deref(), Some("not-in-route-table"));
+            let body = body_string(gone).await;
+            assert!(body.contains("page not in cache"), "{body}");
+            assert!(body.contains("is not in the dev server's current route table"));
+            assert!(body.contains(LIVERELOAD_TAG), "{body}");
+        }
+
+        #[tokio::test]
+        async fn diagnosis_follows_live_route_table_updates() {
+            let fake = FakeRoutes::with(&["/a"]);
+            let router = router_with(test_state(), &fake);
+            assert_eq!(
+                reason(&request(&router, "GET", "/a").await).as_deref(),
+                Some("route-known-not-rendered")
+            );
+            fake.known.write().unwrap().remove("/a");
+            assert_eq!(
+                reason(&request(&router, "GET", "/a").await).as_deref(),
+                Some("not-in-route-table")
+            );
+            fake.known.write().unwrap().insert("/a".to_string());
+            fake.refreshing
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let resp = request(&router, "GET", "/a").await;
+            assert_eq!(reason(&resp).as_deref(), Some("route-known-not-rendered"));
+            assert!(body_string(resp).await.contains("refresh is in progress"));
+        }
+
+        #[tokio::test]
+        async fn unavailable_provider_reports_neutral_reason() {
+            let fake = FakeRoutes::with(&["/a"]);
+            fake.unavailable
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let router = router_with(test_state(), &fake);
+            let resp = request(&router, "GET", "/a").await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+            assert_eq!(reason(&resp).as_deref(), Some("unavailable"));
+            let body = body_string(resp).await;
+            assert!(body.contains("cannot yet tell"), "{body}");
+            assert!(!body.contains("route table:"), "{body}");
+        }
+
+        #[tokio::test]
+        async fn head_carries_reason_header() {
+            let fake = FakeRoutes::with(&["/a"]);
+            let router = router_with(test_state(), &fake);
+            let known = request(&router, "HEAD", "/a").await;
+            assert_eq!(known.status(), StatusCode::NOT_FOUND);
+            assert_eq!(reason(&known).as_deref(), Some("route-known-not-rendered"));
+            let gone = request(&router, "HEAD", "/b").await;
+            assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+            assert_eq!(reason(&gone).as_deref(), Some("not-in-route-table"));
+        }
+
+        #[tokio::test]
+        async fn provider_sees_base_stripped_canonical_url() {
+            let fake = FakeRoutes::with(&["/posts/caf%C3%A9"]);
+            let router = router_with(test_state_with_base("/foo"), &fake);
+            let resp = request(&router, "GET", "/foo/posts/caf%C3%A9?x=1").await;
+            assert_eq!(reason(&resp).as_deref(), Some("route-known-not-rendered"));
+            let resp = request(&router, "GET", "/foo/").await;
+            assert_eq!(reason(&resp).as_deref(), Some("not-in-route-table"));
+            assert_eq!(fake.seen(), vec!["/posts/caf%C3%A9", "/"]);
+        }
+
+        #[tokio::test]
+        async fn successful_and_non_waterfall_responses_carry_no_reason() {
+            let fake = FakeRoutes::with(&["/cached"]);
+            let state = test_state();
+            state
+                .pages
+                .insert("/cached", "<html><body>ok</body></html>")
+                .await;
+            let router = router_with(state, &fake);
+            let ok = request(&router, "GET", "/cached").await;
+            assert_eq!(ok.status(), StatusCode::OK);
+            assert!(reason(&ok).is_none());
+            let head = request(&router, "HEAD", "/cached").await;
+            assert_eq!(head.status(), StatusCode::OK);
+            assert!(reason(&head).is_none());
+            let post = request(&router, "POST", "/cached").await;
+            assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+            assert!(reason(&post).is_none());
+            let script = request(&router, "GET", "/__zfb/livereload.js").await;
+            assert!(reason(&script).is_none());
+            assert!(fake.seen().is_empty(), "{:?}", fake.seen());
+        }
+
+        #[tokio::test]
+        async fn without_provider_or_outside_dev_the_404_is_unchanged() {
+            let resp = request(&build_router(test_state()), "GET", "/missing").await;
+            assert!(reason(&resp).is_none());
+            let body = body_string(resp).await;
+            assert!(!body.contains("data-zfb-dev-404-reason"), "{body}");
+
+            let fake = FakeRoutes::with(&[]);
+            let mut preview = test_state();
+            preview.mode = crate::ServerMode::Preview;
+            let resp = request(&router_with(preview, &fake), "GET", "/missing").await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+            assert!(reason(&resp).is_none());
+            assert_eq!(body_string(resp).await, DEV_404_BODY);
+            assert!(fake.seen().is_empty());
+        }
     }
 }

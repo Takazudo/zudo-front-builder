@@ -1779,6 +1779,20 @@ async fn poll_sequence_index_without_slug(
     ))
 }
 
+/// Issue #4783: a removed URL must 404 *because* it left the live route
+/// table, not because a still-known route failed to render.
+fn removed_route_observation(response: &reqwest::Response) -> Result<(), String> {
+    let status = response.status().as_u16();
+    let reason = response
+        .headers()
+        .get("x-zfb-dev-404-reason")
+        .and_then(|v| v.to_str().ok());
+    match (status, reason) {
+        (404, Some("not-in-route-table")) => Ok(()),
+        (status, reason) => Err(format!("status {status}, x-zfb-dev-404-reason {reason:?}")),
+    }
+}
+
 async fn poll_sequence_deleted_detail(client: &reqwest::Client, url: &str) -> Result<u16, String> {
     let start = Instant::now();
     let mut attempts = 0;
@@ -1786,20 +1800,22 @@ async fn poll_sequence_deleted_detail(client: &reqwest::Client, url: &str) -> Re
     while start.elapsed() < SCENARIO_DEADLINE {
         attempts += 1;
         match client.get(url).send().await {
-            Ok(response) if response.status().as_u16() == 404 => {
-                eprintln!(
-                    "[deletion-sequence] deleted detail returned 404 after {attempts} requests in {:?}",
-                    start.elapsed()
-                );
-                return Ok(404);
-            }
-            Ok(response) => last = format!("status {}", response.status().as_u16()),
+            Ok(response) => match removed_route_observation(&response) {
+                Ok(()) => {
+                    eprintln!(
+                        "[deletion-sequence] deleted detail returned 404 not-in-route-table after {attempts} requests in {:?}",
+                        start.elapsed()
+                    );
+                    return Ok(404);
+                }
+                Err(observation) => last = observation,
+            },
             Err(error) => last = format!("request error: {error}"),
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     Err(format!(
-        "deleted detail did not return 404 after {attempts} requests in {:?}; last observation: {last}",
+        "deleted detail did not return 404 not-in-route-table after {attempts} requests in {:?}; last observation: {last}",
         start.elapsed()
     ))
 }
@@ -2062,15 +2078,18 @@ async fn cold_lazy_deleted_entry_title_only() {
     run_deleted_collection_entry_sequence(DeletionSequence::TitleOnly).await;
 }
 
-/// Poll until `url` answers 404. Used for routes that a collection change
-/// legitimately removed; returns the last observation on timeout.
+/// Poll until `url` answers 404 with the `not-in-route-table` reason. Used
+/// for routes that a collection change legitimately removed; returns the last
+/// observation on timeout.
 async fn poll_until_status_404(client: &reqwest::Client, url: &str) -> Result<(), String> {
     let start = Instant::now();
     let mut last = String::from("no response");
     while start.elapsed() < SCENARIO_DEADLINE {
         match client.get(url).send().await {
-            Ok(response) if response.status().as_u16() == 404 => return Ok(()),
-            Ok(response) => last = format!("status {}", response.status().as_u16()),
+            Ok(response) => match removed_route_observation(&response) {
+                Ok(()) => return Ok(()),
+                Err(observation) => last = observation,
+            },
             Err(error) => last = format!("request error: {error}"),
         }
         tokio::time::sleep(POLL_INTERVAL).await;

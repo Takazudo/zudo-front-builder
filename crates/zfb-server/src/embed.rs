@@ -321,6 +321,7 @@ impl Server {
             // it is Dev-only and the hook gate in `serve_page` enforces
             // this, but `None` keeps the contract explicit.
             render_on_request_hook: None,
+            dev_route_diagnostics: None,
             // Embed callers do not get `_redirects` dev integration
             // (issue #1546 scopes it to `zfb dev`); `None` keeps the
             // contract explicit, same reasoning as the hook above.

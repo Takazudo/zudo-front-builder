@@ -155,6 +155,7 @@ async fn boot_with_plugins_and_host_validation(
         css_bundle_url: None,
         host_validation,
         render_on_request_hook: None,
+        dev_route_diagnostics: None,
         redirects: None,
         // Test uses temp dirs — canonical roots not precomputed.
         canonical_html_root: None,
