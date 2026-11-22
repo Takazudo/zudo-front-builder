@@ -79,37 +79,68 @@ function urlForms(url) {
   return [...new Set([url, trimmed, url === "/" ? "/" : `${trimmed}/`])];
 }
 
-/** Output-file suffixes an eager publish of `url` writes (`/a/` -> `/a/index.html`; `/a` -> also `/a.html`). */
-function outputSuffixes(url) {
+/**
+ * Output paths zfb writes for `url`, RELATIVE to the dist root (zfb-build's
+ * atomic writer rejects absolute ones): `/` -> `index.html`, `/a/` ->
+ * `a/index.html` (and `a.html` for the non-trailing-slash form).
+ */
+export function outputsFor(url) {
   if (!url) return [];
-  if (url === "/") return ["/index.html"];
-  const trimmed = url.replace(/\/$/, "");
+  if (url === "/") return ["index.html"];
+  const trimmed = url.replace(/^\/+/, "").replace(/\/$/, "");
   return [`${trimmed}/index.html`, `${trimmed}.html`];
 }
+
+/** Does an emitted output path name one of `expected`? A relative path must equal it; an absolute one must end in /<it>. */
+export function outputMatches(output, expected) {
+  if (typeof output !== "string") return false;
+  const rel = output.replace(/^\.\//, "");
+  if (!rel.startsWith("/")) return expected.includes(rel);
+  return expected.some((e) => e !== "index.html" && rel.endsWith(`/${e}`));
+}
+
+const nsOf = (e) => (e?._ns === null || e?._ns === undefined ? null : BigInt(e._ns));
 
 /**
  * The causal chain for one attempt, from parsed events only (never HTTP order
  * or controller labels):
  * intake(s) naming a written path -> select for that tick -> generation
  * (snapshot/worker/refresh adopted, or reject retained) -> render_plan and
- * stale -> the first observations event for the adopted generation (after it
- * was adopted) and the edges event of the same drain -> publish of the
- * target with that generation -> the DOM outcome the harness observed.
- * The deciding tick is the LAST intake tick that names a written path.
+ * stale -> the first drain of the adopted generation (observations) and the
+ * edges event of that drain -> publish of the target with that generation ->
+ * the DOM outcome the harness observed.
+ *
+ * The deciding tick is the last intake naming a written path that arrived at
+ * or before t1 (when there is a t1). A publish counts only at or before t1.
+ * Every link must be `observed` (not `unverified`, `failed` or `missing`) for
+ * the events to be complete, and four links must also show evidence about the
+ * target itself: select marked it dirty (or all pages), the render plan
+ * covered it (lazy: its output went stale), its consumer read the written
+ * entry (or the aggregate), and a written graph edge links it to that entry.
+ * All events but no target evidence is `chainEventsOnly`, never complete.
  *
  * `writePaths`: alias lists, one per written/renamed path (raw and realpath forms).
  * `consumers`: alias list for the target page's source file (may be empty).
  */
-export function buildCausalChain(events, { writePaths = [], consumers = [], targetUrl, dom }) {
+export function buildCausalChain(
+  events,
+  { writePaths = [], consumers = [], targetUrl, dom, t1Ns = null },
+) {
   const written = new Set(writePaths.flat());
   const consumerSet = new Set(consumers);
+  const t1 = t1Ns === null || t1Ns === undefined ? null : BigInt(t1Ns);
+  const beforeT1 = (e) => t1 === null || nsOf(e) === null || nsOf(e) <= t1;
   const byEv = (name) => events.filter((e) => e.ev === name);
   const intakes = byEv("intake").filter((e) => (e.paths ?? []).some((p) => written.has(p.path)));
+  const timedIntakes = intakes.filter(beforeT1);
   const ticks = [...new Set(intakes.map((e) => e.tick))];
-  const tick = ticks.length ? ticks[ticks.length - 1] : null;
+  const deciding = timedIntakes.at(-1) ?? null;
+  const tick = deciding ? deciding.tick : null;
   const links = {};
-  links.intake = link(intakes.length > 0, {
+  links.intake = link(!!deciding, {
     ticks,
+    decidingSeq: deciding?.seq ?? null,
+    afterT1: intakes.filter((e) => !beforeT1(e)).map((e) => e.seq),
     events: intakes.map((e) => ({
       seq: e.seq,
       tick: e.tick,
@@ -120,6 +151,15 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
   });
   const forTick = (name) => byEv(name).filter((e) => tick !== null && e.tick === tick);
   const select = forTick("select")[0] ?? null;
+  const targetDirty = select
+    ? (select.changes ?? [])
+        .filter((c) => written.has(c.path))
+        .some(
+          (c) =>
+            c.dirty === "all" ||
+            (Array.isArray(c.dirty) && c.dirty.some((p) => consumerSet.has(p))),
+        )
+    : null;
   links.select = link(!!select, {
     seq: select?.seq ?? null,
     selected: select?.selected ?? null,
@@ -135,15 +175,7 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
     ),
     // `dirty` is the fold's page list or the string "all"; `class` may be null (swallowed by a
     // global full rebuild).
-    targetDirty: select
-      ? (select.changes ?? [])
-          .filter((c) => written.has(c.path))
-          .some(
-            (c) =>
-              c.dirty === "all" ||
-              (Array.isArray(c.dirty) && c.dirty.some((p) => consumerSet.has(p))),
-          )
-      : null,
+    targetDirty,
   });
 
   const reject = forTick("reject")[0] ?? null;
@@ -151,7 +183,6 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
   const worker = forTick("worker")[0] ?? null;
   const refresh = forTick("refresh")[0] ?? null;
   let generation = null;
-  let adoptedAtSeq = null;
   let genOutcome = "none";
   if (reject) {
     genOutcome = "retained";
@@ -159,15 +190,12 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
   } else if (refresh?.outcome === "refreshed") {
     genOutcome = "adopted";
     generation = refresh.generation ?? null;
-    adoptedAtSeq = refresh.seq;
   } else if (worker) {
     genOutcome = "adopted";
     generation = { worker_gen: worker.worker_gen, snapshot_gen: worker.snapshot_gen };
-    adoptedAtSeq = worker.seq;
   } else if (refresh?.outcome === "skipped") {
     genOutcome = "unchanged";
     generation = refresh.generation ?? null;
-    adoptedAtSeq = refresh.seq;
   }
   links.generation = link(genOutcome !== "none", {
     outcome: genOutcome,
@@ -186,7 +214,12 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
       ? { seq: reject.seq, stage: reject.stage, error: reject.error, retained: reject.retained }
       : null,
   });
+  const expectedOutputs = outputsFor(targetUrl);
   const plan = forTick("render_plan")[0] ?? null;
+  const stale = forTick("stale")[0] ?? null;
+  const staleHasTarget = stale
+    ? (stale.outputs ?? []).some((o) => outputMatches(o, expectedOutputs))
+    : null;
   links.render_plan = link(!!plan, {
     seq: plan?.seq ?? null,
     pages: plan?.pages ?? null,
@@ -194,17 +227,20 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
     renderer_refreshed: plan?.renderer_refreshed ?? null,
     route_structure_moved: plan?.route_structure_moved ?? null,
   });
-  const stale = forTick("stale")[0] ?? null;
-  links.stale = link(!!stale, { seq: stale?.seq ?? null, outputs: stale?.outputs ?? null });
+  links.stale = link(!!stale, {
+    seq: stale?.seq ?? null,
+    outputs: stale?.outputs ?? null,
+    targetOutputStale: staleHasTarget,
+  });
 
   // Downstream events are tied to this attempt by generation ids, not seq adjacency: a worker event
   // can be printed a few seq after events emitted under the renderer lock. The only order used is
   // the lower bound of the deciding intake (nothing for this tick precedes it).
-  const intakeSeq = intakes.filter((e) => e.tick === tick).at(-1)?.seq ?? null;
-  const after = (e) => adoptedAtSeq !== null && intakeSeq !== null && e.seq > intakeSeq;
+  const intakeSeq = deciding?.seq ?? null;
+  const after = (e) => genOutcome !== "none" && intakeSeq !== null && e.seq > intakeSeq;
   // `first_reader` is the generation's first reader only in a drain flagged
-  // first_drain_of_generation: true. A drain without the flag (older binary) is
-  // unverified, never observed; drains flagged false are skipped.
+  // first_drain_of_generation: true. Absent (older binary) or null (no current
+  // generation) is unverified, never observed; drains flagged false are skipped.
   const sameGenDrains =
     genOutcome === "adopted" || genOutcome === "unchanged"
       ? byEv("observations").filter((e) => after(e) && sameGen(e.generation, generation))
@@ -217,63 +253,82 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
     .map((e) => e.drain);
   const obsStatus = firstFlagged ? "observed" : unflagged ? "unverified" : "missing";
   const targetObs = (obs?.observations ?? []).filter((o) => consumerSet.has(o.consumer));
+  const targetConsumerRead = obs
+    ? targetObs.some((o) => (o.reads ?? []).some((r) => written.has(r.entry)))
+    : null;
+  const targetConsumerAggregateRead = obs
+    ? targetObs.some((o) => (o.reads ?? []).some((r) => r.aggregate === true))
+    : null;
   links.observations = {
     status: obsStatus,
     reason: firstFlagged
       ? null
       : unflagged
-        ? "first_drain_of_generation absent (older binary)"
+        ? unflagged.first_drain_of_generation === null
+          ? "no-current-generation"
+          : "first_drain_of_generation absent (older binary)"
         : sameGenDrains.length
-          ? "not-first-drain: every drain of this generation is flagged first_drain_of_generation false"
-          : null,
+          ? genOutcome === "unchanged"
+            ? "generation-not-adopted-this-tick"
+            : "not-first-drain: every drain of this generation is flagged first_drain_of_generation false"
+          : genOutcome === "unchanged"
+            ? "generation-not-adopted-this-tick"
+            : null,
     notFirstDrains,
     seq: obs?.seq ?? null,
     drain: obs?.drain ?? null,
     first_drain_of_generation: obs ? (obs.first_drain_of_generation ?? null) : null,
     first_reader: obs?.first_reader ?? null,
-    targetConsumerRead: obs
-      ? targetObs.some((o) => (o.reads ?? []).some((r) => written.has(r.entry)))
-      : null,
-    targetConsumerAggregateRead: obs
-      ? targetObs.some((o) => (o.reads ?? []).some((r) => r.aggregate === true))
-      : null,
+    targetConsumerRead,
+    targetConsumerAggregateRead,
   };
-  const edges = obs ? (byEv("edges").find((e) => e.drain === obs.drain) ?? null) : null;
+  // Several edges events may share a drain id (applied:true then drain_failed on a
+  // poisoned lock): the failure wins.
+  const drainEdges = obs ? byEv("edges").filter((e) => e.drain === obs.drain) : [];
+  const edges = drainEdges.find((e) => e.applied === false) ?? drainEdges[0] ?? null;
   const slots = (edges?.slots ?? []).filter((s) => consumerSet.has(s.consumer));
-  // A group is an edge in the graph only when the drain wrote it (graph_written true); without the
-  // flag the edges link is unverified.
   const graphWritten = typeof edges?.graph_written === "boolean" ? edges.graph_written : null;
   const groupNamesEntry = edges
     ? (edges.groups ?? []).some(
         (g) => consumerSet.has(g.consumer) && (g.entries ?? []).some((p) => written.has(p)),
       )
     : null;
+  let edgesStatus = "missing";
+  let edgesReason = null;
+  if (edges) {
+    if (edges.applied === false) {
+      edgesStatus = "failed";
+      edgesReason = edges.reason ?? "applied false";
+    } else if (edges.applied !== true) {
+      edgesStatus = "unverified";
+      edgesReason = "applied absent";
+    } else if (graphWritten === null) {
+      edgesStatus = "unverified";
+      edgesReason = "graph_written absent (older binary)";
+    } else if (graphWritten === false) {
+      edgesStatus = "not-written";
+      edgesReason = "graph_written false: the drain's groups were not written to the graph";
+    } else edgesStatus = "observed";
+  }
   links.edges = {
-    status: !edges
-      ? "missing"
-      : edges.applied === true && graphWritten === null
-        ? "unverified"
-        : "observed",
-    reason:
-      edges && edges.applied === true && graphWritten === null
-        ? "graph_written absent (older binary)"
-        : null,
+    status: edgesStatus,
+    reason: edgesReason,
+    sameDrainEvents: drainEdges.length,
     seq: edges?.seq ?? null,
     drain: edges?.drain ?? null,
     applied: edges?.applied ?? null,
     graph_written: graphWritten,
     first_drain_of_generation: edges ? (edges.first_drain_of_generation ?? null) : null,
     cleared: edges ? (edges.cleared ?? null) : null,
+    error: edges?.error ?? null,
     targetSlotStatuses: edges ? slots.map((s) => ({ phase: s.phase, status: s.status })) : null,
     groupNamesTargetAndEntry: groupNamesEntry,
-    groupLinksTargetToEntry: edges ? graphWritten === true && groupNamesEntry === true : null,
+    groupLinksTargetToEntry: edges ? edgesStatus === "observed" && groupNamesEntry === true : null,
     groupEntriesTruncated: edges
       ? (edges.groups ?? []).some((g) => consumerSet.has(g.consumer) && g.entries_truncated > 0)
       : null,
-    dropReason: edges?.reason ?? null,
   };
   const urls = urlForms(targetUrl);
-  const suffixes = outputSuffixes(targetUrl);
   const candidates = byEv("publish").filter((e) => {
     if (!(after(e) && sameGen(e.generation, generation))) return false;
     // A lazy publish names its page source when known; prefer it over the url.
@@ -281,19 +336,18 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
       return typeof e.page === "string" && consumerSet.size
         ? consumerSet.has(e.page) && urls.includes(e.url)
         : urls.includes(e.url);
-    return (
-      consumerSet.has(e.page) &&
-      typeof e.output === "string" &&
-      suffixes.some((s) => e.output.endsWith(s))
-    );
+    // Eager outputs are relative to the dist root.
+    return consumerSet.has(e.page) && outputMatches(e.output, expectedOutputs);
   });
+  const afterT1Pub = candidates.filter((e) => !beforeT1(e));
+  const inTime = candidates.filter(beforeT1);
   // A lazy publish links to its drain only when drain_contains_page is true; a
   // missing flag (older binary) is unverified, false is not linked.
   const linked = (e) => e.mode !== "lazy" || e.drain_contains_page === true;
-  const unverifiedPub = candidates.filter(
+  const unverifiedPub = inTime.filter(
     (e) => e.mode === "lazy" && typeof e.drain_contains_page !== "boolean",
   );
-  const publishes = candidates.filter(linked);
+  const publishes = inTime.filter(linked);
   const pubView = (e) => ({
     seq: e.seq,
     mode: e.mode,
@@ -311,11 +365,14 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
       ? null
       : unverifiedPub.length
         ? "drain_contains_page absent (older binary)"
-        : candidates.length
+        : inTime.length
           ? "lazy publish with drain_contains_page false is not linked to the drain"
-          : null,
+          : afterT1Pub.length
+            ? "the only matching publish came after t1"
+            : null,
     events: publishes.map(pubView),
-    unlinked: candidates.filter((e) => !linked(e)).map(pubView),
+    unlinked: inTime.filter((e) => !linked(e)).map(pubView),
+    afterT1: afterT1Pub.map(pubView),
   };
   links.dom = link(dom?.outcome === "success" || dom?.outcome === "recovery-observed", {
     outcome: dom?.outcome ?? null,
@@ -327,17 +384,35 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
   const required = rejected
     ? ["intake", "select", "generation"]
     : ["intake", "select", "generation", "render_plan", "observations", "edges", "publish", "dom"];
-  // Only "observed" counts: "unverified" (an older binary without the flags) and "missing" do not.
+  // Only "observed" counts: unverified, failed, not-written and missing do not.
   const missing = required.filter((k) => links[k].status !== "observed");
   const unverified = required.filter((k) => links[k].status === "unverified");
+  const lazy = publishes.some((e) => e.mode === "lazy") || (stale?.outputs ?? []).length > 0;
+  const targetEvidence = rejected
+    ? {}
+    : {
+        select: targetDirty === true || select?.all_pages === true,
+        render_plan: links.render_plan.targetPlanned === true && (!lazy || staleHasTarget === true),
+        observations: targetConsumerRead === true || targetConsumerAggregateRead === true,
+        edges: links.edges.groupLinksTargetToEntry === true,
+      };
+  const lackingTarget = Object.entries(targetEvidence)
+    .filter(([, ok]) => !ok)
+    .map(([k]) => k);
+  const eventsComplete = missing.length === 0;
   return {
     tick,
     rejected,
+    lazy,
     links,
     required,
     missing,
     unverified,
-    chainComplete: missing.length === 0,
+    targetEvidence,
+    lackingTarget,
+    eventsComplete,
+    chainEventsOnly: eventsComplete && lackingTarget.length > 0,
+    chainComplete: eventsComplete && lackingTarget.length === 0,
   };
 }
 
@@ -356,21 +431,47 @@ export function pathAliases(p) {
   return [...out];
 }
 
-/** The absolute paths an attempt wrote or renamed (rename from and to). */
-export function attemptWritePaths(attempt) {
-  const writes = [
-    ...(attempt.writes ?? (attempt.write ? [attempt.write] : [])),
-    ...(attempt.rejectWrites ?? []),
-    ...(attempt.duringWrites ?? []),
-    ...(attempt.repairWrites ?? []),
-    ...(attempt.recovery ?? []),
-  ];
+/**
+ * The absolute paths an attempt wrote or renamed (rename from and to), split
+ * into the timed writes and the expected-negative recovery writes, which get
+ * their own chain.
+ */
+export function attemptWritePaths(attempt, { recovery = false } = {}) {
+  const writes = recovery
+    ? (attempt.recovery ?? [])
+    : [
+        ...(attempt.writes ?? (attempt.write ? [attempt.write] : [])),
+        ...(attempt.rejectWrites ?? []),
+        ...(attempt.duringWrites ?? []),
+        ...(attempt.repairWrites ?? []),
+      ];
   const paths = new Set();
   for (const w of writes) {
     if (w.path) paths.add(w.path);
     if (w.to) paths.add(w.to);
   }
   return [...paths];
+}
+
+/** Every page string the trace emitted that may name the target: exact alias matches and same-basename others. */
+function targetPageStrings(events, consumers) {
+  const set = new Set(consumers);
+  const base = consumers[0] ? basename(consumers[0]) : null;
+  const seen = new Set();
+  const add = (p) => typeof p === "string" && seen.add(p);
+  for (const e of events) {
+    for (const p of e.pages ?? []) add(p);
+    for (const p of e.selected ?? []) add(p);
+    for (const c of e.changes ?? []) if (Array.isArray(c.dirty)) c.dirty.forEach(add);
+    for (const o of e.observations ?? []) add(o.consumer);
+    for (const s of e.slots ?? []) add(s.consumer);
+    for (const g of e.groups ?? []) add(g.consumer);
+    add(e.page);
+  }
+  return {
+    matched: [...seen].filter((p) => set.has(p)),
+    sameBasenameUnmatched: base ? [...seen].filter((p) => !set.has(p) && basename(p) === base) : [],
+  };
 }
 
 /**
@@ -382,12 +483,24 @@ export function attemptProvenance({ server, mark, attempt, rec, pageFor, traceEn
   const since = server.provSince ? server.provSince(mark) : { lines: [], droppedBeforeMark: null };
   const parsed = parseProvLines(since.lines);
   const consumer = pageFor ? pageFor(rec.targetPath ?? attempt.targetPath) : null;
+  const consumers = consumer ? pathAliases(consumer) : [];
+  const targetUrl = rec.targetPath ?? attempt.targetPath;
   const chain = buildCausalChain(parsed.events, {
     writePaths: attemptWritePaths(attempt).map(pathAliases),
-    consumers: consumer ? pathAliases(consumer) : [],
-    targetUrl: rec.targetPath ?? attempt.targetPath,
+    consumers,
+    targetUrl,
     dom: rec,
+    t1Ns: rec.t1Ns ?? null,
   });
+  const recoveryPaths = attemptWritePaths(attempt, { recovery: true });
+  const recoveryChain = recoveryPaths.length
+    ? buildCausalChain(parsed.events, {
+        writePaths: recoveryPaths.map(pathAliases),
+        consumers,
+        targetUrl,
+        dom: null,
+      })
+    : null;
   return {
     traceEnabled,
     linesSeen: since.lines.length,
@@ -401,8 +514,12 @@ export function attemptProvenance({ server, mark, attempt, rec, pageFor, traceEn
     seqViolations: parsed.seqViolations,
     truncatedLists: parsed.truncatedLists,
     targetConsumer: consumer,
+    // Raw page strings as emitted, so a native run can confirm the absolute PageId form.
+    targetPageStrings: targetPageStrings(parsed.events, consumers),
     causalChain: chain,
     chainComplete: chain.chainComplete,
+    chainEventsOnly: chain.chainEventsOnly,
+    recoveryChain,
     events: parsed.events,
   };
 }

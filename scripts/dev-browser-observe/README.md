@@ -156,6 +156,38 @@ Contract 1e493c9bc adds these rules:
   enabled. The only order used is that nothing for a tick comes before its
   intake.
 
+Review hardening:
+
+- **`edges`:** observed only when `applied: true` and `graph_written: true`.
+  `applied: false` (`token_superseded`, `drain_failed`) is `failed` with its
+  reason. If two edges events share a drain id, the failure wins.
+  `graph_written: false` is `not-written`.
+- **Eager `publish.output`:** relative to the dist root (`index.html`,
+  `articles/a/index.html`). Both sides are normalised before matching.
+- **Timing against `t1`:** the deciding intake is the last one at or before
+  `t1`, and a publish after `t1` does not count. Expected-negative recovery
+  writes are not part of the timed write set; they get their own
+  `recoveryChain`.
+- **Target evidence:** a chain whose events are all observed must also show
+  that each link concerns the target. Otherwise it is `chainEventsOnly`, never
+  complete, and `lackingTarget` names what is missing. The evidence per link
+  is:
+  - select: `targetDirty` or `all_pages`.
+  - render plan: `targetPlanned`; in lazy mode the target's output must also
+    be in `stale`.
+  - observations: the target consumer read the written entry or the
+    aggregate. Every article shares `[slug].tsx`, so a read of another entry
+    is not evidence.
+  - edges: a written graph edge links the target to the entry.
+- **Raw page strings:** `targetPageStrings` records the page strings as
+  emitted, including same-basename strings that did not match, so a native
+  run can confirm the absolute `PageId` form.
+- **Observation reasons:** an unchanged generation (refresh skipped) gives
+  `generation-not-adopted-this-tick`, and `first_drain_of_generation: null`
+  gives `no-current-generation`.
+- **Summary counts:** `summary.json` has `provenanceCounts` with
+  `chainComplete`, `chainEventsOnly`, `incomplete` and `traceMissing`.
+
 `chainComplete` requires every link except `stale`, which is recorded only.
 When the deciding tick was rejected, only intake,
 select and generation are required, and `rejected: true` is set.

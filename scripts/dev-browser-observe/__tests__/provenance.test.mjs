@@ -3,8 +3,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { semanticErrors } from "../lib/profile.mjs";
 import {
+  attemptProvenance,
   attemptWritePaths,
   buildCausalChain,
+  outputMatches,
+  outputsFor,
   parseProvLines,
   traceEnabledIn,
 } from "../lib/provenance.mjs";
@@ -36,7 +39,12 @@ function acceptedTick(tick, paths, { selected = [PAGE], allPages = false, gen = 
     }),
     line("select", {
       tick,
-      changes: paths.map((p) => ({ path: p.path ?? p, kind: "Modified", class: "Content" })),
+      changes: paths.map((p) => ({
+        path: p.path ?? p,
+        kind: "Modified",
+        class: "Content",
+        dirty: allPages ? "all" : selected,
+      })),
       all_pages: allPages,
       all_reasons: allPages ? [{ reason: "global_full_rebuild" }] : [],
       fan_out_safe: !allPages,
@@ -62,7 +70,7 @@ function acceptedTick(tick, paths, { selected = [PAGE], allPages = false, gen = 
       renderer_refreshed: true,
       route_structure_moved: false,
     }),
-    line("stale", { tick, outputs: ["/w/app/dist/articles/a/index.html"], generation: gen }),
+    line("stale", { tick, outputs: ["articles/a/index.html"], generation: gen }),
   ];
 }
 
@@ -107,7 +115,7 @@ const afterAdoption = (gen = GEN, drain = 4, entry = A, flags = {}) => [
     mode: "lazy",
     url: "/articles/a/",
     page: "page" in flags ? flags.page : PAGE,
-    output: "/w/app/dist/articles/a/index.html",
+    output: "articles/a/index.html",
     written: true,
     generation: gen,
     drain,
@@ -196,7 +204,7 @@ describe("causal chain", () => {
       line("publish", {
         mode: "eager",
         page: HOME,
-        output: "/w/app/dist/index.html",
+        output: "index.html",
         written: true,
         generation: GEN,
       }),
@@ -494,8 +502,9 @@ describe("contract 1e493c9bc", () => {
       ...afterAdoption(GEN, 4, A, { graph: false }),
     ]);
     const c = buildCausalChain(events, opts());
+    expect(c.chainComplete).toBe(false);
     expect(c.links.edges).toMatchObject({
-      status: "observed",
+      status: "not-written",
       graph_written: false,
       groupNamesTargetAndEntry: true,
       groupLinksTargetToEntry: false,
@@ -563,6 +572,222 @@ describe("contract 1e493c9bc", () => {
       ssr_module_dependency: "all",
       all_reasons: ["external", "unattributed"],
       graph_known: true,
+    });
+  });
+});
+
+/** Re-number a list of trace lines so seq increases in the given order; optional per-line ns. */
+function reseq(lines, ns = []) {
+  seq = 0;
+  return lines.map((l, i) => {
+    const j = JSON.parse(l.text.slice("[zfb-prov] ".length));
+    return {
+      text: `[zfb-prov] ${JSON.stringify({ ...j, seq: ++seq })}`,
+      ...(ns[i] !== undefined ? { ns: ns[i] } : {}),
+    };
+  });
+}
+const edgeFor = (fields) => line("edges", { drain: 4, generation: GEN, ...fields });
+
+describe("review: false-complete paths", () => {
+  it("edges applied:false is failed, and a failure sharing the drain id wins", () => {
+    const failedOnly = parseProvLines([
+      ...acceptedTick(3, [A]),
+      ...afterAdoption().filter((l) => !l.text.includes('"ev":"edges"')),
+      edgeFor({ applied: false, reason: "token_superseded" }),
+    ]).events;
+    const c1 = buildCausalChain(failedOnly, opts());
+    expect(c1.links.edges).toMatchObject({ status: "failed", reason: "token_superseded" });
+    expect(c1.chainComplete).toBe(false);
+    const both = parseProvLines([
+      ...acceptedTick(3, [A]),
+      ...afterAdoption(),
+      edgeFor({ applied: false, reason: "drain_failed", cleared: true, error: "poisoned" }),
+    ]).events;
+    const c2 = buildCausalChain(both, opts());
+    expect(c2.links.edges).toMatchObject({
+      status: "failed",
+      reason: "drain_failed",
+      sameDrainEvents: 2,
+      cleared: true,
+      error: "poisoned",
+      groupLinksTargetToEntry: false,
+    });
+    expect(c2.chainComplete).toBe(false);
+  });
+
+  it("eager outputs are relative to the dist root", () => {
+    expect(outputsFor("/")).toEqual(["index.html"]);
+    expect(outputsFor("/articles/a/")).toEqual(["articles/a/index.html", "articles/a.html"]);
+    expect(outputMatches("articles/a/index.html", outputsFor("/articles/a/"))).toBe(true);
+    expect(outputMatches("./index.html", outputsFor("/"))).toBe(true);
+    expect(outputMatches("articles/a/index.html", outputsFor("/"))).toBe(false);
+    expect(outputMatches("/w/dist/articles/a/index.html", outputsFor("/articles/a/"))).toBe(true);
+    // An absolute index.html cannot be told apart from any other page's.
+    expect(outputMatches("/w/dist/x/index.html", outputsFor("/"))).toBe(false);
+    const eager = parseProvLines([
+      ...acceptedTick(3, [A]).filter((l) => !l.text.includes('"ev":"stale"')),
+      ...afterAdoption().filter((l) => !l.text.includes('"ev":"publish"')),
+      line("publish", {
+        mode: "eager",
+        page: PAGE,
+        output: "articles/a/index.html",
+        written: true,
+        generation: GEN,
+      }),
+    ]).events;
+    const c = buildCausalChain(eager, opts());
+    expect(c.links.publish.status).toBe("observed");
+    expect(c.lazy).toBe(false);
+    expect(c.chainComplete).toBe(true);
+  });
+
+  it("all events present but no target evidence is chainEventsOnly, never complete", () => {
+    const B = `${W}/b.md`;
+    // The shared [slug].tsx read a different article, select did not dirty the target,
+    // and the lazy stale set does not hold the target's output.
+    const lines = [
+      ...acceptedTick(3, [A], { selected: [HOME] }).map((l) =>
+        l.text.includes('"ev":"stale"')
+          ? line("stale", { tick: 3, outputs: ["articles/b/index.html"], generation: GEN })
+          : l,
+      ),
+      ...afterAdoption(GEN, 4, B),
+    ];
+    const c = buildCausalChain(parseProvLines(lines).events, opts());
+    expect(c.eventsComplete).toBe(true);
+    expect(c.chainComplete).toBe(false);
+    expect(c.chainEventsOnly).toBe(true);
+    expect(c.lackingTarget).toEqual(["select", "render_plan", "observations", "edges"]);
+  });
+
+  it("the aggregate read of the written collection is target evidence for observations", () => {
+    const lines = [...acceptedTick(3, [A]), ...afterAdoption()].map((l) => {
+      if (!l.text.includes('"ev":"observations"')) return l;
+      const j = JSON.parse(l.text.slice(11));
+      j.observations[0].reads = [{ collection: "articles", aggregate: true }];
+      return { text: `[zfb-prov] ${JSON.stringify(j)}` };
+    });
+    const c = buildCausalChain(parseProvLines(lines).events, opts());
+    expect(c.targetEvidence.observations).toBe(true);
+  });
+
+  it("orders against t1: a later intake does not decide and a publish after t1 does not count", () => {
+    const base = [...acceptedTick(3, [A]), ...afterAdoption()];
+    const late = acceptedTick(9, [A]);
+    const all = reseq(
+      [...base, ...late],
+      [
+        ...base.map((_, i) => (i === base.length - 1 ? 500n : 100n + BigInt(i))),
+        ...late.map(() => 600n),
+      ],
+    );
+    const events = parseProvLines(all).events;
+    const c = buildCausalChain(events, opts({ t1Ns: "400" }));
+    expect(c.tick).toBe(3);
+    expect(c.links.intake.afterT1).toHaveLength(1);
+    expect(c.links.publish).toMatchObject({
+      status: "missing",
+      reason: "the only matching publish came after t1",
+    });
+    expect(c.chainComplete).toBe(false);
+    const ok = buildCausalChain(events, opts({ t1Ns: "550" }));
+    expect(ok.tick).toBe(3);
+    expect(ok.chainComplete).toBe(true);
+  });
+
+  it("expected-negative recovery writes are chained separately", () => {
+    const to = `${W}/a-renamed.md`;
+    const attempt = {
+      targetPath: "/",
+      writes: [{ method: "rename", path: A, to }],
+      recovery: [{ method: "rename", path: to, to: A }],
+    };
+    expect(attemptWritePaths(attempt)).toEqual([A, to]);
+    expect(attemptWritePaths(attempt, { recovery: true })).toEqual([to, A]);
+    const s = fakeServer();
+    s.provSince = () => ({ lines: [...acceptedTick(3, [A])], droppedBeforeMark: 0 });
+    const p = attemptProvenance({
+      server: s,
+      mark: 0,
+      attempt,
+      rec: { targetPath: "/", outcome: "expected-negative-observed" },
+      pageFor: () => HOME,
+      traceEnabled: true,
+    });
+    expect(p.recoveryChain).not.toBeNull();
+    expect(p.recoveryChain.links.intake.status).toBe("observed");
+  });
+
+  it("refresh skipped (unchanged generation): observations reason generation-not-adopted-this-tick", () => {
+    const lines = [
+      line("intake", { tick: 4, paths: [{ path: A, kind: "Modified" }], suppressed: 0 }),
+      line("select", { tick: 4, changes: [{ path: A, dirty: [PAGE] }], all_pages: false }),
+      line("refresh", { tick: 4, outcome: "skipped", generation: GEN }),
+      line("observations", {
+        drain: 9,
+        generation: GEN,
+        observations: [],
+        first_reader: null,
+        first_drain_of_generation: false,
+      }),
+    ];
+    const c = buildCausalChain(parseProvLines(lines).events, opts());
+    expect(c.links.generation.outcome).toBe("unchanged");
+    expect(c.links.observations).toMatchObject({
+      status: "missing",
+      reason: "generation-not-adopted-this-tick",
+    });
+  });
+
+  it("first_drain_of_generation null reads as no-current-generation (unverified)", () => {
+    const c = buildCausalChain(
+      parseProvLines([...acceptedTick(3, [A]), ...afterAdoption(GEN, 4, A, { first: null })])
+        .events,
+      opts(),
+    );
+    expect(c.links.observations).toMatchObject({
+      status: "unverified",
+      reason: "no-current-generation",
+    });
+  });
+
+  it("records the raw emitted page strings for the target, including same-basename mismatches", () => {
+    const s = fakeServer();
+    const other = "/private/w/app/pages/articles/[slug].tsx";
+    s.provSince = () => ({
+      lines: [...acceptedTick(3, [A]), line("render_plan", { tick: 3, pages: [other] })],
+      droppedBeforeMark: 0,
+    });
+    const p = attemptProvenance({
+      server: s,
+      mark: 0,
+      attempt: { targetPath: "/articles/a/", writes: [{ method: "in-place", path: A }] },
+      rec: { targetPath: "/articles/a/", outcome: "timeout" },
+      pageFor: () => PAGE,
+      traceEnabled: true,
+    });
+    expect(p.targetPageStrings.matched).toContain(PAGE);
+    expect(p.targetPageStrings.sameBasenameUnmatched).toEqual([other]);
+  });
+
+  it("summary counts complete, events-only, incomplete and trace-missing attempts", () => {
+    const mk = (prov) => ({ type: "attempt", opId: "o", provenance: prov });
+    const s = summarize(
+      [
+        mk({ chainComplete: true, chainEventsOnly: false, traceMissing: false }),
+        mk({ chainComplete: false, chainEventsOnly: true, traceMissing: false }),
+        mk({ chainComplete: false, chainEventsOnly: false, traceMissing: true }),
+        mk({ chainComplete: false, chainEventsOnly: false, traceMissing: false }),
+      ],
+      {},
+    );
+    expect(s.provenanceCounts).toEqual({
+      attempts: 4,
+      chainComplete: 1,
+      chainEventsOnly: 1,
+      incomplete: 2,
+      traceMissing: 1,
     });
   });
 });

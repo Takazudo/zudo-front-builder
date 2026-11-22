@@ -136,12 +136,24 @@
           "properties": {
             "links": {
               "type": "object",
-              "description": "intake, select, generation, render_plan, stale, observations, edges, publish, dom; each {status: observed|missing, ...}"
+              "description": "intake, select, generation, render_plan, stale, observations, edges, publish, dom; each {status: observed|missing|unverified|failed|not-written, ...}. Only observed counts."
             }
           }
         },
         "events": {
           "type": "array"
+        },
+        "chainEventsOnly": {
+          "type": "boolean",
+          "description": "every required link observed but some link lacks evidence about the target (causalChain.lackingTarget); never complete"
+        },
+        "recoveryChain": {
+          "type": ["object", "null"],
+          "description": "chain for the expected-negative recovery writes, kept apart from the timed writes"
+        },
+        "targetPageStrings": {
+          "type": "object",
+          "description": "raw page strings the trace emitted for the target: matched aliases and same-basename strings that did not match"
         }
       }
     }
