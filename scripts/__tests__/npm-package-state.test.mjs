@@ -527,6 +527,42 @@ describe("processing: accepted by npm but still not visible", () => {
     );
   });
 
+  it.each([401, 403])(
+    "a status-API HTTP %i stays uncertain with a non-secret diagnostic (#4719)",
+    async (code) => {
+      const echo = { status: code, body: Buffer.from(`invalid token ${SECRET}`) };
+      const request = async (url) => (url === statusUrl ? echo : notFound());
+      const result = await packageState(NAME, ctx(request, { statusToken: SECRET }));
+      expect(result.state).toBe("uncertain");
+      expect(result.error).toContain(`HTTP ${code}`);
+      expect(result.error).toContain("does not prove the version is absent");
+      expect(result.error).toContain("never grounds to republish");
+      expect(JSON.stringify(result)).not.toContain(SECRET);
+
+      let text = "";
+      const out = { write: (chunk) => (text += chunk) };
+      const env = {
+        ZFB_NPM_STATE_DELAY_MS: "0",
+        ZFB_NPM_STATE_ABSENT_READS: "1",
+        NPM_TOKEN: SECRET,
+      };
+      const args = [
+        "--version",
+        REAL.version,
+        "--source-commit",
+        REAL.commit,
+        "--package",
+        NAME,
+        "--tsv",
+      ];
+      const regRequest = async (url) =>
+        url.startsWith("https://registry.npmjs.org/-/package/") ? echo : notFound();
+      expect(await main(args, { env, out, request: regRequest })).toBe(0);
+      expect(text).toMatch(new RegExp(`^${NAME}\\tuncertain\\t[^\\t]*HTTP ${code}`));
+      expect(text).not.toContain(SECRET);
+    },
+  );
+
   it("a 404 from the status API leaves the version absent", async () => {
     const { request } = registry({});
     const result = await packageState(NAME, ctx(request, { statusToken: SECRET }));

@@ -978,6 +978,13 @@ needs npm support).
   "npm accepted the publish but is still processing", listing the packages.
 - Step 0 recommends `wait-npm-processing`. The package state is `processing`, never `absent`.
 
+A lost acknowledgement is different. When the publish connection drops before npm answers, the
+job has no `+ name@version` line and no E409, so it records no accepted outcome or acceptance
+time. It then rechecks the registry, and only a `present-verified` result is tolerated. An `absent`
+or `uncertain` recheck fails the job as a broken publish, with npm's original error kept in the log.
+Follow Step 0: a later publish of a version npm did accept answers E409 and is classified
+`processing`, not republished.
+
 **What to do**
 
 1. Stop and report. Do not recover.
@@ -989,6 +996,12 @@ needs npm support).
    curl -s -H "Authorization: Bearer ${TOKEN}" \
      "https://registry.npmjs.org/-/package/<name, with / as %2f>/version/<version>/status"
    ```
+
+   If the status API answers HTTP 401 or 403, the local credential was rejected. Step 0 and the
+   state helper then report the package `uncertain`, never `absent`: an authentication failure
+   proves nothing about the version, so it is never a reason to recover or republish. Sign in to
+   npm again (`npm login`) and re-run the check. Do not edit, print or remove stored credentials
+   to make the status read work, and never add a token to CI for it.
 
 3. Wait up to 24 hours. If a package is still processing after that, contact npm support.
 4. Once every package is visible, finalize from `main`:
