@@ -127,7 +127,13 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
     all_reasons: select?.all_reasons ?? null,
     fan_out_safe: select?.fan_out_safe ?? null,
     noop: select?.noop ?? null,
+    // Per-path fields come from the real plan and pass through unchanged (e.g. a
+    // global_removed reason or an external_override marker).
     changes: (select?.changes ?? []).filter((c) => written.has(c.path)),
+    externalOverride: (select?.changes ?? []).some(
+      (c) =>
+        written.has(c.path) && c.external_override !== undefined && c.external_override !== false,
+    ),
   });
 
   const reject = forTick("reject")[0] ?? null;
@@ -182,14 +188,34 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
   links.stale = link(!!stale, { seq: stale?.seq ?? null, outputs: stale?.outputs ?? null });
 
   const after = (e) => adoptedAtSeq !== null && e.seq > adoptedAtSeq;
-  const obs =
+  // `first_reader` is the generation's first reader only in a drain flagged
+  // first_drain_of_generation: true. A drain without the flag (older binary) is
+  // unverified, never observed; drains flagged false are skipped.
+  const sameGenDrains =
     genOutcome === "adopted" || genOutcome === "unchanged"
-      ? (byEv("observations").find((e) => after(e) && sameGen(e.generation, generation)) ?? null)
-      : null;
+      ? byEv("observations").filter((e) => after(e) && sameGen(e.generation, generation))
+      : [];
+  const firstFlagged = sameGenDrains.find((e) => e.first_drain_of_generation === true) ?? null;
+  const unflagged = sameGenDrains.find((e) => typeof e.first_drain_of_generation !== "boolean");
+  const obs = firstFlagged ?? unflagged ?? null;
+  const notFirstDrains = sameGenDrains
+    .filter((e) => e.first_drain_of_generation === false)
+    .map((e) => e.drain);
+  const obsStatus = firstFlagged ? "observed" : unflagged ? "unverified" : "missing";
   const targetObs = (obs?.observations ?? []).filter((o) => consumerSet.has(o.consumer));
-  links.observations = link(!!obs, {
+  links.observations = {
+    status: obsStatus,
+    reason: firstFlagged
+      ? null
+      : unflagged
+        ? "first_drain_of_generation absent (older binary)"
+        : sameGenDrains.length
+          ? "not-first-drain: every drain of this generation is flagged first_drain_of_generation false"
+          : null,
+    notFirstDrains,
     seq: obs?.seq ?? null,
     drain: obs?.drain ?? null,
+    first_drain_of_generation: obs ? (obs.first_drain_of_generation ?? null) : null,
     first_reader: obs?.first_reader ?? null,
     targetConsumerRead: obs
       ? targetObs.some((o) => (o.reads ?? []).some((r) => written.has(r.entry)))
@@ -197,7 +223,7 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
     targetConsumerAggregateRead: obs
       ? targetObs.some((o) => (o.reads ?? []).some((r) => r.aggregate === true))
       : null,
-  });
+  };
   const edges = obs ? (byEv("edges").find((e) => e.drain === obs.drain) ?? null) : null;
   const slots = (edges?.slots ?? []).filter((s) => consumerSet.has(s.consumer));
   links.edges = link(!!edges, {
@@ -217,7 +243,7 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
   });
   const urls = urlForms(targetUrl);
   const suffixes = outputSuffixes(targetUrl);
-  const publishes = byEv("publish").filter((e) => {
+  const candidates = byEv("publish").filter((e) => {
     if (!(after(e) && sameGen(e.generation, generation))) return false;
     if (e.mode === "lazy") return urls.includes(e.url);
     return (
@@ -226,17 +252,36 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
       suffixes.some((s) => e.output.endsWith(s))
     );
   });
-  links.publish = link(publishes.length > 0, {
-    events: publishes.map((e) => ({
-      seq: e.seq,
-      mode: e.mode,
-      url: e.url ?? null,
-      page: e.page ?? null,
-      output: e.output,
-      written: e.written,
-      provenance_current: e.provenance_current ?? null,
-    })),
+  // A lazy publish links to its drain only when drain_contains_page is true; a
+  // missing flag (older binary) is unverified, false is not linked.
+  const linked = (e) => e.mode !== "lazy" || e.drain_contains_page === true;
+  const unverifiedPub = candidates.filter(
+    (e) => e.mode === "lazy" && typeof e.drain_contains_page !== "boolean",
+  );
+  const publishes = candidates.filter(linked);
+  const pubView = (e) => ({
+    seq: e.seq,
+    mode: e.mode,
+    url: e.url ?? null,
+    page: e.page ?? null,
+    output: e.output,
+    written: e.written,
+    drain: e.drain ?? null,
+    drain_contains_page: e.drain_contains_page ?? null,
+    provenance_current: e.provenance_current ?? null,
   });
+  links.publish = {
+    status: publishes.length ? "observed" : unverifiedPub.length ? "unverified" : "missing",
+    reason: publishes.length
+      ? null
+      : unverifiedPub.length
+        ? "drain_contains_page absent (older binary)"
+        : candidates.length
+          ? "lazy publish with drain_contains_page false is not linked to the drain"
+          : null,
+    events: publishes.map(pubView),
+    unlinked: candidates.filter((e) => !linked(e)).map(pubView),
+  };
   links.dom = link(dom?.outcome === "success" || dom?.outcome === "recovery-observed", {
     outcome: dom?.outcome ?? null,
     t1Ns: dom?.t1Ns ?? null,
@@ -247,8 +292,18 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
   const required = rejected
     ? ["intake", "select", "generation"]
     : ["intake", "select", "generation", "render_plan", "observations", "edges", "publish", "dom"];
+  // Only "observed" counts: "unverified" (an older binary without the flags) and "missing" do not.
   const missing = required.filter((k) => links[k].status !== "observed");
-  return { tick, rejected, links, required, missing, chainComplete: missing.length === 0 };
+  const unverified = required.filter((k) => links[k].status === "unverified");
+  return {
+    tick,
+    rejected,
+    links,
+    required,
+    missing,
+    unverified,
+    chainComplete: missing.length === 0,
+  };
 }
 
 /** Raw and realpath forms of a path (a removed file resolves through its dir). */

@@ -129,6 +129,16 @@ count both `from` and `to`. Each link is `observed` or `missing`:
    `page` plus the output suffix.
 8. `dom`: the outcome the harness observed (`t1`, latency).
 
+`observations` counts only a drain flagged `first_drain_of_generation: true`.
+Drains flagged `false` are skipped and listed in `notFirstDrains`. If every
+drain of the generation is flagged `false`, the link is `missing` with a
+`not-first-drain` reason. A lazy `publish` links to its drain only when
+`drain_contains_page` is `true`; one flagged `false` is kept under `unlinked`.
+If an older binary omits either flag, the link is `unverified`: it is never
+`observed` and the chain is not complete (`causalChain.unverified`). Per-path
+`select` fields, such as a `global_removed` reason or `external_override`, and
+any unknown extra fields pass through unchanged.
+
 `chainComplete` requires every link except `stale`, which is recorded only.
 When the deciding tick was rejected, only intake,
 select and generation are required, and `rejected: true` is set.

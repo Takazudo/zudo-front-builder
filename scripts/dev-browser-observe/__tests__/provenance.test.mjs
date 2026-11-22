@@ -66,7 +66,7 @@ function acceptedTick(tick, paths, { selected = [PAGE], allPages = false, gen = 
   ];
 }
 
-const afterAdoption = (gen = GEN, drain = 4, entry = A) => [
+const afterAdoption = (gen = GEN, drain = 4, entry = A, flags = {}) => [
   line("observations", {
     drain,
     generation: gen,
@@ -82,6 +82,11 @@ const afterAdoption = (gen = GEN, drain = 4, entry = A) => [
       },
     ],
     first_reader: { index: 0, consumer: PAGE, phase: "Render", collection: "articles" },
+    ...("first" in flags
+      ? flags.first === undefined
+        ? {}
+        : { first_drain_of_generation: flags.first }
+      : { first_drain_of_generation: true }),
   }),
   line("edges", {
     drain,
@@ -101,6 +106,11 @@ const afterAdoption = (gen = GEN, drain = 4, entry = A) => [
     generation: gen,
     drain,
     provenance_current: true,
+    ...("contains" in flags
+      ? flags.contains === undefined
+        ? {}
+        : { drain_contains_page: flags.contains }
+      : { drain_contains_page: true }),
   }),
 ];
 
@@ -373,5 +383,89 @@ describe("provenance example profiles", () => {
         );
       }
     }
+  });
+});
+
+describe("contract update: first_drain_of_generation, drain_contains_page, select pass-through", () => {
+  it("skips drains flagged not-first and uses the earliest flagged first", () => {
+    const { events } = parseProvLines([
+      ...acceptedTick(3, [A]),
+      ...afterAdoption(GEN, 4, A, { first: false }).slice(0, 1),
+      ...afterAdoption(GEN, 5, A),
+    ]);
+    const c = buildCausalChain(events, opts());
+    expect(c.links.observations).toMatchObject({
+      status: "observed",
+      drain: 5,
+      notFirstDrains: [4],
+      first_drain_of_generation: true,
+    });
+    expect(c.links.edges.drain).toBe(5);
+    expect(c.chainComplete).toBe(true);
+  });
+
+  it("every drain flagged false: observations missing with the not-first-drain reason", () => {
+    const { events } = parseProvLines([
+      ...acceptedTick(3, [A]),
+      ...afterAdoption(GEN, 4, A, { first: false }),
+    ]);
+    const c = buildCausalChain(events, opts());
+    expect(c.links.observations).toMatchObject({ status: "missing", notFirstDrains: [4] });
+    expect(c.links.observations.reason).toMatch(/^not-first-drain/);
+    expect(c.chainComplete).toBe(false);
+  });
+
+  it("an older binary without the flags is unverified, never observed, and the chain is incomplete", () => {
+    const { events } = parseProvLines([
+      ...acceptedTick(3, [A]),
+      ...afterAdoption(GEN, 4, A, { first: undefined, contains: undefined }),
+    ]);
+    const c = buildCausalChain(events, opts());
+    expect(c.links.observations.status).toBe("unverified");
+    expect(c.links.publish.status).toBe("unverified");
+    expect(c.unverified).toEqual(["observations", "publish"]);
+    expect(c.chainComplete).toBe(false);
+  });
+
+  it("a lazy publish with drain_contains_page false is not linked", () => {
+    const { events } = parseProvLines([
+      ...acceptedTick(3, [A]),
+      ...afterAdoption(GEN, 4, A, { contains: false }),
+    ]);
+    const c = buildCausalChain(events, opts());
+    expect(c.links.publish).toMatchObject({ status: "missing", events: [] });
+    expect(c.links.publish.unlinked).toHaveLength(1);
+    expect(c.chainComplete).toBe(false);
+  });
+
+  it("select per-path fields from the real plan pass through unchanged", () => {
+    const { events } = parseProvLines([
+      line("intake", { tick: 11, paths: [{ path: A, kind: "Removed" }], suppressed: 0 }),
+      line("select", {
+        tick: 11,
+        changes: [
+          {
+            path: A,
+            kind: "Removed",
+            class: "Content",
+            reason: "global_removed",
+            external_override: { reason: "x" },
+            future_field: 7,
+          },
+        ],
+        all_pages: true,
+        all_reasons: [{ reason: "global_removed" }],
+        selected: null,
+        noop: false,
+      }),
+    ]);
+    const c = buildCausalChain(events, opts());
+    expect(c.links.select.changes[0]).toMatchObject({
+      reason: "global_removed",
+      external_override: { reason: "x" },
+      future_field: 7,
+    });
+    expect(c.links.select.externalOverride).toBe(true);
+    expect(c.links.select.all_reasons).toEqual([{ reason: "global_removed" }]);
   });
 });
