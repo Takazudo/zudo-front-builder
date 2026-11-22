@@ -759,4 +759,8 @@ pub trait AssetPipeline: Send + Sync {
     /// Apply `plan` against `ctx`. See module-level docs for the
     /// expected behaviour.
     fn apply(&self, plan: &RebuildPlan, ctx: &BuildContext) -> Result<BuildOutcome>;
+
+    /// Keep the CSS work of a tick that failed before reaching [`Self::apply`]
+    /// for the next applied tick. Pipelines without a CSS pass ignore it.
+    fn defer_css(&self, _rerun_css: bool, _changes: crate::CssChangeSet) {}
 }
