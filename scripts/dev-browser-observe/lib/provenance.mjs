@@ -351,8 +351,10 @@ export function buildCausalChain(
       return typeof e.page === "string" && consumerSet.size
         ? consumerSet.has(e.page) && urls.includes(e.url)
         : urls.includes(e.url);
-    // Eager outputs are relative to the dist root.
-    return consumerSet.has(e.page) && outputMatches(e.output, expectedOutputs);
+    // Eager outputs are relative to the dist root. The output path is per URL, so it is
+    // the tie; zfb's eager `page` can be an output-keyed PageId, not the page source
+    // (observed natively on Q bbf742267 for the lazy tick's eagerly rendered edited route).
+    return outputMatches(e.output, expectedOutputs);
   });
   const afterT1Pub = candidates.filter((e) => !beforeT1(e));
   const inTime = candidates.filter(beforeT1);

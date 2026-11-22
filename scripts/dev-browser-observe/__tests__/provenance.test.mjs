@@ -644,6 +644,32 @@ describe("review: false-complete paths", () => {
     expect(c.lazyRuleApplied).toBe(false);
     expect(c.links.observations.evidence.via).toBe("first-drain-after-render-plan");
     expect(c.chainComplete).toBe(true);
+    // Native shape on Q: the eager `page` is the output-keyed id, not the page source.
+    const native = parseProvLines([
+      ...acceptedTick(3, [A]).filter((l) => !l.text.includes('"ev":"stale"')),
+      ...afterAdoption().filter((l) => !l.text.includes('"ev":"publish"')),
+      line("publish", {
+        mode: "eager",
+        page: "articles/a/index.html",
+        output: "articles/a/index.html",
+        written: true,
+        generation: GEN,
+      }),
+    ]).events;
+    expect(buildCausalChain(native, opts({ lazy: false })).links.publish.status).toBe("observed");
+    // Another article's output never links, whatever its page field says.
+    const other = parseProvLines([
+      ...acceptedTick(3, [A]).filter((l) => !l.text.includes('"ev":"stale"')),
+      ...afterAdoption().filter((l) => !l.text.includes('"ev":"publish"')),
+      line("publish", {
+        mode: "eager",
+        page: PAGE,
+        output: "articles/b/index.html",
+        written: true,
+        generation: GEN,
+      }),
+    ]).events;
+    expect(buildCausalChain(other, opts({ lazy: false })).links.publish.status).toBe("missing");
   });
 
   it("all events present but no target evidence is chainEventsOnly, never complete", () => {

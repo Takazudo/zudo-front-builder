@@ -126,7 +126,8 @@ count both `from` and `to`. Each link is `observed` or `missing`:
    statuses (`replaced`, `retired`, `retained`, ...) and whether a group links
    the target consumer to the written entry.
 7. `publish` of the target with that generation: lazy by `url`, eager by
-   `page` plus the output suffix.
+   its per-URL output path. The eager `page` field is not used to match: zfb
+   can report an output-keyed id there instead of the page source.
 8. `dom`: the outcome the harness observed (`t1`, latency).
 
 `observations` counts only a drain flagged `first_drain_of_generation: true`.
