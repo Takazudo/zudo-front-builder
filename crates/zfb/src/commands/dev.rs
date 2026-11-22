@@ -7844,21 +7844,6 @@ impl DevRenderSession {
             .collect()
     }
 
-    /// Look up the SSG [`RouteUniverseEntry`] for a request URL path
-    /// (issue #1019 — reverse URL index).
-    ///
-    /// `request_path` must be:
-    /// - Base-prefix-stripped (the server removes the prefix before
-    ///   dispatching — the index never sees it).
-    /// - May carry a query string (stripped here before lookup).
-    /// - May be percent-encoded (decoded once, then re-canonicalized to the
-    ///   encoded `url_path` form before lookup so `/posts/caf%C3%A9` resolves
-    ///   the `/posts/caf%C3%A9` route — issue #1768).
-    ///
-    /// Returns `Some(entry)` when a matching SSG route exists, `None` for
-    /// SSR-only routes, dynamic routes that were never expanded, and any
-    /// path not in the route universe. The returned entry is cloned out
-    /// under a short read lock — no lock is held by the caller.
     /// Source page id (path) whose route table owns `output_path`. Linear
     /// scan; used only by the provenance trace.
     pub(crate) fn source_for_output_path(&self, output_path: &Path) -> Option<PathBuf> {
@@ -7874,6 +7859,21 @@ impl DevRenderSession {
             .map(|(source, _)| source.clone())
     }
 
+    /// Look up the SSG [`RouteUniverseEntry`] for a request URL path
+    /// (issue #1019 — reverse URL index).
+    ///
+    /// `request_path` must be:
+    /// - Base-prefix-stripped (the server removes the prefix before
+    ///   dispatching — the index never sees it).
+    /// - May carry a query string (stripped here before lookup).
+    /// - May be percent-encoded (decoded once, then re-canonicalized to the
+    ///   encoded `url_path` form before lookup so `/posts/caf%C3%A9` resolves
+    ///   the `/posts/caf%C3%A9` route — issue #1768).
+    ///
+    /// Returns `Some(entry)` when a matching SSG route exists, `None` for
+    /// SSR-only routes, dynamic routes that were never expanded, and any
+    /// path not in the route universe. The returned entry is cloned out
+    /// under a short read lock — no lock is held by the caller.
     pub(crate) fn lookup_by_url(&self, request_path: &str) -> Option<RouteUniverseEntry> {
         // Strip query string (everything from the first `?`).
         let path_only = request_path.split('?').next().unwrap_or(request_path);
