@@ -207,14 +207,22 @@ export function materializeFieldNotes({
   adapter,
   managedCss = false,
   placement = "external",
+  expectedDatasetSha256 = null,
 }) {
   const manifest = loadFieldNotesFixture(fixtureDir);
+  // The pinned dataset is the manifest's unless a caller (a unit test's fake corpus) names its own.
+  const wantDataset = expectedDatasetSha256 ?? manifest.source.datasetSha256;
   const place = fnPlacement(manifest, placement);
   if (existsSync(workDir)) throw new Error(`work dir already exists: ${workDir}`);
   const src = manifest.source;
   const failed = overlayChecks(fixtureDir, sourceDir, manifest, placement).filter((c) => !c.ok);
   if (failed.length)
     throw new Error(`placement ${placement} overlay identity mismatch: ${JSON.stringify(failed)}`);
+  const sourceDataset = datasetSha256(join(sourceDir, src.content));
+  if (sourceDataset !== wantDataset)
+    throw new Error(
+      `source dataset ${sourceDataset} is not the pinned dataset ${wantDataset}; nothing materialized`,
+    );
   mkdirSync(workDir, { recursive: true });
   const roots =
     placement === "internal" ? [src.app, src.shared] : [src.app, src.content, src.shared];
@@ -252,6 +260,11 @@ export function materializeFieldNotes({
   }
   const model = createModel(contentManifest, readJson(join(appDir, "lib", "spec.json")));
   const configSha256 = sha256File(configPath);
+  const materializedDatasetSha256 = datasetSha256Of(contentManifest, contentDir);
+  if (materializedDatasetSha256 !== wantDataset)
+    throw new Error(
+      `materialized dataset ${materializedDatasetSha256} (${placement}) is not the pinned dataset ${wantDataset}`,
+    );
   return {
     kind: "field-notes",
     manifest,
@@ -267,7 +280,7 @@ export function materializeFieldNotes({
       allowOutsideRoot: place.allowOutsideRoot === true,
       externalContentCopied: placement !== "internal",
     },
-    materializedDatasetSha256: datasetSha256Of(contentManifest, contentDir),
+    materializedDatasetSha256,
     layoutPath: join(appDir, manifest.paths.layout),
     publicCssPath: join(appDir, manifest.paths.publicCss),
     managedCssPath,

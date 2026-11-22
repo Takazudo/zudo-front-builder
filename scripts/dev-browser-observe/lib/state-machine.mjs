@@ -33,6 +33,8 @@ export const OUTCOMES = [
   "not-same-tick",
   "same-tick-unknown",
   "recovery-error",
+  "rejection-not-observed",
+  "open-page-replaced",
 ];
 
 const PASS_OUTCOMES = new Set(["success", "expected-negative-observed", "recovery-observed"]);
@@ -94,6 +96,8 @@ export function newAccounting(planned) {
     controlsNotFired: 0,
     expectedNegativePasses: 0,
     recoveryPasses: 0,
+    recoverySameTickProvenPasses: 0,
+    recoveryNoTickPremisePasses: 0,
     recoveryUnprovenTick: 0,
     restorationFailures: 0,
     supplementalFailures: 0,
@@ -154,8 +158,12 @@ function count(acc, outcome, rec = null) {
   else if (outcome === "expected-negative-observed") acc.expectedNegativePasses += 1;
   else if (outcome === "recovery-observed") {
     // A recovery whose same-tick premise was declared but not proven is kept apart from the passes.
-    if (rec?.sameTick && rec.sameTick.sameTick !== true) acc.recoveryUnprovenTick += 1;
-    else acc.recoveryPasses += 1;
+    if (rec?.sameTick && rec.sameTickProven !== true) acc.recoveryUnprovenTick += 1;
+    else {
+      acc.recoveryPasses += 1;
+      if (rec?.sameTickProven === true) acc.recoverySameTickProvenPasses += 1;
+      else acc.recoveryNoTickPremisePasses += 1;
+    }
   } else if (ERROR_OUTCOMES.has(outcome)) acc.error += 1;
 }
 

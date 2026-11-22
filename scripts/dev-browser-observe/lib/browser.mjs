@@ -607,8 +607,8 @@ export class ObserverPage {
 
   /**
    * Read-only look at the OPEN document, with no navigation, reload or HTTP
-   * request: URL, title, declared error markers, and the document's own
-   * response status from its navigation timing entry (null when unknown).
+   * request: URL, title, docUUID, declared error markers, and the status of
+   * the document's original navigation (labelled as such; null when unknown).
    */
   async inspectOpen({ errorMarkers = [] } = {}) {
     try {
@@ -623,7 +623,8 @@ export class ObserverPage {
           ),
           notInCache: text.indexOf("page not in cache") !== -1,
           bodyExcerpt: text.slice(0, 600),
-          httpStatus:
+          // The status of this document's original navigation, before any edit: not evidence of a later state.
+          originalNavigationStatus:
             nav && typeof nav.responseStatus === "number" && nav.responseStatus > 0
               ? nav.responseStatus
               : null,

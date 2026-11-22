@@ -104,6 +104,8 @@ function fieldNotesErrors(profile) {
           errors.push(
             `${at(s, i)}: requireSameTick needs a diagnostic profile (ZFB_DEV_TIMING intake lines)`,
           );
+        if (op.requireSameTick === true && profile.server?.env?.ZFB_DEV_TIMING !== "1")
+          errors.push(`${at(s, i)}: requireSameTick needs server.env.ZFB_DEV_TIMING "1"`);
         if (op.requireSameTick === true && op.op === "edit-during-rejected")
           errors.push(`${at(s, i)}: edit-during-rejected has no same-tick premise`);
         if (op.invalid && op.op !== "css-in-rejected-discovery-tick")

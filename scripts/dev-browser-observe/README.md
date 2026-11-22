@@ -357,19 +357,30 @@ with the extension stripped and the case kept, so `Article-00008.md` becomes the
 slug `Article-00008`. Its frontmatter `slug` stays `article-00008`, and the
 Field Notes helpers throw `Article slug mismatch`. Restoration renames the
 variant back on the same inode, then checks the exact entry names, hashes and
-live pages.
+live pages. Restoration never unlinks an extra file whose lower-cased name, or
+whose dev and inode, matches a snapshot file. On a case-insensitive volume that
+file can be the article's only inode. It is left in place for inspection, and
+the cleanup reports `restoration-failed`.
 
 **Recovery ops** run only in `set: "recovery"` and must declare
 `expectState` for the rejected generation. The steps are:
 
 1. Write CSS first, then content, as the Rust e2e does.
-2. Wait, bounded, for the rejection line (`was not published`, or
-   `[zfb] rebuild tick failed`), then wait for a quiet window.
+2. Wait, bounded by `rejectionWaitMs`, for a rejection line (`was not
+   published`, or `[zfb] rebuild tick failed`) printed after the broken write.
+   Without one the outcome is `rejection-not-observed` and nothing is repaired.
+   Otherwise the repair could join the broken write in one valid tick. Then
+   wait for a quiet window.
 3. Classify the rejected state. For the CSS ops this reads the open page in
-   place: its own navigation status, markers and the last-good predicate. For
+   place: markers and the last-good predicate. First it checks that the page
+   is still the prepared document: the same docUUID, no new document, no
+   main-frame navigation, and a settle that reached quiet. If not, the outcome
+   is `open-page-replaced`. The document's original navigation status is
+   recorded as `originalNavigationStatus` and is not used as evidence. For
    `edit-during-rejected` it observes the declared paths, then navigates back
    once.
-4. Make any writes declared for the rejected state.
+4. Make any writes declared for the rejected state. After them the open page
+   gets the same unchanged-document check.
 5. Arm on the open page.
 6. Repair: `t0` is this write.
 7. Wait for the armed notify (`t1`), then run the declared checks.
@@ -380,18 +391,25 @@ unless the op declares `beforeRepair: "may-be-present"`; then no latency is
 claimed.
 
 The CSS ops parse the server lines from the first write to the rejection for
-`[zfb-timing] intake paths:`. This gives `sameTick`:
+`[zfb-timing] intake paths:`. Lines from before the first write are dropped,
+and only the last intake line before the rejection decides. This gives
+`sameTick`:
 
-- `true`: one intake line names both paths.
+- `true`: the last intake line names both paths.
 - `false`: the paths were in different intakes. The outcome is
   `not-same-tick`, and the batch stops.
-- `unknown`: there was no timing line.
+- `unknown`: there was no timing line, or the server log was truncated.
 
-With `requireSameTick: true` (diagnostic profiles only), `unknown` stops as
+With `requireSameTick: true` (diagnostic profiles with
+`server.env.ZFB_DEV_TIMING: "1"` only), `unknown` stops as
 `same-tick-unknown`. Without it, an otherwise good `recovery-observed` is counted
-in `recoveryUnprovenTick`, never in `recoveryPasses`. These outcomes are errors
-that stop the batch: `recovery-state-mismatch`, `recovery-failed`, `not-same-tick`
-and `same-tick-unknown`. A timeout after the repair stays `timeout`.
+in `recoveryUnprovenTick`, never in `recoveryPasses`. Every recovery record
+carries `sameTickProven` (`true`, `false`, or `null` when the op has no tick
+premise or it is unknown), and so does the `recovery` list in `summary.json`.
+Passes are split into `recoverySameTickProvenPasses` and
+`recoveryNoTickPremisePasses`. These outcomes are errors that stop the batch:
+`rejection-not-observed`, `open-page-replaced`, `recovery-state-mismatch`,
+`recovery-failed`, `not-same-tick` and `same-tick-unknown`. A timeout after the repair stays `timeout`.
 
 **`fixture.placement`** (Field Notes): `external` is the default and copies
 the source layout exactly. `internal` is a versioned derived overlay. The
@@ -403,6 +421,8 @@ only change is the collection `path` (`content/articles`, no
 provenance (`derived`), the base sha256 (`a68c2bdb…f915`), the overlay sha256
 (`ddce03ff…161e`) and the exact diff. `verify-identity` and materialization
 reject a different base or overlay. The source pins are still verified.
+Materialization also refuses a source whose `datasetSha256` is not the
+manifest's, and a materialized copy whose dataset hash differs.
 Receipts record `placement`, `layout`, `configSha256`, `configBaseSha256` and
 `materializedDatasetSha256`. Every op follows the materialized content dir.
 

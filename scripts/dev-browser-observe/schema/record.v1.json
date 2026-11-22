@@ -65,7 +65,9 @@
         "recovery-state-mismatch",
         "not-same-tick",
         "same-tick-unknown",
-        "recovery-error"
+        "recovery-error",
+        "rejection-not-observed",
+        "open-page-replaced"
       ]
     },
     "latencyMs": {

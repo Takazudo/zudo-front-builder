@@ -555,6 +555,37 @@ export function verifySnapshot(snapshot) {
 }
 
 /**
+ * A predicate for extra files restoration must never unlink: an entry whose
+ * lower-cased name equals a snapshot file's in the same dir, or whose
+ * dev+inode is a snapshot file's (a case alias of it).
+ */
+export function aliasGuard(snapshot) {
+  const names = new Map();
+  const inodes = new Map();
+  for (const p of Object.keys(snapshot.files)) {
+    names.set(`${dirname(p)}\0${basename(p).toLowerCase()}`, p);
+    try {
+      const st = statSync(p);
+      inodes.set(`${st.dev}:${st.ino}`, p);
+    } catch {
+      // missing now: nothing to alias
+    }
+  }
+  return (path) => {
+    const byName = names.get(`${dirname(path)}\0${basename(path).toLowerCase()}`);
+    if (byName) return { reason: "case variant of snapshot file", of: byName };
+    try {
+      const st = statSync(path);
+      const byInode = inodes.get(`${st.dev}:${st.ino}`);
+      if (byInode) return { reason: "same dev+inode as snapshot file", of: byInode };
+    } catch {
+      return null;
+    }
+    return null;
+  };
+}
+
+/**
  * Revert case-only renames before anything else: an entry whose name differs
  * from a snapshot file's name only by case (and whose exact name is gone) is
  * renamed back. Without this a case-insensitive volume would report the
@@ -711,9 +742,22 @@ export function restoreSnapshot(
       actions.push({ path, method: write.method, error: String(error?.message ?? error) });
     }
   }
+  const guard = aliasGuard(snapshot);
   for (const dir of snapshot.dirs) {
     for (const f of walkFiles(dir)) {
       if (f.abs in snapshot.files) continue;
+      const alias = guard(f.abs);
+      if (alias) {
+        // On a case-insensitive volume this entry may be the only inode of a snapshot file:
+        // never unlink it. It stays for inspection and verification reports the mismatch.
+        actions.push({
+          path: f.abs,
+          method: "unlink",
+          skipped: true,
+          error: `refused: ${alias.reason} ${alias.of}`,
+        });
+        continue;
+      }
       const write = { method: "unlink", path: f.abs };
       try {
         performWrite(write, untimed, fsImpl);

@@ -441,7 +441,7 @@
                 },
                 "requireSameTick": {
                   "type": "boolean",
-                  "description": "css-in-rejected-*: stop with same-tick-unknown unless the [zfb-timing] intake lines prove the CSS and content edits shared one tick (diagnostic profiles only). A proven different tick is always not-same-tick."
+                  "description": "css-in-rejected-*: stop with same-tick-unknown unless the [zfb-timing] intake lines prove the CSS and content edits shared one tick (diagnostic profiles only). A proven different tick is always not-same-tick. Requires diagnostic: true and server.env.ZFB_DEV_TIMING \"1\"."
                 },
                 "beforeRepair": {
                   "enum": ["must-be-absent", "may-be-present"],
@@ -457,7 +457,7 @@
                 "rejectionWaitMs": {
                   "type": "integer",
                   "minimum": 1,
-                  "description": "recovery ops: bound on waiting for the rejection server line (default settleMs or restoreMs)."
+                  "description": "recovery ops: bound on waiting for the rejection server line after the broken write (default settleMs or restoreMs); no line in time is rejection-not-observed."
                 }
               }
             }

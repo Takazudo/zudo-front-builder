@@ -1,6 +1,7 @@
 import {
   cpSync,
   existsSync,
+  linkSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -25,6 +26,7 @@ import { FIXTURE_KINDS } from "../lib/fixture-kinds.mjs";
 import {
   RENAME_NOOP,
   REAL_FS,
+  aliasGuard,
   dirEntries,
   performWrite,
   performWrites,
@@ -36,7 +38,8 @@ import {
 import { semanticErrors } from "../lib/profile.mjs";
 import { validateAs } from "../lib/schema.mjs";
 import { DIAGNOSTIC_ENV, serverEnv } from "../lib/server.mjs";
-import { sameTickEvidence } from "../lib/special-modes.mjs";
+import { classifyOpen, sameTickEvidence } from "../lib/special-modes.mjs";
+import { summarize } from "../lib/stats.mjs";
 import { batchExitOk, runBatch } from "../lib/state-machine.mjs";
 import { HARNESS_DIR, sha256, sha256File } from "../lib/util.mjs";
 import { deps, fakePage, fakeServer } from "./fakes.mjs";
@@ -67,7 +70,7 @@ function baseConfigBytes() {
 function setup({ placement = "external", adapter = "original-memoized", realConfig = true } = {}) {
   const root = tmp();
   const src = join(root, "src");
-  makeFakeSource(src, 20);
+  const { datasetSha256: ds } = makeFakeSource(src, 20);
   if (realConfig) writeFileSync(join(src, "apps", "zfb", "zfb.config.ts"), baseConfigBytes());
   const m = materializeFieldNotes({
     fixtureDir: FIXTURE,
@@ -76,8 +79,9 @@ function setup({ placement = "external", adapter = "original-memoized", realConf
     adapter,
     managedCss: true,
     placement,
+    expectedDatasetSha256: ds,
   });
-  return { root, src, m };
+  return { root, src, m, ds };
 }
 
 const fnFs = (m) =>
@@ -631,12 +635,13 @@ describe("recovery ops: plans", () => {
 
   it("CSS recovery ops need the managed stylesheet", () => {
     const root = tmp();
-    makeFakeSource(join(root, "src"), 20);
+    const { datasetSha256: ds } = makeFakeSource(join(root, "src"), 20);
     const m = materializeFieldNotes({
       fixtureDir: FIXTURE,
       sourceDir: join(root, "src"),
       workDir: join(root, "work"),
       adapter: "direct-read",
+      expectedDatasetSha256: ds,
     });
     expect(() =>
       planFieldNotesOp(m, m.model, {
@@ -657,7 +662,16 @@ function recoveryPage({ open, notify = true, precondition = false, checksOk = tr
     mark: () => ({}),
     inspectOpen: async () => {
       calls.push("inspectOpen");
-      return open ?? { ok: true, open: true, httpStatus: 200, title: "t", bodyExcerpt: "" };
+      return (
+        open ?? {
+          ok: true,
+          open: true,
+          docUUID: "doc-1",
+          markersFound: [],
+          title: "t",
+          bodyExcerpt: "",
+        }
+      );
     },
     evaluateNow: async () => ({ matched: true }),
     observePage: async (path) => {
@@ -714,6 +728,7 @@ function serverWithLog(lines) {
   return s;
 }
 
+const REJECTED = "[zfb] rebuild tick failed; watcher staying alive: yaml";
 const SAME = [
   "[zfb-timing] intake paths: /w/styles/global.css:Modified, /w/articles/x.md:Modified",
   "[zfb] rebuild tick failed; watcher staying alive: yaml",
@@ -788,22 +803,29 @@ describe("recovery mode", () => {
     const req = await runRecoveryBatch({
       attempt: recoveryAttempt({ requireSameTick: true }),
       page: recoveryPage(),
-      server: fakeServer(),
+      server: serverWithLog([REJECTED]),
     });
     expect(req.rec.outcome).toBe("same-tick-unknown");
     expect(req.accounting.error).toBe(1);
     const free = await runRecoveryBatch({
       attempt: recoveryAttempt(),
       page: recoveryPage(),
-      server: fakeServer(),
+      server: serverWithLog([REJECTED]),
     });
     expect(free.rec.outcome).toBe("recovery-observed");
+    expect(free.rec.sameTickProven).toBeNull();
     expect(free.accounting).toMatchObject({ recoveryPasses: 0, recoveryUnprovenTick: 1 });
   });
 
   it("an undeclared rejected state is recovery-state-mismatch; no repair is attempted", async () => {
     const page = recoveryPage({
-      open: { ok: true, open: true, httpStatus: 200, bodyExcerpt: "Article slug mismatch" },
+      open: {
+        ok: true,
+        open: true,
+        docUUID: "doc-1",
+        markersFound: ["Article slug mismatch"],
+        bodyExcerpt: "Article slug mismatch",
+      },
     });
     page.evaluateNow = async () => ({ matched: false });
     const { rec, accounting } = await runRecoveryBatch({
@@ -867,15 +889,17 @@ describe("recovery mode", () => {
         predicate: { kind: "text", selector: "h1", includes: "tok-r" },
       }),
       page,
-      server: fakeServer(),
+      server: serverWithLog([REJECTED]),
     });
     expect(rec.outcome).toBe("recovery-observed");
+    expect(rec.sameTickProven).toBeNull();
     expect(rec.duringSteps).toHaveLength(1);
-    expect(page.calls.slice(0, 5)).toEqual([
+    expect(page.calls.slice(0, 6)).toEqual([
       "prepare /articles/y/",
       "observe /articles/x/",
       "observe /",
       "prepare /articles/y/",
+      "inspectOpen",
       "arm",
     ]);
   });
@@ -929,5 +953,209 @@ describe("example profiles", () => {
     expect(new Set(ops)).toEqual(
       new Set(["edit-body@detail", "edit-category@detail", "edit-category@/"]),
     );
+  });
+});
+
+describe("review round: recovery premises are verified, never assumed", () => {
+  it("no rejection line after the broken write is rejection-not-observed: a stop, no repair", async () => {
+    for (const server of [
+      serverWithLog(["[zfb-timing] intake paths: /w/styles/global.css:Modified"]),
+      fakeServer(),
+    ]) {
+      const { rec, accounting, stopped } = await runRecoveryBatch({
+        attempt: recoveryAttempt(),
+        page: recoveryPage(),
+        server,
+      });
+      expect(rec.outcome).toBe("rejection-not-observed");
+      expect(rec.repairSteps).toBeUndefined();
+      expect(rec.sameTickProven).toBeNull();
+      expect(accounting).toMatchObject({ error: 1, recoveryPasses: 0 });
+      expect(batchExitOk(accounting, stopped)).toBe(false);
+    }
+  });
+
+  it("a rejection line printed before the broken write does not count", async () => {
+    const s = fakeServer();
+    s.logMark = () => 0;
+    s.logSince = () => ({ lines: [{ text: REJECTED, msFromT0: -5 }] });
+    const { rec } = await runRecoveryBatch({
+      attempt: recoveryAttempt(),
+      page: recoveryPage(),
+      server: s,
+    });
+    expect(rec.outcome).toBe("rejection-not-observed");
+  });
+
+  it("the open page must still be the prepared document after the rejected settle", async () => {
+    const cases = [
+      { open: { ok: true, docUUID: "doc-2", markersFound: [] } },
+      { settle: { settled: true, newDocuments: 1, mainFrameNavigations: 1 } },
+      { settle: { settled: false, reason: "bound-exceeded" } },
+    ];
+    for (const c of cases) {
+      const page = recoveryPage(c.open ? { open: c.open } : {});
+      if (c.settle) page.settle = async () => c.settle;
+      const { rec, accounting } = await runRecoveryBatch({
+        attempt: recoveryAttempt(),
+        page,
+        server: serverWithLog(SAME),
+      });
+      expect(rec.outcome).toBe("open-page-replaced");
+      expect(rec.openPage.reasons.length).toBeGreaterThan(0);
+      expect(rec.repairSteps).toBeUndefined();
+      expect(accounting.error).toBe(1);
+    }
+  });
+
+  it("edit-during-rejected: a reload of the open page after the during-write is open-page-replaced", async () => {
+    const page = recoveryPage();
+    let n = 0;
+    page.settle = async () => (n++ === 0 ? { settled: true } : { settled: true, newDocuments: 1 });
+    const { rec } = await runRecoveryBatch({
+      attempt: recoveryAttempt({
+        variant: "edit-during-rejected",
+        sameTick: undefined,
+        expectState: ["error"],
+        rejectedObserve: { kind: "paths", observe: [{ path: "/articles/x/" }] },
+        duringWrites: [{ method: "in-place", path: "y.md", bytes: "t" }],
+      }),
+      page,
+      server: serverWithLog([REJECTED]),
+    });
+    expect(rec.outcome).toBe("open-page-replaced");
+    expect(rec.duringSteps).toHaveLength(1);
+  });
+
+  it("the open page's state never rests on its original navigation status", () => {
+    const view = { ok: true, originalNavigationStatus: 500, markersFound: [] };
+    expect(classifyOpen(view, { matched: true }).state).toBe("last-good");
+    expect(classifyOpen(view, { matched: false }).state).toBe("other");
+    expect(classifyOpen({ ok: true, markersFound: ["X"] }, null, ["X"]).state).toBe("error");
+  });
+
+  it("sameTickProven is on every recovery record and in the summary; proven passes are counted apart", async () => {
+    const proven = await runRecoveryBatch({
+      attempt: recoveryAttempt(),
+      page: recoveryPage(),
+      server: serverWithLog(SAME),
+    });
+    expect(proven.rec.sameTickProven).toBe(true);
+    expect(proven.accounting).toMatchObject({
+      recoveryPasses: 1,
+      recoverySameTickProvenPasses: 1,
+      recoveryNoTickPremisePasses: 0,
+    });
+    const split = await runRecoveryBatch({
+      attempt: recoveryAttempt(),
+      page: recoveryPage(),
+      server: serverWithLog(SPLIT),
+    });
+    expect(split.rec.sameTickProven).toBe(false);
+    const summary = summarize(
+      [...proven.d.recorder.records, ...split.d.recorder.records],
+      proven.accounting,
+    );
+    const first = summary.recovery.filter((r) => r.opId === "r");
+    expect(first.map((r) => [r.outcome, r.sameTickProven])).toEqual([
+      ["recovery-observed", true],
+      ["not-same-tick", false],
+    ]);
+  });
+});
+
+describe("review round: same-tick window", () => {
+  const tails = ["styles/global.css", "articles/x.md"];
+  const L = (text, msFromT0 = 1) => ({ text, msFromT0 });
+  const BOTH =
+    "[zfb-timing] intake paths: /w/styles/global.css:Modified, /w/articles/x.md:Modified";
+  it("drops lines from before the first write", () => {
+    expect(sameTickEvidence([L(BOTH, -3), L(REJECTED)], tails).sameTick).toBe("unknown");
+  });
+  it("a truncated log is unknown", () => {
+    expect(sameTickEvidence([L(BOTH), L(REJECTED)], tails, { truncated: true }).sameTick).toBe(
+      "unknown",
+    );
+  });
+  it("only the last intake before the rejection decides", () => {
+    const r = sameTickEvidence(
+      [L(BOTH), L("[zfb-timing] intake paths: /w/articles/x.md:Modified"), L(REJECTED)],
+      tails,
+    );
+    expect(r.sameTick).toBe(false);
+    expect(r.decidingLine.text).toMatch(/articles\/x\.md:Modified$/);
+  });
+});
+
+describe("review round: restoration never unlinks a case alias of a snapshot file", () => {
+  it("a failed case revert leaves the variant in place and reports a mismatch", () => {
+    const { m } = setup();
+    const snap = snapshotPaths({ dirs: [m.contentDir] });
+    const from = join(m.contentDir, "article-00008.md");
+    const to = join(m.contentDir, "Article-00008.md");
+    performWrite(
+      caseRenameWrites(m.contentDir, "article-00008.md", "Article-00008.md")[0],
+      () => 1n,
+    );
+    const ino = statSync(to).ino;
+    const brokenRename = {
+      ...REAL_FS,
+      renameSync: () => {
+        throw new Error("EIO: simulated rename failure");
+      },
+    };
+    const res = restoreSnapshot(snap, { renameRevert: true, fsImpl: brokenRename });
+    expect(res.mismatches.length).toBeGreaterThan(0);
+    expect(dirEntries(m.contentDir)).toContain("Article-00008.md");
+    expect(statSync(to).ino).toBe(ino);
+    expect(res.actions.find((a) => a.method === "unlink" && a.path === to)).toMatchObject({
+      skipped: true,
+    });
+    expect(existsSync(from)).toBe(true);
+  });
+
+  it("guards by lower-cased name and by dev+inode", () => {
+    const d = tmp();
+    writeFileSync(join(d, "a.md"), "x");
+    linkSync(join(d, "a.md"), join(d, "hard.md"));
+    writeFileSync(join(d, "other.md"), "y");
+    const snap = {
+      dirs: [d],
+      files: { [join(d, "a.md")]: { sha256: "", bytes: Buffer.from("x") } },
+    };
+    const guard = aliasGuard(snap);
+    expect(guard(join(d, "A.MD"))).toMatchObject({ reason: "case variant of snapshot file" });
+    expect(guard(join(d, "hard.md"))).toMatchObject({ reason: "same dev+inode as snapshot file" });
+    expect(guard(join(d, "other.md"))).toBeNull();
+  });
+});
+
+describe("review round: dataset pin at materialize", () => {
+  it("refuses a source whose dataset is not the pinned one, for both placements", () => {
+    for (const placement of ["external", "internal"]) {
+      const root = tmp();
+      const src = join(root, "src");
+      makeFakeSource(src, 20);
+      writeFileSync(join(src, "apps", "zfb", "zfb.config.ts"), baseConfigBytes());
+      expect(() =>
+        materializeFieldNotes({
+          fixtureDir: FIXTURE,
+          sourceDir: src,
+          workDir: join(root, "work"),
+          adapter: "direct-read",
+          placement,
+        }),
+      ).toThrow(/is not the pinned dataset/);
+      expect(existsSync(join(root, "work"))).toBe(false);
+    }
+  });
+});
+
+describe("review round: requireSameTick needs ZFB_DEV_TIMING=1", () => {
+  it("a diagnostic profile without the env var is rejected", () => {
+    const p = example("field-notes-direct-read-recovery-diagnostic-q.example.json");
+    expect(semanticErrors(p)).toEqual([]);
+    delete p.server.env;
+    expect(semanticErrors(p).join("\n")).toMatch(/requireSameTick needs server.env.ZFB_DEV_TIMING/);
   });
 });
