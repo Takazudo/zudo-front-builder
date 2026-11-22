@@ -58,7 +58,16 @@
         "expected-negative-observed",
         "expected-negative-mismatch",
         "recovery-failed",
-        "final-state-mismatch"
+        "final-state-mismatch",
+        "hidden-precondition-visited",
+        "rename-noop",
+        "recovery-observed",
+        "recovery-state-mismatch",
+        "not-same-tick",
+        "same-tick-unknown",
+        "recovery-error",
+        "rejection-not-observed",
+        "open-page-replaced"
       ]
     },
     "latencyMs": {

@@ -1,4 +1,5 @@
 import { runSpecialMode } from "./special-modes.mjs";
+import { RENAME_NOOP } from "./fixture.mjs";
 import { NO_WRITE_STEPS, noWriteStepsError, nsToMs } from "./util.mjs";
 
 export const OUTCOMES = [
@@ -26,12 +27,20 @@ export const OUTCOMES = [
   "supplemental-failed",
   "restoration-failed",
   "identity-rejected",
+  "rename-noop",
+  "recovery-observed",
+  "recovery-state-mismatch",
+  "not-same-tick",
+  "same-tick-unknown",
+  "recovery-error",
+  "rejection-not-observed",
+  "open-page-replaced",
 ];
 
+const PASS_OUTCOMES = new Set(["success", "expected-negative-observed", "recovery-observed"]);
+
 const ERROR_OUTCOMES = new Set(
-  OUTCOMES.filter(
-    (o) => !["success", "timeout", "stale", "expected-negative-observed"].includes(o),
-  ),
+  OUTCOMES.filter((o) => !PASS_OUTCOMES.has(o) && !["timeout", "stale"].includes(o)),
 );
 
 /**
@@ -86,6 +95,10 @@ export function newAccounting(planned) {
     expectedTimeouts: 0,
     controlsNotFired: 0,
     expectedNegativePasses: 0,
+    recoveryPasses: 0,
+    recoverySameTickProvenPasses: 0,
+    recoveryNoTickPremisePasses: 0,
+    recoveryUnprovenTick: 0,
     restorationFailures: 0,
     supplementalFailures: 0,
     lastArmedUnknownOperation: null,
@@ -138,12 +151,20 @@ export function batchExitOk(acc, stopped) {
   return acc.timeout + acc.stale - acc.expectedTimeouts === 0;
 }
 
-function count(acc, outcome) {
+function count(acc, outcome, rec = null) {
   if (outcome === "success") acc.success += 1;
   else if (outcome === "timeout") acc.timeout += 1;
   else if (outcome === "stale") acc.stale += 1;
   else if (outcome === "expected-negative-observed") acc.expectedNegativePasses += 1;
-  else if (ERROR_OUTCOMES.has(outcome)) acc.error += 1;
+  else if (outcome === "recovery-observed") {
+    // A recovery whose same-tick premise was declared but not proven is kept apart from the passes.
+    if (rec?.sameTick && rec.sameTickProven !== true) acc.recoveryUnprovenTick += 1;
+    else {
+      acc.recoveryPasses += 1;
+      if (rec?.sameTickProven === true) acc.recoverySameTickProvenPasses += 1;
+      else acc.recoveryNoTickPremisePasses += 1;
+    }
+  } else if (ERROR_OUTCOMES.has(outcome)) acc.error += 1;
 }
 
 /**
@@ -451,19 +472,25 @@ export async function runBatch({ scenarios, deps }) {
           } catch (error) {
             // A throw after (some) writes must not lose that the workload changed the files.
             const steps = error?.steps ?? specialCtx.writeSteps ?? null;
+            const noop = error?.code === RENAME_NOOP;
             const wrote =
               specialCtx.writeDone === true ||
+              noop ||
               (Array.isArray(error?.steps) && error.steps.length > 0);
+            const outcome = noop ? "rename-noop" : `${attempt.mode}-error`;
             special = {
               rec: {
                 ...recBase,
                 mode: attempt.mode,
-                outcome: `${attempt.mode}-error`,
+                outcome,
                 error: String(error?.stack ?? error),
                 writePerformed: wrote,
                 writeSteps: steps,
+                ...(noop
+                  ? { renameNoop: error.evidence ?? null, failedStep: error.failedStep ?? null }
+                  : {}),
               },
-              outcome: `${attempt.mode}-error`,
+              outcome,
               writeDone: wrote,
             };
           }
@@ -474,8 +501,8 @@ export async function runBatch({ scenarios, deps }) {
             acc.expectedTimeouts += 1;
           rec.sampleAfter = server.sampleResources();
           append(rec);
-          count(acc, outcome);
-          if (outcome === "success" || outcome === "expected-negative-observed") {
+          count(acc, outcome, rec);
+          if (PASS_OUTCOMES.has(outcome)) {
             acc.lastArmedUnknownOperation = null;
             continue;
           }
@@ -567,7 +594,13 @@ export async function runBatch({ scenarios, deps }) {
             token: attempt.token,
             writeCompleted: "unknown",
           };
-          const wr = { ...recBase, outcome: "write-error" };
+          // A rename whose directory entry did not change is a no-op, never a write that happened.
+          const writeOutcome = error?.code === RENAME_NOOP ? "rename-noop" : "write-error";
+          const wr = { ...recBase, outcome: writeOutcome };
+          if (writeOutcome === "rename-noop") {
+            wr.renameNoop = error.evidence ?? null;
+            wr.failedStep = error.failedStep ?? null;
+          }
           if (op.inject) wr.controlPass = injectPass(op.inject, "write-error", wr);
           if (wr.controlPass) {
             acc.expectedControlPasses += 1;
@@ -581,10 +614,10 @@ export async function runBatch({ scenarios, deps }) {
             observerDisarmed: true,
             nativeWorkCancelled: false,
           });
-          count(acc, "write-error");
+          count(acc, writeOutcome);
           if (op.inject && wr.controlPass !== true)
-            notFired(where, op.inject, "outcome write-error");
-          else stop("write-error", where);
+            notFired(where, op.inject, `outcome ${writeOutcome}`);
+          else stop(writeOutcome, where);
           break outer;
         }
 

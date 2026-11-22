@@ -14,6 +14,7 @@ This directory holds only the parts the harness owns:
 | `adapters/recovered-snapshot/content.ts.adapter` | Exact recovered archive helper (`7ff8a753…`) |
 | `adapters/direct-read/content.ts.adapter` | Reconstructed control, rebuilt on every call |
 | `managed/global.css.src` | Optional managed stylesheet (`fixture.managedCss: true`) |
+| `overlays/internal-placement/zfb.config.ts.overlay` | Derived config for `fixture.placement: "internal"` (`ddce03ff…`, base `a68c2bdb…`; diff in `manifest.json` `placements.internal`) |
 
-Adapters and the managed stylesheet use non-`.ts`/`.css` names so the repo
+Adapters, the managed stylesheet and the overlay use non-`.ts`/`.css` names so the repo
 formatter never changes their bytes.

@@ -1,3 +1,4 @@
+import { classifyMechanism } from "./state-machine.mjs";
 import { nsToMs } from "./util.mjs";
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -298,10 +299,360 @@ async function runExpectedNegative(ctx) {
   };
 }
 
+export const TIMING_INTAKE_PREFIX = "[zfb-timing] intake paths:";
+// The dev server's rejected-tick lines (crates/zfb tests: "was not published", TICK_FAILURE_PREFIX).
+export const REJECTION_MARKERS = ["was not published", "[zfb] rebuild tick failed"];
+
+/**
+ * Same-tick evidence from server lines after the first rejected-generation
+ * write (lines with msFromT0 < 0 are dropped). Only the LAST
+ * `[zfb-timing] intake paths:` line before the rejection decides, so an
+ * earlier intake (e.g. a previous attempt's restoration) cannot satisfy it:
+ * true when that line names every path tail, false when the tails reached
+ * the orchestrator in different intakes, unknown without timing lines
+ * (ZFB_DEV_TIMING off), with a truncated log, or when a path never appears.
+ */
+export function sameTickEvidence(lines, tails, { truncated = false } = {}) {
+  const after = lines.filter((l) => typeof l.msFromT0 !== "number" || l.msFromT0 >= 0);
+  const end = after.findIndex((l) => REJECTION_MARKERS.some((m) => l.text.includes(m)));
+  const window = end >= 0 ? after.slice(0, end) : after;
+  const intakeLines = window
+    .filter((l) => l.text.includes(TIMING_INTAKE_PREFIX))
+    .map((l) => ({
+      msFromT0: l.msFromT0 ?? null,
+      text: l.text,
+      names: tails.map((t) => l.text.includes(t)),
+    }));
+  const base = {
+    tails,
+    rejectionLine: end >= 0 ? after[end] : null,
+    intakeLines,
+    decidingLine: intakeLines.at(-1) ?? null,
+  };
+  if (truncated)
+    return {
+      ...base,
+      sameTick: "unknown",
+      reason: "server log truncated; the window is incomplete",
+    };
+  if (intakeLines.length === 0)
+    return {
+      ...base,
+      sameTick: "unknown",
+      reason: "no [zfb-timing] intake paths: line before the rejection (timing off, or no tick)",
+    };
+  if (base.decidingLine.names.every(Boolean))
+    return {
+      ...base,
+      sameTick: true,
+      reason: "the last intake before the rejection names every path",
+    };
+  if (tails.every((_, i) => intakeLines.some((l) => l.names[i])))
+    return {
+      ...base,
+      sameTick: false,
+      reason: "the paths reached the orchestrator in different intakes",
+    };
+  return { ...base, sameTick: "unknown", reason: "a path has no intake line in the window" };
+}
+
+/** Bounded wait for a server line containing one of `needles`, printed at or after `t0`. */
+export async function waitForServerLine(server, mark, needles, boundMs, t0, stepMs = 50) {
+  if (mark === null || !server.logSince) return { seen: null, reason: "no server log" };
+  const start = Date.now();
+  for (;;) {
+    const log = server.logSince(mark, t0);
+    const line = log.lines.find(
+      (l) =>
+        (typeof l.msFromT0 !== "number" || l.msFromT0 >= 0) &&
+        needles.some((n) => l.text.includes(n)),
+    );
+    if (line) return { seen: true, line, waitedMs: Date.now() - start };
+    if (Date.now() - start >= boundMs)
+      return {
+        seen: false,
+        waitedMs: Date.now() - start,
+        boundMs,
+        truncated: log.truncated === true,
+      };
+    await wait(stepMs);
+  }
+}
+
+/**
+ * Why the open page is no longer the document the attempt prepared, or null:
+ * the settle did not reach quiet, a new document or a main-frame navigation
+ * happened, or the read document's UUID differs from the prepared one.
+ */
+export function openPageReplaced({ preDocUUID, view, settle }) {
+  const reasons = [];
+  if (!settle || settle.settled !== true)
+    reasons.push(`settle not quiet (${settle?.reason ?? "none"})`);
+  if ((settle?.newDocuments ?? 0) > 0) reasons.push(`newDocuments ${settle.newDocuments}`);
+  if ((settle?.mainFrameNavigations ?? 0) > 0)
+    reasons.push(`mainFrameNavigations ${settle.mainFrameNavigations}`);
+  if (!view?.ok) reasons.push(`open page unreadable: ${view?.error ?? "unknown"}`);
+  else if (!preDocUUID || view.docUUID !== preDocUUID)
+    reasons.push(`docUUID ${view.docUUID ?? null} is not the prepared ${preDocUUID ?? null}`);
+  return reasons.length
+    ? { reasons, preDocUUID: preDocUUID ?? null, docUUID: view?.docUUID ?? null }
+    : null;
+}
+
+/**
+ * The rejected state of the open (verified unchanged) document: a declared
+ * error marker, or the original content still rendered. The document's own
+ * navigation status predates the rejection, so it is not evidence of it.
+ */
+export function classifyOpen(view, lastGood, errorMarkers = []) {
+  const marker = errorMarkers.find((m) => (view.markersFound ?? []).includes(m));
+  if (marker) return { state: "error", basis: `error-marker in the open document: ${marker}` };
+  if (lastGood?.matched === true)
+    return {
+      state: "last-good",
+      basis: "same open document (docUUID) and the original content predicate matched",
+    };
+  return { state: "other", basis: `open document; lastGood=${lastGood?.matched ?? null}` };
+}
+
+/**
+ * recovery: a rejected generation, then a repair, then a timed observation on
+ * the page that stayed open throughout. Steps: rejected-generation writes
+ * (CSS first, then content); bounded wait for the rejection line; quiet
+ * settle; same-tick evidence when declared; classification of the rejected
+ * state (the open page read in place, or declared paths followed by one
+ * navigation back); writes made while rejected; arm on the open page; repair
+ * writes (t0); armed wait (t1); declared checks. The controller never reloads
+ * or navigates the open page between the arm and t1. A false or unproven
+ * same tick, an undeclared state, a timeout or a failed check never becomes
+ * a pass.
+ */
+async function runRecovery(ctx) {
+  const { attempt, page, fs, clock, timeouts, recBase, op, server } = ctx;
+  const quietMs = timeouts.quietMs ?? 1500;
+  const boundMs = op.settleMs ?? timeouts.restoreMs;
+  const rec = {
+    ...recBase,
+    mode: "recovery",
+    variant: attempt.variant,
+    expectState: attempt.expectState,
+    beforeRepair: attempt.beforeRepair,
+    requireSameTick: attempt.requireSameTick === true,
+  };
+  const done = (outcome, extra = {}) => {
+    const st = rec.sameTick?.sameTick;
+    return {
+      rec: {
+        ...rec,
+        ...extra,
+        outcome,
+        writePerformed: ctx.writeDone === true,
+        // null: no same-tick premise for this op, or it was not proven either way.
+        sameTickProven: st === true ? true : st === false ? false : null,
+      },
+      outcome,
+      writeDone: ctx.writeDone === true,
+    };
+  };
+  const logMark = server.logMark?.() ?? null;
+  const mark = page.mark();
+  const rej = await doWrites(fs, attempt.rejectWrites, clock);
+  ctx.writeDone = true;
+  ctx.writeSteps = rej.steps;
+  rec.tRejectNs = String(rej.t0);
+  rec.rejectSteps = rej.steps;
+  // The rejection line must follow the broken (last) write; without it a repair could coalesce
+  // with the broken write into one valid tick and nothing was ever rejected.
+  rec.rejection = await waitForServerLine(
+    server,
+    logMark,
+    REJECTION_MARKERS,
+    op.rejectionWaitMs ?? boundMs,
+    rej.tLast,
+  );
+  if (rec.rejection.seen !== true)
+    return done("rejection-not-observed", {
+      serverLog: logMark === null ? null : server.logSince(logMark, rej.t0),
+    });
+  rec.rejectSettle = await page.settle({
+    mark,
+    startNs: rej.tLast,
+    quietMs,
+    boundMs,
+    requireNativeUpdate: false,
+    rule: "quiet-only:rejected-generation",
+  });
+  const serverLog = () => (logMark === null ? null : server.logSince(logMark, rej.t0));
+  if (attempt.sameTick) {
+    const log = serverLog();
+    rec.sameTick = log
+      ? sameTickEvidence(log.lines, attempt.sameTick.tails, { truncated: log.truncated === true })
+      : { tails: attempt.sameTick.tails, sameTick: "unknown", reason: "no server log" };
+    if (rec.sameTick.sameTick === false) return done("not-same-tick", { serverLog: log });
+    if (rec.sameTick.sameTick !== true && attempt.requireSameTick)
+      return done("same-tick-unknown", { serverLog: log });
+  }
+
+  const observed = [];
+  const probe = async (view, pred) => {
+    if (!pred || !view.ok) return null;
+    try {
+      return await page.evaluateNow(pred);
+    } catch (error) {
+      return { matched: false, error: String(error?.message ?? error) };
+    }
+  };
+  const ro = attempt.rejectedObserve;
+  if (ro.kind === "open") {
+    const view = await page.inspectOpen({ errorMarkers: attempt.errorMarkers });
+    const replaced = openPageReplaced({
+      preDocUUID: ctx.preparedState?.docUUID,
+      view,
+      settle: rec.rejectSettle,
+    });
+    if (replaced)
+      return done("open-page-replaced", { openPage: replaced, view, serverLog: serverLog() });
+    const lastGood = await probe(view, ro.lastGood);
+    const c = classifyOpen(view, lastGood, attempt.errorMarkers);
+    observed.push({
+      path: attempt.targetPath,
+      open: true,
+      state: c.state,
+      basis: c.basis,
+      view,
+      lastGood,
+    });
+  } else {
+    for (const o of ro.observe) {
+      const view = await page.observePage(o.path, { errorMarkers: attempt.errorMarkers });
+      const lastGood = await probe(view, o.lastGood);
+      const empty = await probe(view, o.empty);
+      const c = classifyNegative(view, { lastGood, empty, errorMarkers: attempt.errorMarkers });
+      observed.push({ path: o.path, state: c.state, basis: c.basis, view, lastGood, empty });
+    }
+    const back = await page.prepare(attempt.targetPath);
+    page.markPre?.();
+    rec.reopened = { path: attempt.targetPath, docUUID: back?.docUUID ?? null, measured: false };
+  }
+  rec.observed = observed;
+  rec.observedSummary = observed.map((o) => ({
+    path: o.path,
+    open: o.open === true,
+    state: o.state,
+    basis: o.basis,
+    expected: attempt.expectState.includes(o.state),
+  }));
+  rec.statePass = observed.every((o) => attempt.expectState.includes(o.state));
+  if (!rec.statePass) return done("recovery-state-mismatch", { serverLog: serverLog() });
+
+  if (attempt.duringWrites?.length) {
+    const m2 = page.mark();
+    const d = await doWrites(fs, attempt.duringWrites, clock);
+    rec.duringSteps = d.steps;
+    rec.duringSettle = await page.settle({
+      mark: m2,
+      startNs: d.tLast,
+      quietMs,
+      boundMs,
+      requireNativeUpdate: false,
+      rule: "quiet-only:edit-while-rejected",
+    });
+    const view = await page.inspectOpen({ errorMarkers: attempt.errorMarkers });
+    const replaced = openPageReplaced({
+      preDocUUID: rec.reopened?.docUUID ?? ctx.preparedState?.docUUID,
+      view,
+      settle: rec.duringSettle,
+    });
+    if (replaced)
+      return done("open-page-replaced", { openPage: replaced, view, serverLog: serverLog() });
+  }
+
+  let armed;
+  try {
+    armed = await page.arm(attempt.token, attempt.predicate, null);
+  } catch (error) {
+    armed = { armed: false, error: String(error?.message ?? error), threw: true };
+  }
+  rec.arm = armed;
+  if (!armed.armed) {
+    if (!armed.precondition) return done("arm-error", { serverLog: serverLog() });
+    rec.predicateTrueBeforeRepair = true;
+    if (attempt.beforeRepair !== "may-be-present")
+      return done("precondition-failed", { serverLog: serverLog() });
+  }
+  const serverPidBefore = server.pid();
+  if (armed.armed) page.markAttempt();
+  const rep = await doWrites(fs, attempt.repairWrites, clock);
+  attempt.applied?.();
+  rec.t0Ns = String(rep.t0);
+  rec.repairSteps = rep.steps;
+  if (armed.armed) {
+    const late = [];
+    const waited = await Promise.race([
+      page.waitNotify(attempt.token, timeouts.attemptMs, (payload) => late.push(payload)),
+      server.waitExit().then((exit) => ({ kind: "server-exit", exit })),
+    ]);
+    const evidence = page.collectAttempt(rep.t0);
+    rec.evidence = evidence;
+    rec.lateTokensDuringAttempt = late.length;
+    if (late.length) rec.lateTokens = late;
+    if (waited.kind === "notify" && waited.t1 > rep.tLast) {
+      rec.t1Ns = String(waited.t1);
+      rec.latencyMs = nsToMs(waited.t1 - rep.t0);
+      rec.endpoint = "predicate confirmed + 2 rAF + binding delivery";
+      rec.notify = waited.payload;
+      rec.mechanism = classifyMechanism({
+        preDocUUID: armed.docUUID,
+        notifyDocUUID: waited.payload?.docUUID,
+        mainFrameNavigations: evidence?.mainFrameNavigations ?? 0,
+        serverPidBefore,
+        serverPidAfter: server.pid(),
+        livereloadEvents: evidence?.livereloadEvents ?? [],
+      });
+    } else {
+      await page.disarm();
+      rec.observerDisarmed = true;
+      if (waited.kind === "notify")
+        return done("precondition-unstable", {
+          unstable: { reason: "notify-not-after-repair", t1Ns: String(waited.t1) },
+          serverLog: serverLog(),
+        });
+      if (waited.kind === "server-exit")
+        return done("server-exit", { exit: waited.exit, serverLog: serverLog() });
+      return done((evidence?.newDocuments ?? 0) > 0 ? "stale" : "timeout", {
+        timeoutMs: timeouts.attemptMs,
+        serverLog: serverLog(),
+      });
+    }
+  } else {
+    rec.latencyMs = null;
+    rec.endpoint =
+      "predicate already true before the repair (declared may-be-present); no latency claim";
+  }
+
+  const checks = [];
+  for (const check of attempt.recoveryChecks) {
+    try {
+      checks.push({
+        check,
+        ...(await page.supplemental(check, op.recoveryTimeoutMs ?? timeouts.supplementalMs, {
+          quietMs,
+        })),
+      });
+    } catch (error) {
+      checks.push({ check, ok: false, error: String(error?.message ?? error) });
+    }
+  }
+  rec.recoveryChecks = checks;
+  const ok = checks.every((c) => c.ok);
+  return done(ok ? "recovery-observed" : "recovery-failed", { serverLog: serverLog() });
+}
+
 export const SPECIAL_MODES = {
   hidden: runHidden,
   "final-state": runFinalState,
   "expected-negative": runExpectedNegative,
+  recovery: runRecovery,
 };
 
 export function runSpecialMode(mode, ctx) {

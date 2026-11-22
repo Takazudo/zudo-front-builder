@@ -53,6 +53,7 @@ function setup({ count = 20, adapter = "direct-read", managedCss = true } = {}) 
     workDir: join(root, "work"),
     adapter,
     managedCss,
+    expectedDatasetSha256: fake.datasetSha256,
   });
   return { root, src, m, fake };
 }

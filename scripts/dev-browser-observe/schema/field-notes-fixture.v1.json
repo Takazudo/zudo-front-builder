@@ -41,6 +41,33 @@
     "managedCss": {
       "type": "object",
       "required": ["file", "target", "customProperty", "sha256"]
+    },
+    "placements": {
+      "type": "object",
+      "required": ["external"],
+      "description": "Content placements. external is the source layout; any other entry is a derived overlay with provenance, base and overlay sha256 and the exact diff.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["provenance", "contentDest", "collectionPath"],
+        "properties": {
+          "provenance": {
+            "enum": ["source-dir", "derived"]
+          },
+          "contentDest": {
+            "type": "string"
+          },
+          "collectionPath": {
+            "type": "string"
+          },
+          "allowOutsideRoot": {
+            "type": "boolean"
+          },
+          "config": {
+            "type": "object",
+            "required": ["target", "overlay", "baseSha256", "overlaySha256", "diff"]
+          }
+        }
+      }
     }
   }
 }

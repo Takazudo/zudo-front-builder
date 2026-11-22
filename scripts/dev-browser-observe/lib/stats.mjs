@@ -41,5 +41,16 @@ export function summarize(records, accounting) {
       acc[r.mechanism] = (acc[r.mechanism] ?? 0) + 1;
       return acc;
     }, {}),
+    // Recovery attempts, each with whether its same tick was proven (true), disproven (false) or neither (null).
+    recovery: records
+      .filter((r) => r.type === "attempt" && r.mode === "recovery")
+      .map((r) => ({
+        scenario: r.scenario,
+        opId: r.opId,
+        op: r.op,
+        outcome: r.outcome,
+        sameTickProven: r.sameTickProven ?? null,
+        latencyMs: typeof r.latencyMs === "number" ? r.latencyMs : null,
+      })),
   };
 }
