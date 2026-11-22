@@ -426,8 +426,9 @@ export function buildCausalChain(
       ) ?? null;
     evidenceVia = "lazy-publish-drain";
   } else if (eagerPub && plan) {
-    evidenceDrain = sameGenDrains.find((e) => e.seq > plan.seq) ?? null;
-    evidenceVia = "first-drain-after-render-plan";
+    const sameTick = sameGenDrains.find((e) => e.tick === plan.tick && e.seq > plan.seq);
+    evidenceDrain = sameTick ?? sameGenDrains.find((e) => e.seq > plan.seq) ?? null;
+    evidenceVia = sameTick ? "same-tick-drain-after-render-plan" : "first-drain-after-render-plan";
   }
   const evidenceObs = (evidenceDrain?.observations ?? []).filter((o) =>
     consumerSet.has(o.consumer),

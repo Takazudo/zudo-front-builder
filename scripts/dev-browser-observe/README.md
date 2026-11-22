@@ -191,7 +191,8 @@ Review hardening:
   the target's publish, recorded as `observations.evidence` and
   `edges.evidence`. For a lazy publish it is that publish's drain, which must
   have `drain_contains_page: true`. For an eager publish it is the first drain
-  of the generation after this tick's `render_plan`. A sibling article
+  of the generation after this tick's `render_plan`, preferring a drain
+  tagged with the same `tick` (`via` says which). A sibling article
   rendered through the shared `[slug].tsx` in another drain does not count.
   Aggregate reads count only for the written entry's collection.
 - **Raw page strings:** `targetPageStrings` records the page strings as
