@@ -824,7 +824,8 @@ runs cannot be the original publisher. Runs from before #4687 (`legacy-hosted-da
 `legacy-fast-mac`) remain unsupported.
 
 When original publication completed every mandatory delivery duty except clean-room consumption,
-select the later successful finalization-only run explicitly:
+or stopped only because npm was still processing a package (see below), select the later
+successful finalization-only run explicitly:
 
 ```sh
 node scripts/verify-release-delivery.mjs --version <version> \
@@ -842,9 +843,33 @@ Verified-source output and actual clean-room source/version output, installed ve
 build/content assertions are mandatory. Echoed inputs alone cannot prove delivery.
 
 The report retains the original failed run and jobs unchanged. `aggregateDelivery` names the
-selected consumption run and the only superseded original checks: failed clean-room consumption
-and its resulting overall run failure. Failed original builds, source checks, packing, publication,
-asset or digest uploads remain failures. Recovery publication and missing-original-artifact recovery
+selected consumption run, the `supersession` rule that applied and the only superseded original
+checks. There are two rules:
+
+- **`clean-room`:** failed clean-room consumption and its resulting overall run failure.
+- **`processing-then-finalize`** (#4779): the original `publish` job, its skipped
+  `Upload MD/WASM digest asset` and clean-room, and the resulting overall run failure. An explicit
+  classifier (`processingEligibility` in the report) admits it only when all of these hold:
+  - The original run took the normal or tag-dispatch path, and every other original job and
+    check (source, CI, admission, builds, packing, assets) meets its normal contract.
+  - The effective `publish` job is the run's latest attempt. Its `Publish to npm` step succeeded,
+    the recovery step and `Promote channel dist-tag` were skipped, and no other step failed.
+  - Its `Verify npm provenance expectations` step failed. The retained publish job log shows
+    that step exiting 3: one `PROCESSING_PACKAGES=` line, one "accepted by npm, still
+    processing" verdict per listed package, every other source-policy package verified, and no
+    other error.
+  - `Upload MD/WASM digest asset` and the `smoke-clean-room` caller were skipped in that same
+    attempt, and no other job failed or was skipped.
+  - The finalizer log shows the gate cleared and `Provenance expectations: N/N verified` for
+    every source-policy package, including each package that was processing.
+
+  Its finalizer must still pass every check above, including promotion, the tag sweep, digest
+  finalization and the clean-room. The downloaded package, provenance, archive, WASM and
+  installer checks still apply unchanged.
+
+Any other failed original publication, a non-processing provenance failure, an independent failed
+duty, or a failed build, source check, packing step or asset upload remains a failure. A missing
+publish or finalizer log leaves the result incomplete (exit 2), never pardoned. Recovery publication and missing-original-artifact recovery
 are outside this mode. Latest relevant attempts govern; historical successes cannot hide later
 failures. Missing mandatory logs remain incomplete evidence. Without the argument, normal/tag-dispatch
 acceptance and failure rules are unchanged.
@@ -1011,6 +1036,10 @@ Follow Step 0: a later publish of a version npm did accept answers E409 and is c
    ```
 
    Re-run Step 0 first: it must recommend `dispatch-finalize`.
+
+5. After it succeeds, verify delivery with [A14](#a14-verify-delivery), passing the original
+   publisher as `--release-run-id` and this run as `--finalize-run-id`. The verifier applies the
+   `processing-then-finalize` rule only when the original run stopped on npm processing alone.
 
 **Never**
 

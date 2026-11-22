@@ -2394,6 +2394,254 @@ async function observeChannels(ctx) {
  * Run every section and return the versioned report. Network, sigstore, git
  * and clock are injectable so the offline tests can drive every branch.
  */
+// ── Processing-then-finalize eligibility (#4779) ────────────────────────────
+
+export const PROVENANCE_EXPECTATIONS_STEP = "Verify npm provenance expectations";
+export const PROMOTE_CHANNEL_STEP = "Promote channel dist-tag (all packages verified)";
+export const CLEAN_ROOM_SUPERSEDED = Object.freeze(["release-run", "job:smoke-clean-room"]);
+export const PROCESSING_FINALIZE_SUPERSEDED = Object.freeze([
+  "release-run",
+  "job:publish",
+  "job:md-wasm-asset",
+  "job:smoke-clean-room",
+]);
+// Jobs an original processing stop may leave skipped: the two consequences of
+// the failed publish job, plus the finalize branch a normal run never takes.
+const PROCESSING_CONSEQUENCE_JOBS = Object.freeze([
+  "Upload MD/WASM digest asset",
+  "smoke-clean-room",
+]);
+const PROCESSING_ALLOWED_SKIPPED_JOBS = new Set([
+  ...PROCESSING_CONSEQUENCE_JOBS,
+  "Finalize published release",
+  "Finalize MD/WASM digest asset",
+]);
+
+/** Split a cleaned job log into its `##[group]Run …` step segments. */
+export function stepSegments(lines) {
+  const segments = [];
+  let current;
+  for (const line of lines) {
+    if (line.startsWith("##[group]Run ")) {
+      current = { header: line.slice("##[group]Run ".length), lines: [] };
+      segments.push(current);
+    } else if (current) current.lines.push(line);
+  }
+  return segments;
+}
+
+/**
+ * Pure: does a cleaned `publish` job log prove that "Verify npm provenance
+ * expectations" exited 3 only because acknowledged packages were still in npm
+ * processing? Every other provenance row must be verified, and no other error
+ * may appear in that step.
+ */
+export function processingProof(lines, { version, packages }) {
+  const reasons = [];
+  const segments = stepSegments(lines).filter((segment) =>
+    segment.lines.some((line) =>
+      /^\s*node scripts\/verify-npm-provenance-expectations\.mjs --expectations\b/.test(line),
+    ),
+  );
+  if (segments.length !== 1) {
+    return {
+      ok: false,
+      reasons: [`expected one provenance-expectations step log, found ${segments.length}`],
+    };
+  }
+  const body = segments[0].lines;
+  const only = (pattern) => body.filter((line) => pattern.test(line));
+  const exits = only(/^##\[error\]Process completed with exit code \d+\.$/);
+  if (exits.length !== 1 || exits[0] !== "##[error]Process completed with exit code 3.")
+    reasons.push(`step exit evidence is ${JSON.stringify(exits)}, not one exit code 3`);
+  const summaries = only(/^Provenance expectations: \d+\/\d+ verified\.$/);
+  const processingLines = only(/^PROCESSING_PACKAGES=/);
+  if (summaries.length !== 1) reasons.push(`found ${summaries.length} provenance summaries`);
+  if (processingLines.length !== 1)
+    reasons.push(`found ${processingLines.length} PROCESSING_PACKAGES lines`);
+  if (reasons.length) return { ok: false, reasons };
+  const [, verified, total] = /(\d+)\/(\d+)/.exec(summaries[0]).map(Number);
+  const entries = processingLines[0].slice("PROCESSING_PACKAGES=".length).split(",");
+  const expected = new Set(packages.map((name) => `${name}@${version}`));
+  if (!packages.length) reasons.push("the source publication package set is unknown");
+  if (total !== packages.length)
+    reasons.push(`summary covers ${total} packages, source policy has ${packages.length}`);
+  if (entries.some((entry) => !expected.has(entry)) || new Set(entries).size !== entries.length)
+    reasons.push(`PROCESSING_PACKAGES names unknown or repeated packages: ${entries.join(",")}`);
+  if (total - verified !== entries.length)
+    reasons.push(`${total - verified} rows unverified but ${entries.length} processing`);
+  const ticks = only(/^\s*✓ /).map(
+    (line) => /^\s*✓ (\S+): provenance (?:attested|none) as expected\.$/.exec(line)?.[1],
+  );
+  const tickSet = new Set(ticks);
+  if (
+    ticks.length !== verified ||
+    tickSet.size !== ticks.length ||
+    ticks.some((entry) => !expected.has(entry) || entries.includes(entry)) ||
+    tickSet.size + entries.length !== expected.size
+  )
+    reasons.push("verified rows do not cover exactly the non-processing packages");
+  const notice = `##[error]${entries.join(",")} accepted by npm but not yet visible.`;
+  const perPackage = new Map(entries.map((entry) => [entry, 0]));
+  for (const line of body.filter((candidate) => candidate.startsWith("##[error]"))) {
+    if (line === exits[0] || line.startsWith(notice)) continue;
+    const match =
+      /^##\[error\](\S+): expected (?:attested|none) \(publish outcome: (?:publish-accepted|processing)\) — accepted by npm, still processing — not dropped: /.exec(
+        line,
+      );
+    if (match && perPackage.has(match[1])) perPackage.set(match[1], perPackage.get(match[1]) + 1);
+    else reasons.push(`unrelated error in the provenance step: ${line.slice(0, 200)}`);
+  }
+  for (const [entry, count] of perPackage)
+    if (count !== 1) reasons.push(`${entry} has ${count} processing verdicts, not one`);
+  if (!body.some((line) => line.startsWith(notice)))
+    reasons.push("the processing stop notice is missing");
+  return {
+    ok: reasons.length === 0,
+    reasons,
+    evidence: { processing: entries, verified, total, summary: summaries[0] },
+  };
+}
+
+function stepConclusion(job, name) {
+  const step = findStep(job, name);
+  return step ? `${step.status}/${step.conclusion}` : "absent";
+}
+
+/**
+ * Explicit eligibility for the processing-then-finalize completion path. A
+ * green finalizer pardons only a publish job that published every package
+ * and stopped on the provenance step's processing exit 3, plus the duties that
+ * stop skipped. Returns { eligible, status, reasons, evidence }.
+ */
+async function classifyProcessingFinalization(ctx, workflowChecks) {
+  const reasons = [];
+  const evidence = {};
+  const run = ctx.releaseRun;
+  const grouped = ctx.releaseJobs;
+  const attempt = run?.run_attempt ?? 1;
+  const result = (status) => ({
+    eligible: status === STATUS.VERIFIED,
+    status,
+    reasons,
+    evidence,
+  });
+  if (!grouped || !run) {
+    reasons.push("original run jobs are unavailable");
+    return result(STATUS.INCOMPLETE);
+  }
+  if (!SUPPORTED_DELIVERY_PATHS.has(ctx.deliveryPath))
+    reasons.push(`original delivery path is ${ctx.deliveryPath}`);
+  if (run.status !== "completed" || run.conclusion !== "failure")
+    reasons.push(`original run is ${run.status}/${run.conclusion}`);
+  const byId = new Map(workflowChecks.map((c) => [c.id, c]));
+  if (byId.get("release-run")?.reason !== "latest attempt concluded failure")
+    reasons.push("original run failed for a reason other than its latest attempt's failure");
+  for (const id of PROCESSING_FINALIZE_SUPERSEDED)
+    if (byId.get(id)?.status !== STATUS.FAILED) reasons.push(`original ${id} is not a failure`);
+  for (const check of workflowChecks)
+    if (
+      !PROCESSING_FINALIZE_SUPERSEDED.includes(check.id) &&
+      (check.status === STATUS.FAILED || check.status === STATUS.INCOMPLETE)
+    )
+      reasons.push(`original ${check.id} is ${check.status}`);
+
+  const publish = grouped.get("publish");
+  const job = publish?.effective;
+  if (!job || publish.duplicates !== 1) reasons.push("original publish job is absent or ambiguous");
+  else {
+    evidence.publish = { ...jobSummary(job), history: publish.history.map(jobSummary) };
+    if (job.status !== "completed" || job.conclusion !== "failure")
+      reasons.push(`original publish job is ${job.status}/${job.conclusion}`);
+    if ((job.run_attempt ?? 1) !== attempt || !ctx.eligibleAttempts?.includes(attempt))
+      reasons.push(
+        `original publish attempt ${job.run_attempt ?? 1} is not run attempt ${attempt} with an executed "${NORMAL_PUBLISH_STEP}" step`,
+      );
+    const want = {
+      "Verify publish context (verified release tag required)": "completed/success",
+      [NORMAL_PUBLISH_STEP]: "completed/success",
+      "Publish to npm (recovery — no provenance)": "completed/skipped",
+      [PROVENANCE_EXPECTATIONS_STEP]: "completed/failure",
+      [PROMOTE_CHANNEL_STEP]: "completed/skipped",
+    };
+    evidence.steps = {};
+    for (const [name, outcome] of Object.entries(want)) {
+      evidence.steps[name] = stepConclusion(job, name);
+      if (evidence.steps[name] !== outcome)
+        reasons.push(`original step "${name}" is ${evidence.steps[name]}, not ${outcome}`);
+    }
+    for (const step of job.steps ?? [])
+      if (!(step.name in want) && !["success", "skipped"].includes(step.conclusion))
+        reasons.push(`original publish step "${step.name}" concluded ${step.conclusion}`);
+  }
+  for (const [name, entry] of grouped) {
+    if (name === "publish") continue;
+    const { conclusion } = entry.effective;
+    if (name.startsWith("smoke-clean-room / "))
+      reasons.push(`original clean-room expanded as "${name}" instead of being skipped`);
+    else if (conclusion === "skipped") {
+      if (!PROCESSING_ALLOWED_SKIPPED_JOBS.has(name))
+        reasons.push(`original job "${name}" was skipped`);
+    } else if (conclusion !== "success")
+      reasons.push(`original job "${name}" concluded ${conclusion} independently`);
+  }
+  for (const name of PROCESSING_CONSEQUENCE_JOBS) {
+    const entry = grouped.get(name);
+    if (
+      !entry ||
+      entry.duplicates !== 1 ||
+      entry.effective.status !== "completed" ||
+      entry.effective.conclusion !== "skipped" ||
+      (entry.effective.run_attempt ?? 1) !== attempt ||
+      (entry.effective.steps ?? []).some((step) => step.conclusion !== "skipped")
+    )
+      reasons.push(`original "${name}" is not a skipped consequence of the processing stop`);
+  }
+  if (reasons.length || !job) return result(STATUS.FAILED);
+
+  try {
+    const proof = processingProof(await readJobLog(ctx, ctx.repo, job), {
+      version: ctx.version,
+      packages: ctx.publicationPackages ?? [],
+    });
+    evidence.processingProof = proof.evidence ?? null;
+    if (!proof.ok) {
+      reasons.push(...proof.reasons);
+      return result(STATUS.FAILED);
+    }
+  } catch (error) {
+    reasons.push(`original publish log unavailable: ${error.message}`);
+    evidence.publishLogError = errorRecord(error);
+    return result(STATUS.INCOMPLETE);
+  }
+
+  const finalizeJob = ctx.finalizeJobs?.get("Finalize published release")?.effective;
+  try {
+    const lines = await readJobLog(ctx, ctx.repo, finalizeJob);
+    const total = ctx.publicationPackages.length;
+    const { found, missing } = logEvidence(lines, {
+      gate: `Finalization cleared for ${ctx.tag}: all source-policy packages present-verified, build assets complete.`,
+      provenance: new RegExp(`^Provenance expectations: ${total}/${total} verified\\.$`),
+      ...Object.fromEntries(
+        evidence.processingProof.processing.map((entry) => [
+          entry,
+          new RegExp(`^\\s*✓ ${escapeRegExp(entry)}: provenance (?:attested|none) as expected\\.$`),
+        ]),
+      ),
+    });
+    evidence.finalizerLog = found;
+    if (missing.length) {
+      reasons.push(`finalizer log lacks re-verification evidence: ${missing.join(", ")}`);
+      return result(STATUS.FAILED);
+    }
+  } catch (error) {
+    reasons.push(`finalizer log unavailable: ${error.message}`);
+    evidence.finalizerLogError = errorRecord(error);
+    return result(STATUS.INCOMPLETE);
+  }
+  return result(STATUS.VERIFIED);
+}
+
 export async function verifyReleaseDelivery(options, deps = {}) {
   const version = options.version;
   const repo = options.repo ?? DEFAULT_REPO;
@@ -2480,19 +2728,24 @@ export async function verifyReleaseDelivery(options, deps = {}) {
     const sectionJson = Object.fromEntries(
       Object.entries(sections).map(([key, value]) => [key, value.toJSON()]),
     );
-    const superseded = new Set();
+    let superseded = [];
+    let supersession = null;
+    let eligibility = null;
+    const finalizerReady =
+      finalizer?.toJSON().status === STATUS.VERIFIED &&
+      consumption.toJSON().status === STATUS.VERIFIED;
+    const workflowChecks = sectionJson.workflow.checks;
     const originalSmoke = ctx.releaseJobs
       ? [...ctx.releaseJobs.values()].find((e) =>
           e.effective.name.startsWith("smoke-clean-room / "),
         )?.effective
       : undefined;
     if (
-      finalizer?.toJSON().status === STATUS.VERIFIED &&
-      consumption.toJSON().status === STATUS.VERIFIED &&
+      finalizerReady &&
       SUPPORTED_DELIVERY_PATHS.has(ctx.deliveryPath) &&
       ctx.releaseRun?.status === "completed" &&
       ctx.releaseRun?.conclusion === "failure" &&
-      workflow.toJSON().checks.find((c) => c.id === "release-run")?.reason ===
+      workflowChecks.find((c) => c.id === "release-run")?.reason ===
         "latest attempt concluded failure" &&
       originalSmoke?.status === "completed" &&
       originalSmoke.conclusion === "failure" &&
@@ -2500,16 +2753,30 @@ export async function verifyReleaseDelivery(options, deps = {}) {
         "failure"
     ) {
       // Preserve the historical failures verbatim, but reconcile only these two duties.
-      superseded.add("release-run");
-      superseded.add("job:smoke-clean-room");
+      superseded = [...CLEAN_ROOM_SUPERSEDED];
+      supersession = "clean-room";
+    } else if (finalizerReady) {
+      eligibility = await classifyProcessingFinalization(ctx, workflowChecks);
+      if (eligibility.eligible) {
+        superseded = [...PROCESSING_FINALIZE_SUPERSEDED];
+        supersession = "processing-then-finalize";
+      }
     }
+    // Unreadable processing proof is missing evidence: those original failures
+    // count as incomplete, never as pardoned.
+    const pending = eligibility?.status === STATUS.INCOMPLETE ? PROCESSING_FINALIZE_SUPERSEDED : [];
     const verdict = combineStatus(
       Object.entries(sectionJson).flatMap(([name, section]) =>
         section.checks
           .filter(
-            (c) => !(name === "workflow" && superseded.has(c.id) && c.status === STATUS.FAILED),
+            (c) =>
+              !(name === "workflow" && superseded.includes(c.id) && c.status === STATUS.FAILED),
           )
-          .map((c) => c.status),
+          .map((c) =>
+            name === "workflow" && pending.includes(c.id) && c.status === STATUS.FAILED
+              ? STATUS.INCOMPLETE
+              : c.status,
+          ),
       ),
     );
     const aggregateDelivery = {
@@ -2517,8 +2784,13 @@ export async function verifyReleaseDelivery(options, deps = {}) {
       consumptionRunId: ctx.finalizeRunId ?? ctx.releaseRunId,
       originalRunId: ctx.releaseRunId,
       finalizerRunId: ctx.finalizeRunId ?? null,
-      supersededOriginalChecks: [...superseded],
-      rule: "only original clean-room failure and its resulting overall run failure",
+      supersession,
+      supersededOriginalChecks: superseded,
+      rule:
+        supersession === "processing-then-finalize"
+          ? "original publish stopped only on npm processing (provenance expectations exit 3 after every package was published); the selected same-source finalizer re-verified all packages, promoted, swept holding tags, finalized the digest asset and ran the clean-room, so only that publish failure, its skipped digest upload and clean-room, and the resulting overall run failure are superseded"
+          : "only original clean-room failure and its resulting overall run failure",
+      ...(eligibility ? { processingEligibility: eligibility } : {}),
     };
     const final = verdict === STATUS.NOT_APPLICABLE ? STATUS.INCOMPLETE : verdict;
     const unverified = [];
@@ -2564,7 +2836,7 @@ export async function verifyReleaseDelivery(options, deps = {}) {
         "Foreign-platform binaries are hashed and inspected, never executed.",
         "The installer run is the explicitly selected run; GitHub's API does not name the Release run that triggered a workflow_run.",
         "Mutable channels (GitHub Latest, npm dist-tags, Homebrew) are observations unless an --expect-* flag was given.",
-        "Original publication must use the normal or tag-dispatch path. An explicitly selected finalization-only run can satisfy only failed original clean-room consumption; it never supplies publication provenance or replaces mandatory original artifacts.",
+        "Original publication must use the normal or tag-dispatch path. An explicitly selected finalization-only run can satisfy only failed original clean-room consumption, or an original publish that stopped solely on npm processing after publishing every package (processing-then-finalize); it never supplies publication provenance or replaces mandatory original artifacts.",
       ],
       requestCount: http.requests?.length ?? null,
     };
