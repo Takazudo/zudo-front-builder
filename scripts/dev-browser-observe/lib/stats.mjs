@@ -52,6 +52,10 @@ export function summarize(records, accounting) {
         traceMissing: r.provenance.traceMissing ?? null,
         chainComplete: r.provenance.chainComplete ?? false,
         chainEventsOnly: r.provenance.chainEventsOnly ?? false,
+        chainConsumerLevel: r.provenance.chainConsumerLevel ?? false,
+        evidenceVia: r.provenance.evidenceVia ?? null,
+        reasons: r.provenance.causalChain?.reasons ?? null,
+        integrity: r.provenance.causalChain?.integrity?.status ?? null,
         lackingTarget: r.provenance.causalChain?.lackingTarget ?? null,
         missing: r.provenance.causalChain?.missing ?? null,
         parseErrors: r.provenance.parseErrors?.length ?? null,
@@ -65,7 +69,19 @@ export function summarize(records, accounting) {
         attempts: ps.length,
         chainComplete: ps.filter((p) => p.chainComplete === true).length,
         chainEventsOnly: ps.filter((p) => p.chainEventsOnly === true).length,
-        incomplete: ps.filter((p) => p.chainComplete !== true && p.chainEventsOnly !== true).length,
+        chainConsumerLevel: ps.filter((p) => p.chainConsumerLevel === true).length,
+        incomplete: ps.filter(
+          (p) =>
+            p.chainComplete !== true && p.chainEventsOnly !== true && p.chainConsumerLevel !== true,
+        ).length,
+        traceIntegrityUnverified: ps.filter(
+          (p) => p.causalChain?.integrity?.status === "unverified",
+        ).length,
+        byEvidenceVia: ps.reduce((acc, p) => {
+          const k = p.evidenceVia ?? "none";
+          acc[k] = (acc[k] ?? 0) + 1;
+          return acc;
+        }, {}),
         traceMissing: ps.filter((p) => p.traceMissing === true).length,
       };
     })(),

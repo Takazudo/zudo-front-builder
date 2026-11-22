@@ -195,7 +195,23 @@ Review hardening:
   of the generation after this tick's `render_plan`, preferring a drain
   tagged with the same `tick` (`via` says which). A sibling article
   rendered through the shared `[slug].tsx` in another drain does not count.
-  Aggregate reads count only for the written entry's collection.
+  Aggregate reads count only for the written entry's collection. Only
+  `Render`-phase reads count; a `Paths` read of the shared page reads every
+  entry. The phases seen are recorded.
+- **Own drain required:** only `lazy-publish-drain` and
+  `same-tick-drain-after-render-plan` evidence can make a chain complete.
+  Evidence from the `first-drain-after-render-plan` fallback may come from a
+  later tick or another article. Such a chain is `chainConsumerLevel`, never
+  complete, and the reason is recorded. Summary rows and `provenanceCounts`
+  report `evidenceVia`.
+- **Rejected deciding tick:** this explains the attempt only when the DOM
+  outcome is `expected-negative-observed`. A DOM success or
+  `recovery-observed` "explained" by a rejected tick is incomplete with the
+  reason `deciding-tick-rejected`.
+- **Trace integrity:** these make the chain's `integrity` `unverified` and
+  `chainComplete` false: parse errors, `seq` gaps (a jump greater than 1,
+  meaning a line never arrived, listed in `seqGaps`), `seq` order violations,
+  or buffer loss before the mark.
 - **Raw page strings:** `targetPageStrings` records the page strings as
   emitted, including same-basename strings that did not match, so a native
   run can confirm the absolute `PageId` form.
@@ -540,6 +556,11 @@ Passes are split into `recoverySameTickProvenPasses` and
 `recoveryNoTickPremisePasses`. These outcomes are errors that stop the batch:
 `rejection-not-observed`, `open-page-replaced`, `recovery-state-mismatch`,
 `recovery-failed`, `not-same-tick` and `same-tick-unknown`. A timeout after the repair stays `timeout`.
+
+Exit 0 for a recovery scenario without `requireSameTick` does not mean the
+same tick was proven. Read `sameTickProven` on the record, and
+`recoverySameTickProvenPasses` against `recoveryUnprovenTick` in the
+accounting.
 
 **`fixture.placement`** (Field Notes): `external` is the default and copies
 the source layout exactly. `internal` is a versioned derived overlay. The

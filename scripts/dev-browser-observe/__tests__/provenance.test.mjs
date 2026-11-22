@@ -223,8 +223,15 @@ describe("causal chain", () => {
       line("snapshot", { tick: 5, snapshot_gen: 3, outcome: "Failed", error: "bad yaml" }),
       line("reject", { tick: 5, stage: "refresh", error: "bad yaml", retained: GEN }),
     ];
-    const onlyRejected = buildCausalChain(parseProvLines(rejected).events, opts({ dom: null }));
+    const onlyRejected = buildCausalChain(
+      parseProvLines(rejected).events,
+      opts({ dom: { outcome: "expected-negative-observed" } }),
+    );
     expect(onlyRejected).toMatchObject({ tick: 5, rejected: true, chainComplete: true });
+    // A DOM success cannot be explained by a rejected deciding tick.
+    const explained = buildCausalChain(parseProvLines(rejected).events, opts());
+    expect(explained).toMatchObject({ rejected: true, chainComplete: false });
+    expect(explained.reasons).toEqual(["deciding-tick-rejected"]);
     expect(onlyRejected.links.generation).toMatchObject({
       outcome: "retained",
       generation: GEN,
@@ -642,8 +649,16 @@ describe("review: false-complete paths", () => {
     const c = buildCausalChain(eager, opts({ lazy: false }));
     expect(c.links.publish.status).toBe("observed");
     expect(c.lazyRuleApplied).toBe(false);
+    // The only drain carries no tick: fallback evidence, consumer-level at best.
     expect(c.links.observations.evidence.via).toBe("first-drain-after-render-plan");
-    expect(c.chainComplete).toBe(true);
+    expect(c.chainComplete).toBe(false);
+    expect(c.chainConsumerLevel).toBe(true);
+    expect(c.reasons[0]).toMatch(/fallback drain/);
+    // The same chain with this tick's own drain is complete.
+    const own = eager.map((e) => (e.ev === "observations" ? { ...e, tick: 3 } : e));
+    const co = buildCausalChain(own, opts({ lazy: false }));
+    expect(co.evidenceVia).toBe("same-tick-drain-after-render-plan");
+    expect(co.chainComplete).toBe(true);
     // Native shape on Q: the eager `page` is the output-keyed id, not the page source.
     const native = parseProvLines([
       ...acceptedTick(3, [A]).filter((l) => !l.text.includes('"ev":"stale"')),
@@ -816,8 +831,11 @@ describe("review: false-complete paths", () => {
       attempts: 4,
       chainComplete: 1,
       chainEventsOnly: 1,
+      chainConsumerLevel: 0,
       incomplete: 2,
       traceMissing: 1,
+      traceIntegrityUnverified: 0,
+      byEvidenceVia: { none: 4 },
     });
   });
 });
@@ -968,5 +986,84 @@ describe("review 2: lazy render evidence and drain-tied observations", () => {
       buildCausalChain(parseProvLines(withAgg("authors")).events, opts()).targetEvidence
         .observations,
     ).toBe(false);
+  });
+});
+
+describe("integrated review: evidence strength, rejected ticks, phases, trace integrity", () => {
+  it("Paths-phase reads of the shared page are not target evidence", () => {
+    const lines = [...acceptedTick(3, [A]), ...afterAdoption()].map((l) => {
+      if (!l.text.includes('"ev":"observations"')) return l;
+      const j = JSON.parse(l.text.slice(11));
+      j.observations[0].phase = "Paths";
+      return { text: `[zfb-prov] ${JSON.stringify(j)}` };
+    });
+    const c = buildCausalChain(parseProvLines(lines).events, opts());
+    expect(c.links.observations.evidence).toMatchObject({
+      phase: "Render",
+      consumerPhasesSeen: ["Paths"],
+      targetConsumerRead: false,
+    });
+    expect(c.targetEvidence.observations).toBe(false);
+    expect(c.chainComplete).toBe(false);
+  });
+
+  it("seq gaps, parse errors or buffer loss in the window make the chain unverified", () => {
+    seq = 0;
+    const whole = [...acceptedTick(3, [A]), ...afterAdoption()];
+    const run = (lines, dropped = 0) => {
+      const s = fakeServer();
+      s.provSince = () => ({ lines, droppedBeforeMark: dropped });
+      return attemptProvenance({
+        server: s,
+        mark: 0,
+        attempt: { targetPath: "/articles/a/", writes: [{ method: "in-place", path: A }] },
+        rec: { targetPath: "/articles/a/", outcome: "success", t1Ns: null },
+        pageFor: () => PAGE,
+        traceEnabled: true,
+        renderMode: { lazy: true, source: "test" },
+      });
+    };
+    expect(run(whole).chainComplete).toBe(true);
+    expect(run(whole).causalChain.integrity).toEqual({ status: "ok", reasons: [] });
+    // One line lost in the middle: a seq gap.
+    const gapped = whole.filter((_, i) => i !== 6);
+    const g = run(gapped);
+    expect(g.seqGaps).toEqual([expect.objectContaining({ missing: 1 })]);
+    expect(g.causalChain.integrity.status).toBe("unverified");
+    expect(g.chainComplete).toBe(false);
+    const bad = run([...whole, { text: "[zfb-prov] {broken" }]);
+    expect(bad.chainComplete).toBe(false);
+    expect(bad.causalChain.integrity.reasons).toEqual(["1 parse errors"]);
+    const dropped = run(whole, 3);
+    expect(dropped.chainComplete).toBe(false);
+    expect(dropped.causalChain.reasons).toContain("trace-integrity");
+  });
+
+  it("summary rows carry evidenceVia, and counts split consumer-level chains", () => {
+    const mk = (prov) => ({ type: "attempt", opId: "o", provenance: prov });
+    const s = summarize(
+      [
+        mk({ chainComplete: true, evidenceVia: "lazy-publish-drain" }),
+        mk({
+          chainComplete: false,
+          chainConsumerLevel: true,
+          evidenceVia: "first-drain-after-render-plan",
+        }),
+        mk({ chainComplete: false, causalChain: { integrity: { status: "unverified" } } }),
+      ],
+      {},
+    );
+    expect(s.provenance.map((r) => r.evidenceVia)).toEqual([
+      "lazy-publish-drain",
+      "first-drain-after-render-plan",
+      null,
+    ]);
+    expect(s.provenanceCounts).toMatchObject({
+      chainComplete: 1,
+      chainConsumerLevel: 1,
+      incomplete: 1,
+      traceIntegrityUnverified: 1,
+      byEvidenceVia: { "lazy-publish-drain": 1, "first-drain-after-render-plan": 1, none: 1 },
+    });
   });
 });
