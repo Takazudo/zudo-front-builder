@@ -373,6 +373,7 @@ describe("rename-case-only", () => {
     const { m } = setup();
     const snap = snapshotPaths({ dirs: [m.contentDir] });
     const ino = statSync(join(m.contentDir, "article-00008.md")).ino;
+    const { caseSensitive } = probeCaseSensitivity(m.contentDir);
     for (const steps of ["direct", "via-temp"]) {
       const r = await performWrites(
         caseRenameWrites(m.contentDir, "article-00008.md", "Article-00008.md", steps),
@@ -383,7 +384,14 @@ describe("rename-case-only", () => {
       expect(ev.readdirAfter).toContain("Article-00008.md");
       expect(ev.readdirAfter).not.toContain("article-00008.md");
       expect(ev.inodeAfterTo).toBe(ino);
-      expect(verifySnapshot(snap).map((x) => x.got)).toContain("name-case-mismatch");
+      const got = verifySnapshot(snap).map((x) => x.got);
+      if (caseSensitive) {
+        // Two distinct names on a case-sensitive volume: the original is missing and the variant is extra.
+        expect(got).toContain(null);
+        expect(got).toContain("unexpected-file");
+      } else {
+        expect(got).toContain("name-case-mismatch");
+      }
       const res = restoreSnapshot(snap, { renameRevert: true });
       expect(res.mismatches).toEqual([]);
       expect(res.actions).toHaveLength(1);
