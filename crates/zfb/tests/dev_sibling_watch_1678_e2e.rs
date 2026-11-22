@@ -342,7 +342,13 @@ async fn wait_for_watch_extra(session: &DevSession, dir_suffix: &str) {
 /// Wait for one NEW reason-bearing intake line before issuing the next write;
 /// otherwise notify may legitimately coalesce repeated writes into one event.
 async fn wait_for_linked_suppression(session: &DevSession, path: &Path, previous: usize) {
-    let needle = format!("intake: suppressed linked-ignored {} (", path.display());
+    // The watcher reports canonical paths; on macOS the tempdir under /var is
+    // reported as /private/var, so match the canonical spelling of the same file.
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let needle = format!(
+        "intake: suppressed linked-ignored {} (",
+        canonical.display()
+    );
     let started = Instant::now();
     while started.elapsed() < SIGNAL_DEADLINE {
         if session.stderr().matches(&needle).count() > previous {
