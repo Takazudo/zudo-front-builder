@@ -38,7 +38,7 @@ function acceptedTick(tick, paths, { selected = [PAGE], allPages = false, gen = 
       tick,
       changes: paths.map((p) => ({ path: p.path ?? p, kind: "Modified", class: "Content" })),
       all_pages: allPages,
-      all_reasons: allPages ? [{ reason: "content-snapshot-changed" }] : [],
+      all_reasons: allPages ? [{ reason: "global_full_rebuild" }] : [],
       fan_out_safe: !allPages,
       selected: allPages ? null : selected,
       noop: false,
@@ -97,10 +97,16 @@ const afterAdoption = (gen = GEN, drain = 4, entry = A, flags = {}) => [
     ],
     demoted: [],
     groups: [{ consumer: PAGE, collection: "articles", entries: [entry], entries_total: 1 }],
+    ...("graph" in flags
+      ? flags.graph === undefined
+        ? {}
+        : { graph_written: flags.graph }
+      : { graph_written: true }),
   }),
   line("publish", {
     mode: "lazy",
     url: "/articles/a/",
+    page: "page" in flags ? flags.page : PAGE,
     output: "/w/app/dist/articles/a/index.html",
     written: true,
     generation: gen,
@@ -237,7 +243,7 @@ describe("causal chain", () => {
     const c = buildCausalChain(events, opts());
     expect(c.links.select).toMatchObject({
       all_pages: true,
-      all_reasons: [{ reason: "content-snapshot-changed" }],
+      all_reasons: [{ reason: "global_full_rebuild" }],
       selected: null,
       fan_out_safe: false,
     });
@@ -418,12 +424,13 @@ describe("contract update: first_drain_of_generation, drain_contains_page, selec
   it("an older binary without the flags is unverified, never observed, and the chain is incomplete", () => {
     const { events } = parseProvLines([
       ...acceptedTick(3, [A]),
-      ...afterAdoption(GEN, 4, A, { first: undefined, contains: undefined }),
+      ...afterAdoption(GEN, 4, A, { first: undefined, contains: undefined, graph: undefined }),
     ]);
     const c = buildCausalChain(events, opts());
     expect(c.links.observations.status).toBe("unverified");
     expect(c.links.publish.status).toBe("unverified");
-    expect(c.unverified).toEqual(["observations", "publish"]);
+    expect(c.links.edges.status).toBe("unverified");
+    expect(c.unverified).toEqual(["observations", "edges", "publish"]);
     expect(c.chainComplete).toBe(false);
   });
 
@@ -449,7 +456,7 @@ describe("contract update: first_drain_of_generation, drain_contains_page, selec
             kind: "Removed",
             class: "Content",
             reason: "global_removed",
-            external_override: { reason: "x" },
+            external_override: true,
             future_field: 7,
           },
         ],
@@ -462,10 +469,100 @@ describe("contract update: first_drain_of_generation, drain_contains_page, selec
     const c = buildCausalChain(events, opts());
     expect(c.links.select.changes[0]).toMatchObject({
       reason: "global_removed",
-      external_override: { reason: "x" },
+      external_override: true,
       future_field: 7,
     });
     expect(c.links.select.externalOverride).toBe(true);
     expect(c.links.select.all_reasons).toEqual([{ reason: "global_removed" }]);
+  });
+});
+
+describe("contract 1e493c9bc", () => {
+  it("first_drain_of_generation null is unverified", () => {
+    const { events } = parseProvLines([
+      ...acceptedTick(3, [A]),
+      ...afterAdoption(GEN, 4, A, { first: null }),
+    ]);
+    const c = buildCausalChain(events, opts());
+    expect(c.links.observations.status).toBe("unverified");
+    expect(c.chainComplete).toBe(false);
+  });
+
+  it("a group counts as a graph edge only when graph_written is true", () => {
+    const { events } = parseProvLines([
+      ...acceptedTick(3, [A]),
+      ...afterAdoption(GEN, 4, A, { graph: false }),
+    ]);
+    const c = buildCausalChain(events, opts());
+    expect(c.links.edges).toMatchObject({
+      status: "observed",
+      graph_written: false,
+      groupNamesTargetAndEntry: true,
+      groupLinksTargetToEntry: false,
+    });
+  });
+
+  it("a lazy publish naming another page is not the target's, even at the same url", () => {
+    const { events } = parseProvLines([
+      ...acceptedTick(3, [A]),
+      ...afterAdoption(GEN, 4, A, { page: HOME }),
+    ]);
+    expect(buildCausalChain(events, opts()).links.publish.status).toBe("missing");
+    const nullPage = parseProvLines([
+      ...acceptedTick(3, [A]),
+      ...afterAdoption(GEN, 4, A, { page: null }),
+    ]).events;
+    expect(buildCausalChain(nullPage, opts()).links.publish.status).toBe("observed");
+  });
+
+  it("a worker event printed after the drain it enabled still links by generation ids", () => {
+    const tick = acceptedTick(3, [A]);
+    const worker = tick.find((l) => l.text.includes('"ev":"worker"'));
+    const refresh = tick.find((l) => l.text.includes('"ev":"refresh"'));
+    const rest = tick.filter((l) => l !== worker && l !== refresh);
+    const drained = afterAdoption();
+    // Re-sequence so the worker and refresh lines come after the observations and publish.
+    seq = 0;
+    const reseq = [...rest, ...drained, worker, refresh].map((l) => {
+      const j = JSON.parse(l.text.slice("[zfb-prov] ".length));
+      return { text: `[zfb-prov] ${JSON.stringify({ ...j, seq: ++seq })}` };
+    });
+    const c = buildCausalChain(parseProvLines(reseq).events, opts());
+    expect(c.links.generation.outcome).toBe("adopted");
+    expect(c.chainComplete).toBe(true);
+  });
+
+  it('select dirty may be a page list or "all"; class may be null; per-path fields pass through', () => {
+    const sel = (dirty, extra = {}) =>
+      parseProvLines([
+        line("intake", { tick: 12, paths: [{ path: A, kind: "Modified" }], suppressed: 0 }),
+        line("select", {
+          tick: 12,
+          changes: [{ path: A, kind: "Modified", class: null, dirty, ...extra }],
+          all_pages: false,
+          all_reasons: [],
+          selected: [PAGE],
+          noop: false,
+        }),
+      ]).events;
+    expect(buildCausalChain(sel("all"), opts()).links.select.targetDirty).toBe(true);
+    expect(buildCausalChain(sel([HOME]), opts()).links.select.targetDirty).toBe(false);
+    const c = buildCausalChain(
+      sel([PAGE], {
+        external_override: true,
+        ssr_module_dependency: "all",
+        all_reasons: ["external", "unattributed"],
+        graph_known: true,
+      }),
+      opts(),
+    );
+    expect(c.links.select.targetDirty).toBe(true);
+    expect(c.links.select.externalOverride).toBe(true);
+    expect(c.links.select.changes[0]).toMatchObject({
+      class: null,
+      ssr_module_dependency: "all",
+      all_reasons: ["external", "unattributed"],
+      graph_known: true,
+    });
   });
 });

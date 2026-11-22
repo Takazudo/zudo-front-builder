@@ -131,9 +131,19 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
     // global_removed reason or an external_override marker).
     changes: (select?.changes ?? []).filter((c) => written.has(c.path)),
     externalOverride: (select?.changes ?? []).some(
-      (c) =>
-        written.has(c.path) && c.external_override !== undefined && c.external_override !== false,
+      (c) => written.has(c.path) && c.external_override === true,
     ),
+    // `dirty` is the fold's page list or the string "all"; `class` may be null (swallowed by a
+    // global full rebuild).
+    targetDirty: select
+      ? (select.changes ?? [])
+          .filter((c) => written.has(c.path))
+          .some(
+            (c) =>
+              c.dirty === "all" ||
+              (Array.isArray(c.dirty) && c.dirty.some((p) => consumerSet.has(p))),
+          )
+      : null,
   });
 
   const reject = forTick("reject")[0] ?? null;
@@ -187,7 +197,11 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
   const stale = forTick("stale")[0] ?? null;
   links.stale = link(!!stale, { seq: stale?.seq ?? null, outputs: stale?.outputs ?? null });
 
-  const after = (e) => adoptedAtSeq !== null && e.seq > adoptedAtSeq;
+  // Downstream events are tied to this attempt by generation ids, not seq adjacency: a worker event
+  // can be printed a few seq after events emitted under the renderer lock. The only order used is
+  // the lower bound of the deciding intake (nothing for this tick precedes it).
+  const intakeSeq = intakes.filter((e) => e.tick === tick).at(-1)?.seq ?? null;
+  const after = (e) => adoptedAtSeq !== null && intakeSeq !== null && e.seq > intakeSeq;
   // `first_reader` is the generation's first reader only in a drain flagged
   // first_drain_of_generation: true. A drain without the flag (older binary) is
   // unverified, never observed; drains flagged false are skipped.
@@ -226,26 +240,47 @@ export function buildCausalChain(events, { writePaths = [], consumers = [], targ
   };
   const edges = obs ? (byEv("edges").find((e) => e.drain === obs.drain) ?? null) : null;
   const slots = (edges?.slots ?? []).filter((s) => consumerSet.has(s.consumer));
-  links.edges = link(!!edges, {
+  // A group is an edge in the graph only when the drain wrote it (graph_written true); without the
+  // flag the edges link is unverified.
+  const graphWritten = typeof edges?.graph_written === "boolean" ? edges.graph_written : null;
+  const groupNamesEntry = edges
+    ? (edges.groups ?? []).some(
+        (g) => consumerSet.has(g.consumer) && (g.entries ?? []).some((p) => written.has(p)),
+      )
+    : null;
+  links.edges = {
+    status: !edges
+      ? "missing"
+      : edges.applied === true && graphWritten === null
+        ? "unverified"
+        : "observed",
+    reason:
+      edges && edges.applied === true && graphWritten === null
+        ? "graph_written absent (older binary)"
+        : null,
     seq: edges?.seq ?? null,
     drain: edges?.drain ?? null,
     applied: edges?.applied ?? null,
+    graph_written: graphWritten,
+    first_drain_of_generation: edges ? (edges.first_drain_of_generation ?? null) : null,
+    cleared: edges ? (edges.cleared ?? null) : null,
     targetSlotStatuses: edges ? slots.map((s) => ({ phase: s.phase, status: s.status })) : null,
-    groupLinksTargetToEntry: edges
-      ? (edges.groups ?? []).some(
-          (g) => consumerSet.has(g.consumer) && (g.entries ?? []).some((p) => written.has(p)),
-        )
-      : null,
+    groupNamesTargetAndEntry: groupNamesEntry,
+    groupLinksTargetToEntry: edges ? graphWritten === true && groupNamesEntry === true : null,
     groupEntriesTruncated: edges
       ? (edges.groups ?? []).some((g) => consumerSet.has(g.consumer) && g.entries_truncated > 0)
       : null,
-    reason: edges?.reason ?? null,
-  });
+    dropReason: edges?.reason ?? null,
+  };
   const urls = urlForms(targetUrl);
   const suffixes = outputSuffixes(targetUrl);
   const candidates = byEv("publish").filter((e) => {
     if (!(after(e) && sameGen(e.generation, generation))) return false;
-    if (e.mode === "lazy") return urls.includes(e.url);
+    // A lazy publish names its page source when known; prefer it over the url.
+    if (e.mode === "lazy")
+      return typeof e.page === "string" && consumerSet.size
+        ? consumerSet.has(e.page) && urls.includes(e.url)
+        : urls.includes(e.url);
     return (
       consumerSet.has(e.page) &&
       typeof e.output === "string" &&

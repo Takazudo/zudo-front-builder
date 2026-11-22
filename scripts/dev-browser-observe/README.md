@@ -139,6 +139,23 @@ If an older binary omits either flag, the link is `unverified`: it is never
 `select` fields, such as a `global_removed` reason or `external_override`, and
 any unknown extra fields pass through unchanged.
 
+Contract 1e493c9bc adds these rules:
+
+- **`first_drain_of_generation`:** `null` means no generation was known, so
+  the link is `unverified`.
+- **`graph_written`:** an `edges` group counts as a graph edge only when this
+  is `true`. The group check is `groupLinksTargetToEntry`, and
+  `groupNamesTargetAndEntry` records the group's contents regardless.
+  Without the flag, the edges link is `unverified`.
+- **Lazy `publish` page:** a lazy publish that names its `page` must name the
+  target page and URL. With `page: null`, the URL alone decides.
+- **`select` dirty pages:** `targetDirty` reads each written path's `dirty`,
+  which is a page list or `"all"`.
+- **Ordering:** downstream events are tied to the attempt by generation ids,
+  not by `seq` adjacency. A `worker` line can be printed after the events it
+  enabled. The only order used is that nothing for a tick comes before its
+  intake.
+
 `chainComplete` requires every link except `stale`, which is recorded only.
 When the deciding tick was rejected, only intake,
 select and generation are required, and `rejected: true` is set.
