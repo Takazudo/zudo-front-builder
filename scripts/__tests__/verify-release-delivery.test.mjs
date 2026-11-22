@@ -2790,6 +2790,21 @@ describe("installer byte binding (#4784)", () => {
       expect(report.exitCode).toBe(EXIT.incomplete);
     });
 
+  for (const [label, records] of [
+    ["verified", [installerRecord()]],
+    ["failed", [installerRecord(COMMIT, "0".repeat(64))]],
+  ])
+    it(`records the bound source, not a moving ref, for a ${label} new-protocol run`, async () => {
+      const { report } = await run((w) => withBoundInstaller(w, records));
+      const evidence = check(report, "consumption", "installer-evidence").evidence;
+      expect(evidence.installScriptRef).toBe(COMMIT);
+      expect(evidence.note).toBeUndefined();
+      expect(JSON.stringify(report.sections.consumption)).not.toContain("moving ref");
+      expect(JSON.stringify(report.sections.consumption)).not.toContain(
+        '"${ZFB_INSTALL_SOURCE_SHA}"',
+      );
+    });
+
   it("keeps an unavailable installer log incomplete", async () => {
     const { report } = await run((w) => {
       withBoundInstaller(w);

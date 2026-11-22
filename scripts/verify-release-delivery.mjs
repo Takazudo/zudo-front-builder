@@ -1949,7 +1949,8 @@ async function sourceFileBytes(ctx, path) {
  * whose Dockerfile produces zfb-installer-bytes/v1 must carry one matching
  * record, re-hashed here from install.sh at that commit. Only a retrieved
  * Dockerfile without the producer is legacy; a retrieval failure is not.
- * Returns "bound", "legacy-unbound" or null (protocol undetermined).
+ * Returns "bound", "new-protocol-unverified", "legacy-unbound" or null
+ * (protocol undetermined).
  */
 async function verifyInstallerBytes(ctx, section, lines) {
   const id = "installer-bytes";
@@ -1977,7 +1978,7 @@ async function verifyInstallerBytes(ctx, section, lines) {
       `malformed ${INSTALLER_BYTES_PROTOCOL} record in the installer log`,
       evidence,
     );
-    return null;
+    return "new-protocol-unverified";
   }
   if (records.length !== 1) {
     section.failed(
@@ -1987,7 +1988,7 @@ async function verifyInstallerBytes(ctx, section, lines) {
         : `the release source produces ${INSTALLER_BYTES_PROTOCOL} but the installer log has no record`,
       evidence,
     );
-    return null;
+    return "new-protocol-unverified";
   }
   const [record] = records;
   if (record.source !== ctx.commit) {
@@ -1996,7 +1997,7 @@ async function verifyInstallerBytes(ctx, section, lines) {
       `installer fetched install.sh at ${record.source}, not the release source`,
       evidence,
     );
-    return null;
+    return "new-protocol-unverified";
   }
   try {
     const actual = sha("sha256", await sourceFileBytes(ctx, "install.sh"));
@@ -2007,11 +2008,11 @@ async function verifyInstallerBytes(ctx, section, lines) {
         `install.sh at ${ctx.commit} hashes to ${actual}, not the recorded ${record.sha256}`,
         evidence,
       );
-      return null;
+      return "new-protocol-unverified";
     }
   } catch (error) {
     section.error(id, error, evidence, { missingIsFailure: false });
-    return null;
+    return "new-protocol-unverified";
   }
   section.verified(id, evidence);
   return "bound";
@@ -2177,22 +2178,22 @@ async function verifyConsumption(ctx) {
       scriptLine ?? "",
     )?.[1];
     const binding = await verifyInstallerBytes(ctx, section, lines);
+    const newProtocol = binding === "bound" || binding === "new-protocol-unverified";
     const movingRef =
-      scriptRef && !/^[0-9a-f]{40}$/.test(scriptRef)
+      !newProtocol && scriptRef && !/^[0-9a-f]{40}$/.test(scriptRef)
         ? `install.sh was fetched from the moving ref "${scriptRef}"; `
         : "";
     const evidence = {
       found,
-      installScriptRef: scriptRef ?? null,
+      installScriptRef: newProtocol ? ctx.commit : (scriptRef ?? null),
       installerBytes: binding,
-      note:
-        binding === "bound"
-          ? undefined
-          : binding === "legacy-unbound"
-            ? `${movingRef}installer bytes are unbound (release source ${ctx.commit} predates ${INSTALLER_BYTES_PROTOCOL}): this proves exact-version installer behavior, not immutable installer-script bytes`
-            : movingRef
-              ? `${movingRef}this proves exact-version installer behavior, not immutable installer-script bytes`
-              : undefined,
+      note: newProtocol
+        ? undefined
+        : binding === "legacy-unbound"
+          ? `${movingRef}installer bytes are unbound (release source ${ctx.commit} predates ${INSTALLER_BYTES_PROTOCOL}): this proves exact-version installer behavior, not immutable installer-script bytes`
+          : movingRef
+            ? `${movingRef}this proves exact-version installer behavior, not immutable installer-script bytes`
+            : undefined,
     };
     if (missing.length)
       section.failed(
