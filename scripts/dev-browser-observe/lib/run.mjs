@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { OBSERVER_PATH, closeOwnedBrowser, launchOwnedBrowser } from "./browser.mjs";
 import { runCalibration, CALIBRATION_CELLS } from "./calibrate.mjs";
 import { kindFor } from "./fixture-kinds.mjs";
+import { traceEnabledIn } from "./provenance.mjs";
 import {
   ancestorNodeModules,
   collectIdentityFacts,
@@ -418,6 +419,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           timeouts: profile.timeouts,
           startedNs,
           accountingRef,
+          provenance:
+            profile.diagnostic === true
+              ? { traceEnabled: traceEnabledIn(server.zfbEnv), pageFor: fixtureOps.pageFor ?? null }
+              : null,
         },
       });
       summaryExtra = { accountingFinal: accounting };

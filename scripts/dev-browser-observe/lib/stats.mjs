@@ -41,6 +41,19 @@ export function summarize(records, accounting) {
       acc[r.mechanism] = (acc[r.mechanism] ?? 0) + 1;
       return acc;
     }, {}),
+    // Diagnostic attempts: whether the provenance trace proved the causal chain, and what is missing.
+    provenance: records
+      .filter((r) => r.type === "attempt" && r.provenance)
+      .map((r) => ({
+        scenario: r.scenario,
+        opId: r.opId,
+        outcome: r.outcome,
+        traceEnabled: r.provenance.traceEnabled ?? null,
+        traceMissing: r.provenance.traceMissing ?? null,
+        chainComplete: r.provenance.chainComplete ?? false,
+        missing: r.provenance.causalChain?.missing ?? null,
+        parseErrors: r.provenance.parseErrors?.length ?? null,
+      })),
     // Recovery attempts, each with whether its same tick was proven (true), disproven (false) or neither (null).
     recovery: records
       .filter((r) => r.type === "attempt" && r.mode === "recovery")

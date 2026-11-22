@@ -78,13 +78,67 @@ its method.
 `ZFB_DEV_TIMING` and `ZFB_DEV_PROVENANCE_TRACE` are allowed in `server.env`
 only when the profile sets `diagnostic: true`. Outside a diagnostic profile,
 the harness also strips either one when inherited from the server's
-environment. `ZFB_DEV_PROVENANCE_TRACE` is for `[zfb-prov] {json}` lines; the
-harness keeps them with every other server line but does not parse them yet. The receipt records
+environment. `ZFB_DEV_PROVENANCE_TRACE` turns on the `[zfb-prov]` trace (see
+below). The receipt records
 every effective `ZFB_*` variable and any variable that was removed. Every
 attempt record carries the server output lines printed from arming until the
 attempt ends, each with milliseconds relative to `t0`; `server.log` holds all
 lines. `profiles/tiny-internal-a0-diagnostic.example.json` compares an
 in-place title edit with an atomic-rename one.
+
+## Provenance trace (`[zfb-prov]`)
+
+In a diagnostic profile with `ZFB_DEV_PROVENANCE_TRACE: "1"` in `server.env`,
+zfb prints one `[zfb-prov] {json}` stderr line per event. Each line has `ev`,
+`seq` (strictly increasing), `ms` and, inside a tick, `tick`. The harness keeps
+these lines in their own buffer, so neither the 400-line `serverLog` cap nor the
+general line cap can drop them. Any buffer loss before an attempt's mark is
+recorded in `droppedBeforeMark` and `lossNote`.
+
+Every attempt record in a diagnostic run carries `provenance`:
+
+- `traceEnabled` (from the effective server env), `linesSeen`, and
+  `traceMissing`, which is true when the gate is on but no line arrived since
+  arming.
+- `parseErrors`: malformed lines are kept here, never dropped. Also
+  `seqViolations`, and `truncatedLists`, which lists every `x_truncated: n`
+  cut at the source.
+- `events`: the parsed events. `targetConsumer` is the page source file for
+  `targetPath`, from the fixture's route table.
+- `causalChain` and `chainComplete`.
+
+The chain uses the trace's own ids only, never HTTP order or controller
+labels. The deciding tick is the last `intake` tick that names a path the
+attempt wrote, compared as absolute paths in raw and realpath forms. Renames
+count both `from` and `to`. Each link is `observed` or `missing`:
+
+1. `intake`: every matching intake, with its tick and the matched paths.
+2. `select` for that tick: `selected`, `all_pages` with `all_reasons`,
+   `fan_out_safe`, `noop`, and the changes for the written paths.
+3. `generation`: `adopted` (refresh `refreshed`, or a worker), `unchanged`
+   (refresh `skipped`), or `retained` (a `reject`, with its stage and the
+   retained generation). The snapshot outcome is recorded too.
+4. `render_plan` (whether the target page was planned) and `stale`.
+5. `observations`: the first event after the adoption whose generation equals
+   the adopted one. Recorded: its `first_reader`, and whether the target
+   consumer read the written entry.
+6. `edges`: the event for the same drain. Recorded: the target consumer's slot
+   statuses (`replaced`, `retired`, `retained`, ...) and whether a group links
+   the target consumer to the written entry.
+7. `publish` of the target with that generation: lazy by `url`, eager by
+   `page` plus the output suffix.
+8. `dom`: the outcome the harness observed (`t1`, latency).
+
+`chainComplete` requires every link except `stale`, which is recorded only.
+When the deciding tick was rejected, only intake,
+select and generation are required, and `rejected: true` is set.
+`summary.json` lists each attempt's `chainComplete`, `missing` and
+`traceMissing`.
+
+Examples: `profiles/tiny-{internal,external}-a1-provenance-diagnostic.example.json`
+cover A1, the original helper, with title and body edits under every warm
+order. `profiles/field-notes-original-memoized-provenance-diagnostic.example.json`
+is the Field Notes version.
 
 ## Measurement
 
