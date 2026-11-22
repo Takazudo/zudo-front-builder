@@ -56,7 +56,7 @@ use crate::pipeline::{
     AssetPipeline, BuildContext, BuildOutcome, CssPassRequest, DynamicInjectedProbe,
     RefreshOutcome, SsrPublishProbe, StaleProbe,
 };
-use crate::plan::{PageSelection, RebuildPlan};
+use crate::plan::{CssChangeSet, PageSelection, RebuildPlan};
 
 /// The framework-entry namespace whose publisher ran in a transaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -791,6 +791,11 @@ pub struct DevAssetPipeline {
     /// Failed-prune retries consult it so a lazy route that reappeared without
     /// rendering cannot have its still-live fallback deleted later.
     live_document_paths_probe: Option<Arc<dyn Fn() -> HashSet<PathBuf> + Send + Sync>>,
+    /// CSS work of a tick that failed before its CSS pass ran. A refresh
+    /// rejection aborts the tick at the renderer reload, and the orchestrator
+    /// drops its change set, so a coalesced stylesheet edit would otherwise
+    /// never reach the CSS runner. Merged into the next applied plan.
+    css_carry: Mutex<Option<(bool, CssChangeSet)>>,
 }
 
 impl std::fmt::Debug for DevAssetPipeline {
@@ -888,6 +893,7 @@ impl DevAssetPipeline {
             discovery_terminal_attempted: None,
             discovery_publication_resolved: None,
             live_document_paths_probe: None,
+            css_carry: Mutex::default(),
         }
     }
 
@@ -1112,6 +1118,48 @@ impl RequestWriter {
 
 impl AssetPipeline for DevAssetPipeline {
     fn apply(&self, plan: &RebuildPlan, ctx: &BuildContext) -> Result<BuildOutcome> {
+        let carried = self
+            .css_carry
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        let merged;
+        let plan = match carried {
+            Some((rerun_css, changes)) => {
+                let mut with_carry = plan.clone();
+                with_carry.rerun_css |= rerun_css;
+                with_carry.css_changes.upserted.extend(changes.upserted);
+                with_carry.css_changes.removed.extend(changes.removed);
+                merged = with_carry;
+                &merged
+            }
+            None => plan,
+        };
+        let mut css_pass_reached = false;
+        let result = self.apply_tick(plan, ctx, &mut css_pass_reached);
+        if result.is_err() && !css_pass_reached && (plan.rerun_css || !plan.css_changes.is_empty())
+        {
+            self.defer_css(plan.rerun_css, plan.css_changes.clone());
+        }
+        result
+    }
+
+    fn defer_css(&self, rerun_css: bool, changes: CssChangeSet) {
+        let mut carry = self.css_carry.lock().unwrap_or_else(|p| p.into_inner());
+        let (carried_rerun, carried_changes) = carry.get_or_insert_with(Default::default);
+        *carried_rerun |= rerun_css;
+        carried_changes.upserted.extend(changes.upserted);
+        carried_changes.removed.extend(changes.removed);
+    }
+}
+
+impl DevAssetPipeline {
+    fn apply_tick(
+        &self,
+        plan: &RebuildPlan,
+        ctx: &BuildContext,
+        css_pass_reached: &mut bool,
+    ) -> Result<BuildOutcome> {
         let has_selected_documents = match &plan.pages {
             PageSelection::Specific(pages) => !pages.is_empty(),
             PageSelection::All => true,
@@ -1663,6 +1711,7 @@ impl AssetPipeline for DevAssetPipeline {
         }
 
         // 2. CSS.
+        *css_pass_reached = true;
         if plan.rerun_css {
             outcome.css_rerun = true;
         }
@@ -1959,6 +2008,127 @@ mod tests {
                 "css"
             ]
         );
+    }
+
+    fn css_carry_ctx(
+        dir: &Path,
+        reload_fails: Arc<AtomicBool>,
+        css_fails: Arc<AtomicBool>,
+        css_requests: Arc<Mutex<Vec<CssPassRequest>>>,
+    ) -> BuildContext {
+        BuildContext {
+            dist_root: dir.to_path_buf(),
+            run_client_scripts: None,
+            run_islands: None,
+            render_pages: Arc::new(|_, _| Ok(Vec::new())),
+            run_css: Some(Arc::new(move |request| {
+                css_requests.lock().unwrap().push(request.clone());
+                if css_fails.load(Ordering::SeqCst) {
+                    anyhow::bail!("css failed");
+                }
+                Ok(true)
+            })),
+            reload_renderer: Some(Arc::new(move || {
+                if reload_fails.load(Ordering::SeqCst) {
+                    anyhow::bail!("dev generation rejected");
+                }
+                Ok(RefreshOutcome::Refreshed {
+                    vanished: Vec::new(),
+                    changed_sources: Vec::new(),
+                })
+            })),
+        }
+    }
+
+    fn css_carry_plan(css: &[&str]) -> RebuildPlan {
+        let mut plan = client_script_page_plan();
+        plan.rerun_client_scripts = false;
+        plan.renderer_fresh = false;
+        for path in css {
+            plan.css_changes.record_upsert(PathBuf::from(path));
+        }
+        plan
+    }
+
+    #[test]
+    fn css_work_of_a_tick_aborted_before_css_runs_on_the_next_tick() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let reload_fails = Arc::new(AtomicBool::new(true));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let ctx = css_carry_ctx(
+            dir.path(),
+            Arc::clone(&reload_fails),
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&requests),
+        );
+
+        assert!(pipeline
+            .apply(&css_carry_plan(&["/proj/styles/global.css"]), &ctx)
+            .is_err());
+        assert!(requests.lock().unwrap().is_empty());
+
+        reload_fails.store(false, Ordering::SeqCst);
+        pipeline.apply(&css_carry_plan(&[]), &ctx).unwrap();
+        let carried = requests.lock().unwrap().clone();
+        assert_eq!(carried.len(), 1);
+        assert!(carried[0]
+            .changes
+            .upserted
+            .contains(&PathBuf::from("/proj/styles/global.css")));
+
+        pipeline.apply(&css_carry_plan(&[]), &ctx).unwrap();
+        assert_eq!(
+            requests.lock().unwrap().len(),
+            1,
+            "the carry is consumed once"
+        );
+    }
+
+    #[test]
+    fn css_work_deferred_by_the_orchestrator_runs_on_the_next_tick() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let ctx = css_carry_ctx(
+            dir.path(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&requests),
+        );
+        let mut changes = CssChangeSet::default();
+        changes.record_upsert(PathBuf::from("/proj/styles/global.css"));
+        pipeline.defer_css(true, changes);
+
+        pipeline.apply(&css_carry_plan(&[]), &ctx).unwrap();
+        let carried = requests.lock().unwrap().clone();
+        assert_eq!(carried.len(), 1);
+        assert!(carried[0].rerun_requested);
+        assert!(carried[0]
+            .changes
+            .upserted
+            .contains(&PathBuf::from("/proj/styles/global.css")));
+    }
+
+    #[test]
+    fn a_failed_css_pass_is_not_carried_forward() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let css_fails = Arc::new(AtomicBool::new(true));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let ctx = css_carry_ctx(
+            dir.path(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&css_fails),
+            Arc::clone(&requests),
+        );
+
+        assert!(pipeline
+            .apply(&css_carry_plan(&["/proj/styles/global.css"]), &ctx)
+            .is_err());
+        css_fails.store(false, Ordering::SeqCst);
+        pipeline.apply(&css_carry_plan(&[]), &ctx).unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 1);
     }
 
     #[test]
