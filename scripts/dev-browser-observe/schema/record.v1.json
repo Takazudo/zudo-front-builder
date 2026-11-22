@@ -158,6 +158,23 @@
         "renderMode": {
           "type": ["object", "null"],
           "description": "{lazy, source}: zfb dev lazy-render switch resolved from the effective server env (ZFB_LAZY_DEV_RENDER, ZFB_DEV_EAGER, default lazy)"
+        },
+        "chainConsumerLevel": {
+          "type": "boolean",
+          "description": "events and target evidence present, but the evidence drain is the first-drain-after-render-plan fallback, not the target own drain; never complete"
+        },
+        "evidenceVia": {
+          "type": ["string", "null"],
+          "enum": [
+            "lazy-publish-drain",
+            "same-tick-drain-after-render-plan",
+            "first-drain-after-render-plan",
+            null
+          ]
+        },
+        "seqGaps": {
+          "type": "array",
+          "description": "seq jumps > 1 inside the attempt window; any gap makes causalChain.integrity unverified and chainComplete false"
         }
       }
     }

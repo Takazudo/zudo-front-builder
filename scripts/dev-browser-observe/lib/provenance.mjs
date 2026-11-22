@@ -38,6 +38,7 @@ export function parseProvLines(lines) {
   const events = [];
   const parseErrors = [];
   const seqViolations = [];
+  const seqGaps = [];
   const truncatedLists = [];
   let lastSeq = null;
   lines.forEach((line, index) => {
@@ -57,11 +58,14 @@ export function parseProvLines(lines) {
     }
     if (lastSeq !== null && !(ev.seq > lastSeq))
       seqViolations.push({ index, seq: ev.seq, previous: lastSeq });
+    // seq is assigned under the line's write lock, so a jump > 1 is a line that never reached us.
+    else if (lastSeq !== null && ev.seq - lastSeq > 1)
+      seqGaps.push({ index, seq: ev.seq, previous: lastSeq, missing: ev.seq - lastSeq - 1 });
     lastSeq = ev.seq;
     collectTruncation(ev, ev.ev, ev.seq, truncatedLists);
     events.push({ ...ev, _line: index, _ns: line.ns === undefined ? null : String(line.ns) });
   });
-  return { events, parseErrors, seqViolations, truncatedLists };
+  return { events, parseErrors, seqViolations, seqGaps, truncatedLists };
 }
 
 function collectTruncation(value, ev, seq, out, path = "") {
@@ -432,9 +436,11 @@ export function buildCausalChain(
     evidenceDrain = sameTick ?? sameGenDrains.find((e) => e.seq > plan.seq) ?? null;
     evidenceVia = sameTick ? "same-tick-drain-after-render-plan" : "first-drain-after-render-plan";
   }
-  const evidenceObs = (evidenceDrain?.observations ?? []).filter((o) =>
+  // Only Render-phase reads are evidence: the shared [slug].tsx paths() reads every entry.
+  const consumerObs = (evidenceDrain?.observations ?? []).filter((o) =>
     consumerSet.has(o.consumer),
   );
+  const evidenceObs = consumerObs.filter((o) => o.phase === "Render");
   const evEntryRead = evidenceObs.some((o) => (o.reads ?? []).some((r) => written.has(r.entry)));
   const evAggregateRead = evidenceObs.some((o) =>
     (o.reads ?? []).some((r) => r.aggregate === true && writtenCollections.has(r.collection)),
@@ -455,6 +461,8 @@ export function buildCausalChain(
     drain: evidenceDrain?.drain ?? null,
     targetConsumerRead: evidenceDrain ? evEntryRead : null,
     targetConsumerAggregateRead: evidenceDrain ? evAggregateRead : null,
+    phase: "Render",
+    consumerPhasesSeen: [...new Set(consumerObs.map((o) => o.phase ?? null))],
     writtenCollections: [...writtenCollections],
   };
   links.edges.evidence = {
@@ -492,8 +500,26 @@ export function buildCausalChain(
     .filter(([, ok]) => !ok)
     .map(([k]) => k);
   const eventsComplete = missing.length === 0;
+  // A rejected deciding tick explains only a rejection the DOM also showed.
+  const rejectionConsistent = !rejected || dom?.outcome === "expected-negative-observed";
+  // Only the target's own drain proves the target: the lazy publish's drain, or this tick's drain
+  // after its render_plan. The fallback (a later drain of the generation) may be another tick's or
+  // another article's render, so it is consumer-level at best.
+  const ownDrain =
+    rejected ||
+    evidenceVia === "lazy-publish-drain" ||
+    evidenceVia === "same-tick-drain-after-render-plan";
+  const targetOk = lackingTarget.length === 0;
+  const reasons = [];
+  if (!rejectionConsistent) reasons.push("deciding-tick-rejected");
+  if (eventsComplete && targetOk && !ownDrain)
+    reasons.push(`evidence from a fallback drain (${evidenceVia ?? "none"}), not the target's own`);
+  const chainComplete = eventsComplete && targetOk && ownDrain && rejectionConsistent;
   return {
     tick,
+    evidenceVia,
+    reasons,
+    chainConsumerLevel: eventsComplete && targetOk && !ownDrain && rejectionConsistent,
     rejected,
     lazy,
     lazyRuleApplied: lazyRule,
@@ -504,8 +530,8 @@ export function buildCausalChain(
     targetEvidence,
     lackingTarget,
     eventsComplete,
-    chainEventsOnly: eventsComplete && lackingTarget.length > 0,
-    chainComplete: eventsComplete && lackingTarget.length === 0,
+    chainEventsOnly: eventsComplete && !targetOk && rejectionConsistent,
+    chainComplete,
   };
 }
 
@@ -594,6 +620,25 @@ export function attemptProvenance({
     t1Ns: rec.t1Ns ?? null,
     lazy: renderMode?.lazy ?? null,
   });
+  // A window with parse errors, seq gaps or buffer loss cannot prove a chain: it may have lost the link.
+  const integrityReasons = [];
+  if (parsed.parseErrors.length) integrityReasons.push(`${parsed.parseErrors.length} parse errors`);
+  if (parsed.seqGaps.length)
+    integrityReasons.push(
+      `${parsed.seqGaps.reduce((n, g) => n + g.missing, 0)} seq numbers missing in ${parsed.seqGaps.length} gaps`,
+    );
+  if (parsed.seqViolations.length)
+    integrityReasons.push(`${parsed.seqViolations.length} seq order violations`);
+  if (since.droppedBeforeMark > 0)
+    integrityReasons.push(`${since.droppedBeforeMark} lines dropped before the mark`);
+  chain.integrity = {
+    status: integrityReasons.length ? "unverified" : "ok",
+    reasons: integrityReasons,
+  };
+  if (integrityReasons.length) {
+    if (chain.chainComplete) chain.reasons.push("trace-integrity");
+    chain.chainComplete = false;
+  }
   const recoveryPaths = attemptWritePaths(attempt, { recovery: true });
   const recoveryChain = recoveryPaths.length
     ? buildCausalChain(parsed.events, {
@@ -617,6 +662,7 @@ export function attemptProvenance({
         : null,
     parseErrors: parsed.parseErrors,
     seqViolations: parsed.seqViolations,
+    seqGaps: parsed.seqGaps,
     truncatedLists: parsed.truncatedLists,
     targetConsumer: consumer,
     // Raw page strings as emitted, so a native run can confirm the absolute PageId form.
@@ -624,6 +670,8 @@ export function attemptProvenance({
     causalChain: chain,
     chainComplete: chain.chainComplete,
     chainEventsOnly: chain.chainEventsOnly,
+    chainConsumerLevel: chain.chainConsumerLevel,
+    evidenceVia: chain.evidenceVia,
     recoveryChain,
     events: parsed.events,
   };
