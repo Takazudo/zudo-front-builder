@@ -8192,6 +8192,10 @@ pub(crate) fn read_tsconfig_paths(
 ///
 /// The snapshot comes back beside its JSON so `zfb dev` can publish the
 /// files it was built from for the watch-arm reconcile (issue #3202).
+///
+/// Test-only since #4781: `zfb build` calls the cached builder directly and
+/// `zfb dev` uses [`dev_content_snapshot_json`], which keeps failures apart.
+#[cfg(test)]
 pub(crate) fn build_content_snapshot_json(
     project_root: &Path,
     config: &Config,
@@ -8203,6 +8207,59 @@ pub(crate) fn build_content_snapshot_json(
     )?;
     let json = serialize_content_snapshot(&snapshot)?;
     Some((json, snapshot))
+}
+
+/// The content snapshot outcome `zfb dev` needs (issue #4781). Unlike
+/// [`build_content_snapshot_json`], which folds "no collections" and a
+/// failed build into `None` (production keeps booting with empty
+/// collections), dev must tell them apart: a failed candidate is rejected
+/// so the last successful generation stays published, while a successful
+/// snapshot, including a legitimately empty one, is published.
+pub(crate) enum DevContentSnapshot {
+    NoCollections,
+    Built {
+        json: String,
+        snapshot: zfb_content::ContentSnapshot,
+    },
+    Failed(String),
+}
+
+/// Fallible twin of [`build_content_snapshot_json`] for `zfb dev`. Emits
+/// no diagnostic; the caller reports [`DevContentSnapshot::Failed`].
+pub(crate) fn dev_content_snapshot_json(
+    project_root: &Path,
+    config: &Config,
+) -> DevContentSnapshot {
+    let snapshot = match try_build_content_snapshot_with_cache(
+        project_root,
+        config,
+        zfb_content::SnapshotOptions::default(),
+        zfb_content::MdxModuleCache::process_global(),
+    ) {
+        Ok(None) => return DevContentSnapshot::NoCollections,
+        Ok(Some(snapshot)) => snapshot,
+        Err(e) => {
+            return DevContentSnapshot::Failed(format!("content snapshot build failed ({e})"))
+        }
+    };
+    match serde_json::to_string(&snapshot) {
+        Ok(json) => DevContentSnapshot::Built { json, snapshot },
+        Err(e) => {
+            DevContentSnapshot::Failed(format!("content snapshot serialization failed ({e})"))
+        }
+    }
+}
+
+/// Report a rejected dev content snapshot under the same ZB024 code the
+/// production warning uses (issue #4781).
+pub(crate) fn warn_dev_content_snapshot_rejected(message: &str) {
+    warn_build(
+        codes::CONTENT_SNAPSHOT,
+        format!(
+            "{message}; this content generation was not published: the dev server keeps \
+             serving its last successful generation, if any, until the source is fixed"
+        ),
+    );
 }
 
 /// Serialize a built snapshot for embedding in the worker bundle.
@@ -8226,6 +8283,7 @@ pub(crate) fn serialize_content_snapshot(
 
 /// Build the content snapshot itself, with the caller's opt-in switches
 /// applied. See [`build_content_snapshot_json`] for the shared contract.
+#[cfg(test)]
 pub(crate) fn build_content_snapshot(
     project_root: &Path,
     config: &Config,
@@ -8245,8 +8303,29 @@ fn build_content_snapshot_with_cache(
     options: zfb_content::SnapshotOptions,
     cache: &zfb_content::MdxModuleCache,
 ) -> Option<zfb_content::ContentSnapshot> {
+    match try_build_content_snapshot_with_cache(project_root, config, options, cache) {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            warn_build(
+                codes::CONTENT_SNAPSHOT,
+                format!(
+                "content snapshot build failed ({e}); getCollection(...) will see empty collections"
+            ),
+            );
+            None
+        }
+    }
+}
+
+/// `Ok(None)` when the project declares no collections.
+fn try_build_content_snapshot_with_cache(
+    project_root: &Path,
+    config: &Config,
+    options: zfb_content::SnapshotOptions,
+    cache: &zfb_content::MdxModuleCache,
+) -> Result<Option<zfb_content::ContentSnapshot>, String> {
     if config.collections.is_empty() {
-        return None;
+        return Ok(None);
     }
     let collections: Vec<zfb_content::CollectionConfig> = config
         .collections
@@ -8274,23 +8353,14 @@ fn build_content_snapshot_with_cache(
         spec.resolve_source_map = build_resolve_source_map_for_snapshot(project_root, config);
         spec
     };
-    match zfb_content::build_snapshot_with_options_and_cache(
+    zfb_content::build_snapshot_with_options_and_cache(
         &collections,
         &snapshot_config,
         options,
         cache,
-    ) {
-        Ok(snap) => Some(snap),
-        Err(e) => {
-            warn_build(
-                codes::CONTENT_SNAPSHOT,
-                format!(
-                "content snapshot build failed ({e}); getCollection(...) will see empty collections"
-            ),
-            );
-            None
-        }
-    }
+    )
+    .map(Some)
+    .map_err(|e| e.to_string())
 }
 
 /// Cover direct `pages/*.md` routes in the render-metadata index (epic
@@ -19326,6 +19396,60 @@ mod tests {
             result.is_none(),
             "build_content_snapshot_json must return None when collections is empty \
              (no-collections cost guard must be preserved after gate removal)"
+        );
+    }
+
+    /// Issue #4781: dev distinguishes no collections, a successful (even
+    /// empty) snapshot, and a failed candidate that the production helper
+    /// folds into `None`.
+    #[test]
+    fn dev_content_snapshot_distinguishes_absent_empty_and_failed() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        assert!(matches!(
+            dev_content_snapshot_json(root, &Config::default()),
+            DevContentSnapshot::NoCollections
+        ));
+
+        std::fs::create_dir_all(root.join("content/posts")).unwrap();
+        let cfg = Config {
+            collections: vec![crate::config::CollectionDef {
+                name: "posts".into(),
+                path: PathBuf::from("content/posts"),
+                schema: None,
+                include: None,
+                exclude: None,
+                id_strip_suffix: None,
+                allow_outside_root: false,
+            }],
+            ..Config::default()
+        };
+        match dev_content_snapshot_json(root, &cfg) {
+            DevContentSnapshot::Built { json, snapshot } => {
+                assert!(json.contains("posts"), "{json}");
+                assert_eq!(snapshot.collections.get("posts").map(Vec::len), Some(0));
+            }
+            _ => panic!("an empty collection directory is a successful snapshot"),
+        }
+
+        std::fs::write(
+            root.join("content/posts/broken.md"),
+            "---\ntitle: [unclosed\n---\n\nbody\n",
+        )
+        .unwrap();
+        match dev_content_snapshot_json(root, &cfg) {
+            DevContentSnapshot::Failed(message) => {
+                assert!(
+                    message.contains("content snapshot build failed"),
+                    "{message}"
+                );
+                assert!(message.contains("broken.md"), "{message}");
+            }
+            _ => panic!("invalid frontmatter must be a failed candidate"),
+        }
+        assert!(
+            build_content_snapshot_json(root, &cfg).is_none(),
+            "production keeps folding a failed snapshot into None"
         );
     }
 

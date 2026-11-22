@@ -1511,7 +1511,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // to the eager pre-bind renderer (no SSR-only 404 window). Decided here (before
     // `boot_dev_renderer`) so the scaffold-vs-eager choice and the deferred task
     // agree on one value.
-    let defer_dev_bundle = defer_dev_bundle_decision(
+    let mut defer_dev_bundle = defer_dev_bundle_decision(
         lazy_dev_render_enabled(),
         std::env::var("ZFB_DEV_BOOT_LAZY").ok().as_deref(),
         dist_seed.as_deref().is_some_and(dist_is_servable_seed),
@@ -1542,29 +1542,58 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     //    noop renderer so the dev server still boots — the user can
     //    still poke at the dev URL while they fix the underlying
     //    bundler / runtime issue.
-    let dev_session = match boot_dev_renderer(
-        &project_root,
-        &cfg,
-        scratch_paths.bundle_outdir.clone(),
-        // #1550 — the per-collection resolved roots the renderer's content
-        // sites (frontmatter-hash seeding, tick narrowing, created-file
-        // discovery) key on; canonical for out-of-root collections.
-        root_inventory.collection_roots(),
-        v8_plugin_hooks,
-        dev_plugin_alias_entries.clone(),
-        dev_plugin_virtual_modules.clone(),
-        // Issue #2168 — the shared refresh state constructed above, stashed
-        // on `DevRebuildInputs` so it is reachable from the same struct the
-        // three plugin-data consumers below already read from.
-        plugin_refresh.clone(),
-        // S2 (#1230) — the package-owned injected routes registered during
-        // setup. Boot materialises the survivor set into a session-lifetime
-        // staging dir and threads it into the dev bundler so the injected
-        // entrypoints land in the dev bundle. Empty on the parity path.
-        setup_registries.injected_routes.as_slice(),
-        defer_dev_bundle,
-    ) {
+    let boot_renderer = |defer: bool| {
+        boot_dev_renderer(
+            &project_root,
+            &cfg,
+            scratch_paths.bundle_outdir.clone(),
+            // #1550 — the per-collection resolved roots the renderer's content
+            // sites (frontmatter-hash seeding, tick narrowing, created-file
+            // discovery) key on; canonical for out-of-root collections.
+            root_inventory.collection_roots(),
+            v8_plugin_hooks.clone(),
+            dev_plugin_alias_entries.clone(),
+            dev_plugin_virtual_modules.clone(),
+            // Issue #2168 — the shared refresh state constructed above, stashed
+            // on `DevRebuildInputs` so it is reachable from the same struct the
+            // three plugin-data consumers below already read from.
+            plugin_refresh.clone(),
+            // S2 (#1230) — the package-owned injected routes registered during
+            // setup. Boot materialises the survivor set into a session-lifetime
+            // staging dir and threads it into the dev bundler so the injected
+            // entrypoints land in the dev bundle. Empty on the parity path.
+            setup_registries.injected_routes.as_slice(),
+            defer,
+        )
+    };
+    // Issue #4781 — an eager boot whose content snapshot fails has no last
+    // good generation to keep. Fall back to the deferred scaffold (route
+    // tables unpublished, so dev 404s say `unavailable`) and arm the
+    // bootstrap recovery latch, so a later successful refresh publishes and
+    // seeds the session without a restart.
+    let mut content_boot_fell_back = false;
+    let dev_session = match boot_renderer(defer_dev_bundle) {
         Ok(s) => Some(s),
+        Err(err) if err.downcast_ref::<DevCandidateRejected>().is_some() => {
+            match boot_renderer(true) {
+                Ok(s) => {
+                    output::error(format!(
+                        "dev generation rejected at boot — no route is published until \
+                         the source is fixed; the dev server keeps watching: {err:#}",
+                    ));
+                    defer_dev_bundle = true;
+                    content_boot_fell_back = true;
+                    Some(s)
+                }
+                Err(scaffold_err) => {
+                    output::warn(format!(
+                        "renderer disabled — falling back to empty page cache: {err:#}; \
+                         scaffold fallback also failed: {scaffold_err:#}",
+                    ));
+                    None
+                }
+            }
+        }
         Err(err) => {
             output::warn(format!(
                 "renderer disabled — falling back to empty page cache: {err:#}",
@@ -1572,6 +1601,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             None
         }
     };
+    let defer_dev_bundle = defer_dev_bundle;
 
     // Issue #1808 — Cold's non-deferred path: `boot_dev_renderer` above
     // already built the route tables + renderer EAGERLY (since
@@ -3469,11 +3499,21 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                             }
                         }
                         Err(e) => {
-                            let msg = deferred_bundle_failure_message(
-                                boot_lazy_mode_now,
-                                &format!("{e:#}"),
-                            );
-                            if arm_cold_bootstrap_recovery_decision(boot_lazy_mode_now) {
+                            let msg = if content_boot_fell_back {
+                                format!(
+                                    "dev generation still rejected — no route is \
+                                     published until the next renderer-relevant edit fixes \
+                                     the source, or `zfb dev` is restarted: {e:#}"
+                                )
+                            } else {
+                                deferred_bundle_failure_message(
+                                    boot_lazy_mode_now,
+                                    &format!("{e:#}"),
+                                )
+                            };
+                            if arm_cold_bootstrap_recovery_decision(boot_lazy_mode_now)
+                                || content_boot_fell_back
+                            {
                                 // Issue #1809 — Cold has NO seed to degrade to:
                                 // the tables stay the empty scaffold while
                                 // `run_boot_render` (below in this same hook)
@@ -9534,6 +9574,24 @@ struct AssembledBundleResult {
     content_files: std::collections::BTreeSet<PathBuf>,
 }
 
+/// A dev generation candidate rejected before publication: its content
+/// snapshot failed to build or serialize (issue #4781). Carried through
+/// `anyhow` so the boot path can tell it apart from other renderer boot
+/// failures.
+#[cfg(feature = "direct-v8")]
+#[derive(Debug)]
+pub(crate) struct DevCandidateRejected(pub(crate) String);
+
+#[cfg(feature = "direct-v8")]
+impl std::fmt::Display for DevCandidateRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[cfg(feature = "direct-v8")]
+impl std::error::Error for DevCandidateRejected {}
+
 /// Assemble the dev-mode bundler input and run the bundler, returning the
 /// fresh [`BundlerOutput`] wrapped in [`AssembledBundleResult`] (issue #659
 /// — extracted from `boot_dev_renderer` so the watch-ADD re-bundle reuses
@@ -9606,13 +9664,22 @@ fn assemble_and_bundle_dev(
     } else {
         None
     };
+    // Issue #4781: a failed snapshot is not an empty one. Rejecting it here
+    // aborts the refresh before P4, so the last successful renderer, route
+    // tables, outputs and provenance stay published.
     let (content_snapshot_json, content_files) =
-        match crate::commands::build::build_content_snapshot_json(project_root, cfg) {
-            Some((json, snapshot)) => (
+        match crate::commands::build::dev_content_snapshot_json(project_root, cfg) {
+            crate::commands::build::DevContentSnapshot::Built { json, snapshot } => (
                 Some(json),
                 content_snapshot_files(project_root, cfg, &snapshot),
             ),
-            None => (None, std::collections::BTreeSet::new()),
+            crate::commands::build::DevContentSnapshot::NoCollections => {
+                (None, std::collections::BTreeSet::new())
+            }
+            crate::commands::build::DevContentSnapshot::Failed(message) => {
+                crate::commands::build::warn_dev_content_snapshot_rejected(&message);
+                return Err(anyhow::Error::new(DevCandidateRejected(message)));
+            }
         };
     let snapshot_ms = snap_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
