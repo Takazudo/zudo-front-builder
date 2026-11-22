@@ -32,12 +32,25 @@ pub enum DevRouteDiagnosis {
     /// The URL is absent from the current, published SSG route table.
     NotInRouteTable,
     /// The URL is in the current route table but no rendered output was
-    /// servable. `refresh_in_progress` is `true` only when the provider
-    /// observed a route-table refresh actually running at diagnosis time.
-    RouteKnownNotRendered { refresh_in_progress: bool },
+    /// servable. `activity` says what the provider observed at diagnosis
+    /// time, so the body only blames a render error when nothing that
+    /// could still produce the output was running.
+    RouteKnownNotRendered { activity: RenderActivity },
     /// The provider cannot answer authoritatively (no route table has been
     /// published yet, or no renderer session exists).
     Unavailable,
+}
+
+/// What the provider observed for a known route without output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderActivity {
+    /// The boot render finished and no route refresh is running.
+    Idle,
+    /// A route-table refresh is running right now.
+    RefreshInProgress,
+    /// The boot render has not finished yet: the route may simply not
+    /// have been rendered so far.
+    BootRenderPending,
 }
 
 impl DevRouteDiagnosis {
@@ -56,14 +69,19 @@ impl DevRouteDiagnosis {
                 "<p data-zfb-dev-404-reason=\"not-in-route-table\">This URL is not in the dev server's current route table: the page may have been removed or renamed, or its <code>paths()</code> no longer yields it.</p>"
             }
             DevRouteDiagnosis::RouteKnownNotRendered {
-                refresh_in_progress: false,
+                activity: RenderActivity::Idle,
             } => {
                 "<p data-zfb-dev-404-reason=\"route-known-not-rendered\">This URL is in the dev server's current route table, but no rendered output was available for it. Check the dev server output for a render error.</p>"
             }
             DevRouteDiagnosis::RouteKnownNotRendered {
-                refresh_in_progress: true,
+                activity: RenderActivity::RefreshInProgress,
             } => {
                 "<p data-zfb-dev-404-reason=\"route-known-not-rendered\">This URL is in the dev server's current route table, but no rendered output was available for it. A route refresh is in progress; this tab reloads when it publishes.</p>"
+            }
+            DevRouteDiagnosis::RouteKnownNotRendered {
+                activity: RenderActivity::BootRenderPending,
+            } => {
+                "<p data-zfb-dev-404-reason=\"route-known-not-rendered\">This URL is in the dev server's current route table and has not been rendered yet: the dev server is still finishing its first render. This tab reloads when it publishes.</p>"
             }
             DevRouteDiagnosis::Unavailable => {
                 "<p data-zfb-dev-404-reason=\"unavailable\">The dev server cannot yet tell whether this URL is in its route table.</p>"
@@ -110,7 +128,7 @@ mod tests {
         );
         assert_eq!(
             DevRouteDiagnosis::RouteKnownNotRendered {
-                refresh_in_progress: true
+                activity: RenderActivity::BootRenderPending
             }
             .reason(),
             "route-known-not-rendered"
@@ -131,20 +149,21 @@ mod tests {
     }
 
     #[test]
-    fn refresh_sentence_requires_observed_refresh() {
-        let idle = dev_404_body_with_diagnosis(
-            DEV_404_BODY,
-            DevRouteDiagnosis::RouteKnownNotRendered {
-                refresh_in_progress: false,
-            },
-        );
+    fn render_error_hint_requires_idle_activity() {
+        let body = |activity| {
+            dev_404_body_with_diagnosis(
+                DEV_404_BODY,
+                DevRouteDiagnosis::RouteKnownNotRendered { activity },
+            )
+        };
+        let idle = body(RenderActivity::Idle);
+        assert!(idle.contains("render error"), "{idle}");
         assert!(!idle.contains("refresh is in progress"), "{idle}");
-        let busy = dev_404_body_with_diagnosis(
-            DEV_404_BODY,
-            DevRouteDiagnosis::RouteKnownNotRendered {
-                refresh_in_progress: true,
-            },
-        );
+        let busy = body(RenderActivity::RefreshInProgress);
         assert!(busy.contains("refresh is in progress"), "{busy}");
+        assert!(!busy.contains("render error"), "{busy}");
+        let booting = body(RenderActivity::BootRenderPending);
+        assert!(booting.contains("first render"), "{booting}");
+        assert!(!booting.contains("render error"), "{booting}");
     }
 }

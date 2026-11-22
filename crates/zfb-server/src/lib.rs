@@ -746,7 +746,8 @@ pub type IslandsBundleUrl = Arc<RwLock<DevPublicationState>>;
 pub type CssBundleUrl = Arc<RwLock<Option<String>>>;
 
 pub use dev_404_diagnostics::{
-    DevRouteDiagnosis, DevRouteDiagnostics, DevRouteDiagnosticsHandle, DEV_404_REASON_HEADER,
+    DevRouteDiagnosis, DevRouteDiagnostics, DevRouteDiagnosticsHandle, RenderActivity,
+    DEV_404_REASON_HEADER,
 };
 pub use embed::{Server, ServerBuilder, ServerHandle, ServerMode};
 pub use embed_handlers::{

@@ -1235,7 +1235,13 @@ async fn serve_page(
                             &target,
                             state.base_prefix.as_deref(),
                         );
-                        return serve_from_waterfall(state, &target_trimmed, lr_prefix).await;
+                        return serve_from_waterfall(
+                            state,
+                            &target_trimmed,
+                            lr_prefix,
+                            WaterfallEntry::RewriteTarget,
+                        )
+                        .await;
                     }
                 }
             }
@@ -1413,7 +1419,7 @@ async fn serve_page(
         }
     }
 
-    serve_from_waterfall(state, trimmed, lr_prefix).await
+    serve_from_waterfall(state, trimmed, lr_prefix, WaterfallEntry::Request).await
 }
 
 /// Page-cache / on-disk waterfall: `PageCache` → `html_root` →
@@ -1431,7 +1437,22 @@ async fn serve_page(
 /// `trimmed` is the lookup path WITHOUT a leading slash — either the
 /// original request's `trimmed` (the common case) or a `_redirects`
 /// rewrite target's trimmed form.
-async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) -> Response {
+/// How a URL reached [`serve_from_waterfall`]. A `_redirects` 200 rewrite
+/// resolves its target, so a route diagnosis of that target would describe
+/// a different URL than the one the browser shows; its miss stays the plain
+/// dev 404 (issue #4783).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WaterfallEntry {
+    Request,
+    RewriteTarget,
+}
+
+async fn serve_from_waterfall(
+    state: &AppState,
+    trimmed: &str,
+    lr_prefix: &str,
+    entry: WaterfallEntry,
+) -> Response {
     // Boundary re-canonicalization (issue #1768): `trimmed` is the axum-decoded
     // request path, but the page cache and rendered-output dirs (`html_root`,
     // `dist_root`) key on the encoded canonical `url_path`/`output_path`. Encode
@@ -1647,7 +1668,10 @@ async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) 
     // a real one lands. The live-reload script gets injected. In Dev with
     // a diagnosis provider (issue #4783) the body and a header also say
     // whether the live route table knows this URL.
-    let diagnosis = diagnose_dev_404(state, &canonical);
+    let diagnosis = match entry {
+        WaterfallEntry::Request => diagnose_dev_404(state, &canonical, &path_for_inject),
+        WaterfallEntry::RewriteTarget => None,
+    };
     let body = match diagnosis {
         Some(diagnosis) => {
             crate::dev_404_diagnostics::dev_404_body_with_diagnosis(DEV_404_BODY, diagnosis)
@@ -1678,11 +1702,19 @@ async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) 
 
 /// Ask the configured provider why the waterfall missed (issue #4783).
 /// `canonical` is the encoded, base-stripped lookup path without a leading
-/// slash. A panicking provider degrades to the neutral `Unavailable`.
+/// slash; `injected_path` is the decoded path injected patterns match.
+/// A panicking provider degrades to the neutral `Unavailable`.
+///
+/// The provider's route table holds static injected routes but not the
+/// instances of a dynamic injected pattern (`/preset-docs/[slug]`), so a
+/// URL such a pattern claims is never reported as absent: the server can
+/// neither confirm nor rule it out, and answers `Unavailable`.
 fn diagnose_dev_404(
     state: &AppState,
     canonical: &str,
+    injected_path: &str,
 ) -> Option<crate::dev_404_diagnostics::DevRouteDiagnosis> {
+    use crate::dev_404_diagnostics::DevRouteDiagnosis;
     if !matches!(state.mode, crate::ServerMode::Dev) {
         return None;
     }
@@ -1691,7 +1723,14 @@ fn diagnose_dev_404(
     let diagnosis = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         provider.diagnose(&url_path)
     }))
-    .unwrap_or(crate::dev_404_diagnostics::DevRouteDiagnosis::Unavailable);
+    .unwrap_or(DevRouteDiagnosis::Unavailable);
+    let claimed_by_injected_pattern = state
+        .injected_routes
+        .as_ref()
+        .is_some_and(|set| set.find_match(injected_path).is_some());
+    if diagnosis == DevRouteDiagnosis::NotInRouteTable && claimed_by_injected_pattern {
+        return Some(DevRouteDiagnosis::Unavailable);
+    }
     Some(diagnosis)
 }
 
@@ -6636,7 +6675,11 @@ mod tests {
                 }
                 if self.known.read().unwrap().contains(url_path) {
                     DevRouteDiagnosis::RouteKnownNotRendered {
-                        refresh_in_progress: self.refreshing.load(Ordering::SeqCst),
+                        activity: if self.refreshing.load(Ordering::SeqCst) {
+                            crate::RenderActivity::RefreshInProgress
+                        } else {
+                            crate::RenderActivity::Idle
+                        },
                     }
                 } else {
                     DevRouteDiagnosis::NotInRouteTable
@@ -6793,6 +6836,53 @@ mod tests {
             assert!(reason(&resp).is_none());
             assert_eq!(body_string(resp).await, DEV_404_BODY);
             assert!(fake.seen().is_empty());
+        }
+
+        #[tokio::test]
+        async fn dynamic_injected_pattern_is_never_reported_absent() {
+            let fake = FakeRoutes::with(&["/preset-about"]);
+            let mut state = test_state();
+            state.injected_routes = Some(crate::injected_routes::InjectedRouteSet::new(vec![
+                zfb_build::InjectedRoute {
+                    pattern: "/preset-docs/[slug]".into(),
+                    entrypoint: PathBuf::from("/tmp/preset-docs.tsx"),
+                    plugin: "preset".into(),
+                    prerender: None,
+                },
+            ]));
+            let router = router_with(state, &fake);
+
+            let claimed = request(&router, "GET", "/preset-docs/intro").await;
+            assert_eq!(claimed.status(), StatusCode::NOT_FOUND);
+            assert_eq!(reason(&claimed).as_deref(), Some("unavailable"));
+            let body = body_string(claimed).await;
+            assert!(!body.contains("removed or renamed"), "{body}");
+
+            let known = request(&router, "GET", "/preset-about").await;
+            assert_eq!(reason(&known).as_deref(), Some("route-known-not-rendered"));
+            let unclaimed = request(&router, "GET", "/elsewhere/intro").await;
+            assert_eq!(reason(&unclaimed).as_deref(), Some("not-in-route-table"));
+        }
+
+        #[tokio::test]
+        async fn rewrite_target_miss_carries_no_diagnosis() {
+            let fake = FakeRoutes::with(&["/target"]);
+            let mut state = test_state();
+            state.redirects = Some(Arc::new(RwLock::new(Redirects::parse(
+                "/alias /target 200\n",
+            ))));
+            let router = router_with(state, &fake);
+
+            let resp = request(&router, "GET", "/alias").await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+            assert!(reason(&resp).is_none());
+            let body = body_string(resp).await;
+            assert!(body.contains("page not in cache"), "{body}");
+            assert!(!body.contains("data-zfb-dev-404-reason"), "{body}");
+            assert!(fake.seen().is_empty(), "{:?}", fake.seen());
+
+            let direct = request(&router, "GET", "/target").await;
+            assert_eq!(reason(&direct).as_deref(), Some("route-known-not-rendered"));
         }
     }
 }

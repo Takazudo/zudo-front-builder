@@ -3208,7 +3208,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     //     the controlled
     //     `DEV_404_BODY` — a complete, well-formed HTML page carrying the
     //     live-reload script that auto-upgrades the moment the real render
-    //     lands. It is NEVER a wrong/empty/partial body. This matches the
+    //     lands. Its #4783 diagnosis says the route is known but not
+    //     rendered yet (`boot_render_returned` is still false), never a render
+    //     error. It is NEVER a wrong/empty/partial body. This matches the
     //     boot-lazy contract (#1057), which seeds `dist/` and re-renders
     //     on first request via the render-on-request hook installed in
     //     `ServeOpts` above (already live before the first accept, so a
@@ -3569,6 +3571,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 boot_render.boundary = BootDocumentBoundary::Failed;
             }
             boot_publication_guard.store(false, Ordering::SeqCst);
+            if let Some(session) = dev_session_for_boot.as_ref() {
+                session
+                    .inner
+                    .boot_render_returned
+                    .store(true, Ordering::SeqCst);
+            }
             use zfb_build::pipeline::dev::DocumentPublicationEvent;
             match boot_render.boundary {
                 BootDocumentBoundary::Published => {
@@ -5344,8 +5352,10 @@ fn prune_dev_companions(
 // ---------------------------------------------------------------------------
 
 /// Counts one running route refresh for the dev 404 diagnosis (#4783).
+#[cfg(any(feature = "direct-v8", test))]
 struct RouteRefreshInFlight<'a>(&'a std::sync::atomic::AtomicUsize);
 
+#[cfg(any(feature = "direct-v8", test))]
 impl<'a> RouteRefreshInFlight<'a> {
     fn enter(counter: &'a std::sync::atomic::AtomicUsize) -> Self {
         counter.fetch_add(1, Ordering::SeqCst);
@@ -5353,6 +5363,7 @@ impl<'a> RouteRefreshInFlight<'a> {
     }
 }
 
+#[cfg(any(feature = "direct-v8", test))]
 impl Drop for RouteRefreshInFlight<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
@@ -6666,6 +6677,11 @@ struct DevRenderInner {
     /// so it can say a route refresh is in progress exactly when one is.
     route_refreshes_in_flight: std::sync::atomic::AtomicUsize,
 
+    /// Set once the boot task's boot render returned (issue #4783). Until
+    /// then an eager boot can serve a known route that simply has not been
+    /// rendered yet, so the dev 404 must not blame a render error.
+    boot_render_returned: std::sync::atomic::AtomicBool,
+
     /// One-shot per-tick flag: this session's P4 route-table swap
     /// re-staled at least one previously-rendered DYNAMIC injected route
     /// (issue #2097, MDX Reload Fix epic #2092).
@@ -7758,9 +7774,14 @@ impl DevRenderSession {
         if self.lookup_by_url(request_path).is_none() {
             return zfb_server::DevRouteDiagnosis::NotInRouteTable;
         }
-        zfb_server::DevRouteDiagnosis::RouteKnownNotRendered {
-            refresh_in_progress: self.inner.route_refreshes_in_flight.load(Ordering::SeqCst) > 0,
-        }
+        let activity = if self.inner.route_refreshes_in_flight.load(Ordering::SeqCst) > 0 {
+            zfb_server::RenderActivity::RefreshInProgress
+        } else if !self.inner.boot_render_returned.load(Ordering::SeqCst) {
+            zfb_server::RenderActivity::BootRenderPending
+        } else {
+            zfb_server::RenderActivity::Idle
+        };
+        zfb_server::DevRouteDiagnosis::RouteKnownNotRendered { activity }
     }
 
     /// Return all known page IDs (source paths) from the router scan.
@@ -10767,6 +10788,7 @@ fn boot_dev_renderer(
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
             route_refreshes_in_flight: std::sync::atomic::AtomicUsize::new(0),
+            boot_render_returned: std::sync::atomic::AtomicBool::new(false),
             dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "direct-v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
@@ -12503,6 +12525,7 @@ pub(crate) fn stub_session_for_adapter_tests(
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
             route_refreshes_in_flight: std::sync::atomic::AtomicUsize::new(0),
+            boot_render_returned: std::sync::atomic::AtomicBool::new(true),
             dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "direct-v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
@@ -15424,6 +15447,7 @@ mod tests {
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
             route_refreshes_in_flight: std::sync::atomic::AtomicUsize::new(0),
+            boot_render_returned: std::sync::atomic::AtomicBool::new(true),
             dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "direct-v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
@@ -16213,6 +16237,7 @@ mod tests {
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
             route_refreshes_in_flight: std::sync::atomic::AtomicUsize::new(0),
+            boot_render_returned: std::sync::atomic::AtomicBool::new(true),
             dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "direct-v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
@@ -22357,9 +22382,8 @@ mod tests {
     fn diagnose_route_reads_live_route_table() {
         use zfb_server::DevRouteDiagnosis as D;
         let session = session_with_route("/posts/caf%C3%A9");
-        let known = D::RouteKnownNotRendered {
-            refresh_in_progress: false,
-        };
+        use zfb_server::RenderActivity as A;
+        let known = D::RouteKnownNotRendered { activity: A::Idle };
         assert_eq!(session.diagnose_route("/posts/caf%C3%A9"), known);
         assert_eq!(session.diagnose_route("/posts/caf%C3%A9/"), known);
         assert_eq!(session.diagnose_route("/posts/caf%C3%A9/index.html"), known);
@@ -22371,12 +22395,28 @@ mod tests {
             assert_eq!(
                 session.diagnose_route("/posts/caf%C3%A9"),
                 D::RouteKnownNotRendered {
-                    refresh_in_progress: true
+                    activity: A::RefreshInProgress
                 }
             );
             assert_eq!(session.diagnose_route("/posts/gone"), D::NotInRouteTable);
         }
         assert_eq!(session.diagnose_route("/posts/caf%C3%A9"), known);
+
+        session
+            .inner
+            .boot_render_returned
+            .store(false, Ordering::SeqCst);
+        assert_eq!(
+            session.diagnose_route("/posts/caf%C3%A9"),
+            D::RouteKnownNotRendered {
+                activity: A::BootRenderPending
+            }
+        );
+        assert_eq!(session.diagnose_route("/posts/gone"), D::NotInRouteTable);
+        session
+            .inner
+            .boot_render_returned
+            .store(true, Ordering::SeqCst);
 
         session.inner.routes.write().unwrap().url_index.clear();
         assert_eq!(
