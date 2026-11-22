@@ -7390,23 +7390,27 @@ impl DevRenderSession {
         };
     }
 
+    /// Returns whether Content edges were cleared (the token was current and
+    /// a graph is installed).
     #[cfg(feature = "direct-v8")]
-    fn clear_content_edges_if_current(&self, token: &str) {
+    fn clear_content_edges_if_current(&self, token: &str) -> bool {
         let Ok(state) = self.inner.content_trace.lock() else {
-            return;
+            return false;
         };
         if state.token.as_deref() != Some(token) {
-            return;
+            return false;
         }
         let Some(graph) = self.content_graph() else {
-            return;
+            return false;
         };
         if let Ok(mut graph) = graph.lock() {
             replace_content_edges(
                 &mut graph,
                 std::iter::empty::<zfb_build::ContentEdgeGroup>(),
             );
+            return true;
         };
+        false
     }
 
     /// Drain actual `getCollection()` observations from the current worker and
@@ -7432,6 +7436,9 @@ impl DevRenderSession {
         };
         let prov_drain = zfb_build::provenance_trace::next_drain_id();
         let mut prov_generation = None;
+        let mut prov_first_drain = None;
+        // Built under the content-state mutex, written after it is released.
+        let mut prov_pending: Option<zfb_build::provenance_trace::PendingEvent> = None;
 
         let result = (|| {
             let mut headers = BTreeMap::new();
@@ -7457,8 +7464,14 @@ impl DevRenderSession {
                 // trace the build-time render pass recorded — it is not
                 // a request-time SSR dispatch, even though it shares the
                 // host instance with one.
-                host.dispatch_fetch_full(DEV_CONTENT_TRACE_ENDPOINT, "GET", &headers, &[])
-                    .map_err(anyhow::Error::from)?
+                let response = host
+                    .dispatch_fetch_full(DEV_CONTENT_TRACE_ENDPOINT, "GET", &headers, &[])
+                    .map_err(anyhow::Error::from)?;
+                // The worker answered, so its trace buffer was drained.
+                prov_first_drain = prov_generation.map(|generation| {
+                    zfb_build::provenance_trace::note_drain_of_generation(generation.worker_gen)
+                });
+                response
             };
             if response.status != 200 {
                 anyhow::bail!("content provenance drain returned HTTP {}", response.status);
@@ -7486,6 +7499,7 @@ impl DevRenderSession {
                 emit_observations_event(
                     drain,
                     prov_generation,
+                    prov_first_drain,
                     events,
                     &self.inner.project_root,
                     &current_trace,
@@ -7501,7 +7515,7 @@ impl DevRenderSession {
                 .map_err(|_| anyhow::anyhow!("content provenance state mutex poisoned"))?;
             if !state.boot_complete || state.token.as_deref() != Some(token.as_str()) {
                 if let Some(drain) = prov_drain {
-                    zfb_build::provenance_trace::emit(
+                    prov_pending = Some(zfb_build::provenance_trace::PendingEvent::new(
                         "edges",
                         serde_json::json!({
                             "drain": drain,
@@ -7509,7 +7523,7 @@ impl DevRenderSession {
                             "applied": false,
                             "reason": "token_superseded",
                         }),
-                    );
+                    ));
                 }
                 return Ok(());
             }
@@ -7560,9 +7574,10 @@ impl DevRenderSession {
                 prov_read_keys.as_ref(),
                 prov_after_apply.as_ref(),
             ) {
-                emit_edges_event(
+                prov_pending = Some(edges_event(
                     drain,
                     prov_generation,
+                    self.content_graph().is_some(),
                     &ProvEdgeInputs {
                         before,
                         observed: &current_trace.observed,
@@ -7571,7 +7586,7 @@ impl DevRenderSession {
                         after_demote: &state.reads_by_observation,
                         groups: &groups,
                     },
-                );
+                ));
             }
             if let Some(graph) = self.content_graph() {
                 let mut graph = graph
@@ -7582,20 +7597,14 @@ impl DevRenderSession {
             Ok(())
         })();
 
-        if result.is_err() {
-            self.clear_content_edges_if_current(&token);
+        let cleared = result.is_err() && self.clear_content_edges_if_current(&token);
+        if let Some(event) = prov_pending {
+            event.emit();
         }
         if let (Some(drain), Err(error)) = (prov_drain, result.as_ref()) {
             zfb_build::provenance_trace::emit(
                 "edges",
-                serde_json::json!({
-                    "drain": drain,
-                    "generation": prov_generation.map(zfb_build::provenance_trace::Generation::to_json),
-                    "applied": false,
-                    "reason": "drain_failed",
-                    "cleared": true,
-                    "error": format!("{error:#}"),
-                }),
+                drain_failed_fields(drain, prov_generation, prov_first_drain, cleared, error),
             );
         }
         result
@@ -7848,6 +7857,21 @@ impl DevRenderSession {
     /// SSR-only routes, dynamic routes that were never expanded, and any
     /// path not in the route universe. The returned entry is cloned out
     /// under a short read lock — no lock is held by the caller.
+    /// Source page id (path) whose route table owns `output_path`. Linear
+    /// scan; used only by the provenance trace.
+    pub(crate) fn source_for_output_path(&self, output_path: &Path) -> Option<PathBuf> {
+        let tables = self.inner.routes.read().unwrap_or_else(|p| p.into_inner());
+        tables
+            .routes_by_source
+            .iter()
+            .find(|(_, entries)| {
+                entries
+                    .iter()
+                    .any(|entry| entry.entry.output_path == output_path)
+            })
+            .map(|(source, _)| source.clone())
+    }
+
     pub(crate) fn lookup_by_url(&self, request_path: &str) -> Option<RouteUniverseEntry> {
         // Strip query string (everything from the first `?`).
         let path_only = request_path.split('?').next().unwrap_or(request_path);
@@ -8532,7 +8556,7 @@ impl DevRenderSession {
             .take()
             .expect("validated renderer candidate must still be present");
         let p2_swap_start = tick_start.map(|_| std::time::Instant::now());
-        let previous = {
+        let (previous, prov_worker_event) = {
             let mut lock = self.inner.renderer.lock().unwrap_or_else(|p| {
                 tracing::warn!(
                     site = "refresh_bundle_and_routes",
@@ -8541,9 +8565,13 @@ impl DevRenderSession {
                 p.into_inner()
             });
             let previous = lock.replace(started);
-            zfb_build::provenance_trace::adopt_worker(candidate_snapshot_gen, "refresh");
-            previous
+            let event =
+                zfb_build::provenance_trace::adopt_worker(candidate_snapshot_gen, "refresh");
+            (previous, event)
         };
+        if let Some(event) = prov_worker_event {
+            event.emit();
+        }
         self.begin_content_trace(trace_token);
         let p2_swap_ms = p2_swap_start.map(|t| t.elapsed().as_millis());
 
@@ -10982,7 +11010,9 @@ fn boot_dev_renderer(
         })
         .map_err(anyhow::Error::from)
         .context("renderer start failed")?;
-        zfb_build::provenance_trace::adopt_worker(boot_snapshot_gen, "boot");
+        if let Some(event) = zfb_build::provenance_trace::adopt_worker(boot_snapshot_gen, "boot") {
+            event.emit();
+        }
 
         // Wrap the renderer state in the shared `Arc<Mutex<Option<...>>>` up
         // front so the SSG `paths()` runtime-evaluation phase below can borrow
@@ -11529,16 +11559,20 @@ fn prov_consumer_path(raw_source: &str, project_root: &Path) -> PathBuf {
 #[cfg(feature = "direct-v8")]
 /// Fields of the `observations` provenance event. Slots are listed in the
 /// order their first event appears in the worker trace; `first_reader` is
-/// the first `read` event in that order (the first execution in this
-/// worker generation that read the content snapshot), `null` if none.
+/// the first `read` event in that order, `null` if none. The worker trace is
+/// drained (emptied) by each request, so `first_reader` is the generation's
+/// first snapshot reader only when `first_drain_of_generation` is `true`;
+/// otherwise it is the first reader since the previous drain.
 ///
-/// `observations`: `{drain, generation, events, observations: [{consumer,
+/// `observations`: `{drain, generation, first_drain_of_generation,
+/// events, observations: [{consumer,
 /// phase, source, visit, raw_reads: [collection], reads: [{collection,
 /// entry}|{collection, aggregate: true}]}], first_reader: {index, consumer,
 /// phase, collection}|null}`
 fn observations_fields(
     drain: u64,
     generation: Option<zfb_build::provenance_trace::Generation>,
+    first_drain_of_generation: Option<bool>,
     events: &[DevContentTraceEvent],
     project_root: &Path,
     classified: &ClassifiedContentTrace,
@@ -11582,6 +11616,10 @@ fn observations_fields(
             .map(prov::Generation::to_json)
             .unwrap_or(serde_json::Value::Null),
     );
+    fields.insert(
+        "first_drain_of_generation".into(),
+        serde_json::json!(first_drain_of_generation),
+    );
     fields.insert("events".into(), serde_json::json!(events.len()));
     prov::insert_capped(
         &mut fields,
@@ -11617,14 +11655,48 @@ fn observations_fields(
 fn emit_observations_event(
     drain: u64,
     generation: Option<zfb_build::provenance_trace::Generation>,
+    first_drain_of_generation: Option<bool>,
     events: &[DevContentTraceEvent],
     project_root: &Path,
     classified: &ClassifiedContentTrace,
 ) {
+    zfb_build::provenance_trace::note_drain_consumers(
+        events
+            .iter()
+            .map(|event| prov_consumer_path(&event.source, project_root)),
+    );
     zfb_build::provenance_trace::emit(
         "observations",
-        observations_fields(drain, generation, events, project_root, classified),
+        observations_fields(
+            drain,
+            generation,
+            first_drain_of_generation,
+            events,
+            project_root,
+            classified,
+        ),
     );
+}
+
+/// `edges` for a drain that failed: this worker generation's Content edges
+/// were cleared, so content edits take the unknown-path `All` fallback.
+#[cfg(feature = "direct-v8")]
+fn drain_failed_fields(
+    drain: u64,
+    generation: Option<zfb_build::provenance_trace::Generation>,
+    first_drain_of_generation: Option<bool>,
+    cleared: bool,
+    error: &anyhow::Error,
+) -> serde_json::Value {
+    serde_json::json!({
+        "drain": drain,
+        "generation": generation.map(zfb_build::provenance_trace::Generation::to_json),
+        "first_drain_of_generation": first_drain_of_generation,
+        "applied": false,
+        "reason": "drain_failed",
+        "cleared": cleared,
+        "error": format!("{error:#}"),
+    })
 }
 
 #[cfg(feature = "direct-v8")]
@@ -11660,13 +11732,17 @@ struct ProvEdgeInputs<'a> {
 ///
 /// `demoted` lists retained `Paths` slots whose entry reads were broadened
 /// to collection reads. `groups` is the resulting `DepKind::Content` edge
-/// set written to the graph.
+/// set; it replaces the graph's Content edges only when `graph_written` is
+/// `true` (a dependency graph is installed).
 ///
-/// `edges`: `{drain, generation, applied: true, slots: [{consumer, phase,
-/// status, reads_before, reads_after}], demoted: [{consumer, phase,
-/// collections}], groups: [{consumer, collection, entries, entries_total}]}`;
-/// or `{drain, generation, applied: false, reason: "token_superseded" |
-/// "drain_failed", cleared?, error?}`
+/// `edges`: `{drain, generation, applied: true, graph_written, slots:
+/// [{consumer, phase, status, reads_before, reads_after}], demoted:
+/// [{consumer, phase, collections}], groups: [{consumer, collection,
+/// entries, entries_total}]}`; or `{drain, generation, applied: false,
+/// reason: "token_superseded"}`; or `{drain, generation,
+/// first_drain_of_generation, applied: false, reason: "drain_failed",
+/// cleared, error}` (`cleared`: this generation's Content edges were
+/// removed, so content edits take the unknown-path `All` fallback)
 fn edges_fields(
     drain: u64,
     generation: Option<zfb_build::provenance_trace::Generation>,
@@ -11754,12 +11830,17 @@ fn edges_fields(
 }
 
 #[cfg(feature = "direct-v8")]
-fn emit_edges_event(
+fn edges_event(
     drain: u64,
     generation: Option<zfb_build::provenance_trace::Generation>,
+    graph_present: bool,
     inputs: &ProvEdgeInputs<'_>,
-) {
-    zfb_build::provenance_trace::emit("edges", edges_fields(drain, generation, inputs));
+) -> zfb_build::provenance_trace::PendingEvent {
+    let mut value = edges_fields(drain, generation, inputs);
+    if let serde_json::Value::Object(map) = &mut value {
+        map.insert("graph_written".into(), serde_json::json!(graph_present));
+    }
+    zfb_build::provenance_trace::PendingEvent::new("edges", value)
 }
 
 /// Apply one current-worker drain to the retained observations. Route phases
@@ -20916,7 +20997,8 @@ mod tests {
                 worker_gen: 2,
                 snapshot_gen: 5,
             };
-            let value = observations_fields(7, Some(generation), &events, root, &classified);
+            let value =
+                observations_fields(7, Some(generation), Some(true), &events, root, &classified);
             assert_eq!(value["drain"], 7);
             assert_eq!(value["generation"]["worker_gen"], 2);
             assert_eq!(value["generation"]["snapshot_gen"], 5);
@@ -20950,10 +21032,26 @@ mod tests {
                 observed: [index_render].into_iter().collect(),
                 reads: BTreeMap::new(),
             };
-            let value = observations_fields(8, None, &visits_only, root, &empty);
+            let value = observations_fields(8, None, None, &visits_only, root, &empty);
             assert!(value["first_reader"].is_null());
             assert!(value["generation"].is_null());
             assert_eq!(value["observations"][0]["reads"], serde_json::json!([]));
+        }
+
+        /// Issue #4753 — the `applied: false` drain-failure form reports
+        /// whether this generation's Content edges were actually cleared.
+        #[test]
+        fn prov_drain_failed_reports_clearing() {
+            let error = anyhow::anyhow!("content provenance drain returned HTTP 500");
+            let value = drain_failed_fields(4, None, Some(false), true, &error);
+            assert_eq!(value["applied"], false);
+            assert_eq!(value["reason"], "drain_failed");
+            assert_eq!(value["cleared"], true);
+            assert_eq!(value["first_drain_of_generation"], false);
+            assert!(value["error"].as_str().unwrap().contains("HTTP 500"));
+            let value = drain_failed_fields(4, None, None, false, &error);
+            assert_eq!(value["cleared"], false);
+            assert!(value["first_drain_of_generation"].is_null());
         }
 
         /// Issue #4753 — the `edges` event classifies each slot against the

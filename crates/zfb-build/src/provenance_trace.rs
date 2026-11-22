@@ -29,7 +29,7 @@
 //! here is a single cached-bool check; no ids are allocated and nothing is
 //! written.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -53,10 +53,13 @@ static SNAPSHOT_GENS: AtomicU64 = AtomicU64::new(0);
 static WORKER_GENS: AtomicU64 = AtomicU64::new(0);
 static DRAIN_IDS: AtomicU64 = AtomicU64::new(0);
 static CURRENT_GENERATION: Mutex<Option<Generation>> = Mutex::new(None);
+static LAST_DRAINED_WORKER: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
     static CURRENT_TICK: Cell<Option<u64>> = const { Cell::new(None) };
     static LAST_DRAIN: Cell<Option<u64>> = const { Cell::new(None) };
+    static LAST_DRAIN_CONSUMERS: RefCell<Option<Vec<std::path::PathBuf>>> =
+        const { RefCell::new(None) };
 }
 
 fn parse_enabled(raw: Option<&str>) -> bool {
@@ -123,7 +126,34 @@ pub fn last_drain_on_thread() -> Option<u64> {
 pub fn clear_last_drain_on_thread() {
     if enabled() {
         LAST_DRAIN.with(|cell| cell.set(None));
+        LAST_DRAIN_CONSUMERS.with(|cell| cell.borrow_mut().take());
     }
+}
+
+/// Remember the consumer page ids (source paths) whose observation slots
+/// this thread's latest drain reported.
+pub fn note_drain_consumers(consumers: impl IntoIterator<Item = std::path::PathBuf>) {
+    if enabled() {
+        let consumers: Vec<_> = consumers.into_iter().collect();
+        LAST_DRAIN_CONSUMERS.with(|cell| *cell.borrow_mut() = Some(consumers));
+    }
+}
+
+/// Whether this thread's latest drain reported a slot for `consumer`
+/// (`None` when no drain reported observations on this thread).
+pub fn last_drain_contains(consumer: &std::path::Path) -> Option<bool> {
+    LAST_DRAIN_CONSUMERS.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|consumers| consumers.iter().any(|c| c == consumer))
+    })
+}
+
+/// Record that worker generation `worker_gen` answered a drain request.
+/// Returns `true` for the first drain answered by that generation (the
+/// worker's trace buffer then holds everything it recorded since adoption).
+pub fn note_drain_of_generation(worker_gen: u64) -> bool {
+    LAST_DRAINED_WORKER.swap(worker_gen, Ordering::Relaxed) != worker_gen
 }
 
 /// The currently adopted generation, if any (always `None` when off).
@@ -134,16 +164,33 @@ pub fn current_generation() -> Option<Generation> {
     *CURRENT_GENERATION.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// Record a renderer host adoption built from `snapshot_gen` and emit the
+/// An event built while a lock was held, written once it is released.
+#[must_use = "call `emit` after releasing the lock"]
+pub struct PendingEvent {
+    ev: &'static str,
+    fields: Value,
+}
+
+impl PendingEvent {
+    pub fn new(ev: &'static str, fields: Value) -> Self {
+        Self { ev, fields }
+    }
+
+    pub fn emit(self) {
+        emit(self.ev, self.fields);
+    }
+}
+
+/// Record a renderer host adoption built from `snapshot_gen` and return the
 /// `worker` event. Call while holding the renderer slot lock so a reader
 /// that samples [`current_generation`] under the same lock sees the host
-/// it rendered with.
+/// it rendered with; emit the returned event after releasing it.
 ///
 /// `worker`: `{worker_gen, snapshot_gen, phase: "boot"|"refresh",
 /// previous: {worker_gen, snapshot_gen}|null}`
-pub fn adopt_worker(snapshot_gen: Option<u64>, phase: &str) {
+pub fn adopt_worker(snapshot_gen: Option<u64>, phase: &str) -> Option<PendingEvent> {
     if !enabled() {
-        return;
+        return None;
     }
     let worker_gen = WORKER_GENS.fetch_add(1, Ordering::Relaxed) + 1;
     let generation = Generation {
@@ -154,7 +201,7 @@ pub fn adopt_worker(snapshot_gen: Option<u64>, phase: &str) {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .replace(generation);
-    emit(
+    Some(PendingEvent::new(
         "worker",
         serde_json::json!({
             "worker_gen": generation.worker_gen,
@@ -162,7 +209,7 @@ pub fn adopt_worker(snapshot_gen: Option<u64>, phase: &str) {
             "phase": phase,
             "previous": previous.map(Generation::to_json),
         }),
-    );
+    ))
 }
 
 /// Marks the current thread as running tick `id` until dropped, so events
@@ -317,6 +364,16 @@ mod tests {
     }
 
     #[test]
+    fn drain_of_generation_is_first_only_once_per_worker() {
+        // Uses worker ids far from any a real adoption in this process
+        // would allocate.
+        assert!(note_drain_of_generation(1_000_001));
+        assert!(!note_drain_of_generation(1_000_001));
+        assert!(note_drain_of_generation(1_000_002));
+        assert!(note_drain_of_generation(1_000_001));
+    }
+
+    #[test]
     fn tick_scope_restores_previous_tick() {
         assert_eq!(CURRENT_TICK.with(Cell::get), None);
         {
@@ -341,7 +398,9 @@ mod tests {
         assert_eq!(next_tick_id(), None);
         assert_eq!(next_snapshot_gen(), None);
         assert_eq!(next_drain_id(), None);
-        adopt_worker(Some(1), "boot");
+        assert!(adopt_worker(Some(1), "boot").is_none());
+        note_drain_consumers([std::path::PathBuf::from("/p")]);
+        assert_eq!(last_drain_contains(std::path::Path::new("/p")), None);
         assert_eq!(current_generation(), None);
         emit("worker", serde_json::json!({}));
         assert_eq!(*EMIT_LOCK.lock().unwrap(), 0, "no line was emitted");

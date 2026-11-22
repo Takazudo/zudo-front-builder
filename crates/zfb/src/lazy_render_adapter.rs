@@ -453,19 +453,29 @@ impl LazyRenderAdapter {
             },
         ) {
             Ok(GuardedWriteOutcome::Written(outcome)) => {
-                // `publish` (lazy): `{mode: "lazy", url, output, written,
-                // generation, drain, provenance_current}`. `drain` is the
-                // content-trace drain this thread ran right after the render.
+                // `publish` (lazy): `{mode: "lazy", url, output, page,
+                // written, generation, drain, drain_contains_page,
+                // provenance_current}`. `drain` is the content-trace drain
+                // this thread ran right after the render. Another thread can
+                // drain this render's trace first, so `drain_contains_page`
+                // says whether that drain reported a slot for `page`
+                // (`null` when the page or the drain is unknown).
                 if zfb_build::provenance_trace::enabled() {
+                    let page = self.session.source_for_output_path(&entry.output_path);
+                    let drain_contains_page = page
+                        .as_deref()
+                        .and_then(zfb_build::provenance_trace::last_drain_contains);
                     zfb_build::provenance_trace::emit(
                         "publish",
                         serde_json::json!({
                             "mode": "lazy",
                             "url": url_path,
                             "output": zfb_build::provenance_trace::path_value(&entry.output_path),
+                            "page": page.as_deref().map(zfb_build::provenance_trace::path_value),
                             "written": outcome.written,
                             "generation": prov_generation.map(zfb_build::provenance_trace::Generation::to_json),
                             "drain": zfb_build::provenance_trace::last_drain_on_thread(),
+                            "drain_contains_page": drain_contains_page,
                             "provenance_current": provenance_current,
                         }),
                     );
