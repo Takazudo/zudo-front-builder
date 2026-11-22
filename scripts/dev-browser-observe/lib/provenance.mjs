@@ -6,6 +6,21 @@ import { basename, dirname, join } from "node:path";
 export const PROV_PREFIX = "[zfb-prov] ";
 export const PROV_ENV = "ZFB_DEV_PROVENANCE_TRACE";
 
+/**
+ * zfb dev's lazy-render switch as the server resolves it (crates/zfb/src/commands/dev.rs
+ * resolve_lazy_dev_render): ZFB_LAZY_DEV_RENDER=1|true / 0|false wins, else ZFB_DEV_EAGER=1|true
+ * turns it off, else the built-in default (LAZY_DEV_RENDER_DEFAULT = true).
+ */
+export function resolveLazyDevRender(env) {
+  const norm = (v) => (typeof v === "string" ? v.trim().toLowerCase() : null);
+  const lazyVar = norm(env?.ZFB_LAZY_DEV_RENDER);
+  if (lazyVar === "1" || lazyVar === "true") return { lazy: true, source: "ZFB_LAZY_DEV_RENDER" };
+  if (lazyVar === "0" || lazyVar === "false") return { lazy: false, source: "ZFB_LAZY_DEV_RENDER" };
+  const eager = norm(env?.ZFB_DEV_EAGER);
+  if (eager === "1" || eager === "true") return { lazy: false, source: "ZFB_DEV_EAGER" };
+  return { lazy: true, source: "default (LAZY_DEV_RENDER_DEFAULT)" };
+}
+
 /** The Rust side's own gate: "1" or "true", case-insensitive, trimmed. */
 export function traceEnabledIn(env) {
   const raw = env?.[PROV_ENV];
@@ -124,7 +139,7 @@ const nsOf = (e) => (e?._ns === null || e?._ns === undefined ? null : BigInt(e._
  */
 export function buildCausalChain(
   events,
-  { writePaths = [], consumers = [], targetUrl, dom, t1Ns = null },
+  { writePaths = [], consumers = [], targetUrl, dom, t1Ns = null, lazy = null },
 ) {
   const written = new Set(writePaths.flat());
   const consumerSet = new Set(consumers);
@@ -387,14 +402,88 @@ export function buildCausalChain(
   // Only "observed" counts: unverified, failed, not-written and missing do not.
   const missing = required.filter((k) => links[k].status !== "observed");
   const unverified = required.filter((k) => links[k].status === "unverified");
-  const lazy = publishes.some((e) => e.mode === "lazy") || (stale?.outputs ?? []).length > 0;
+  // Target evidence. Observations and edges are consumer-level and every article shares
+  // [slug].tsx, so the evidence drain is tied to the target's own publish: a lazy publish's
+  // drain (drain_contains_page true), or for an eager publish the first drain of this
+  // generation after this tick's render_plan. Aggregate reads count only for the written
+  // entry's collection.
+  const writtenCollections = new Set();
+  for (const e of events) {
+    for (const o of e.observations ?? [])
+      for (const r of o.reads ?? [])
+        if (r.entry !== undefined && written.has(r.entry)) writtenCollections.add(r.collection);
+    for (const g of e.groups ?? [])
+      if ((g.entries ?? []).some((x) => written.has(x))) writtenCollections.add(g.collection);
+  }
+  const lazyPub = publishes.find((e) => e.mode === "lazy") ?? null;
+  const eagerPub = publishes.find((e) => e.mode === "eager") ?? null;
+  let evidenceDrain = null;
+  let evidenceVia = null;
+  if (lazyPub) {
+    evidenceDrain =
+      sameGenDrains.find(
+        (e) => e.drain === lazyPub.drain && lazyPub.drain_contains_page === true,
+      ) ?? null;
+    evidenceVia = "lazy-publish-drain";
+  } else if (eagerPub && plan) {
+    evidenceDrain = sameGenDrains.find((e) => e.seq > plan.seq) ?? null;
+    evidenceVia = "first-drain-after-render-plan";
+  }
+  const evidenceObs = (evidenceDrain?.observations ?? []).filter((o) =>
+    consumerSet.has(o.consumer),
+  );
+  const evEntryRead = evidenceObs.some((o) => (o.reads ?? []).some((r) => written.has(r.entry)));
+  const evAggregateRead = evidenceObs.some((o) =>
+    (o.reads ?? []).some((r) => r.aggregate === true && writtenCollections.has(r.collection)),
+  );
+  const evEdgesAll = evidenceDrain
+    ? byEv("edges").filter((e) => e.drain === evidenceDrain.drain)
+    : [];
+  const evEdges = evEdgesAll.find((e) => e.applied === false) ?? evEdgesAll[0] ?? null;
+  const evEdgeLink =
+    !!evEdges &&
+    evEdges.applied === true &&
+    evEdges.graph_written === true &&
+    (evEdges.groups ?? []).some(
+      (g) => consumerSet.has(g.consumer) && (g.entries ?? []).some((x) => written.has(x)),
+    );
+  links.observations.evidence = {
+    via: evidenceVia,
+    drain: evidenceDrain?.drain ?? null,
+    targetConsumerRead: evidenceDrain ? evEntryRead : null,
+    targetConsumerAggregateRead: evidenceDrain ? evAggregateRead : null,
+    writtenCollections: [...writtenCollections],
+  };
+  links.edges.evidence = {
+    drain: evEdges?.drain ?? null,
+    applied: evEdges?.applied ?? null,
+    graph_written: evEdges?.graph_written ?? null,
+    linksTargetToEntry: evidenceDrain ? evEdgeLink : null,
+  };
+
+  // Lazy ticks render the edited entries' own routes eagerly (publish mode "eager", never in
+  // stale.outputs) and mark only the rest stale; `stale` is also emitted, usually empty, in eager
+  // mode. So the mode comes from the server's effective env, not from the stale event.
+  const inTickTargetPublish = byEv("publish").some(
+    (e) =>
+      sameGen(e.generation, generation) &&
+      e.seq > (intakeSeq ?? Infinity) &&
+      beforeT1(e) &&
+      // A lazy publish is request-time, not in-tick; an untagged eager publish is the tick's render.
+      (e.tick === tick || (e.tick === undefined && e.mode === "eager")) &&
+      (e.mode === "lazy" ? urls.includes(e.url) : outputMatches(e.output, expectedOutputs)),
+  );
+  const lazyRule = lazy !== false;
+  links.render_plan.targetOutputStaleOrPublished = staleHasTarget === true || inTickTargetPublish;
   const targetEvidence = rejected
     ? {}
     : {
         select: targetDirty === true || select?.all_pages === true,
-        render_plan: links.render_plan.targetPlanned === true && (!lazy || staleHasTarget === true),
-        observations: targetConsumerRead === true || targetConsumerAggregateRead === true,
-        edges: links.edges.groupLinksTargetToEntry === true,
+        render_plan:
+          links.render_plan.targetPlanned === true &&
+          (!lazyRule || staleHasTarget === true || inTickTargetPublish),
+        observations: evidenceDrain !== null && (evEntryRead || evAggregateRead),
+        edges: evEdgeLink,
       };
   const lackingTarget = Object.entries(targetEvidence)
     .filter(([, ok]) => !ok)
@@ -404,6 +493,7 @@ export function buildCausalChain(
     tick,
     rejected,
     lazy,
+    lazyRuleApplied: lazyRule,
     links,
     required,
     missing,
@@ -479,7 +569,15 @@ function targetPageStrings(events, consumers) {
  * since `mark` (from the server's dedicated, uncapped trace buffer), parsed,
  * with any loss recorded, and the causal chain.
  */
-export function attemptProvenance({ server, mark, attempt, rec, pageFor, traceEnabled }) {
+export function attemptProvenance({
+  server,
+  mark,
+  attempt,
+  rec,
+  pageFor,
+  traceEnabled,
+  renderMode = null,
+}) {
   const since = server.provSince ? server.provSince(mark) : { lines: [], droppedBeforeMark: null };
   const parsed = parseProvLines(since.lines);
   const consumer = pageFor ? pageFor(rec.targetPath ?? attempt.targetPath) : null;
@@ -491,6 +589,7 @@ export function attemptProvenance({ server, mark, attempt, rec, pageFor, traceEn
     targetUrl,
     dom: rec,
     t1Ns: rec.t1Ns ?? null,
+    lazy: renderMode?.lazy ?? null,
   });
   const recoveryPaths = attemptWritePaths(attempt, { recovery: true });
   const recoveryChain = recoveryPaths.length
@@ -499,10 +598,13 @@ export function attemptProvenance({ server, mark, attempt, rec, pageFor, traceEn
         consumers,
         targetUrl,
         dom: null,
+        lazy: renderMode?.lazy ?? null,
       })
     : null;
   return {
     traceEnabled,
+    // From the server's effective env; null means unknown and the stricter lazy rule applies.
+    renderMode,
     linesSeen: since.lines.length,
     traceMissing: traceEnabled === true && since.lines.length === 0,
     droppedBeforeMark: since.droppedBeforeMark ?? null,

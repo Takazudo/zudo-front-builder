@@ -154,6 +154,10 @@
         "targetPageStrings": {
           "type": "object",
           "description": "raw page strings the trace emitted for the target: matched aliases and same-basename strings that did not match"
+        },
+        "renderMode": {
+          "type": ["object", "null"],
+          "description": "{lazy, source}: zfb dev lazy-render switch resolved from the effective server env (ZFB_LAZY_DEV_RENDER, ZFB_DEV_EAGER, default lazy)"
         }
       }
     }

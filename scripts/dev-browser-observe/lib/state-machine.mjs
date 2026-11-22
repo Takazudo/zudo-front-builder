@@ -464,6 +464,7 @@ export async function runBatch({ scenarios, deps }) {
               rec,
               pageFor: deps.provenance.pageFor ?? fs.pageFor ?? null,
               traceEnabled: deps.provenance.traceEnabled === true,
+              renderMode: deps.provenance.renderMode ?? null,
             });
           } catch (error) {
             rec.provenance = { error: String(error?.stack ?? error) };

@@ -179,6 +179,21 @@ Review hardening:
     aggregate. Every article shares `[slug].tsx`, so a read of another entry
     is not evidence.
   - edges: a written graph edge links the target to the entry.
+- **Render mode:** taken from the server's effective env, the way zfb dev
+  resolves it: `ZFB_LAZY_DEV_RENDER`, then `ZFB_DEV_EAGER`, else lazy by
+  default. It is recorded as `provenance.renderMode` with its source. A lazy
+  tick renders the edited entries' own routes eagerly; those are published
+  in-tick with mode `eager` and never appear in `stale.outputs`. So the lazy
+  render-plan evidence is `targetPlanned` plus either the target's stale
+  output or an in-tick publish of it with this generation. Eager mode needs
+  only `targetPlanned`. An unknown mode gets the lazy rule.
+- **Evidence drain:** observation and edge evidence come from a drain tied to
+  the target's publish, recorded as `observations.evidence` and
+  `edges.evidence`. For a lazy publish it is that publish's drain, which must
+  have `drain_contains_page: true`. For an eager publish it is the first drain
+  of the generation after this tick's `render_plan`. A sibling article
+  rendered through the shared `[slug].tsx` in another drain does not count.
+  Aggregate reads count only for the written entry's collection.
 - **Raw page strings:** `targetPageStrings` records the page strings as
   emitted, including same-basename strings that did not match, so a native
   run can confirm the absolute `PageId` form.

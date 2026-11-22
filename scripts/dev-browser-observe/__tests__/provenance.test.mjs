@@ -9,6 +9,7 @@ import {
   outputMatches,
   outputsFor,
   parseProvLines,
+  resolveLazyDevRender,
   traceEnabledIn,
 } from "../lib/provenance.mjs";
 import { validateAs } from "../lib/schema.mjs";
@@ -315,7 +316,7 @@ async function runOne({ lines, traceEnabled = true, dropped = 0, outcome = "noti
     ],
   });
   const d = deps({ page, fs, server: provServer(lines, dropped) });
-  d.provenance = { traceEnabled };
+  d.provenance = { traceEnabled, renderMode: { lazy: true, source: "ZFB_LAZY_DEV_RENDER" } };
   await runBatch({
     scenarios: [{ id: "s", set: "workload", ops: [{ id: "o", op: "edit-title", article: "a" }] }],
     deps: d,
@@ -335,6 +336,8 @@ describe("diagnostic attempt records", () => {
       targetConsumer: PAGE,
     });
     expect(rec.provenance.linesSeen).toBe(10);
+    expect(rec.provenance.renderMode).toEqual({ lazy: true, source: "ZFB_LAZY_DEV_RENDER" });
+    expect(rec.provenance.causalChain.lazyRuleApplied).toBe(true);
     const s = summarize(records, {});
     expect(s.provenance).toEqual([
       expect.objectContaining({ opId: "o", chainComplete: true, traceMissing: false, missing: [] }),
@@ -636,9 +639,10 @@ describe("review: false-complete paths", () => {
         generation: GEN,
       }),
     ]).events;
-    const c = buildCausalChain(eager, opts());
+    const c = buildCausalChain(eager, opts({ lazy: false }));
     expect(c.links.publish.status).toBe("observed");
-    expect(c.lazy).toBe(false);
+    expect(c.lazyRuleApplied).toBe(false);
+    expect(c.links.observations.evidence.via).toBe("first-drain-after-render-plan");
     expect(c.chainComplete).toBe(true);
   });
 
@@ -789,5 +793,154 @@ describe("review: false-complete paths", () => {
       incomplete: 2,
       traceMissing: 1,
     });
+  });
+});
+
+describe("review 2: lazy render evidence and drain-tied observations", () => {
+  it("resolves the server's lazy switch like zfb dev does", () => {
+    expect(resolveLazyDevRender({})).toEqual({
+      lazy: true,
+      source: "default (LAZY_DEV_RENDER_DEFAULT)",
+    });
+    expect(resolveLazyDevRender({ ZFB_DEV_EAGER: "1" })).toMatchObject({ lazy: false });
+    expect(resolveLazyDevRender({ ZFB_DEV_EAGER: "1", ZFB_LAZY_DEV_RENDER: "true" })).toMatchObject(
+      { lazy: true, source: "ZFB_LAZY_DEV_RENDER" },
+    );
+    expect(resolveLazyDevRender({ ZFB_LAZY_DEV_RENDER: "0" })).toMatchObject({ lazy: false });
+  });
+
+  it("lazy tick: the edited route's in-tick eager publish satisfies the render plan without a stale entry", () => {
+    const lines = [
+      ...acceptedTick(3, [A]).map((l) =>
+        l.text.includes('"ev":"stale"')
+          ? line("stale", { tick: 3, outputs: ["articles/b/index.html"], generation: GEN })
+          : l,
+      ),
+      line("publish", {
+        tick: 3,
+        mode: "eager",
+        page: PAGE,
+        output: "articles/a/index.html",
+        written: true,
+        generation: GEN,
+      }),
+      ...afterAdoption(),
+    ];
+    const c = buildCausalChain(parseProvLines(lines).events, opts({ lazy: true }));
+    expect(c.links.stale.targetOutputStale).toBe(false);
+    expect(c.links.render_plan.targetOutputStaleOrPublished).toBe(true);
+    expect(c.targetEvidence.render_plan).toBe(true);
+    // Without that publish, and with the target not stale, the lazy rule is not met.
+    const without = lines.filter((l) => !l.text.includes('"mode":"eager"'));
+    expect(
+      buildCausalChain(parseProvLines(without).events, opts({ lazy: true })).targetEvidence
+        .render_plan,
+    ).toBe(false);
+    // An eager server needs only the planned page, even with an empty stale event.
+    expect(
+      buildCausalChain(parseProvLines(without).events, opts({ lazy: false })).targetEvidence
+        .render_plan,
+    ).toBe(true);
+  });
+
+  it("a lazy publish's evidence comes from its own drain, not a sibling article's", () => {
+    const B = `${W}/b.md`;
+    // Drain 4 (first of the generation) rendered sibling b; the target was published from drain 5.
+    const drain = (n, entry, first) =>
+      line("observations", {
+        drain: n,
+        generation: GEN,
+        observations: [
+          { consumer: PAGE, phase: "Render", reads: [{ collection: "articles", entry }] },
+        ],
+        first_reader: { index: 0, consumer: PAGE, phase: "Render", collection: "articles" },
+        first_drain_of_generation: first,
+      });
+    const edgesOf = (n, entry) =>
+      line("edges", {
+        drain: n,
+        generation: GEN,
+        applied: true,
+        graph_written: true,
+        slots: [],
+        groups: [{ consumer: PAGE, collection: "articles", entries: [entry], entries_total: 1 }],
+      });
+    const pub = (n) =>
+      line("publish", {
+        mode: "lazy",
+        url: "/articles/a/",
+        page: PAGE,
+        output: "articles/a/index.html",
+        written: true,
+        generation: GEN,
+        drain: n,
+        drain_contains_page: true,
+      });
+    const good = [
+      ...acceptedTick(3, [A]),
+      drain(4, A, true),
+      edgesOf(4, A),
+      drain(5, B, false),
+      edgesOf(5, B),
+      pub(4),
+    ];
+    const cg = buildCausalChain(parseProvLines(good).events, opts({ lazy: true }));
+    expect(cg.links.observations.evidence).toMatchObject({ via: "lazy-publish-drain", drain: 4 });
+    expect(cg.chainComplete).toBe(true);
+    const sibling = [
+      ...acceptedTick(3, [A]),
+      drain(4, A, true),
+      edgesOf(4, A),
+      drain(5, B, false),
+      edgesOf(5, B),
+      pub(5),
+    ];
+    const cs = buildCausalChain(parseProvLines(sibling).events, opts({ lazy: true }));
+    expect(cs.links.observations.evidence.drain).toBe(5);
+    expect(cs.targetEvidence).toMatchObject({ observations: false, edges: false });
+    expect(cs.chainEventsOnly).toBe(true);
+  });
+
+  it("an eager publish's evidence drain must come after this tick's render_plan", () => {
+    const early = line("observations", {
+      drain: 2,
+      generation: GEN,
+      observations: [{ consumer: PAGE, reads: [{ collection: "articles", entry: A }] }],
+      first_drain_of_generation: true,
+    });
+    const lines = [
+      ...acceptedTick(3, [A]).filter((l) => !l.text.includes('"ev":"render_plan"')),
+      early,
+      line("render_plan", { tick: 3, pages: [PAGE] }),
+      line("publish", {
+        mode: "eager",
+        page: PAGE,
+        output: "articles/a/index.html",
+        written: true,
+        generation: GEN,
+      }),
+    ];
+    const c = buildCausalChain(parseProvLines(reseq(lines)).events, opts({ lazy: false }));
+    expect(c.links.observations.status).toBe("observed");
+    expect(c.links.observations.evidence.drain).toBeNull();
+    expect(c.targetEvidence.observations).toBe(false);
+  });
+
+  it("aggregate reads count only for the written entry's collection", () => {
+    const withAgg = (collection) =>
+      [...acceptedTick(3, [A]), ...afterAdoption()].map((l) => {
+        if (!l.text.includes('"ev":"observations"')) return l;
+        const j = JSON.parse(l.text.slice(11));
+        j.observations[0].reads = [{ collection, aggregate: true }];
+        return { text: `[zfb-prov] ${JSON.stringify(j)}` };
+      });
+    expect(
+      buildCausalChain(parseProvLines(withAgg("articles")).events, opts()).targetEvidence
+        .observations,
+    ).toBe(true);
+    expect(
+      buildCausalChain(parseProvLines(withAgg("authors")).events, opts()).targetEvidence
+        .observations,
+    ).toBe(false);
   });
 });
