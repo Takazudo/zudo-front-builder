@@ -773,6 +773,11 @@ head branch `v<version>`.
    the run whose `Smoke released (install.sh)` job installed the exact tag. After a rerun, use the
    run the final attempt triggered.
 
+   The job fetches `install.sh` at the full release source commit it checked out, never at
+   `main` or a tag, with no fallback. It logs one
+   `zfb-installer-bytes/v1 source=<sha> path=install.sh sha256=<digest>` line, then runs that
+   same file. Record the line with the run ID.
+
    **Actions route:** it is not established whether `workflow_run` follows a `release.yml` run that
    `GITHUB_TOKEN` dispatched. If no `workflow_run` installer for the tag appears a few minutes
    after the Release run succeeds, dispatch it at the tag, once:
@@ -824,7 +829,8 @@ runs cannot be the original publisher. Runs from before #4687 (`legacy-hosted-da
 `legacy-fast-mac`) remain unsupported.
 
 When original publication completed every mandatory delivery duty except clean-room consumption,
-select the later successful finalization-only run explicitly:
+or stopped only because npm was still processing a package (see below), select the later
+successful finalization-only run explicitly:
 
 ```sh
 node scripts/verify-release-delivery.mjs --version <version> \
@@ -842,9 +848,33 @@ Verified-source output and actual clean-room source/version output, installed ve
 build/content assertions are mandatory. Echoed inputs alone cannot prove delivery.
 
 The report retains the original failed run and jobs unchanged. `aggregateDelivery` names the
-selected consumption run and the only superseded original checks: failed clean-room consumption
-and its resulting overall run failure. Failed original builds, source checks, packing, publication,
-asset or digest uploads remain failures. Recovery publication and missing-original-artifact recovery
+selected consumption run, the `supersession` rule that applied and the only superseded original
+checks. There are two rules:
+
+- **`clean-room`:** failed clean-room consumption and its resulting overall run failure.
+- **`processing-then-finalize`** (#4779): the original `publish` job, its skipped
+  `Upload MD/WASM digest asset` and clean-room, and the resulting overall run failure. An explicit
+  classifier (`processingEligibility` in the report) admits it only when all of these hold:
+  - The original run took the normal or tag-dispatch path, and every other original job and
+    check (source, CI, admission, builds, packing, assets) meets its normal contract.
+  - The effective `publish` job is the run's latest attempt. Its `Publish to npm` step succeeded,
+    the recovery step and `Promote channel dist-tag` were skipped, and no other step failed.
+  - Its `Verify npm provenance expectations` step failed. The retained publish job log shows
+    that step exiting 3: one `PROCESSING_PACKAGES=` line, one "accepted by npm, still
+    processing" verdict per listed package, every other source-policy package verified, and no
+    other error.
+  - `Upload MD/WASM digest asset` and the `smoke-clean-room` caller were skipped in that same
+    attempt, and no other job failed or was skipped.
+  - The finalizer log shows the gate cleared and `Provenance expectations: N/N verified` for
+    every source-policy package, including each package that was processing.
+
+  Its finalizer must still pass every check above, including promotion, the tag sweep, digest
+  finalization and the clean-room. The downloaded package, provenance, archive, WASM and
+  installer checks still apply unchanged.
+
+Any other failed original publication, a non-processing provenance failure, an independent failed
+duty, or a failed build, source check, packing step or asset upload remains a failure. A missing
+publish or finalizer log leaves the result incomplete (exit 2), never pardoned. Recovery publication and missing-original-artifact recovery
 are outside this mode. Latest relevant attempts govern; historical successes cannot hide later
 failures. Missing mandatory logs remain incomplete evidence. Without the argument, normal/tag-dispatch
 acceptance and failure rules are unchanged.
@@ -852,6 +882,18 @@ acceptance and failure rules are unchanged.
 The separately selected installer must execute successfully and retain exact source/version,
 checksum and smoke assertions. A green workflow with a skipped installer does not qualify. A
 correctly bound installer may precede finalization; no after-finalizer ordering is required.
+
+The verifier binds the installer bytes (`installer-bytes`, #4784). It reads
+`tests/smoke/node-free/Dockerfile` at the release source commit. When that file produces
+`zfb-installer-bytes/v1`, the source is a new-protocol source. Its installer log must then carry
+exactly one well-formed record whose source is the release commit. The verifier fetches
+`install.sh` at that commit, hashes the bytes itself and compares the digest. A missing,
+malformed, repeated or conflicting record, another source SHA (even for identical bytes) or a
+digest mismatch fails. An unreadable Dockerfile, `install.sh` or installer log is incomplete, never
+legacy. Only a Dockerfile that was read and has no producer marks a legacy source, such as v7.1.0
+and earlier. Such a source keeps its original receipt: `installer-bytes` is observed with the
+`legacy-unbound` caveat, and the installer evidence notes that the installer bytes are unbound.
+
 This audit performs only GETs and does not authorize dispatch, publication or channel changes.
 
 Per-package npm identity can be checked independently:
@@ -978,6 +1020,13 @@ needs npm support).
   "npm accepted the publish but is still processing", listing the packages.
 - Step 0 recommends `wait-npm-processing`. The package state is `processing`, never `absent`.
 
+A lost acknowledgement is different. When the publish connection drops before npm answers, the
+job has no `+ name@version` line and no E409, so it records no accepted outcome or acceptance
+time. It then rechecks the registry, and only a `present-verified` result is tolerated. An `absent`
+or `uncertain` recheck fails the job as a broken publish, with npm's original error kept in the log.
+Follow Step 0: a later publish of a version npm did accept answers E409 and is classified
+`processing`, not republished.
+
 **What to do**
 
 1. Stop and report. Do not recover.
@@ -990,6 +1039,12 @@ needs npm support).
      "https://registry.npmjs.org/-/package/<name, with / as %2f>/version/<version>/status"
    ```
 
+   If the status API answers HTTP 401 or 403, the local credential was rejected. Step 0 and the
+   state helper then report the package `uncertain`, never `absent`: an authentication failure
+   proves nothing about the version, so it is never a reason to recover or republish. Sign in to
+   npm again (`npm login`) and re-run the check. Do not edit, print or remove stored credentials
+   to make the status read work, and never add a token to CI for it.
+
 3. Wait up to 24 hours. If a package is still processing after that, contact npm support.
 4. Once every package is visible, finalize from `main`:
 
@@ -998,6 +1053,10 @@ needs npm support).
    ```
 
    Re-run Step 0 first: it must recommend `dispatch-finalize`.
+
+5. After it succeeds, verify delivery with [A14](#a14-verify-delivery), passing the original
+   publisher as `--release-run-id` and this run as `--finalize-run-id`. The verifier applies the
+   `processing-then-finalize` rule only when the original run stopped on npm processing alone.
 
 **Never**
 

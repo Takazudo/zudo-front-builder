@@ -79,8 +79,9 @@
 #
 # Tag push — after release.yml has published GH Release assets
 # (ZFB_SMOKE_MODE=released):
-#   smoke-released (ubuntu-latest) — curl-pipes install.sh, validates
-#                                    public install path end-to-end.
+#   smoke-released (ubuntu-latest) — fetches install.sh at the release
+#                                    source commit and runs it, validating
+#                                    the public install path end-to-end.
 #
 # ── Trigger policy ────────────────────────────────────────────────────────
 #
@@ -1292,12 +1293,22 @@ jobs:
         # repo's security posture. install.sh pins to this tag so the smoke installs
         # the exact just-released assets — the default /releases/latest path 404s
         # while the project ships only pre-releases.
+        # The installer is fetched at the full checked-out release source commit
+        # (#4784): the image prints a zfb-installer-bytes/v1 record of the exact
+        # install.sh bytes it runs, which the delivery verifier re-hashes.
         env:
           RELEASE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || inputs.release_tag }}
         run: |
+          INSTALL_SOURCE_SHA="$(git rev-parse HEAD)"
+          if [[ ! "$INSTALL_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::checked-out release source is not a full commit SHA: '${INSTALL_SOURCE_SHA}'"
+            exit 1
+          fi
+          echo "Installer source: ${INSTALL_SOURCE_SHA} (install.sh)"
           docker build \
             --build-arg ZFB_SMOKE_MODE=released \
             --build-arg "ZFB_VERSION=${RELEASE_TAG}" \
+            --build-arg "ZFB_INSTALL_SOURCE_SHA=${INSTALL_SOURCE_SHA}" \
             -t zfb-smoke:released \
             tests/smoke/node-free/
 
