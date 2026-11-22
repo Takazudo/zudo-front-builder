@@ -1566,8 +1566,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             defer,
         )
     };
-    // Issue #4781 — an eager boot whose content snapshot fails has no last
-    // good generation to keep. Fall back to the deferred scaffold (route
+    // Issues #4781/#4782 — an eager boot whose content snapshot or
+    // `paths()` fails has no last good generation to keep. Fall back to the deferred scaffold (route
     // tables unpublished, so dev 404s say `unavailable`) and arm the
     // bootstrap recovery latch, so a later successful refresh publishes and
     // seeds the session without a restart.
@@ -9575,9 +9575,9 @@ struct AssembledBundleResult {
 }
 
 /// A dev generation candidate rejected before publication: its content
-/// snapshot failed to build or serialize (issue #4781). Carried through
-/// `anyhow` so the boot path can tell it apart from other renderer boot
-/// failures.
+/// snapshot failed to build or serialize (issue #4781), or a dynamic SSG
+/// route's `paths()` failed (issue #4782). Carried through `anyhow` so the
+/// boot path can tell it apart from other renderer boot failures.
 #[cfg(feature = "direct-v8")]
 #[derive(Debug)]
 pub(crate) struct DevCandidateRejected(pub(crate) String);
@@ -10288,11 +10288,29 @@ fn build_dev_route_tables_inner(
         // as warnings so the user knows why a `[slug]` route didn't appear —
         // mirrors the build-side diagnostics. These are silently dropped from
         // `dist/` otherwise.
-        for d in &runtime_expansion.deferred {
-            crate::output::warn(format!(
-                "dynamic SSG route {} not expanded in dev: {}",
-                d.template, d.reason
-            ));
+        //
+        // Issue #4782: after both phases every remaining entry is a failed
+        // `paths()` (a throw, a non-2xx dispatch or an invalid result), not a
+        // successful `[]`. Publishing the table without its URLs would turn a
+        // source error into "this URL was removed", so dev rejects the whole
+        // candidate and keeps the last successful route table.
+        if !runtime_expansion.deferred.is_empty() {
+            let failures: Vec<String> = runtime_expansion
+                .deferred
+                .iter()
+                .map(|d| format!("{}: {}", d.template, d.reason))
+                .collect();
+            for failure in &failures {
+                crate::output::error(format!(
+                    "dynamic SSG route paths() failed in dev ({failure}); this route table \
+                     was not published: the dev server keeps serving its last successful \
+                     generation, if any, until the source is fixed"
+                ));
+            }
+            return Err(anyhow::Error::new(DevCandidateRejected(format!(
+                "paths() failed for {}",
+                failures.join("; ")
+            ))));
         }
 
         // File every resolved concrete-URL entry under its dynamic source's

@@ -3024,3 +3024,247 @@ fn assert_ready_banner(session: &DevSession, expected: bool, phase: &str) {
         session.logs()
     );
 }
+
+fn slug_agreement_fixture_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dev-paths-slug-agreement")
+}
+
+fn slug_session_root(temp: &tempfile::TempDir) -> (PathBuf, PathBuf) {
+    let root = temp
+        .path()
+        .canonicalize()
+        .expect("canonicalize slug-agreement fixture root");
+    copy_dir(&slug_agreement_fixture_dir(), &root).expect("copy slug-agreement fixture");
+    fs::create_dir_all(root.join("data")).expect("create handshake-probe data directory");
+    let data_probe_path = root.join("data/handshake-probe.json");
+    fs::write(&data_probe_path, "{\"revision\":0}\n").expect("write initial handshake probe");
+    (root, data_probe_path)
+}
+
+async fn get_status_and_body(client: &reqwest::Client, url: &str) -> (u16, Option<String>, String) {
+    let response = client.get(url).send().await.expect("GET");
+    let status = response.status().as_u16();
+    let reason = response
+        .headers()
+        .get("x-zfb-dev-404-reason")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    (status, reason, response.text().await.unwrap_or_default())
+}
+
+/// Issue #4782: the fixture's helper throws when an entry's filename slug
+/// disagrees with its frontmatter `slug`, as the Field Notes original helper
+/// does. A filename-only rename makes `paths()` throw. Dev rejects that
+/// candidate route table instead of publishing one without the article URLs,
+/// so the last good routes keep serving; restoring the filename and later
+/// valid edits recover without a restart. Controls: a valid slug rename moves
+/// the URL (old `not-in-route-table`, new 200), a deletion removes a URL, and
+/// a successful empty `paths()` result removes every article URL.
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_failed_paths_keeps_last_good_route_table() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create slug-agreement fixture");
+    let (root, data_probe_path) = slug_session_root(&temp);
+    let mut session = spawn_dev_with_timing(root, DevMode::Lazy, Some("cold"), true);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some((base, client)) =
+            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+        else {
+            return ScenarioOutcome::Skipped;
+        };
+        let home = format!("{base}/");
+        let url = |slug: &str| format!("{base}/articles/{slug}/");
+        for (target, marker) in [
+            (home.clone(), "Beta Slug"),
+            (url("a"), "Alpha Slug"),
+            (url("b"), "Beta Slug"),
+        ] {
+            poll_until_response_contains(&client, &target, marker, "baseline", &session).await;
+        }
+
+        let articles = session.root.join("content/articles");
+        let (a_md, renamed) = (articles.join("a.md"), articles.join("a-renamed.md"));
+        let offset = read_log(&session.stderr_path).len();
+        fs::rename(&a_md, &renamed).expect("filename-only rename");
+        wait_for_stderr_line(
+            &session,
+            offset,
+            &["paths() failed in dev", "was not published"],
+            "filename-only rename rejected",
+        )
+        .await;
+        drain_ticks_until_quiescent(&base).await;
+        for (target, marker) in [
+            (url("a"), "Alpha Slug"),
+            (url("b"), "Beta Slug"),
+            (home.clone(), "Alpha Slug"),
+        ] {
+            let (status, _, text) = get_status_and_body(&client, &target).await;
+            assert!(
+                status == 200 && text.contains(marker),
+                "{target} must keep the last good route ({marker}) while paths() fails; got \
+                 {status}:\n{text}\n{}",
+                session.logs()
+            );
+        }
+        let (status, reason, _) = get_status_and_body(&client, &url("a-renamed")).await;
+        assert_eq!(
+            (status, reason.as_deref()),
+            (404, Some("not-in-route-table")),
+            "the rejected candidate's URL must not be published\n{}",
+            session.logs()
+        );
+        assert!(
+            !read_log(&session.stderr_path).contains("not expanded in dev"),
+            "a failed paths() must not publish a partial route table\n{}",
+            session.logs()
+        );
+
+        fs::rename(&renamed, &a_md).expect("restore the filename");
+        write_in_place(
+            &articles.join("b.md"),
+            b"---\ntitle: Beta Slug Edited\nslug: b\n---\n\nBeta body.\n",
+        );
+        poll_until_body_matches(&client, &home, |body| {
+            body.contains("Alpha Slug") && body.contains("Beta Slug Edited")
+        })
+        .await
+        .unwrap_or_else(|last| panic!("home did not recover: {last}\n{}", session.logs()));
+        poll_until_response_contains(
+            &client,
+            &url("b"),
+            "Beta Slug Edited",
+            "detail b after recovery",
+            &session,
+        )
+        .await;
+
+        let c_md = articles.join("c.md");
+        fs::write(
+            &c_md,
+            b"---\ntitle: Alpha Slug\nslug: c\n---\n\nAlpha body.\n",
+        )
+        .expect("write the renamed entry");
+        fs::remove_file(&a_md).expect("remove the old entry");
+        poll_until_response_contains(&client, &url("c"), "Alpha Slug", "valid rename", &session)
+            .await;
+        poll_until_status_404(&client, &url("a"))
+            .await
+            .unwrap_or_else(|last| {
+                panic!(
+                    "the old URL survived a valid rename: {last}\n{}",
+                    session.logs()
+                )
+            });
+
+        fs::remove_file(articles.join("b.md")).expect("delete b");
+        poll_until_status_404(&client, &url("b"))
+            .await
+            .unwrap_or_else(|last| panic!("b survived its deletion: {last}\n{}", session.logs()));
+
+        fs::remove_file(&c_md).expect("delete the last entry");
+        poll_until_status_404(&client, &url("c"))
+            .await
+            .unwrap_or_else(|last| {
+                panic!(
+                    "c survived an empty paths() result: {last}\n{}",
+                    session.logs()
+                )
+            });
+        poll_until_body_matches(&client, &home, |body| {
+            body.contains("SLUG-HOME") && !body.contains("Alpha Slug")
+        })
+        .await
+        .unwrap_or_else(|last| panic!("home kept a removed entry: {last}\n{}", session.logs()));
+        assert!(
+            !read_log(&session.stderr_path)[offset..]
+                .lines()
+                .filter(|line| line.contains("paths() failed in dev"))
+                .any(|line| !line.contains("a-renamed")),
+            "only the filename-only rename is a paths() failure\n{}",
+            session.logs()
+        );
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] failed paths() dev E2E exceeded {}s; process group {pgid} will be \
+             killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
+        ),
+    }
+}
+
+/// Issue #4782 at first boot: `paths()` fails before any route table was
+/// published, so dev 404s say `unavailable`, and fixing the filename
+/// publishes the routes without a restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn first_boot_failed_paths_recovers_without_restart() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    let temp = tempfile::tempdir().expect("create slug-agreement fixture");
+    let (root, _) = slug_session_root(&temp);
+    let articles = root.join("content/articles");
+    fs::rename(articles.join("a.md"), articles.join("a-renamed.md")).expect("break a.md");
+    let mut session = spawn_dev_with_timing(root, DevMode::Lazy, Some("cold"), true);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some(port) = wait_for_listening_port(&mut session).await else {
+            return ScenarioOutcome::Skipped;
+        };
+        let base = format!("http://localhost:{port}");
+        let client = build_reqwest_client();
+        wait_for_stderr_line(
+            &session,
+            0,
+            &["[zfb-timing] boot: render complete"],
+            "boot hook finished",
+        )
+        .await;
+        assert_ready_banner(&session, false, "rejected first generation");
+        assert!(
+            read_log(&session.stderr_path).contains("paths() failed in dev"),
+            "the first route table must be rejected\n{}",
+            session.logs()
+        );
+        for target in [format!("{base}/"), format!("{base}/articles/b/")] {
+            let (status, reason, _) = get_status_and_body(&client, &target).await;
+            assert_eq!(
+                (status, reason.as_deref()),
+                (404, Some("unavailable")),
+                "{target} has no published route table yet\n{}",
+                session.logs()
+            );
+        }
+        fs::rename(articles.join("a-renamed.md"), articles.join("a.md")).expect("fix a.md");
+        poll_until_response_contains(
+            &client,
+            &format!("{base}/articles/a/"),
+            "Alpha Slug",
+            "first-boot paths recovery",
+            &session,
+        )
+        .await;
+        poll_until_response_contains(&client, &format!("{base}/"), "Beta Slug", "home", &session)
+            .await;
+        wait_for_ready_banner(&session, "first-boot paths repair").await;
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] first-boot paths() failure exceeded {}s; process group {pgid} will be \
+             killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
+        ),
+    }
+}
