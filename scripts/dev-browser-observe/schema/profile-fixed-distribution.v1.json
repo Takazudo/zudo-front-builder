@@ -453,6 +453,14 @@
                       "minimum": 1
                     }
                   }
+                },
+                "breakage": {
+                  "enum": ["title-unbalanced-quote-v1", "unclosed-flow-sequence-v1"],
+                  "description": "edit-invalid-frontmatter only: the versioned breakage. Default title-unbalanced-quote-v1 (the original op, unchanged). unclosed-flow-sequence-v1 is invalid YAML for zfb's noyalib, js-yaml 3.15.2 (Next) and yaml 2.9.1 (Astro); see fixtures/field-notes/evidence/frontmatter-breakage-verification.json."
+                },
+                "acceptRouteNotExpandedWithEvidence": {
+                  "type": "boolean",
+                  "description": "fixed-distribution zfb, rename-filename-only only: a route-not-expanded detail page counts as expected only when the server output after the write contains the framework's declared rejection line (distributions.json negativeEvidence.routeNotExpanded); otherwise it stays a mismatch."
                 }
               }
             }

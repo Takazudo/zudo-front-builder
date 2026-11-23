@@ -1001,6 +1001,42 @@ The ops run on the same corpus and selectors in every framework:
   imported from the layout with the `/site.css` link removed. The op adds or
   changes `--fn-managed-marker` in the first `:root{}` block.
 
+### Correctness fixes from the first native fixed runs
+
+None of these changes the timed endpoint (predicate confirmed, 2 rAF, binding delivery) or what
+a timed success means. They change only restoration checks, expected-negative classification,
+the settle and the mechanism label.
+
+- **Gone checks** (all frameworks): a removed page counts as gone on HTTP 404 or 410 whose body
+  lacks the page's title (recorded from the edit's model) and has no
+  `[data-article-body="<slug>"]` element. The bare slug is no longer the marker, because Astro's
+  dev 404 page prints the requested path (`astro/dist/template/4xx.js`). zfb's own 404 and stale
+  pages get the same verdict as before.
+- **Invalid-frontmatter breakage**: `edit-invalid-frontmatter` takes `breakage`.
+  - `title-unbalanced-quote-v1` is the original and stays the default, so old results keep their
+    meaning.
+  - `unclosed-flow-sequence-v1` replaces the title line with `title: [unbalanced`. js-yaml
+    3.15.2 (the Next app's gray-matter) accepts the original as a multi-line quoted title, but it
+    and yaml 2.9.1 (Astro) both reject the new variant; I ran both from the installs. zfb's
+    noyalib 0.0.58 rejects it according to its own tests and scanner rule; I did not run it.
+    The evidence is in `fixtures/field-notes/evidence/frontmatter-breakage-verification.json`.
+  - Each record's `declared.breakage` names the variant used. New fixed profiles select
+    `unclosed-flow-sequence-v1` explicitly.
+- **zfb 6.0.1 rename rejection**: in a fixed-distribution zfb profile, `rename-filename-only`
+  may set `acceptRouteNotExpandedWithEvidence`. A detail page classified `route-not-expanded`
+  then counts as expected only when the server output after the write contains the declared
+  line `paths() threw for "/articles/:slug": Article slug mismatch: <renamed>`
+  (`distributions.json` `negativeEvidence.routeNotExpanded`). Without that line it stays a
+  mismatch. Each observed page records the condition and the matched line. Source-built
+  profiles and other frameworks refuse the option.
+- **Framework update signals**: `distributions.json` `updateSignal.sockets` declares Next's HMR
+  socket and Vite's (Astro), with their message types mapped to `page`, `css`, `rsc` or
+  `module`. Each declaration cites the installed source. Fixed runs set them on the observer.
+  - A mapped frame counts as the framework's own update for the settle. The mechanism is then
+    labelled `rsc-update` or `hmr-module-update`.
+  - Other frames from those sockets are kept in `otherFrames` and are never evidence.
+  - zfb's livereload socket is handled exactly as before.
+
 ### Cohorts
 
 The examples are `profiles/field-notes-fixed-{zfb-original-memoized,zfb-recovered-snapshot,astro,next}-100.example.json`.

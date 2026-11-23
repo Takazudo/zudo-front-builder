@@ -202,14 +202,45 @@ async function runFinalState(ctx) {
 }
 
 /**
+ * Mark each observed page expected when its state is declared. A state outside expectState is
+ * accepted only through a declared conditional state whose server-output line appears after the
+ * write (for example zfb 6.0.1's `paths() threw … Article slug mismatch` for an unexpanded
+ * route); without that line it stays a mismatch.
+ */
+export function acceptConditionalStates(observed, attempt, logSince) {
+  let log;
+  for (const o of observed) {
+    o.expected = attempt.expectState.includes(o.state);
+    if (o.expected) continue;
+    const c = (attempt.conditionalStates ?? []).find(
+      (x) => x.state === o.state && (!x.path || x.path === o.path),
+    );
+    if (!c) continue;
+    if (log === undefined) log = logSince();
+    const re = new RegExp(c.serverLine);
+    const line = log?.lines?.find((l) => re.test(l.text)) ?? null;
+    o.conditional = {
+      rule: c.rule,
+      serverLine: c.serverLine,
+      matched: line ? line.text : null,
+      logAvailable: Boolean(log),
+      logTruncated: log?.truncated ?? null,
+    };
+    o.expected = line !== null;
+  }
+  return observed;
+}
+
+/**
  * expected-negative: an invalid edit whose declared expected state is an
  * error or the last good page. Observe each declared page, classify, then run
  * the recovery writes and require live behaviour back. An unexpected state or
  * a failed recovery is never relabelled as expected.
  */
 async function runExpectedNegative(ctx) {
-  const { attempt, page, fs, clock, timeouts, recBase, op } = ctx;
+  const { attempt, page, fs, clock, timeouts, recBase, op, server } = ctx;
   const mark = page.mark();
+  const logMark = server?.logMark?.() ?? null;
   const { t0, tLast, steps } = await doWrites(fs, attempt.writes, clock);
   ctx.writeDone = true;
   const settle = await page.settle({
@@ -236,7 +267,10 @@ async function runExpectedNegative(ctx) {
     const c = classifyNegative(view, { lastGood, empty, errorMarkers: attempt.errorMarkers });
     observed.push({ path: o.path, state: c.state, basis: c.basis, view, lastGood, empty });
   }
-  const statePass = observed.every((o) => attempt.expectState.includes(o.state));
+  acceptConditionalStates(observed, attempt, () =>
+    logMark === null || !server?.logSince ? null : server.logSince(logMark, t0),
+  );
+  const statePass = observed.every((o) => o.expected);
   const r0 = clock.now();
   let recoverySteps = null;
   let recoveryError = null;
@@ -279,7 +313,8 @@ async function runExpectedNegative(ctx) {
         state: o.state,
         basis: o.basis,
         httpStatus: o.view.httpStatus ?? null,
-        expected: attempt.expectState.includes(o.state),
+        expected: o.expected,
+        ...(o.conditional ? { conditional: o.conditional } : {}),
       })),
       settle,
       observed,
