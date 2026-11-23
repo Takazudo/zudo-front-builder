@@ -225,8 +225,10 @@ function localizedNote(value, locale, field) {
 // pin remain unchanged; refresh this closure digest after Wind checks pass.
 // Rust 1.100.0 clippy (needless_bool): the JSX attribute-name check in
 // crates/zudo-wind/src/extract/script.rs returns its condition directly; behavior and catalog unchanged.
+// #4795 url 2.5.9 (RUSTSEC-2026-0592): Cargo.lock only (url and its required form_urlencoded
+// 1.2.3, version + checksum); neither is reachable from zudo-wind (every edge kind, all targets).
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "fd51df5bfd39e32fcd10163d5a5b612edf691a02f6afb5104cf14cba67f101a2";
+  "33a234a02d10944f2bbbed04a061d9c175bcc714770abd652273b6b831e8dd7e";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];
