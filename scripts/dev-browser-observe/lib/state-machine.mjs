@@ -124,7 +124,13 @@ export function classifyMechanism({
   const newDoc = notifyDocUUID !== preDocUUID;
   if (newDoc && mainFrameNavigations > 0)
     return page ? "native-full-reload" : "full-reload-without-page-frame";
-  if (!newDoc && mainFrameNavigations === 0) return css ? "css-replacement" : "in-document-update";
+  if (!newDoc && mainFrameNavigations === 0) {
+    if (css) return "css-replacement";
+    // Declared framework HMR events (fixed distributions only; zfb livereload has neither).
+    if (livereloadEvents.includes("rsc")) return "rsc-update";
+    if (livereloadEvents.includes("module")) return "hmr-module-update";
+    return "in-document-update";
+  }
   return "unclassified";
 }
 

@@ -101,7 +101,18 @@
           "role": "zfb-native",
           "args": "@takazudo/zfb-[a-z0-9-]+/zfb(\\s|$)"
         }
-      ]
+      ],
+      "negativeEvidence": {
+        "routeNotExpanded": {
+          "rule": "zfb-6.0.1-rejected-paths-route-not-expanded",
+          "serverLine": "paths\\(\\) threw for \"/articles/:slug\": Article slug mismatch: {renamed}(?![\\w-])",
+          "source": "zfb 6.0.1 dev prints '⚠ dynamic SSG route /articles/:slug not expanded in dev: worker returned 500 for /__paths__//articles/:slug: [zfb-runtime] /__paths__: paths() threw for \"/articles/:slug\": Article slug mismatch: <entry>' and then serves its 404 'page not in cache' for the route (native run fxq-zfb-rs-fn-neg-rename-filename-only server.log 15:43:51.788); 'Article slug mismatch' is the archive helper's own error"
+        }
+      },
+      "updateSignal": {
+        "sockets": [],
+        "note": "zfb's livereload socket /__zfb/reload/ws (JSON {event: page|css}) is built into the observer and is unchanged"
+      }
     },
     "astro": {
       "app": "apps/astro",
@@ -192,7 +203,26 @@
           "role": "astro-cli",
           "args": "astro/bin/astro\\.mjs"
         }
-      ]
+      ],
+      "updateSignal": {
+        "sockets": [
+          {
+            "name": "vite-hmr",
+            "url": "^wss?://[^/]+/\\?token=",
+            "typeKey": "type",
+            "events": {
+              "full-reload": "page",
+              "update:css-update": "css",
+              "update": "module"
+            },
+            "source": [
+              "vite 8.3.8 dist/client/client.mjs:947 new WebSocket(`${socketProtocol}://${socketHost}?token=${wsToken}`, \"vite-hmr\")",
+              "client.mjs:1041-1103 payload.type: connected | update (updates[].type js-update | css-update) | custom | full-reload | prune | error",
+              "astro 7.4.12 dist/content/vite-plugin-content-virtual-mod.js:60 hot.send(\"astro:content-changed\"), :68 {type: \"full-reload\"}"
+            ]
+          }
+        ]
+      }
     },
     "next": {
       "app": "apps/next",
@@ -315,7 +345,26 @@
           "role": "next-server",
           "args": "next-server|next/dist/server/lib/start-server"
         }
-      ]
+      ],
+      "updateSignal": {
+        "sockets": [
+          {
+            "name": "next-hmr",
+            "url": "^wss?://[^/]+/_next/hmr(?:[/?#]|$)",
+            "typeKey": "type",
+            "events": {
+              "serverComponentChanges": "rsc",
+              "reloadPage": "page",
+              "turbopack-message": "activity"
+            },
+            "source": [
+              "next 16.4.6 dist/server/lib/router-server.js:757 isHMRRequest = req.url.startsWith(`${hmrPrefix}/_next/hmr`)",
+              "dist/server/dev/hot-reloader-types.js HMR_MESSAGE_SENT_TO_BROWSER: serverComponentChanges, reloadPage, turbopack-message, built, sync, ... (JSON key 'type')",
+              "dist/server/dev/hot-reloader-turbopack.js:680,750 type SERVER_COMPONENT_CHANGES; :799,813,890 type RELOAD_PAGE; :729 type TURBOPACK_MESSAGE"
+            ]
+          }
+        ]
+      }
     }
   }
 }

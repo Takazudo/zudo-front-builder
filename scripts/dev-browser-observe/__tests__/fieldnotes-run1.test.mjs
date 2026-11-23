@@ -123,10 +123,13 @@ describe("BUG 2: the cleanup gone check for a removed created file", () => {
     const gone = liveRestoreChecks(model, ["article-00021"]).find(
       (c) => c.path === "/articles/article-00021/",
     );
+    // The bare slug is no longer the marker (a 404 page can echo it in the path); without a
+    // recorded title only the body element's absence is checked.
     expect(gone).toEqual({
       kind: "gone",
       path: "/articles/article-00021/",
-      absentText: "article-00021",
+      absentText: null,
+      absentSelector: '[data-article-body="article-00021"]',
     });
     const p = new ObserverPage(null, "", () => 1n);
     p.observePage = async (path) => ({

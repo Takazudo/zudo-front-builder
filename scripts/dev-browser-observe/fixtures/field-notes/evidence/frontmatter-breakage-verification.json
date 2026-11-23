@@ -1,0 +1,57 @@
+{
+  "schema": "field-notes-frontmatter-breakage-verification.v1",
+  "recordedAt": "2026-11-24",
+  "input": {
+    "article": "fieldnotes/src-100/content/articles/article-00009.md (scale 100, generate.mjs)",
+    "sha256": "e535c70bcf34e94909dcda8b20e374bbda4fdeb136d90beef709f96f1a872924",
+    "frontmatterExtraction": "text between the leading '---' lines"
+  },
+  "breakages": {
+    "title-unbalanced-quote-v1": "title line loses its closing quote and gains a following line '  : [unbalanced' (the original op, default)",
+    "unclosed-flow-sequence-v1": "title line replaced by 'title: [unbalanced' (a flow sequence never closed before the end of the frontmatter)"
+  },
+  "executed": {
+    "method": "node script importing the installed parsers from the fixed installs (no server, no build); output verbatim",
+    "versions": {
+      "js-yaml": "3.15.2",
+      "gray-matter": "4.0.3",
+      "yaml": "2.9.1",
+      "@astrojs/internal-helpers": "0.13.2"
+    },
+    "results": [
+      {
+        "variant": "title-unbalanced-quote-v1 (old)",
+        "jsyaml": "parsed: title=\"Keeping a growing archive approachable · 00009 : [unbalanced description: \"",
+        "grayMatter": "parsed: title=\"Keeping a growing archive approachable · 00009 : [unbalanced description: \"",
+        "yaml": "ERROR YAMLParseError: Missing closing \"quote at line 3, column 16:",
+        "astroParseFrontmatter": "ERROR YAMLParseError: Missing closing \"quote at line 4, column 16:"
+      },
+      {
+        "variant": "unclosed-flow-sequence-v1 (new)",
+        "jsyaml": "ERROR YAMLException: missed comma between flow collection entries at line 3, column 1:",
+        "grayMatter": "ERROR YAMLException: missed comma between flow collection entries at line 4, column 1:",
+        "yaml": "ERROR YAMLParseError: Flow sequence in block collection must be sufficiently indented and end with a ] at line 3, column 1:",
+        "astroParseFrontmatter": "ERROR YAMLParseError: Flow sequence in block collection must be sufficiently indented and end with a ] at line 4, column 1:"
+      }
+    ],
+    "script": {
+      "sha256": "75fa79028abecd6f2ba660b66bbf4ea1a528ddf212ec03b768ee3556ffd0ce2a",
+      "argv": [
+        "<fixed-installs>/next/apps/next/node_modules",
+        "<fixed-installs>/astro/apps/astro/node_modules",
+        "<src-100>/content/articles/article-00009.md"
+      ],
+      "source": "import { createRequire } from \"node:module\";\nimport { readFileSync } from \"node:fs\";\nconst [nextNm, astroNm, article] = process.argv.slice(2);\nconst reqN = createRequire(nextNm + \"/\");\nconst jsyaml = reqN(\"js-yaml\"); const gm = reqN(\"gray-matter\");\nconst { parse: yamlParse } = await import(astroNm + \"/yaml/dist/index.js\");\nconst { parseFrontmatter } = await import(astroNm + \"/@astrojs/internal-helpers/dist/frontmatter.js\");\nconst text = readFileSync(article, \"utf8\");\nconst fieldRe = (k) => new RegExp(`^${k}: .*$`, \"m\");\nconst oldBreak = (t) => t.replace(fieldRe(\"title\"), (line) => line.replace(/\"$/, \"\") + \"\\n  : [unbalanced\");\nconst newBreak = (t) => t.replace(fieldRe(\"title\"), \"title: [unbalanced\");\nconst fm = (t) => t.split(\"\\n---\\n\")[0].replace(/^---\\n/, \"\");\nfor (const [name, f] of [[\"title-unbalanced-quote-v1 (old)\", oldBreak], [\"unclosed-flow-sequence-v1 (new)\", newBreak]]) {\n  const t = f(text);\n  const y = fm(t);\n  const r = {};\n  try { const v = jsyaml.safeLoad(y); r.jsyaml = \"parsed: title=\" + JSON.stringify(v.title); } catch (e) { r.jsyaml = \"ERROR \" + e.name + \": \" + e.message.split(\"\\n\")[0]; }\n  try { const v = gm(t); r.grayMatter = \"parsed: title=\" + JSON.stringify(v.data.title); } catch (e) { r.grayMatter = \"ERROR \" + e.name + \": \" + e.message.split(\"\\n\")[0]; }\n  try { const v = yamlParse(y); r.yaml = \"parsed: title=\" + JSON.stringify(v.title); } catch (e) { r.yaml = \"ERROR \" + e.name + \": \" + e.message.split(\"\\n\")[0]; }\n  try { const v = parseFrontmatter(t, { frontmatter: \"empty-with-spaces\" }); r.astroParseFrontmatter = \"parsed: title=\" + JSON.stringify(v.frontmatter.title); } catch (e) { r.astroParseFrontmatter = \"ERROR \" + e.name + \": \" + e.message.split(\"\\n\")[0]; }\n  console.log(JSON.stringify({ variant: name, ...r }, null, 1));\n}\nconsole.log(\"versions\", reqN(\"js-yaml/package.json\").version, reqN(\"gray-matter/package.json\").version, JSON.parse(readFileSync(astroNm + \"/yaml/package.json\")).version, JSON.parse(readFileSync(astroNm + \"/@astrojs/internal-helpers/package.json\")).version);\n"
+    }
+  },
+  "zfb": {
+    "parser": "noyalib 0.0.58 via noyalib-serde-yaml 0.0.58 (Cargo.lock at v6.0.1; crates/zfb-content/src/frontmatter.rs calls serde_yaml::from_str)",
+    "executed": false,
+    "basis": "not run (no zfb build or server allowed while the timing series runs); from the crate source: tests/errors/ux_diagnostics.rs asserts from_str(\"key: bad\\nbad: [unclosed\\nkey: ok\\n\").unwrap_err() and tests/errors/structured_diagnostics.rs asserts from_str(\"first: ok\\nsecond: [unclosed\\n\").unwrap_err() (the same shape: an unclosed flow sequence followed by block keys); src/parser/scanner.rs:1100-1103 rejects flow content not indented more than the surrounding block, which the next key at column 0 is",
+    "oldBreakage": "rejected by zfb in the native fixed and source-built runs (the existing expected-negative results)"
+  },
+  "conclusion": {
+    "title-unbalanced-quote-v1": "accepted by js-yaml 3.15.2 / gray-matter (Next app) as a multi-line quoted title; rejected by yaml 2.9.1 (Astro) and by zfb",
+    "unclosed-flow-sequence-v1": "rejected by js-yaml 3.15.2, gray-matter 4.0.3, yaml 2.9.1 and Astro's parseFrontmatter (executed); rejected by noyalib 0.0.58 per its own tests and scanner rule (not executed)"
+  }
+}

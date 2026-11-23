@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import {
   addArticle,
+  DEFAULT_FRONTMATTER_BREAKAGE,
   breakFrontmatter,
   computeIndex,
   createModel,
@@ -551,6 +552,27 @@ function heroText(n) {
   return n.toLocaleString("en-US");
 }
 
+const escapeRe = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The framework's declared evidence that a rejected rename shows as an unexpanded route
+ * (distributions.json negativeEvidence.routeNotExpanded); only fixed-distribution entries have it.
+ */
+function routeNotExpandedEvidence(m, slug, renamed) {
+  const decl = m.entry?.negativeEvidence?.routeNotExpanded;
+  if (!decl)
+    throw new Error(
+      "acceptRouteNotExpandedWithEvidence needs a framework that declares negativeEvidence.routeNotExpanded",
+    );
+  return {
+    state: "route-not-expanded",
+    path: href(slug),
+    rule: decl.rule,
+    serverLine: decl.serverLine.replace("{renamed}", escapeRe(renamed)),
+    source: decl.source,
+  };
+}
+
 /**
  * Plan one op against the current model. Returns the attempt (writes, timed
  * predicate on targetPath, supplemental checks after the endpoint) and the
@@ -821,6 +843,9 @@ export function planFieldNotesOp(m, model, op, { token = newToken(), tokens = nu
           },
         ],
         errorMarkers: ["Article slug mismatch"],
+        conditionalStates: op.acceptRouteNotExpandedWithEvidence
+          ? [routeNotExpandedEvidence(m, slug, to)]
+          : [],
         recovery: [{ method: "rename", path: articlePath(m, to), to: articlePath(m, slug) }],
         recoveryChecks: liveRestoreChecks(model, [slug]),
         nextModel: model,
@@ -832,7 +857,16 @@ export function planFieldNotesOp(m, model, op, { token = newToken(), tokens = nu
         ...base,
         mode: "expected-negative",
         targetPath: href(slug),
-        writes: [inPlace(articlePath(m, slug), breakFrontmatter(original))],
+        writes: [
+          inPlace(
+            articlePath(m, slug),
+            breakFrontmatter(original, op.breakage ?? DEFAULT_FRONTMATTER_BREAKAGE),
+          ),
+        ],
+        declared: {
+          breakage: op.breakage ?? DEFAULT_FRONTMATTER_BREAKAGE,
+          breakageExplicit: op.breakage !== undefined,
+        },
         expectState: op.expectState ?? ["error", "last-good"],
         observe: [
           { path: href(slug), lastGood: text(FN_SEL.title, "equals", idx.bySlug.get(slug).title) },
@@ -1253,7 +1287,7 @@ function planRecovery(m, model, op, { base, slug, method, token }) {
 }
 
 /** Live checks that the original state is back: home, detail pages, every archive page, one category page, counts. */
-export function liveRestoreChecks(model, touched = []) {
+export function liveRestoreChecks(model, touched = [], removedTitles = new Map()) {
   const idx = computeIndex(model);
   const checks = [
     {
@@ -1307,8 +1341,15 @@ export function liveRestoreChecks(model, touched = []) {
         .map((a) => href(a.slug)),
     ),
   });
+  // A removed page's marker is its title (from the model the edit produced) and its body element;
+  // never the bare slug, which a 404 page may echo in the requested path (Astro's dev 404 does).
   for (const s of touched.filter((x) => !idx.bySlug.has(x)))
-    checks.push({ kind: "gone", path: href(s), absentText: s });
+    checks.push({
+      kind: "gone",
+      path: href(s),
+      absentText: removedTitles.get(s) ?? null,
+      absentSelector: FN_SEL.body(s),
+    });
   return checks;
 }
 
@@ -1325,7 +1366,7 @@ export function fnWarmPaths(scenario) {
  */
 export function fieldNotesOps(m, { restorationWriteMethod = "in-place" } = {}) {
   const original = m.model;
-  const state = { model: original, touched: new Set() };
+  const state = { model: original, touched: new Set(), titles: new Map() };
   const snapshotSpec = {
     dirs: [m.contentDir],
     files: [m.layoutPath, m.publicCssPath, ...(m.managedCssPath ? [m.managedCssPath] : [])],
@@ -1337,6 +1378,11 @@ export function fieldNotesOps(m, { restorationWriteMethod = "in-place" } = {}) {
       for (const s of a.touched ?? []) state.touched.add(s);
       a.applied = () => {
         state.model = a.nextModel;
+        const next = computeIndex(a.nextModel);
+        for (const s of a.touched ?? []) {
+          const t = next.bySlug.get(s)?.title;
+          if (t) state.titles.set(s, t);
+        }
       };
       a.write = a.writes[0];
       return a;
@@ -1352,8 +1398,9 @@ export function fieldNotesOps(m, { restorationWriteMethod = "in-place" } = {}) {
       return r;
     },
     liveChecks: () => {
-      const checks = liveRestoreChecks(original, [...state.touched]);
+      const checks = liveRestoreChecks(original, [...state.touched], state.titles);
       state.touched.clear();
+      state.titles.clear();
       return checks;
     },
     warmPaths: fnWarmPaths,

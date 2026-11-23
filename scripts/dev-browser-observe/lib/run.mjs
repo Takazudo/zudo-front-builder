@@ -556,6 +556,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     browserHandle = await (hooks.launchOwnedBrowser ?? launchOwnedBrowser)(profile.browser);
     const observer = browserHandle.observer;
     observer.baseUrl = ready.baseUrl;
+    // Fixed distributions declare their own HMR sockets; zfb livereload needs none.
+    if (fixed) observer.updateSockets = m.entry.updateSignal?.sockets ?? [];
     observer.onStray = (payload) =>
       rec.append({ type: "late-token", label: "not-success", armedToken: null, payload });
     receipt.browser = browserHandle.identity;

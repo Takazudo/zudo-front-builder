@@ -141,6 +141,18 @@ function fieldNotesErrors(profile) {
         if (op.invalid && op.op !== "css-in-rejected-discovery-tick")
           errors.push(`${at(s, i)}: invalid applies only to css-in-rejected-discovery-tick`);
       }
+      if (op.breakage !== undefined && op.op !== "edit-invalid-frontmatter")
+        errors.push(`${at(s, i)}: breakage applies only to edit-invalid-frontmatter`);
+      if (op.acceptRouteNotExpandedWithEvidence) {
+        if (op.op !== "rename-filename-only")
+          errors.push(
+            `${at(s, i)}: acceptRouteNotExpandedWithEvidence applies only to rename-filename-only`,
+          );
+        if (profile.mode !== "fixed-distribution" || profile.framework !== "zfb")
+          errors.push(
+            `${at(s, i)}: acceptRouteNotExpandedWithEvidence is for fixed-distribution zfb profiles only`,
+          );
+      }
       if (op.op === "edit-prop" && !FN_EDITABLE_PROPS[op.prop ?? "description"])
         errors.push(`${at(s, i)}: edit-prop cannot edit ${op.prop}`);
       if (op.op === "edit-managed-css" && !hasManagedCss(profile))

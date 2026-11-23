@@ -1,0 +1,119 @@
+{
+  "schema": "dev-browser-observe.profile.fixed-distribution.v1",
+  "description": "Fixed next expected-negative families at scale 100. edit-invalid-frontmatter selects breakage unclosed-flow-sequence-v1, which every cohort parser rejects (the default title-unbalanced-quote-v1 is valid YAML to the Next app's js-yaml 3.15.2).",
+  "mode": "fixed-distribution",
+  "diagnostic": false,
+  "framework": "next",
+  "distribution": {
+    "installDir": "/REPLACE/with/installs/next",
+    "launch": "direct"
+  },
+  "fixture": {
+    "kind": "field-notes",
+    "dir": "../fixtures/field-notes",
+    "adapter": "archive",
+    "scale": 100,
+    "placement": "external",
+    "importedCss": true,
+    "source": {
+      "dir": "/REPLACE/with/fieldnotes/src-100",
+      "appsZfbTreeSha256": "5e5580347095d9c5817faf3d4aa30529913e1a0c26a6b1b80905b5b01fa9ba36",
+      "contentTreeSha256": "22763056bd34e0a5dd6e4ac096e69de7e0278519235df88666124c801ea0b7a7",
+      "sharedTreeSha256": "f709ace99f2aad0d1c7c1d553c8693b66883f1055168855fb6807722b0cf226a",
+      "datasetSha256": "fcaa222e52caaedb411a4136f106d4ddb5eaa7334a3ef03f34ccd282f6bab58a"
+    }
+  },
+  "pins": {
+    "harnessTreeSha256": null,
+    "fixtureTreeSha256": null,
+    "observerSha256": null,
+    "adapterSha256": null
+  },
+  "server": {
+    "port": {
+      "mode": "ephemeral"
+    },
+    "host": "127.0.0.1",
+    "readyTimeoutMs": 180000,
+    "env": {
+      "ASTRO_TELEMETRY_DISABLED": "1",
+      "NEXT_TELEMETRY_DISABLED": "1"
+    }
+  },
+  "browser": {
+    "headless": true,
+    "args": [
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows"
+    ],
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "deviceScaleFactor": 1
+  },
+  "timeouts": {
+    "attemptMs": 30000,
+    "supplementalMs": 30000,
+    "restoreMs": 60000,
+    "stopTermMs": 5000,
+    "stopKillMs": 3000,
+    "quietMs": 3000
+  },
+  "limits": {
+    "rssCeilingKiB": 4194304,
+    "wallCeilingMs": 3600000,
+    "sampleEveryMs": 1000
+  },
+  "calibration": {
+    "repeats": 3,
+    "staleTimeoutMs": 2000,
+    "cells": [
+      "binding-round-trip",
+      "two-raf",
+      "synthetic-dom",
+      "synthetic-css",
+      "observer-init-after-navigation",
+      "stale-then-new-token",
+      "late-token",
+      "reload-survival-controller-triggered",
+      "native-reload-survival"
+    ]
+  },
+  "restoration": {
+    "writeMethod": "in-place"
+  },
+  "scenarios": [
+    {
+      "id": "fn-neg-rename-filename-only",
+      "set": "expected-negative",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "rename-filename-08",
+          "op": "rename-filename-only",
+          "article": "article-00008",
+          "writeMethod": "rename",
+          "expectState": ["error", "last-good"]
+        }
+      ]
+    },
+    {
+      "id": "fn-neg-invalid-frontmatter",
+      "set": "expected-negative",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "bad-yaml-09-flow",
+          "op": "edit-invalid-frontmatter",
+          "article": "article-00009",
+          "writeMethod": "in-place",
+          "expectState": ["error", "last-good"],
+          "breakage": "unclosed-flow-sequence-v1"
+        }
+      ]
+    }
+  ],
+  "outDir": "/tmp/dev-browser-observe-fixed"
+}

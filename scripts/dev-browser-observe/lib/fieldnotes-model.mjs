@@ -181,10 +181,25 @@ export function tokenInFirstParagraph(text, token) {
 }
 
 /** Break the YAML frontmatter (an unterminated quoted title). */
-export function breakFrontmatter(text) {
+/**
+ * Invalid-frontmatter breakages, by versioned id. The first is the original and stays the
+ * default, so existing results keep their meaning. js-yaml 3.15.2 (gray-matter, the Next app)
+ * accepts it as a multi-line quoted title; the second is an unclosed flow sequence that zfb's
+ * noyalib 0.0.58, js-yaml 3.15.2 and yaml 2.9.1 all reject
+ * (fixtures/field-notes/evidence/frontmatter-breakage-verification.json).
+ */
+export const FRONTMATTER_BREAKAGES = {
+  "title-unbalanced-quote-v1": (line) => line.replace(/"$/, "") + "\n  : [unbalanced",
+  "unclosed-flow-sequence-v1": () => "title: [unbalanced",
+};
+export const DEFAULT_FRONTMATTER_BREAKAGE = "title-unbalanced-quote-v1";
+
+export function breakFrontmatter(text, breakage = DEFAULT_FRONTMATTER_BREAKAGE) {
   const re = fieldRe("title");
   if (!re.test(text)) throw new Error("frontmatter has no title field");
-  return text.replace(re, (line) => line.replace(/"$/, "") + "\n  : [unbalanced");
+  const f = FRONTMATTER_BREAKAGES[breakage];
+  if (!f) throw new Error(`unknown frontmatter breakage ${breakage}`);
+  return text.replace(re, (line) => f(line));
 }
 
 export function newArticleText(meta, token) {

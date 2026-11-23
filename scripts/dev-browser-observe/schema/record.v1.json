@@ -94,7 +94,9 @@
         "css-replacement",
         "in-document-update",
         "server-restart",
-        "unclassified"
+        "unclassified",
+        "rsc-update",
+        "hmr-module-update"
       ]
     },
     "provenance": {
