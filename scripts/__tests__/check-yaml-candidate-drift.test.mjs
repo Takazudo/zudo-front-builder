@@ -1207,7 +1207,7 @@ describe("committed baseline guard", () => {
       role: "adopted",
       pendingReleasePr: null,
     });
-    expect(CANDIDATE_CONFIG.noyalib.pendingReleasePr).toBe(521);
+    expect(CANDIDATE_CONFIG.noyalib.pendingReleasePr).toBeNull();
   });
 
   it("is a valid, self-consistent schemaVersion 3 baseline with no drift against itself", async () => {

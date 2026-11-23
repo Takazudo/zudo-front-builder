@@ -3071,6 +3071,16 @@ These are local, not GitHub-runner, bytes; the deltas match the 0.0.62 CI pair a
 
 **Baseline refresh still held.** From the Cloud container the live detector exits 1 (`operational-failure`): api.github.com answers 401 with the session token and 403 without one for the upstream repositories, so no `--snapshot` could be taken and `pendingReleasePr` (`521`) could not be re-proven. The refresh (write the snapshot to a new temporary file, validate it, then copy it over `scripts/yaml-candidate-baseline.json`) needs an environment with authenticated upstream API access, and must first confirm that no newer unevaluated pair or other triage delta has appeared. #4758 closes only on a genuine main watch with rc=0.
 
+##### YAML candidate watch baseline refresh after the 0.0.62 and 0.0.63 KEEPs (#4758)
+
+**Observation.** An authenticated detector run on the owner's Mac at `2026-11-23T09:46:32.731Z` against the 2026-11-14 baseline was complete (`errors: []`) and exited 10, `CANDIDATE_DRIFT`. The triage-severity deltas on the adopted pair were the publish, tag and Release of 0.0.62 and 0.0.63 on both crates, which the two KEEPs above evaluated, and `noyalib#521` `OPEN → MERGED`. crates.io still lists 0.0.63 as the newest version of both crates, with no yank. Neither repository is archived. The RustSec record for `noyalib` is RUSTSEC-2026-0333 (patched `>= 0.0.53`) and its nine repository advisories are patched in 0.0.53 or 0.0.55; `noyalib-serde-yaml` has none, so nothing affects 0.0.58. Every other delta was informational: branch churn on both adopted repositories, `saphyr` 0.4.0 and `serde-saphyr` 2.2.0 / 3.0.0-rc.1 with their tags, Releases and branches.
+
+**Release-PR pointer.** `CANDIDATE_CONFIG.noyalib.pendingReleasePr` moves from `521` back to `null`. noyalib#521 merged at 2026-11-15T15:41:39Z (merge `11ac547e`), and `v0.0.62` contains that merge (GitHub compare: `ahead`, `behind_by` 0), so its v0.0.61 work was part of the 0.0.62 evaluation. The only open PRs on either repository are dependabot updates (noyalib#536/#537, noyalib-serde-yaml#49), none of them a release PR. The re-run with the pointer reset added only `pending release PR changed {"number":521,"state":"OPEN"} -> null`.
+
+**Refresh.** A `--snapshot` taken at `2026-11-23T09:48:00.642Z` with the pointer already reset was written to a new temporary file, records all seven candidates and passes `validateCandidateRecord` for each. It replaced `scripts/yaml-candidate-baseline.json` (formatter normalization only; content identical). The post-refresh live run at `2026-11-23T09:48:14.705Z` exited 0, `no-drift`, `errors: []`, with every candidate `no-drift`.
+
+**Unchanged.** Production stays on `noyalib` / `noyalib-serde-yaml` `=0.0.58`; `Cargo.toml`, `Cargo.lock`, the harness label and corpus, `shipped-sizes.json`, severity rules and candidate coverage are unchanged. #4758 closes only on a genuine `main` watch with rc=0 after this merges. **Next trigger:** a newer published pair such as 0.0.64, a yank of either 0.0.58 crate, a new release PR, or a new advisory against 0.0.58.
+
 ##### `serde-saphyr 1.2.0` differential evaluation (#2788) — KEEP
 
 This evaluation deliberately used **serde-saphyr 1.2.0**, superseding the
