@@ -576,8 +576,8 @@ export class ObserverPage {
    * or HTTP polling. If a native reload aborts the navigation, the resulting
    * document is awaited (bounded) and, only if it is not the target, the
    * target is navigated to once more. A reload that destroys the context
-   * while arming (Next HMR after a rename is restored, #4752) is awaited and
-   * the target navigated to once more. Both share one re-navigation per
+   * while arming (Next HMR after a rename is restored, #4752) is awaited the
+   * same way. Both share one re-navigation per
    * check; every step is recorded, and a second interruption is a failure.
    */
   async navigateAndAwait(path, predicate, timeoutMs, tokenPrefix) {
@@ -586,20 +586,25 @@ export class ObserverPage {
     const recovery = [];
     const transientReads = [];
     const deadline = navStart + BigInt(Math.round(timeoutMs * 1e6));
-    const token = `${tokenPrefix}-${Math.random().toString(16).slice(2, 10)}`;
+    const newToken = () => `${tokenPrefix}-${Math.random().toString(16).slice(2, 10)}`;
+    let token = null;
     const interrupted = async (stage, msg) => ({
       ok: false,
       stage,
       error: msg,
+      docUUID: state?.docUUID ?? null,
+      httpStatus: state?.httpStatus ?? null,
       transientReads,
       recovery,
       evidence: this.since(m, navStart),
       failure: await this.failureSnapshot(predicate),
     });
-    let state;
+    let state = null;
     let armed;
+    let reuse = null;
     for (;;) {
-      state = null;
+      state = reuse;
+      reuse = null;
       while (state === null) {
         try {
           state = await this.prepare(path);
@@ -649,21 +654,28 @@ export class ObserverPage {
           failure: await this.failureSnapshot(predicate),
         };
       }
+      // A fresh token per arm, so a notify from an interrupted arm's persisted record stays distinct.
+      token = newToken();
       try {
         armed = await this.arm(token, predicate);
         break;
       } catch (error) {
         this.armedToken = null;
         const msg = String(error?.message ?? error);
-        if (!/Execution context was destroyed|frame was detached/i.test(msg)) throw error;
+        if (!/Execution context was destroyed|frame was detached|Cannot find context/i.test(msg))
+          throw error;
         if (recovery.length >= 1) return interrupted("arm", msg);
         const remainingMs = Math.max(1, timeoutMs - nsToMs(this.clock() - navStart));
+        const resulting = await this.awaitResultingDocument(remainingMs);
+        const onTarget =
+          resulting.ok && new URL(resulting.url).pathname === new URL(this.url(path)).pathname;
         recovery.push({
           at: isoNow(),
           armInterruptedBy: msg.split("\n")[0],
-          resulting: await this.awaitResultingDocument(remainingMs),
-          usedResultingDocument: false,
+          resulting,
+          usedResultingDocument: onTarget,
         });
+        if (onTarget) reuse = resulting.state;
       }
     }
     const base = {

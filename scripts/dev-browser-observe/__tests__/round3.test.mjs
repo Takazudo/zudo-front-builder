@@ -258,7 +258,7 @@ describe("ObserverPage controller side", () => {
   });
 
   it("an arm interrupted by a framework reload re-navigates and re-arms once, recorded", async () => {
-    const { p, calls } = stubbed({ resultingUrl: "http://127.0.0.1:1/" });
+    const { p, calls } = stubbed({ resultingUrl: "http://127.0.0.1:1/other" });
     const realArm = p.arm;
     let arms = 0;
     p.arm = async (...a) => {
@@ -280,7 +280,7 @@ describe("ObserverPage controller side", () => {
 
   it("a second arm interruption is a recorded arm failure; a non-navigation arm error propagates", async () => {
     const destroyed = "page.evaluate: Execution context was destroyed";
-    const twice = stubbed({ resultingUrl: "http://127.0.0.1:1/" });
+    const twice = stubbed({ resultingUrl: "http://127.0.0.1:1/other" });
     twice.p.arm = async () => {
       twice.calls.push("arm");
       twice.p.armedToken = "stale";
@@ -312,7 +312,7 @@ describe("ObserverPage controller side", () => {
   }
 
   it("shares one re-navigation: an abort after an arm interruption is a structured navigation failure", async () => {
-    const { p, calls } = stubbed({ resultingUrl: "http://127.0.0.1:1/" });
+    const { p, calls } = stubbed({ resultingUrl: "http://127.0.0.1:1/other" });
     interruptFirstArm(p, calls);
     const realPrepare = p.prepare;
     let prepares = 0;
@@ -334,7 +334,7 @@ describe("ObserverPage controller side", () => {
   });
 
   it("a re-prepared page-not-in-cache document still goes through the transient re-read loop", async () => {
-    const { p, calls } = stubbed({ resultingUrl: "http://127.0.0.1:1/" });
+    const { p, calls } = stubbed({ resultingUrl: "http://127.0.0.1:1/other" });
     interruptFirstArm(p, calls);
     let prepares = 0;
     p.prepare = async (path) => {
@@ -370,6 +370,18 @@ describe("ObserverPage controller side", () => {
     const r = await p.navigateAndAwait("/", {}, 100, "r");
     expect(calls).toEqual(["prepare:/", "await-resulting", "prepare:/"]);
     expect(r).toMatchObject({ ok: true, recovery: [{ usedResultingDocument: false }] });
+  });
+
+  it("an arm interrupted by a reload that lands on the target arms on that document, no re-navigation", async () => {
+    const { p, calls } = stubbed({ resultingUrl: "http://127.0.0.1:1/" });
+    interruptFirstArm(p, calls);
+    const r = await p.navigateAndAwait("/", {}, 100, "r");
+    expect(calls).toEqual(["prepare:/", "arm", "await-resulting", "arm"]);
+    expect(r).toMatchObject({
+      ok: true,
+      docUUID: "doc-resulting",
+      recovery: [{ usedResultingDocument: true }],
+    });
   });
 
   it("a failed wait records the first-read value and a read-only failure snapshot", async () => {
