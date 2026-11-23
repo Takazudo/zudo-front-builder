@@ -41,7 +41,7 @@
 //! markdown-rs with a `Message` that already carries line/column info.
 //! We surface it as [`PipelineError::Parse`] verbatim — no panics.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
@@ -3528,6 +3528,83 @@ struct CacheState {
     entries: HashMap<String, CachedMdxModule>,
     retained_bytes: usize,
     epoch: u64,
+    /// Generational retention (issue #4754), active only on a
+    /// clear-on-overflow cache once [`MdxModuleCache::begin_generation`] has
+    /// been called; `0` keeps the original clear-on-overflow behaviour.
+    generations: GenerationState,
+}
+
+/// Bookkeeping for generational retention. `last_used` holds each resident
+/// key's latest generation; `touches` is an append-only log with exactly one
+/// valid `(generation, key)` record per resident key (older records for the
+/// same key are stale and skipped). Generations only grow, so the log is
+/// ordered by generation and its front is always the oldest candidate:
+/// eviction pops from the front, and each record is popped or compacted away
+/// at most once, so admission costs amortized O(1) instead of an O(len) scan.
+#[derive(Debug, Default)]
+struct GenerationState {
+    current: u64,
+    last_used: HashMap<String, u64>,
+    touches: VecDeque<(u64, String)>,
+}
+
+impl CacheState {
+    fn generational(&self, policy: CachePolicy) -> bool {
+        matches!(policy, CachePolicy::ClearOnOverflow) && self.generations.current > 0
+    }
+
+    /// Record that `key` was used in the current generation. Repeated uses
+    /// within one generation append nothing.
+    fn touch(&mut self, key: &str) {
+        let generation = self.generations.current;
+        match self.generations.last_used.get_mut(key) {
+            Some(last) if *last == generation => return,
+            Some(last) => *last = generation,
+            None => {
+                self.generations
+                    .last_used
+                    .insert(key.to_owned(), generation);
+            }
+        }
+        self.generations
+            .touches
+            .push_back((generation, key.to_owned()));
+        // Drop stale records once they outnumber the valid ones; the cost is
+        // paid for by the pushes since the previous compaction.
+        if self.generations.touches.len() > 2 * self.generations.last_used.len() + 64 {
+            let last_used = &self.generations.last_used;
+            self.generations
+                .touches
+                .retain(|(g, k)| last_used.get(k) == Some(g));
+        }
+    }
+
+    /// Evict one resident entry that was used in neither the current nor
+    /// the previous generation. Returns `false` when every resident entry is
+    /// live, so the caller declines admission instead of evicting a key the
+    /// current walk has simply not reached yet.
+    fn evict_one_dead(&mut self) -> bool {
+        let current = self.generations.current;
+        while let Some((generation, _)) = self.generations.touches.front() {
+            if generation.saturating_add(2) > current {
+                return false;
+            }
+            let (generation, key) = self
+                .generations
+                .touches
+                .pop_front()
+                .expect("front was just observed");
+            if self.generations.last_used.get(&key) != Some(&generation) {
+                continue; // superseded by a later touch
+            }
+            self.generations.last_used.remove(&key);
+            if let Some(old) = self.entries.remove(&key) {
+                self.retained_bytes = self.retained_bytes.saturating_sub(old.retained_bytes);
+                return true;
+            }
+        }
+        false
+    }
 }
 
 /// One cache slot: the compiled output plus the broken-link
@@ -3776,12 +3853,45 @@ impl MdxModuleCache {
         let mut state = self.lock();
         state.entries.clear();
         state.retained_bytes = 0;
+        state.generations.last_used.clear();
+        state.generations.touches.clear();
         // An in-flight miss must not repopulate a deliberately cleared cache.
         state.epoch = state.epoch.checked_add(1).expect("cache epoch exhausted");
         #[cfg(test)]
         self.counters
             .explicit_clears
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Start a new retention generation (issue #4754). The dev server calls
+    /// this once per content snapshot walk. The first call switches a
+    /// clear-on-overflow cache from clear-all-on-overflow to bounded
+    /// generational retention: at capacity, a new key evicts one entry used
+    /// in neither this nor the previous generation (a superseded edit body, a
+    /// deleted file), and when every entry is live the new key is declined.
+    /// A full sorted walk over more keys than the cap therefore keeps hitting
+    /// the retained prefix instead of clearing and missing everything.
+    ///
+    /// No effect on a [`MdxModuleCache::for_build`] (retain) cache.
+    pub fn begin_generation(&self) {
+        if matches!(self.policy, CachePolicy::ClearOnOverflow) {
+            let mut state = self.lock();
+            state.generations.current = state
+                .generations
+                .current
+                .checked_add(1)
+                .expect("cache generation exhausted");
+        }
+    }
+
+    /// Clone a resident entry, recording its use for generational retention.
+    fn lookup(&self, key: &str) -> Option<CachedMdxModule> {
+        let mut state = self.lock();
+        let hit = state.entries.get(key).cloned();
+        if hit.is_some() && state.generational(self.policy) {
+            state.touch(key);
+        }
+        hit
     }
 
     /// Conservative retained payload accounting. HashMap bucket allocation is
@@ -3814,7 +3924,18 @@ impl MdxModuleCache {
         if state.epoch != epoch {
             return;
         }
+        let generational = state.generational(self.policy);
         match self.policy {
+            CachePolicy::ClearOnOverflow if generational => {
+                // Replacing a resident key is not a new-key capacity decision.
+                if !state.entries.contains_key(&key)
+                    && state.entries.len() >= MDX_MODULE_CACHE_CAP
+                    && !state.evict_one_dead()
+                {
+                    return;
+                }
+                state.touch(&key);
+            }
             CachePolicy::ClearOnOverflow => {
                 if state.entries.len() >= MDX_MODULE_CACHE_CAP {
                     state.entries.clear();
@@ -4095,7 +4216,7 @@ pub fn compile_mdx_to_jsx_module_cached_with_deps(
         // Clone out of the lock before validating: dependency
         // validation does filesystem reads (one re-hash per recorded
         // dep) and must not serialise other cache users behind it.
-        let hit = c.lock().entries.get(key).cloned();
+        let hit = c.lookup(key);
         if let Some(hit) = hit {
             // Dependency-manifest validation (zfb#942): a hit is
             // honoured only while every external file the original
@@ -6336,6 +6457,174 @@ mod tests {
         entry.retained_bytes = entry.payload_bytes(&key);
         let epoch = cache.lock().epoch;
         cache.admit(key, entry, epoch);
+    }
+
+    // ── Generational dev retention (issue #4754) ──────────────────────
+
+    fn accounted_bytes(cache: &MdxModuleCache) -> usize {
+        cache
+            .lock()
+            .entries
+            .values()
+            .map(|entry| entry.retained_bytes)
+            .sum()
+    }
+
+    fn generational_walk(cache: &MdxModuleCache, keys: &[String]) {
+        cache.begin_generation();
+        for key in keys {
+            if cache.lookup(key).is_none() {
+                admit_test_entry(cache, key, retained_test_entry(16));
+            }
+        }
+    }
+
+    #[test]
+    fn generational_sorted_walk_over_cap_keeps_cap_hits_per_walk() {
+        // The #4754 cliff: a sorted walk over cap+1 distinct bodies through
+        // the real compile path. Clear-on-overflow misses every key on every
+        // walk; generational retention keeps the first `cap` resident.
+        let cache = MdxModuleCache::new();
+        let n = MDX_MODULE_CACHE_CAP + 1;
+        let walk = |cache: &MdxModuleCache| {
+            cache.begin_generation();
+            for i in 0..n {
+                compile_mdx_to_jsx_module_cached(
+                    &format!("word{i}\n"),
+                    Path::new("/virtual/blog/scan.mdx"),
+                    Some(cache),
+                    None,
+                )
+                .unwrap();
+            }
+        };
+        walk(&cache);
+        assert_eq!(
+            cache.counter_snapshot(),
+            CacheCounterSnapshot {
+                compiles: n,
+                misses: n,
+                hits: 0,
+                admissions: MDX_MODULE_CACHE_CAP,
+                capacity_clears: 0,
+                explicit_clears: 0,
+            },
+            "the walk that fills the cache declines the overflow key instead of clearing"
+        );
+        for _ in 0..2 {
+            walk(&cache);
+        }
+        assert_eq!(
+            cache.counter_snapshot(),
+            CacheCounterSnapshot {
+                compiles: n + 2,
+                misses: n + 2,
+                hits: 2 * MDX_MODULE_CACHE_CAP,
+                admissions: MDX_MODULE_CACHE_CAP,
+                capacity_clears: 0,
+                explicit_clears: 0,
+            },
+            "each warm walk hits all `cap` resident keys and misses only the overflow key"
+        );
+        assert_eq!(cache.len(), MDX_MODULE_CACHE_CAP);
+        assert_eq!(cache.retained_payload_bytes(), accounted_bytes(&cache));
+    }
+
+    #[test]
+    fn generational_evicts_superseded_key_before_live_ones() {
+        let cache = MdxModuleCache::new();
+        let mut keys: Vec<String> = (0..MDX_MODULE_CACHE_CAP)
+            .map(|i| format!("key-{i:05}"))
+            .collect();
+        generational_walk(&cache, &keys);
+        assert_eq!(cache.len(), MDX_MODULE_CACHE_CAP);
+
+        // An edit supersedes key-00005 with a new body (a new key).
+        keys[5] = "key-00005-edited".to_string();
+        // Generation 2: the old body was live one generation ago, so it is
+        // not yet provably dead; the full cache declines the new key.
+        generational_walk(&cache, &keys);
+        // Inspect residency without `lookup`, which would record a use.
+        let resident = |key: &str| cache.lock().entries.contains_key(key);
+        assert!(resident("key-00005"));
+        assert!(!resident("key-00005-edited"));
+        // Generation 3: the old body was used in neither this nor the
+        // previous generation, so it is evicted ahead of every live key.
+        generational_walk(&cache, &keys);
+        assert_eq!(cache.len(), MDX_MODULE_CACHE_CAP);
+        assert!(!resident("key-00005"));
+        for key in &keys {
+            assert!(resident(key), "live key {key} was evicted");
+        }
+        assert_eq!(cache.retained_payload_bytes(), accounted_bytes(&cache));
+    }
+
+    #[test]
+    fn generational_replacement_at_capacity_needs_no_eviction() {
+        let cache = MdxModuleCache::new();
+        let keys: Vec<String> = (0..MDX_MODULE_CACHE_CAP)
+            .map(|i| format!("key-{i:05}"))
+            .collect();
+        generational_walk(&cache, &keys);
+        // A dependency-invalidated recompile re-admits a resident key.
+        admit_test_entry(&cache, &keys[0], retained_test_entry(4096));
+        assert_eq!(cache.len(), MDX_MODULE_CACHE_CAP);
+        assert!(cache.lookup(&keys[0]).is_some());
+        assert_eq!(cache.retained_payload_bytes(), accounted_bytes(&cache));
+    }
+
+    #[test]
+    fn generational_explicit_clear_still_clears_everything() {
+        let cache = MdxModuleCache::new();
+        let keys: Vec<String> = (0..MDX_MODULE_CACHE_CAP)
+            .map(|i| format!("key-{i:05}"))
+            .collect();
+        generational_walk(&cache, &keys);
+        let stale_epoch = cache.lock().epoch;
+        cache.clear();
+        assert!(cache.is_empty());
+        assert_eq!(cache.retained_payload_bytes(), 0);
+        // An in-flight miss from before the clear still cannot admit.
+        cache.admit(
+            "in-flight".to_string(),
+            retained_test_entry(16),
+            stale_epoch,
+        );
+        assert!(cache.is_empty());
+        // Retention stays active and refills from empty.
+        generational_walk(&cache, &keys);
+        assert_eq!(cache.len(), MDX_MODULE_CACHE_CAP);
+        assert_eq!(cache.retained_payload_bytes(), accounted_bytes(&cache));
+        assert_eq!(cache.counter_snapshot().explicit_clears, 1);
+        assert_eq!(cache.counter_snapshot().capacity_clears, 0);
+    }
+
+    #[test]
+    fn generational_bookkeeping_stays_bounded_across_many_walks() {
+        let cache = MdxModuleCache::new();
+        let keys: Vec<String> = (0..64).map(|i| format!("key-{i:02}")).collect();
+        for _ in 0..100 {
+            generational_walk(&cache, &keys);
+        }
+        let state = cache.lock();
+        assert_eq!(state.generations.last_used.len(), keys.len());
+        assert!(state.generations.touches.len() <= 2 * keys.len() + 64);
+    }
+
+    #[test]
+    fn begin_generation_does_not_change_a_build_cache() {
+        let cache = MdxModuleCache::for_build();
+        cache.begin_generation();
+        assert_eq!(cache.lock().generations.current, 0);
+        let keys: Vec<String> = (0..=MDX_MODULE_CACHE_CAP)
+            .map(|i| format!("key-{i:05}"))
+            .collect();
+        generational_walk(&cache, &keys);
+        let state = cache.lock();
+        assert_eq!(state.entries.len(), MDX_MODULE_CACHE_CAP);
+        assert!(state.generations.last_used.is_empty());
+        assert!(state.generations.touches.is_empty());
+        assert!(!state.entries.contains_key(&keys[MDX_MODULE_CACHE_CAP]));
     }
 
     #[test]
