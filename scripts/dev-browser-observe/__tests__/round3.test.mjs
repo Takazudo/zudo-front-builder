@@ -257,6 +257,45 @@ describe("ObserverPage controller side", () => {
     expect(r2.ok).toBe(false);
   });
 
+  it("an arm interrupted by a framework reload re-navigates and re-arms once, recorded", async () => {
+    const { p, calls } = stubbed({ resultingUrl: "http://127.0.0.1:1/" });
+    const realArm = p.arm;
+    let arms = 0;
+    p.arm = async (...a) => {
+      calls.push("arm");
+      arms += 1;
+      if (arms === 1)
+        throw new Error(
+          "page.evaluate: Execution context was destroyed, most likely because of a navigation",
+        );
+      return realArm(...a);
+    };
+    const r = await p.navigateAndAwait("/", { kind: "count", selector: "x", equals: 1 }, 100, "r");
+    expect(calls).toEqual(["prepare:/", "arm", "await-resulting", "prepare:/", "arm"]);
+    expect(r).toMatchObject({
+      ok: true,
+      recovery: [{ armInterruptedBy: expect.stringMatching(/Execution context was destroyed/) }],
+    });
+  });
+
+  it("a second arm interruption or a non-navigation arm error is not retried", async () => {
+    const destroyed = "page.evaluate: Execution context was destroyed";
+    const twice = stubbed({ resultingUrl: "http://127.0.0.1:1/" });
+    twice.p.arm = async () => {
+      twice.calls.push("arm");
+      throw new Error(destroyed);
+    };
+    await expect(twice.p.navigateAndAwait("/", {}, 100, "r")).rejects.toThrow(destroyed);
+    expect(twice.calls).toEqual(["prepare:/", "arm", "await-resulting", "prepare:/", "arm"]);
+    const other = stubbed({});
+    other.p.arm = async () => {
+      other.calls.push("arm");
+      throw new Error("observer missing");
+    };
+    await expect(other.p.navigateAndAwait("/", {}, 100, "r")).rejects.toThrow("observer missing");
+    expect(other.calls).toEqual(["prepare:/", "arm"]);
+  });
+
   it("a failed wait records the first-read value and a read-only failure snapshot", async () => {
     const { p } = stubbed({ preconditionTrue: false });
     const r = await p.navigateAndAwait(

@@ -643,7 +643,27 @@ export class ObserverPage {
       };
     }
     const token = `${tokenPrefix}-${Math.random().toString(16).slice(2, 10)}`;
-    const armed = await this.arm(token, predicate);
+    let armed;
+    try {
+      armed = await this.arm(token, predicate);
+    } catch (error) {
+      // A framework reload between prepare and arm (Next HMR after a rename, #4752) destroys the
+      // context under page.evaluate: wait for the replacing document, then navigate and arm once
+      // more. A second interruption, or any other error, propagates as before.
+      const msg = String(error?.message ?? error);
+      if (!/Execution context was destroyed|frame was detached/i.test(msg)) throw error;
+      this.armedToken = null;
+      const remainingMs = Math.max(1, timeoutMs - nsToMs(this.clock() - navStart));
+      const resulting = await this.awaitResultingDocument(remainingMs);
+      recovery.push({
+        at: isoNow(),
+        armInterruptedBy: msg.split("\n")[0],
+        resulting,
+        usedResultingDocument: false,
+      });
+      state = await this.prepare(path);
+      armed = await this.arm(token, predicate);
+    }
     const base = {
       transientReads,
       docUUID: state.docUUID,
