@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import {
   addArticle,
@@ -30,7 +30,7 @@ import {
   restoreSnapshot,
   snapshotPaths,
 } from "./fixture.mjs";
-import { randomHex, readJson, sha256, sha256File, treeHashDir } from "./util.mjs";
+import { cpSyncWritable, randomHex, readJson, sha256, sha256File, treeHashDir } from "./util.mjs";
 
 export const FIELD_NOTES_SCHEMA = "field-notes-fixture.v1";
 
@@ -182,7 +182,7 @@ export async function makeFieldNotesSource({
     );
   mkdirSync(outDir, { recursive: true });
   for (const rel of decl.sourceCopy)
-    cpSync(join(archiveDir, rel), join(outDir, rel), {
+    cpSyncWritable(join(archiveDir, rel), join(outDir, rel), {
       recursive: true,
       filter: (p) => !isBuildOutputPath(relative(join(archiveDir, rel), p)),
     });
@@ -344,7 +344,7 @@ export function materializeFieldNotes({
     placement === "internal" ? [src.app, src.shared] : [src.app, src.content, src.shared];
   for (const rel of roots) {
     mkdirSync(dirname(join(workDir, rel)), { recursive: true });
-    cpSync(join(sourceDir, rel), join(workDir, rel), {
+    cpSyncWritable(join(sourceDir, rel), join(workDir, rel), {
       recursive: true,
       // Judge only the part below the copied root, so a source dir that itself sits under e.g. /dist/ still copies.
       filter: (p) => !isBuildOutputPath(relative(join(sourceDir, rel), p)),
@@ -367,7 +367,7 @@ export function materializeFieldNotes({
     if (existsSync(contentDir))
       throw new Error(`internal content dir already exists: ${contentDir}`);
     mkdirSync(dirname(contentDir), { recursive: true });
-    cpSync(join(sourceDir, src.content, "articles"), contentDir, { recursive: true });
+    cpSyncWritable(join(sourceDir, src.content, "articles"), contentDir, { recursive: true });
     contentManifest = readJson(join(sourceDir, src.content, "manifest.json"));
     writeFileSync(configPath, readFileSync(join(fixtureDir, place.config.overlay)));
   } else {

@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
 import {
   constants as fsConstants,
-  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -23,6 +22,7 @@ import {
   loadFieldNotesFixture,
 } from "./fieldnotes.mjs";
 import {
+  cpSyncWritable,
   isoNow,
   readJson,
   run,
@@ -562,7 +562,7 @@ export function installDistribution({
     );
   mkdirSync(dirname(appDir), { recursive: true });
   const caches = new Set(entry.cacheDirs ?? []);
-  cpSync(srcApp, appDir, {
+  cpSyncWritable(srcApp, appDir, {
     recursive: true,
     filter: (p) => {
       const rel = toPosix(relative(srcApp, p));
@@ -711,13 +711,13 @@ export function materializeFixed({
     );
   mkdirSync(workDir, { recursive: true });
   for (const rel of [src.content, src.shared])
-    cpSync(join(sourceDir, rel), join(workDir, rel), {
+    cpSyncWritable(join(sourceDir, rel), join(workDir, rel), {
       recursive: true,
       filter: (p) => !isBuildOutputPath(relative(join(sourceDir, rel), p)),
     });
   const appDir = join(workDir, entry.app);
   mkdirSync(dirname(appDir), { recursive: true });
-  cpSync(join(installDir, entry.app), appDir, {
+  cpSyncWritable(join(installDir, entry.app), appDir, {
     recursive: true,
     verbatimSymlinks: true,
     mode: fsConstants.COPYFILE_FICLONE,

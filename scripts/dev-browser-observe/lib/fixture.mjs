@@ -2,7 +2,6 @@ import {
   chmodSync,
   closeSync,
   constants,
-  cpSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -17,6 +16,7 @@ import {
 import { basename, dirname, join } from "node:path";
 import {
   hrtimeNs,
+  cpSyncWritable,
   noWriteStepsError,
   randomHex,
   readJson,
@@ -122,13 +122,13 @@ export function materialize({
   if (existsSync(workDir)) throw new Error(`work dir already exists: ${workDir}`);
   mkdirSync(workDir, { recursive: true });
   const appDir = join(workDir, manifest.app);
-  cpSync(join(fixtureDir, manifest.app), appDir, { recursive: true });
+  cpSyncWritable(join(fixtureDir, manifest.app), appDir, { recursive: true });
   const contentDir = join(workDir, manifest.content.placements[placement].dest);
   mkdirSync(dirname(contentDir), { recursive: true });
-  cpSync(join(fixtureDir, manifest.content.source), contentDir, { recursive: true });
+  cpSyncWritable(join(fixtureDir, manifest.content.source), contentDir, { recursive: true });
   const adapterTarget = join(workDir, manifest.adapters.target);
   mkdirSync(dirname(adapterTarget), { recursive: true });
-  cpSync(adapterPath(fixtureDir, manifest, adapter), adapterTarget);
+  cpSyncWritable(adapterPath(fixtureDir, manifest, adapter), adapterTarget);
   const configFile = configFileFor(fixtureDir, manifest, {
     configFormat,
     placement,
