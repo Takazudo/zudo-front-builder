@@ -305,6 +305,13 @@ batch.
   document, `navigationType` `reload` and a livereload `page` frame, then
   restores and confirms the original state live. With a memoizing adapter
   (A1) that body edit may legitimately not render, so calibrate with A0.
+  After each restoration write the cell runs the same settle as batch cleanup:
+  the restore's own native update, then `quietMs` of quiet, bounded by
+  `restoreMs`. It is recorded as `restoration.settle`, so that reload cannot
+  land in the next cycle's prepare. A navigation that still interrupts a
+  prepare records outcome `prepare-interrupted-by-navigation` and aborts the
+  cell (`aborted: "prepare-interrupted-by-navigation"`). Nothing was written in
+  that cycle, nothing is retried, and the run exits 1, not 8.
 
 ## Round-3 controls
 
