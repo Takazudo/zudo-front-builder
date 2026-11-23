@@ -575,75 +575,109 @@ export class ObserverPage {
    * navigation, then an observer-armed wait up to `timeoutMs` with no reload
    * or HTTP polling. If a native reload aborts the navigation, the resulting
    * document is awaited (bounded) and, only if it is not the target, the
-   * target is navigated to once more. Every step is recorded.
+   * target is navigated to once more. A reload that destroys the context
+   * while arming (Next HMR after a rename is restored, #4752) is awaited the
+   * same way. Both share one re-navigation per
+   * check; every step is recorded, and a second interruption is a failure.
    */
   async navigateAndAwait(path, predicate, timeoutMs, tokenPrefix) {
     const navStart = this.clock();
     const m = this.mark();
     const recovery = [];
+    const transientReads = [];
+    const deadline = navStart + BigInt(Math.round(timeoutMs * 1e6));
+    const newToken = () => `${tokenPrefix}-${Math.random().toString(16).slice(2, 10)}`;
+    let token = null;
+    const interrupted = async (stage, msg) => ({
+      ok: false,
+      stage,
+      error: msg,
+      docUUID: state?.docUUID ?? null,
+      httpStatus: state?.httpStatus ?? null,
+      transientReads,
+      recovery,
+      evidence: this.since(m, navStart),
+      failure: await this.failureSnapshot(predicate),
+    });
     let state = null;
-    for (let i = 0; state === null; i += 1) {
-      try {
-        state = await this.prepare(path);
-      } catch (error) {
-        const msg = String(error?.message ?? error);
-        const aborted = /ERR_ABORTED|interrupted by another navigation|frame was detached/i.test(
-          msg,
-        );
-        if (!aborted || i >= 1) {
-          return {
-            ok: false,
-            stage: "navigation",
-            error: msg,
-            recovery,
-            evidence: this.since(m, navStart),
-            failure: await this.failureSnapshot(predicate),
-          };
+    let armed;
+    let reuse = null;
+    for (;;) {
+      state = reuse;
+      reuse = null;
+      while (state === null) {
+        try {
+          state = await this.prepare(path);
+        } catch (error) {
+          const msg = String(error?.message ?? error);
+          const aborted =
+            error?.code === PREPARE_INTERRUPTED ||
+            /ERR_ABORTED|interrupted by another navigation|frame was detached/i.test(msg);
+          if (!aborted || recovery.length >= 1) return interrupted("navigation", msg);
+          const resulting = await this.awaitResultingDocument(timeoutMs);
+          const onTarget =
+            resulting.ok && new URL(resulting.url).pathname === new URL(this.url(path)).pathname;
+          recovery.push({
+            at: isoNow(),
+            abortedBy: msg.split("\n")[0],
+            resulting,
+            usedResultingDocument: onTarget,
+          });
+          if (onTarget) state = resulting.state;
         }
-        const resulting = await this.awaitResultingDocument(timeoutMs);
+      }
+      // zfb dev answers "404 — page not in cache" while a rebuild is in flight (and for removed URLs).
+      // A presence check never accepts it: re-read by navigation only, bounded by the check timeout.
+      while (state.notInCache && this.clock() < deadline) {
+        transientReads.push({
+          at: isoNow(),
+          httpStatus: state.httpStatus ?? null,
+          evidence: "transient-not-in-cache",
+        });
+        await new Promise((r) => setTimeout(r, TRANSIENT_REREAD_MS));
+        try {
+          state = await this.prepare(path);
+        } catch (error) {
+          transientReads.push({ at: isoNow(), error: String(error?.message ?? error) });
+        }
+      }
+      if (state.notInCache) {
+        return {
+          ok: false,
+          stage: "transient",
+          transient: "transient-not-in-cache",
+          transientReads,
+          httpStatus: state.httpStatus ?? null,
+          recovery,
+          sinceNavigationMs: nsToMs(this.clock() - navStart),
+          evidence: this.since(m, navStart),
+          failure: await this.failureSnapshot(predicate),
+        };
+      }
+      // A fresh token per arm, so a notify from an interrupted arm's persisted record stays distinct.
+      token = newToken();
+      try {
+        armed = await this.arm(token, predicate);
+        break;
+      } catch (error) {
+        this.armedToken = null;
+        const msg = String(error?.message ?? error);
+        if (!/Execution context was destroyed|frame was detached|Cannot find context/i.test(msg))
+          throw error;
+        if (recovery.length >= 1) return interrupted("arm", msg);
+        const remainingMs = Math.max(1, timeoutMs - nsToMs(this.clock() - navStart));
+        const resulting = await this.awaitResultingDocument(remainingMs);
         const onTarget =
           resulting.ok && new URL(resulting.url).pathname === new URL(this.url(path)).pathname;
         recovery.push({
           at: isoNow(),
-          abortedBy: msg.split("\n")[0],
+          armInterruptedBy: msg.split("\n")[0],
           resulting,
           usedResultingDocument: onTarget,
         });
-        if (onTarget) state = resulting.state;
+        if (onTarget) reuse = resulting.state;
       }
     }
-    // zfb dev answers "404 — page not in cache" while a rebuild is in flight (and for removed URLs).
-    // A presence check never accepts it: re-read by navigation only, bounded by the check timeout.
-    const transientReads = [];
-    const deadline = navStart + BigInt(Math.round(timeoutMs * 1e6));
-    while (state.notInCache && this.clock() < deadline) {
-      transientReads.push({
-        at: isoNow(),
-        httpStatus: state.httpStatus ?? null,
-        evidence: "transient-not-in-cache",
-      });
-      await new Promise((r) => setTimeout(r, TRANSIENT_REREAD_MS));
-      try {
-        state = await this.prepare(path);
-      } catch (error) {
-        transientReads.push({ at: isoNow(), error: String(error?.message ?? error) });
-      }
-    }
-    if (state.notInCache) {
-      return {
-        ok: false,
-        stage: "transient",
-        transient: "transient-not-in-cache",
-        transientReads,
-        httpStatus: state.httpStatus ?? null,
-        recovery,
-        sinceNavigationMs: nsToMs(this.clock() - navStart),
-        evidence: this.since(m, navStart),
-        failure: await this.failureSnapshot(predicate),
-      };
-    }
-    const token = `${tokenPrefix}-${Math.random().toString(16).slice(2, 10)}`;
-    const armed = await this.arm(token, predicate);
     const base = {
       transientReads,
       docUUID: state.docUUID,
