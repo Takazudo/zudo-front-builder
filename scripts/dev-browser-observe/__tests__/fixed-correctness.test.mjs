@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ObserverPage, declaredSocketFor, goneRead, updateSignalFrame } from "../lib/browser.mjs";
+import { ObserverPage, declaredSocketFor, goneRead } from "../lib/browser.mjs";
 import { distributionOf } from "../lib/distribution.mjs";
 import {
   EMPTY_HOME_PROBE,
