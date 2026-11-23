@@ -615,6 +615,30 @@ describe("aggregate", () => {
     ).toEqual(["within-variant:A:adapter"]);
   });
 
+  it("a session that ran but whose receipt.json is missing or unreadable fails receipt-readable (exit 3)", () => {
+    const root = tmp();
+    for (const l of ["a1", "a2", "a3"]) writeSession(join(root, l));
+    rmSync(join(root, "a2", "receipt.json"));
+    writeFileSync(join(root, "a3", "receipt.json"), "{ not json");
+    const { report, exitCode } = aggregate({
+      sessions: ["a1", "a2", "a3"].map((label) => ({
+        label,
+        variant: "A",
+        dir: join(root, label),
+      })),
+    });
+    expect(exitCode).toBe(3);
+    expect(report.identity.ok).toBe(false);
+    const failed = report.identity.checks.filter((c) => !c.ok);
+    expect(failed.map((c) => c.name)).toEqual(["receipt-readable:a2", "receipt-readable:a3"]);
+    for (const c of failed) expect(c.actual).toEqual(expect.any(String));
+    expect(report.sessions.map((x) => [x.label, x.ran, x.status])).toEqual([
+      ["a1", true, "complete"],
+      ["a2", true, "incomplete"],
+      ["a3", true, "incomplete"],
+    ]);
+  });
+
   it("a missing session dir is reported missing and incomplete", () => {
     const root = tmp();
     writeSession(join(root, "a1"));
