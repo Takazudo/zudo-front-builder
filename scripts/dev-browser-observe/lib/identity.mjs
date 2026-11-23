@@ -391,6 +391,33 @@ export function frozenState(harnessDir = HARNESS_DIR) {
   };
 }
 
+/**
+ * Identity checks a run from a frozen copy adds (none outside one): the copy's bytes still equal
+ * its stamp, and its @playwright/test link still points at the stamped package. Shared by the
+ * source-built and fixed-distribution verdicts.
+ */
+export function frozenIdentityChecks(harnessDir = HARNESS_DIR) {
+  const frozen = frozenState(harnessDir);
+  if (!frozen) return [];
+  return [
+    {
+      name: "harness-frozen-copy-intact",
+      ok: frozen.intact,
+      expected: {
+        harnessTreeSha256: frozen.stamp.harnessTreeSha256,
+        fullTreeSha256: frozen.stamp.fullTreeSha256,
+      },
+      actual: frozen.actual,
+    },
+    {
+      name: "harness-frozen-playwright-link",
+      ok: frozen.playwrightLink.ok,
+      expected: frozen.playwrightLink.expected,
+      actual: frozen.playwrightLink.actual,
+    },
+  ];
+}
+
 export function harnessCapability(harnessDir = HARNESS_DIR) {
   const frozen = frozenState(harnessDir);
   if (frozen)

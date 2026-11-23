@@ -9,7 +9,7 @@ import {
   collectIdentityFacts,
   evaluateIdentity,
   findLocalTakazudoPackages,
-  frozenState,
+  frozenIdentityChecks,
   harnessCapability,
 } from "./identity.mjs";
 import { LockBusyError, acquireLock } from "./lock.mjs";
@@ -26,6 +26,7 @@ import {
   createReadiness,
   launchCommand,
   materializeFixed,
+  processIdentityChecks,
   resolveNpmCli,
 } from "./distribution.mjs";
 import { FN_SEL } from "./fieldnotes.mjs";
@@ -126,24 +127,7 @@ function identityVerdict({ profile, resolved, manifest, receipt, extraAppDirs })
     });
   }
   extra.push(...kind.extraChecks(profile, resolved, manifest));
-  const frozen = frozenState();
-  if (frozen)
-    extra.push({
-      name: "harness-frozen-copy-intact",
-      ok: frozen.intact,
-      expected: {
-        harnessTreeSha256: frozen.stamp.harnessTreeSha256,
-        fullTreeSha256: frozen.stamp.fullTreeSha256,
-      },
-      actual: frozen.actual,
-    });
-  if (frozen)
-    extra.push({
-      name: "harness-frozen-playwright-link",
-      ok: frozen.playwrightLink.ok,
-      expected: frozen.playwrightLink.expected,
-      actual: frozen.playwrightLink.actual,
-    });
+  extra.push(...frozenIdentityChecks());
   const gitTree = findGitWorkTree(resolved.outDir);
   extra.push({
     name: "outdir-outside-git-worktree",
@@ -485,10 +469,40 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     let roles = null;
     if (fixed) {
       // Launcher tree at readiness (npm / sidecar / shim and the framework's server processes).
-      roles = classifyRoles(m.entry, (hooks.snapshotOwned ?? snapshotOwnedWithArgs)(server.handle));
+      const owned = (hooks.snapshotOwned ?? snapshotOwnedWithArgs)(server.handle);
+      roles = classifyRoles(m.entry, owned);
       receipt.server.roles = roles;
       receipt.server.rootRole =
         roles.find((r) => r.pid === server.handle.native?.pid)?.role ?? null;
+      const processChecks = processIdentityChecks({
+        processes: owned,
+        roles,
+        nodeRealpath: verdict.facts?.installReceipt?.node?.realpath ?? null,
+        executables: verdict.facts?.install?.executables ?? [],
+        appDir: m.appDir,
+        ...(hooks.processExecutable ? { exeOf: hooks.processExecutable } : {}),
+        ...(hooks.processAlive ? { alive: hooks.processAlive } : {}),
+      });
+      receipt.server.processIdentity = processChecks;
+      if (processChecks.some((c) => !c.ok)) {
+        // A process of the tree runs an executable the install did not record (e.g. PATH's node):
+        // refused before the browser opens and before any workload edit.
+        receipt.identity = {
+          ...receipt.identity,
+          ok: false,
+          checks: [...receipt.identity.checks, ...processChecks],
+        };
+        rec.append({
+          type: "identity",
+          ok: false,
+          outcome: "identity-rejected",
+          phase: "server-ready",
+          checks: processChecks,
+        });
+        summaryExtra = { stopReason: "identity-rejected", identityRejected: true };
+        exitCode = EXIT.identityRejected;
+        return exitCode;
+      }
     }
     rec.append({
       type: "server-ready",

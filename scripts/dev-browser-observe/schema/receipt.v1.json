@@ -27,7 +27,7 @@
     },
     "productSha": {
       "type": ["string", "null"],
-      "description": "source-built: the product SHA; null in a fixed-distribution receipt."
+      "description": "source-built: the product SHA (a string, required); fixed-distribution: null."
     },
     "productDirtyIdentity": {
       "type": ["string", "null"]
@@ -92,6 +92,34 @@
     "distribution": {
       "type": ["object", "null"],
       "description": "fixed-distribution: the identity facts checked before any edit (framework entry, helper, install verification facts, install receipt summary, node, launch, npm, pins)."
+    }
+  },
+  "if": {
+    "type": "object",
+    "required": ["mode"],
+    "properties": {
+      "mode": {
+        "const": "fixed-distribution"
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "productSha": {
+        "type": "null"
+      },
+      "framework": {
+        "enum": ["zfb", "astro", "next"]
+      }
+    },
+    "required": ["framework", "distribution"]
+  },
+  "else": {
+    "properties": {
+      "productSha": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$"
+      }
     }
   }
 }

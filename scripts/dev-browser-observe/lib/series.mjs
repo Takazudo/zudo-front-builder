@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { DECLARABLE_FACETS, stripVariantKeys } from "./aggregate.mjs";
+import { DECLARABLE_FACETS, allowedDifferences, stripVariantKeys } from "./aggregate.mjs";
 import { verifyFrozen } from "./frozen.mjs";
 import { harnessCapability } from "./identity.mjs";
 import { LABEL_RE, loadProfile } from "./profile.mjs";
@@ -111,27 +111,46 @@ export function loadSeriesPlan(planPath) {
   const frameworks = new Set(vs.map((x) => x.loaded.profile.framework ?? null));
   if (fixed && !frameworkDeclared && frameworks.size > 1)
     errors.push("variants run different frameworks; declare framework in declaredDifferences");
+  if (frameworkDeclared && fixed && frameworks.size < 2)
+    errors.push(
+      "$.declaredDifferences: framework is declared but every variant runs the same framework",
+    );
+  // Plan-time build identity: build receipts (source-built) or install receipts (fixed).
   const builds = Object.fromEntries(
     Object.entries(out.variants).map(([v, x]) => {
-      if (fixed) return [v, null];
+      const path = fixed
+        ? x.loaded.resolved.installDir && join(x.loaded.resolved.installDir, "install-receipt.json")
+        : x.loaded.resolved.buildReceipt;
       try {
-        return [v, readJson(x.loaded.resolved.buildReceipt)];
+        return [v, readJson(path)];
       } catch {
+        if (fixed) errors.push(`$.variants.${v}: install receipt unreadable: ${path}`);
         return [v, null];
       }
     }),
   );
-  const facet = {
-    build: (b) =>
-      b && { exe: b.exe?.sha256, source: b.source?.sha, dirty: b.source?.dirtyIdentitySha256 },
-    toolchain: (b) => b?.toolchain ?? null,
-  };
+  const facet = fixed
+    ? {
+        build: (r) =>
+          r && {
+            lockfile: r.verification?.facts?.lockfileSha256 ?? null,
+            nodeModules: r.verification?.facts?.nodeModules?.sha256 ?? null,
+            executables: (r.verification?.facts?.executables ?? []).map((x) => [x.role, x.sha256]),
+          },
+        toolchain: (r) => r && { version: r.node?.version, sha256: r.node?.sha256 },
+      }
+    : {
+        build: (b) =>
+          b && { exe: b.exe?.sha256, source: b.source?.sha, dirty: b.source?.dirtyIdentitySha256 },
+        toolchain: (b) => b?.toolchain ?? null,
+      };
+  const mayDiffer = allowedDifferences(declared);
   for (const [name, get] of Object.entries(facet)) {
-    if (declared.includes(name)) continue;
+    if (mayDiffer.includes(name)) continue;
     const vals = new Set(Object.values(builds).map((b) => canon(get(b))));
     if (vals.size > 1)
       errors.push(
-        `build receipts differ in ${name}, which the plan does not declare as a difference`,
+        `${fixed ? "install" : "build"} receipts differ in ${name}, which the plan does not declare as a difference`,
       );
   }
   const proto = PROTOCOLS[plan.protocol];

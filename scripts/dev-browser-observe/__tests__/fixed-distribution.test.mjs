@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -25,6 +26,8 @@ import {
   logicalText,
   materializeFixed,
   nodeIdentity,
+  processExecutable,
+  processIdentityChecks,
   verifyInstall,
 } from "../lib/distribution.mjs";
 import {
@@ -34,6 +37,7 @@ import {
   sourceTreeHashes,
 } from "../lib/fieldnotes.mjs";
 import { fixedIdentityVerdict } from "../lib/fixed.mjs";
+import { freezeHarness, unfreezeForRemoval } from "../lib/frozen.mjs";
 import { currentPins } from "../lib/identity.mjs";
 import { OBSERVER_PATH } from "../lib/browser.mjs";
 import { profileSchemaFor, semanticErrors, loadProfile } from "../lib/profile.mjs";
@@ -618,6 +622,8 @@ describe("a fixed run end to end with a fake server and browser", () => {
           },
           { pid: 102, ppid: 101, comm: "node", args: "next-server (v16.4.6)" },
         ],
+        processExecutable: () => ({ path: process.execPath, method: "fake" }),
+        processAlive: () => true,
         launchOwnedBrowser: async () => ({ observer: page, identity: { engine: "fake" } }),
         closeOwnedBrowser: async () => [],
         stopOwned: async () => {
@@ -1071,7 +1077,7 @@ describe("aggregate: a declared framework difference (fixed cohorts only)", () =
 });
 
 describe("series: fixed pairwise cohorts", () => {
-  function plan(root, declared, b = "astro") {
+  function plan(root, declared, b = "astro", installs = shared().installs) {
     const write = (fw, n) => {
       const p = example(
         fw === "zfb"
@@ -1079,6 +1085,7 @@ describe("series: fixed pairwise cohorts", () => {
           : `field-notes-fixed-${fw}-100.example.json`,
       );
       p.outDir = join(root, "out");
+      p.distribution.installDir = installs[fw].out;
       writeFileSync(join(root, n), JSON.stringify(p));
     };
     write("zfb", "z.json");
@@ -1135,5 +1142,356 @@ describe("node identity", () => {
     const n = nodeIdentity();
     expect(n.version).toBe(process.version);
     expect(n.sha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("review fixes (fixed distributions)", () => {
+  it("the fixed verdict carries the frozen-copy checks: a broken playwright link in a frozen copy is refused", () => {
+    const { s, installs } = shared();
+    const { path } = fixedProfile(s, "astro", installs.astro.out, {}, "frozen-astro.json");
+    const { profile, resolved } = loadProfile(path);
+    const manifest = loadFieldNotesFixture(resolved.fixtureDir);
+    const out = join(tmp(), "frozen");
+    const r = freezeHarness({
+      outDir: out,
+      allowDirty: true,
+      capabilityImpl: () => ({ repo: "/r", sha: "f".repeat(40), harnessDirDirty: false }),
+    });
+    try {
+      const ok = fixedIdentityVerdict({ profile, resolved, manifest, harnessDir: r.dir });
+      expect(
+        ok.checks.filter((c) => c.name.startsWith("harness-frozen")).map((c) => [c.name, c.ok]),
+      ).toEqual([
+        ["harness-frozen-copy-intact", true],
+        ["harness-frozen-playwright-link", true],
+      ]);
+      rmSync(r.stamp.playwright.link);
+      symlinkSync(tmpdir(), r.stamp.playwright.link, "dir");
+      const bad = fixedIdentityVerdict({ profile, resolved, manifest, harnessDir: r.dir });
+      expect(bad.ok).toBe(false);
+      expect(failed(bad)).toEqual(["harness-frozen-playwright-link"]);
+      expect(
+        fixedIdentityVerdict({ profile, resolved, manifest }).checks.some((c) =>
+          c.name.startsWith("harness-frozen"),
+        ),
+      ).toBe(false);
+    } finally {
+      unfreezeForRemoval(r.dir);
+    }
+  });
+
+  it("npm-script launch requires the npm that installed the app", () => {
+    const s = setup();
+    const npmDir = join(s.root, "npm");
+    writeTree(npmDir, {
+      "bin/npm-cli.js": "// npm\n",
+      "package.json": JSON.stringify({ version: "11.0.0" }),
+    });
+    const npmCli = join(npmDir, "bin", "npm-cli.js");
+    const out = join(s.root, "install-npm");
+    installDistribution({
+      fixtureDir: s.fixtureDir,
+      framework: "next",
+      sourceDir: s.src,
+      outDir: out,
+      npmCli,
+      spawnImpl: (_c, _a, opts) => {
+        fakeNpmCi(opts.cwd, "next");
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    const { path, profile } = fixedProfile(s, "next", out);
+    writeFileSync(
+      path,
+      JSON.stringify({ ...profile, distribution: { installDir: out, launch: "npm-script" } }),
+    );
+    const v = (impl) => {
+      const loaded = loadProfile(path);
+      return fixedIdentityVerdict({
+        profile: loaded.profile,
+        resolved: loaded.resolved,
+        manifest: loadFieldNotesFixture(loaded.resolved.fixtureDir),
+        npmCliImpl: impl,
+      });
+    };
+    expect(failed(v(() => npmCli))).toEqual([]);
+    writeFileSync(npmCli, "// a different npm\n");
+    expect(failed(v(() => npmCli))).toEqual(["npm-matches-install"]);
+    expect(failed(v(() => null))).toEqual(["npm-cli", "npm-matches-install"]);
+  });
+
+  it("processExecutable reads lsof's txt entry, falls back to an absolute ps comm, else null", () => {
+    const lsof = (cmd) => {
+      if (cmd === "lsof") return "p42\nftxt\nn/opt/node/bin/node\nftxt\nn/usr/lib/dyld\n";
+      throw new Error("no ps");
+    };
+    expect(processExecutable(42, lsof)).toEqual({ path: "/opt/node/bin/node", method: "lsof-txt" });
+    const ps = (cmd) => {
+      if (cmd === "lsof") throw new Error("no lsof");
+      return "/usr/local/bin/node\n";
+    };
+    expect(processExecutable(42, ps)).toEqual({ path: "/usr/local/bin/node", method: "ps-comm" });
+    expect(processExecutable(42, (cmd) => (cmd === "ps" ? "node\n" : ""))).toEqual({
+      path: null,
+      method: "unavailable",
+    });
+  });
+
+  it("process identity: node roles need the install's node, zfb-native its binary, others the app's node_modules", () => {
+    const root = tmp();
+    const app = join(root, "app");
+    writeTree(app, {
+      "node_modules/@takazudo/zfb-darwin-arm64/zfb": "native",
+      "node_modules/@esbuild/darwin-arm64/bin/esbuild": "esbuild",
+    });
+    writeTree(root, { "other/node": "other node", "other/zfb": "other native" });
+    const nativeSha = sha256File(join(app, "node_modules/@takazudo/zfb-darwin-arm64/zfb"));
+    const exes = {
+      1: process.execPath,
+      2: join(root, "other/node"),
+      3: join(app, "node_modules/@takazudo/zfb-darwin-arm64/zfb"),
+      4: join(root, "other/zfb"),
+      5: join(app, "node_modules/@esbuild/darwin-arm64/bin/esbuild"),
+      6: "/bin/sh",
+      7: join(root, "other/tool"),
+    };
+    const roles = [
+      { pid: 1, role: "zfb-shim" },
+      { pid: 2, role: "npm" },
+      { pid: 3, role: "zfb-native" },
+      { pid: 4, role: "zfb-native" },
+      { pid: 5, role: "unclassified" },
+      { pid: 6, role: "shell" },
+      { pid: 7, role: "unclassified" },
+      { pid: 8, role: "next-server" },
+      { pid: 9, role: "next-cli" },
+    ];
+    const checks = processIdentityChecks({
+      processes: roles.map((r) => ({ pid: r.pid })),
+      roles,
+      nodeRealpath: realpathSync(process.execPath),
+      executables: [{ role: "zfb-native", sha256: nativeSha }],
+      appDir: app,
+      exeOf: (pid) =>
+        exes[pid] ? { path: exes[pid], method: "fake" } : { path: null, method: "unavailable" },
+      alive: (pid) => pid === 9,
+    });
+    expect(checks.map((c) => [c.pid, c.ok])).toEqual([
+      [1, true],
+      [2, false],
+      [3, true],
+      [4, false],
+      [5, true],
+      [6, true],
+      [7, false],
+      [8, true],
+      [9, false],
+    ]);
+    expect(checks.find((c) => c.pid === 8).note).toMatch(/exited/);
+  });
+
+  it("a fixed run whose server tree runs PATH's node is refused at readiness, before the browser and any edit", async () => {
+    const { s, installs } = shared();
+    const { path } = fixedProfile(s, "next", installs.next.out, {}, "path-node.json");
+    let resolveExit;
+    const handle = {
+      native: { pid: 100, pgid: 100, lstart: "x", comm: "node" },
+      exit: null,
+      known: new Map(),
+    };
+    handle.exited = new Promise((r) => {
+      resolveExit = r;
+    });
+    let browserLaunched = false;
+    const code = await execute({
+      profilePath: path,
+      label: "PN1",
+      command: "run",
+      stderr: () => {},
+      hooks: {
+        freePort: async () => 4556,
+        startDevServer: (opts) => ({
+          handle,
+          args: opts.args,
+          envOverrides: opts.env,
+          zfbEnv: {},
+          removedDiagnosticEnv: [],
+          diagnostic: false,
+          startedNs: process.hrtime.bigint(),
+          ready: Promise.resolve({
+            baseUrl: "http://127.0.0.1:4556",
+            readyNs: process.hrtime.bigint(),
+          }),
+          closeLog: async () => ({}),
+        }),
+        snapshotOwned: () => [
+          { pid: 100, ppid: 1, comm: "node", args: "node /w/apps/next/scripts/dev-content.mjs" },
+          {
+            pid: 101,
+            ppid: 100,
+            comm: "node",
+            args: "node /w/node_modules/next/dist/bin/next dev",
+          },
+        ],
+        processExecutable: (pid) => ({
+          path: pid === 101 ? "/opt/other/bin/node" : process.execPath,
+          method: "fake",
+        }),
+        processAlive: () => true,
+        launchOwnedBrowser: async () => {
+          browserLaunched = true;
+          throw new Error("must not launch");
+        },
+        stopOwned: async () => {
+          resolveExit((handle.exit = { exitCode: 0, signalCode: null }));
+          return { absent: true };
+        },
+      },
+    });
+    expect(code).toBe(EXIT.identityRejected);
+    expect(browserLaunched).toBe(false);
+    const dir = join(s.root, "out", "PN1");
+    const records = readFileSync(join(dir, "records.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(records.some((r) => r.type === "attempt")).toBe(false);
+    expect(
+      records
+        .find((r) => r.type === "identity" && r.phase === "server-ready")
+        .checks.filter((c) => !c.ok),
+    ).toMatchObject([{ pid: 101, role: "next-cli", actual: "/opt/other/bin/node" }]);
+    expect(readJson(join(dir, "summary.json")).identityRejected).toBe(true);
+  });
+
+  it("an unparsable ready URL fails readiness instead of throwing", () => {
+    const r = createReadiness({ url: "ready on (\\S+)", require: [] }, { port: 1 });
+    expect(r.push("ready on http://[not-a-host")).toEqual({
+      failed: { reason: "ready-url-unparsable", printed: "http://[not-a-host" },
+    });
+  });
+
+  it("framework must actually differ when it is declared (aggregate and series)", () => {
+    const root = tmp();
+    const sessions = ["s1", "s2"].map((label, i) => {
+      fixedSession(join(root, label), { framework: "zfb", adapterSha: "a" });
+      return { label, variant: i === 0 ? "A" : "B", dir: join(root, label) };
+    });
+    const r = aggregate({ sessions, declaredDifferences: ["framework"] });
+    expect(
+      r.report.identity.checks.find((c) => c.name === "framework-declared-and-differs"),
+    ).toMatchObject({
+      ok: false,
+    });
+    expect(r.exitCode).toBe(3);
+    const { installs } = shared();
+    const proot = tmp();
+    const p = example("field-notes-fixed-zfb-original-memoized-100.example.json");
+    p.outDir = join(proot, "out");
+    p.distribution.installDir = installs.zfb.out;
+    for (const n of ["a.json", "b.json"]) writeFileSync(join(proot, n), JSON.stringify(p));
+    writeFileSync(
+      join(proot, "plan.json"),
+      JSON.stringify({
+        schema: "dev-browser-observe.series.v1",
+        id: "x",
+        protocol: "dev-browser-observe.timing-abba.v1",
+        variants: { A: { profile: "a.json" }, B: { profile: "b.json" } },
+        declaredDifferences: ["framework"],
+        order: ["A", "B", "B", "A"],
+        labelPrefix: "x",
+      }),
+    );
+    expect(loadSeriesPlan(join(proot, "plan.json")).errors.join("\n")).toMatch(
+      /framework is declared but every variant runs the same framework/,
+    );
+  });
+
+  it("series compares the install receipts at plan time: an undeclared node or build difference fails before any session", () => {
+    const s = setup();
+    const a = install(s, "zfb");
+    const bOut = join(s.root, "install-zfb-b");
+    installDistribution({
+      fixtureDir: s.fixtureDir,
+      framework: "zfb",
+      sourceDir: s.src,
+      outDir: bOut,
+      npmCli: "/fake/npm-cli.js",
+      spawnImpl: (_c, _a, opts) => {
+        fakeNpmCi(opts.cwd, "zfb");
+        writeFileSync(join(opts.cwd, "node_modules", "@takazudo", "zfb", "extra.txt"), "x");
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    const proot = tmp();
+    const p = example("field-notes-fixed-zfb-original-memoized-100.example.json");
+    p.outDir = join(proot, "out");
+    const write = (n, dir) =>
+      writeFileSync(
+        join(proot, n),
+        JSON.stringify({ ...p, distribution: { installDir: dir, launch: "direct" } }),
+      );
+    write("a.json", a.out);
+    write("b.json", bOut);
+    const plan = (declared) => {
+      writeFileSync(
+        join(proot, "plan.json"),
+        JSON.stringify({
+          schema: "dev-browser-observe.series.v1",
+          id: "aa",
+          protocol: "dev-browser-observe.timing-abba.v1",
+          variants: { A: { profile: "a.json" }, B: { profile: "b.json" } },
+          declaredDifferences: declared,
+          order: ["A", "B", "B", "A"],
+          labelPrefix: "aa",
+        }),
+      );
+      return loadSeriesPlan(join(proot, "plan.json")).errors.join("\n");
+    };
+    expect(plan([])).toMatch(/install receipts differ in build/);
+    expect(plan(["build"])).toBe("");
+    const rb = readJson(join(bOut, "install-receipt.json"));
+    rb.node.sha256 = "0".repeat(64);
+    writeFileSync(join(bOut, "install-receipt.json"), JSON.stringify(rb));
+    expect(plan(["build"])).toMatch(/install receipts differ in toolchain/);
+    rmSync(join(bOut, "install-receipt.json"));
+    expect(plan(["build", "toolchain"])).toMatch(/install receipt unreadable/);
+  });
+
+  it("receipt.v1: productSha is a required SHA string for source-built and null for fixed-distribution", () => {
+    const base = {
+      schema: "dev-browser-observe.receipt.v1",
+      label: "l",
+      command: "run",
+      createdAt: "t",
+      harnessCapability: { sha: "s", harnessDirDirty: false },
+      identity: { ok: true, checks: [] },
+      host: {},
+    };
+    expect(validateAs("receipt", { ...base, productSha: "a".repeat(40) })).toEqual([]);
+    expect(
+      validateAs("receipt", { ...base, mode: "source-built", productSha: null }).join("\n"),
+    ).toMatch(/productSha: expected string/);
+    expect(validateAs("receipt", { ...base, productSha: null }).join("\n")).toMatch(
+      /productSha: expected string/,
+    );
+    expect(
+      validateAs("receipt", {
+        ...base,
+        mode: "fixed-distribution",
+        framework: "astro",
+        distribution: {},
+        productSha: null,
+      }),
+    ).toEqual([]);
+    expect(
+      validateAs("receipt", {
+        ...base,
+        mode: "fixed-distribution",
+        framework: "astro",
+        distribution: {},
+        productSha: "a".repeat(40),
+      }).join("\n"),
+    ).toMatch(/productSha: expected null/);
   });
 });

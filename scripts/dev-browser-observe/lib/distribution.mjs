@@ -25,6 +25,7 @@ import {
 import {
   isoNow,
   readJson,
+  run,
   sha256,
   sha256File,
   toPosix,
@@ -313,7 +314,14 @@ export function createReadiness(spec, { port = null } = {}) {
         const m = text.match(url);
         if (m) {
           const found = m[1].replace(/\/$/, "");
-          const p = new URL(found).port;
+          let p;
+          try {
+            p = new URL(found).port;
+          } catch {
+            state.failure = { reason: "ready-url-unparsable", printed: found };
+            state.url = found;
+            return this.result();
+          }
           if (port !== null && String(port) !== p)
             state.failure = {
               reason: "ready-port-mismatch",
@@ -343,6 +351,92 @@ export function classifyRoles(entry, processes) {
     comm: p.comm,
     role: rules.find((r) => r.re.test(p.args ?? ""))?.role ?? "unclassified",
   }));
+}
+
+/**
+ * The executable a live process runs. macOS and Linux lsof list it as the first `txt` entry;
+ * `ps -o comm=` is the fallback when it prints an absolute path. Null when neither works.
+ */
+export function processExecutable(pid, runImpl = run) {
+  const env = { ...process.env, LC_ALL: "C" };
+  try {
+    const out = runImpl("lsof", ["-a", "-p", String(pid), "-d", "txt", "-Fn"], { env });
+    const line = out.split("\n").find((l) => l.startsWith("n"));
+    if (line) return { path: line.slice(1), method: "lsof-txt" };
+  } catch {
+    // fall through to ps
+  }
+  try {
+    const comm = runImpl("ps", ["-o", "comm=", "-p", String(pid)], { env }).trim();
+    if (comm.startsWith("/")) return { path: comm, method: "ps-comm" };
+  } catch {
+    // unreadable
+  }
+  return { path: null, method: "unavailable" };
+}
+
+const realOrSelf = (p) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+};
+
+/**
+ * Every owned process at readiness must run an executable of the install: node-role processes
+ * the install's node binary (a PATH `node`, e.g. via npm's `.bin` shebang, can differ); the zfb
+ * native process the installed platform binary; any other process an executable inside the
+ * app's node_modules. A shell is recorded but not judged. A process that exited between the
+ * snapshot and this check is recorded as gone.
+ */
+export function processIdentityChecks({
+  processes,
+  roles,
+  nodeRealpath,
+  executables = [],
+  appDir,
+  exeOf = processExecutable,
+  alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+}) {
+  const nativeSha = executables.find((x) => x.role === "zfb-native")?.sha256 ?? null;
+  const nm = join(realOrSelf(appDir), "node_modules");
+  return processes.map((p) => {
+    const role = roles.find((r) => r.pid === p.pid)?.role ?? "unclassified";
+    const exe = exeOf(p.pid);
+    const real = exe.path ? realOrSelf(exe.path) : null;
+    const base = {
+      name: `process-executable:${p.pid}:${role}`,
+      pid: p.pid,
+      role,
+      method: exe.method,
+    };
+    if (real === null)
+      return alive(p.pid)
+        ? { ...base, ok: false, expected: "a readable executable", actual: null }
+        : { ...base, ok: true, expected: null, actual: null, note: "exited before the check" };
+    if (role === "shell")
+      return { ...base, ok: true, expected: null, actual: real, note: "not judged" };
+    if (role === "zfb-native") {
+      const sha = existsSync(real) ? sha256File(real) : null;
+      return {
+        ...base,
+        ok: sha !== null && sha === nativeSha,
+        expected: nativeSha,
+        actual: { path: real, sha256: sha },
+      };
+    }
+    const isNode = role !== "unclassified" || /(^|\/)node$/.test(real);
+    if (isNode) return { ...base, ok: real === nodeRealpath, expected: nodeRealpath, actual: real };
+    return { ...base, ok: real.startsWith(`${nm}/`), expected: `${nm}/…`, actual: real };
+  });
 }
 
 function check(name, ok, expected, actual, extra = {}) {

@@ -179,6 +179,15 @@ export function compareFacets(sessions, declaredDifferences = []) {
         : Object.fromEntries(variants.map((v, i) => [v, JSON.parse(firsts[i])])),
     });
   }
+  if (declaredDifferences.includes("framework") && withReceipt.length) {
+    const across = checks.find((c) => c.name === "across-variants:framework");
+    checks.push({
+      name: "framework-declared-and-differs",
+      ok: across?.differs === true,
+      expected: "the variants run different frameworks",
+      actual: across?.differs ?? null,
+    });
+  }
   if (declaredDifferences.includes("framework")) {
     const notFixed = withReceipt.filter((s) => s.facets.framework.mode !== "fixed-distribution");
     checks.push({

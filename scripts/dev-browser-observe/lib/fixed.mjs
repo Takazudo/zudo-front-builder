@@ -11,8 +11,8 @@ import {
   resolveNpmCli,
 } from "./distribution.mjs";
 import { FIXTURE_KINDS } from "./fixture-kinds.mjs";
-import { currentPins } from "./identity.mjs";
-import { sha256File } from "./util.mjs";
+import { currentPins, frozenIdentityChecks } from "./identity.mjs";
+import { HARNESS_DIR, sha256File } from "./util.mjs";
 
 /** The nearest enclosing git work tree root (a dir holding `.git`), or null. */
 function gitWorkTreeOf(dir) {
@@ -46,6 +46,8 @@ export function fixedIdentityVerdict({
   resolved,
   manifest,
   distributionImpl = distributionChecks,
+  harnessDir = HARNESS_DIR,
+  npmCliImpl = resolveNpmCli,
 }) {
   const checks = [];
   let entry;
@@ -120,8 +122,20 @@ export function fixedIdentityVerdict({
   const launch = profile.distribution?.launch ?? "direct";
   let npm = null;
   if (launch === "npm-script") {
-    npm = npmIdentity(resolveNpmCli());
+    npm = npmIdentity(npmCliImpl());
     checks.push(check("npm-cli", npm.cli !== null, "npm-cli.js on PATH", npm.cli));
+    // npm-script runs this npm, so it must be the npm that installed the app.
+    const installed = dist.receipt?.npm ?? null;
+    checks.push(
+      check(
+        "npm-matches-install",
+        npm.sha256 !== null &&
+          npm.sha256 === (installed?.sha256 ?? null) &&
+          npm.version === (installed?.version ?? null),
+        installed ? { version: installed.version, sha256: installed.sha256 } : null,
+        { version: npm.version, sha256: npm.sha256 },
+      ),
+    );
   }
   const pins =
     helperPath && existsSync(helperPath)
@@ -136,6 +150,7 @@ export function fixedIdentityVerdict({
     const actual = pins?.[key] ?? null;
     checks.push(check(`pin:${key}`, pinned !== null && pinned === actual, pinned, actual));
   }
+  checks.push(...frozenIdentityChecks(harnessDir));
   for (const [name, dir] of [
     ["outdir", resolved.outDir],
     ["installdir", resolved.installDir],

@@ -40,6 +40,11 @@ function typeMatches(v, t) {
 /** Validates the JSON Schema subset these schemas use. Returns error strings. */
 export function validate(schema, value, path = "$") {
   const errors = [];
+  // `if` / `then` / `else`: a conditional subschema chosen by whether `if` validates.
+  if (schema.if) {
+    const branch = validate(schema.if, value, path).length === 0 ? schema.then : schema.else;
+    if (branch) errors.push(...validate(branch, value, path));
+  }
   if ("const" in schema && value !== schema.const)
     errors.push(`${path}: expected ${JSON.stringify(schema.const)}`);
   if (schema.enum && !schema.enum.includes(value))

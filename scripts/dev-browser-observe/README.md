@@ -911,6 +911,10 @@ for any of these mismatches:
 - the node binary: its version and sha256 must equal the install's;
 - the install checks above, or `node_modules` changed since the install;
 - the harness, fixture, observer or helper pins;
+- from a frozen copy, the same `harness-frozen-copy-intact` and
+  `harness-frozen-playwright-link` checks as source-built;
+- with `launch: "npm-script"`, an npm on PATH whose version or sha256 differs
+  from the npm in the install receipt (`npm-matches-install`);
 - `outDir` or `installDir` inside a git work tree.
 
 After materialization, the run also refuses (exit 3) if the copied app or the
@@ -945,6 +949,18 @@ fixture's `pinned`, `appTreeSha256`, `helperSha256`, `importedCss`,
   process by its `ps` args: `npm`, `shell`, `content-sidecar`, `next-cli`,
   `next-server`, `astro-cli`, `zfb-shim` or `zfb-native`. Stop and absence
   verification is the existing sequence over every known descendant.
+- **Executables at readiness:** every owned process must run an executable the
+  install recorded. The executable is lsof's first `txt` entry, or `ps -o comm=`
+  when that is an absolute path.
+  - Node-role processes must run the install's node realpath. A PATH `node`, as
+    npm's `.bin` shebang or a version manager's shim selects, is rejected.
+  - The zfb native process must run the installed platform binary (its sha256).
+  - An unclassified process must run an executable inside the app's
+    `node_modules`, such as Vite's esbuild service.
+
+  A failure records an `identity` record with `phase: "server-ready"` and exits
+  3 before the browser opens and before any edit. `receipt.server.processIdentity`
+  keeps each result.
 
 ### Operations
 
@@ -973,6 +989,14 @@ declare `framework`.
   and build (installed executables, `node_modules`) facets differ. Corpus,
   browser, harness, observer, host, schedule and the node binary must still
   match.
+- **Framework must differ:** a declared `framework` whose variants all run the
+  same framework is refused, by the series plan and by `aggregate`
+  (`framework-declared-and-differs`).
+- **Plan-time install comparison:** `series` reads each fixed variant's
+  `install-receipt.json` and refuses the plan before any session when they
+  differ undeclared. `build` covers the lockfile, the `node_modules` tree and
+  the executables; `toolchain` covers the node version and sha256. Declaring
+  `framework` allows a `build` difference.
 - **Separate ZFB reference series:** each cohort's zfb sessions are that
   cohort's own reference series, so aggregate each series record separately.
   The `recovered-snapshot` zfb profile is a separately labelled reference too.
