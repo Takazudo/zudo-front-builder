@@ -1030,10 +1030,12 @@ the settle and the mechanism label.
   mismatch. Each observed page records the condition and the matched line. Source-built
   profiles and other frameworks refuse the option.
 - **Framework update signals**: `distributions.json` `updateSignal.sockets` declares Next's HMR
-  socket and Vite's (Astro), with their message types mapped to `page`, `css`, `rsc` or
-  `module`. Each declaration cites the installed source. Fixed runs set them on the observer.
-  - A mapped frame counts as the framework's own update for the settle. The mechanism is then
-    labelled `rsc-update` or `hmr-module-update`.
+  socket and Vite's (Astro), with their message types mapped to `page`, `css`, `rsc`, `module`
+  or `activity`. Each declaration cites the installed source. Fixed runs set them on the observer.
+  - A frame mapped to `page`, `css`, `rsc` or `module` counts as the framework's own update for
+    the settle. The mechanism is then labelled `rsc-update` or `hmr-module-update`.
+  - Next's `turbopack-message` maps to `activity`: it extends the quiet window but is never
+    update evidence, so it alone cannot end a settle that requires a native update.
   - Other frames from those sockets are kept in `otherFrames` and are never evidence.
   - zfb's livereload socket is handled exactly as before.
 

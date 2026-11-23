@@ -416,6 +416,58 @@ describe("(HMR) declared framework update sockets for settle and mechanism", () 
     expect(rsc).toMatchObject({ settled: true, nativeUpdateObserved: true });
   });
 
+  it("a Turbopack message extends the quiet window but cannot satisfy require-native-update", async () => {
+    let now = 0n;
+    const o = new ObserverPage(null, "", () => now);
+    o.updateSockets = next;
+    const url = "ws://h/_next/hmr";
+    const mark = o.mark();
+    o.recordSocketFrame(url, JSON.stringify({ type: "turbopack-message", data: {} }));
+    expect(o.wsFrames.map((f) => [f.rawType, f.event])).toEqual([
+      ["turbopack-message", "activity"],
+    ]);
+    expect(o.otherFrames).toEqual([]);
+    const tick = setInterval(() => (now += 5_000_000n), 1);
+    const alone = await o.settle({
+      mark,
+      startNs: 0n,
+      quietMs: 10,
+      boundMs: 60,
+      requireNativeUpdate: true,
+      stepMs: 1,
+    });
+    expect(alone).toMatchObject({
+      settled: false,
+      nativeUpdateObserved: false,
+      reason: "bound-exceeded-without-native-update",
+    });
+    const quietOnly = await o.settle({ mark, startNs: 0n, quietMs: 10, boundMs: 500, stepMs: 1 });
+    expect(quietOnly).toMatchObject({ settled: true, nativeUpdateObserved: false });
+    clearInterval(tick);
+    expect(
+      classifyMechanism({
+        preDocUUID: "a",
+        notifyDocUUID: "a",
+        mainFrameNavigations: 0,
+        serverPidBefore: 1,
+        serverPidAfter: 1,
+        livereloadEvents: ["activity"],
+      }),
+    ).toBe("in-document-update");
+  });
+
+  it("a Turbopack message pushes the quiet window out", async () => {
+    let now = 0n;
+    const o = new ObserverPage(null, "", () => now);
+    o.updateSockets = next;
+    const mark = o.mark();
+    now = 100_000_000n;
+    o.recordSocketFrame("ws://h/_next/hmr", JSON.stringify({ type: "turbopack-message" }));
+    now = 105_000_000n;
+    const r = await o.settle({ mark, startNs: 0n, quietMs: 10, boundMs: 0, stepMs: 1 });
+    expect(r).toMatchObject({ settled: false, reason: "bound-exceeded" });
+  });
+
   it("mechanism: rsc and module updates get their own labels; zfb's labels are unchanged", () => {
     const base = {
       preDocUUID: "a",

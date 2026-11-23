@@ -355,7 +355,7 @@
             "events": {
               "serverComponentChanges": "rsc",
               "reloadPage": "page",
-              "turbopack-message": "module"
+              "turbopack-message": "activity"
             },
             "source": [
               "next 16.4.6 dist/server/lib/router-server.js:757 isHMRRequest = req.url.startsWith(`${hmrPrefix}/_next/hmr`)",

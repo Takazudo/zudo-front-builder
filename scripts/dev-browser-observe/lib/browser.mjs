@@ -155,6 +155,9 @@ export function goneRead(v) {
 /** Update events that count as a framework's own update (settle evidence; mechanism input). */
 export const UPDATE_EVENTS = new Set(["page", "css", "rsc", "module"]);
 
+/** Declared framework frames that only show the server is busy: they extend the quiet window but are never update evidence. */
+export const ACTIVITY_EVENTS = new Set(["activity"]);
+
 /** The declared update socket (distributions.json updateSignal.sockets) a WebSocket URL belongs to. */
 export function declaredSocketFor(url, sockets = []) {
   return sockets.find((s) => new RegExp(s.url).test(url)) ?? null;
@@ -253,7 +256,8 @@ export class ObserverPage {
 
   /**
    * zfb livereload frames go to wsFrames unchanged. A declared framework socket's frame goes to
-   * wsFrames when it maps to an update event, otherwise to otherFrames (recorded, not evidence).
+   * wsFrames when it maps to an update or activity event, otherwise to otherFrames (recorded,
+   * not evidence).
    */
   recordSocketFrame(url, payload) {
     if (isLivereloadSocket(url)) {
@@ -263,7 +267,8 @@ export class ObserverPage {
     const socket = declaredSocketFor(url, this.updateSockets);
     if (!socket) return;
     const frame = updateSignalFrame(payload, this.clock(), url, socket);
-    (UPDATE_EVENTS.has(frame.event) ? this.wsFrames : this.otherFrames).push(frame);
+    const kept = UPDATE_EVENTS.has(frame.event) || ACTIVITY_EVENTS.has(frame.event);
+    (kept ? this.wsFrames : this.otherFrames).push(frame);
   }
 
   /** Returns true so the observer persists `delivered` only after this ack. */
