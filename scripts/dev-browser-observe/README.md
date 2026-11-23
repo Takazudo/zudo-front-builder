@@ -670,8 +670,13 @@ Before any session, the plan is rejected (exit 2) when any of these holds:
 - their build receipts differ in `build` or `toolchain` without listing it in
   `declaredDifferences`.
 
+A timing-abba.v1 plan must run all five protocol ops at least once. To run
+fewer, the plan declares `opSubset: { ops, reason }`; the ops must then be
+exactly that subset, and the series record and aggregate report carry it.
+
 An A/A control is two receipts of the same binary with no declared difference.
-Then every variant's `verify-identity` must pass, or no session runs (exit 3).
+Then every variant's `verify-identity` must pass, and a frozen harness must
+pass `verify-frozen` (recorded as `preflightFrozen`), or no session runs (exit 3).
 
 Sessions run in order as separate `run`s, so each one gets a fresh server and
 browser. Labels are `<labelPrefix>-s<n>-<variant>`. The first session that
@@ -695,13 +700,23 @@ writes schema `aggregate`:
   `excludedFromStats`.
 - **Pooled per variant and op:** counts are summed and latencies concatenated
   across that variant's sessions.
-- **Identity:** facets are read from each `receipt.json`: corpus, adapter,
+- **Unknown counts:** a session recorded before schedules existed has
+  `planned: null`. Any pooled op that includes such a block keeps `planned` and
+  `notAttempted` null (unknown), and `failuresPresent` is null when no failure
+  was observed. A count is never negative: more attempts than planned gives
+  `notAttempted: null` with `countsInconsistent`.
+- **Unrun sessions:** with `--series`, a session the series never ran
+  (`not-attempted`, no label dir) has no identity and adds its planned
+  attempts, from its variant's unchanged profile, to the pooled `notAttempted`.
+  If the profile changed since, its planned schedule is unknown and
+  `plannedError` says why. A missing label dir is likewise `missing`.
+- **Identity:** facets are read from each `receipt.json` of a session that ran: corpus, adapter,
   config, toolchain, build, browser, harness, observer, host, profile and
   schedule. Every facet must match within a variant. Across variants, every
   facet must match except those declared.
 
-Exit codes: 3 for an identity mismatch, 1 when a session is missing, stopped
-or incomplete, otherwise 0.
+Exit codes: 3 for an identity mismatch among the sessions that ran, 1 when a
+session is missing, not attempted, stopped or incomplete, otherwise 0.
 
 ## Resource study (`resourceStudy`, protocol `dev-browser-observe.resource-study.v1`)
 
@@ -721,7 +736,10 @@ the birth-verified owned pids. Each sample is one async
 `ps -o pid=,rss=,vsz=` plus one async `ps -M` per pid. Every `resource-sample`
 record carries its phase (`edit`, `restore`, `after-restore`, `final`) and its
 own `costMs`, and a tick that would overlap a running sample is skipped and
-counted.
+counted. The phase turns to `restore` as each restoration starts. A sample
+that cannot be recorded halts the batch: the next op stops with a
+`controller-error` precheck (`halt`), no further idle runs, the run exits 8, and
+`summary.json` `resourceStudy.failure` says why.
 
 A field `ps` cannot read is `unavailable`. `summary.json` `resourceStudy`
 reports completed cycles, sample counts, cost, unavailable counts, the last
@@ -743,7 +761,8 @@ profiles' `fixture.dir` at the frozen `fixtures/`. Take their `pins` from the
 frozen `cli.mjs pins`. From a frozen copy:
 
 - `harnessCapability` reports `frozen: true` and `intact` instead of git state;
-- `verify-identity` and `run` add `harness-frozen-copy-intact`;
+- `verify-identity` and `run` add `harness-frozen-copy-intact` and
+  `harness-frozen-playwright-link`;
 - `verify-frozen [--dir]` rechecks the hashes, the read-only bits and the
   playwright link.
 

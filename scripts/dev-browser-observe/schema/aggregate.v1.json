@@ -30,7 +30,7 @@
         "type": "object",
         "required": ["label", "variant", "status", "blocks"],
         "properties": {
-          "status": { "enum": ["complete", "incomplete", "missing"] },
+          "status": { "enum": ["complete", "incomplete", "missing", "not-attempted"] },
           "blocks": {
             "type": "array",
             "items": {

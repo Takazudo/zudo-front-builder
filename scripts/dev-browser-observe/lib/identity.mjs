@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   HARNESS_DIR,
@@ -354,6 +354,24 @@ export function fullTreeHash(dir) {
   return treeHashDir(dir, { filter: (_rel, _kind, name) => !name.startsWith(".") }).sha256;
 }
 
+/** Whether a frozen copy's @playwright/test link still points at the stamped package dir. */
+export function frozenPlaywrightLink(stamp) {
+  const link = stamp.playwright?.link ?? null;
+  const expected = stamp.playwright?.target ?? null;
+  let actual = null;
+  try {
+    actual = link ? readlinkSync(link) : null;
+  } catch {
+    actual = null;
+  }
+  return {
+    ok: expected !== null && actual === expected && existsSync(expected),
+    link,
+    expected,
+    actual,
+  };
+}
+
 /** A frozen copy's stamp and whether its bytes still equal the frozen hashes; null outside a frozen copy. */
 export function frozenState(harnessDir = HARNESS_DIR) {
   const stampPath = join(harnessDir, FROZEN_STAMP);
@@ -364,6 +382,7 @@ export function frozenState(harnessDir = HARNESS_DIR) {
   return {
     stamp,
     stampSha256: sha256File(stampPath),
+    playwrightLink: frozenPlaywrightLink(stamp),
     actual: { harnessTreeSha256: harness, fullTreeSha256: full },
     intact:
       stamp.schema === FROZEN_SCHEMA &&

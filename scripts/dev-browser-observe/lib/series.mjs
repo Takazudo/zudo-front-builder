@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { DECLARABLE_FACETS, PROFILE_VARIANT_KEYS } from "./aggregate.mjs";
+import { verifyFrozen } from "./frozen.mjs";
+import { harnessCapability } from "./identity.mjs";
 import { LABEL_RE, loadProfile } from "./profile.mjs";
 import { EXIT, execute, verifyIdentityOnly } from "./run.mjs";
 import {
@@ -8,9 +10,10 @@ import {
   RESOURCE_STUDY_PROTOCOL,
   TIMING_ABBA_PROTOCOL,
   expandSchedule,
+  scheduleOf,
 } from "./schedule.mjs";
 import { validateAs } from "./schema.mjs";
-import { isoNow, readJson, sha256, writeJsonSync } from "./util.mjs";
+import { HARNESS_DIR, isoNow, readJson, sha256, writeJsonSync } from "./util.mjs";
 
 export const SERIES_SCHEMA = "dev-browser-observe.series.v1";
 export const SERIES_RECORD_SCHEMA = "dev-browser-observe.series-record.v1";
@@ -142,6 +145,16 @@ export function loadSeriesPlan(planPath) {
           if ((op.expect ?? "success") !== "success")
             errors.push(`${at}: timing ops expect success`);
         }
+      const used = new Set(prof.scenarios.flatMap((s) => s.ops.map((op) => op.op)));
+      const want = plan.opSubset ? new Set(plan.opSubset.ops) : new Set(proto.ops);
+      const missing = [...want].filter((o) => !used.has(o));
+      const extra = [...used].filter((o) => !want.has(o));
+      if (missing.length)
+        errors.push(
+          `$.variants.${v}: ${plan.protocol} needs every ${plan.opSubset ? "declared opSubset" : "protocol"} op at least once; missing ${missing.join(", ")}${plan.opSubset ? "" : " (declare opSubset to run fewer)"}`,
+        );
+      if (plan.opSubset && extra.length)
+        errors.push(`$.variants.${v}: ops ${extra.join(", ")} are outside the declared opSubset`);
     } else if (plan.protocol === RESOURCE_STUDY_PROTOCOL) {
       if (!prof.resourceStudy) errors.push(`$.variants.${v}: needs resourceStudy`);
       try {
@@ -150,6 +163,14 @@ export function loadSeriesPlan(planPath) {
         errors.push(`$.variants.${v}: ${error?.message ?? error}`);
       }
     }
+  }
+  if (plan.opSubset) {
+    if (plan.protocol !== TIMING_ABBA_PROTOCOL)
+      errors.push(`$.opSubset applies only to ${TIMING_ABBA_PROTOCOL}`);
+    const bad = plan.opSubset.ops.filter((o) => !proto.ops.includes(o));
+    if (bad.length) errors.push(`$.opSubset.ops: ${bad.join(", ")} are not protocol ops`);
+    if (new Set(plan.opSubset.ops).size >= proto.ops.length && !bad.length)
+      errors.push("$.opSubset must name fewer ops than the protocol (omit it to run all)");
   }
   if (plan.protocol === TIMING_ABBA_PROTOCOL && !isAbba(plan.order))
     errors.push(`$.order: ${plan.protocol} needs an X,Y,Y,X order of two variants`);
@@ -175,6 +196,7 @@ export async function runSeries({
   stderr = (m) => process.stderr.write(`${m}\n`),
   executeImpl = execute,
   verifyImpl = verifyIdentityOnly,
+  frozenCheck = () => (harnessCapability().frozen ? verifyFrozen(HARNESS_DIR) : null),
 }) {
   const s = loadSeriesPlan(planPath);
   if (s.errors.length) {
@@ -197,6 +219,7 @@ export async function runSeries({
     plan: s.plan,
     protocol: s.plan.protocol,
     constants: PROTOCOLS[s.plan.protocol],
+    opSubset: s.plan.opSubset ?? null,
     variants: Object.fromEntries(
       Object.entries(s.variants).map(([v, x]) => [
         v,
@@ -218,7 +241,16 @@ export async function runSeries({
       failed: verdict.checks.filter((c) => !c.ok).map((c) => c.name),
     };
   }
-  const preflightOk = Object.values(record.preflight).every((p) => p.ok);
+  const frozen = frozenCheck();
+  record.preflightFrozen = frozen
+    ? {
+        ok: frozen.ok,
+        dir: frozen.dir,
+        failed: frozen.checks.filter((c) => !c.ok).map((c) => c.name),
+      }
+    : null;
+  const preflightOk =
+    Object.values(record.preflight).every((p) => p.ok) && (frozen === null || frozen.ok);
   if (!preflightOk) {
     for (const x of record.sessions) x.status = "not-attempted";
     record.exitCode = EXIT.identityRejected;
@@ -264,16 +296,61 @@ export async function runSeries({
   return { exitCode, record };
 }
 
-/** The sessions of a series record, as aggregate() inputs (planned-but-unrun sessions included). */
+/**
+ * The planned schedule of one variant, from its profile as the series ran it (same bytes, same
+ * scenario selection, same expansion). Null with a reason when the profile is gone or changed.
+ */
+export function plannedScheduleFor(record, variant) {
+  const v = record.variants?.[variant];
+  if (!v) return { schedule: null, error: `variant ${variant} not in the record` };
+  try {
+    const loaded = loadProfile(v.profile);
+    if (loaded.sha256 !== v.profileSha256)
+      return { schedule: null, error: `profile ${v.profile} changed since the series ran` };
+    const ids = record.plan?.scenarios ?? null;
+    const profile = ids
+      ? { ...loaded.profile, scenarios: loaded.profile.scenarios.filter((s) => ids.includes(s.id)) }
+      : loaded.profile;
+    return { schedule: scheduleOf(expandSchedule(profile)), error: null };
+  } catch (error) {
+    return { schedule: null, error: String(error?.message ?? error) };
+  }
+}
+
+/** The sessions of a series record as aggregate() inputs; unrun sessions carry their planned schedule. */
 export function sessionsFromRecord(recordPath) {
   const record = readJson(recordPath);
+  const planned = {};
   return {
     record,
-    sessions: record.sessions.map((x) => ({
-      index: x.index,
-      label: x.label,
-      variant: x.variant,
-      dir: join(record.outDir, x.label),
-    })),
+    sessions: record.sessions.map((x) => {
+      planned[x.variant] ??= plannedScheduleFor(record, x.variant);
+      return {
+        index: x.index,
+        label: x.label,
+        variant: x.variant,
+        dir: join(record.outDir, x.label),
+        seriesStatus: x.status,
+        plannedSchedule: planned[x.variant].schedule,
+        plannedError: planned[x.variant].error,
+      };
+    }),
+  };
+}
+
+/** aggregate() input for a series record: its sessions, declared differences, protocol and subset. */
+export function aggregateInputFromRecord(recordPath) {
+  const { record, sessions } = sessionsFromRecord(recordPath);
+  return {
+    sessions,
+    declaredDifferences: record.plan.declaredDifferences ?? [],
+    protocol: record.protocol,
+    series: {
+      id: record.plan.id,
+      record: recordPath,
+      planSha256: record.planSha256,
+      opSubset: record.opSubset ?? null,
+      stoppedAt: record.stoppedAt ?? null,
+    },
   };
 }

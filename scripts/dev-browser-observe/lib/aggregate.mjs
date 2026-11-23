@@ -82,7 +82,7 @@ const canon = (v) =>
   );
 
 /**
- * Compare sessions' facets: within a variant every facet must match; across variants every facet
+ * Compare the facets of sessions that ran (a label dir exists; unrun sessions have no identity): within a variant every facet must match; across variants every facet
  * except the declared ones must match. Returns { ok, checks }.
  */
 export function compareFacets(sessions, declaredDifferences = []) {
@@ -115,7 +115,7 @@ export function compareFacets(sessions, declaredDifferences = []) {
     });
   }
   for (const s of sessions)
-    if (!s.facets)
+    if (s.ran && !s.facets)
       checks.push({ name: `receipt-readable:${s.label}`, ok: false, actual: s.error ?? null });
   return { ok: checks.every((c) => c.ok), checks };
 }
@@ -135,16 +135,28 @@ function emptyCounts(planned) {
   };
 }
 
-function finishCounts(c, latencies) {
-  c.notAttempted = c.planned === null ? null : c.planned - c.attempted;
+/** notAttempted is unknown (null) without a planned count, and never negative: more attempts than planned is flagged instead. */
+function withNotAttempted(c) {
+  const diff = c.planned === null ? null : c.planned - c.attempted;
+  return {
+    ...c,
+    notAttempted: diff !== null && diff >= 0 ? diff : null,
+    ...(diff !== null && diff < 0 ? { countsInconsistent: "attempted exceeds planned" } : {}),
+  };
+}
+
+function finishCounts(counts, latencies) {
+  const c = withNotAttempted(counts);
   const { values, ...d } = distribution(latencies);
+  const observed = c.stale + c.timeout + c.error > 0 || (c.notAttempted ?? 0) > 0;
   return {
     ...c,
     latencyMs: {
       ...d,
       values,
       conditionalOnSuccess: true,
-      failuresPresent: c.stale + c.timeout + c.error > 0 || (c.notAttempted ?? 0) > 0,
+      // null: no observed failure, but without a planned count missing attempts cannot be ruled out.
+      failuresPresent: observed ? true : c.notAttempted === null ? null : false,
     },
   };
 }
@@ -153,7 +165,11 @@ function finishCounts(c, latencies) {
 export function sessionBlocks(labelDir) {
   const records = readJsonl(join(labelDir, "records.jsonl"));
   const runStart = records.find((r) => r.type === "run-start") ?? {};
-  const schedule = runStart.schedule ?? null;
+  return blocksFrom(records, runStart.schedule ?? null);
+}
+
+/** Blocks from records against a schedule; a session that never ran passes no records. */
+export function blocksFrom(records, schedule) {
   const byScenarioOp = new Map();
   for (const e of schedule ?? []) byScenarioOp.set(`${e.scenario}\0${e.opId}`, e);
   const keyOf = (r) => {
@@ -208,20 +224,37 @@ export function sessionBlocks(labelDir) {
       opId: b.opId,
       op: b.op,
       measured: finishCounts(b.measured, b.latencies),
-      warmup: (() => {
-        const w = { ...b.warmup };
-        w.notAttempted = w.planned === null ? null : w.planned - w.attempted;
-        return { ...w, excludedFromStats: true };
-      })(),
+      warmup: { ...withNotAttempted(b.warmup), excludedFromStats: true },
     })),
   };
 }
 
 /** Read one session: receipt facets, summary, blocks, and whether it ran to completion. */
-export function readSession({ label, variant, dir, index = null }) {
-  const s = { index, label, variant, dir };
-  if (!existsSync(dir))
-    return { ...s, status: "missing", facets: null, blocks: [], error: "no label dir" };
+export function readSession({
+  label,
+  variant,
+  dir,
+  index = null,
+  seriesStatus = null,
+  plannedSchedule = null,
+  plannedError = null,
+}) {
+  const s = { index, label, variant, dir, ran: existsSync(dir) };
+  if (!s.ran) {
+    // Never ran: no identity to compare; its planned attempts all count as not attempted.
+    const { blocks, schedulePresent } = plannedSchedule
+      ? blocksFrom([], plannedSchedule)
+      : { blocks: [], schedulePresent: false };
+    return {
+      ...s,
+      status: seriesStatus === "not-attempted" ? "not-attempted" : "missing",
+      seriesStatus,
+      facets: null,
+      schedulePresent,
+      plannedError,
+      blocks,
+    };
+  }
   let receipt = null;
   try {
     receipt = readJson(join(dir, "receipt.json"));
@@ -274,7 +307,12 @@ export function poolVariants(sessions) {
         sessions: [],
       });
       p.sessions.push(s.label);
-      for (const k of ["planned", "attempted", "success", "stale", "timeout", "error"])
+      // One block without a planned count makes the pooled planned (and notAttempted) unknown.
+      p.counts.planned =
+        p.counts.planned === null || b.measured.planned === null
+          ? null
+          : p.counts.planned + b.measured.planned;
+      for (const k of ["attempted", "success", "stale", "timeout", "error"])
         p.counts[k] += b.measured[k] ?? 0;
       p.latencies.push(...b.measured.latencyMs.values);
     }
@@ -289,11 +327,15 @@ export function poolVariants(sessions) {
 
 /**
  * Aggregate the given sessions: per-session blocks, pooled per-variant stats, the identity comparison
- * and the session completeness. Exit: 3 identity mismatch, 1 any session incomplete, else 0.
+ * and the session completeness. Exit: 3 identity mismatch among the sessions that ran, 1 any session
+ * incomplete, missing or not attempted, else 0.
  */
 export function aggregate({ sessions, declaredDifferences = [], protocol = null, series = null }) {
   const read = sessions.map((s) => readSession(s));
-  const identity = compareFacets(read, declaredDifferences);
+  const identity = compareFacets(
+    read.filter((s) => s.ran),
+    declaredDifferences,
+  );
   const incomplete = read.filter((s) => s.status !== "complete").map((s) => s.label);
   const report = {
     schema: AGGREGATE_SCHEMA,
@@ -307,7 +349,7 @@ export function aggregate({ sessions, declaredDifferences = [], protocol = null,
     complete: incomplete.length === 0,
     incompleteSessions: incomplete,
     sessions: read.map(({ facets: _f, ...rest }) => rest),
-    facets: Object.fromEntries(read.map((s) => [s.label, s.facets])),
+    facets: Object.fromEntries(read.filter((s) => s.ran).map((s) => [s.label, s.facets])),
     pooled: poolVariants(read),
   };
   const exitCode = !identity.ok ? 3 : incomplete.length > 0 ? 1 : 0;

@@ -120,6 +120,13 @@ function identityVerdict({ profile, resolved, manifest, receipt, extraAppDirs })
       },
       actual: frozen.actual,
     });
+  if (frozen)
+    extra.push({
+      name: "harness-frozen-playwright-link",
+      ok: frozen.playwrightLink.ok,
+      expected: frozen.playwrightLink.expected,
+      actual: frozen.playwrightLink.actual,
+    });
   const gitTree = findGitWorkTree(resolved.outDir);
   extra.push({
     name: "outdir-outside-git-worktree",
@@ -456,6 +463,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         deps: {
           recorder,
           afterScenario: study ? study.afterScenario : undefined,
+          beforeCleanup: study ? study.beforeCleanup : undefined,
+          haltReason: study ? study.haltReason : undefined,
           clock: { now: hrtimeNs },
           server: { ...server, sampleResources: sampleServer },
           page: observer,
@@ -474,13 +483,19 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
               : null,
         },
       });
+      let studyFailure = null;
       if (study) {
         await study.finalIdle({ stopped, stopReason: accounting.stopReason });
         await study.stop();
+        studyFailure = study.failure;
         study = null;
       }
-      summaryExtra = { accountingFinal: accounting };
-      exitCode = batchExitOk(accounting, stopped) ? EXIT.ok : EXIT.stopped;
+      summaryExtra = { accountingFinal: accounting, resourceStudyFailure: studyFailure };
+      exitCode = studyFailure
+        ? EXIT.controllerError
+        : batchExitOk(accounting, stopped)
+          ? EXIT.ok
+          : EXIT.stopped;
     } else {
       const cal = profile.calibration ?? {};
       const results = await runCalibration({
@@ -610,7 +625,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         resourceSamples: { count: samples.length, peak: sampledPeak(samples) },
         resourceStudy:
           command === "run" && profile.resourceStudy
-            ? summarizeResourceStudy(rec.records, profile.resourceStudy)
+            ? {
+                ...summarizeResourceStudy(rec.records, profile.resourceStudy),
+                failure: summaryExtra.resourceStudyFailure ?? null,
+              }
             : null,
         ownedServerAbsentAfterStop: Boolean(stopReport.absent),
         stopFailure,

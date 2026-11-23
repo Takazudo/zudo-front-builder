@@ -16,6 +16,7 @@ export function createResourceStudy({ study, sampleNow, append, clock, sleep = d
     timer: null,
     inflight: null,
     overlappingSkipped: 0,
+    failure: null,
   };
 
   const take = () => {
@@ -33,15 +34,24 @@ export function createResourceStudy({ study, sampleNow, append, clock, sleep = d
       } catch (e) {
         error = String(e?.message ?? e);
       }
-      append({
-        type: "resource-sample",
-        label: "unmeasured",
-        protocol: study.protocol,
-        phase,
-        costMs: nsToMs(clock.now() - t),
-        sample: sample ?? null,
-        error,
-      });
+      try {
+        append({
+          type: "resource-sample",
+          label: "unmeasured",
+          protocol: study.protocol,
+          phase,
+          costMs: nsToMs(clock.now() - t),
+          sample: sample ?? null,
+          error,
+        });
+      } catch (e) {
+        // A sample that cannot be recorded halts the batch before its next edit (haltReason).
+        state.failure ??= {
+          reason: "resource-sample-record-failed",
+          phase,
+          error: String(e?.message ?? e),
+        };
+      }
     })().finally(() => {
       state.inflight = null;
     });
@@ -80,18 +90,26 @@ export function createResourceStudy({ study, sampleNow, append, clock, sleep = d
     onRecord(r) {
       if (r.type === "scenario-start")
         state.phase = { step: "edit", cycle: r.cycle?.index ?? null };
-      else if (r.type === "cleanup") state.phase = { step: "restore", cycle: state.phase.cycle };
     },
-    afterScenario: ({ scenario }) =>
-      idle("after-restore", scenario.cycle?.index ?? null, study.idleAfterRestoreMs),
+    beforeCleanup() {
+      state.phase = { step: "restore", cycle: state.phase.cycle };
+    },
+    haltReason: () => state.failure,
+    async afterScenario({ scenario }) {
+      if (state.failure)
+        throw new Error(`resource study halted: ${state.failure.reason}: ${state.failure.error}`);
+      await idle("after-restore", scenario.cycle?.index ?? null, study.idleAfterRestoreMs);
+    },
     async finalIdle({ stopped, stopReason }) {
-      if (stopped) {
+      if (stopped || state.failure) {
         append({
           type: "idle",
           label: "unmeasured",
           phase: "final",
           step: "skipped",
-          reason: `batch stopped: ${stopReason}`,
+          reason: stopped
+            ? `batch stopped: ${stopReason}`
+            : `resource study halted: ${state.failure.reason}`,
           plannedMs: study.finalIdleMs,
         });
         return;
@@ -110,6 +128,9 @@ export function createResourceStudy({ study, sampleNow, append, clock, sleep = d
         step: "stop",
         overlappingSkipped: state.overlappingSkipped,
       });
+    },
+    get failure() {
+      return state.failure;
     },
     get overlappingSkipped() {
       return state.overlappingSkipped;

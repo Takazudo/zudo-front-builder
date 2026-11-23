@@ -6,13 +6,21 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { aggregate, compareFacets, sessionBlocks, sessionFacets } from "../lib/aggregate.mjs";
+import {
+  aggregate,
+  blocksFrom,
+  compareFacets,
+  poolVariants,
+  sessionBlocks,
+  sessionFacets,
+} from "../lib/aggregate.mjs";
 import {
   FN_SCALE_PIN_KEYS,
   fnScale,
@@ -24,7 +32,7 @@ import {
 } from "../lib/fieldnotes.mjs";
 import { FIXTURE_KINDS } from "../lib/fixture-kinds.mjs";
 import { freezeHarness, unfreezeForRemoval, verifyFrozen } from "../lib/frozen.mjs";
-import { harnessCapability, harnessTreeHash } from "../lib/identity.mjs";
+import { frozenPlaywrightLink, harnessCapability, harnessTreeHash } from "../lib/identity.mjs";
 import { sampleAsync, threadCountAsync } from "../lib/mac-process-adapter.mjs";
 import { semanticErrors } from "../lib/profile.mjs";
 import { createResourceStudy, summarizeResourceStudy } from "../lib/resource-study.mjs";
@@ -38,7 +46,13 @@ import {
   scheduleOf,
 } from "../lib/schedule.mjs";
 import { validateAs } from "../lib/schema.mjs";
-import { isAbba, loadSeriesPlan, runSeries, sessionsFromRecord } from "../lib/series.mjs";
+import {
+  aggregateInputFromRecord,
+  isAbba,
+  loadSeriesPlan,
+  runSeries,
+  sessionsFromRecord,
+} from "../lib/series.mjs";
 import { runBatch } from "../lib/state-machine.mjs";
 import { summarize } from "../lib/stats.mjs";
 import { HARNESS_DIR, readJson, readJsonl, sha256File } from "../lib/util.mjs";
@@ -611,8 +625,10 @@ describe("aggregate", () => {
       ],
     });
     expect(report.sessions[1].status).toBe("missing");
-    expect(report.identity.checks.find((c) => c.name === "receipt-readable:a2").ok).toBe(false);
-    expect(exitCode).toBe(3);
+    expect(report.identity.ok).toBe(true);
+    expect(report.identity.checks.some((c) => c.name.includes("a2"))).toBe(false);
+    expect(Object.keys(report.facets)).toEqual(["a1"]);
+    expect(exitCode).toBe(1);
   });
 });
 
@@ -712,6 +728,7 @@ describe("series plans", () => {
       planPath: s.planPath,
       stderr: () => {},
       verifyImpl: () => ({ ok: true, checks: [] }),
+      frozenCheck: () => null,
       executeImpl: async (a) => {
         calls.push(a);
         return codes.shift();
@@ -738,6 +755,7 @@ describe("series plans", () => {
       planPath: s.planPath,
       stderr: () => {},
       verifyImpl: () => ({ ok: true, checks: [] }),
+      frozenCheck: () => null,
       executeImpl: async () => EXIT.ok,
     });
     expect(again.exitCode).toBe(EXIT.usage);
@@ -749,6 +767,7 @@ describe("series plans", () => {
     const { exitCode, record } = await runSeries({
       planPath: s.planPath,
       stderr: () => {},
+      frozenCheck: () => null,
       verifyImpl: (p) => ({
         ok: p !== s.paths.B,
         checks: [{ name: "exe-sha256", ok: p !== s.paths.B }],
@@ -924,5 +943,344 @@ describe("records written by a run carry the schedule", () => {
     ])
       expect(validateAs("record", r)).toEqual([]);
     expect(readJsonl(join(tmp(), "none.jsonl"))).toEqual([]);
+  });
+});
+
+describe("review fixes", () => {
+  it("pooling a schedule-less block keeps planned and notAttempted unknown, never negative", () => {
+    const old = blocksFrom(
+      [
+        {
+          type: "attempt",
+          scenario: "s",
+          opId: "b",
+          op: "edit-body",
+          outcome: "success",
+          latencyMs: 5,
+        },
+        {
+          type: "attempt",
+          scenario: "s",
+          opId: "b",
+          op: "edit-body",
+          outcome: "success",
+          latencyMs: 6,
+        },
+      ],
+      null,
+    ).blocks;
+    expect(old[0].measured).toMatchObject({ planned: null, attempted: 2, notAttempted: null });
+    expect(old[0].measured.latencyMs.failuresPresent).toBe(null);
+    const fresh = blocksFrom(
+      [],
+      [
+        {
+          scenario: "s",
+          scenarioBase: "s",
+          opId: "b#m1",
+          baseOpId: "b",
+          op: "edit-body",
+          kind: "measured",
+        },
+      ],
+    ).blocks;
+    const pooled = poolVariants([
+      { variant: "A", label: "old", blocks: old },
+      { variant: "A", label: "new", blocks: fresh },
+    ]).A.ops["s/b"].measured;
+    expect(pooled).toMatchObject({ planned: null, attempted: 2, notAttempted: null });
+    expect(pooled.latencyMs.failuresPresent).toBe(null);
+    const over = blocksFrom(
+      [
+        { type: "attempt", scenario: "s", opId: "b#m1", outcome: "success", latencyMs: 1 },
+        { type: "attempt", scenario: "s", opId: "b#m1", outcome: "success", latencyMs: 1 },
+      ],
+      [
+        {
+          scenario: "s",
+          scenarioBase: "s",
+          opId: "b#m1",
+          baseOpId: "b",
+          op: "edit-body",
+          kind: "measured",
+        },
+      ],
+    ).blocks[0].measured;
+    expect(over).toMatchObject({ planned: 1, attempted: 2, notAttempted: null });
+    expect(over.countsInconsistent).toMatch(/exceeds/);
+  });
+
+  it("a stopped series aggregates as incomplete (exit 1); unrun sessions add their planned attempts as not attempted", async () => {
+    const s = seriesSetup();
+    const outDir = join(s.root, "out");
+    const codes = [EXIT.ok, EXIT.stopped];
+    await runSeries({
+      planPath: s.planPath,
+      stderr: () => {},
+      verifyImpl: () => ({ ok: true, checks: [] }),
+      frozenCheck: () => null,
+      executeImpl: async ({ label }) => {
+        const variant = label.endsWith("-A") ? "A" : "B";
+        const code = codes.shift();
+        writeSession(join(outDir, label), {
+          variant,
+          exe: variant === "A" ? "1".repeat(64) : "2".repeat(64),
+          ...(code === EXIT.ok ? {} : { failAt: 0 }),
+        });
+        return code;
+      },
+    });
+    const input = aggregateInputFromRecord(join(outDir, "ser1.series.json"));
+    const { report, exitCode } = aggregate(input);
+    expect(validateAs("aggregate", report)).toEqual([]);
+    expect(exitCode).toBe(1);
+    expect(report.identity.ok).toBe(true);
+    expect(Object.keys(report.facets)).toEqual(["ser1-s1-A", "ser1-s2-B"]);
+    expect(report.sessions.map((x) => x.status)).toEqual([
+      "complete",
+      "incomplete",
+      "not-attempted",
+      "not-attempted",
+    ]);
+    expect(report.series.stoppedAt).toEqual({ session: "ser1-s2-B", exitCode: EXIT.stopped });
+    const body = report.pooled.B.ops["fn-edit-body/body-05"].measured;
+    expect(body).toMatchObject({ planned: 10, attempted: 0, notAttempted: 10 });
+    expect(body.latencyMs.failuresPresent).toBe(true);
+    expect(report.pooled.A.ops["fn-category/category-15"].measured.notAttempted).toBe(10);
+    expect(report.pooled.B.ops["s/b"].measured).toMatchObject({
+      planned: 3,
+      attempted: 1,
+      timeout: 1,
+      notAttempted: 2,
+    });
+  });
+
+  it("an unrun session whose profile changed since the series reports the planned schedule as unknown", async () => {
+    const s = seriesSetup();
+    await runSeries({
+      planPath: s.planPath,
+      stderr: () => {},
+      verifyImpl: () => ({ ok: true, checks: [] }),
+      frozenCheck: () => null,
+      executeImpl: async () => EXIT.stopped,
+    });
+    writeFileSync(
+      s.paths.B,
+      readFileSync(s.paths.B, "utf8").replace("direct-read", "direct-read "),
+    );
+    const { sessions } = sessionsFromRecord(join(s.root, "out", "ser1.series.json"));
+    expect(sessions[1]).toMatchObject({ seriesStatus: "not-attempted", plannedSchedule: null });
+    expect(sessions[1].plannedError).toMatch(/changed since the series ran/);
+    expect(sessions[3].plannedSchedule).toHaveLength(60);
+  });
+
+  it("timing-abba.v1 needs all five ops unless a declared opSubset (recorded) names fewer", async () => {
+    const trim = (s, keep) => {
+      for (const v of ["A", "B"]) {
+        const p = JSON.parse(readFileSync(s.paths[v], "utf8"));
+        p.scenarios = p.scenarios.filter((x) => keep.includes(x.ops[0].op));
+        writeFileSync(s.paths[v], JSON.stringify(p));
+      }
+    };
+    const three = ["edit-body", "edit-title", "edit-category"];
+    let s = seriesSetup();
+    trim(s, three);
+    expect(loadSeriesPlan(s.planPath).errors.join("\n")).toMatch(
+      /needs every protocol op at least once; missing edit-shared-component, edit-managed-css/,
+    );
+    writeFileSync(
+      s.planPath,
+      JSON.stringify({ ...s.plan, opSubset: { ops: three, reason: "content ops only" } }),
+    );
+    expect(loadSeriesPlan(s.planPath).errors).toEqual([]);
+    const { record } = await runSeries({
+      planPath: s.planPath,
+      stderr: () => {},
+      verifyImpl: () => ({ ok: true, checks: [] }),
+      frozenCheck: () => null,
+      executeImpl: async () => EXIT.ok,
+    });
+    expect(record.opSubset).toEqual({ ops: three, reason: "content ops only" });
+    expect(
+      aggregateInputFromRecord(join(s.root, "out", "ser1.series.json")).series.opSubset,
+    ).toEqual(record.opSubset);
+    s = seriesSetup();
+    writeFileSync(
+      s.planPath,
+      JSON.stringify({ ...s.plan, opSubset: { ops: ["edit-body"], reason: "x" } }),
+    );
+    expect(loadSeriesPlan(s.planPath).errors.join("\n")).toMatch(/outside the declared opSubset/);
+    writeFileSync(
+      s.planPath,
+      JSON.stringify({
+        ...s.plan,
+        opSubset: { ops: PROTOCOLS[TIMING_ABBA_PROTOCOL].ops, reason: "x" },
+      }),
+    );
+    expect(loadSeriesPlan(s.planPath).errors.join("\n")).toMatch(/fewer ops than the protocol/);
+  });
+
+  it("resource samples taken during a restoration are tagged restore from the start of cleanup", async () => {
+    const order = [];
+    const fs = repeatFs();
+    fs.restore = () => {
+      order.push("restore");
+      return { restored: [], mismatches: [] };
+    };
+    const page = fakePage({ behaviors: [{ kind: "notify", t1: 5_000_000_000n }] });
+    const d = deps({ page, fs });
+    d.beforeCleanup = ({ reason }) => order.push(`before:${reason}`);
+    await runBatch({ scenarios: expandSchedule(withOps(fnProfile(), [body()])), deps: d });
+    expect(order).toEqual(["before:scenario-end", "restore"]);
+
+    const rec = fakeRecorder();
+    const rs = createResourceStudy({
+      study: {
+        protocol: RESOURCE_STUDY_PROTOCOL,
+        cycles: 30,
+        idleAfterRestoreMs: 0,
+        finalIdleMs: 0,
+        sampleEveryMs: 1000,
+      },
+      clock: fakeClock(),
+      append: (r) => rec.append(r),
+      sleep: async () => {},
+      sampleNow: async () => ({ summedRssKiB: 1, processes: [] }),
+    });
+    rs.onRecord({ type: "scenario-start", cycle: { index: 4 } });
+    await rs.start();
+    rs.beforeCleanup({ reason: "scenario-end" });
+    await rs.stop();
+    const phases = rec.records.filter((r) => r.type === "resource-sample").map((r) => r.phase);
+    expect(phases).toEqual([
+      { step: "edit", cycle: 4 },
+      { step: "end", cycle: null },
+    ]);
+    const rec2 = fakeRecorder();
+    const rs2 = createResourceStudy({
+      study: {
+        protocol: RESOURCE_STUDY_PROTOCOL,
+        cycles: 30,
+        idleAfterRestoreMs: 0,
+        finalIdleMs: 0,
+        sampleEveryMs: 1000,
+      },
+      clock: fakeClock(),
+      append: (r) => rec2.append(r),
+      sleep: async () => {},
+      sampleNow: async () => ({ summedRssKiB: 1, processes: [] }),
+    });
+    rs2.onRecord({ type: "scenario-start", cycle: { index: 4 } });
+    rs2.beforeCleanup({ reason: "scenario-end" });
+    await rs2.start();
+    rs2.onRecord({ type: "cleanup" });
+    await rs2.stop();
+    expect(rec2.records.find((r) => r.type === "resource-sample").phase).toEqual({
+      step: "restore",
+      cycle: 4,
+    });
+  });
+
+  it("a sampler tick whose record write throws halts the batch before the next edit, without an unhandled rejection", async () => {
+    let failSamples = false;
+    const rec = fakeRecorder();
+    const rs = createResourceStudy({
+      study: {
+        protocol: RESOURCE_STUDY_PROTOCOL,
+        cycles: 30,
+        idleAfterRestoreMs: 0,
+        finalIdleMs: 0,
+        sampleEveryMs: 1000,
+      },
+      clock: fakeClock(),
+      append: (r) => {
+        if (failSamples && r.type === "resource-sample") throw new Error("EIO: disk full");
+        return rec.append(r);
+      },
+      sleep: async () => {},
+      sampleNow: async () => ({ summedRssKiB: 1, processes: [] }),
+    });
+    await rs.start();
+    failSamples = true;
+    await rs.stop().catch(() => {});
+    expect(rs.haltReason()).toMatchObject({
+      reason: "resource-sample-record-failed",
+      error: "EIO: disk full",
+    });
+    await expect(rs.afterScenario({ scenario: { cycle: { index: 1 } } })).rejects.toThrow(/halted/);
+    const page = fakePage({ behaviors: [{ kind: "notify", t1: 5_000_000_000n }] });
+    const d = deps({ page, fs: repeatFs() });
+    d.haltReason = rs.haltReason;
+    const scenarios = expandSchedule(
+      withOps(fnProfile(), [body({ repeat: { warmups: 0, measured: 3 } })]),
+    );
+    const { accounting, stopped } = await runBatch({ scenarios, deps: d });
+    expect(stopped).toBe(true);
+    expect(accounting).toMatchObject({
+      attempted: 0,
+      notAttempted: 3,
+      error: 1,
+      stopReason: "controller-error",
+    });
+    expect(d.recorder.records.find((r) => r.type === "precheck")).toMatchObject({
+      outcome: "controller-error",
+      halt: { reason: "resource-sample-record-failed" },
+    });
+    await rs.finalIdle({ stopped: false, stopReason: null }).catch(() => {});
+    expect(rec.records.find((r) => r.type === "idle" && r.phase === "final").reason).toMatch(
+      /halted/,
+    );
+  });
+
+  it("a frozen copy's broken playwright link fails verify-frozen and the run identity check; series preflight refuses it", async () => {
+    const out = join(tmp(), "frozen");
+    const r = freezeHarness({ outDir: out, allowDirty: true });
+    expect(frozenPlaywrightLink(r.stamp).ok).toBe(true);
+    const link = r.stamp.playwright.link;
+    rmSync(link);
+    symlinkSync(tmpdir(), link, "dir");
+    expect(frozenPlaywrightLink(r.stamp)).toMatchObject({ ok: false, actual: tmpdir() });
+    expect(
+      verifyFrozen(r.dir)
+        .checks.filter((c) => !c.ok)
+        .map((c) => c.name),
+    ).toEqual(["playwright-link"]);
+    const profile = example("tiny-internal-a0.example.json");
+    profile.fixture.dir = join(r.dir, "fixtures", "tiny-two-article");
+    profile.outDir = join(tmp(), "out");
+    const pPath = join(tmp(), "p.json");
+    writeFileSync(pPath, JSON.stringify(profile));
+    let res;
+    try {
+      execFileSync(
+        process.execPath,
+        [join(r.dir, "cli.mjs"), "verify-identity", "--profile", pPath],
+        {
+          encoding: "utf8",
+        },
+      );
+    } catch (error) {
+      res = JSON.parse(error.stdout);
+    }
+    expect(res.checks.find((c) => c.name === "harness-frozen-copy-intact").ok).toBe(true);
+    expect(res.checks.find((c) => c.name === "harness-frozen-playwright-link")).toMatchObject({
+      ok: false,
+      actual: tmpdir(),
+    });
+    const s = seriesSetup();
+    let ran = 0;
+    const { exitCode, record } = await runSeries({
+      planPath: s.planPath,
+      stderr: () => {},
+      verifyImpl: () => ({ ok: true, checks: [] }),
+      frozenCheck: () => verifyFrozen(r.dir),
+      executeImpl: async () => {
+        ran += 1;
+        return EXIT.ok;
+      },
+    });
+    expect(exitCode).toBe(EXIT.identityRejected);
+    expect(ran).toBe(0);
+    expect(record.preflightFrozen).toMatchObject({ ok: false, failed: ["playwright-link"] });
   });
 });

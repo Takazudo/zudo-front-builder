@@ -23,7 +23,7 @@ import {
   verifyIdentityOnly,
 } from "./lib/run.mjs";
 import { PROTOCOLS } from "./lib/schedule.mjs";
-import { runSeries, sessionsFromRecord } from "./lib/series.mjs";
+import { aggregateInputFromRecord, runSeries } from "./lib/series.mjs";
 import { SCHEMA_FILES, loadSchema, validateAs } from "./lib/schema.mjs";
 import { HARNESS_DIR, HARNESS_VERSION, writeJsonSync } from "./lib/util.mjs";
 
@@ -320,17 +320,7 @@ export async function main(argv) {
       }
       let input;
       if (typeof args.series === "string") {
-        const { record, sessions } = sessionsFromRecord(resolve(args.series));
-        input = {
-          sessions,
-          declaredDifferences: record.plan.declaredDifferences ?? [],
-          protocol: record.protocol,
-          series: {
-            id: record.plan.id,
-            record: resolve(args.series),
-            planSha256: record.planSha256,
-          },
-        };
+        input = aggregateInputFromRecord(resolve(args.series));
       } else if (typeof args.sessions === "string") {
         const sessions = args.sessions.split(",").map((pair, index) => {
           const at = pair.indexOf("=");

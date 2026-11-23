@@ -6,7 +6,6 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  readlinkSync,
   realpathSync,
   symlinkSync,
   writeFileSync,
@@ -144,17 +143,12 @@ export function verifyFrozen(dir) {
   ];
   const writable = anyWritable(dir);
   checks.push({ name: "read-only", ok: writable.length === 0, expected: [], actual: writable });
-  let target = null;
-  try {
-    target = readlinkSync(stamp.playwright.link);
-  } catch {
-    target = null;
-  }
+  const link = state.playwrightLink;
   checks.push({
     name: "playwright-link",
-    ok: target === stamp.playwright.target && existsSync(stamp.playwright.target),
-    expected: stamp.playwright.target,
-    actual: target,
+    ok: link.ok,
+    expected: link.expected,
+    actual: link.actual,
   });
   return { ok: checks.every((c) => c.ok), dir, stamp, checks };
 }

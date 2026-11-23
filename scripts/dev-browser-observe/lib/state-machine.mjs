@@ -173,8 +173,9 @@ function count(acc, outcome, rec = null) {
  * by the recorder) BEFORE the batch stops; no further workload edit follows.
  * Cleanup restoration always runs afterwards and is never a measured trial.
  *
- * deps: { recorder, clock, server, page, fs, limits, timeouts, startedNs, afterScenario? }
- * afterScenario runs only after a scenario's restoration succeeded (resource-study idle).
+ * deps: { recorder, clock, server, page, fs, limits, timeouts, startedNs, afterScenario?, beforeCleanup?, haltReason? }
+ * afterScenario runs only after a scenario's restoration succeeded (resource-study idle);
+ * beforeCleanup runs as each restoration starts; a non-null haltReason() stops before the next op.
  */
 export async function runBatch({ scenarios, deps }) {
   const { recorder, clock, server, page, fs, limits = {}, timeouts } = deps;
@@ -203,6 +204,7 @@ export async function runBatch({ scenarios, deps }) {
   };
 
   const cleanup = async (snapshot, reason, blocked = [], { retry = false } = {}) => {
+    deps.beforeCleanup?.({ reason });
     const blocks = [];
     for (const path of blocked) {
       try {
@@ -370,6 +372,13 @@ export async function runBatch({ scenarios, deps }) {
           ...(op.iteration ? { iteration: op.iteration } : {}),
         };
 
+        const halt = deps.haltReason?.() ?? null;
+        if (halt) {
+          append({ ...base, type: "precheck", outcome: "controller-error", halt });
+          acc.error += 1;
+          stop("controller-error", where);
+          break outer;
+        }
         const alive = server.isAlive();
         if (!alive.alive) {
           append({ ...base, type: "precheck", outcome: "server-exit", exit: alive.exit });
