@@ -14,7 +14,8 @@
 //! - `seq` — per-process, strictly increasing, assigned under the same lock
 //!   that writes the line, so line order equals `seq` order.
 //! - `ms` — milliseconds since the first trace call of the process
-//!   (monotonic clock).
+//!   (monotonic clock), sampled under the `seq` lock, so it never
+//!   decreases in `seq` order.
 //! - `tick` — present only when the event was emitted from inside a watcher
 //!   tick (thread-scoped, see [`TickScope`]) or carries it explicitly
 //!   (`intake`). It is the id `intake` allocated for that tick.
@@ -295,15 +296,16 @@ pub fn emit(ev: &str, fields: Value) {
     if !enabled() {
         return;
     }
+    let tick = CURRENT_TICK.with(Cell::get);
+    let mut seq = EMIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    *seq += 1;
+    // Sampled under the same lock as `seq`, so a higher `seq` never carries a lower `ms`.
     let ms = EPOCH
         .get_or_init(Instant::now)
         .elapsed()
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX);
-    let tick = CURRENT_TICK.with(Cell::get);
-    let mut seq = EMIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    *seq += 1;
     eprintln!("{}", format_line(ev, *seq, ms, tick, fields));
 }
 
