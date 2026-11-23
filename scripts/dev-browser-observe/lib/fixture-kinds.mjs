@@ -1,8 +1,10 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
+  FN_SCALE_PIN_KEYS,
   FN_SEL,
   fieldNotesOps,
+  fnScale,
   fnAdapterPath,
   loadFieldNotesFixture,
   materializeFieldNotes,
@@ -26,7 +28,7 @@ import {
   unblockWrite,
   warmPaths,
 } from "./fixture.mjs";
-import { sha256File } from "./util.mjs";
+import { readJson, sha256File } from "./util.mjs";
 
 export function fixtureKind(profile) {
   return profile.fixture.kind ?? "tiny";
@@ -154,11 +156,46 @@ const fieldNotes = {
         actual: actual[key],
       });
     }
+    let scale;
+    try {
+      scale = fnScale(resolved.fixtureDir, manifest, profile.fixture.scale ?? null);
+    } catch (error) {
+      checks.push({
+        name: "field-notes-scale-declared",
+        ok: false,
+        expected: "a declared scale",
+        actual: String(error?.message ?? error),
+      });
+      return checks;
+    }
     checks.push({
       name: "source-dataset-matches-manifest-declaration",
-      ok: actual.datasetSha256 === manifest.source.datasetSha256,
-      expected: manifest.source.datasetSha256,
+      ok: actual.datasetSha256 === scale.datasetSha256,
+      expected: scale.datasetSha256,
       actual: actual.datasetSha256,
+      scale: scale.scale,
+    });
+    for (const key of FN_SCALE_PIN_KEYS)
+      checks.push({
+        name: `source-pin-matches-scale-declaration:${key}`,
+        ok: (src[key] ?? null) === scale[key],
+        expected: scale[key],
+        actual: src[key] ?? null,
+        scale: scale.scale,
+      });
+    let articleCount = null;
+    try {
+      articleCount =
+        readJson(join(dir, manifest.source.content, "manifest.json")).articleCount ?? null;
+    } catch {
+      articleCount = null;
+    }
+    checks.push({
+      name: "source-article-count-matches-scale",
+      ok: articleCount === scale.articleCount,
+      expected: scale.articleCount,
+      actual: articleCount,
+      scale: scale.scale,
     });
     const placement = profile.fixture.placement ?? "external";
     try {
@@ -190,10 +227,13 @@ const fieldNotes = {
       adapter: profile.fixture.adapter,
       managedCss: profile.fixture.managedCss === true,
       placement: profile.fixture.placement ?? "external",
+      scale: profile.fixture.scale ?? null,
     }),
   receiptFixture: (m, manifest, profile) => ({
     name: manifest.name,
     kind: "field-notes",
+    scale: m.scale,
+    scaleId: m.scaleId,
     adapter: profile.fixture.adapter,
     adapterLabel: manifest.adapters.variants[profile.fixture.adapter].label,
     adapterProvenance: manifest.adapters.variants[profile.fixture.adapter].provenance ?? null,

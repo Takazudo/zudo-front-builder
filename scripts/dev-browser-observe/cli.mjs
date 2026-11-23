@@ -1,16 +1,31 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { AGGREGATE_SCHEMA, DECLARABLE_FACETS, aggregate } from "./lib/aggregate.mjs";
 import { OBSERVER_PATH } from "./lib/browser.mjs";
 import { fixtureKind, kindFor } from "./lib/fixture-kinds.mjs";
-import { sourceTreeHashes } from "./lib/fieldnotes.mjs";
+import {
+  FN_SCALE_COUNTS,
+  fnScale,
+  makeFieldNotesSource,
+  sourceTreeHashes,
+} from "./lib/fieldnotes.mjs";
+import { freezeHarness, verifyFrozen } from "./lib/frozen.mjs";
 import { currentPins, recordBuild } from "./lib/identity.mjs";
 import { holdLock, lockContentionCheck } from "./lib/lock-check.mjs";
 import { probeMac } from "./lib/mac-process-adapter.mjs";
 import { loadProfile } from "./lib/profile.mjs";
-import { EXIT, execute, notImplementedResult, verifyIdentityOnly } from "./lib/run.mjs";
+import {
+  EXIT,
+  execute,
+  findGitWorkTree,
+  notImplementedResult,
+  verifyIdentityOnly,
+} from "./lib/run.mjs";
+import { PROTOCOLS } from "./lib/schedule.mjs";
+import { aggregateInputFromRecord, runSeries } from "./lib/series.mjs";
 import { SCHEMA_FILES, loadSchema, validateAs } from "./lib/schema.mjs";
-import { HARNESS_VERSION, writeJsonSync } from "./lib/util.mjs";
+import { HARNESS_DIR, HARNESS_VERSION, writeJsonSync } from "./lib/util.mjs";
 
 export const HELP = `dev-browser-observe (${HARNESS_VERSION}) - measure whether \`zfb dev\` updates an
 open Chromium page after a content file edit, with fail-stop semantics.
@@ -42,6 +57,7 @@ Commands:
   verify-identity --profile <p.json>
                                Check identity only (no lock, server, browser or edits).
   probe-mac                    Print which ps fields work on this host (JSON).
+  protocols                    Print the series protocol ids and their fixed constants (JSON).
   hold-lock --profile <p.json> [--ms N]
                                Hold the profile's batch lock (prints LOCKED) until
                                N ms pass (default 60000) or stdin closes.
@@ -53,11 +69,41 @@ Commands:
   run --profile <p.json> --label <unique> [--scenario id[,id]]
                                Run the profile's scenarios (fail-stop). --scenario runs
                                only the named scenarios, in profile order; the selection
-                               is recorded in records.jsonl and receipt.json.
+                               is recorded in records.jsonl and receipt.json. An op with
+                               repeat { warmups, measured } runs that many times in a row
+                               (warmups recorded, excluded from stats); a profile with
+                               resourceStudy runs its one scenario as restore cycles.
+  make-source --archive <dir> --scale <100|1000|5000> --out <dir> [--fixture-dir <dir>]
+                               Build a Field Notes source dir for a declared scale: copy
+                               the archive's apps/, shared/ and scripts/ to a new --out
+                               (outside any git work tree), check generate.mjs's sha256,
+                               run it at that count and compare the tree/dataset hashes
+                               with fixtures/field-notes/scales.json. Prints the pins.
+  series --plan <series.json>  Run a series (schema "series"): preflight identity of every
+                               variant, then one fresh run (server + browser) per session
+                               in plan order; the first non-zero session stops the series
+                               and the rest are not-attempted. Writes
+                               <outDir>/<labelPrefix>.series.json.
+  aggregate (--series <record.json> | --sessions V=<labelDir>[,V=<labelDir>...])
+            [--declared-differences build[,toolchain]] [--out <report.json>]
+                               Per-session block stats and pooled per-variant/op stats
+                               (planned/attempted/success/stale/timeout/error/notAttempted,
+                               n/min/median/nearest-rank p95/max, conditional on success,
+                               warmups excluded) plus the identity comparison (schema
+                               "aggregate"). Exit 3 identity mismatch, 1 a session
+                               incomplete, 0 otherwise. --out is never overwritten.
+  freeze --out <dir> [--allow-dirty]
+                               Copy this harness to <dir>/dev-browser-observe with a
+                               .frozen.json stamp (tree hashes, source sha, the linked
+                               @playwright/test), read-only. Run series from its cli.mjs.
+  verify-frozen [--dir <frozen harness dir>]
+                               Recheck a frozen copy (default: this harness) against its stamp.
 
 Stop: SIGINT to the server group, SIGTERM after timeouts.stopTermMs, SIGKILL after
 timeouts.stopKillMs; the signal that ended each owned process is recorded.
 outDir must be outside every git work tree.
+
+Protocols: ${Object.keys(PROTOCOLS).join(", ")}; \`protocols\` prints their constants.
 
 Outputs (run/calibrate): <outDir>/<label>/records.jsonl (append + fsync per record),
 receipt.json, summary.json, server.log. A label is never reused.
@@ -169,11 +215,22 @@ export async function main(argv) {
         adapterPath: kind.adapterPath(resolved.fixtureDir, manifest, profile.fixture.adapter),
       });
       if (fixtureKind(profile) === "field-notes") {
+        const scale = fnScale(resolved.fixtureDir, manifest, profile.fixture.scale ?? null);
         print({
           pins,
           source: {
             dir: profile.fixture.source.dir,
             ...sourceTreeHashes(resolved.sourceDir, manifest),
+          },
+          scale: {
+            scale: scale.scale,
+            id: scale.id,
+            articleCount: scale.articleCount,
+            declared: Object.fromEntries(
+              ["appsZfbTreeSha256", "contentTreeSha256", "sharedTreeSha256", "datasetSha256"].map(
+                (k) => [k, scale[k]],
+              ),
+            ),
           },
         });
       } else print(pins);
@@ -215,6 +272,114 @@ export async function main(argv) {
       print(r);
       return r.ok ? EXIT.ok : EXIT.stopped;
     }
+    case "make-source": {
+      const scale = Number(need(args, "scale"));
+      if (!FN_SCALE_COUNTS.includes(scale)) {
+        process.stderr.write(`--scale must be one of ${FN_SCALE_COUNTS.join(", ")}\n`);
+        return EXIT.usage;
+      }
+      const out = resolve(need(args, "out"));
+      const git = findGitWorkTree(out);
+      if (git) {
+        process.stderr.write(`--out ${out} is inside the git work tree ${git}\n`);
+        return EXIT.usage;
+      }
+      if (existsSync(out)) {
+        process.stderr.write(`refusing to overwrite ${out}\n`);
+        return EXIT.usage;
+      }
+      const r = makeFieldNotesSource({
+        fixtureDir: resolve(args["fixture-dir"] ?? join(HARNESS_DIR, "fixtures", "field-notes")),
+        archiveDir: resolve(need(args, "archive")),
+        scale,
+        outDir: out,
+      });
+      print({ ...r, generator: { ...r.generator, stdout: r.generator.stdout.trim() } });
+      return r.ok ? EXIT.ok : EXIT.identityRejected;
+    }
+    case "series": {
+      const { exitCode, record } = await runSeries({ planPath: need(args, "plan") });
+      if (record)
+        print({
+          record: join(record.outDir, `${record.plan.labelPrefix}.series.json`),
+          exitCode,
+          sessions: record.sessions.map((x) => ({
+            label: x.label,
+            variant: x.variant,
+            status: x.status,
+            exitCode: x.exitCode,
+          })),
+        });
+      return exitCode;
+    }
+    case "aggregate": {
+      const out = typeof args.out === "string" ? resolve(args.out) : null;
+      if (out && existsSync(out)) {
+        process.stderr.write(`refusing to overwrite ${out}\n`);
+        return EXIT.usage;
+      }
+      let input;
+      if (typeof args.series === "string") {
+        input = aggregateInputFromRecord(resolve(args.series));
+      } else if (typeof args.sessions === "string") {
+        const sessions = args.sessions.split(",").map((pair, index) => {
+          const at = pair.indexOf("=");
+          const variant = pair.slice(0, at);
+          const dir = resolve(pair.slice(at + 1));
+          return { index, variant, dir, label: dir.split("/").filter(Boolean).at(-1) };
+        });
+        if (sessions.some((x) => !/^[A-Za-z0-9]+$/.test(x.variant))) {
+          process.stderr.write("--sessions needs V=<labelDir> pairs (variant: [A-Za-z0-9]+)\n");
+          return EXIT.usage;
+        }
+        const declared =
+          typeof args["declared-differences"] === "string"
+            ? args["declared-differences"].split(",").filter(Boolean)
+            : [];
+        const bad = declared.filter((d) => !DECLARABLE_FACETS.includes(d));
+        if (bad.length) {
+          process.stderr.write(
+            `--declared-differences: ${bad.join(", ")} cannot differ (declarable: ${DECLARABLE_FACETS.join(", ")})\n`,
+          );
+          return EXIT.usage;
+        }
+        input = { sessions, declaredDifferences: declared, protocol: null, series: null };
+      } else {
+        process.stderr.write("aggregate needs --series <record.json> or --sessions V=<dir>,...\n");
+        return EXIT.usage;
+      }
+      const { report, exitCode } = aggregate(input);
+      const errors = validateAs("aggregate", report);
+      if (out) writeJsonSync(out, report);
+      print({
+        schema: AGGREGATE_SCHEMA,
+        out,
+        exitCode,
+        identityOk: report.identity.ok,
+        failedChecks: report.identity.checks.filter((c) => !c.ok).map((c) => c.name),
+        complete: report.complete,
+        incompleteSessions: report.incompleteSessions,
+        schemaErrors: errors,
+        ...(out ? {} : { report }),
+      });
+      return exitCode;
+    }
+    case "freeze": {
+      const r = freezeHarness({
+        outDir: need(args, "out"),
+        allowDirty: Boolean(args["allow-dirty"]),
+      });
+      print({ dir: r.dir, cli: r.cli, stamp: r.stamp });
+      return EXIT.ok;
+    }
+    case "verify-frozen": {
+      const r = verifyFrozen(resolve(typeof args.dir === "string" ? args.dir : HARNESS_DIR));
+      print({ ok: r.ok, dir: r.dir, checks: r.checks });
+      return r.ok ? EXIT.ok : EXIT.identityRejected;
+    }
+    case "protocols":
+      print(PROTOCOLS);
+      return EXIT.ok;
     case "probe-mac":
       print(probeMac());
       return EXIT.ok;

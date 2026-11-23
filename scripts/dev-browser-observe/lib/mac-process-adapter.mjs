@@ -125,44 +125,69 @@ export function sampledPeak(samples) {
 
 const execFileAsync = promisify(execFile);
 
+/** Async `ps -M` line count; "unavailable" when ps fails or prints no thread rows. */
+export async function threadCountAsync(pid, execImpl = execFileAsync) {
+  let out;
+  try {
+    out = (await execImpl("ps", ["-M", "-p", String(pid)], { env: C_ENV() })).stdout;
+  } catch {
+    return "unavailable";
+  }
+  const lines = String(out ?? "")
+    .split("\n")
+    .filter((l) => l.trim() !== "");
+  return lines.length >= 2 ? lines.length - 1 : "unavailable";
+}
+
 /**
  * Non-blocking variant used during the armed wait, so sampling never stalls
- * the event loop that timestamps binding delivery. Threads are not sampled here.
+ * the event loop that timestamps binding delivery. Threads are sampled only with
+ * withThreads (the resource study), one async ps -M per present pid.
  */
-export async function sampleAsync(pids) {
+export async function sampleAsync(pids, { withThreads = false, execImpl = execFileAsync } = {}) {
   const at = isoNow();
   const hr = process.hrtime.bigint().toString();
   if (pids.length === 0)
     return { at, hrtimeNs: hr, processes: [], summedRssKiB: 0, label: SAMPLE_LABELS.rss };
   let text = "";
   try {
-    text = (
-      await execFileAsync("ps", ["-o", "pid=,rss=,vsz=", "-p", pids.join(",")], { env: C_ENV() })
-    ).stdout;
+    text = (await execImpl("ps", ["-o", "pid=,rss=,vsz=", "-p", pids.join(",")], { env: C_ENV() }))
+      .stdout;
   } catch (error) {
     text = error?.stdout ?? "";
   }
   const rows = parseSampleRows(text);
-  const processes = pids.map((pid) => {
-    const r = rows.find((x) => x.pid === pid);
-    return {
-      pid,
-      present: Boolean(r),
-      rssKiB: r ? r.rssKiB : "unavailable",
-      vszKiB: r ? r.vszKiB : "unavailable",
-      threads: "unavailable",
-    };
-  });
+  const processes = await Promise.all(
+    pids.map(async (pid) => {
+      const r = rows.find((x) => x.pid === pid);
+      return {
+        pid,
+        present: Boolean(r),
+        rssKiB: r ? r.rssKiB : "unavailable",
+        vszKiB: r ? r.vszKiB : "unavailable",
+        threads: r && withThreads ? await threadCountAsync(pid, execImpl) : "unavailable",
+      };
+    }),
+  );
   const summed = processes.reduce(
     (acc, p) => (typeof p.rssKiB === "number" ? acc + p.rssKiB : acc),
     0,
   );
+  const threadCounts = processes.map((p) => p.threads).filter((t) => typeof t === "number");
   return {
     at,
     hrtimeNs: hr,
     processes,
     summedRssKiB: summed,
     label: SAMPLE_LABELS.rss,
-    threadsNote: "not sampled during the armed wait",
+    ...(withThreads
+      ? {
+          summedThreads:
+            threadCounts.length === processes.filter((p) => p.present).length &&
+            threadCounts.length > 0
+              ? threadCounts.reduce((a, b) => a + b, 0)
+              : "unavailable",
+        }
+      : { threadsNote: "not sampled during the armed wait" }),
   };
 }

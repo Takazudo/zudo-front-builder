@@ -13,8 +13,10 @@
       "sha256": "f2eaa2fe860b8cbc88e4ac2274f8e00c003ee7fb891e2dd151e5069f6b386641",
       "args": "100"
     },
-    "treeHashes": "apps/zfb excluding lib/content.ts (and node_modules/dist/.zfb), content/, shared/; recorded by `cli.mjs pins` and checked by verify-identity"
+    "treeHashes": "apps/zfb excluding lib/content.ts (and node_modules/dist/.zfb), content/, shared/; recorded by `cli.mjs pins` and checked by verify-identity",
+    "scaleNote": "source.datasetSha256 and generator.args describe scale 100, the default; scales.json declares 100, 1000 and 5000"
   },
+  "scales": "scales.json",
   "adapters": {
     "target": "apps/zfb/lib/content.ts",
     "storage": "Stored as content.ts.adapter so the repo formatter never rewrites byte-exact inputs.",

@@ -1,0 +1,51 @@
+{
+  "$id": "dev-browser-observe.aggregate.v1",
+  "title": "Report of `cli.mjs aggregate`: per-session block stats, pooled per-variant stats and the identity comparison",
+  "type": "object",
+  "required": [
+    "schema",
+    "declaredDifferences",
+    "identity",
+    "complete",
+    "incompleteSessions",
+    "sessions",
+    "facets",
+    "pooled"
+  ],
+  "properties": {
+    "schema": { "const": "dev-browser-observe.aggregate.v1" },
+    "protocol": { "type": ["string", "null"] },
+    "series": { "type": ["object", "null"] },
+    "declaredDifferences": { "type": "array", "items": { "enum": ["build", "toolchain"] } },
+    "identity": {
+      "type": "object",
+      "required": ["ok", "checks"],
+      "description": "within-variant:<v>:<facet> (every facet equal within a variant) and across-variants:<facet> (equal unless declared). Facets: corpus, adapter, config, toolchain, build, browser, harness, observer, host, profile, schedule."
+    },
+    "complete": { "type": "boolean" },
+    "incompleteSessions": { "type": "array", "items": { "type": "string" } },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "variant", "status", "blocks"],
+        "properties": {
+          "status": { "enum": ["complete", "incomplete", "missing", "not-attempted"] },
+          "blocks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["scenario", "opId", "measured", "warmup"],
+              "description": "measured: planned, attempted, success, stale, timeout, error, notAttempted and latencyMs { n, min, median, p95NearestRank, max, values, conditionalOnSuccess, failuresPresent }. warmup: the same counts, excludedFromStats."
+            }
+          }
+        }
+      }
+    },
+    "facets": { "type": "object" },
+    "pooled": {
+      "type": "object",
+      "description": "variant -> { sessions, ops: { <scenario>/<opId>: { measured } } } with counts summed and latencies concatenated across the variant's sessions."
+    }
+  }
+}

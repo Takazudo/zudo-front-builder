@@ -9,6 +9,9 @@ export const SCHEMA_FILES = {
   "build-receipt": "build-receipt.v1.json",
   fixture: "tiny-fixture.v1.json",
   "field-notes-fixture": "field-notes-fixture.v1.json",
+  "field-notes-scales": "field-notes-scales.v1.json",
+  series: "series.v1.json",
+  aggregate: "aggregate.v1.json",
 };
 
 export function loadSchema(name) {
@@ -63,6 +66,8 @@ export function validate(schema, value, path = "$") {
       if (props[k]) errors.push(...validate(props[k], v, `${path}.${k}`));
       else if (schema.additionalProperties === false)
         errors.push(`${path}: unexpected property ${k}`);
+      else if (schema.additionalProperties && typeof schema.additionalProperties === "object")
+        errors.push(...validate(schema.additionalProperties, v, `${path}.${k}`));
     }
   }
   return errors;

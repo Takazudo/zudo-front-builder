@@ -1,0 +1,92 @@
+{
+  "$id": "dev-browser-observe.series.v1",
+  "title": "dev-browser-observe series plan: fresh sessions of two (or more) variant profiles in a declared order",
+  "type": "object",
+  "required": ["schema", "id", "protocol", "variants", "order", "labelPrefix"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "dev-browser-observe.series.v1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "protocol": {
+      "enum": ["dev-browser-observe.timing-abba.v1", "dev-browser-observe.resource-study.v1"],
+      "description": "timing-abba.v1: order X,Y,Y,X, every op repeat { warmups: 2, measured: 10 }, ops edit-body, edit-shared-component, edit-managed-css, edit-title, edit-category. resource-study.v1: each profile declares resourceStudy with the protocol constants."
+    },
+    "variants": {
+      "type": "object",
+      "description": "Variant name -> { profile }. Profiles must be equal except buildReceipt, productSha, productDirtyIdentity and description, and share outDir and lock. For A/A, use two receipts of the same binary.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["profile"],
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "type": "string",
+            "minLength": 1
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "declaredDifferences": {
+      "type": "array",
+      "items": {
+        "enum": ["build", "toolchain"]
+      },
+      "description": "Identity facets allowed to differ between variants (default none: an A/A series)."
+    },
+    "order": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9]+$"
+      }
+    },
+    "labelPrefix": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,100}$",
+      "description": "Session labels are <labelPrefix>-s<n>-<variant>; the series record is <outDir>/<labelPrefix>.series.json."
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Scenario ids passed to every session as --scenario (default: all)."
+    },
+    "opSubset": {
+      "type": "object",
+      "required": ["ops", "reason"],
+      "additionalProperties": false,
+      "description": "timing-abba.v1 only: run fewer than the protocol's five ops. Without it every protocol op must appear at least once; with it the ops must be exactly this subset. Recorded in the series record and the aggregate report.",
+      "properties": {
+        "ops": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "edit-body",
+              "edit-shared-component",
+              "edit-managed-css",
+              "edit-title",
+              "edit-category"
+            ]
+          }
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

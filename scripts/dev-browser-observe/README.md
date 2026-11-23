@@ -5,8 +5,9 @@ a content file edit. The harness launches the server and one browser it owns.
 Any run that cannot be trusted stops before the next workload edit.
 
 `node scripts/dev-browser-observe/cli.mjs --help` lists every command and exit
-code. `cli.mjs schema <profile|receipt|record|build-receipt|fixture>` prints a
-JSON schema.
+code. `cli.mjs schema <name>` prints a JSON schema (`profile`, `receipt`,
+`record`, `build-receipt`, `fixture`, `field-notes-fixture`,
+`field-notes-scales`, `series`, `aggregate`).
 
 ## Workflow
 
@@ -437,8 +438,8 @@ batch.
 
 ## Field Notes fixture (`kind: "field-notes"`)
 
-`fixture.kind: "field-notes"` runs the original 100-article Field Notes ZFB
-app. That app is not in this repo. `fixture.source.dir` points at the
+`fixture.kind: "field-notes"` runs the original Field Notes ZFB app, at 100
+articles unless `fixture.scale` says otherwise (see "Corpus scales" below). That app is not in this repo. `fixture.source.dir` points at the
 parent-provided source dir, and the profile pins its tree hashes: `apps/zfb`
 without `lib/content.ts`, `content/`, `shared/`, and the generator's
 `datasetSha256`. `cli.mjs pins` prints all of them, and `verify-identity`
@@ -586,6 +587,188 @@ hide the others. The matrices are in `profiles/field-notes-*.example.json`.
 For each adapter, `*-q.example.json` (external), `*-internal-q.example.json`
 and `*-recovery-diagnostic-q.example.json` (`ZFB_DEV_TIMING=1`,
 `requireSameTick`) cover the new families.
+
+## Corpus scales (`fixture.scale`: 100, 1000, 5000)
+
+`fixtures/field-notes/scales.json` (schema `field-notes-scales`) declares each
+scale: the generator (`scripts/generate.mjs`, sha256 `f2eaa2fe…6641`), its
+argument, and the expected `apps/zfb`, `content/`, `shared/`, dataset and
+`content/manifest.json` hashes. A source dir for a scale is the archive's
+`apps/`, `shared/` and `scripts/` with `node scripts/generate.mjs <count>` run
+in it. The generator is deterministic. Its only parameter is the article count,
+and it also copies the shared spec and CSS into each app, with identical bytes.
+
+| Scale | datasetSha256 | Source |
+| --- | --- | --- |
+| 100 | `fcaa222e…b58a` | `generate.mjs 100`; batch Q's `src-100` is byte-identical to a fresh run |
+| 1000 | `96d9266a…189b` | `generate.mjs 1000`; no 1000 tree is in the archive |
+| 5000 | `fc3717b7…8c59` | `generate.mjs 5000`; byte-identical to the archive's own `content/` |
+
+All three dataset hashes equal the original benchmark's
+`results/final-audit.json` entries. `apps/zfb` and `shared/` hash the same at
+every scale.
+
+- `cli.mjs make-source --archive <archive> --scale <n> --out <dir>` builds a
+  source dir. It checks the generator's sha256 before copying anything, refuses
+  an existing `--out` or one inside a git work tree, and compares every hash
+  with `scales.json`. It exits 3 on any mismatch and prints the `source` pins.
+- A profile sets `fixture.scale` and pins that scale's hashes in
+  `fixture.source`. A profile without `fixture.scale` is scale 100, with the same
+  pins as before. `cli.mjs pins` prints the scale's declared hashes next to
+  the actual ones.
+- `verify-identity` and `run` reject the following before any edit:
+  - a source whose dataset is not the declared scale's
+    (`source-dataset-matches-manifest-declaration`);
+  - pins that differ from the declaration
+    (`source-pin-matches-scale-declaration:*`);
+  - a `content/manifest.json` with a different `articleCount`
+    (`source-article-count-matches-scale`).
+
+  Materialization refuses another scale's dataset as well. Receipts record
+  `fixture.scale` and `scaleId`.
+
+Cleanup live-checks every archive page, so a 5000 restore checks 100 archive
+pages. That cost applies equally to every variant of a series.
+
+## Repeats, series and aggregation
+
+### `repeat` (per op, Field Notes workload ops)
+
+`"repeat": { "warmups": 2, "measured": 10 }` on an op runs it 12 times in a
+row in the same session, each time with a fresh token on the current file.
+Repeat is allowed on `edit-body`, `edit-shared-component`, `edit-managed-css`,
+`edit-title`, `edit-category` and `edit-prop`, only in workload scenarios,
+and never with `inject` or `expect: "timeout"`.
+
+- `run` expands each repeat into ops `<id>#w1..` then `<id>#m1..`, each with
+  `iteration { opId, kind, index, of }`. `run-start` and `receipt.json` record
+  the expanded `schedule`.
+- Warmup attempts get label `warmup`. They are counted in `accounting` and fail
+  the batch like any attempt, but `summary.json` latency statistics exclude
+  them (`warmupsExcludedFromStats`).
+- Fail-stop is unchanged. The first failure, warmup or measured, stops the
+  session before the next edit, and the remainder is `notAttempted`.
+  Restoration runs once, at the end of the scenario.
+
+### `series --plan <plan.json>` (schema `series`)
+
+A plan names the variant profiles, `order`, `labelPrefix` and `protocol`.
+`cli.mjs protocols` prints each protocol's constants.
+
+- `dev-browser-observe.timing-abba.v1` requires all of these:
+  - the order is X,Y,Y,X;
+  - every op has `repeat { warmups: 2, measured: 10 }` and expects success;
+  - the ops come from `edit-body`, `edit-shared-component`,
+    `edit-managed-css`, `edit-title` and `edit-category`.
+- `dev-browser-observe.resource-study.v1` (see below).
+
+Before any session, the plan is rejected (exit 2) when any of these holds:
+
+- variant profiles differ outside `buildReceipt`, `productSha`,
+  `productDirtyIdentity` and `description`;
+- they do not share `outDir` and lock;
+- their build receipts differ in `build` or `toolchain` without listing it in
+  `declaredDifferences`.
+
+A timing-abba.v1 plan must run all five protocol ops at least once. To run
+fewer, the plan declares `opSubset: { ops, reason }`; the ops must then be
+exactly that subset, and the series record and aggregate report carry it.
+
+An A/A control is two receipts of the same binary with no declared difference.
+Then every variant's `verify-identity` must pass, and a frozen harness must
+pass `verify-frozen` (recorded as `preflightFrozen`), or no session runs (exit 3).
+
+Sessions run in order as separate `run`s, so each one gets a fresh server and
+browser. Labels are `<labelPrefix>-s<n>-<variant>`. The first session that
+exits non-zero stops the series, and later sessions are `not-attempted`.
+`<outDir>/<labelPrefix>.series.json` records the plan hash, profile hashes,
+preflight and each session's status and exit code. Examples:
+`profiles/series-timing-abba.example.json` and
+`profiles/field-notes-direct-read-timing-abba-5000.example.json`.
+
+### `aggregate`
+
+Run `aggregate --series <record.json>`, or
+`aggregate --sessions A=<labelDir>,B=<labelDir>,... [--declared-differences build]`.
+Add `[--out report.json]` to write the report. It reads each label dir and
+writes schema `aggregate`:
+
+- **Per session and op block:** `measured` planned, attempted, success, stale,
+  timeout, error and notAttempted, with latency n, min, median, nearest-rank
+  p95 and max. Latency covers measured successes only (`conditionalOnSuccess`,
+  `failuresPresent`). `warmup` counts are reported separately and marked
+  `excludedFromStats`.
+- **Pooled per variant and op:** counts are summed and latencies concatenated
+  across that variant's sessions.
+- **Unknown counts:** a session recorded before schedules existed has
+  `planned: null`. Any pooled op that includes such a block keeps `planned` and
+  `notAttempted` null (unknown), and `failuresPresent` is null when no failure
+  was observed. A count is never negative: more attempts than planned gives
+  `notAttempted: null` with `countsInconsistent`.
+- **Unrun sessions:** with `--series`, a session the series never ran
+  (`not-attempted`, no label dir) has no identity and adds its planned
+  attempts, from its variant's unchanged profile, to the pooled `notAttempted`.
+  If the profile changed since, its planned schedule is unknown and
+  `plannedError` says why. A missing label dir is likewise `missing`.
+- **Identity:** facets are read from each `receipt.json` of a session that ran: corpus, adapter,
+  config, toolchain, build, browser, harness, observer, host, profile and
+  schedule. Every facet must match within a variant. Across variants, every
+  facet must match except those declared.
+
+Exit codes: 3 for an identity mismatch among the sessions that ran, 1 when a
+session is missing, not attempted, stopped or incomplete, otherwise 0.
+
+## Resource study (`resourceStudy`, protocol `dev-browser-observe.resource-study.v1`)
+
+This is separate from timing. A profile declares
+`{ protocol, cycles: 30, idleAfterRestoreMs: 10000, finalIdleMs: 60000, sampleEveryMs }`,
+with `sampleEveryMs` of at least 1000. The values must equal the protocol's
+constants, and every variant uses the same profile apart from its build.
+
+A resource-study run takes exactly one scenario of repeatable edits; use
+`--scenario` or the plan's `scenarios` to pick it. It runs that scenario as 30
+cycles (`<id>@c01..30`), each an edit followed by a restoration. After each
+restoration that completes, the run idles for 10 s, and after the last cycle it
+idles a further 60 s. A stopped batch skips the final idle and records why.
+
+From start to stop, owned processes are sampled every `sampleEveryMs`, using
+the birth-verified owned pids. Each sample is one async
+`ps -o pid=,rss=,vsz=` plus one async `ps -M` per pid. Every `resource-sample`
+record carries its phase (`edit`, `restore`, `after-restore`, `final`) and its
+own `costMs`, and a tick that would overlap a running sample is skipped and
+counted. The phase turns to `restore` as each restoration starts. A sample
+that cannot be recorded halts the batch: the next op stops with a
+`controller-error` precheck (`halt`), no further idle runs, the run exits 8, and
+`summary.json` `resourceStudy.failure` says why.
+
+A field `ps` cannot read is `unavailable`. `summary.json` `resourceStudy`
+reports completed cycles, sample counts, cost, unavailable counts, the last
+sample of each idle, and min and max. It never infers a leak, a trend or an
+OOM. Attempt latencies in such a session are not timing measurements.
+
+## Frozen copy for a measurement series
+
+`cli.mjs freeze --out <dir>` copies the harness to `<dir>/dev-browser-observe`.
+It refuses a harness dir with uncommitted changes unless `--allow-dirty` is
+given. The copy gets a `.frozen.json` stamp with the source sha and dirty
+state, the harness and full tree hashes, the fixture hashes, the observer hash,
+and the `@playwright/test` package it links. That package is linked by its
+resolved, versioned path from `<dir>/node_modules`. Every file is made
+read-only.
+
+Run the series with `node <dir>/dev-browser-observe/cli.mjs`, and point the
+profiles' `fixture.dir` at the frozen `fixtures/`. Take their `pins` from the
+frozen `cli.mjs pins`. From a frozen copy:
+
+- `harnessCapability` reports `frozen: true` and `intact` instead of git state;
+- `verify-identity` and `run` add `harness-frozen-copy-intact` and
+  `harness-frozen-playwright-link`;
+- `verify-frozen [--dir]` rechecks the hashes, the read-only bits and the
+  playwright link.
+
+Development can continue in the checkout meanwhile. The Chromium binary itself
+is identified per session by `receipt.browser.executableSha256`, and
+`aggregate` compares it.
 
 ## Restoration and processes
 

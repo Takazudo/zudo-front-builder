@@ -1,0 +1,251 @@
+{
+  "$id": "field-notes-scales.v1",
+  "title": "Field Notes corpus scale declarations",
+  "type": "object",
+  "required": ["schema", "default", "generator", "sourceCopy", "byCount"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "field-notes-scales.v1"
+    },
+    "description": {
+      "type": "string"
+    },
+    "default": {
+      "enum": [100, 1000, 5000]
+    },
+    "generator": {
+      "type": "object",
+      "required": ["path", "sha256", "invocation"],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "invocation": {
+          "type": "string"
+        },
+        "semantics": {
+          "type": "string"
+        }
+      }
+    },
+    "sourceCopy": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "originalAudit": {
+      "type": "object"
+    },
+    "byCount": {
+      "type": "object",
+      "required": ["100", "1000", "5000"],
+      "additionalProperties": false,
+      "properties": {
+        "100": {
+          "type": "object",
+          "required": [
+            "id",
+            "articleCount",
+            "generatorArgs",
+            "datasetSha256",
+            "contentManifestSha256",
+            "appsZfbTreeSha256",
+            "contentTreeSha256",
+            "sharedTreeSha256",
+            "provenance",
+            "archiveDataset"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "articleCount": {
+              "type": "integer",
+              "minimum": 40
+            },
+            "generatorArgs": {
+              "type": "string"
+            },
+            "routeCount": {
+              "type": "integer"
+            },
+            "markdownBytes": {
+              "type": "integer"
+            },
+            "datasetSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "contentManifestSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "appsZfbTreeSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "contentTreeSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "sharedTreeSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "provenance": {
+              "enum": ["regenerated", "archive"]
+            },
+            "archiveDataset": {
+              "type": "object",
+              "required": ["equal"],
+              "properties": {
+                "equal": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "1000": {
+          "type": "object",
+          "required": [
+            "id",
+            "articleCount",
+            "generatorArgs",
+            "datasetSha256",
+            "contentManifestSha256",
+            "appsZfbTreeSha256",
+            "contentTreeSha256",
+            "sharedTreeSha256",
+            "provenance",
+            "archiveDataset"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "articleCount": {
+              "type": "integer",
+              "minimum": 40
+            },
+            "generatorArgs": {
+              "type": "string"
+            },
+            "routeCount": {
+              "type": "integer"
+            },
+            "markdownBytes": {
+              "type": "integer"
+            },
+            "datasetSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "contentManifestSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "appsZfbTreeSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "contentTreeSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "sharedTreeSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "provenance": {
+              "enum": ["regenerated", "archive"]
+            },
+            "archiveDataset": {
+              "type": "object",
+              "required": ["equal"],
+              "properties": {
+                "equal": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "5000": {
+          "type": "object",
+          "required": [
+            "id",
+            "articleCount",
+            "generatorArgs",
+            "datasetSha256",
+            "contentManifestSha256",
+            "appsZfbTreeSha256",
+            "contentTreeSha256",
+            "sharedTreeSha256",
+            "provenance",
+            "archiveDataset"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "articleCount": {
+              "type": "integer",
+              "minimum": 40
+            },
+            "generatorArgs": {
+              "type": "string"
+            },
+            "routeCount": {
+              "type": "integer"
+            },
+            "markdownBytes": {
+              "type": "integer"
+            },
+            "datasetSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "contentManifestSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "appsZfbTreeSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "contentTreeSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "sharedTreeSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "provenance": {
+              "enum": ["regenerated", "archive"]
+            },
+            "archiveDataset": {
+              "type": "object",
+              "required": ["equal"],
+              "properties": {
+                "equal": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

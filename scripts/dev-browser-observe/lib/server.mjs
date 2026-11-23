@@ -239,9 +239,15 @@ export function startDevServer({
       return sample(owned.map((p) => p.pid));
     },
     /** Only owned pids whose birth identity still matches are sampled. */
-    sampleResourcesAsync: async () => {
+    sampleResourcesAsync: async (opts = {}) => {
       const live = await liveKnownAsync(handle);
-      return { ...(await sampleAsync(live.map((p) => p.pid))), birthVerified: live.length };
+      return {
+        ...(await sampleAsync(
+          live.map((p) => p.pid),
+          opts,
+        )),
+        birthVerified: live.length,
+      };
     },
     injectKill: () => injectKillOwned(handle),
     logMark: () => linesBase + lines.length,
