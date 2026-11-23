@@ -1,0 +1,17 @@
+{
+  "schema": "dev-browser-observe.series.v1",
+  "id": "fn-5000-resource-1",
+  "description": "Resource-study series: filled copies of field-notes-direct-read-resource-study-5000.example.json, one per variant.",
+  "protocol": "dev-browser-observe.resource-study.v1",
+  "variants": {
+    "A": {
+      "profile": "/REPLACE/with/profile-a.json"
+    },
+    "B": {
+      "profile": "/REPLACE/with/profile-b.json"
+    }
+  },
+  "declaredDifferences": ["build"],
+  "order": ["A", "B", "B", "A"],
+  "labelPrefix": "fn5000-res1"
+}

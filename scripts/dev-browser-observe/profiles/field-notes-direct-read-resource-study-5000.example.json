@@ -1,0 +1,103 @@
+{
+  "schema": "dev-browser-observe.profile.v1",
+  "description": "Resource protocol dev-browser-observe.resource-study.v1 at scale 5000 (direct-read helper), separate from timing: the one scenario runs as 30 edit+restore cycles, 10 s idle after each completed restoration, 60 s final idle, owned processes sampled every 5 s (RSS and threads; a field ps cannot read is recorded unavailable). Use one filled copy per variant with profiles/series-resource-study.example.json.",
+  "mode": "source-built",
+  "diagnostic": false,
+  "productSha": "0000000000000000000000000000000000000000",
+  "productDirtyIdentity": null,
+  "buildReceipt": "/tmp/dev-browser-observe/build-receipt.json",
+  "fixture": {
+    "kind": "field-notes",
+    "dir": "../fixtures/field-notes",
+    "adapter": "direct-read",
+    "managedCss": true,
+    "source": {
+      "dir": "/REPLACE/with/fieldnotes/src-5000",
+      "appsZfbTreeSha256": "5e5580347095d9c5817faf3d4aa30529913e1a0c26a6b1b80905b5b01fa9ba36",
+      "contentTreeSha256": "dff8f9791e9e1c2da791293813b8bc6327a419e6ebf9fd772484320268b84540",
+      "sharedTreeSha256": "f709ace99f2aad0d1c7c1d553c8693b66883f1055168855fb6807722b0cf226a",
+      "datasetSha256": "fc3717b7bd57cc5921cbd2f7bcdea2f8341d8b2ab8b389d8f5b0d24c068e8c59"
+    },
+    "scale": 5000
+  },
+  "pins": {
+    "harnessTreeSha256": null,
+    "fixtureTreeSha256": null,
+    "observerSha256": null,
+    "adapterSha256": null
+  },
+  "server": {
+    "port": {
+      "mode": "ephemeral"
+    },
+    "host": "127.0.0.1",
+    "readyTimeoutMs": 180000
+  },
+  "browser": {
+    "headless": true,
+    "args": [
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows"
+    ],
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "deviceScaleFactor": 1
+  },
+  "timeouts": {
+    "attemptMs": 30000,
+    "supplementalMs": 30000,
+    "restoreMs": 60000,
+    "stopTermMs": 5000,
+    "stopKillMs": 3000,
+    "quietMs": 3000
+  },
+  "limits": {
+    "rssCeilingKiB": 4194304,
+    "wallCeilingMs": 7200000,
+    "sampleEveryMs": 1000
+  },
+  "calibration": {
+    "repeats": 3,
+    "staleTimeoutMs": 2000,
+    "cells": [
+      "binding-round-trip",
+      "two-raf",
+      "synthetic-dom",
+      "synthetic-css",
+      "observer-init-after-navigation",
+      "stale-then-new-token",
+      "late-token",
+      "reload-survival-controller-triggered",
+      "native-reload-survival"
+    ]
+  },
+  "restoration": {
+    "writeMethod": "in-place"
+  },
+  "scenarios": [
+    {
+      "id": "fn-edit-body",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "body-05",
+          "op": "edit-body",
+          "article": "article-00005",
+          "writeMethod": "in-place"
+        }
+      ]
+    }
+  ],
+  "outDir": "/tmp/dev-browser-observe-series",
+  "resourceStudy": {
+    "protocol": "dev-browser-observe.resource-study.v1",
+    "cycles": 30,
+    "idleAfterRestoreMs": 10000,
+    "finalIdleMs": 60000,
+    "sampleEveryMs": 5000
+  }
+}

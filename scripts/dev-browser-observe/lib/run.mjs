@@ -9,6 +9,7 @@ import {
   collectIdentityFacts,
   evaluateIdentity,
   findLocalTakazudoPackages,
+  frozenState,
   harnessCapability,
 } from "./identity.mjs";
 import { LockBusyError, acquireLock } from "./lock.mjs";
@@ -16,6 +17,8 @@ import { hostIdentity, probeMac, sampledPeak } from "./mac-process-adapter.mjs";
 import { liveOwnedFromRegistry, shouldRegisterOwned, stopOwned } from "./process-owner.mjs";
 import { LABEL_RE, loadProfile } from "./profile.mjs";
 import { Recorder } from "./recorder.mjs";
+import { createResourceStudy, summarizeResourceStudy } from "./resource-study.mjs";
+import { expandSchedule, scheduleOf } from "./schedule.mjs";
 import { startDevServer } from "./server.mjs";
 import { batchExitOk, newAccounting, runBatch } from "./state-machine.mjs";
 import { summarize } from "./stats.mjs";
@@ -55,8 +58,8 @@ export function notImplementedResult(profile) {
   };
 }
 
-function plannedCount(profile) {
-  return profile.scenarios.reduce((n, s) => n + s.ops.length, 0);
+function plannedCount(scenarios) {
+  return scenarios.reduce((n, s) => n + s.ops.length, 0);
 }
 
 /** Identity verification only: no lock, no server, no materialization, no edits. */
@@ -106,6 +109,17 @@ function identityVerdict({ profile, resolved, manifest, receipt, extraAppDirs })
     });
   }
   extra.push(...kind.extraChecks(profile, resolved, manifest));
+  const frozen = frozenState();
+  if (frozen)
+    extra.push({
+      name: "harness-frozen-copy-intact",
+      ok: frozen.intact,
+      expected: {
+        harnessTreeSha256: frozen.stamp.harnessTreeSha256,
+        fullTreeSha256: frozen.stamp.fullTreeSha256,
+      },
+      actual: frozen.actual,
+    });
   const gitTree = findGitWorkTree(resolved.outDir);
   extra.push({
     name: "outdir-outside-git-worktree",
@@ -158,6 +172,12 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
   }
   if (!LABEL_RE.test(label ?? "")) {
     stderr(`invalid --label ${JSON.stringify(label)} (must match ${LABEL_RE})`);
+    return EXIT.usage;
+  }
+  try {
+    loaded.runScenarios = command === "run" ? expandSchedule(profile) : profile.scenarios;
+  } catch (error) {
+    stderr(String(error?.message ?? error));
     return EXIT.usage;
   }
   const gitTree = findGitWorkTree(resolved.outDir);
@@ -213,7 +233,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   const { profile, resolved } = loaded;
   const rec = new Recorder(join(labelDir, "records.jsonl"));
   const startedNs = hrtimeNs();
-  const planned = command === "run" ? plannedCount(profile) : 0;
+  const runScenarios = loaded.runScenarios ?? profile.scenarios;
+  const schedule = command === "run" ? scheduleOf(runScenarios) : [];
+  const planned = command === "run" ? plannedCount(runScenarios) : 0;
   rec.append({
     type: "run-start",
     command,
@@ -221,6 +243,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     profilePath: loaded.path,
     profileSha256: loaded.sha256,
     scenarioSelection: loaded.scenarioSelection ?? null,
+    schedule,
+    resourceStudy: command === "run" ? (profile.resourceStudy ?? null) : null,
   });
 
   const kind = kindFor(profile);
@@ -246,6 +270,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     profile,
     profileSha256: loaded.sha256,
     scenarioSelection: loaded.scenarioSelection ?? null,
+    schedule,
     fixture: null,
     browser: null,
     server: null,
@@ -282,6 +307,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   let server = null;
   let browserHandle = null;
   const samples = [];
+  let study = null;
   let exitCode = EXIT.ok;
   let summaryExtra = {};
   const accountingRef = { current: null };
@@ -407,10 +433,29 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     const fixtureOps = kind.ops(m, profile);
 
     if (command === "run") {
+      if (profile.resourceStudy) {
+        study = createResourceStudy({
+          study: profile.resourceStudy,
+          sampleNow: () => server.sampleResourcesAsync({ withThreads: true }),
+          append: (r) => rec.append(r),
+          clock: { now: hrtimeNs },
+          sleep: hooks.sleep,
+        });
+        await study.start();
+      }
+      const recorder = study
+        ? {
+            append: (r) => {
+              study.onRecord(r);
+              return rec.append(r);
+            },
+          }
+        : rec;
       const { accounting, stopped } = await runBatch({
-        scenarios: profile.scenarios,
+        scenarios: runScenarios,
         deps: {
-          recorder: rec,
+          recorder,
+          afterScenario: study ? study.afterScenario : undefined,
           clock: { now: hrtimeNs },
           server: { ...server, sampleResources: sampleServer },
           page: observer,
@@ -429,6 +474,11 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
               : null,
         },
       });
+      if (study) {
+        await study.finalIdle({ stopped, stopReason: accounting.stopReason });
+        await study.stop();
+        study = null;
+      }
       summaryExtra = { accountingFinal: accounting };
       exitCode = batchExitOk(accounting, stopped) ? EXIT.ok : EXIT.stopped;
     } else {
@@ -468,6 +518,13 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         stderr(`record write failed (${r.type}): ${error?.message ?? error}`);
       }
     };
+    if (study) {
+      try {
+        await study.stop();
+      } catch (error) {
+        stderr(`resource-study sampler stop failed: ${error?.message ?? error}`);
+      }
+    }
     let stopReport = { absent: true, reason: "no-server-started" };
     if (server) {
       try {
@@ -551,6 +608,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         identityRejected: summaryExtra.identityRejected === true,
         calibration: summaryExtra.calibration ?? null,
         resourceSamples: { count: samples.length, peak: sampledPeak(samples) },
+        resourceStudy:
+          command === "run" && profile.resourceStudy
+            ? summarizeResourceStudy(rec.records, profile.resourceStudy)
+            : null,
         ownedServerAbsentAfterStop: Boolean(stopReport.absent),
         stopFailure,
         serverExit: server?.handle.exit ?? null,

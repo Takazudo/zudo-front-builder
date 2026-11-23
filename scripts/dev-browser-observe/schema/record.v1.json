@@ -30,11 +30,22 @@
         "controller-error",
         "run-end",
         "inject",
-        "control-not-fired"
+        "control-not-fired",
+        "idle",
+        "resource-sample",
+        "resource-study"
       ]
     },
     "label": {
-      "enum": ["measured", "supplemental", "cleanup", "calibration", "not-success", "unmeasured"]
+      "enum": [
+        "measured",
+        "supplemental",
+        "cleanup",
+        "calibration",
+        "not-success",
+        "unmeasured",
+        "warmup"
+      ]
     },
     "outcome": {
       "enum": [

@@ -25,14 +25,25 @@ export function distribution(values) {
 /** Latency stats are conditional on success: failed attempts never contribute a duration. */
 export function summarize(records, accounting) {
   // hidden-edit and final-state successes carry no update latency, so they are left out of the distribution.
+  // Warmup attempts (op.repeat) are recorded and counted in accounting but never enter a distribution.
+  const isWarmup = (r) => r.iteration?.kind === "warmup";
   const successes = records.filter(
-    (r) => r.type === "attempt" && r.outcome === "success" && typeof r.latencyMs === "number",
+    (r) =>
+      r.type === "attempt" &&
+      r.outcome === "success" &&
+      typeof r.latencyMs === "number" &&
+      !isWarmup(r),
   );
+  const warmups = records.filter((r) => r.type === "attempt" && isWarmup(r));
   const byOp = {};
   for (const r of successes) (byOp[r.op] ??= []).push(r.latencyMs);
   return {
     accounting,
     endpoint: "predicate confirmed + 2 rAF + binding delivery",
+    warmupsExcludedFromStats: {
+      attempts: warmups.length,
+      success: warmups.filter((r) => r.outcome === "success").length,
+    },
     latencyConditionalOnSuccessMs: distribution(successes.map((r) => r.latencyMs)),
     byOpConditionalOnSuccessMs: Object.fromEntries(
       Object.entries(byOp).map(([k, v]) => [k, distribution(v)]),

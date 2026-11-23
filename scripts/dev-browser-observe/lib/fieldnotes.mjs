@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
@@ -125,6 +126,105 @@ export function fnAdapterPath(fixtureDir, manifest, adapterId) {
   return join(fixtureDir, v.file);
 }
 
+export const FN_SCALES_SCHEMA = "field-notes-scales.v1";
+export const FN_SCALE_COUNTS = [100, 1000, 5000];
+
+/** The versioned scale declarations (scales.json) the fixture manifest names. */
+export function loadFieldNotesScales(fixtureDir, manifest = loadFieldNotesFixture(fixtureDir)) {
+  if (!manifest.scales) throw new Error("field-notes fixture manifest declares no scales");
+  const scales = readJson(join(fixtureDir, manifest.scales));
+  if (scales.schema !== FN_SCALES_SCHEMA)
+    throw new Error(`scales schema ${scales.schema} is not ${FN_SCALES_SCHEMA}`);
+  return scales;
+}
+
+/** One scale's declaration (default: the declared default, 100), with the generator it was produced by. */
+export function fnScale(fixtureDir, manifest, scale = null, scales = null) {
+  const all = scales ?? loadFieldNotesScales(fixtureDir, manifest);
+  const n = scale ?? all.default;
+  const decl = all.byCount[String(n)];
+  if (!decl)
+    throw new Error(
+      `unknown field-notes scale ${n}; declared: ${Object.keys(all.byCount).join(", ")}`,
+    );
+  return { scale: n, ...decl, generator: all.generator, sourceCopy: all.sourceCopy };
+}
+
+/** Pins a profile's fixture.source must carry for a scale (dir excluded). */
+export const FN_SCALE_PIN_KEYS = [
+  "appsZfbTreeSha256",
+  "contentTreeSha256",
+  "sharedTreeSha256",
+  "datasetSha256",
+];
+
+/**
+ * Produce a scale's source dir from the original archive: copy apps/, shared/ and scripts/ into a new
+ * outDir, verify the generator's sha256, run `node scripts/generate.mjs <count>` there, then compare
+ * the resulting tree hashes with the scale declaration. The archive itself is only read.
+ */
+export function makeFieldNotesSource({
+  fixtureDir,
+  archiveDir,
+  scale,
+  outDir,
+  scales = null,
+  nodePath = process.execPath,
+}) {
+  const manifest = loadFieldNotesFixture(fixtureDir);
+  const decl = fnScale(fixtureDir, manifest, scale, scales);
+  if (existsSync(outDir)) throw new Error(`source out dir already exists: ${outDir}`);
+  const generatorAt = join(archiveDir, decl.generator.path);
+  const generatorSha = existsSync(generatorAt) ? sha256File(generatorAt) : null;
+  if (generatorSha !== decl.generator.sha256)
+    throw new Error(
+      `archive generator ${generatorAt} sha256 ${generatorSha} is not the declared ${decl.generator.sha256}; nothing copied`,
+    );
+  mkdirSync(outDir, { recursive: true });
+  for (const rel of decl.sourceCopy)
+    cpSync(join(archiveDir, rel), join(outDir, rel), {
+      recursive: true,
+      filter: (p) => !isBuildOutputPath(relative(join(archiveDir, rel), p)),
+    });
+  const copiedSha = sha256File(join(outDir, decl.generator.path));
+  const gen = spawnSync(nodePath, [decl.generator.path, decl.generatorArgs], {
+    cwd: outDir,
+    encoding: "utf8",
+    env: { PATH: process.env.PATH ?? "" },
+  });
+  const generator = {
+    path: decl.generator.path,
+    sha256: copiedSha,
+    args: [decl.generatorArgs],
+    node: nodePath,
+    status: gen.status,
+    signal: gen.signal,
+    stdout: gen.stdout,
+    stderr: gen.stderr,
+  };
+  if (gen.status !== 0) return { ok: false, scale: decl.scale, outDir, generator, checks: [] };
+  const actual = {
+    ...sourceTreeHashes(outDir, manifest),
+    contentManifestSha256: sha256File(join(outDir, manifest.source.content, "manifest.json")),
+  };
+  const checks = [...FN_SCALE_PIN_KEYS, "contentManifestSha256"].map((k) => ({
+    name: `scale-${decl.scale}:${k}`,
+    ok: actual[k] === decl[k],
+    expected: decl[k],
+    actual: actual[k],
+  }));
+  return {
+    ok: checks.every((c) => c.ok),
+    scale: decl.scale,
+    scaleId: decl.id,
+    outDir,
+    archiveDir,
+    generator,
+    checks,
+    source: Object.fromEntries([["dir", outDir], ...FN_SCALE_PIN_KEYS.map((k) => [k, actual[k]])]),
+  };
+}
+
 const skipBuildDirs = (_rel, kind, name) =>
   !(
     kind === "dir" &&
@@ -207,11 +307,13 @@ export function materializeFieldNotes({
   adapter,
   managedCss = false,
   placement = "external",
+  scale = null,
   expectedDatasetSha256 = null,
 }) {
   const manifest = loadFieldNotesFixture(fixtureDir);
-  // The pinned dataset is the manifest's unless a caller (a unit test's fake corpus) names its own.
-  const wantDataset = expectedDatasetSha256 ?? manifest.source.datasetSha256;
+  const scaleDecl = fnScale(fixtureDir, manifest, scale);
+  // The pinned dataset is the scale's unless a caller (a unit test's fake corpus) names its own.
+  const wantDataset = expectedDatasetSha256 ?? scaleDecl.datasetSha256;
   const place = fnPlacement(manifest, placement);
   if (existsSync(workDir)) throw new Error(`work dir already exists: ${workDir}`);
   const src = manifest.source;
@@ -281,6 +383,8 @@ export function materializeFieldNotes({
       externalContentCopied: placement !== "internal",
     },
     materializedDatasetSha256,
+    scale: scaleDecl.scale,
+    scaleId: scaleDecl.id,
     layoutPath: join(appDir, manifest.paths.layout),
     publicCssPath: join(appDir, manifest.paths.publicCss),
     managedCssPath,
