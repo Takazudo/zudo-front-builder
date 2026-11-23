@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it } from "vitest";
-import { ObserverPage } from "../lib/browser.mjs";
+import { ObserverPage, PREPARE_INTERRUPTED } from "../lib/browser.mjs";
 import {
   blockWrite,
   hashOf,
@@ -278,15 +278,19 @@ describe("ObserverPage controller side", () => {
     });
   });
 
-  it("a second arm interruption or a non-navigation arm error is not retried", async () => {
+  it("a second arm interruption is a recorded arm failure; a non-navigation arm error propagates", async () => {
     const destroyed = "page.evaluate: Execution context was destroyed";
     const twice = stubbed({ resultingUrl: "http://127.0.0.1:1/" });
     twice.p.arm = async () => {
       twice.calls.push("arm");
+      twice.p.armedToken = "stale";
       throw new Error(destroyed);
     };
-    await expect(twice.p.navigateAndAwait("/", {}, 100, "r")).rejects.toThrow(destroyed);
+    const r = await twice.p.navigateAndAwait("/", {}, 100, "r");
     expect(twice.calls).toEqual(["prepare:/", "arm", "await-resulting", "prepare:/", "arm"]);
+    expect(r).toMatchObject({ ok: false, stage: "arm", error: destroyed });
+    expect(r.recovery).toHaveLength(1);
+    expect(twice.p.armedToken).toBeNull();
     const other = stubbed({});
     other.p.arm = async () => {
       other.calls.push("arm");
@@ -294,6 +298,78 @@ describe("ObserverPage controller side", () => {
     };
     await expect(other.p.navigateAndAwait("/", {}, 100, "r")).rejects.toThrow("observer missing");
     expect(other.calls).toEqual(["prepare:/", "arm"]);
+  });
+
+  function interruptFirstArm(p, calls) {
+    const realArm = p.arm;
+    let arms = 0;
+    p.arm = async (...a) => {
+      calls.push("arm");
+      arms += 1;
+      if (arms === 1) throw new Error("page.evaluate: Execution context was destroyed");
+      return realArm(...a);
+    };
+  }
+
+  it("shares one re-navigation: an abort after an arm interruption is a structured navigation failure", async () => {
+    const { p, calls } = stubbed({ resultingUrl: "http://127.0.0.1:1/" });
+    interruptFirstArm(p, calls);
+    const realPrepare = p.prepare;
+    let prepares = 0;
+    p.prepare = async (path) => {
+      prepares += 1;
+      if (prepares === 2) {
+        calls.push(`prepare:${path}`);
+        throw new Error("page.goto: net::ERR_ABORTED");
+      }
+      return realPrepare(path);
+    };
+    const r = await p.navigateAndAwait("/", {}, 100, "r");
+    expect(calls).toEqual(["prepare:/", "arm", "await-resulting", "prepare:/"]);
+    expect(r).toMatchObject({
+      ok: false,
+      stage: "navigation",
+      recovery: [{ armInterruptedBy: expect.any(String) }],
+    });
+  });
+
+  it("a re-prepared page-not-in-cache document still goes through the transient re-read loop", async () => {
+    const { p, calls } = stubbed({ resultingUrl: "http://127.0.0.1:1/" });
+    interruptFirstArm(p, calls);
+    let prepares = 0;
+    p.prepare = async (path) => {
+      calls.push(`prepare:${path}`);
+      prepares += 1;
+      return {
+        docUUID: `doc-${prepares}`,
+        httpStatus: prepares === 2 ? 404 : 200,
+        notInCache: prepares === 2,
+      };
+    };
+    const r = await p.navigateAndAwait("/", {}, 5000, "r");
+    expect(calls).toEqual(["prepare:/", "arm", "await-resulting", "prepare:/", "prepare:/", "arm"]);
+    expect(r).toMatchObject({
+      ok: true,
+      docUUID: "doc-3",
+      transientReads: [{ evidence: "transient-not-in-cache" }],
+    });
+  });
+
+  it("a prepare interrupted by a navigation (PREPARE_INTERRUPTED) gets the same one re-navigation", async () => {
+    const { p, calls } = stubbed({ resultingUrl: "http://127.0.0.1:1/x" });
+    let prepares = 0;
+    p.prepare = async (path) => {
+      calls.push(`prepare:${path}`);
+      prepares += 1;
+      if (prepares === 1)
+        throw Object.assign(new Error(`prepare of ${path} interrupted by a navigation: x`), {
+          code: PREPARE_INTERRUPTED,
+        });
+      return { docUUID: "doc-target", httpStatus: 200 };
+    };
+    const r = await p.navigateAndAwait("/", {}, 100, "r");
+    expect(calls).toEqual(["prepare:/", "await-resulting", "prepare:/"]);
+    expect(r).toMatchObject({ ok: true, recovery: [{ usedResultingDocument: false }] });
   });
 
   it("a failed wait records the first-read value and a read-only failure snapshot", async () => {
