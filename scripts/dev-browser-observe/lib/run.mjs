@@ -320,6 +320,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   let browserHandle = null;
   const samples = [];
   let study = null;
+  let checkLateProcesses = null;
+  let lateFailure = null;
   let exitCode = EXIT.ok;
   let summaryExtra = {};
   const accountingRef = { current: null };
@@ -474,15 +476,51 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       receipt.server.roles = roles;
       receipt.server.rootRole =
         roles.find((r) => r.pid === server.handle.native?.pid)?.role ?? null;
-      const processChecks = processIdentityChecks({
-        processes: owned,
-        roles,
+      const identityInputs = {
         nodeRealpath: verdict.facts?.installReceipt?.node?.realpath ?? null,
+        nodeSha256: verdict.facts?.installReceipt?.node?.sha256 ?? null,
         executables: verdict.facts?.install?.executables ?? [],
         appDir: m.appDir,
         ...(hooks.processExecutable ? { exeOf: hooks.processExecutable } : {}),
         ...(hooks.processAlive ? { alive: hooks.processAlive } : {}),
-      });
+      };
+      const processChecks = processIdentityChecks({ processes: owned, roles, ...identityInputs });
+      const checkedKey = (p) => `${p.pid}@${p.lstart ?? "?"}`;
+      const checked = new Set(owned.map(checkedKey));
+      // Processes born after readiness: every one seen in the tree (or remembered by sampling)
+      // is checked before the next workload edit; the first failure stops the batch there.
+      checkLateProcesses = () => {
+        if (lateFailure) return lateFailure;
+        const now = (hooks.snapshotOwned ?? snapshotOwnedWithArgs)(server.handle);
+        const remembered = [...(server.handle.known?.values() ?? [])];
+        const fresh = [
+          ...now,
+          ...remembered.filter((k) => !now.some((p) => p.pid === k.pid)),
+        ].filter((p) => !checked.has(checkedKey(p)));
+        if (fresh.length === 0) return null;
+        for (const p of fresh) checked.add(checkedKey(p));
+        const lateRoles = classifyRoles(m.entry, fresh);
+        const lateChecks = processIdentityChecks({
+          processes: fresh,
+          roles: lateRoles,
+          ...identityInputs,
+        });
+        receipt.server.processIdentityLate = [
+          ...(receipt.server.processIdentityLate ?? []),
+          ...lateChecks,
+        ];
+        const bad = lateChecks.filter((c) => !c.ok);
+        rec.append({
+          type: "identity",
+          ok: bad.length === 0,
+          ...(bad.length ? { outcome: "identity-rejected" } : {}),
+          phase: "before-edit",
+          checks: lateChecks,
+        });
+        if (bad.length)
+          lateFailure = { reason: "process-identity", outcome: "identity-rejected", checks: bad };
+        return lateFailure;
+      };
       receipt.server.processIdentity = processChecks;
       if (processChecks.some((c) => !c.ok)) {
         // A process of the tree runs an executable the install did not record (e.g. PATH's node):
@@ -557,7 +595,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           recorder,
           afterScenario: study ? study.afterScenario : undefined,
           beforeCleanup: study ? study.beforeCleanup : undefined,
-          haltReason: study ? study.haltReason : undefined,
+          haltReason:
+            study || checkLateProcesses
+              ? () => study?.haltReason() ?? checkLateProcesses?.() ?? null
+              : undefined,
           clock: { now: hrtimeNs },
           server: { ...server, sampleResources: sampleServer },
           page: observer,
@@ -584,11 +625,21 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         study = null;
       }
       summaryExtra = { accountingFinal: accounting, resourceStudyFailure: studyFailure };
-      exitCode = studyFailure
-        ? EXIT.controllerError
-        : batchExitOk(accounting, stopped)
-          ? EXIT.ok
-          : EXIT.stopped;
+      exitCode = lateFailure
+        ? EXIT.identityRejected
+        : studyFailure
+          ? EXIT.controllerError
+          : batchExitOk(accounting, stopped)
+            ? EXIT.ok
+            : EXIT.stopped;
+      if (lateFailure) {
+        summaryExtra.identityRejected = true;
+        receipt.identity = {
+          ...receipt.identity,
+          ok: false,
+          checks: [...receipt.identity.checks, ...lateFailure.checks],
+        };
+      }
     } else {
       const cal = profile.calibration ?? {};
       const results = await runCalibration({

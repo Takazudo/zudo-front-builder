@@ -47,7 +47,7 @@ import { validateAs } from "../lib/schema.mjs";
 import { loadSeriesPlan } from "../lib/series.mjs";
 import { startDevServer } from "../lib/server.mjs";
 import { HARNESS_DIR, readJson, sha256, sha256File } from "../lib/util.mjs";
-import { SPEC, makeFakeSource } from "./fieldnotes-fake.mjs";
+import { SPEC, makeFakeSource, makeTinyHarness } from "./fieldnotes-fake.mjs";
 import { fakePage } from "./fakes.mjs";
 
 const FIXTURE = join(HARNESS_DIR, "fixtures", "field-notes");
@@ -1151,11 +1151,14 @@ describe("review fixes (fixed distributions)", () => {
     const { path } = fixedProfile(s, "astro", installs.astro.out, {}, "frozen-astro.json");
     const { profile, resolved } = loadProfile(path);
     const manifest = loadFieldNotesFixture(resolved.fixtureDir);
-    const out = join(tmp(), "frozen");
+    const root = tmp();
+    const tiny = makeTinyHarness(root);
     const r = freezeHarness({
-      outDir: out,
+      outDir: join(root, "frozen"),
+      harnessDir: tiny.harness,
       allowDirty: true,
       capabilityImpl: () => ({ repo: "/r", sha: "f".repeat(40), harnessDirDirty: false }),
+      playwrightDir: tiny.playwright,
     });
     try {
       const ok = fixedIdentityVerdict({ profile, resolved, manifest, harnessDir: r.dir });
@@ -1362,6 +1365,178 @@ describe("review fixes (fixed distributions)", () => {
         .checks.filter((c) => !c.ok),
     ).toMatchObject([{ pid: 101, role: "next-cli", actual: "/opt/other/bin/node" }]);
     expect(readJson(join(dir, "summary.json")).identityRejected).toBe(true);
+  });
+
+  it("a `sh -c` must run a system shell; a byte-identical node elsewhere is the same node", () => {
+    const root = tmp();
+    writeTree(root, {
+      "fake/sh": "not a shell",
+      "node-a": "node bytes",
+      "node-b": "node bytes",
+      "node-c": "other",
+    });
+    const roles = [
+      { pid: 1, role: "shell" },
+      { pid: 2, role: "shell" },
+      { pid: 3, role: "next-cli" },
+      { pid: 4, role: "next-cli" },
+    ];
+    const exes = {
+      1: "/bin/sh",
+      2: join(root, "fake/sh"),
+      3: join(root, "node-b"),
+      4: join(root, "node-c"),
+    };
+    const checks = processIdentityChecks({
+      processes: roles.map((r) => ({ pid: r.pid })),
+      roles,
+      nodeRealpath: join(root, "node-a"),
+      nodeSha256: sha256File(join(root, "node-a")),
+      appDir: root,
+      exeOf: (pid) => ({ path: exes[pid], method: "fake" }),
+      alive: () => true,
+    });
+    expect(checks.map((c) => [c.pid, c.ok])).toEqual([
+      [1, true],
+      [2, false],
+      [3, true],
+      [4, false],
+    ]);
+    expect(checks[2].matchedBy).toBe("sha256");
+    expect(
+      processIdentityChecks({
+        processes: [{ pid: 1 }],
+        roles: [{ pid: 1, role: "shell" }],
+        nodeRealpath: "/n",
+        appDir: root,
+        systemShells: ["/no/such/shell"],
+        exeOf: () => ({ path: "/bin/sh", method: "fake" }),
+      })[0].ok,
+    ).toBe(false);
+  });
+
+  it("a worker born after readiness that runs PATH's node stops the batch before the first edit", async () => {
+    const { s, installs } = shared();
+    const { path, profile } = fixedProfile(s, "next", installs.next.out, {}, "late-node.json");
+    profile.scenarios = [
+      {
+        id: "body",
+        set: "workload",
+        warmOrder: "none",
+        ops: [{ id: "b", op: "edit-body", article: "article-00005", writeMethod: "in-place" }],
+      },
+    ];
+    writeFileSync(path, JSON.stringify(profile));
+    let resolveExit;
+    const handle = {
+      native: { pid: 100, pgid: 100, lstart: "L", comm: "node" },
+      exit: null,
+      known: new Map(),
+    };
+    handle.exited = new Promise((r) => {
+      resolveExit = r;
+    });
+    const tree = [
+      {
+        pid: 100,
+        ppid: 1,
+        lstart: "L",
+        comm: "node",
+        args: "node /w/apps/next/scripts/dev-content.mjs",
+      },
+      {
+        pid: 101,
+        ppid: 100,
+        lstart: "L",
+        comm: "node",
+        args: "node /w/node_modules/next/dist/bin/next dev",
+      },
+    ];
+    let snapshots = 0;
+    const page = fakePage({
+      onWait: () =>
+        Promise.resolve({
+          kind: "notify",
+          payload: { docUUID: "doc-1" },
+          t1: process.hrtime.bigint() + 1_000_000n,
+        }),
+    });
+    const contentBefore = readFileSync(join(s.src, "content/articles/article-00005.md"), "utf8");
+    const code = await execute({
+      profilePath: path,
+      label: "LATE1",
+      command: "run",
+      stderr: () => {},
+      hooks: {
+        freePort: async () => 4557,
+        startDevServer: (opts) => ({
+          handle,
+          args: opts.args,
+          envOverrides: opts.env,
+          zfbEnv: {},
+          removedDiagnosticEnv: [],
+          diagnostic: false,
+          startedNs: process.hrtime.bigint(),
+          ready: Promise.resolve({
+            baseUrl: "http://127.0.0.1:4557",
+            readyNs: process.hrtime.bigint(),
+          }),
+          closeLog: async () => ({}),
+          isAlive: () => ({ alive: true, exit: null }),
+          pid: () => 100,
+          waitExit: () => handle.exited,
+          sampleResources: () => ({ summedRssKiB: 1 }),
+          logMark: () => 0,
+          logSince: () => ({ lineCount: 0, lines: [] }),
+        }),
+        snapshotOwned: () => {
+          snapshots += 1;
+          // A next-server worker appears after the readiness snapshot.
+          return snapshots === 1
+            ? tree
+            : [
+                ...tree,
+                { pid: 102, ppid: 101, lstart: "L2", comm: "node", args: "next-server (v16.4.6)" },
+              ];
+        },
+        processExecutable: (pid) => ({
+          path: pid === 102 ? "/opt/path/bin/node" : process.execPath,
+          method: "fake",
+        }),
+        processAlive: () => true,
+        launchOwnedBrowser: async () => ({ observer: page, identity: { engine: "fake" } }),
+        closeOwnedBrowser: async () => [],
+        stopOwned: async () => {
+          resolveExit((handle.exit = { exitCode: 0, signalCode: null }));
+          return { absent: true };
+        },
+      },
+    });
+    expect(code).toBe(EXIT.identityRejected);
+    const dir = join(s.root, "out", "LATE1");
+    const records = readFileSync(join(dir, "records.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(records.some((r) => r.type === "attempt")).toBe(false);
+    expect(records.find((r) => r.type === "precheck")).toMatchObject({
+      outcome: "identity-rejected",
+      halt: {
+        reason: "process-identity",
+        checks: [{ pid: 102, role: "next-server", actual: "/opt/path/bin/node" }],
+      },
+    });
+    expect(records.find((r) => r.type === "identity" && r.phase === "before-edit").ok).toBe(false);
+    const summary = readJson(join(dir, "summary.json"));
+    expect(summary).toMatchObject({ identityRejected: true });
+    expect(summary.accounting).toMatchObject({
+      attempted: 0,
+      notAttempted: 1,
+      stopReason: "identity-rejected",
+    });
+    expect(readFileSync(join(dir, "work/content/articles/article-00005.md"), "utf8")).toBe(
+      contentBefore,
+    );
   });
 
   it("an unparsable ready URL fails readiness instead of throwing", () => {

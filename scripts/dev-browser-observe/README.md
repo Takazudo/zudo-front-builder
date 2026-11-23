@@ -952,8 +952,11 @@ fixture's `pinned`, `appTreeSha256`, `helperSha256`, `importedCss`,
 - **Executables at readiness:** every owned process must run an executable the
   install recorded. The executable is lsof's first `txt` entry, or `ps -o comm=`
   when that is an absolute path.
-  - Node-role processes must run the install's node realpath. A PATH `node`, as
-    npm's `.bin` shebang or a version manager's shim selects, is rejected.
+  - Node-role processes must run the install's node: the same realpath, or a
+    byte-identical binary (same sha256) elsewhere. A different PATH `node`, as
+    npm's `.bin` shebang or a version manager's shim may select, is rejected.
+  - A `sh -c` must run a system shell (`/bin/sh`, `/bin/bash`, `/bin/zsh` or
+    `/bin/dash`, compared after realpath).
   - The zfb native process must run the installed platform binary (its sha256).
   - An unclassified process must run an executable inside the app's
     `node_modules`, such as Vite's esbuild service.
@@ -961,6 +964,13 @@ fixture's `pinned`, `appTreeSha256`, `helperSha256`, `importedCss`,
   A failure records an `identity` record with `phase: "server-ready"` and exits
   3 before the browser opens and before any edit. `receipt.server.processIdentity`
   keeps each result.
+
+  Processes born later (workers, compilers) get the same check before every
+  workload edit: the tree is re-snapshotted, together with descendants that
+  sampling remembered, and every process not yet checked is judged. Results
+  are kept in `receipt.server.processIdentityLate` and an `identity` record with
+  `phase: "before-edit"`. A failure stops the batch at that op's precheck with
+  outcome `identity-rejected`, before its edit, and the run exits 3.
 
 ### Operations
 

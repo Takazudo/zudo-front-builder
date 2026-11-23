@@ -314,7 +314,7 @@ export async function main(argv) {
         process.stderr.write(`refusing to overwrite ${out}\n`);
         return EXIT.usage;
       }
-      const r = makeFieldNotesSource({
+      const r = await makeFieldNotesSource({
         fixtureDir: resolve(args["fixture-dir"] ?? join(HARNESS_DIR, "fixtures", "field-notes")),
         archiveDir: resolve(need(args, "archive")),
         scale,

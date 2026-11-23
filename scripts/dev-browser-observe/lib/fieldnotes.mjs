@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
@@ -163,7 +163,7 @@ export const FN_SCALE_PIN_KEYS = [
  * outDir, verify the generator's sha256, run `node scripts/generate.mjs <count>` there, then compare
  * the resulting tree hashes with the scale declaration. The archive itself is only read.
  */
-export function makeFieldNotesSource({
+export async function makeFieldNotesSource({
   fixtureDir,
   archiveDir,
   scale,
@@ -187,10 +187,24 @@ export function makeFieldNotesSource({
       filter: (p) => !isBuildOutputPath(relative(join(archiveDir, rel), p)),
     });
   const copiedSha = sha256File(join(outDir, decl.generator.path));
-  const gen = spawnSync(nodePath, [decl.generator.path, decl.generatorArgs], {
-    cwd: outDir,
-    encoding: "utf8",
-    env: { PATH: process.env.PATH ?? "" },
+  const gen = await new Promise((resolveGen) => {
+    execFile(
+      nodePath,
+      [decl.generator.path, decl.generatorArgs],
+      {
+        cwd: outDir,
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      (error, stdout, stderr) =>
+        resolveGen({
+          status: error ? (typeof error.code === "number" ? error.code : null) : 0,
+          signal: error?.signal ?? null,
+          stdout,
+          stderr,
+        }),
+    );
   });
   const generator = {
     path: decl.generator.path,

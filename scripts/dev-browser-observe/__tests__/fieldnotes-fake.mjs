@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -88,4 +88,53 @@ export function makeFakeSource(root, count = 20) {
     JSON.stringify({ articleCount: count, articles: rows }),
   );
   return { datasetSha256: h.digest("hex"), rows };
+}
+
+/**
+ * A fake archive for make-source: the fake source layout without content/, plus a tiny
+ * deterministic scripts/generate.mjs; the returned scales declare that generator's sha256.
+ */
+export async function makeFakeArchive(root, fixtureDir) {
+  const { loadFieldNotesFixture, loadFieldNotesScales } = await import("../lib/fieldnotes.mjs");
+  const { sha256File } = await import("../lib/util.mjs");
+  const archive = join(root, "archive");
+  makeFakeSource(archive, 40);
+  rmSync(join(archive, "content"), { recursive: true });
+  mkdirSync(join(archive, "scripts"));
+  const gen = [
+    'import fs from "node:fs";',
+    "const n = Number(process.argv[2]);",
+    'fs.mkdirSync("content/articles", { recursive: true });',
+    "const rows = [];",
+    "for (let i = 1; i <= n; i++) {",
+    '  const slug = `article-${String(i).padStart(5, "0")}`;',
+    "  fs.writeFileSync(`content/articles/${slug}.md`, `# ${slug}\\n`);",
+    "  rows.push({ slug });",
+    "}",
+    'fs.writeFileSync("content/manifest.json", JSON.stringify({ articleCount: n, articles: rows }));',
+    "console.log(JSON.stringify({ articleCount: n }));",
+    "",
+  ].join("\n");
+  writeFileSync(join(archive, "scripts", "generate.mjs"), gen);
+  const manifest = loadFieldNotesFixture(fixtureDir);
+  const scales = structuredClone(loadFieldNotesScales(fixtureDir, manifest));
+  scales.generator.sha256 = sha256File(join(archive, "scripts", "generate.mjs"));
+  return { root, archive, manifest, scales };
+}
+
+/**
+ * A minimal harness dir to freeze (cli.mjs, observer, one lib file, one fixture) and a fake
+ * @playwright/test package dir, so frozen-copy tests need not copy and hash the real harness.
+ */
+export function makeTinyHarness(root) {
+  const harness = join(root, "harness");
+  for (const d of ["lib", "fixtures/f"]) mkdirSync(join(harness, d), { recursive: true });
+  writeFileSync(join(harness, "cli.mjs"), "// cli\n");
+  writeFileSync(join(harness, "observer-init.js"), "// observer\n");
+  writeFileSync(join(harness, "lib", "a.mjs"), "export const a = 1;\n");
+  writeFileSync(join(harness, "fixtures", "f", "x.txt"), "x\n");
+  const playwright = join(root, "pw");
+  mkdirSync(playwright);
+  writeFileSync(join(playwright, "package.json"), JSON.stringify({ version: "0.0.0-fake" }));
+  return { harness, playwright };
 }

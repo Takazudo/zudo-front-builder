@@ -375,6 +375,9 @@ export function processExecutable(pid, runImpl = run) {
   return { path: null, method: "unavailable" };
 }
 
+/** Shells an npm `run` (or a launcher's `sh -c`) may legitimately use, compared after realpath. */
+export const SYSTEM_SHELLS = ["/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash"];
+
 const realOrSelf = (p) => {
   try {
     return realpathSync(p);
@@ -386,14 +389,16 @@ const realOrSelf = (p) => {
 /**
  * Every owned process at readiness must run an executable of the install: node-role processes
  * the install's node binary (a PATH `node`, e.g. via npm's `.bin` shebang, can differ); the zfb
- * native process the installed platform binary; any other process an executable inside the
- * app's node_modules. A shell is recorded but not judged. A process that exited between the
- * snapshot and this check is recorded as gone.
+ * native process the installed platform binary; a `sh -c` a system shell (SYSTEM_SHELLS after
+ * realpath); any other process an executable inside the app's node_modules. A process that
+ * exited between the snapshot and this check is recorded as gone.
  */
 export function processIdentityChecks({
   processes,
   roles,
   nodeRealpath,
+  nodeSha256 = null,
+  systemShells = SYSTEM_SHELLS,
   executables = [],
   appDir,
   exeOf = processExecutable,
@@ -407,6 +412,7 @@ export function processIdentityChecks({
   },
 }) {
   const nativeSha = executables.find((x) => x.role === "zfb-native")?.sha256 ?? null;
+  const shells = new Set(systemShells.filter((p) => existsSync(p)).map(realOrSelf));
   const nm = join(realOrSelf(appDir), "node_modules");
   return processes.map((p) => {
     const role = roles.find((r) => r.pid === p.pid)?.role ?? "unclassified";
@@ -423,7 +429,7 @@ export function processIdentityChecks({
         ? { ...base, ok: false, expected: "a readable executable", actual: null }
         : { ...base, ok: true, expected: null, actual: null, note: "exited before the check" };
     if (role === "shell")
-      return { ...base, ok: true, expected: null, actual: real, note: "not judged" };
+      return { ...base, ok: shells.has(real), expected: [...shells], actual: real };
     if (role === "zfb-native") {
       const sha = existsSync(real) ? sha256File(real) : null;
       return {
@@ -434,7 +440,19 @@ export function processIdentityChecks({
       };
     }
     const isNode = role !== "unclassified" || /(^|\/)node$/.test(real);
-    if (isNode) return { ...base, ok: real === nodeRealpath, expected: nodeRealpath, actual: real };
+    if (isNode) {
+      if (real === nodeRealpath)
+        return { ...base, ok: true, expected: nodeRealpath, actual: real, matchedBy: "realpath" };
+      // A byte-identical node binary at another path is the same node.
+      const sha = nodeSha256 && existsSync(real) ? sha256File(real) : null;
+      return {
+        ...base,
+        ok: sha !== null && sha === nodeSha256,
+        expected: { realpath: nodeRealpath, sha256: nodeSha256 },
+        actual: sha === null ? real : { path: real, sha256: sha },
+        ...(sha !== null && sha === nodeSha256 ? { matchedBy: "sha256" } : {}),
+      };
+    }
     return { ...base, ok: real.startsWith(`${nm}/`), expected: `${nm}/…`, actual: real };
   });
 }

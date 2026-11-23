@@ -76,6 +76,7 @@ export function freezeHarness({
   harnessDir = HARNESS_DIR,
   allowDirty = false,
   capabilityImpl = harnessCapability,
+  playwrightDir = null,
 }) {
   const out = resolve(outDir);
   if (existsSync(out)) throw new Error(`frozen out dir already exists: ${out}`);
@@ -85,7 +86,7 @@ export function freezeHarness({
     throw new Error(
       `harness dir has uncommitted changes (patch ${cap.harnessDirPatchSha256}, untracked ${JSON.stringify(cap.harnessDirUntracked)}); commit them or pass --allow-dirty`,
     );
-  const pwDir = playwrightPackageDir(harnessDir);
+  const pwDir = playwrightDir ?? playwrightPackageDir(harnessDir);
   const pwVersion = JSON.parse(readFileSync(join(pwDir, "package.json"), "utf8")).version;
   const dest = join(out, FROZEN_HARNESS_DIRNAME);
   mkdirSync(out, { recursive: true });
