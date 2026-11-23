@@ -1,0 +1,36 @@
+{
+  "$id": "field-notes-distributions.v1",
+  "title": "Fixed-distribution framework declarations",
+  "type": "object",
+  "required": ["schema", "frameworks"],
+  "properties": {
+    "schema": {
+      "const": "field-notes-distributions.v1"
+    },
+    "frameworks": {
+      "type": "object",
+      "required": ["zfb", "astro", "next"],
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "app",
+          "pinned",
+          "packageJsonSha256",
+          "lockfile",
+          "appTree",
+          "cacheDirs",
+          "helper",
+          "config",
+          "spec",
+          "layout",
+          "publicCss",
+          "importedCss",
+          "executables",
+          "launch",
+          "readiness",
+          "roles"
+        ]
+      }
+    }
+  }
+}

@@ -6,7 +6,21 @@ import { readJson, readJsonl } from "./util.mjs";
 export const AGGREGATE_SCHEMA = "dev-browser-observe.aggregate.v1";
 
 /** Facets a variant may declare as different from the other variant. Every other facet must match. */
-export const DECLARABLE_FACETS = ["build", "toolchain"];
+export const DECLARABLE_FACETS = ["build", "toolchain", "framework"];
+
+/**
+ * Declaring `framework` (fixed-distribution cohorts only, e.g. fixed ZFB vs Astro) also lets the
+ * facets each framework's own app defines differ: its helper (adapter), config and installed
+ * executables (build). Corpus, browser, harness, observer, host, schedule and node must still match.
+ */
+export const FRAMEWORK_IMPLIED_FACETS = ["adapter", "config", "build"];
+
+/** Facets that may differ given a declaration list. */
+export function allowedDifferences(declared) {
+  return declared.includes("framework")
+    ? [...new Set([...declared, ...FRAMEWORK_IMPLIED_FACETS, "profile"])]
+    : declared;
+}
 
 const omit = (obj, keys) =>
   obj && typeof obj === "object"
@@ -20,6 +34,29 @@ export const PROFILE_VARIANT_KEYS = [
   "productDirtyIdentity",
   "description",
 ];
+
+const without = (obj, path) => {
+  if (!obj || typeof obj !== "object") return obj;
+  const [head, ...rest] = path;
+  if (!(head in obj)) return obj;
+  if (rest.length === 0) return omit(obj, [head]);
+  return { ...obj, [head]: without(obj[head], rest) };
+};
+
+/**
+ * A profile without the keys that select the build a variant runs; with `framework`, also
+ * without the keys that select the framework (framework, its helper and its helper pin).
+ */
+export function stripVariantKeys(profile, { framework = false } = {}) {
+  let p = omit(profile, [...PROFILE_VARIANT_KEYS, "outDir", "lockPath"]);
+  p = without(p, ["distribution", "installDir"]);
+  if (framework) {
+    p = omit(p, ["framework"]);
+    p = without(p, ["fixture", "adapter"]);
+    p = without(p, ["pins", "adapterSha256"]);
+  }
+  return p;
+}
 
 /** Identity facets of one session, read from its receipt.json. */
 export function sessionFacets(receipt) {
@@ -46,15 +83,42 @@ export function sessionFacets(receipt) {
       managedCss: f.managedCss ?? null,
       trailingSlash: f.trailingSlash ?? null,
     },
-    toolchain: b.toolchain ?? null,
-    build: {
-      exeSha256: b.exe?.sha256 ?? null,
-      sourceSha: b.source?.sha ?? null,
-      dirtyIdentitySha256: b.source?.dirtyIdentitySha256 ?? null,
-      cargoLockSha256: b.cargoLockSha256 ?? null,
-      build: omit(b.build, ["targetDir", "command"]),
-      vendorTreeSha256: b.vendor?.chosen?.treeSha256 ?? null,
+    framework: {
+      mode: receipt.mode ?? "source-built",
+      framework: receipt.framework ?? "zfb-source-built",
     },
+    toolchain:
+      receipt.mode === "fixed-distribution"
+        ? {
+            node: receipt.distribution?.node
+              ? {
+                  version: receipt.distribution.node.version,
+                  sha256: receipt.distribution.node.sha256,
+                }
+              : null,
+          }
+        : (b.toolchain ?? null),
+    build:
+      receipt.mode === "fixed-distribution"
+        ? {
+            pinned: f.pinned ?? null,
+            lockfileSha256: receipt.distribution?.install?.lockfileSha256 ?? null,
+            appTreeSha256: f.appTreeSha256 ?? null,
+            nodeModulesSha256: f.nodeModules?.sha256 ?? null,
+            executables: (receipt.distribution?.install?.executables ?? []).map((x) => ({
+              role: x.role,
+              sha256: x.sha256 ?? null,
+            })),
+            launch: receipt.server?.launch?.kind ?? null,
+          }
+        : {
+            exeSha256: b.exe?.sha256 ?? null,
+            sourceSha: b.source?.sha ?? null,
+            dirtyIdentitySha256: b.source?.dirtyIdentitySha256 ?? null,
+            cargoLockSha256: b.cargoLockSha256 ?? null,
+            build: omit(b.build, ["targetDir", "command"]),
+            vendorTreeSha256: b.vendor?.chosen?.treeSha256 ?? null,
+          },
     browser: omit(receipt.browser, []),
     harness: {
       pins: omit(profile.pins, ["observerSha256", "adapterSha256"]),
@@ -65,7 +129,8 @@ export function sessionFacets(receipt) {
       browserObserverSha256: receipt.browser?.observerSha256 ?? null,
     },
     host: omit(receipt.host, ["freememBytes", "loadavg"]),
-    profile: omit(profile, [...PROFILE_VARIANT_KEYS, "outDir", "lockPath"]),
+    profile: stripVariantKeys(profile),
+    profileFrameworkNeutral: stripVariantKeys(profile, { framework: true }),
     schedule: receipt.schedule ?? null,
   };
 }
@@ -99,7 +164,7 @@ export function compareFacets(sessions, declaredDifferences = []) {
         sessions: withReceipt.filter((s) => s.variant === v).map((s) => s.label),
       });
     }
-    const declared = declaredDifferences.includes(facet);
+    const declared = allowedDifferences(declaredDifferences).includes(facet);
     const firsts = variants.map((v) =>
       canon(withReceipt.find((s) => s.variant === v).facets[facet]),
     );
@@ -112,6 +177,24 @@ export function compareFacets(sessions, declaredDifferences = []) {
       values: same
         ? undefined
         : Object.fromEntries(variants.map((v, i) => [v, JSON.parse(firsts[i])])),
+    });
+  }
+  if (declaredDifferences.includes("framework") && withReceipt.length) {
+    const across = checks.find((c) => c.name === "across-variants:framework");
+    checks.push({
+      name: "framework-declared-and-differs",
+      ok: across?.differs === true,
+      expected: "the variants run different frameworks",
+      actual: across?.differs ?? null,
+    });
+  }
+  if (declaredDifferences.includes("framework")) {
+    const notFixed = withReceipt.filter((s) => s.facets.framework.mode !== "fixed-distribution");
+    checks.push({
+      name: "framework-difference-only-for-fixed-distribution",
+      ok: notFixed.length === 0,
+      expected: "every session fixed-distribution",
+      actual: notFixed.map((s) => s.label),
     });
   }
   for (const s of sessions)

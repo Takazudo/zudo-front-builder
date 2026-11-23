@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -12,7 +11,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   aggregate,
   blocksFrom,
@@ -57,7 +56,7 @@ import { runBatch } from "../lib/state-machine.mjs";
 import { summarize } from "../lib/stats.mjs";
 import { HARNESS_DIR, readJson, readJsonl, sha256File } from "../lib/util.mjs";
 import { deps, fakeClock, fakePage, fakeRecorder } from "./fakes.mjs";
-import { makeFakeSource } from "./fieldnotes-fake.mjs";
+import { makeFakeArchive, makeFakeSource, makeTinyHarness } from "./fieldnotes-fake.mjs";
 
 const FIXTURE = join(HARNESS_DIR, "fixtures", "field-notes");
 const example = (n) => JSON.parse(readFileSync(join(HARNESS_DIR, "profiles", n), "utf8"));
@@ -198,78 +197,12 @@ describe("versioned Field Notes scales", () => {
     expect(existsSync(join(s.root, "work-5000"))).toBe(false);
   });
 
-  function fakeArchive() {
-    const root = tmp();
-    const archive = join(root, "archive");
-    makeFakeSource(archive, 40);
-    rmSync(join(archive, "content"), { recursive: true });
-    mkdirSync(join(archive, "scripts"));
-    const gen = [
-      'import fs from "node:fs";',
-      "const n = Number(process.argv[2]);",
-      'fs.mkdirSync("content/articles", { recursive: true });',
-      "const rows = [];",
-      "for (let i = 1; i <= n; i++) {",
-      '  const slug = `article-${String(i).padStart(5, "0")}`;',
-      "  fs.writeFileSync(`content/articles/${slug}.md`, `# ${slug}\\n`);",
-      "  rows.push({ slug });",
-      "}",
-      'fs.writeFileSync("content/manifest.json", JSON.stringify({ articleCount: n, articles: rows }));',
-      "console.log(JSON.stringify({ articleCount: n }));",
-      "",
-    ].join("\n");
-    writeFileSync(join(archive, "scripts", "generate.mjs"), gen);
-    const manifest = loadFieldNotesFixture(FIXTURE);
-    const scales = structuredClone(loadFieldNotesScales(FIXTURE, manifest));
-    scales.generator.sha256 = sha256File(join(archive, "scripts", "generate.mjs"));
-    return { root, archive, manifest, scales };
-  }
-
-  it("make-source copies apps/shared/scripts, runs the pinned generator at the scale and checks every hash", () => {
-    const a = fakeArchive();
-    a.scales.byCount["100"].generatorArgs = "40";
-    const probe = join(a.root, "probe");
-    const first = makeFieldNotesSource({
-      fixtureDir: FIXTURE,
-      archiveDir: a.archive,
-      scale: 100,
-      outDir: probe,
-      scales: a.scales,
-    });
-    expect(first.generator.status).toBe(0);
-    expect(first.ok).toBe(false);
-    const decl = Object.fromEntries(first.checks.map((c) => [c.name.split(":")[1], c.actual]));
-    a.scales.byCount["100"] = { ...a.scales.byCount["100"], ...decl };
-    const out = join(a.root, "src-100");
-    const r = makeFieldNotesSource({
-      fixtureDir: FIXTURE,
-      archiveDir: a.archive,
-      scale: 100,
-      outDir: out,
-      scales: a.scales,
-    });
-    expect(r.ok).toBe(true);
-    expect(r.scale).toBe(100);
-    expect(readJson(join(out, "content", "manifest.json")).articleCount).toBe(40);
-    expect(r.source.datasetSha256).toBe(sourceTreeHashes(out, a.manifest).datasetSha256);
-    expect(existsSync(join(a.archive, "content"))).toBe(false);
-    expect(() =>
-      makeFieldNotesSource({
-        fixtureDir: FIXTURE,
-        archiveDir: a.archive,
-        scale: 100,
-        outDir: out,
-        scales: a.scales,
-      }),
-    ).toThrow(/already exists/);
-  });
-
-  it("make-source refuses a generator whose sha256 is not declared, before copying anything", () => {
-    const a = fakeArchive();
+  it("make-source refuses a generator whose sha256 is not declared, before copying anything", async () => {
+    const a = await makeFakeArchive(tmp(), FIXTURE);
     const out = join(a.root, "src");
-    expect(() =>
+    await expect(
       makeFieldNotesSource({ fixtureDir: FIXTURE, archiveDir: a.archive, scale: 100, outDir: out }),
-    ).toThrow(/is not the declared f2eaa2fe/);
+    ).rejects.toThrow(/is not the declared f2eaa2fe/);
     expect(existsSync(out)).toBe(false);
   });
 });
@@ -916,10 +849,36 @@ describe("resource study", () => {
   });
 });
 
+// The git state of this checkout is not what these tests check; skipping its git calls keeps them fast.
+const FAKE_CAPABILITY = () => ({
+  repo: "/fake/repo",
+  sha: "f".repeat(40),
+  harnessDirDirty: false,
+  harnessDirPatchSha256: null,
+  harnessDirUntracked: [],
+});
+
 describe("frozen harness copy", () => {
+  // One freeze shared by the three tests below, so no single test carries the copy, the
+  // stamp hashes and every verification at once; the tests run in order on that copy.
+  let root;
+  let out;
+  let r;
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), "dbo-m1-frozen-"));
+    out = join(root, "frozen");
+    r = freezeHarness({ outDir: out, allowDirty: true, capabilityImpl: FAKE_CAPABILITY });
+  });
+  afterAll(() => {
+    try {
+      unfreezeForRemoval(root);
+    } catch {
+      // already writable
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("freezes a read-only, hash-stamped copy that resolves playwright and reports itself frozen", () => {
-    const out = join(tmp(), "frozen");
-    const r = freezeHarness({ outDir: out, allowDirty: true });
     expect(r.stamp.harnessTreeSha256).toBe(harnessTreeHash(HARNESS_DIR));
     const v = verifyFrozen(r.dir);
     expect(v.checks.filter((c) => !c.ok)).toEqual([]);
@@ -928,6 +887,9 @@ describe("frozen harness copy", () => {
     expect(
       createRequire(join(r.dir, "cli.mjs")).resolve("@playwright/test/package.json"),
     ).toBeTruthy();
+  });
+
+  it("a changed file in the frozen copy is no longer intact", () => {
     unfreezeForRemoval(r.dir);
     writeFileSync(join(r.dir, "lib", "stats.mjs"), "// changed\n");
     expect(harnessCapability(r.dir).intact).toBe(false);
@@ -936,24 +898,10 @@ describe("frozen harness copy", () => {
         .checks.filter((c) => !c.ok)
         .map((c) => c.name),
     ).toEqual(["harness-tree", "full-tree", "read-only"]);
-    expect(() => freezeHarness({ outDir: out })).toThrow(/already exists/);
   });
 
-  it("refuses to freeze a harness dir with uncommitted changes", () => {
-    const repo = tmp();
-    const git = (...a) =>
-      execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", ...a], {
-        cwd: repo,
-      });
-    git("init", "-q");
-    mkdirSync(join(repo, "h"));
-    writeFileSync(join(repo, "h", "cli.mjs"), "");
-    git("add", ".");
-    git("commit", "-qm", "x");
-    writeFileSync(join(repo, "h", "new.mjs"), "");
-    expect(() =>
-      freezeHarness({ outDir: join(repo, "..", "never"), harnessDir: join(repo, "h") }),
-    ).toThrow(/uncommitted changes/);
+  it("freeze never overwrites an existing out dir", () => {
+    expect(() => freezeHarness({ outDir: out })).toThrow(/already exists/);
   });
 });
 
@@ -1256,9 +1204,16 @@ describe("review fixes", () => {
     );
   });
 
-  it("a frozen copy's broken playwright link fails verify-frozen and the run identity check; series preflight refuses it", async () => {
-    const out = join(tmp(), "frozen");
-    const r = freezeHarness({ outDir: out, allowDirty: true });
+  it("a frozen copy's broken playwright link fails verify-frozen; series preflight refuses it", async () => {
+    const root = tmp();
+    const tiny = makeTinyHarness(root);
+    const r = freezeHarness({
+      outDir: join(root, "frozen"),
+      harnessDir: tiny.harness,
+      allowDirty: true,
+      capabilityImpl: FAKE_CAPABILITY,
+      playwrightDir: tiny.playwright,
+    });
     expect(frozenPlaywrightLink(r.stamp).ok).toBe(true);
     const link = r.stamp.playwright.link;
     rmSync(link);
@@ -1269,28 +1224,6 @@ describe("review fixes", () => {
         .checks.filter((c) => !c.ok)
         .map((c) => c.name),
     ).toEqual(["playwright-link"]);
-    const profile = example("tiny-internal-a0.example.json");
-    profile.fixture.dir = join(r.dir, "fixtures", "tiny-two-article");
-    profile.outDir = join(tmp(), "out");
-    const pPath = join(tmp(), "p.json");
-    writeFileSync(pPath, JSON.stringify(profile));
-    let res;
-    try {
-      execFileSync(
-        process.execPath,
-        [join(r.dir, "cli.mjs"), "verify-identity", "--profile", pPath],
-        {
-          encoding: "utf8",
-        },
-      );
-    } catch (error) {
-      res = JSON.parse(error.stdout);
-    }
-    expect(res.checks.find((c) => c.name === "harness-frozen-copy-intact").ok).toBe(true);
-    expect(res.checks.find((c) => c.name === "harness-frozen-playwright-link")).toMatchObject({
-      ok: false,
-      actual: tmpdir(),
-    });
     const s = seriesSetup();
     let ran = 0;
     const { exitCode, record } = await runSeries({

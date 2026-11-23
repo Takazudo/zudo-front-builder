@@ -1,0 +1,17 @@
+{
+  "schema": "dev-browser-observe.series.v1",
+  "id": "fixed-100-zfb-vs-astro",
+  "description": "Pairwise fixed-distribution cohort: fixed ZFB 6.0.1 (original-memoized helper) vs astro, A,B,B,A. Its zfb sessions are this cohort's own ZFB reference series: aggregate each cohort's record separately and never pool zfb sessions across cohorts.",
+  "protocol": "dev-browser-observe.timing-abba.v1",
+  "variants": {
+    "zfb": {
+      "profile": "/REPLACE/with/field-notes-fixed-zfb-original-memoized-100.json"
+    },
+    "astro": {
+      "profile": "/REPLACE/with/field-notes-fixed-astro-100.json"
+    }
+  },
+  "declaredDifferences": ["framework"],
+  "order": ["zfb", "astro", "astro", "zfb"],
+  "labelPrefix": "fixed100-zfb-vs-astro"
+}

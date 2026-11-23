@@ -40,9 +40,9 @@
     "declaredDifferences": {
       "type": "array",
       "items": {
-        "enum": ["build", "toolchain"]
+        "enum": ["build", "toolchain", "framework"]
       },
-      "description": "Identity facets allowed to differ between variants (default none: an A/A series)."
+      "description": "Identity facets allowed to differ between variants (default none: an A/A series). framework is for fixed-distribution cohorts only (fixed ZFB vs Astro, fixed ZFB vs Next); it also lets each framework's helper (adapter), config and installed executables (build) differ, and the profiles differ in framework, fixture.adapter and pins.adapterSha256."
     },
     "order": {
       "type": "array",

@@ -374,9 +374,10 @@ export async function runBatch({ scenarios, deps }) {
 
         const halt = deps.haltReason?.() ?? null;
         if (halt) {
-          append({ ...base, type: "precheck", outcome: "controller-error", halt });
+          const haltOutcome = halt.outcome ?? "controller-error";
+          append({ ...base, type: "precheck", outcome: haltOutcome, halt });
           acc.error += 1;
-          stop("controller-error", where);
+          stop(haltOutcome, where);
           break outer;
         }
         const alive = server.isAlive();

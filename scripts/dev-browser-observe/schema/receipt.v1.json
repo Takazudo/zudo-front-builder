@@ -13,32 +13,113 @@
     "host"
   ],
   "properties": {
-    "schema": { "const": "dev-browser-observe.receipt.v1" },
-    "label": { "type": "string" },
-    "command": { "enum": ["run", "calibrate"] },
-    "createdAt": { "type": "string" },
-    "productSha": { "type": "string" },
-    "productDirtyIdentity": { "type": ["string", "null"] },
+    "schema": {
+      "const": "dev-browser-observe.receipt.v1"
+    },
+    "label": {
+      "type": "string"
+    },
+    "command": {
+      "enum": ["run", "calibrate"]
+    },
+    "createdAt": {
+      "type": "string"
+    },
+    "productSha": {
+      "type": ["string", "null"],
+      "description": "source-built: the product SHA (a string, required); fixed-distribution: null."
+    },
+    "productDirtyIdentity": {
+      "type": ["string", "null"]
+    },
     "harnessCapability": {
       "type": "object",
       "required": ["sha", "harnessDirDirty"],
-      "properties": { "sha": { "type": "string" }, "harnessDirDirty": { "type": "boolean" } }
+      "properties": {
+        "sha": {
+          "type": "string"
+        },
+        "harnessDirDirty": {
+          "type": "boolean"
+        }
+      }
     },
-    "buildReceipt": { "type": ["object", "null"] },
+    "buildReceipt": {
+      "type": ["object", "null"]
+    },
     "identity": {
       "type": "object",
       "required": ["ok", "checks"],
       "properties": {
-        "ok": { "type": "boolean" },
-        "checks": { "type": "array", "items": { "type": "object" } }
+        "ok": {
+          "type": "boolean"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
       }
     },
-    "profile": { "type": "object" },
-    "profileSha256": { "type": "string" },
-    "fixture": { "type": ["object", "null"] },
-    "browser": { "type": ["object", "null"] },
-    "server": { "type": ["object", "null"] },
-    "host": { "type": "object" },
-    "macProbe": { "type": ["object", "null"] }
+    "profile": {
+      "type": "object"
+    },
+    "profileSha256": {
+      "type": "string"
+    },
+    "fixture": {
+      "type": ["object", "null"]
+    },
+    "browser": {
+      "type": ["object", "null"]
+    },
+    "server": {
+      "type": ["object", "null"]
+    },
+    "host": {
+      "type": "object"
+    },
+    "macProbe": {
+      "type": ["object", "null"]
+    },
+    "mode": {
+      "enum": ["source-built", "fixed-distribution"]
+    },
+    "framework": {
+      "enum": ["zfb-source-built", "zfb", "astro", "next"]
+    },
+    "distribution": {
+      "type": ["object", "null"],
+      "description": "fixed-distribution: the identity facts checked before any edit (framework entry, helper, install verification facts, install receipt summary, node, launch, npm, pins)."
+    }
+  },
+  "if": {
+    "type": "object",
+    "required": ["mode"],
+    "properties": {
+      "mode": {
+        "const": "fixed-distribution"
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "productSha": {
+        "type": "null"
+      },
+      "framework": {
+        "enum": ["zfb", "astro", "next"]
+      }
+    },
+    "required": ["framework", "distribution"]
+  },
+  "else": {
+    "properties": {
+      "productSha": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$"
+      }
+    }
   }
 }

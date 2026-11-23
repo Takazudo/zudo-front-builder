@@ -17,6 +17,7 @@
     "scaleNote": "source.datasetSha256 and generator.args describe scale 100, the default; scales.json declares 100, 1000 and 5000"
   },
   "scales": "scales.json",
+  "distributions": "distributions.json",
   "adapters": {
     "target": "apps/zfb/lib/content.ts",
     "storage": "Stored as content.ts.adapter so the repo formatter never rewrites byte-exact inputs.",

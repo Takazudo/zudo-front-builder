@@ -34,6 +34,10 @@
     "layoutFooter": {
       "type": "string"
     },
+    "distributions": {
+      "type": "string",
+      "description": "Relative path of the field-notes-distributions.v1 declaration (fixed-distribution zfb, astro, next)."
+    },
     "scales": {
       "type": "string",
       "description": "Relative path of the field-notes-scales.v1 declaration (100, 1000, 5000)."

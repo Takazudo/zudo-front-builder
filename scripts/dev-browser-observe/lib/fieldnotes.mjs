@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
@@ -163,7 +163,7 @@ export const FN_SCALE_PIN_KEYS = [
  * outDir, verify the generator's sha256, run `node scripts/generate.mjs <count>` there, then compare
  * the resulting tree hashes with the scale declaration. The archive itself is only read.
  */
-export function makeFieldNotesSource({
+export async function makeFieldNotesSource({
   fixtureDir,
   archiveDir,
   scale,
@@ -187,10 +187,24 @@ export function makeFieldNotesSource({
       filter: (p) => !isBuildOutputPath(relative(join(archiveDir, rel), p)),
     });
   const copiedSha = sha256File(join(outDir, decl.generator.path));
-  const gen = spawnSync(nodePath, [decl.generator.path, decl.generatorArgs], {
-    cwd: outDir,
-    encoding: "utf8",
-    env: { PATH: process.env.PATH ?? "" },
+  const gen = await new Promise((resolveGen) => {
+    execFile(
+      nodePath,
+      [decl.generator.path, decl.generatorArgs],
+      {
+        cwd: outDir,
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      (error, stdout, stderr) =>
+        resolveGen({
+          status: error ? (typeof error.code === "number" ? error.code : null) : 0,
+          signal: error?.signal ?? null,
+          stdout,
+          stderr,
+        }),
+    );
   });
   const generator = {
     path: decl.generator.path,
@@ -582,7 +596,26 @@ export function planFieldNotesOp(m, model, op, { token = newToken(), tokens = nu
       };
     }
     case "edit-managed-css": {
-      if (!m.managedCssPath) throw new Error("edit-managed-css needs fixture.managedCss: true");
+      if (!m.managedCssPath)
+        throw new Error("edit-managed-css needs fixture.managedCss (or importedCss): true");
+      if (m.managedCssEdit?.mode === "insert-root") {
+        // The archive's imported-CSS variants are exact shared CSS with no marker: add or change one
+        // custom property in the first :root{} block.
+        const prop = m.managedCssEdit.customProperty;
+        const src = readFileSync(m.managedCssPath, "utf8");
+        const re = new RegExp(`${prop}:[^;}]*;`);
+        const next = re.test(src)
+          ? src.replace(re, `${prop}:${token};`)
+          : src.replace(":root{", `:root{${prop}:${token};`);
+        if (next === src) throw new Error("imported css :root block not found");
+        return {
+          ...base,
+          targetPath: op.targetPath ?? "/",
+          predicate: { kind: "computed-style", selector: ":root", property: prop, includes: token },
+          writes: [inPlace(m.managedCssPath, next)],
+          nextModel: model,
+        };
+      }
       const prop = m.manifest.managedCss.customProperty;
       const src = readFileSync(m.managedCssPath, "utf8");
       const re = new RegExp(`${prop}: [^;]*;`);
