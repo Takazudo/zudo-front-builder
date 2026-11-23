@@ -13,24 +13,44 @@
     "pooled"
   ],
   "properties": {
-    "schema": { "const": "dev-browser-observe.aggregate.v1" },
-    "protocol": { "type": ["string", "null"] },
-    "series": { "type": ["object", "null"] },
-    "declaredDifferences": { "type": "array", "items": { "enum": ["build", "toolchain"] } },
+    "schema": {
+      "const": "dev-browser-observe.aggregate.v1"
+    },
+    "protocol": {
+      "type": ["string", "null"]
+    },
+    "series": {
+      "type": ["object", "null"]
+    },
+    "declaredDifferences": {
+      "type": "array",
+      "items": {
+        "enum": ["build", "toolchain", "framework"]
+      }
+    },
     "identity": {
       "type": "object",
       "required": ["ok", "checks"],
       "description": "within-variant:<v>:<facet> (every facet equal within a variant) and across-variants:<facet> (equal unless declared). Facets: corpus, adapter, config, toolchain, build, browser, harness, observer, host, profile, schedule."
     },
-    "complete": { "type": "boolean" },
-    "incompleteSessions": { "type": "array", "items": { "type": "string" } },
+    "complete": {
+      "type": "boolean"
+    },
+    "incompleteSessions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "sessions": {
       "type": "array",
       "items": {
         "type": "object",
         "required": ["label", "variant", "status", "blocks"],
         "properties": {
-          "status": { "enum": ["complete", "incomplete", "missing", "not-attempted"] },
+          "status": {
+            "enum": ["complete", "incomplete", "missing", "not-attempted"]
+          },
           "blocks": {
             "type": "array",
             "items": {
@@ -42,7 +62,9 @@
         }
       }
     },
-    "facets": { "type": "object" },
+    "facets": {
+      "type": "object"
+    },
     "pooled": {
       "type": "object",
       "description": "variant -> { sessions, ops: { <scenario>/<opId>: { measured } } } with counts summed and latencies concatenated across the variant's sessions."

@@ -34,6 +34,35 @@ const NEEDS_ARTICLE = new Set([
 const TINY_OPS = new Set(Object.keys(OP_WRITE_METHODS));
 
 /** Field-notes-only rules: op set per kind, expected-negative placement, managed CSS, public CSS classification, hidden-edit isolation. */
+const hasManagedCss = (profile) =>
+  profile.mode === "fixed-distribution"
+    ? profile.fixture?.importedCss === true
+    : profile.fixture?.managedCss === true;
+
+export const FIXED_ADAPTERS = {
+  zfb: ["original-memoized", "recovered-snapshot"],
+  astro: ["archive"],
+  next: ["archive"],
+};
+
+/** fixed-distribution rules: the framework's declared helper, no zfb-only diagnostic/recovery families. */
+function fixedErrors(profile) {
+  const errors = [];
+  const allowed = FIXED_ADAPTERS[profile.framework] ?? [];
+  if (!allowed.includes(profile.fixture?.adapter))
+    errors.push(
+      `$.fixture.adapter: ${profile.framework} runs ${allowed.join(" or ")} (got ${profile.fixture?.adapter})`,
+    );
+  if ((profile.distribution?.launch ?? "direct") === "npm-script" && profile.framework === "zfb")
+    errors.push("$.distribution.launch: the zfb app has no dev script; use direct");
+  for (const s of profile.scenarios ?? [])
+    if (s.set === "recovery")
+      errors.push(
+        `$.scenarios[${s.id}]: set "recovery" reads zfb's rejection lines and is source-built only`,
+      );
+  return errors;
+}
+
 function fieldNotesErrors(profile) {
   const errors = [];
   const at = (s, i) => `$.scenarios[${s.id}].ops[${i}]`;
@@ -114,8 +143,10 @@ function fieldNotesErrors(profile) {
       }
       if (op.op === "edit-prop" && !FN_EDITABLE_PROPS[op.prop ?? "description"])
         errors.push(`${at(s, i)}: edit-prop cannot edit ${op.prop}`);
-      if (op.op === "edit-managed-css" && profile.fixture.managedCss !== true)
-        errors.push(`${at(s, i)}: edit-managed-css needs fixture.managedCss: true`);
+      if (op.op === "edit-managed-css" && !hasManagedCss(profile))
+        errors.push(
+          `${at(s, i)}: edit-managed-css needs fixture.${profile.mode === "fixed-distribution" ? "importedCss" : "managedCss"}: true`,
+        );
       if (op.op === "edit-public-css" && op.expect !== "classify")
         errors.push(
           `${at(s, i)}: edit-public-css must declare expect: "classify" (public CSS may have no auto-update contract)`,
@@ -149,6 +180,7 @@ function fieldNotesErrors(profile) {
 
 export function semanticErrors(profile) {
   const errors = [];
+  if (profile.mode === "fixed-distribution") errors.push(...fixedErrors(profile));
   const kind = profile.fixture?.kind ?? "tiny";
   if (kind === "field-notes") errors.push(...fieldNotesErrors(profile));
   else if (!profile.fixture?.placement)
@@ -209,11 +241,16 @@ export function semanticErrors(profile) {
   return errors;
 }
 
+/** The schema a profile validates against: its mode picks it; source-built stays profile.v1. */
+export function profileSchemaFor(profile) {
+  return profile?.mode === "fixed-distribution" ? "profile-fixed-distribution" : "profile";
+}
+
 export function loadProfile(path) {
   const abs = resolve(path);
   const raw = readFileSync(abs);
   const profile = JSON.parse(raw.toString("utf8"));
-  const errors = [...validateAs("profile", profile), ...semanticErrors(profile)];
+  const errors = [...validateAs(profileSchemaFor(profile), profile), ...semanticErrors(profile)];
   if (errors.length) {
     const e = new Error(`invalid profile ${abs}:\n  ${errors.join("\n  ")}`);
     e.code = "PROFILE_INVALID";
@@ -228,7 +265,8 @@ export function loadProfile(path) {
     path: abs,
     sha256: sha256(raw),
     resolved: {
-      buildReceipt: r(profile.buildReceipt),
+      buildReceipt: profile.buildReceipt ? r(profile.buildReceipt) : null,
+      installDir: profile.distribution?.installDir ? r(profile.distribution.installDir) : null,
       fixtureDir: r(profile.fixture.dir),
       sourceDir: profile.fixture.source?.dir ? r(profile.fixture.source.dir) : null,
       outDir,

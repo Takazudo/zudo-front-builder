@@ -7,7 +7,8 @@ Any run that cannot be trusted stops before the next workload edit.
 `node scripts/dev-browser-observe/cli.mjs --help` lists every command and exit
 code. `cli.mjs schema <name>` prints a JSON schema (`profile`, `receipt`,
 `record`, `build-receipt`, `fixture`, `field-notes-fixture`,
-`field-notes-scales`, `series`, `aggregate`).
+`field-notes-scales`, `field-notes-distributions`, `install-receipt`,
+`profile-fixed-distribution`, `series`, `aggregate`).
 
 ## Workflow
 
@@ -748,7 +749,7 @@ OOM. Attempt latencies in such a session are not timing measurements.
 
 ## Frozen copy for a measurement series
 
-`cli.mjs freeze --out <dir>` copies the harness to `<dir>/dev-browser-observe`.
+`cli.mjs freeze --out <dir>` copies the harness, without `__tests__`, to `<dir>/dev-browser-observe`.
 It refuses a harness dir with uncommitted changes unless `--allow-dirty` is
 given. The copy gets a `.frozen.json` stamp with the source sha and dirty
 state, the harness and full tree hashes, the fixture hashes, the observer hash,
@@ -819,10 +820,162 @@ cover A0–A3 in both placements. Each warm order (`index-first`,
 the detail page, and category on `/`. Each cell is its own scenario. A1
 remains exactly the original helper.
 
-## Not implemented
+## Fixed distributions (`mode: "fixed-distribution"`)
 
-`mode: "fixed-distribution"` is accepted by the schema but rejected with
-`not-implemented` (exit 4).
+A fixed-distribution profile runs one of three pinned frameworks over the same
+Field Notes corpus and scales, instead of a zfb built from this checkout:
+
+| `framework` | Packages (archive lockfile) | App | Helper |
+| --- | --- | --- | --- |
+| `zfb` | `@takazudo/zfb` + `@takazudo/zfb-runtime` 6.0.1 | `apps/zfb` | `original-memoized` or `recovered-snapshot` (archive helper bytes) |
+| `astro` | `astro` 7.4.12 (Vite 8.3.8) | `apps/astro` | `archive`: original `src/lib/content.js`, native glob loader |
+| `next` | `next` 16.4.6, `react`/`react-dom` 19.3.1 | `apps/next` | `archive`: the authoring dev adapter `lib/content.js` |
+
+`fixtures/field-notes/distributions.json` (schema `field-notes-distributions`)
+declares each framework from the archive. It records:
+
+- the app tree, `package.json` and lockfile hashes, and the pinned versions;
+- the helper and config, and the adapter files;
+- the imported-CSS variant files and the executables;
+- the launch argv (from the archive's `devtools/dev-bench.mjs`);
+- readiness patterns from the archive's recorded server logs;
+- process-role patterns.
+
+Next's `scripts/dev-content.mjs` sidecar is the archive's own file (sha256
+`4e70fdc7…71b04d7`). It is hashed and labelled, and its watch, debounce and
+revision write fall inside the measured latency. Its volatile
+`lib/content-revision.js` is outside the tree hash. Astro needs no fixture
+adapter: its native glob loader watches the external content dir. The
+memoized `indexPromise` stays the archive original.
+
+Neither framework's core is changed. Historical fixed-ZFB results stay what
+they were: the 6.0.1 helpers are the archive bytes, and a stale or timeout
+outcome is a recorded failure. No later zfb or modified helper replaces them.
+
+### Profile schema per mode
+
+`mode` selects the schema, and source-built keeps `profile.v1` unchanged:
+
+- `profile.v1` now allows only `source-built`, and it still requires
+  `productSha`, `buildReceipt` and `pins`.
+- A fixed-distribution profile uses schema `profile-fixed-distribution`
+  (`dev-browser-observe.profile.fixed-distribution.v1`). It requires
+  `framework`, `distribution.installDir` and `pins`, and forbids `productSha`
+  and `buildReceipt`. `diagnostic` is always false. The fixture is Field Notes
+  with external placement, `fixture.scale`, the helper as `fixture.adapter`,
+  and `fixture.importedCss`.
+- Recovery scenarios are source-built only, because they read zfb's own
+  rejection lines.
+
+### Install, then run
+
+1. Build a scale source dir with `make-source` (every app is in it).
+2. `cli.mjs install-distribution --framework <fw> --source <src-100> --out <installs>/<fw>`
+   does the following:
+   1. Checks `<src>/apps/<fw>` against the declared tree, and copies nothing
+      on a mismatch.
+   2. Copies the app without `node_modules` or caches to a new `--out` that is
+      outside any git work tree.
+   3. Runs `npm ci --no-audit --no-fund` there with this node. Lifecycle
+      scripts run, as for a normal install.
+   4. Writes `install-receipt.json` with node and npm identity, the command,
+      the exit code, and the verification.
+
+   `--dry-run` prints the plan. One install serves every scale, because the
+   apps are identical across scales.
+3. `cli.mjs verify-distribution --framework <fw> --install-dir <dir>` repeats
+   the checks.
+
+The verification covers:
+
+- the app tree, `package.json` and lockfile;
+- every pinned version in `node_modules` and in the lockfile;
+- `node_modules/.package-lock.json` against the lockfile: the same packages,
+  versions and integrity strings, with optional platform packages skipped and
+  listed, and nothing extraneous or missing;
+- the version in each installed `package.json`;
+- each executable's realpath and sha256;
+- that no framework cache dir exists;
+- the `node_modules` tree hash, with symlinks recorded by target.
+
+The tarball integrity itself was npm's check at install time; extracted files
+cannot prove it.
+
+`verify-identity` and `run` refuse a fixed profile before any edit (exit 3)
+for any of these mismatches:
+
+- the corpus or scale (the same source checks as Field Notes);
+- the source app tree, config, adapter files or helper;
+- the imported-CSS files;
+- the install receipt;
+- the node binary: its version and sha256 must equal the install's;
+- the install checks above, or `node_modules` changed since the install;
+- the harness, fixture, observer or helper pins;
+- `outDir` or `installDir` inside a git work tree.
+
+After materialization, the run also refuses (exit 3) if the copied app or the
+copied `node_modules` differs from the install. The work dir is
+`<label>/work/{content,shared,apps/<fw>}`, and the app is copied from the
+install with clone-on-write when the volume supports it.
+
+The receipt records `mode`, `framework` and `distribution`, plus the
+fixture's `pinned`, `appTreeSha256`, `helperSha256`, `importedCss`,
+`adapterFiles` and `nodeModules`.
+
+### Launch, readiness and processes
+
+- **Launch:** `direct` (default) spawns this node with the declared script:
+  the zfb shim `bin/zfb.mjs`, `astro/bin/astro.mjs dev --ignore-lock`, or Next's
+  `scripts/dev-content.mjs` sidecar, which spawns `next dev`. `npm-script`
+  spawns this node with `npm-cli.js run dev -- <args>`, for Astro and Next only.
+  With `port.mode: "ephemeral"` the harness picks a free port and passes it.
+- **Readiness:** read from each complete output line. A JSON log line with a
+  `message` (Astro's non-TTY logger) is read through that message.
+  - zfb: `→ ready on <url>`, as in `output.rs` at v6.0.1 and the archive log.
+  - astro: `astro v7.4.12 ready in N ms` plus `┃ Local <url>`.
+  - next: the sidecar's `external content watcher ready`, `▲ Next.js 16.4.6`,
+    `- Local: <url>` and `✓ Ready in`.
+
+  A printed port other than the requested one is `READY_CONTRADICTED`, not
+  readiness.
+- **Processes:** the launcher (npm, `sh -c`, the sidecar or the shim) is the
+  spawned root of a detached group. The existing ownership code adopts every
+  descendant through the group or the parent chain, including a child in its
+  own group. At readiness, `receipt.server.roles` classifies each owned
+  process by its `ps` args: `npm`, `shell`, `content-sidecar`, `next-cli`,
+  `next-server`, `astro-cli`, `zfb-shim` or `zfb-native`. Stop and absence
+  verification is the existing sequence over every known descendant.
+
+### Operations
+
+The ops run on the same corpus and selectors in every framework:
+
+- Body, title and category edit `content/articles/<slug>.md`.
+- The shared layout is `components/Layout.tsx`, `src/layouts/Site.astro` or
+  `app/layout.jsx`. Each has the same footer.
+- Public CSS is each app's `public/site.css`.
+- `edit-managed-css` needs `importedCss: true`, which applies the archive's
+  variant. That variant is zfb's native `styles/global.css`, Astro's
+  `src/styles/site.imported.css` or Next's `app/site.imported.css`, each
+  imported from the layout with the `/site.css` link removed. The op adds or
+  changes `--fn-managed-marker` in the first `:root{}` block.
+
+### Cohorts
+
+The examples are `profiles/field-notes-fixed-{zfb-original-memoized,zfb-recovered-snapshot,astro,next}-100.example.json`.
+Each fixed profile is identical apart from its framework, helper and install,
+so the pairwise plans `profiles/series-fixed-zfb-vs-{astro,next}.example.json`
+declare `framework`.
+
+- **Declaring `framework`:** allowed only when every session is
+  fixed-distribution. It lets the profiles differ in `framework`,
+  `fixture.adapter` and `pins.adapterSha256`. It also lets the adapter, config
+  and build (installed executables, `node_modules`) facets differ. Corpus,
+  browser, harness, observer, host, schedule and the node binary must still
+  match.
+- **Separate ZFB reference series:** each cohort's zfb sessions are that
+  cohort's own reference series, so aggregate each series record separately.
+  The `recovered-snapshot` zfb profile is a separately labelled reference too.
 
 ## macOS process sampling
 

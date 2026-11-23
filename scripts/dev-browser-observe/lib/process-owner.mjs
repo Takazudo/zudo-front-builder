@@ -182,6 +182,20 @@ function remember(handle, p, source) {
   handle.onNewOwned?.(entry);
 }
 
+/** snapshotOwned plus each process's full args (one `ps -o args=` per pid; "unavailable" if gone). */
+export function snapshotOwnedWithArgs(handle, psImpl = run, platform = process.platform) {
+  const env = { ...process.env, LC_ALL: "C" };
+  return snapshotOwned(handle, psImpl, platform).map((p) => {
+    let args = "unavailable";
+    try {
+      args = psImpl("ps", ["-o", "args=", "-p", String(p.pid)], { env }).trim() || "unavailable";
+    } catch {
+      args = "unavailable";
+    }
+    return { ...p, args };
+  });
+}
+
 export function snapshotOwned(handle, psImpl, platform = process.platform) {
   if (!handle.native) return [];
   let seen = ownedProcesses(psTable(psImpl), handle.native);

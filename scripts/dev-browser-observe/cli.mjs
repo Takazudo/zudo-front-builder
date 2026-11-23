@@ -3,6 +3,13 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AGGREGATE_SCHEMA, DECLARABLE_FACETS, aggregate } from "./lib/aggregate.mjs";
 import { OBSERVER_PATH } from "./lib/browser.mjs";
+import {
+  FRAMEWORKS,
+  distributionChecks,
+  distributionOf,
+  fixedHelperPath,
+  installDistribution,
+} from "./lib/distribution.mjs";
 import { fixtureKind, kindFor } from "./lib/fixture-kinds.mjs";
 import {
   FN_SCALE_COUNTS,
@@ -15,13 +22,7 @@ import { currentPins, recordBuild } from "./lib/identity.mjs";
 import { holdLock, lockContentionCheck } from "./lib/lock-check.mjs";
 import { probeMac } from "./lib/mac-process-adapter.mjs";
 import { loadProfile } from "./lib/profile.mjs";
-import {
-  EXIT,
-  execute,
-  findGitWorkTree,
-  notImplementedResult,
-  verifyIdentityOnly,
-} from "./lib/run.mjs";
+import { EXIT, execute, findGitWorkTree, verifyIdentityOnly } from "./lib/run.mjs";
 import { PROTOCOLS } from "./lib/schedule.mjs";
 import { aggregateInputFromRecord, runSeries } from "./lib/series.mjs";
 import { SCHEMA_FILES, loadSchema, validateAs } from "./lib/schema.mjs";
@@ -73,6 +74,11 @@ Commands:
                                repeat { warmups, measured } runs that many times in a row
                                (warmups recorded, excluded from stats); a profile with
                                resourceStudy runs its one scenario as restore cycles.
+                               A profile with mode "fixed-distribution" (schema
+                               profile-fixed-distribution) runs a pinned zfb 6.0.1, astro
+                               7.4.12 or next 16.4.6 install from install-distribution; its
+                               install, lockfile, executables, helper and corpus are checked
+                               before any edit (verify-identity runs the same checks).
   make-source --archive <dir> --scale <100|1000|5000> --out <dir> [--fixture-dir <dir>]
                                Build a Field Notes source dir for a declared scale: copy
                                the archive's apps/, shared/ and scripts/ to a new --out
@@ -92,6 +98,18 @@ Commands:
                                warmups excluded) plus the identity comparison (schema
                                "aggregate"). Exit 3 identity mismatch, 1 a session
                                incomplete, 0 otherwise. --out is never overwritten.
+  install-distribution --framework <zfb|astro|next> --source <scale source dir> --out <dir>
+            [--npm-cli <npm-cli.js>] [--dry-run] [--fixture-dir <dir>]
+                               fixed-distribution install: copy <source>/apps/<fw> (checked
+                               against fixtures/field-notes/distributions.json) to a new --out
+                               outside any git work tree, run \`npm ci --no-audit --no-fund\`
+                               there with this node, verify the result and write
+                               <out>/install-receipt.json. --dry-run prints the plan only.
+                               Exit 0 ok, 3 installed but not the declared tree, 1 npm failed.
+  verify-distribution --framework <fw> --install-dir <dir> [--fixture-dir <dir>]
+                               Recheck an install against its receipt and the declarations
+                               (lockfile, pinned versions, hidden-lockfile versions and
+                               integrity, executables, node binary, node_modules tree).
   freeze --out <dir> [--allow-dirty]
                                Copy this harness to <dir>/dev-browser-observe with a
                                .frozen.json stamp (tree hashes, source sha, the linked
@@ -111,7 +129,7 @@ receipt.json, summary.json, server.log. A label is never reused.
 Exit codes: 0 ok (a batch stopped only by a declared negative control, or by an
 expect:"classify" timeout recorded as timeout, counts as ok),
 1 batch stopped / calibration failure, 2 usage, 3 identity rejected,
-4 not implemented (fixed-distribution), 5 lock busy, 6 owned server still alive,
+4 not implemented (unused since fixed-distribution was implemented), 5 lock busy, 6 owned server still alive,
 7 server not ready, 8 controller error.
 
 Timing endpoint: "predicate confirmed + 2 rAF + binding delivery", measured on one
@@ -209,10 +227,22 @@ export async function main(argv) {
       const { profile, resolved } = loadProfile(need(args, "profile"));
       const kind = kindFor(profile);
       const manifest = kind.loadManifest(resolved.fixtureDir);
+      const entry =
+        profile.mode === "fixed-distribution"
+          ? distributionOf(resolved.fixtureDir, profile.framework, manifest)
+          : null;
       const pins = currentPins({
         fixtureDir: resolved.fixtureDir,
         observerPath: OBSERVER_PATH,
-        adapterPath: kind.adapterPath(resolved.fixtureDir, manifest, profile.fixture.adapter),
+        adapterPath: entry
+          ? fixedHelperPath({
+              fixtureDir: resolved.fixtureDir,
+              manifest,
+              entry,
+              sourceDir: resolved.sourceDir,
+              adapter: profile.fixture.adapter,
+            })
+          : kind.adapterPath(resolved.fixtureDir, manifest, profile.fixture.adapter),
       });
       if (fixtureKind(profile) === "field-notes") {
         const scale = fnScale(resolved.fixtureDir, manifest, profile.fixture.scale ?? null);
@@ -237,15 +267,11 @@ export async function main(argv) {
       return EXIT.ok;
     }
     case "verify-identity": {
-      const { profile } = loadProfile(need(args, "profile"));
-      if (profile.mode === "fixed-distribution") {
-        print(notImplementedResult(profile));
-        return EXIT.notImplemented;
-      }
-      const verdict = verifyIdentityOnly(args.profile);
+      const verdict = verifyIdentityOnly(need(args, "profile"));
       print({
         ok: verdict.ok,
         checks: verdict.checks,
+        ...(verdict.facts?.framework ? { distribution: verdict.facts } : {}),
         receiptError: verdict.receiptError,
         harnessCapability: verdict.harnessCapability,
       });
@@ -363,6 +389,66 @@ export async function main(argv) {
         ...(out ? {} : { report }),
       });
       return exitCode;
+    }
+    case "install-distribution": {
+      const framework = need(args, "framework");
+      if (!FRAMEWORKS.includes(framework)) {
+        process.stderr.write(`--framework must be one of ${FRAMEWORKS.join(", ")}\n`);
+        return EXIT.usage;
+      }
+      const out = resolve(need(args, "out"));
+      const git = findGitWorkTree(out);
+      if (git) {
+        process.stderr.write(`--out ${out} is inside the git work tree ${git}\n`);
+        return EXIT.usage;
+      }
+      if (!args["dry-run"] && existsSync(out)) {
+        process.stderr.write(`refusing to overwrite ${out}\n`);
+        return EXIT.usage;
+      }
+      const r = installDistribution({
+        fixtureDir: resolve(args["fixture-dir"] ?? join(HARNESS_DIR, "fixtures", "field-notes")),
+        framework,
+        sourceDir: resolve(need(args, "source")),
+        outDir: out,
+        ...(typeof args["npm-cli"] === "string" ? { npmCli: resolve(args["npm-cli"]) } : {}),
+        dryRun: Boolean(args["dry-run"]),
+      });
+      if (r.dryRun) {
+        print(r);
+        return EXIT.ok;
+      }
+      print({
+        receipt: join(out, "install-receipt.json"),
+        ok: r.ok,
+        exitCode: r.exitCode,
+        node: r.node,
+        npm: r.npm,
+        failed: r.verification?.checks.filter((c) => !c.ok).map((c) => c.name) ?? null,
+        stderrTail: r.ok ? undefined : r.stderrTail,
+      });
+      return r.ok ? EXIT.ok : r.exitCode === 0 ? EXIT.identityRejected : EXIT.stopped;
+    }
+    case "verify-distribution": {
+      const framework = need(args, "framework");
+      if (!FRAMEWORKS.includes(framework)) {
+        process.stderr.write(`--framework must be one of ${FRAMEWORKS.join(", ")}\n`);
+        return EXIT.usage;
+      }
+      const fixtureDir = resolve(
+        args["fixture-dir"] ?? join(HARNESS_DIR, "fixtures", "field-notes"),
+      );
+      const r = distributionChecks({
+        installDir: resolve(need(args, "install-dir")),
+        entry: distributionOf(fixtureDir, framework),
+      });
+      print({
+        ok: r.ok,
+        failed: r.checks.filter((c) => !c.ok).map((c) => c.name),
+        checks: r.checks,
+        facts: r.verification?.facts ?? null,
+      });
+      return r.ok ? EXIT.ok : EXIT.identityRejected;
     }
     case "freeze": {
       const r = freezeHarness({

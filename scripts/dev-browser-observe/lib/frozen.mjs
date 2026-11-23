@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import {
   FROZEN_SCHEMA,
   FROZEN_STAMP,
@@ -71,10 +71,15 @@ function anyWritable(dir) {
  * @playwright/test package it resolves today, and make the copy read-only. Refuses a dirty
  * harness dir unless allowDirty, and never overwrites.
  */
-export function freezeHarness({ outDir, harnessDir = HARNESS_DIR, allowDirty = false }) {
+export function freezeHarness({
+  outDir,
+  harnessDir = HARNESS_DIR,
+  allowDirty = false,
+  capabilityImpl = harnessCapability,
+}) {
   const out = resolve(outDir);
   if (existsSync(out)) throw new Error(`frozen out dir already exists: ${out}`);
-  const cap = harnessCapability(harnessDir);
+  const cap = capabilityImpl(harnessDir);
   if (cap.frozen) throw new Error(`${harnessDir} is already a frozen copy; freeze from a checkout`);
   if (cap.harnessDirDirty && !allowDirty)
     throw new Error(
@@ -84,9 +89,13 @@ export function freezeHarness({ outDir, harnessDir = HARNESS_DIR, allowDirty = f
   const pwVersion = JSON.parse(readFileSync(join(pwDir, "package.json"), "utf8")).version;
   const dest = join(out, FROZEN_HARNESS_DIRNAME);
   mkdirSync(out, { recursive: true });
+  // Unit tests are not part of a measurement series; everything the runs read is copied.
   cpSync(harnessDir, dest, {
     recursive: true,
-    filter: (p) => !p.split(/[\\/]/).includes("node_modules"),
+    filter: (p) => {
+      const rel = relative(harnessDir, p).split(/[\\/]/);
+      return !rel.includes("node_modules") && rel[0] !== "__tests__";
+    },
   });
   const link = join(out, "node_modules", "@playwright", "test");
   mkdirSync(dirname(link), { recursive: true });

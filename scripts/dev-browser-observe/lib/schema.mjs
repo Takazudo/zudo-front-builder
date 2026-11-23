@@ -4,12 +4,15 @@ import { HARNESS_DIR } from "./util.mjs";
 
 export const SCHEMA_FILES = {
   profile: "profile.v1.json",
+  "profile-fixed-distribution": "profile-fixed-distribution.v1.json",
   receipt: "receipt.v1.json",
   record: "record.v1.json",
   "build-receipt": "build-receipt.v1.json",
   fixture: "tiny-fixture.v1.json",
   "field-notes-fixture": "field-notes-fixture.v1.json",
   "field-notes-scales": "field-notes-scales.v1.json",
+  "field-notes-distributions": "field-notes-distributions.v1.json",
+  "install-receipt": "install-receipt.v1.json",
   series: "series.v1.json",
   aggregate: "aggregate.v1.json",
 };

@@ -1,0 +1,67 @@
+{
+  "$id": "dev-browser-observe.install-receipt.v1",
+  "title": "<installDir>/install-receipt.json written by `cli.mjs install-distribution`",
+  "type": "object",
+  "required": [
+    "schema",
+    "framework",
+    "createdAt",
+    "distributionsSha256",
+    "source",
+    "installDir",
+    "appDir",
+    "node",
+    "npm",
+    "command",
+    "exitCode",
+    "verification",
+    "ok"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dev-browser-observe.install-receipt.v1"
+    },
+    "framework": {
+      "enum": ["zfb", "astro", "next"]
+    },
+    "createdAt": {
+      "type": "string"
+    },
+    "distributionsSha256": {
+      "type": "string"
+    },
+    "source": {
+      "type": "object"
+    },
+    "installDir": {
+      "type": "string"
+    },
+    "appDir": {
+      "type": "string"
+    },
+    "node": {
+      "type": "object",
+      "required": ["execPath", "realpath", "sha256", "version"]
+    },
+    "npm": {
+      "type": "object",
+      "required": ["cli", "sha256", "version"]
+    },
+    "command": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "exitCode": {
+      "type": ["integer", "null"]
+    },
+    "verification": {
+      "type": ["object", "null"],
+      "description": "verifyInstall: app tree, package.json, lockfile, pinned versions, hidden-lockfile comparison (version + integrity per package, optional platform packages skipped), executables (realpath + sha256), no framework caches, node_modules tree hash."
+    },
+    "ok": {
+      "type": "boolean"
+    }
+  }
+}

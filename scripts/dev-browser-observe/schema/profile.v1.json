@@ -27,7 +27,8 @@
       "type": "string"
     },
     "mode": {
-      "enum": ["source-built", "fixed-distribution"]
+      "enum": ["source-built"],
+      "description": "source-built: a zfb binary built from this checkout, pinned by productSha and buildReceipt. A fixed-distribution profile uses the separate schema profile-fixed-distribution (dev-browser-observe.profile.fixed-distribution.v1)."
     },
     "diagnostic": {
       "type": "boolean",

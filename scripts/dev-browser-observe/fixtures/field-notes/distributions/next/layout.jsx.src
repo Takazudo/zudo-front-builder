@@ -1,0 +1,17 @@
+import './site.imported.css';
+export default function RootLayout({ children }) {
+  return (
+    <html lang="en">
+      <head />
+      <body>
+        <header className="site-header"><div className="header-inner">
+          <a className="brand" href="/">FIELD<span>NOTES</span></a>
+          <nav aria-label="Main"><a href="/">Journal</a><a href="/archive/1/">Archive</a><a href="/category/architecture/">Architecture</a></nav>
+          <span className="edition">INDEPENDENT WEB JOURNAL</span>
+        </div></header>
+        <main id="main-content" className="site-main">{children}</main>
+        <footer className="site-footer"><div><strong>FIELD NOTES</strong><p>A shared fixture for static publishing.</p></div><p>Same content. Same design. Three build systems.</p></footer>
+      </body>
+    </html>
+  );
+}

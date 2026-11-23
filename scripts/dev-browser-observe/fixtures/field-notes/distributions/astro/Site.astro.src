@@ -1,0 +1,24 @@
+---
+import { spec } from '../lib/content.js';
+import '../styles/site.imported.css';
+const { title, description, path } = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title} | {spec.siteName}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={`${spec.siteUrl}${path}`} />
+  </head>
+  <body>
+    <header class="site-header"><div class="header-inner">
+      <a class="brand" href="/">FIELD<span>NOTES</span></a>
+      <nav aria-label="Main"><a href="/">Journal</a><a href="/archive/1/">Archive</a><a href="/category/architecture/">Architecture</a></nav>
+      <span class="edition">INDEPENDENT WEB JOURNAL</span>
+    </div></header>
+    <main id="main-content" class="site-main"><slot /></main>
+    <footer class="site-footer"><div><strong>FIELD NOTES</strong><p>A shared fixture for static publishing.</p></div><p>Same content. Same design. Three build systems.</p></footer>
+  </body>
+</html>

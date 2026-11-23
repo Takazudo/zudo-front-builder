@@ -20,6 +20,17 @@ import { Recorder } from "./recorder.mjs";
 import { createResourceStudy, summarizeResourceStudy } from "./resource-study.mjs";
 import { expandSchedule, scheduleOf } from "./schedule.mjs";
 import { startDevServer } from "./server.mjs";
+import {
+  appTreeHash,
+  classifyRoles,
+  createReadiness,
+  launchCommand,
+  materializeFixed,
+  resolveNpmCli,
+} from "./distribution.mjs";
+import { FN_SEL } from "./fieldnotes.mjs";
+import { fixedIdentityVerdict, freePort } from "./fixed.mjs";
+import { snapshotOwnedWithArgs } from "./process-owner.mjs";
 import { batchExitOk, newAccounting, runBatch } from "./state-machine.mjs";
 import { summarize } from "./stats.mjs";
 import {
@@ -58,6 +69,8 @@ export function notImplementedResult(profile) {
   };
 }
 
+export const isFixed = (profile) => profile.mode === "fixed-distribution";
+
 function plannedCount(scenarios) {
   return scenarios.reduce((n, s) => n + s.ops.length, 0);
 }
@@ -66,6 +79,10 @@ function plannedCount(scenarios) {
 export function verifyIdentityOnly(profilePath) {
   const { profile, resolved } = loadProfile(profilePath);
   const manifest = kindFor(profile).loadManifest(resolved.fixtureDir);
+  if (isFixed(profile)) {
+    const v = fixedIdentityVerdict({ profile, resolved, manifest });
+    return { ...v, receiptError: null, harnessCapability: harnessCapability() };
+  }
   let receipt = null;
   let receiptError = null;
   try {
@@ -173,10 +190,6 @@ export async function execute({
 
 async function execute2({ loaded, label, command, stderr, hooks }) {
   const { profile, resolved } = loaded;
-  if (profile.mode === "fixed-distribution") {
-    stderr(JSON.stringify(notImplementedResult(profile)));
-    return EXIT.notImplemented;
-  }
   if (!LABEL_RE.test(label ?? "")) {
     stderr(`invalid --label ${JSON.stringify(label)} (must match ${LABEL_RE})`);
     return EXIT.usage;
@@ -256,23 +269,28 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
 
   const kind = kindFor(profile);
   const manifest = kind.loadManifest(resolved.fixtureDir);
+  const fixed = isFixed(profile);
   let buildReceipt = null;
-  try {
-    buildReceipt = readJson(resolved.buildReceipt);
-  } catch {
-    buildReceipt = null;
-  }
+  if (!fixed)
+    try {
+      buildReceipt = readJson(resolved.buildReceipt);
+    } catch {
+      buildReceipt = null;
+    }
   const receipt = {
     schema: RECEIPT_SCHEMA,
     label,
     command,
     createdAt: isoNow(),
-    productSha: profile.productSha,
+    mode: profile.mode,
+    framework: fixed ? profile.framework : "zfb-source-built",
+    productSha: profile.productSha ?? null,
     productDirtyIdentity: profile.productDirtyIdentity ?? null,
     diagnostic: profile.diagnostic === true,
     restorationWriteMethod: profile.restoration.writeMethod,
     harnessCapability: harnessCapability(),
     buildReceipt,
+    distribution: null,
     identity: null,
     profile,
     profileSha256: loaded.sha256,
@@ -287,14 +305,17 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   const receiptPath = join(labelDir, "receipt.json");
   const summaryPath = join(labelDir, "summary.json");
 
-  const verdict = identityVerdict({
-    profile,
-    resolved,
-    manifest,
-    receipt: buildReceipt,
-    extraAppDirs: [labelDir],
-  });
+  const verdict = fixed
+    ? (hooks.fixedIdentityVerdict ?? fixedIdentityVerdict)({ profile, resolved, manifest })
+    : identityVerdict({
+        profile,
+        resolved,
+        manifest,
+        receipt: buildReceipt,
+        extraAppDirs: [labelDir],
+      });
   receipt.identity = verdict;
+  if (fixed) receipt.distribution = verdict.facts ?? null;
   rec.append({
     type: "identity",
     ok: verdict.ok,
@@ -320,7 +341,18 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   const accountingRef = { current: null };
   try {
     try {
-      m = kind.materialize({ profile, resolved, workDir: join(labelDir, "work") });
+      m = fixed
+        ? materializeFixed({
+            fixtureDir: resolved.fixtureDir,
+            sourceDir: resolved.sourceDir,
+            installDir: resolved.installDir,
+            workDir: join(labelDir, "work"),
+            framework: profile.framework,
+            adapter: profile.fixture.adapter,
+            importedCss: profile.fixture.importedCss === true,
+            scale: profile.fixture.scale ?? null,
+          })
+        : kind.materialize({ profile, resolved, workDir: join(labelDir, "work") });
     } catch (error) {
       rec.append({
         type: "controller-error",
@@ -332,28 +364,33 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       exitCode = EXIT.controllerError;
       return exitCode;
     }
-    const local = [
-      ...findLocalTakazudoPackages(m.appDir),
-      ...findLocalTakazudoPackages(m.contentDir),
-    ];
+    // A fixed zfb installs @takazudo/zfb* on purpose; its identity is the lockfile comparison.
+    const local = fixed
+      ? []
+      : [...findLocalTakazudoPackages(m.appDir), ...findLocalTakazudoPackages(m.contentDir)];
     receipt.fixture = {
-      ...kind.receiptFixture(m, manifest, profile),
-      localTakazudoPackages: local,
+      ...(fixed ? fixedReceiptFixture(m, profile) : kind.receiptFixture(m, manifest, profile)),
+      localTakazudoPackages: fixed ? null : local,
       ancestorNodeModules: ancestorNodeModules(m.appDir),
     };
-    if (local.length > 0) {
+    const postChecks = fixed
+      ? fixedMaterializedChecks(m, resolved, verdict)
+      : local.length > 0
+        ? [
+            {
+              name: "no-local-takazudo-packages:materialized",
+              ok: false,
+              expected: [],
+              actual: local,
+            },
+          ]
+        : [];
+    if (fixed) receipt.fixture.materializedChecks = postChecks;
+    if (postChecks.some((c) => !c.ok)) {
       receipt.identity = {
         ...verdict,
         ok: false,
-        checks: [
-          ...verdict.checks,
-          {
-            name: "no-local-takazudo-packages:materialized",
-            ok: false,
-            expected: [],
-            actual: local,
-          },
-        ],
+        checks: [...verdict.checks, ...postChecks],
       };
       rec.append({
         type: "identity",
@@ -366,12 +403,34 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       return exitCode;
     }
 
-    server = startDevServer({
-      exe: buildReceipt.exe.path,
+    let launch = null;
+    if (fixed) {
+      const port =
+        profile.server.port.mode === "fixed"
+          ? profile.server.port.port
+          : await (hooks.freePort ?? freePort)(profile.server.host);
+      launch = launchCommand({
+        entry: m.entry,
+        appDir: m.appDir,
+        launch: profile.distribution.launch ?? "direct",
+        host: profile.server.host,
+        port,
+        nodePath: process.execPath,
+        npmCli: resolveNpmCli(),
+      });
+      launch.port = port;
+    }
+    server = (hooks.startDevServer ?? startDevServer)({
+      ...(fixed
+        ? {
+            command: launch.command,
+            args: launch.args,
+            readiness: createReadiness(m.entry.readiness, { port: launch.port }),
+          }
+        : { exe: buildReceipt.exe.path, extraArgs: profile.server.extraArgs ?? [] }),
       appDir: m.appDir,
       port: profile.server.port,
       host: profile.server.host,
-      extraArgs: profile.server.extraArgs ?? [],
       env: profile.server.env ?? {},
       diagnostic: profile.diagnostic === true,
       readyTimeoutMs: profile.server.readyTimeoutMs,
@@ -396,6 +455,17 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       zfbEnv: server.zfbEnv,
       removedDiagnosticEnv: server.removedDiagnosticEnv,
       diagnostic: server.diagnostic,
+      ...(fixed
+        ? {
+            launch: {
+              kind: launch.kind,
+              command: launch.command,
+              args: launch.args,
+              port: launch.port,
+            },
+            readiness: m.entry.readiness,
+          }
+        : {}),
     };
 
     let ready;
@@ -412,12 +482,21 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       summaryExtra = { stopReason: "ready-failed" };
       return exitCode;
     }
+    let roles = null;
+    if (fixed) {
+      // Launcher tree at readiness (npm / sidecar / shim and the framework's server processes).
+      roles = classifyRoles(m.entry, (hooks.snapshotOwned ?? snapshotOwnedWithArgs)(server.handle));
+      receipt.server.roles = roles;
+      receipt.server.rootRole =
+        roles.find((r) => r.pid === server.handle.native?.pid)?.role ?? null;
+    }
     rec.append({
       type: "server-ready",
       baseUrl: ready.baseUrl,
       readyMs: nsToMs(ready.readyNs - server.startedNs),
       native: server.handle.native,
-      launcher: "none",
+      launcher: fixed ? (receipt.server.rootRole ?? "unclassified") : "none",
+      ...(fixed ? { roles } : {}),
     });
     receipt.server.baseUrl = ready.baseUrl;
     receipt.server.readyMs = nsToMs(ready.readyNs - server.startedNs);
@@ -664,4 +743,71 @@ export function findGitWorkTree(dir) {
     if (parent === cur) return null;
     cur = parent;
   }
+}
+
+/** Receipt fields only a fixed-distribution run has. */
+function fixedReceiptFixture(m, profile) {
+  return {
+    name: m.manifest.name,
+    kind: "field-notes",
+    scale: m.scale,
+    scaleId: m.scaleId,
+    adapter: profile.fixture.adapter,
+    adapterSha256: m.adapterSha256,
+    sourceDir: profile.fixture.source.dir,
+    sourcePins: profile.fixture.source,
+    placement: m.placement,
+    layout: m.layout,
+    trailingSlash: true,
+    materializedDatasetSha256: m.materializedDatasetSha256,
+    configFile: m.configFile,
+    configSha256: m.configSha256,
+    configProvenance: m.configProvenance,
+    configBaseSha256: m.configBaseSha256,
+    workDir: m.workDir,
+    appDir: m.appDir,
+    contentDir: m.contentDir,
+    managedCss: { declaredAddition: false },
+    selectors: Object.fromEntries(
+      Object.entries(FN_SEL).map(([k, v]) => [k, typeof v === "function" ? v("{slug}") : v]),
+    ),
+    mode: "fixed-distribution",
+    framework: m.framework,
+    app: m.entry.app,
+    pinned: m.entry.pinned,
+    appTreeSha256: m.appTreeSha256,
+    helperSha256: m.helperSha256,
+    helperProvenance: m.helperProvenance,
+    importedCss: m.importedCss,
+    adapterFiles: m.entry.adapterFiles,
+    nodeModules: m.nodeModules,
+    distributionsSha256: m.entry.manifestSha256,
+  };
+}
+
+/**
+ * After materialization: the copied app (imported-CSS targets aside) equals the install's app,
+ * and the copied node_modules equals the install's recorded tree. A difference refuses the run
+ * before the server starts.
+ */
+function fixedMaterializedChecks(m, resolved, verdict) {
+  const exclude = [...(m.entry.appTree.exclude ?? []), ...m.importedCss.map((f) => f.target)];
+  const ex = { ...m.entry, appTree: { ...m.entry.appTree, exclude } };
+  const installApp = join(resolved.installDir, m.entry.app);
+  const installTree = appTreeHash(installApp, ex).sha256;
+  const recordedNm = verdict.facts?.install?.nodeModules?.sha256 ?? null;
+  return [
+    {
+      name: "materialized-app-equals-install",
+      ok: m.appTreeSha256 === installTree,
+      expected: installTree,
+      actual: m.appTreeSha256,
+    },
+    {
+      name: "materialized-node-modules-equals-install",
+      ok: recordedNm !== null && m.nodeModules.sha256 === recordedNm,
+      expected: recordedNm,
+      actual: m.nodeModules.sha256,
+    },
+  ];
 }

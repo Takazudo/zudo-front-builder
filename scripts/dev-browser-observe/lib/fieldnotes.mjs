@@ -582,7 +582,26 @@ export function planFieldNotesOp(m, model, op, { token = newToken(), tokens = nu
       };
     }
     case "edit-managed-css": {
-      if (!m.managedCssPath) throw new Error("edit-managed-css needs fixture.managedCss: true");
+      if (!m.managedCssPath)
+        throw new Error("edit-managed-css needs fixture.managedCss (or importedCss): true");
+      if (m.managedCssEdit?.mode === "insert-root") {
+        // The archive's imported-CSS variants are exact shared CSS with no marker: add or change one
+        // custom property in the first :root{} block.
+        const prop = m.managedCssEdit.customProperty;
+        const src = readFileSync(m.managedCssPath, "utf8");
+        const re = new RegExp(`${prop}:[^;}]*;`);
+        const next = re.test(src)
+          ? src.replace(re, `${prop}:${token};`)
+          : src.replace(":root{", `:root{${prop}:${token};`);
+        if (next === src) throw new Error("imported css :root block not found");
+        return {
+          ...base,
+          targetPath: op.targetPath ?? "/",
+          predicate: { kind: "computed-style", selector: ":root", property: prop, includes: token },
+          writes: [inPlace(m.managedCssPath, next)],
+          nextModel: model,
+        };
+      }
       const prop = m.manifest.managedCss.customProperty;
       const src = readFileSync(m.managedCssPath, "utf8");
       const re = new RegExp(`${prop}: [^;]*;`);

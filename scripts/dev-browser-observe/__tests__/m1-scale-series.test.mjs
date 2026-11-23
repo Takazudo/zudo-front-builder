@@ -916,10 +916,19 @@ describe("resource study", () => {
   });
 });
 
+// The git state of this checkout is not what these tests check; skipping its git calls keeps them fast.
+const FAKE_CAPABILITY = () => ({
+  repo: "/fake/repo",
+  sha: "f".repeat(40),
+  harnessDirDirty: false,
+  harnessDirPatchSha256: null,
+  harnessDirUntracked: [],
+});
+
 describe("frozen harness copy", () => {
   it("freezes a read-only, hash-stamped copy that resolves playwright and reports itself frozen", () => {
     const out = join(tmp(), "frozen");
-    const r = freezeHarness({ outDir: out, allowDirty: true });
+    const r = freezeHarness({ outDir: out, allowDirty: true, capabilityImpl: FAKE_CAPABILITY });
     expect(r.stamp.harnessTreeSha256).toBe(harnessTreeHash(HARNESS_DIR));
     const v = verifyFrozen(r.dir);
     expect(v.checks.filter((c) => !c.ok)).toEqual([]);
@@ -1258,7 +1267,7 @@ describe("review fixes", () => {
 
   it("a frozen copy's broken playwright link fails verify-frozen and the run identity check; series preflight refuses it", async () => {
     const out = join(tmp(), "frozen");
-    const r = freezeHarness({ outDir: out, allowDirty: true });
+    const r = freezeHarness({ outDir: out, allowDirty: true, capabilityImpl: FAKE_CAPABILITY });
     expect(frozenPlaywrightLink(r.stamp).ok).toBe(true);
     const link = r.stamp.playwright.link;
     rmSync(link);
