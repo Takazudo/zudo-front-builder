@@ -101,6 +101,11 @@ pub fn next_tick_id() -> Option<u64> {
     enabled().then(|| TICK_IDS.fetch_add(1, Ordering::Relaxed) + 1)
 }
 
+/// This thread's current tick id (`None` outside a tick or when off).
+pub fn current_tick() -> Option<u64> {
+    CURRENT_TICK.with(Cell::get)
+}
+
 /// Allocate a content snapshot generation (`None` when off).
 pub fn next_snapshot_gen() -> Option<u64> {
     enabled().then(|| SNAPSHOT_GENS.fetch_add(1, Ordering::Relaxed) + 1)

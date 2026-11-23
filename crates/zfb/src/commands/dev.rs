@@ -8391,6 +8391,10 @@ impl DevRenderSession {
         let p1_snapshot_ms = bundle_result.sub_timing.as_ref().map(|t| t.snapshot_ms);
         let p1_assemble_ms = bundle_result.sub_timing.as_ref().map(|t| t.assemble_ms);
         let p1_bundle_ms = bundle_result.sub_timing.as_ref().map(|t| t.bundle_ms);
+        let diag_snap_seq = bundle_result.diag_snap_seq;
+        if let Some(seq) = diag_snap_seq {
+            DIAG_LAST_SNAP_SEQ.store(seq, Ordering::Relaxed);
+        }
         let bundler_out = bundle_result.output;
         self.publish_linked_package_snapshots(bundler_out.linked_package_snapshots.clone());
         // Issue #3202 — the snapshot is the bundle's first read, so the
@@ -8453,6 +8457,22 @@ impl DevRenderSession {
                 .page_sources
                 .clone();
             self.publish_known_page_sources(&sources);
+            if let Some(tick_elapsed) = tick_start.map(|t| t.elapsed().as_millis()) {
+                // The full tick line below is not reached on a skip, so this
+                // line carries the stages that did run (issue #4754).
+                eprintln!(
+                    "[zfb-timing] refresh-stage: snap_seq={} prov_tick={} skip=hit \
+                     tick={tick_elapsed}ms P0(router)={}ms snap={}ms asm={}ms esbuild={}ms \
+                     P1b(skip-key)={}ms",
+                    diag_opt(diag_snap_seq),
+                    diag_opt(zfb_build::provenance_trace::current_tick()),
+                    p0_ms.unwrap_or(0),
+                    p1_snapshot_ms.unwrap_or(0),
+                    p1_assemble_ms.unwrap_or(0),
+                    p1_bundle_ms.unwrap_or(0),
+                    p1b_ms.unwrap_or(0),
+                );
+            }
             return Ok(BundleRefresh::Skipped);
         }
 
@@ -8707,6 +8727,18 @@ impl DevRenderSession {
                  P2(host)[boot={p2b}ms,swap={p2s}ms,shutdown={p2d}ms] \
                  P3(routes)={p3}ms[cache-hits={p3_cache_hits},miss={p3_cache_misses}] \
                  P4(diff+swap)={p4}ms"
+            );
+            // Issue #4754: correlate the tick line above with its snapshot's
+            // `mdx-cache:` line and the trace tick; record the skip outcome.
+            eprintln!(
+                "[zfb-timing] refresh-stage: snap_seq={} prov_tick={} skip={}",
+                diag_opt(diag_snap_seq),
+                diag_opt(zfb_build::provenance_trace::current_tick()),
+                if new_skip_key.is_some() {
+                    "miss"
+                } else {
+                    "unkeyed"
+                },
             );
         }
 
@@ -9781,6 +9813,9 @@ struct AssembledBundleResult {
     /// snapshot is this function's first read, so a read start the caller
     /// took just before calling covers it.
     content_files: std::collections::BTreeSet<PathBuf>,
+    /// Issue #4754 diagnostics: this assembly's `mdx-cache:` `snap_seq`
+    /// (`None` while `ZFB_DEV_TIMING` is off).
+    diag_snap_seq: Option<u64>,
     /// Provenance-trace generation of the content snapshot this bundle
     /// embeds (`None` while `ZFB_DEV_PROVENANCE_TRACE` is off).
     snapshot_gen: Option<u64>,
@@ -9876,10 +9911,32 @@ fn assemble_and_bundle_dev(
     } else {
         None
     };
+    let diag_cache_before =
+        dev_timing_enabled().then(|| zfb_content::MdxModuleCache::process_global().diagnostics());
+    let diag_snap_start = diag_cache_before
+        .as_ref()
+        .map(|_| std::time::Instant::now());
     // Issue #4781: a failed snapshot is not an empty one. Rejecting it here
     // aborts the refresh before P4, so the last successful renderer, route
     // tables, outputs and provenance stay published.
     let snapshot = crate::commands::build::dev_content_snapshot_json(project_root, cfg);
+    let diag_snap_seq = diag_cache_before.as_ref().map(|before| {
+        use crate::commands::build::DevContentSnapshot;
+        let (outcome, entries) = match &snapshot {
+            DevContentSnapshot::Built { snapshot, .. } => (
+                "built",
+                snapshot.collections.values().map(Vec::len).sum::<usize>(),
+            ),
+            DevContentSnapshot::NoCollections => ("no-collections", 0),
+            DevContentSnapshot::Failed(_) => ("failed", 0),
+        };
+        emit_mdx_cache_line(
+            before,
+            outcome,
+            entries,
+            diag_snap_start.map(|t| t.elapsed().as_millis()),
+        )
+    });
     let snapshot_gen = zfb_build::provenance_trace::next_snapshot_gen();
     if let Some(snapshot_gen) = snapshot_gen {
         emit_snapshot_event(snapshot_gen, &snapshot);
@@ -9968,6 +10025,7 @@ fn assemble_and_bundle_dev(
         sub_timing,
         content_files,
         snapshot_gen,
+        diag_snap_seq,
     })
 }
 
@@ -12563,6 +12621,7 @@ fn make_render_callback(
     obligations: Option<Arc<Mutex<DocumentObligations>>>,
 ) -> PageRenderer {
     Arc::new(move |pages: &[PageId], narrowing| {
+        let render_start = dev_timing_enabled().then(std::time::Instant::now);
         // Issue #1025 — lazy dev render. Switch ON (the default since
         // the #1027 activation flip) routes the tick through the
         // eager-vs-stale split; OFF (the `ZFB_DEV_EAGER=1` hatch) falls
@@ -12585,6 +12644,7 @@ fn make_render_callback(
                      content edits will conservatively rebuild all pages: {error:#}"
                 ));
             }
+            emit_render_stage_line(render_start, "lazy", pages.len(), &result);
             return result;
         }
         // Issue #958 — one narrowing decision per tick; per-page filters
@@ -12683,8 +12743,112 @@ fn make_render_callback(
                  content edits will conservatively rebuild all pages: {error:#}"
             ));
         }
-        Ok(out)
+        let result = Ok(out);
+        emit_render_stage_line(render_start, "eager", pages.len(), &result);
+        result
     })
+}
+
+/// `ZFB_DEV_TIMING` render-stage line (issue #4754 diagnostics): one per
+/// render-callback invocation, correlated by `prov_tick` (trace on) and the
+/// latest `snap_seq` the refresh published before this render.
+fn emit_render_stage_line(
+    start: Option<std::time::Instant>,
+    mode: &str,
+    pages_in: usize,
+    result: &Result<Vec<RenderedPage>>,
+) {
+    let Some(start) = start else {
+        return;
+    };
+    let rendered = match result {
+        Ok(out) => out.len().to_string(),
+        Err(_) => "err".to_string(),
+    };
+    eprintln!(
+        "[zfb-timing] render-stage: after_snap_seq={} prov_tick={} mode={mode} \
+         pages_in={pages_in} rendered={rendered} elapsed_ms={}",
+        DIAG_LAST_SNAP_SEQ.load(Ordering::Relaxed),
+        diag_opt(zfb_build::provenance_trace::current_tick()),
+        start.elapsed().as_millis()
+    );
+}
+
+/// Issue #4754 diagnostics: per-process content-snapshot sequence, allocated
+/// only while `ZFB_DEV_TIMING` is on (0 = none yet).
+#[cfg(feature = "direct-v8")]
+static DIAG_SNAP_SEQ: AtomicU64 = AtomicU64::new(0);
+/// Latest `snap_seq` a refresh observed, for the render-stage line.
+static DIAG_LAST_SNAP_SEQ: AtomicU64 = AtomicU64::new(0);
+/// Cache counters at the previous `mdx-cache:` line, for `since_prev_*`.
+#[cfg(feature = "direct-v8")]
+static DIAG_PREV_MDX_CACHE: Mutex<Option<zfb_content::MdxModuleCacheDiagnostics>> =
+    Mutex::new(None);
+
+fn diag_opt(v: Option<u64>) -> String {
+    v.map_or_else(|| "-".to_string(), |v| v.to_string())
+}
+
+/// `ZFB_DEV_TIMING` MDX compile-cache line (issue #4754 diagnostics), emitted
+/// after every dev content snapshot. `walk_*` = counter deltas across this
+/// snapshot walk only; `since_prev_*` = deltas since the previous line, which
+/// also covers the bundler/render-metadata compiles in between (the cache is
+/// process-global and shared). Counters are Relaxed loads; a concurrent
+/// compile elsewhere can land inside a `walk_*` window.
+#[cfg(feature = "direct-v8")]
+fn emit_mdx_cache_line(
+    before: &zfb_content::MdxModuleCacheDiagnostics,
+    outcome: &str,
+    entries: usize,
+    snapshot_ms: Option<u128>,
+) -> u64 {
+    let seq = DIAG_SNAP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    let now = zfb_content::MdxModuleCache::process_global().diagnostics();
+    let prev = DIAG_PREV_MDX_CACHE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .replace(now);
+    let d = |a: usize, b: usize| a.saturating_sub(b);
+    let (p_hits, p_misses, p_bypasses, p_admissions, p_clears) =
+        prev.map_or((0, 0, 0, 0, 0), |p| {
+            (
+                p.hits,
+                p.misses,
+                p.bypasses,
+                p.admissions,
+                p.capacity_clears,
+            )
+        });
+    eprintln!(
+        "[zfb-timing] mdx-cache: snap_seq={seq} prov_tick={} outcome={outcome} entries={entries} \
+         snapshot_ms={} len={} cap={} policy={} retained_bytes={} \
+         hits={} misses={} bypasses={} admissions={} capacity_clears={} explicit_clears={} \
+         walk_hits={} walk_misses={} walk_bypasses={} walk_capacity_clears={} \
+         since_prev_hits={} since_prev_misses={} since_prev_bypasses={} \
+         since_prev_admissions={} since_prev_capacity_clears={}",
+        diag_opt(zfb_build::provenance_trace::current_tick()),
+        snapshot_ms.map_or_else(|| "-".to_string(), |ms| ms.to_string()),
+        now.len,
+        now.capacity,
+        now.policy,
+        now.retained_payload_bytes,
+        now.hits,
+        now.misses,
+        now.bypasses,
+        now.admissions,
+        now.capacity_clears,
+        now.explicit_clears,
+        d(now.hits, before.hits),
+        d(now.misses, before.misses),
+        d(now.bypasses, before.bypasses),
+        d(now.capacity_clears, before.capacity_clears),
+        d(now.hits, p_hits),
+        d(now.misses, p_misses),
+        d(now.bypasses, p_bypasses),
+        d(now.admissions, p_admissions),
+        d(now.capacity_clears, p_clears),
+    );
+    seq
 }
 
 /// Build the live watch-ADD discovery hook handed to

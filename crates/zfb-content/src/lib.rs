@@ -111,7 +111,7 @@ pub use mdx_jsx_emit::{
     compile_mdx_to_jsx_module, compile_mdx_to_jsx_module_cached,
     compile_mdx_to_jsx_module_cached_with_deps, mdx_to_jsx_module, mdx_to_jsx_module_with_pipeline,
     parse_mdx_specifier, CompiledMdx, HeadingEntry, MdxJsxOptions, MdxModuleCache,
-    MdxModuleSpecifier, SpecifierError,
+    MdxModuleCacheDiagnostics, MdxModuleSpecifier, SpecifierError,
 };
 // `DefaultExportFirstParam` / `PlainFirstParam` / `RequestParamTier` and
 // `ssr_request_param_tier` are the SSR handler-shape detector (#2352):
