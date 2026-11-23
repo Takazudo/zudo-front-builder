@@ -9951,6 +9951,10 @@ fn assemble_and_bundle_dev(
     let browser_build_token = bundler_input.zudo_react_build.clone();
     let bundler_out: BundlerOutput =
         bundle_with_session(bundler_input, shadow_session).context("bundler step failed")?;
+    // Issue #4754: the snapshot walk and the bundler's compiles both used
+    // the generation `dev_content_snapshot_json` began; only now, with both
+    // succeeded, may it move the MDX cache's eviction horizon.
+    zfb_content::MdxModuleCache::process_global().complete_generation();
     let bundle_ms = bnd_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
     let sub_timing = if timing_enabled {
