@@ -8232,16 +8232,24 @@ pub(crate) fn dev_content_snapshot_json(
 ) -> DevContentSnapshot {
     // Issue #4754: one retention generation per dev snapshot walk, so a
     // corpus above the cache cap keeps its retained entries instead of
-    // clearing them on overflow every tick.
-    zfb_content::MdxModuleCache::process_global().begin_generation();
+    // clearing them on overflow every tick. Only a walk that finishes is
+    // completed: a rejected walk must not age the keys it never reached.
+    let cache = zfb_content::MdxModuleCache::process_global();
+    cache.begin_generation();
     let snapshot = match try_build_content_snapshot_with_cache(
         project_root,
         config,
         zfb_content::SnapshotOptions::default(),
-        zfb_content::MdxModuleCache::process_global(),
+        cache,
     ) {
-        Ok(None) => return DevContentSnapshot::NoCollections,
-        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => {
+            cache.complete_generation();
+            return DevContentSnapshot::NoCollections;
+        }
+        Ok(Some(snapshot)) => {
+            cache.complete_generation();
+            snapshot
+        }
         Err(e) => {
             return DevContentSnapshot::Failed(format!("content snapshot build failed ({e})"))
         }

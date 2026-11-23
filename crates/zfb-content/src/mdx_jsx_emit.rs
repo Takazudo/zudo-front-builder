@@ -3510,9 +3510,12 @@ fn collection_and_slug(file_path: &Path) -> (String, String) {
     (collection, slug)
 }
 
-/// Entry cap shared by both cache policies. Default/dev caches clear all on
-/// overflow; a build cache retains admitted entries and also enforces a
-/// separate finite retained-payload byte budget.
+/// Entry cap shared by both cache policies. Default caches clear all on
+/// overflow until [`MdxModuleCache::begin_generation`] is first called (the
+/// dev server does, once per snapshot walk); from then on they evict only
+/// entries unused for a completed walk and otherwise decline new keys. A
+/// build cache retains admitted entries and also enforces a separate finite
+/// retained-payload byte budget.
 const MDX_MODULE_CACHE_CAP: usize = 4_096;
 /// Accounted retained payload, not allocator overhead or process RSS.
 const BUILD_MDX_MODULE_CACHE_BYTES: usize = 32 * 1024 * 1024;
@@ -3534,7 +3537,13 @@ struct CacheState {
     generations: GenerationState,
 }
 
-/// Bookkeeping for generational retention. `last_used` holds each resident
+/// Bookkeeping for generational retention. `current` counts begun walks and
+/// `completed` is the latest walk that finished; `horizon` is the `completed`
+/// value when the current walk began. An entry is evictable only when its
+/// latest use is older than `horizon`, i.e. neither the current walk nor the
+/// last completed walk before it used it. Aborted walks never advance
+/// `completed`, so they cannot age the live keys they did not reach.
+/// `last_used` holds each resident
 /// key's latest generation; `touches` is an append-only log with exactly one
 /// valid `(generation, key)` record per resident key (older records for the
 /// same key are stale and skipped). Generations only grow, so the log is
@@ -3544,6 +3553,8 @@ struct CacheState {
 #[derive(Debug, Default)]
 struct GenerationState {
     current: u64,
+    completed: u64,
+    horizon: u64,
     last_used: HashMap<String, u64>,
     touches: VecDeque<(u64, String)>,
 }
@@ -3579,14 +3590,14 @@ impl CacheState {
         }
     }
 
-    /// Evict one resident entry that was used in neither the current nor
-    /// the previous generation. Returns `false` when every resident entry is
-    /// live, so the caller declines admission instead of evicting a key the
-    /// current walk has simply not reached yet.
+    /// Evict one resident entry used in neither the current walk nor the
+    /// last completed walk before it. Returns `false` when every resident
+    /// entry is live, so the caller declines admission instead of evicting a
+    /// key the current walk has simply not reached yet.
     fn evict_one_dead(&mut self) -> bool {
-        let current = self.generations.current;
+        let horizon = self.generations.horizon;
         while let Some((generation, _)) = self.generations.touches.front() {
-            if generation.saturating_add(2) > current {
+            if *generation >= horizon {
                 return false;
             }
             let (generation, key) = self
@@ -3822,9 +3833,12 @@ impl MdxModuleCache {
     /// snapshot + bundle every tick compiles each unchanged
     /// `(input, pipeline-config)` pair exactly once and serves every
     /// later tick from memory. The map is bounded at
-    /// [`MDX_MODULE_CACHE_CAP`] entries: when an insertion would exceed
-    /// the cap the entire map is cleared first (clear-on-overflow
-    /// policy), bounding the entry count across a long edit session.
+    /// [`MDX_MODULE_CACHE_CAP`] entries. Without generations an insertion
+    /// that would exceed the cap clears the entire map first
+    /// (clear-on-overflow). The dev server switches it to generational
+    /// retention ([`MdxModuleCache::begin_generation`]): at the cap a new key
+    /// evicts an entry no completed walk still uses, or is declined, so a
+    /// corpus larger than the cap keeps `cap` entries hitting every tick.
     ///
     /// Safe to share between configs because every entry is keyed by
     /// the pipeline config fingerprint (see the type-level docs);
@@ -3864,23 +3878,45 @@ impl MdxModuleCache {
     }
 
     /// Start a new retention generation (issue #4754). The dev server calls
-    /// this once per content snapshot walk. The first call switches a
-    /// clear-on-overflow cache from clear-all-on-overflow to bounded
-    /// generational retention: at capacity, a new key evicts one entry used
-    /// in neither this nor the previous generation (a superseded edit body, a
-    /// deleted file), and when every entry is live the new key is declined.
-    /// A full sorted walk over more keys than the cap therefore keeps hitting
-    /// the retained prefix instead of clearing and missing everything.
+    /// this before each content snapshot walk and
+    /// [`MdxModuleCache::complete_generation`] after the walk succeeds. The
+    /// first call switches a clear-on-overflow cache from
+    /// clear-all-on-overflow to bounded generational retention: at capacity,
+    /// a new key evicts one entry used in neither this walk nor the last
+    /// completed walk (a superseded edit body, a deleted file), and when
+    /// every entry is live the new key is declined. A full sorted walk over
+    /// more keys than the cap therefore keeps hitting the retained prefix
+    /// instead of clearing and missing everything. Entries already resident
+    /// at the first call are stamped as the oldest generation.
     ///
     /// No effect on a [`MdxModuleCache::for_build`] (retain) cache.
     pub fn begin_generation(&self) {
+        if !matches!(self.policy, CachePolicy::ClearOnOverflow) {
+            return;
+        }
+        let mut state = self.lock();
+        if state.generations.current == 0 {
+            let resident: Vec<String> = state.entries.keys().cloned().collect();
+            for key in resident {
+                state.touch(&key);
+            }
+        }
+        state.generations.current = state
+            .generations
+            .current
+            .checked_add(1)
+            .expect("cache generation exhausted");
+        state.generations.horizon = state.generations.completed;
+    }
+
+    /// Mark the walk begun by the latest [`MdxModuleCache::begin_generation`]
+    /// as completed. Only completed walks move the eviction horizon, so an
+    /// aborted walk (a snapshot rejected part-way) cannot make the live keys
+    /// it never reached evictable.
+    pub fn complete_generation(&self) {
         if matches!(self.policy, CachePolicy::ClearOnOverflow) {
             let mut state = self.lock();
-            state.generations.current = state
-                .generations
-                .current
-                .checked_add(1)
-                .expect("cache generation exhausted");
+            state.generations.completed = state.generations.current;
         }
     }
 
@@ -6472,11 +6508,75 @@ mod tests {
 
     fn generational_walk(cache: &MdxModuleCache, keys: &[String]) {
         cache.begin_generation();
+        walk_keys(cache, keys);
+        cache.complete_generation();
+    }
+
+    fn walk_keys(cache: &MdxModuleCache, keys: &[String]) {
         for key in keys {
             if cache.lookup(key).is_none() {
                 admit_test_entry(cache, key, retained_test_entry(16));
             }
         }
+    }
+
+    #[test]
+    fn generational_aborted_walk_does_not_age_unreached_live_keys() {
+        let cache = MdxModuleCache::new();
+        let keys: Vec<String> = (0..MDX_MODULE_CACHE_CAP)
+            .map(|i| format!("key-{i:05}"))
+            .collect();
+        generational_walk(&cache, &keys);
+        assert_eq!(cache.len(), MDX_MODULE_CACHE_CAP);
+        // A walk rejected part-way (e.g. an MDX error): begun, never completed.
+        cache.begin_generation();
+        walk_keys(&cache, &keys[..10]);
+        // The next walk meets a new file early. Every resident key was used
+        // in the last completed walk, so it is declined rather than evicting
+        // the first unreached key (and cascading down the walk).
+        let mut next = keys[..5].to_vec();
+        next.push("key-00004-new".to_string());
+        next.extend_from_slice(&keys[5..]);
+        generational_walk(&cache, &next);
+        let state = cache.lock();
+        assert_eq!(state.entries.len(), MDX_MODULE_CACHE_CAP);
+        for key in &keys {
+            assert!(
+                state.entries.contains_key(key),
+                "live key {key} was evicted"
+            );
+        }
+        assert!(!state.entries.contains_key("key-00004-new"));
+    }
+
+    #[test]
+    fn generational_entries_admitted_before_the_first_generation_are_evictable() {
+        let cache = MdxModuleCache::new();
+        let keys: Vec<String> = (0..MDX_MODULE_CACHE_CAP)
+            .map(|i| format!("key-{i:05}"))
+            .collect();
+        // Filled while still clear-on-overflow (exactly at the cap).
+        for key in &keys {
+            admit_test_entry(&cache, key, retained_test_entry(16));
+        }
+        assert_eq!(cache.len(), MDX_MODULE_CACHE_CAP);
+        // key-00000 is gone from the corpus; a new key takes its place.
+        let mut walk = keys[1..].to_vec();
+        walk.push("key-new".to_string());
+        // First generation: key-00000 was resident before generations began
+        // (stamped oldest), but no walk has completed yet, so it is not
+        // provably dead and the new key is declined.
+        generational_walk(&cache, &walk);
+        assert!(cache.lock().entries.contains_key("key-00000"));
+        assert!(!cache.lock().entries.contains_key("key-new"));
+        // After a completed walk that did not use it, it is evicted.
+        generational_walk(&cache, &walk);
+        let state = cache.lock();
+        assert!(!state.entries.contains_key("key-00000"));
+        assert!(state.entries.contains_key("key-new"));
+        assert_eq!(state.entries.len(), MDX_MODULE_CACHE_CAP);
+        let accounted: usize = state.entries.values().map(|e| e.retained_bytes).sum();
+        assert_eq!(state.retained_bytes, accounted);
     }
 
     #[test]
@@ -6497,6 +6597,7 @@ mod tests {
                 )
                 .unwrap();
             }
+            cache.complete_generation();
         };
         walk(&cache);
         assert_eq!(
