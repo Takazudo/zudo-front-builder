@@ -1,3 +1,5 @@
+import { PREPARE_INTERRUPTED } from "./browser.mjs";
+import { settleRule } from "./state-machine.mjs";
 import { distribution } from "./stats.mjs";
 import { nsToMs } from "./util.mjs";
 
@@ -65,7 +67,25 @@ export async function nativeReloadSurvival({
   const snap = fixtureOps.snapshot();
   const slug = fixtureOps.calibrationArticle ?? "b";
   const target = fixtureOps.route("article", slug);
-  const state = await observer.prepare(target);
+  const prepMark = observer.mark?.() ?? null;
+  let state;
+  try {
+    state = await observer.prepare(target);
+  } catch (error) {
+    if (error?.code !== PREPARE_INTERRUPTED) throw error;
+    // Nothing was written in this cycle; the page was replaced under prepare (for example by a
+    // late native reload). Classified and recorded, never retried.
+    return {
+      ok: false,
+      outcome: "prepare-interrupted-by-navigation",
+      prepareError: error.message,
+      target,
+      evidence: prepMark ? observer.since(prepMark) : null,
+      restorationOk: true,
+      restoration: null,
+      writePerformed: false,
+    };
+  }
   const attempt = fixtureOps.prepareAttempt({
     op: "edit-body",
     article: slug,
@@ -86,12 +106,32 @@ export async function nativeReloadSurvival({
     t0 === null ? { kind: "not-written" } : await observer.waitNotify(attempt.token, timeoutMs);
   const evidence = observer.collectAttempt(t0);
   if (waited.kind !== "notify") await observer.disarm();
+  const restoreMark = observer.mark?.() ?? null;
+  const restoreNs = observer.clock();
   const restore = fixtureOps.restore(snap);
   const live = [];
+  let settle = null;
   if (restore.mismatches.length === 0) {
+    // The same cleanup settle the batch uses: the restore's own native update (if it wrote),
+    // then quietMs of quiet, bounded by restoreMs; so it cannot land in the next cycle's prepare.
+    if (restoreMark && (restore.actions ?? []).length > 0)
+      settle = await observer.settle({
+        mark: restoreMark,
+        startNs: restoreNs,
+        quietMs,
+        boundMs: restoreMs,
+        ...settleRule(restore.actions ?? [], fixtureOps.noAutoUpdatePaths ?? []),
+      });
     for (const check of fixtureOps.liveChecks(snap)) {
       try {
-        live.push({ ...check, ...(await observer.liveCheck(check, restoreMs)) });
+        live.push({
+          ...check,
+          ...(await observer.liveCheck(check, restoreMs, {
+            quietMs,
+            nativeUpdateConfirmed:
+              settle?.settled === true && settle?.nativeUpdateObserved === true,
+          })),
+        });
       } catch (error) {
         live.push({ ...check, ok: false, error: String(error?.message ?? error) });
       }
@@ -127,6 +167,7 @@ export async function nativeReloadSurvival({
       writeMethod: restore.writeMethod,
       actions: restore.actions,
       mismatches: restore.mismatches,
+      settle,
       live,
       quiet,
     },
@@ -245,6 +286,17 @@ export async function runCalibration({
         };
       } else if (cell === "native-reload-survival") {
         res = await nativeReloadSurvival({ observer, fixtureOps, timeoutMs, restoreMs, quietMs });
+        if (res.outcome === "prepare-interrupted-by-navigation") {
+          record(cell, i, res);
+          results[cell] = {
+            repeats,
+            failures: failures + 1,
+            distributionMs: distribution(values),
+            aborted: "prepare-interrupted-by-navigation",
+          };
+          results.aborted = { cell, i, reason: "prepare-interrupted-by-navigation" };
+          return results;
+        }
         if (res.restorationOk === false) {
           record(cell, i, res);
           results[cell] = {

@@ -24,6 +24,22 @@ function playwrightVersion() {
   }
 }
 
+export const PREPARE_INTERRUPTED = "PREPARE_INTERRUPTED";
+
+/**
+ * A prepare whose page was replaced under it (Playwright: "Execution context was destroyed",
+ * a detached frame) gets the code PREPARE_INTERRUPTED; any other error passes through.
+ */
+export function prepareInterruption(error, path) {
+  const message = String(error?.message ?? error);
+  if (!/Execution context was destroyed|frame was detached|navigation/i.test(message)) return error;
+  return Object.assign(new Error(`prepare of ${path} interrupted by a navigation: ${message}`), {
+    code: PREPARE_INTERRUPTED,
+    path,
+    cause: error,
+  });
+}
+
 /**
  * One owned Chromium (Playwright launch: fresh temporary profile), one
  * context, one page. Never touches the user's browser profile.
@@ -270,12 +286,17 @@ export class ObserverPage {
       waitUntil: "load",
       timeout: timeoutMs,
     });
-    const state = await this.page.evaluate(() => ({
-      ...window.__dbo.state(),
-      notInCache:
-        (document.body ? document.body.innerText : "").indexOf("page not in cache") !== -1,
-    }));
-    if (state.armed) await this.page.evaluate(() => window.__dbo.disarm());
+    let state;
+    try {
+      state = await this.page.evaluate(() => ({
+        ...window.__dbo.state(),
+        notInCache:
+          (document.body ? document.body.innerText : "").indexOf("page not in cache") !== -1,
+      }));
+      if (state.armed) await this.page.evaluate(() => window.__dbo.disarm());
+    } catch (error) {
+      throw prepareInterruption(error, path);
+    }
     return { ...state, httpStatus: response ? response.status() : null };
   }
 
