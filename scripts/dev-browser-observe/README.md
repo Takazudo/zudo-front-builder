@@ -767,6 +767,14 @@ frozen `cli.mjs pins`. From a frozen copy:
 - `verify-frozen [--dir]` rechecks the hashes, the read-only bits and the
   playwright link.
 
+Materialization copies fixture and source files into `<label>/work` and then
+makes the work copy owner-writable (dirs `u+rwx`, files `u+rw`; symlinks are
+not followed). This lets a run from a read-only frozen copy, a read-only source
+dir or a read-only install edit and restore its own work files. The frozen
+copy and the sources keep their modes. Tree hashes cover only paths and bytes,
+so no identity hash changes. The `restore-blocked` control still sets 0444 on
+the work target and reverts to the work file's mode.
+
 Development can continue in the checkout meanwhile. The Chromium binary itself
 is identified per session by `receipt.browser.executableSha256`, and
 `aggregate` compares it.

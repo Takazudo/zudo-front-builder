@@ -1,5 +1,8 @@
 import {
+  chmodSync,
   cpSync,
+  lstatSync,
+  readdirSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -46,7 +49,7 @@ import { EXIT, execute } from "../lib/run.mjs";
 import { validateAs } from "../lib/schema.mjs";
 import { loadSeriesPlan } from "../lib/series.mjs";
 import { startDevServer } from "../lib/server.mjs";
-import { HARNESS_DIR, readJson, sha256, sha256File } from "../lib/util.mjs";
+import { HARNESS_DIR, ensureOwnerWritable, readJson, sha256, sha256File } from "../lib/util.mjs";
 import { SPEC, makeFakeSource, makeTinyHarness } from "./fieldnotes-fake.mjs";
 import { fakePage } from "./fakes.mjs";
 
@@ -733,6 +736,52 @@ describe("materialization and op mapping", () => {
         ).toThrow(/runs only its archive helper/);
       }
     });
+});
+
+describe("fixed materialization from read-only sources", () => {
+  it("a read-only scale source and install still give an owner-writable work copy with the same node_modules", () => {
+    const s = setup();
+    const { out, receipt } = install(s, "zfb");
+    const readOnly = (dir) => {
+      const st = lstatSync(dir);
+      if (st.isSymbolicLink()) return;
+      if (st.isDirectory()) {
+        for (const n of readdirSync(dir)) readOnly(join(dir, n));
+        chmodSync(dir, 0o555);
+      } else chmodSync(dir, st.mode & 0o555);
+    };
+    readOnly(s.src);
+    readOnly(out);
+    try {
+      const m = materializeFixed({
+        fixtureDir: s.fixtureDir,
+        sourceDir: s.src,
+        installDir: out,
+        workDir: join(s.root, "work-ro"),
+        framework: "zfb",
+        adapter: "original-memoized",
+        importedCss: true,
+        scale: 100,
+      });
+      expect(m.nodeModules.sha256).toBe(receipt.verification.facts.nodeModules.sha256);
+      const notWritable = [];
+      const visit = (p) => {
+        const st = lstatSync(p);
+        if (st.isSymbolicLink()) return;
+        const want = st.isDirectory() ? 0o700 : 0o600;
+        if ((st.mode & want) !== want) notWritable.push(p);
+        if (st.isDirectory()) for (const n of readdirSync(p)) visit(join(p, n));
+      };
+      visit(m.workDir);
+      expect(notWritable).toEqual([]);
+      writeFileSync(join(m.contentDir, "article-00005.md"), "edited\n");
+      writeFileSync(m.managedCssPath, ":root{}\n");
+      expect(lstatSync(join(out, "apps/zfb/package.json")).mode & 0o222).toBe(0);
+    } finally {
+      ensureOwnerWritable(s.src);
+      ensureOwnerWritable(out);
+    }
+  });
 });
 
 describe("launch commands and readiness from real archive output", () => {
