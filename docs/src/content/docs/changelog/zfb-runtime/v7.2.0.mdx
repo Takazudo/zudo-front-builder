@@ -1,0 +1,12 @@
+---
+title: v7.2.0
+sidebar_position: 64
+---
+
+# v7.2.0
+
+Released: 2026-11-24
+
+## Bug Fixes
+
+- `createPageRouter` accepts `devTrailingSlashDispatch`, which the native `zfb dev` Development bundle passes under `trailingSlash: true`. An eligible slash URL then selects its slashless route while the handler still sees the original URL and Request. The default router stays strict, and production bundles are unchanged (76166079c, 21d49202d).

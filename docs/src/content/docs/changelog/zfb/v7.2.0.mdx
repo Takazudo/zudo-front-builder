@@ -1,0 +1,27 @@
+---
+title: v7.2.0
+sidebar_position: 178
+---
+
+# v7.2.0
+
+Released: 2026-11-24
+
+## Features
+
+- `zfb dev` now explains its final 404 from the live route table. The response carries `x-zfb-dev-404-reason: not-in-route-table | route-known-not-rendered | unavailable` and a matching body paragraph, while the existing "page not in cache" text, status codes and live reload are unchanged (647b9010b, 2a49a1dd2).
+- Add the dev-only `ZFB_DEV_PROVENANCE_TRACE` environment variable, which prints structured `[zfb-prov]` stderr events tracing one edit from intake through selection, rendering, content edges and publication. It only observes and changes no plan or publication behavior. With the variable unset it costs one cached check (f3044e123, 1e493c9bc, 9796d3c31, b0222cc90).
+
+## Bug Fixes
+
+- Dispatch trailing-slash URLs to request-time SSR in `zfb dev` under `trailingSlash: true`, so `/live/first/` reaches the same route as `/live/first`. Prerendered pages, plugin middleware, embed handlers and injected routes keep their slash URLs. `zfb build` and production bundles are unchanged (76166079c, 21d49202d).
+- Keep the last good generation published when the dev content snapshot fails (ZB024), instead of publishing empty collections that removed `paths()` routes and could leave a memoized helper empty (9140f5d76).
+- Reject a dev route table whose `paths()` threw or returned an invalid result, instead of publishing it without those URLs and answering `not-in-route-table` 404s (18a491570).
+- After a rejected dev refresh, the next published refresh reselects every route, so edits made while the generation was rejected are rendered or marked stale (f370851cb).
+- Carry a stylesheet edit coalesced into a dev tick whose renderer reload or discovery refresh failed into the next applied tick, instead of dropping it (4eb5ebc94, 460a01d21).
+- Render routes again in dev when they return after their collection was briefly empty, instead of answering 404 until restart (509a986e1, d613d2e8b).
+- Observe collection reads made through a module-level memoized `getCollection()` helper in dev content provenance, so an in-place entry edit re-renders every page that consumes it (for example `/` as well as the detail page). Frozen, sealed, cloned or proxied frontmatter falls back conservatively and keeps ordinary JavaScript write semantics (5b6c346e2, 87b724cbb, eae239c93, 17aeafeb8, 729a70df4, 94b7db0ee, ef5db521e, 841c416af, 9459e2de0, 30663d8b1, 2ae9f8877).
+
+## Other Changes
+
+- Update the `url` crate to 2.5.9 for RUSTSEC-2026-0592 (5f9b3a2dd).
