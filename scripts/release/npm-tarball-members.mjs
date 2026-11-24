@@ -2,6 +2,11 @@ import { posix } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { parseTarEntries } from "../admit-darwin-artifacts.mjs";
 
+export const NPM_TARBALL_LIMITS = Object.freeze({
+  compressed: 256 * 1024 * 1024,
+  unpacked: 512 * 1024 * 1024,
+});
+
 export function indexNpmPayload(entries) {
   const files = new Map();
   const directories = new Set();

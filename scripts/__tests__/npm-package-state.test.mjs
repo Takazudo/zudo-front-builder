@@ -11,6 +11,7 @@ import * as npmTarball from "../release/npm-tarball-members.mjs";
 import {
   collectStates,
   darwinDigestProblems,
+  defaultRequest,
   expectationShape,
   main,
   packageState,
@@ -260,6 +261,85 @@ describe("packageState", () => {
         reasons: ["blocked: npm packages present-unverified (create-zfb)"],
       });
       expect(calls).toEqual([versionUrl(name, REAL.version), tarballUrl]);
+    } finally {
+      inspect.mockRestore();
+    }
+  });
+
+  it("refuses a registry tarball above the compressed bound", async () => {
+    const name = "create-zfb";
+    const { compressed } = npmTarball.NPM_TARBALL_LIMITS;
+    const cancel = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (url === tarballUrl) {
+        return new Response(new ReadableStream({ cancel }), {
+          headers: { "content-length": String(compressed + 1) },
+        });
+      }
+      return Response.json({
+        name,
+        version: REAL.version,
+        gitHead: REAL.commit,
+        dist: packageDist,
+      });
+    });
+    try {
+      expect(await packageState(name, ctx(defaultRequest))).toMatchObject({
+        state: "present-unverified",
+        detail: `tarball size: ${compressed + 1} bytes exceeds the ${compressed}-byte bound`,
+      });
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("bounds the streamed registry body when content-length is absent", async () => {
+    const cancel = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(Buffer.from("hi"));
+            controller.enqueue(Buffer.from("bye"));
+          },
+          cancel,
+        }),
+      ),
+    );
+    try {
+      await expect(defaultRequest(tarballUrl, { maxBytes: 4 })).rejects.toThrow(
+        "body exceeds the 4-byte bound",
+      );
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("uses bounded decompression before admitting a registry tarball", async () => {
+    const name = "create-zfb";
+    const { request } = registry({
+      [versionUrl(name, REAL.version)]: ok({
+        name,
+        version: REAL.version,
+        gitHead: REAL.commit,
+        dist: packageDist,
+      }),
+      [tarballUrl]: ok(packageTarball),
+    });
+    const read = npmTarball.readNpmPayload;
+    const inspect = vi
+      .spyOn(npmTarball, "readNpmPayload")
+      .mockImplementationOnce((bytes, options) => {
+        expect(options.maxOutputLength).toBe(npmTarball.NPM_TARBALL_LIMITS.unpacked);
+        return read(bytes, { maxOutputLength: 16 });
+      });
+    try {
+      expect(await packageState(name, ctx(request))).toMatchObject({
+        state: "present-unverified",
+        detail: expect.stringMatching(/^tarball contents: .*16/),
+      });
     } finally {
       inspect.mockRestore();
     }

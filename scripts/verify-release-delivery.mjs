@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { policyFromSourceFiles } from "./release/npm-publication-policy.mjs";
-import { readNpmPayload } from "./release/npm-tarball-members.mjs";
+import { readBoundedResponse, ResponseSizeError } from "./release/bounded-response.mjs";
+import { NPM_TARBALL_LIMITS, readNpmPayload } from "./release/npm-tarball-members.mjs";
 /**
  * verify-release-delivery.mjs — read-only audit of one published zfb release.
  *
@@ -222,8 +223,8 @@ const LIMITS = Object.freeze({
   log: 64 * 1024 * 1024,
   text: 1024 * 1024,
   archive: 256 * 1024 * 1024,
-  tarball: 256 * 1024 * 1024,
-  unpacked: 512 * 1024 * 1024,
+  tarball: NPM_TARBALL_LIMITS.compressed,
+  unpacked: NPM_TARBALL_LIMITS.unpacked,
   jobPages: 20,
   attempts: 20,
 });
@@ -278,38 +279,6 @@ function retryWaitMs(response, attempt, nowMs) {
   return Math.min(30_000, 1000 * 2 ** (attempt - 1));
 }
 
-async function readBounded(response, maxBytes, url) {
-  const declared = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    throw new FetchError(
-      "too-large",
-      `${url}: ${declared} bytes exceeds the ${maxBytes}-byte bound`,
-      { url },
-    );
-  }
-  if (!response.body?.getReader) {
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length > maxBytes) {
-      throw new FetchError("too-large", `${url}: body exceeds the ${maxBytes}-byte bound`, { url });
-    }
-    return bytes;
-  }
-  const reader = response.body.getReader();
-  const chunks = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => {});
-      throw new FetchError("too-large", `${url}: body exceeds the ${maxBytes}-byte bound`, { url });
-    }
-    chunks.push(Buffer.from(value));
-  }
-  return Buffer.concat(chunks, total);
-}
-
 /**
  * GET-only HTTP client with bounded timeouts, finite retries for transient
  * answers, and classified errors. The GitHub token is sent to api.github.com only.
@@ -358,9 +327,11 @@ export function createHttpClient({
       }
       if (response.ok) {
         try {
-          return await readBounded(response, maxBytes, url);
+          return await readBoundedResponse(response, maxBytes);
         } catch (error) {
-          if (error instanceof FetchError) throw error;
+          if (error instanceof ResponseSizeError) {
+            throw new FetchError("too-large", `${url}: ${error.message}`, { url });
+          }
           lastError = new FetchError("network", `${url}: body read failed: ${error.message}`, {
             url,
           });

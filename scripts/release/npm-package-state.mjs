@@ -44,8 +44,9 @@
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { PUBLISHED_PACKAGES } from "../retire-next-dist-tag.mjs";
+import { readBoundedResponse, ResponseSizeError } from "./bounded-response.mjs";
 import { execGh, isMain, repoFromEnv } from "./gh.mjs";
-import { readNpmPayload } from "./npm-tarball-members.mjs";
+import { NPM_TARBALL_LIMITS, readNpmPayload } from "./npm-tarball-members.mjs";
 import {
   PROCESSING_OUTCOMES,
   loadReceipts,
@@ -92,13 +93,20 @@ function sleep(ms) {
   return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 }
 
-/** Default HTTP reader: { status, json(), bytes() } or a thrown ReadError. */
-export async function defaultRequest(url, { timeoutMs = 30000, headers } = {}) {
+/** Default HTTP reader for registry metadata and tarball bytes. */
+export async function defaultRequest(url, { timeoutMs = 30000, headers, maxBytes } = {}) {
   let response;
   try {
     response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers });
   } catch (error) {
     throw new ReadError(`GET ${url} failed: ${error.message}`, { cause: error });
+  }
+  if (maxBytes !== undefined) {
+    if (response.status !== 200) {
+      await response.body?.cancel().catch(() => {});
+      return { status: response.status, body: Buffer.alloc(0) };
+    }
+    return { status: response.status, body: await readBoundedResponse(response, maxBytes) };
   }
   const body = Buffer.from(await response.arrayBuffer());
   return { status: response.status, body };
@@ -355,12 +363,15 @@ export async function packageState(name, ctx) {
   }
   let bytes;
   try {
-    const response = await request(tarball);
+    const response = await request(tarball, { maxBytes: NPM_TARBALL_LIMITS.compressed });
     if (response.status !== 200) {
       throw new ReadError(`GET ${tarball} answered HTTP ${response.status}`);
     }
     bytes = response.body;
   } catch (error) {
+    if (error instanceof ResponseSizeError) {
+      return { ...base, state: "present-unverified", detail: `tarball size: ${error.message}` };
+    }
     return { ...base, state: "uncertain", error: error.message };
   }
   if (createHash("sha512").update(bytes).digest("hex") !== expectedDigest) {
@@ -372,7 +383,7 @@ export async function packageState(name, ctx) {
   }
   let files;
   try {
-    files = readNpmPayload(bytes);
+    files = readNpmPayload(bytes, { maxOutputLength: NPM_TARBALL_LIMITS.unpacked });
   } catch (error) {
     return { ...base, state: "present-unverified", detail: `tarball contents: ${error.message}` };
   }
