@@ -148,6 +148,10 @@ describe("release.yml structure", () => {
     }
     const pack = jobs.pack.steps.find((s) => s.name === "Pack npm tarballs");
     expect(pack.run).toContain("pack-release-tarballs.mjs");
+    expect(pack.env.ZFB_RELEASE_SOURCE_COMMIT).toBe(
+      "${{ needs.release-context.outputs.source_commit }}",
+    );
+    expect(pack.run).toContain('--source-commit "$ZFB_RELEASE_SOURCE_COMMIT"');
     expect(jobs.publish.needs).toEqual(expect.arrayContaining(["pack", "release-assets"]));
   });
 

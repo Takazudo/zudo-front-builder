@@ -1168,7 +1168,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           IS_RECOVERY: ${{ needs.release-context.outputs.is_recovery }}
         run: |
-          ARGS=(--mode "$PUBLISH_MODE" --out "$RUNNER_TEMP/npm-tarballs" --root .
+          ARGS=(--mode "$PUBLISH_MODE" --source-commit "$ZFB_RELEASE_SOURCE_COMMIT"
+            --out "$RUNNER_TEMP/npm-tarballs" --root .
             --admission "$RUNNER_TEMP/darwin-admission/verdict.json")
           if [[ "$PUBLISH_MODE" == "mac-local" ]]; then
             ARGS+=(--local-built "packages/zfb-darwin-arm64 packages/zfb-darwin-x64")
