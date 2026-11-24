@@ -349,6 +349,7 @@ export async function stopOwned(
     psImpl,
     birthImpl = birthIdentity,
     platform = process.platform,
+    signal: abortSignal,
   } = {},
 ) {
   const report = {
@@ -375,6 +376,7 @@ export async function stopOwned(
       killWaitMs,
       killImpl,
       psImpl,
+      abortSignal,
       birthImpl: birthImpl === birthIdentity ? linuxBirth : birthImpl,
     });
   report.pgidScans = [];
@@ -396,6 +398,7 @@ export async function stopOwned(
   const rootAlive = handle.exit === null && rootNow !== null;
   if (rootAlive) snapshotOwned(handle, psImpl, platform);
   const current = () => {
+    abortSignal?.throwIfAborted();
     const table = psTable(psImpl);
     if (unverifiable) {
       for (const p of pgidScopeSince(table, root, platform))
@@ -442,6 +445,7 @@ export async function stopOwned(
       ? [{ target: -root.pgid, label: `group:${root.pgid}` }]
       : left.map((p) => ({ target: p.pid, label: p.pid }));
     for (const t of targets) {
+      abortSignal?.throwIfAborted();
       try {
         killImpl(t.target, signal);
         report.steps.push({ at: isoNow(), signal, target: t.label });
@@ -479,7 +483,7 @@ export async function stopOwned(
 async function stopLinux(
   handle,
   report,
-  { intWaitMs, termWaitMs, killWaitMs, killImpl, psImpl, birthImpl },
+  { intWaitMs, termWaitMs, killWaitMs, killImpl, psImpl, birthImpl, abortSignal },
 ) {
   const root = handle.native;
   const endings = new Map();
@@ -493,6 +497,7 @@ async function stopLinux(
     });
   };
   function current() {
+    abortSignal?.throwIfAborted();
     const leader = birthImpl(root.pid);
     if (
       leader &&
@@ -530,6 +535,7 @@ async function stopLinux(
       const group = left.some((p) => p.pid === root.pid) && handle.exit === null;
       const targets = group ? [root, ...left.filter((p) => p.pgid !== root.pgid)] : left;
       for (const expected of targets) {
+        abortSignal?.throwIfAborted();
         const now = birthImpl(expected.pid);
         if (!now) continue;
         if (!sameLinuxBirth(expected, now) || expected.pgid !== now.pgid) fail(expected, now);
