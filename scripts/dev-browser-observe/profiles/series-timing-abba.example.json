@@ -1,0 +1,17 @@
+{
+  "schema": "dev-browser-observe.series.v1",
+  "id": "fn-5000-timing-abba-1",
+  "description": "A/B timing series: A and B are filled copies of field-notes-direct-read-timing-abba-5000.example.json that differ only in buildReceipt/productSha. For an A/A control, point both at receipts of the same binary and drop declaredDifferences.",
+  "protocol": "dev-browser-observe.timing-abba.v1",
+  "variants": {
+    "A": {
+      "profile": "/REPLACE/with/profile-a.json"
+    },
+    "B": {
+      "profile": "/REPLACE/with/profile-b.json"
+    }
+  },
+  "declaredDifferences": ["build"],
+  "order": ["A", "B", "B", "A"],
+  "labelPrefix": "fn5000-abba1"
+}

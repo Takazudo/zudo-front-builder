@@ -1,8 +1,10 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import {
   addArticle,
+  DEFAULT_FRONTMATTER_BREAKAGE,
   breakFrontmatter,
   computeIndex,
   createModel,
@@ -29,7 +31,7 @@ import {
   restoreSnapshot,
   snapshotPaths,
 } from "./fixture.mjs";
-import { randomHex, readJson, sha256, sha256File, treeHashDir } from "./util.mjs";
+import { cpSyncWritable, randomHex, readJson, sha256, sha256File, treeHashDir } from "./util.mjs";
 
 export const FIELD_NOTES_SCHEMA = "field-notes-fixture.v1";
 
@@ -125,6 +127,119 @@ export function fnAdapterPath(fixtureDir, manifest, adapterId) {
   return join(fixtureDir, v.file);
 }
 
+export const FN_SCALES_SCHEMA = "field-notes-scales.v1";
+export const FN_SCALE_COUNTS = [100, 1000, 5000];
+
+/** The versioned scale declarations (scales.json) the fixture manifest names. */
+export function loadFieldNotesScales(fixtureDir, manifest = loadFieldNotesFixture(fixtureDir)) {
+  if (!manifest.scales) throw new Error("field-notes fixture manifest declares no scales");
+  const scales = readJson(join(fixtureDir, manifest.scales));
+  if (scales.schema !== FN_SCALES_SCHEMA)
+    throw new Error(`scales schema ${scales.schema} is not ${FN_SCALES_SCHEMA}`);
+  return scales;
+}
+
+/** One scale's declaration (default: the declared default, 100), with the generator it was produced by. */
+export function fnScale(fixtureDir, manifest, scale = null, scales = null) {
+  const all = scales ?? loadFieldNotesScales(fixtureDir, manifest);
+  const n = scale ?? all.default;
+  const decl = all.byCount[String(n)];
+  if (!decl)
+    throw new Error(
+      `unknown field-notes scale ${n}; declared: ${Object.keys(all.byCount).join(", ")}`,
+    );
+  return { scale: n, ...decl, generator: all.generator, sourceCopy: all.sourceCopy };
+}
+
+/** Pins a profile's fixture.source must carry for a scale (dir excluded). */
+export const FN_SCALE_PIN_KEYS = [
+  "appsZfbTreeSha256",
+  "contentTreeSha256",
+  "sharedTreeSha256",
+  "datasetSha256",
+];
+
+/**
+ * Produce a scale's source dir from the original archive: copy apps/, shared/ and scripts/ into a new
+ * outDir, verify the generator's sha256, run `node scripts/generate.mjs <count>` there, then compare
+ * the resulting tree hashes with the scale declaration. The archive itself is only read.
+ */
+export async function makeFieldNotesSource({
+  fixtureDir,
+  archiveDir,
+  scale,
+  outDir,
+  scales = null,
+  nodePath = process.execPath,
+}) {
+  const manifest = loadFieldNotesFixture(fixtureDir);
+  const decl = fnScale(fixtureDir, manifest, scale, scales);
+  if (existsSync(outDir)) throw new Error(`source out dir already exists: ${outDir}`);
+  const generatorAt = join(archiveDir, decl.generator.path);
+  const generatorSha = existsSync(generatorAt) ? sha256File(generatorAt) : null;
+  if (generatorSha !== decl.generator.sha256)
+    throw new Error(
+      `archive generator ${generatorAt} sha256 ${generatorSha} is not the declared ${decl.generator.sha256}; nothing copied`,
+    );
+  mkdirSync(outDir, { recursive: true });
+  for (const rel of decl.sourceCopy)
+    cpSyncWritable(join(archiveDir, rel), join(outDir, rel), {
+      recursive: true,
+      filter: (p) => !isBuildOutputPath(relative(join(archiveDir, rel), p)),
+    });
+  const copiedSha = sha256File(join(outDir, decl.generator.path));
+  const gen = await new Promise((resolveGen) => {
+    execFile(
+      nodePath,
+      [decl.generator.path, decl.generatorArgs],
+      {
+        cwd: outDir,
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      (error, stdout, stderr) =>
+        resolveGen({
+          status: error ? (typeof error.code === "number" ? error.code : null) : 0,
+          signal: error?.signal ?? null,
+          stdout,
+          stderr,
+        }),
+    );
+  });
+  const generator = {
+    path: decl.generator.path,
+    sha256: copiedSha,
+    args: [decl.generatorArgs],
+    node: nodePath,
+    status: gen.status,
+    signal: gen.signal,
+    stdout: gen.stdout,
+    stderr: gen.stderr,
+  };
+  if (gen.status !== 0) return { ok: false, scale: decl.scale, outDir, generator, checks: [] };
+  const actual = {
+    ...sourceTreeHashes(outDir, manifest),
+    contentManifestSha256: sha256File(join(outDir, manifest.source.content, "manifest.json")),
+  };
+  const checks = [...FN_SCALE_PIN_KEYS, "contentManifestSha256"].map((k) => ({
+    name: `scale-${decl.scale}:${k}`,
+    ok: actual[k] === decl[k],
+    expected: decl[k],
+    actual: actual[k],
+  }));
+  return {
+    ok: checks.every((c) => c.ok),
+    scale: decl.scale,
+    scaleId: decl.id,
+    outDir,
+    archiveDir,
+    generator,
+    checks,
+    source: Object.fromEntries([["dir", outDir], ...FN_SCALE_PIN_KEYS.map((k) => [k, actual[k]])]),
+  };
+}
+
 const skipBuildDirs = (_rel, kind, name) =>
   !(
     kind === "dir" &&
@@ -207,11 +322,13 @@ export function materializeFieldNotes({
   adapter,
   managedCss = false,
   placement = "external",
+  scale = null,
   expectedDatasetSha256 = null,
 }) {
   const manifest = loadFieldNotesFixture(fixtureDir);
-  // The pinned dataset is the manifest's unless a caller (a unit test's fake corpus) names its own.
-  const wantDataset = expectedDatasetSha256 ?? manifest.source.datasetSha256;
+  const scaleDecl = fnScale(fixtureDir, manifest, scale);
+  // The pinned dataset is the scale's unless a caller (a unit test's fake corpus) names its own.
+  const wantDataset = expectedDatasetSha256 ?? scaleDecl.datasetSha256;
   const place = fnPlacement(manifest, placement);
   if (existsSync(workDir)) throw new Error(`work dir already exists: ${workDir}`);
   const src = manifest.source;
@@ -228,7 +345,7 @@ export function materializeFieldNotes({
     placement === "internal" ? [src.app, src.shared] : [src.app, src.content, src.shared];
   for (const rel of roots) {
     mkdirSync(dirname(join(workDir, rel)), { recursive: true });
-    cpSync(join(sourceDir, rel), join(workDir, rel), {
+    cpSyncWritable(join(sourceDir, rel), join(workDir, rel), {
       recursive: true,
       // Judge only the part below the copied root, so a source dir that itself sits under e.g. /dist/ still copies.
       filter: (p) => !isBuildOutputPath(relative(join(sourceDir, rel), p)),
@@ -251,7 +368,7 @@ export function materializeFieldNotes({
     if (existsSync(contentDir))
       throw new Error(`internal content dir already exists: ${contentDir}`);
     mkdirSync(dirname(contentDir), { recursive: true });
-    cpSync(join(sourceDir, src.content, "articles"), contentDir, { recursive: true });
+    cpSyncWritable(join(sourceDir, src.content, "articles"), contentDir, { recursive: true });
     contentManifest = readJson(join(sourceDir, src.content, "manifest.json"));
     writeFileSync(configPath, readFileSync(join(fixtureDir, place.config.overlay)));
   } else {
@@ -281,6 +398,8 @@ export function materializeFieldNotes({
       externalContentCopied: placement !== "internal",
     },
     materializedDatasetSha256,
+    scale: scaleDecl.scale,
+    scaleId: scaleDecl.id,
     layoutPath: join(appDir, manifest.paths.layout),
     publicCssPath: join(appDir, manifest.paths.publicCss),
     managedCssPath,
@@ -433,6 +552,27 @@ function heroText(n) {
   return n.toLocaleString("en-US");
 }
 
+const escapeRe = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The framework's declared evidence that a rejected rename shows as an unexpanded route
+ * (distributions.json negativeEvidence.routeNotExpanded); only fixed-distribution entries have it.
+ */
+function routeNotExpandedEvidence(m, slug, renamed) {
+  const decl = m.entry?.negativeEvidence?.routeNotExpanded;
+  if (!decl)
+    throw new Error(
+      "acceptRouteNotExpandedWithEvidence needs a framework that declares negativeEvidence.routeNotExpanded",
+    );
+  return {
+    state: "route-not-expanded",
+    path: href(slug),
+    rule: decl.rule,
+    serverLine: decl.serverLine.replace("{renamed}", escapeRe(renamed)),
+    source: decl.source,
+  };
+}
+
 /**
  * Plan one op against the current model. Returns the attempt (writes, timed
  * predicate on targetPath, supplemental checks after the endpoint) and the
@@ -478,7 +618,26 @@ export function planFieldNotesOp(m, model, op, { token = newToken(), tokens = nu
       };
     }
     case "edit-managed-css": {
-      if (!m.managedCssPath) throw new Error("edit-managed-css needs fixture.managedCss: true");
+      if (!m.managedCssPath)
+        throw new Error("edit-managed-css needs fixture.managedCss (or importedCss): true");
+      if (m.managedCssEdit?.mode === "insert-root") {
+        // The archive's imported-CSS variants are exact shared CSS with no marker: add or change one
+        // custom property in the first :root{} block.
+        const prop = m.managedCssEdit.customProperty;
+        const src = readFileSync(m.managedCssPath, "utf8");
+        const re = new RegExp(`${prop}:[^;}]*;`);
+        const next = re.test(src)
+          ? src.replace(re, `${prop}:${token};`)
+          : src.replace(":root{", `:root{${prop}:${token};`);
+        if (next === src) throw new Error("imported css :root block not found");
+        return {
+          ...base,
+          targetPath: op.targetPath ?? "/",
+          predicate: { kind: "computed-style", selector: ":root", property: prop, includes: token },
+          writes: [inPlace(m.managedCssPath, next)],
+          nextModel: model,
+        };
+      }
       const prop = m.manifest.managedCss.customProperty;
       const src = readFileSync(m.managedCssPath, "utf8");
       const re = new RegExp(`${prop}: [^;]*;`);
@@ -684,6 +843,9 @@ export function planFieldNotesOp(m, model, op, { token = newToken(), tokens = nu
           },
         ],
         errorMarkers: ["Article slug mismatch"],
+        conditionalStates: op.acceptRouteNotExpandedWithEvidence
+          ? [routeNotExpandedEvidence(m, slug, to)]
+          : [],
         recovery: [{ method: "rename", path: articlePath(m, to), to: articlePath(m, slug) }],
         recoveryChecks: liveRestoreChecks(model, [slug]),
         nextModel: model,
@@ -695,7 +857,16 @@ export function planFieldNotesOp(m, model, op, { token = newToken(), tokens = nu
         ...base,
         mode: "expected-negative",
         targetPath: href(slug),
-        writes: [inPlace(articlePath(m, slug), breakFrontmatter(original))],
+        writes: [
+          inPlace(
+            articlePath(m, slug),
+            breakFrontmatter(original, op.breakage ?? DEFAULT_FRONTMATTER_BREAKAGE),
+          ),
+        ],
+        declared: {
+          breakage: op.breakage ?? DEFAULT_FRONTMATTER_BREAKAGE,
+          breakageExplicit: op.breakage !== undefined,
+        },
         expectState: op.expectState ?? ["error", "last-good"],
         observe: [
           { path: href(slug), lastGood: text(FN_SEL.title, "equals", idx.bySlug.get(slug).title) },
@@ -1116,7 +1287,7 @@ function planRecovery(m, model, op, { base, slug, method, token }) {
 }
 
 /** Live checks that the original state is back: home, detail pages, every archive page, one category page, counts. */
-export function liveRestoreChecks(model, touched = []) {
+export function liveRestoreChecks(model, touched = [], removedTitles = new Map()) {
   const idx = computeIndex(model);
   const checks = [
     {
@@ -1170,8 +1341,15 @@ export function liveRestoreChecks(model, touched = []) {
         .map((a) => href(a.slug)),
     ),
   });
+  // A removed page's marker is its title (from the model the edit produced) and its body element;
+  // never the bare slug, which a 404 page may echo in the requested path (Astro's dev 404 does).
   for (const s of touched.filter((x) => !idx.bySlug.has(x)))
-    checks.push({ kind: "gone", path: href(s), absentText: s });
+    checks.push({
+      kind: "gone",
+      path: href(s),
+      absentText: removedTitles.get(s) ?? null,
+      absentSelector: FN_SEL.body(s),
+    });
   return checks;
 }
 
@@ -1188,7 +1366,7 @@ export function fnWarmPaths(scenario) {
  */
 export function fieldNotesOps(m, { restorationWriteMethod = "in-place" } = {}) {
   const original = m.model;
-  const state = { model: original, touched: new Set() };
+  const state = { model: original, touched: new Set(), titles: new Map() };
   const snapshotSpec = {
     dirs: [m.contentDir],
     files: [m.layoutPath, m.publicCssPath, ...(m.managedCssPath ? [m.managedCssPath] : [])],
@@ -1200,6 +1378,11 @@ export function fieldNotesOps(m, { restorationWriteMethod = "in-place" } = {}) {
       for (const s of a.touched ?? []) state.touched.add(s);
       a.applied = () => {
         state.model = a.nextModel;
+        const next = computeIndex(a.nextModel);
+        for (const s of a.touched ?? []) {
+          const t = next.bySlug.get(s)?.title;
+          if (t) state.titles.set(s, t);
+        }
       };
       a.write = a.writes[0];
       return a;
@@ -1215,8 +1398,9 @@ export function fieldNotesOps(m, { restorationWriteMethod = "in-place" } = {}) {
       return r;
     },
     liveChecks: () => {
-      const checks = liveRestoreChecks(original, [...state.touched]);
+      const checks = liveRestoreChecks(original, [...state.touched], state.titles);
       state.touched.clear();
+      state.titles.clear();
       return checks;
     },
     warmPaths: fnWarmPaths,

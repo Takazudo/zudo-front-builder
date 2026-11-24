@@ -1000,18 +1000,21 @@ describe("execute (identity gate)", () => {
     expect(v2.checks.find((c) => c.name === "source-pin:contentTreeSha256").ok).toBe(false);
   });
 
-  it("rejects fixed-distribution mode as not implemented", async () => {
+  it("a source-built profile that claims mode fixed-distribution is invalid before anything is created", async () => {
     const s = setup({ mode: "fixed-distribution" });
-    const msgs = [];
-    expect(
-      await execute({
-        profilePath: s.profilePath,
-        label: "L2",
-        command: "run",
-        stderr: (m) => msgs.push(m),
-      }),
-    ).toBe(EXIT.notImplemented);
-    expect(JSON.parse(msgs[0]).outcome).toBe("not-implemented");
+    await expect(
+      execute({ profilePath: s.profilePath, label: "L2", command: "run", stderr: () => {} }),
+    ).rejects.toMatchObject({ code: "PROFILE_INVALID" });
+    const err = await execute({
+      profilePath: s.profilePath,
+      label: "L2",
+      command: "run",
+      stderr: () => {},
+    }).catch((e) => e);
+    expect(err.errors.join("\n")).toMatch(
+      /expected "dev-browser-observe.profile.fixed-distribution.v1"/,
+    );
+    expect(err.errors.join("\n")).toMatch(/missing framework/);
     expect(existsSync(join(s.outDir, "L2"))).toBe(false);
   });
 });

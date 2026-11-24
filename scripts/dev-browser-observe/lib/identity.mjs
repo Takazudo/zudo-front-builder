@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   HARNESS_DIR,
@@ -346,7 +346,96 @@ export function fixtureTreeHash(fixtureDir) {
   return treeHashDir(fixtureDir, { filter: (_rel, _kind, name) => !name.startsWith(".") }).sha256;
 }
 
+export const FROZEN_STAMP = ".frozen.json";
+export const FROZEN_SCHEMA = "dev-browser-observe.frozen.v1";
+
+/** Every file of a harness copy (tests, fixtures and profiles included), dot-names excluded. */
+export function fullTreeHash(dir) {
+  return treeHashDir(dir, { filter: (_rel, _kind, name) => !name.startsWith(".") }).sha256;
+}
+
+/** Whether a frozen copy's @playwright/test link still points at the stamped package dir. */
+export function frozenPlaywrightLink(stamp) {
+  const link = stamp.playwright?.link ?? null;
+  const expected = stamp.playwright?.target ?? null;
+  let actual = null;
+  try {
+    actual = link ? readlinkSync(link) : null;
+  } catch {
+    actual = null;
+  }
+  return {
+    ok: expected !== null && actual === expected && existsSync(expected),
+    link,
+    expected,
+    actual,
+  };
+}
+
+/** A frozen copy's stamp and whether its bytes still equal the frozen hashes; null outside a frozen copy. */
+export function frozenState(harnessDir = HARNESS_DIR) {
+  const stampPath = join(harnessDir, FROZEN_STAMP);
+  if (!existsSync(stampPath)) return null;
+  const stamp = JSON.parse(readFileSync(stampPath, "utf8"));
+  const harness = harnessTreeHash(harnessDir);
+  const full = fullTreeHash(harnessDir);
+  return {
+    stamp,
+    stampSha256: sha256File(stampPath),
+    playwrightLink: frozenPlaywrightLink(stamp),
+    actual: { harnessTreeSha256: harness, fullTreeSha256: full },
+    intact:
+      stamp.schema === FROZEN_SCHEMA &&
+      harness === stamp.harnessTreeSha256 &&
+      full === stamp.fullTreeSha256,
+  };
+}
+
+/**
+ * Identity checks a run from a frozen copy adds (none outside one): the copy's bytes still equal
+ * its stamp, and its @playwright/test link still points at the stamped package. Shared by the
+ * source-built and fixed-distribution verdicts.
+ */
+export function frozenIdentityChecks(harnessDir = HARNESS_DIR) {
+  const frozen = frozenState(harnessDir);
+  if (!frozen) return [];
+  return [
+    {
+      name: "harness-frozen-copy-intact",
+      ok: frozen.intact,
+      expected: {
+        harnessTreeSha256: frozen.stamp.harnessTreeSha256,
+        fullTreeSha256: frozen.stamp.fullTreeSha256,
+      },
+      actual: frozen.actual,
+    },
+    {
+      name: "harness-frozen-playwright-link",
+      ok: frozen.playwrightLink.ok,
+      expected: frozen.playwrightLink.expected,
+      actual: frozen.playwrightLink.actual,
+    },
+  ];
+}
+
 export function harnessCapability(harnessDir = HARNESS_DIR) {
+  const frozen = frozenState(harnessDir);
+  if (frozen)
+    return {
+      frozen: true,
+      repo: null,
+      sha: frozen.stamp.source?.sha ?? null,
+      sourceRepo: frozen.stamp.source?.repo ?? null,
+      harnessDirDirty: frozen.stamp.source?.harnessDirDirty ?? null,
+      harnessDirPatchSha256: frozen.stamp.source?.harnessDirPatchSha256 ?? null,
+      harnessDirUntracked: frozen.stamp.source?.harnessDirUntracked ?? null,
+      frozenAt: frozen.stamp.frozenAt ?? null,
+      frozenDir: harnessDir,
+      stampSha256: frozen.stampSha256,
+      harnessTreeSha256: frozen.stamp.harnessTreeSha256 ?? null,
+      fullTreeSha256: frozen.stamp.fullTreeSha256 ?? null,
+      intact: frozen.intact,
+    };
   const top = gitToplevel(harnessDir);
   const state = gitDirtyState(top, [harnessDir]);
   return {

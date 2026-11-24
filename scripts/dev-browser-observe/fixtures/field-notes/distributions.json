@@ -1,0 +1,370 @@
+{
+  "schema": "field-notes-distributions.v1",
+  "description": "Fixed-distribution frameworks over the same Field Notes corpus. Every app, lockfile, helper, adapter file and imported-CSS variant below is the archive's own bytes; nothing is reconstructed. Readiness patterns come from the archive's recorded server logs.",
+  "archive": {
+    "root": "the extracted archive zfb-dev-benchmark (mac-qual-261123 inputs-extract/inner)",
+    "historicalRunner": {
+      "file": "devtools/dev-bench.mjs",
+      "sha256": "4de78a745ca06be01a1d71ba0cd729fc518feccc692c3e5874ef3ef7a5fc006c",
+      "note": "historical HTTP-only controller; its launch argv is the source of the direct launch commands below; it is not used to run cohorts"
+    }
+  },
+  "frameworks": {
+    "zfb": {
+      "app": "apps/zfb",
+      "pinned": {
+        "@takazudo/zfb": "6.0.1",
+        "@takazudo/zfb-runtime": "6.0.1"
+      },
+      "packageJsonSha256": "47022736eff176d6414f219c2c1c2c932fd4865fabe886f9a86f6186fcf62bce",
+      "lockfile": {
+        "path": "package-lock.json",
+        "sha256": "f97e8fc0dfa8e727e2b5510668801701f74a3117bc7881ccc507f47b3b685a25"
+      },
+      "appTree": {
+        "sha256": "5e5580347095d9c5817faf3d4aa30529913e1a0c26a6b1b80905b5b01fa9ba36",
+        "exclude": ["lib/content.ts"],
+        "note": "equals scales.json appsZfbTreeSha256"
+      },
+      "cacheDirs": [".zfb", ".zfb-build", "dist"],
+      "helper": {
+        "path": "lib/content.ts",
+        "adapters": ["original-memoized", "recovered-snapshot"],
+        "note": "the archive helper bytes from manifest.json adapters (original-input / recovered-input); the reconstructed direct-read control is not a fixed-distribution helper"
+      },
+      "config": {
+        "path": "zfb.config.ts",
+        "sha256": "a68c2bdbee70c1958e1bafd00b8dc3805764d6e3b4cf3a84a56d943c0c97f915"
+      },
+      "spec": "lib/spec.json",
+      "layout": "components/Layout.tsx",
+      "publicCss": "public/site.css",
+      "adapterFiles": [],
+      "importedCss": {
+        "provenance": "research/zfb-dev-prototype native-css variant (manifest.json sha256 ea6381fe…c5e2): exact shared CSS as styles/global.css, the /site.css link removed from Layout.tsx",
+        "edit": "styles/global.css",
+        "customProperty": "--fn-managed-marker",
+        "files": [
+          {
+            "target": "components/Layout.tsx",
+            "file": "distributions/zfb/Layout.tsx.src",
+            "sha256": "423293138fda260cedc95e5dce8b3a3ff406fa98a0a48ce67fc22968b154f583",
+            "provenance": "research/zfb-dev-prototype/native-css/apps/zfb/components/Layout.tsx"
+          },
+          {
+            "target": "styles/global.css",
+            "file": "distributions/zfb/global.css.src",
+            "sha256": "7ceecd7b658d7b642374b21be6f69441712bcb75727020e1e25f6f837f3e7688",
+            "provenance": "research/zfb-dev-prototype/native-css/apps/zfb/styles/global.css"
+          }
+        ]
+      },
+      "executables": [
+        {
+          "role": "zfb-shim",
+          "path": "node_modules/@takazudo/zfb/bin/zfb.mjs"
+        },
+        {
+          "role": "zfb-native",
+          "path": {
+            "darwin-arm64": "node_modules/@takazudo/zfb-darwin-arm64/zfb",
+            "darwin-x64": "node_modules/@takazudo/zfb-darwin-x64/zfb",
+            "linux-arm64": "node_modules/@takazudo/zfb-linux-arm64-gnu/zfb",
+            "linux-x64": "node_modules/@takazudo/zfb-linux-x64-gnu/zfb"
+          },
+          "note": "the platform package packages/zfb/bin/zfb.mjs resolves at v6.0.1 (e6bd0a7c)"
+        }
+      ],
+      "launch": {
+        "direct": {
+          "script": "node_modules/@takazudo/zfb/bin/zfb.mjs",
+          "args": ["dev", "--host", "{host}", "--port", "{port}"],
+          "source": "dev-bench.mjs: node_modules/.bin/zfb dev --host --port (the .bin link points at this script)"
+        },
+        "npmScript": null
+      },
+      "readiness": {
+        "url": "ready on (https?://\\S+)\\s*$",
+        "require": [],
+        "source": "crates/zfb/src/output.rs fmt_ready at v6.0.1 (e6bd0a7c); archive results/dev/adapted-smoke-100/zfb-100/server.log (sha256 892567db…6539) prints '→ ready on http://127.0.0.1:4311'"
+      },
+      "roles": [
+        {
+          "role": "npm",
+          "args": "npm-cli\\.js"
+        },
+        {
+          "role": "zfb-shim",
+          "args": "zfb/bin/zfb\\.mjs"
+        },
+        {
+          "role": "zfb-native",
+          "args": "@takazudo/zfb-[a-z0-9-]+/zfb(\\s|$)"
+        }
+      ],
+      "negativeEvidence": {
+        "routeNotExpanded": {
+          "rule": "zfb-6.0.1-rejected-paths-route-not-expanded",
+          "serverLine": "paths\\(\\) threw for \"/articles/:slug\": Article slug mismatch: {renamed}(?![\\w-])",
+          "source": "zfb 6.0.1 dev prints '⚠ dynamic SSG route /articles/:slug not expanded in dev: worker returned 500 for /__paths__//articles/:slug: [zfb-runtime] /__paths__: paths() threw for \"/articles/:slug\": Article slug mismatch: <entry>' and then serves its 404 'page not in cache' for the route (native run fxq-zfb-rs-fn-neg-rename-filename-only server.log 15:43:51.788); 'Article slug mismatch' is the archive helper's own error"
+        }
+      },
+      "updateSignal": {
+        "sockets": [],
+        "note": "zfb's livereload socket /__zfb/reload/ws (JSON {event: page|css}) is built into the observer and is unchanged"
+      }
+    },
+    "astro": {
+      "app": "apps/astro",
+      "pinned": {
+        "astro": "7.4.12",
+        "vite": "8.3.8"
+      },
+      "packageJsonSha256": "0a417f465c2b95b2fd6aab883714a05fa79d95c8fbf4ce6808be81d01cdc269a",
+      "lockfile": {
+        "path": "package-lock.json",
+        "sha256": "6dd40a12a361e040ae8171b61cac690205206c093074fb294bf68a677910cf89"
+      },
+      "appTree": {
+        "sha256": "d62150fd6f5a5112fca4d808e77a11cee49707f0cc645408864509dfcb8f093a",
+        "exclude": []
+      },
+      "cacheDirs": [".astro", "dist", "node_modules/.astro", "node_modules/.vite"],
+      "helper": {
+        "path": "src/lib/content.js",
+        "sha256": "074e3df03601aacf56e15f81c56e6b68b0855810f4b7336c1f17e715f4d3e7d8",
+        "provenance": "original-input",
+        "note": "original memoized indexPromise over getCollection('articles'); no fixture adapter: the native glob loader (src/content.config.js) watches ../../content/articles"
+      },
+      "config": {
+        "path": "astro.config.mjs",
+        "sha256": "e6b9b56b275ffc29e17829cc0e9db63f746d6a1c514466620cb8cdbdc3a18ddb"
+      },
+      "contentConfig": {
+        "path": "src/content.config.js",
+        "sha256": "3f53e52c9a1eeb9b495f222e7c10104e4c572fda0e1a1a857193956d2c6fa819"
+      },
+      "spec": "spec.json",
+      "layout": "src/layouts/Site.astro",
+      "publicCss": "public/site.css",
+      "adapterFiles": [],
+      "importedCss": {
+        "provenance": "research/css-dev-prototypes astro-imported-css variant (manifest.json sha256 a64407ba…c1f8)",
+        "edit": "src/styles/site.imported.css",
+        "customProperty": "--fn-managed-marker",
+        "files": [
+          {
+            "target": "src/layouts/Site.astro",
+            "file": "distributions/astro/Site.astro.src",
+            "sha256": "96921d4980acdee60903bccf8a621f9ac2ecb88b429ebf0ea1805535ae99ca15",
+            "provenance": "research/css-dev-prototypes/variants/astro/apps/astro/src/layouts/Site.astro"
+          },
+          {
+            "target": "src/styles/site.imported.css",
+            "file": "distributions/astro/site.imported.css.src",
+            "sha256": "7ceecd7b658d7b642374b21be6f69441712bcb75727020e1e25f6f837f3e7688",
+            "provenance": "research/css-dev-prototypes/variants/astro/apps/astro/src/styles/site.imported.css"
+          }
+        ]
+      },
+      "executables": [
+        {
+          "role": "astro-cli",
+          "path": "node_modules/astro/bin/astro.mjs"
+        }
+      ],
+      "launch": {
+        "direct": {
+          "script": "node_modules/astro/bin/astro.mjs",
+          "args": ["dev", "--ignore-lock", "--host", "{host}", "--port", "{port}"],
+          "source": "dev-bench.mjs direct.astro argv"
+        },
+        "npmScript": {
+          "script": "dev",
+          "args": ["--ignore-lock", "--host", "{host}", "--port", "{port}"],
+          "packageScript": "astro dev"
+        }
+      },
+      "readiness": {
+        "url": "┃ Local\\s+(https?://[^\\s\"]+)",
+        "require": ["astro\\s+v7\\.4\\.12 ready in \\d+ ms"],
+        "source": "archive results/dev/aux-100-corrected/astro-100/server.log (sha256 6222231a…cc95): JSON log line ' astro  v7.4.12 ready in 2092 ms\\n┃ Local    http://127.0.0.1:4312/'"
+      },
+      "roles": [
+        {
+          "role": "npm",
+          "args": "npm-cli\\.js"
+        },
+        {
+          "role": "shell",
+          "args": "^(/bin/)?sh -c"
+        },
+        {
+          "role": "astro-cli",
+          "args": "astro/bin/astro\\.mjs"
+        }
+      ],
+      "updateSignal": {
+        "sockets": [
+          {
+            "name": "vite-hmr",
+            "url": "^wss?://[^/]+/\\?token=",
+            "typeKey": "type",
+            "events": {
+              "full-reload": "page",
+              "update:css-update": "css",
+              "update": "module"
+            },
+            "source": [
+              "vite 8.3.8 dist/client/client.mjs:947 new WebSocket(`${socketProtocol}://${socketHost}?token=${wsToken}`, \"vite-hmr\")",
+              "client.mjs:1041-1103 payload.type: connected | update (updates[].type js-update | css-update) | custom | full-reload | prune | error",
+              "astro 7.4.12 dist/content/vite-plugin-content-virtual-mod.js:60 hot.send(\"astro:content-changed\"), :68 {type: \"full-reload\"}"
+            ]
+          }
+        ]
+      }
+    },
+    "next": {
+      "app": "apps/next",
+      "pinned": {
+        "next": "16.4.6",
+        "react": "19.3.1",
+        "react-dom": "19.3.1"
+      },
+      "packageJsonSha256": "2af25dc50b975b05141c69134dfaa6a8612806b8320e0d66323c199e1eed7e9c",
+      "lockfile": {
+        "path": "package-lock.json",
+        "sha256": "4421f6c55a5e6e5ce8605f314f3119fceb07142943958f501a54367dbe064f57"
+      },
+      "appTree": {
+        "sha256": "185cac587ef33330f32daee4dad72d7b4739aa726f5dcf64143a64b75661a148",
+        "exclude": ["lib/content-revision.js"],
+        "note": "lib/content-revision.js is volatile: the sidecar rewrites it at startup and on each content change"
+      },
+      "cacheDirs": [".next", "out"],
+      "helper": {
+        "path": "lib/content.js",
+        "sha256": "4b421cb0e630e712204e36e01a0e1bbe58142ba2cafdf7bdefa17a85e545a1be",
+        "provenance": "archive-adapter",
+        "note": "the archive's authoring-mode Next dev adapter (research/next-dev-prototype, applied state in .next-dev-adapter-state/state.json): metadata and body caches scoped to lib/content-revision.js"
+      },
+      "config": {
+        "path": "next.config.mjs",
+        "sha256": "a3b7e34bd6370207397808848d85f73e8aa6c3c15c9f932e070c495d7966f6d6"
+      },
+      "spec": "spec.json",
+      "layout": "app/layout.jsx",
+      "publicCss": "public/site.css",
+      "adapterFiles": [
+        {
+          "path": "scripts/dev-content.mjs",
+          "sha256": "4e70fdc7412ced624afa67b71867469af7f822954a6ee2f03f0103df371b04d7",
+          "label": "archive external-content sidecar (research/next-dev-prototype/launcher.mjs): fs.watch on ../../content/articles, 20 ms debounce, rewrites lib/content-revision.js; its work is inside the measured latency"
+        },
+        {
+          "path": "lib/content-revision.js",
+          "volatile": true,
+          "label": "revision module the sidecar writes; excluded from the tree hash"
+        }
+      ],
+      "adapterState": {
+        "file": ".next-dev-adapter-state/state.json",
+        "sha256": "31cb984f768406f1a8b3f9650bdf1097d0995199554f3883c6910a4a9ab5e69a",
+        "mode": "authoring",
+        "prototypeManifestSha256": "9565ba6ce3e91e0811f0622de7154f6a684381c4869f4ffa7676ab2e28310050"
+      },
+      "importedCss": {
+        "provenance": "research/css-dev-prototypes next-imported-css variant (manifest.json sha256 a64407ba…c1f8)",
+        "edit": "app/site.imported.css",
+        "customProperty": "--fn-managed-marker",
+        "files": [
+          {
+            "target": "app/layout.jsx",
+            "file": "distributions/next/layout.jsx.src",
+            "sha256": "d982b8e6818ba83328e0cb2f18d81bfc5de0c5dd7b7058c72d0027a0a187cd07",
+            "provenance": "research/css-dev-prototypes/variants/next/apps/next/app/layout.jsx"
+          },
+          {
+            "target": "app/site.imported.css",
+            "file": "distributions/next/site.imported.css.src",
+            "sha256": "7ceecd7b658d7b642374b21be6f69441712bcb75727020e1e25f6f837f3e7688",
+            "provenance": "research/css-dev-prototypes/variants/next/apps/next/app/site.imported.css"
+          }
+        ]
+      },
+      "executables": [
+        {
+          "role": "content-sidecar",
+          "path": "scripts/dev-content.mjs",
+          "sha256": "4e70fdc7412ced624afa67b71867469af7f822954a6ee2f03f0103df371b04d7"
+        },
+        {
+          "role": "next-cli",
+          "path": "node_modules/next/dist/bin/next"
+        }
+      ],
+      "launch": {
+        "direct": {
+          "script": "scripts/dev-content.mjs",
+          "args": ["--hostname", "{host}", "--port", "{port}"],
+          "source": "dev-bench.mjs: the sidecar replaces next dev for the adapted variant; it spawns node node_modules/next/dist/bin/next dev <args>"
+        },
+        "npmScript": {
+          "script": "dev",
+          "args": ["--hostname", "{host}", "--port", "{port}"],
+          "packageScript": "node scripts/dev-content.mjs"
+        }
+      },
+      "readiness": {
+        "url": "- Local:\\s+(https?://\\S+)",
+        "require": [
+          "\\[field-notes-dev\\] external content watcher ready",
+          "▲ Next\\.js 16\\.4\\.6",
+          "✓ Ready in \\d+"
+        ],
+        "source": "archive results/dev/adapted-smoke-100/next-100/server.log (sha256 e656b735…36ab)"
+      },
+      "roles": [
+        {
+          "role": "npm",
+          "args": "npm-cli\\.js"
+        },
+        {
+          "role": "shell",
+          "args": "^(/bin/)?sh -c"
+        },
+        {
+          "role": "content-sidecar",
+          "args": "scripts/dev-content\\.mjs"
+        },
+        {
+          "role": "next-cli",
+          "args": "next/dist/bin/next"
+        },
+        {
+          "role": "next-server",
+          "args": "next-server|next/dist/server/lib/start-server"
+        }
+      ],
+      "updateSignal": {
+        "sockets": [
+          {
+            "name": "next-hmr",
+            "url": "^wss?://[^/]+/_next/hmr(?:[/?#]|$)",
+            "typeKey": "type",
+            "events": {
+              "serverComponentChanges": "rsc",
+              "reloadPage": "page",
+              "turbopack-message": "activity"
+            },
+            "source": [
+              "next 16.4.6 dist/server/lib/router-server.js:757 isHMRRequest = req.url.startsWith(`${hmrPrefix}/_next/hmr`)",
+              "dist/server/dev/hot-reloader-types.js HMR_MESSAGE_SENT_TO_BROWSER: serverComponentChanges, reloadPage, turbopack-message, built, sync, ... (JSON key 'type')",
+              "dist/server/dev/hot-reloader-turbopack.js:680,750 type SERVER_COMPONENT_CHANGES; :799,813,890 type RELOAD_PAGE; :729 type TURBOPACK_MESSAGE"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

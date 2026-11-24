@@ -1,0 +1,72 @@
+{
+  "schema": "field-notes-scales.v1",
+  "description": "Versioned corpus declarations for the Field Notes source dir at 100, 1000 and 5000 articles. Each source dir is the original archive's apps/, shared/ and scripts/ with scripts/generate.mjs run at that count; the corpus is NOT in this repo.",
+  "default": 100,
+  "generator": {
+    "path": "scripts/generate.mjs",
+    "sha256": "f2eaa2fe860b8cbc88e4ac2274f8e00c003ee7fb891e2dd151e5069f6b386641",
+    "invocation": "node scripts/generate.mjs <count>, cwd = the source dir",
+    "semantics": "deterministic; argv[2] is the article count (integer 40..100000, default 100); it replaces content/articles, writes content/manifest.json and copies shared/spec.json, shared/site.css and shared/field-grid.svg into apps/{zfb,next,astro}"
+  },
+  "sourceCopy": ["apps", "shared", "scripts"],
+  "originalAudit": {
+    "file": "results/final-audit.json",
+    "sha256": "802a2828ed97f4bc328f5d2c3788bfafe639a1ee2ee81c9e2d2dac7763c2be93",
+    "note": "the original benchmark's audit records primary/verification/{0,1,2}/datasetSha256 for 100, 1000 and 5000; each equals the datasetSha256 declared below"
+  },
+  "byCount": {
+    "100": {
+      "id": "field-notes-100",
+      "articleCount": 100,
+      "generatorArgs": "100",
+      "routeCount": 113,
+      "markdownBytes": 481636,
+      "datasetSha256": "fcaa222e52caaedb411a4136f106d4ddb5eaa7334a3ef03f34ccd282f6bab58a",
+      "contentManifestSha256": "bc0fed78e9643387949827b524db48dca14e1e36a9eb696e74e749918bb295b1",
+      "appsZfbTreeSha256": "5e5580347095d9c5817faf3d4aa30529913e1a0c26a6b1b80905b5b01fa9ba36",
+      "contentTreeSha256": "22763056bd34e0a5dd6e4ac096e69de7e0278519235df88666124c801ea0b7a7",
+      "sharedTreeSha256": "f709ace99f2aad0d1c7c1d553c8693b66883f1055168855fb6807722b0cf226a",
+      "provenance": "regenerated",
+      "archiveDataset": {
+        "equal": false,
+        "note": "the archive's content/ is the 5000-article dataset; the 100 source is generate.mjs 100 (batch Q src-100 is byte-identical to a fresh regeneration, every file under apps, content, scripts and shared)"
+      }
+    },
+    "1000": {
+      "id": "field-notes-1000",
+      "articleCount": 1000,
+      "generatorArgs": "1000",
+      "routeCount": 1031,
+      "markdownBytes": 4818586,
+      "datasetSha256": "96d9266a01a0eb21351a5899c5cfd941652dd2458299f0d35d5d8ba78053189b",
+      "contentManifestSha256": "f6b7f738dd4e2e459f2a4589289115ac2de57e03e4be0c4b09601e952aa0217b",
+      "appsZfbTreeSha256": "5e5580347095d9c5817faf3d4aa30529913e1a0c26a6b1b80905b5b01fa9ba36",
+      "contentTreeSha256": "417918815461e3338f8e0ff402425f63d47ed1b9d96950619b19ced6af034565",
+      "sharedTreeSha256": "f709ace99f2aad0d1c7c1d553c8693b66883f1055168855fb6807722b0cf226a",
+      "provenance": "regenerated",
+      "archiveDataset": {
+        "equal": false,
+        "note": "no 1000-article content tree is in the archive; the dataset hash equals the original audit's 1000 entry"
+      }
+    },
+    "5000": {
+      "id": "field-notes-5000",
+      "articleCount": 5000,
+      "generatorArgs": "5000",
+      "routeCount": 5111,
+      "markdownBytes": 24101786,
+      "datasetSha256": "fc3717b7bd57cc5921cbd2f7bcdea2f8341d8b2ab8b389d8f5b0d24c068e8c59",
+      "contentManifestSha256": "cd9e74a203c588d06075520d7e1f842e0cd09a1cda6de87270baae6816de6fe7",
+      "appsZfbTreeSha256": "5e5580347095d9c5817faf3d4aa30529913e1a0c26a6b1b80905b5b01fa9ba36",
+      "contentTreeSha256": "dff8f9791e9e1c2da791293813b8bc6327a419e6ebf9fd772484320268b84540",
+      "sharedTreeSha256": "f709ace99f2aad0d1c7c1d553c8693b66883f1055168855fb6807722b0cf226a",
+      "provenance": "regenerated",
+      "archiveDataset": {
+        "equal": true,
+        "archiveContentTreeSha256": "dff8f9791e9e1c2da791293813b8bc6327a419e6ebf9fd772484320268b84540",
+        "verifiedBy": "diff -rq between the archive's content/ and content/ from generate.mjs 5000: no difference; content tree, dataset and content/manifest.json hashes are equal",
+        "note": "the archive's original content/ and the regenerated one are the same bytes, so either can be the 5000 source"
+      }
+    }
+  }
+}

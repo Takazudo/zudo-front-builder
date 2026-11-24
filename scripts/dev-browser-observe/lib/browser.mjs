@@ -24,6 +24,22 @@ function playwrightVersion() {
   }
 }
 
+export const PREPARE_INTERRUPTED = "PREPARE_INTERRUPTED";
+
+/**
+ * A prepare whose page was replaced under it (Playwright: "Execution context was destroyed",
+ * a detached frame) gets the code PREPARE_INTERRUPTED; any other error passes through.
+ */
+export function prepareInterruption(error, path) {
+  const message = String(error?.message ?? error);
+  if (!/Execution context was destroyed|frame was detached|navigation/i.test(message)) return error;
+  return Object.assign(new Error(`prepare of ${path} interrupted by a navigation: ${message}`), {
+    code: PREPARE_INTERRUPTED,
+    path,
+    cause: error,
+  });
+}
+
 /**
  * One owned Chromium (Playwright launch: fresh temporary profile), one
  * context, one page. Never touches the user's browser profile.
@@ -123,6 +139,64 @@ export function livereloadFrame(payload, ns, url) {
   };
 }
 
+/**
+ * One read of a gone check: a 404 or 410 whose body does not contain the removed page's marker
+ * text and, when declared, has no element matching its selector.
+ */
+export function goneRead(v) {
+  return (
+    v.ok &&
+    (v.httpStatus === 404 || v.httpStatus === 410) &&
+    v.containsMarker !== true &&
+    v.selectorPresent !== true
+  );
+}
+
+/** Update events that count as a framework's own update (settle evidence; mechanism input). */
+export const UPDATE_EVENTS = new Set(["page", "css", "rsc", "module"]);
+
+/** Declared framework frames that only show the server is busy: they extend the quiet window but are never update evidence. */
+export const ACTIVITY_EVENTS = new Set(["activity"]);
+
+/** The declared update socket (distributions.json updateSignal.sockets) a WebSocket URL belongs to. */
+export function declaredSocketFor(url, sockets = []) {
+  return sockets.find((s) => new RegExp(s.url).test(url)) ?? null;
+}
+
+/**
+ * A frame from a declared framework HMR socket. Its raw type is payload[typeKey], refined by the
+ * update kinds of a Vite `update` (`update:css-update`) or a Vite custom event
+ * (`custom:astro:content-changed`). The declared events map the most specific raw type first,
+ * then the base type; anything else is `unmapped` and recorded, never used as update evidence.
+ */
+export function updateSignalFrame(payload, ns, url, socket) {
+  const text = typeof payload === "string" ? payload : Buffer.from(payload).toString("utf8");
+  let msg = null;
+  try {
+    msg = JSON.parse(text);
+  } catch {
+    msg = null;
+  }
+  const base = msg && typeof msg[socket.typeKey] === "string" ? msg[socket.typeKey] : null;
+  let rawType = base;
+  if (base && Array.isArray(msg.updates))
+    rawType = `${base}:${[...new Set(msg.updates.map((u) => u?.type).filter(Boolean))].sort().join("+")}`;
+  else if (base && typeof msg.event === "string") rawType = `${base}:${msg.event}`;
+  const event =
+    (rawType && socket.events[rawType]) ??
+    (base && socket.events[base]) ??
+    (base ? "unmapped" : "unparsed");
+  return {
+    at: isoNow(),
+    ns: String(ns),
+    url,
+    socket: socket.name,
+    rawType,
+    event,
+    raw: base ? undefined : text.slice(0, 200),
+  };
+}
+
 export class ObserverPage {
   constructor(context, observerSource, clock = hrtimeNs) {
     this.context = context;
@@ -138,6 +212,8 @@ export class ObserverPage {
     this.pingWaiters = new Map();
     this.docInitWaiters = [];
     this.wsFrames = [];
+    this.otherFrames = [];
+    this.updateSockets = [];
     this.requests = [];
     this.resolved = new Set();
     this.duplicates = [];
@@ -172,11 +248,27 @@ export class ObserverPage {
       });
     });
     this.page.on("websocket", (ws) => {
-      if (!isLivereloadSocket(ws.url())) return;
-      ws.on("framereceived", ({ payload }) =>
-        this.wsFrames.push(livereloadFrame(payload, this.clock(), ws.url())),
-      );
+      const url = ws.url();
+      if (!isLivereloadSocket(url) && !declaredSocketFor(url, this.updateSockets)) return;
+      ws.on("framereceived", ({ payload }) => this.recordSocketFrame(url, payload));
     });
+  }
+
+  /**
+   * zfb livereload frames go to wsFrames unchanged. A declared framework socket's frame goes to
+   * wsFrames when it maps to an update or activity event, otherwise to otherFrames (recorded,
+   * not evidence).
+   */
+  recordSocketFrame(url, payload) {
+    if (isLivereloadSocket(url)) {
+      this.wsFrames.push(livereloadFrame(payload, this.clock(), url));
+      return;
+    }
+    const socket = declaredSocketFor(url, this.updateSockets);
+    if (!socket) return;
+    const frame = updateSignalFrame(payload, this.clock(), url, socket);
+    const kept = UPDATE_EVENTS.has(frame.event) || ACTIVITY_EVENTS.has(frame.event);
+    (kept ? this.wsFrames : this.otherFrames).push(frame);
   }
 
   /** Returns true so the observer persists `delivered` only after this ack. */
@@ -270,12 +362,17 @@ export class ObserverPage {
       waitUntil: "load",
       timeout: timeoutMs,
     });
-    const state = await this.page.evaluate(() => ({
-      ...window.__dbo.state(),
-      notInCache:
-        (document.body ? document.body.innerText : "").indexOf("page not in cache") !== -1,
-    }));
-    if (state.armed) await this.page.evaluate(() => window.__dbo.disarm());
+    let state;
+    try {
+      state = await this.page.evaluate(() => ({
+        ...window.__dbo.state(),
+        notInCache:
+          (document.body ? document.body.innerText : "").indexOf("page not in cache") !== -1,
+      }));
+      if (state.armed) await this.page.evaluate(() => window.__dbo.disarm());
+    } catch (error) {
+      throw prepareInterruption(error, path);
+    }
     return { ...state, httpStatus: response ? response.status() : null };
   }
 
@@ -362,7 +459,7 @@ export class ObserverPage {
       const quietFor = nsToMs(now - lastNs);
       const waitedMs = nsToMs(now - begun);
       const nativeUpdateObserved =
-        ev.wsFrames.some((f) => f.event === "page" || f.event === "css") || ev.newDocuments > 0;
+        ev.wsFrames.some((f) => UPDATE_EVENTS.has(f.event)) || ev.newDocuments > 0;
       const done = quietFor >= quietMs && (!requireNativeUpdate || nativeUpdateObserved);
       if (done || waitedMs >= boundMs) {
         return {
@@ -401,6 +498,7 @@ export class ObserverPage {
       docInits: this.docInits.length,
       navigations: this.navigations.length,
       wsFrames: this.wsFrames.length,
+      otherFrames: this.otherFrames.length,
       requests: this.requests.length,
     };
   }
@@ -411,6 +509,9 @@ export class ObserverPage {
     const navigations = this.navigations.slice(mark.navigations).map(rel);
     const wsFrames = this.wsFrames.slice(mark.wsFrames).map(rel);
     const requests = this.requests.slice(mark.requests ?? this.requests.length).map(rel);
+    const otherFrames = this.otherFrames
+      .slice(mark.otherFrames ?? this.otherFrames.length)
+      .map(rel);
     return {
       mainFrameNavigations: navigations.length,
       newDocuments: docInits.length,
@@ -419,6 +520,7 @@ export class ObserverPage {
       navigations,
       wsFrames,
       requests,
+      ...(otherFrames.length ? { otherFrames } : {}),
     };
   }
 
@@ -473,75 +575,109 @@ export class ObserverPage {
    * navigation, then an observer-armed wait up to `timeoutMs` with no reload
    * or HTTP polling. If a native reload aborts the navigation, the resulting
    * document is awaited (bounded) and, only if it is not the target, the
-   * target is navigated to once more. Every step is recorded.
+   * target is navigated to once more. A reload that destroys the context
+   * while arming (Next HMR after a rename is restored, #4752) is awaited the
+   * same way. Both share one re-navigation per
+   * check; every step is recorded, and a second interruption is a failure.
    */
   async navigateAndAwait(path, predicate, timeoutMs, tokenPrefix) {
     const navStart = this.clock();
     const m = this.mark();
     const recovery = [];
+    const transientReads = [];
+    const deadline = navStart + BigInt(Math.round(timeoutMs * 1e6));
+    const newToken = () => `${tokenPrefix}-${Math.random().toString(16).slice(2, 10)}`;
+    let token = null;
+    const interrupted = async (stage, msg) => ({
+      ok: false,
+      stage,
+      error: msg,
+      docUUID: state?.docUUID ?? null,
+      httpStatus: state?.httpStatus ?? null,
+      transientReads,
+      recovery,
+      evidence: this.since(m, navStart),
+      failure: await this.failureSnapshot(predicate),
+    });
     let state = null;
-    for (let i = 0; state === null; i += 1) {
-      try {
-        state = await this.prepare(path);
-      } catch (error) {
-        const msg = String(error?.message ?? error);
-        const aborted = /ERR_ABORTED|interrupted by another navigation|frame was detached/i.test(
-          msg,
-        );
-        if (!aborted || i >= 1) {
-          return {
-            ok: false,
-            stage: "navigation",
-            error: msg,
-            recovery,
-            evidence: this.since(m, navStart),
-            failure: await this.failureSnapshot(predicate),
-          };
+    let armed;
+    let reuse = null;
+    for (;;) {
+      state = reuse;
+      reuse = null;
+      while (state === null) {
+        try {
+          state = await this.prepare(path);
+        } catch (error) {
+          const msg = String(error?.message ?? error);
+          const aborted =
+            error?.code === PREPARE_INTERRUPTED ||
+            /ERR_ABORTED|interrupted by another navigation|frame was detached/i.test(msg);
+          if (!aborted || recovery.length >= 1) return interrupted("navigation", msg);
+          const resulting = await this.awaitResultingDocument(timeoutMs);
+          const onTarget =
+            resulting.ok && new URL(resulting.url).pathname === new URL(this.url(path)).pathname;
+          recovery.push({
+            at: isoNow(),
+            abortedBy: msg.split("\n")[0],
+            resulting,
+            usedResultingDocument: onTarget,
+          });
+          if (onTarget) state = resulting.state;
         }
-        const resulting = await this.awaitResultingDocument(timeoutMs);
+      }
+      // zfb dev answers "404 — page not in cache" while a rebuild is in flight (and for removed URLs).
+      // A presence check never accepts it: re-read by navigation only, bounded by the check timeout.
+      while (state.notInCache && this.clock() < deadline) {
+        transientReads.push({
+          at: isoNow(),
+          httpStatus: state.httpStatus ?? null,
+          evidence: "transient-not-in-cache",
+        });
+        await new Promise((r) => setTimeout(r, TRANSIENT_REREAD_MS));
+        try {
+          state = await this.prepare(path);
+        } catch (error) {
+          transientReads.push({ at: isoNow(), error: String(error?.message ?? error) });
+        }
+      }
+      if (state.notInCache) {
+        return {
+          ok: false,
+          stage: "transient",
+          transient: "transient-not-in-cache",
+          transientReads,
+          httpStatus: state.httpStatus ?? null,
+          recovery,
+          sinceNavigationMs: nsToMs(this.clock() - navStart),
+          evidence: this.since(m, navStart),
+          failure: await this.failureSnapshot(predicate),
+        };
+      }
+      // A fresh token per arm, so a notify from an interrupted arm's persisted record stays distinct.
+      token = newToken();
+      try {
+        armed = await this.arm(token, predicate);
+        break;
+      } catch (error) {
+        this.armedToken = null;
+        const msg = String(error?.message ?? error);
+        if (!/Execution context was destroyed|frame was detached|Cannot find context/i.test(msg))
+          throw error;
+        if (recovery.length >= 1) return interrupted("arm", msg);
+        const remainingMs = Math.max(1, timeoutMs - nsToMs(this.clock() - navStart));
+        const resulting = await this.awaitResultingDocument(remainingMs);
         const onTarget =
           resulting.ok && new URL(resulting.url).pathname === new URL(this.url(path)).pathname;
         recovery.push({
           at: isoNow(),
-          abortedBy: msg.split("\n")[0],
+          armInterruptedBy: msg.split("\n")[0],
           resulting,
           usedResultingDocument: onTarget,
         });
-        if (onTarget) state = resulting.state;
+        if (onTarget) reuse = resulting.state;
       }
     }
-    // zfb dev answers "404 — page not in cache" while a rebuild is in flight (and for removed URLs).
-    // A presence check never accepts it: re-read by navigation only, bounded by the check timeout.
-    const transientReads = [];
-    const deadline = navStart + BigInt(Math.round(timeoutMs * 1e6));
-    while (state.notInCache && this.clock() < deadline) {
-      transientReads.push({
-        at: isoNow(),
-        httpStatus: state.httpStatus ?? null,
-        evidence: "transient-not-in-cache",
-      });
-      await new Promise((r) => setTimeout(r, TRANSIENT_REREAD_MS));
-      try {
-        state = await this.prepare(path);
-      } catch (error) {
-        transientReads.push({ at: isoNow(), error: String(error?.message ?? error) });
-      }
-    }
-    if (state.notInCache) {
-      return {
-        ok: false,
-        stage: "transient",
-        transient: "transient-not-in-cache",
-        transientReads,
-        httpStatus: state.httpStatus ?? null,
-        recovery,
-        sinceNavigationMs: nsToMs(this.clock() - navStart),
-        evidence: this.since(m, navStart),
-        failure: await this.failureSnapshot(predicate),
-      };
-    }
-    const token = `${tokenPrefix}-${Math.random().toString(16).slice(2, 10)}`;
-    const armed = await this.arm(token, predicate);
     const base = {
       transientReads,
       docUUID: state.docUUID,
@@ -652,18 +788,19 @@ export class ObserverPage {
   }
 
   /** One fresh navigation and a read-only look at the result (status, title, excerpt, marker text). */
-  async observePage(path, { markerText = null, errorMarkers = [] } = {}) {
+  async observePage(path, { markerText = null, errorMarkers = [], absentSelector = null } = {}) {
     const navStart = this.clock();
     try {
       await this.disarm();
       const response = await this.page.goto(this.url(path), { waitUntil: "load", timeout: 30000 });
       const view = await this.page.evaluate(
-        ([marker, markers]) => {
+        ([marker, markers, selector]) => {
           const text = document.body ? document.body.innerText : "";
           return {
             url: location.href,
             title: document.title,
             containsMarker: marker ? text.indexOf(marker) !== -1 : null,
+            selectorPresent: selector ? document.querySelector(selector) !== null : null,
             markersFound: markers.filter(
               (m) => text.indexOf(m) !== -1 || document.title.indexOf(m) !== -1,
             ),
@@ -671,7 +808,7 @@ export class ObserverPage {
             bodyExcerpt: text.slice(0, 600),
           };
         },
-        [markerText, errorMarkers],
+        [markerText, errorMarkers, absentSelector],
       );
       return {
         ok: true,
@@ -698,9 +835,12 @@ export class ObserverPage {
    * content. A 200 error page or still-rendered content fails.
    */
   async goneCheck(check, { quietMs = 1500, nativeUpdateConfirmed = false } = {}) {
-    const read = () => this.observePage(check.path, { markerText: check.absentText ?? null });
-    const looksGone = (v) =>
-      v.ok && (v.httpStatus === 404 || v.httpStatus === 410) && v.containsMarker !== true;
+    const read = () =>
+      this.observePage(check.path, {
+        markerText: check.absentText ?? null,
+        absentSelector: check.absentSelector ?? null,
+      });
+    const looksGone = goneRead;
     const reads = [await read()];
     let basis = null;
     if (looksGone(reads[0]) && nativeUpdateConfirmed) basis = "settle-native-update";
@@ -722,6 +862,7 @@ export class ObserverPage {
         title: v.title ?? null,
         notInCache: v.notInCache ?? null,
         containsMarker: v.containsMarker ?? null,
+        selectorPresent: v.selectorPresent ?? null,
         error: v.error ?? null,
       })),
     };

@@ -1,0 +1,546 @@
+{
+  "$id": "dev-browser-observe.profile.fixed-distribution.v1",
+  "title": "dev-browser-observe fixed-distribution run profile (pinned zfb, Astro or Next from the archive lockfiles)",
+  "type": "object",
+  "required": [
+    "schema",
+    "mode",
+    "diagnostic",
+    "framework",
+    "distribution",
+    "fixture",
+    "pins",
+    "server",
+    "browser",
+    "timeouts",
+    "limits",
+    "restoration",
+    "scenarios",
+    "outDir"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "dev-browser-observe.profile.fixed-distribution.v1"
+    },
+    "description": {
+      "type": "string"
+    },
+    "mode": {
+      "const": "fixed-distribution"
+    },
+    "diagnostic": {
+      "const": false,
+      "description": "Fixed distributions run without zfb diagnostic env (ZFB_DEV_TIMING / ZFB_DEV_PROVENANCE_TRACE)."
+    },
+    "fixture": {
+      "type": "object",
+      "required": ["dir", "adapter", "kind", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "type": "string"
+        },
+        "placement": {
+          "const": "external",
+          "description": "Every framework app reads ../../content/articles, so only the external source layout exists."
+        },
+        "adapter": {
+          "enum": ["original-memoized", "recovered-snapshot", "archive"],
+          "description": "zfb: original-memoized or recovered-snapshot (archive helper bytes). astro / next: archive (the app's own helper)."
+        },
+        "kind": {
+          "const": "field-notes"
+        },
+        "source": {
+          "type": "object",
+          "required": [
+            "dir",
+            "appsZfbTreeSha256",
+            "contentTreeSha256",
+            "sharedTreeSha256",
+            "datasetSha256"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "dir": {
+              "type": "string",
+              "minLength": 1
+            },
+            "appsZfbTreeSha256": {
+              "type": ["string", "null"]
+            },
+            "contentTreeSha256": {
+              "type": ["string", "null"]
+            },
+            "sharedTreeSha256": {
+              "type": ["string", "null"]
+            },
+            "datasetSha256": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "scale": {
+          "enum": [100, 1000, 5000],
+          "description": "field-notes only: the declared corpus scale (fixtures/field-notes/scales.json); default 100. fixture.source must pin that scale's tree and dataset hashes, and the source content must have that many articles."
+        },
+        "importedCss": {
+          "type": "boolean",
+          "description": "Apply the archive's imported/managed CSS variant for this framework (distributions.json importedCss); required by edit-managed-css."
+        }
+      }
+    },
+    "pins": {
+      "type": "object",
+      "required": ["harnessTreeSha256", "fixtureTreeSha256", "observerSha256", "adapterSha256"],
+      "additionalProperties": false,
+      "properties": {
+        "harnessTreeSha256": {
+          "type": ["string", "null"]
+        },
+        "fixtureTreeSha256": {
+          "type": ["string", "null"]
+        },
+        "observerSha256": {
+          "type": ["string", "null"]
+        },
+        "adapterSha256": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "server": {
+      "type": "object",
+      "required": ["port", "host", "readyTimeoutMs"],
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "object",
+          "required": ["mode"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "enum": ["ephemeral", "fixed"]
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!0\\.0\\.0\\.0$)(?!\\[?::\\]?$)\\S+$",
+          "description": "Explicit bind address (e.g. 127.0.0.1). Unspecified hosts (0.0.0.0, ::) are rejected because zfb then prints a multi-line Local:/Network: banner."
+        },
+        "readyTimeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "env": {
+          "type": "object",
+          "description": "Extra server env. ZFB_DEV_TIMING and ZFB_DEV_PROVENANCE_TRACE are not allowed."
+        }
+      }
+    },
+    "browser": {
+      "type": "object",
+      "required": ["headless", "viewport", "deviceScaleFactor"],
+      "additionalProperties": false,
+      "properties": {
+        "headless": {
+          "type": "boolean"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "viewport": {
+          "type": "object",
+          "required": ["width", "height"],
+          "additionalProperties": false,
+          "properties": {
+            "width": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "deviceScaleFactor": {
+          "type": "number",
+          "minimum": 0.1
+        }
+      }
+    },
+    "timeouts": {
+      "type": "object",
+      "required": ["attemptMs", "supplementalMs", "restoreMs"],
+      "additionalProperties": false,
+      "properties": {
+        "attemptMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "supplementalMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "restoreMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "stopTermMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "stopKillMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "quietMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Post-restore quiet window after live confirmation (default 1500)."
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": ["rssCeilingKiB", "wallCeilingMs"],
+      "additionalProperties": false,
+      "properties": {
+        "rssCeilingKiB": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "wallCeilingMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sampleEveryMs": {
+          "type": "integer",
+          "minimum": 50,
+          "description": "Resource sampling period during the armed wait (default 1000)."
+        }
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repeats": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "staleTimeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cells": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "binding-round-trip",
+              "two-raf",
+              "synthetic-dom",
+              "synthetic-css",
+              "observer-init-after-navigation",
+              "stale-then-new-token",
+              "late-token",
+              "reload-survival-controller-triggered",
+              "native-reload-survival"
+            ]
+          }
+        }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "ops"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "set": {
+            "enum": ["workload", "negative-controls", "expected-negative", "recovery"]
+          },
+          "ops": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["op", "writeMethod"],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "op": {
+                  "enum": [
+                    "add-article",
+                    "burst",
+                    "create-article",
+                    "css-in-rejected-discovery-tick",
+                    "css-in-rejected-tick",
+                    "delete-article",
+                    "edit-body",
+                    "edit-category",
+                    "edit-css",
+                    "edit-during-rejected",
+                    "edit-invalid-frontmatter",
+                    "edit-managed-css",
+                    "edit-prop",
+                    "edit-public-css",
+                    "edit-shared-component",
+                    "edit-title",
+                    "hidden-edit",
+                    "rapid-sequence",
+                    "rename-article",
+                    "rename-case-only",
+                    "rename-filename-only",
+                    "rename-slug-change",
+                    "stale-predicate"
+                  ]
+                },
+                "article": {
+                  "type": "string"
+                },
+                "expect": {
+                  "enum": ["success", "timeout", "classify"],
+                  "description": "success (default); timeout = declared negative control; classify = timeout/stale is a classification result: recorded as timeout, batch still stops, exit 0 with stoppedByClassifyTimeout."
+                },
+                "targetPath": {
+                  "type": "string"
+                },
+                "predicate": {
+                  "type": "object"
+                },
+                "supplemental": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "writeMethod": {
+                  "enum": ["in-place", "atomic-rename", "unlink", "create", "rename"]
+                },
+                "to": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "inject": {
+                  "enum": [
+                    "kill-server-during-wait",
+                    "restore-blocked",
+                    "write-error",
+                    "precondition-true"
+                  ],
+                  "description": "Negative-control injection; only in set negative-controls. Declared outcomes: server-exit (SIGKILL), restoration-failed, write-error, precondition-failed (no write, hash-proven)."
+                },
+                "toCategory": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "category": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 2
+                },
+                "spacingMs": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "observeMs": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "accessDelayMs": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "settleMs": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "recoveryTimeoutMs": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "variant": {
+                  "enum": ["title-then-category", "add-then-delete"]
+                },
+                "expectState": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "error",
+                      "last-good",
+                      "route-not-expanded",
+                      "empty-collection",
+                      "other"
+                    ]
+                  },
+                  "description": "Declared acceptable states. expected-negative ops default to [error, last-good]; rename-case-only (expected-negative) and recovery ops must declare it. route-not-expanded and empty-collection are classified explicitly and are NOT expected unless declared."
+                },
+                "prop": {
+                  "enum": ["description"],
+                  "description": "edit-prop: the visible frontmatter prop to edit (default description)."
+                },
+                "toName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "rename-case-only: the case-variant file name (default: first letter flipped, e.g. Article-00008.md)."
+                },
+                "caseRenameSteps": {
+                  "enum": ["direct", "via-temp"],
+                  "description": "rename-case-only: one direct rename (default) or two renames through a temp sibling; every step is recorded."
+                },
+                "other": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "edit-during-rejected: the article whose title is edited while article is rejected."
+                },
+                "invalid": {
+                  "enum": ["frontmatter", "slug-mismatch"],
+                  "description": "css-in-rejected-discovery-tick: how the created article is invalid (default frontmatter)."
+                },
+                "requireSameTick": {
+                  "type": "boolean",
+                  "description": "css-in-rejected-*: stop with same-tick-unknown unless the [zfb-timing] intake lines prove the CSS and content edits shared one tick (diagnostic profiles only). A proven different tick is always not-same-tick. Requires diagnostic: true and server.env.ZFB_DEV_TIMING \"1\"."
+                },
+                "beforeRepair": {
+                  "enum": ["must-be-absent", "may-be-present"],
+                  "description": "recovery ops: whether the timed predicate may already hold before the repair (default must-be-absent: precondition-failed)."
+                },
+                "errorMarkers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "recovery ops: page text marking the error state (default [\"Article slug mismatch\"])."
+                },
+                "rejectionWaitMs": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "recovery ops: bound on waiting for the rejection server line after the broken write (default settleMs or restoreMs); no line in time is rejection-not-observed."
+                },
+                "repeat": {
+                  "type": "object",
+                  "required": ["warmups", "measured"],
+                  "additionalProperties": false,
+                  "description": "field-notes repeatable edit ops only: run the op warmups + measured times in a row in one session (fail-stop). Warmup attempts are recorded with label warmup and iteration.kind warmup, and are excluded from latency statistics.",
+                  "properties": {
+                    "warmups": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "measured": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                },
+                "breakage": {
+                  "enum": ["title-unbalanced-quote-v1", "unclosed-flow-sequence-v1"],
+                  "description": "edit-invalid-frontmatter only: the versioned breakage. Default title-unbalanced-quote-v1 (the original op, unchanged). unclosed-flow-sequence-v1 is invalid YAML for zfb's noyalib, js-yaml 3.15.2 (Next) and yaml 2.9.1 (Astro); see fixtures/field-notes/evidence/frontmatter-breakage-verification.json."
+                },
+                "acceptRouteNotExpandedWithEvidence": {
+                  "type": "boolean",
+                  "description": "fixed-distribution zfb, rename-filename-only only: a route-not-expanded detail page counts as expected only when the server output after the write contains the framework's declared rejection line (distributions.json negativeEvidence.routeNotExpanded); otherwise it stays a mismatch."
+                }
+              }
+            }
+          },
+          "warmOrder": {
+            "enum": ["index-first", "detail-first", "none"],
+            "description": "Unmeasured controller navigations at scenario start: index-first = / then detail, detail-first = detail then /, none = only the target page."
+          },
+          "warmDetail": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Article slug for the warm detail page (default a)."
+          }
+        }
+      }
+    },
+    "outDir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lockPath": {
+      "type": "string"
+    },
+    "restoration": {
+      "type": "object",
+      "required": ["writeMethod"],
+      "additionalProperties": false,
+      "properties": {
+        "writeMethod": {
+          "enum": ["in-place", "atomic-rename"],
+          "description": "Method for restoring changed files; missing files are recreated with create and unexpected files removed with unlink."
+        }
+      }
+    },
+    "resourceStudy": {
+      "type": "object",
+      "required": ["protocol", "cycles", "idleAfterRestoreMs", "finalIdleMs", "sampleEveryMs"],
+      "additionalProperties": false,
+      "description": "Resource-study session (separate from timing): the single scenario is run as cycles edit+restore cycles, with an idle wait after each completed restoration and a final idle, while owned processes are sampled at sampleEveryMs. Values must equal the protocol's constants.",
+      "properties": {
+        "protocol": {
+          "const": "dev-browser-observe.resource-study.v1"
+        },
+        "cycles": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "idleAfterRestoreMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "finalIdleMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sampleEveryMs": {
+          "type": "integer",
+          "minimum": 1000
+        }
+      }
+    },
+    "framework": {
+      "enum": ["zfb", "astro", "next"],
+      "description": "zfb = @takazudo/zfb + zfb-runtime 6.0.1; astro = astro 7.4.12; next = next 16.4.6 + react/react-dom 19.3.1 (fixtures/field-notes/distributions.json)."
+    },
+    "distribution": {
+      "type": "object",
+      "required": ["installDir"],
+      "additionalProperties": false,
+      "properties": {
+        "installDir": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Dir written by `cli.mjs install-distribution` (contains install-receipt.json and <app>/node_modules)."
+        },
+        "launch": {
+          "enum": ["direct", "npm-script"],
+          "description": "direct (default): node runs the declared script (zfb shim, astro.mjs, Next's dev-content.mjs sidecar). npm-script: node runs npm-cli.js `run dev -- <args>` (astro, next)."
+        }
+      }
+    }
+  }
+}

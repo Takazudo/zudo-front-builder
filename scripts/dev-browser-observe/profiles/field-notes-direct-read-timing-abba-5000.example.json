@@ -1,0 +1,168 @@
+{
+  "schema": "dev-browser-observe.profile.v1",
+  "description": "Timing protocol dev-browser-observe.timing-abba.v1 at scale 5000 (direct-read helper): one scenario per operation, each op repeated 2 warmups + 10 measured in one session. Use one filled copy per variant (A, B) that differs only in buildReceipt/productSha, and run them with `cli.mjs series --plan` (profiles/series-timing-abba.example.json). Fill productSha, buildReceipt, outDir, pins and fixture.source.dir.",
+  "mode": "source-built",
+  "diagnostic": false,
+  "productSha": "0000000000000000000000000000000000000000",
+  "productDirtyIdentity": null,
+  "buildReceipt": "/tmp/dev-browser-observe/build-receipt.json",
+  "fixture": {
+    "kind": "field-notes",
+    "dir": "../fixtures/field-notes",
+    "adapter": "direct-read",
+    "managedCss": true,
+    "source": {
+      "dir": "/REPLACE/with/fieldnotes/src-5000",
+      "appsZfbTreeSha256": "5e5580347095d9c5817faf3d4aa30529913e1a0c26a6b1b80905b5b01fa9ba36",
+      "contentTreeSha256": "dff8f9791e9e1c2da791293813b8bc6327a419e6ebf9fd772484320268b84540",
+      "sharedTreeSha256": "f709ace99f2aad0d1c7c1d553c8693b66883f1055168855fb6807722b0cf226a",
+      "datasetSha256": "fc3717b7bd57cc5921cbd2f7bcdea2f8341d8b2ab8b389d8f5b0d24c068e8c59"
+    },
+    "scale": 5000
+  },
+  "pins": {
+    "harnessTreeSha256": null,
+    "fixtureTreeSha256": null,
+    "observerSha256": null,
+    "adapterSha256": null
+  },
+  "server": {
+    "port": {
+      "mode": "ephemeral"
+    },
+    "host": "127.0.0.1",
+    "readyTimeoutMs": 180000
+  },
+  "browser": {
+    "headless": true,
+    "args": [
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows"
+    ],
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "deviceScaleFactor": 1
+  },
+  "timeouts": {
+    "attemptMs": 30000,
+    "supplementalMs": 30000,
+    "restoreMs": 60000,
+    "stopTermMs": 5000,
+    "stopKillMs": 3000,
+    "quietMs": 3000
+  },
+  "limits": {
+    "rssCeilingKiB": 4194304,
+    "wallCeilingMs": 5400000,
+    "sampleEveryMs": 1000
+  },
+  "calibration": {
+    "repeats": 3,
+    "staleTimeoutMs": 2000,
+    "cells": [
+      "binding-round-trip",
+      "two-raf",
+      "synthetic-dom",
+      "synthetic-css",
+      "observer-init-after-navigation",
+      "stale-then-new-token",
+      "late-token",
+      "reload-survival-controller-triggered",
+      "native-reload-survival"
+    ]
+  },
+  "restoration": {
+    "writeMethod": "in-place"
+  },
+  "scenarios": [
+    {
+      "id": "fn-edit-body",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "body-05",
+          "op": "edit-body",
+          "article": "article-00005",
+          "writeMethod": "in-place",
+          "repeat": {
+            "warmups": 2,
+            "measured": 10
+          }
+        }
+      ]
+    },
+    {
+      "id": "fn-shared-component",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "footer",
+          "op": "edit-shared-component",
+          "writeMethod": "in-place",
+          "targetPath": "/",
+          "repeat": {
+            "warmups": 2,
+            "measured": 10
+          }
+        }
+      ]
+    },
+    {
+      "id": "fn-managed-css",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "managed-css",
+          "op": "edit-managed-css",
+          "writeMethod": "in-place",
+          "targetPath": "/",
+          "repeat": {
+            "warmups": 2,
+            "measured": 10
+          }
+        }
+      ]
+    },
+    {
+      "id": "fn-title-detail",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "title-05-detail",
+          "op": "edit-title",
+          "article": "article-00005",
+          "writeMethod": "in-place",
+          "repeat": {
+            "warmups": 2,
+            "measured": 10
+          }
+        }
+      ]
+    },
+    {
+      "id": "fn-category",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "category-15",
+          "op": "edit-category",
+          "article": "article-00015",
+          "writeMethod": "in-place",
+          "repeat": {
+            "warmups": 2,
+            "measured": 10
+          }
+        }
+      ]
+    }
+  ],
+  "outDir": "/tmp/dev-browser-observe-series"
+}

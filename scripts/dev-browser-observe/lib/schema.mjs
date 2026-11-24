@@ -4,11 +4,17 @@ import { HARNESS_DIR } from "./util.mjs";
 
 export const SCHEMA_FILES = {
   profile: "profile.v1.json",
+  "profile-fixed-distribution": "profile-fixed-distribution.v1.json",
   receipt: "receipt.v1.json",
   record: "record.v1.json",
   "build-receipt": "build-receipt.v1.json",
   fixture: "tiny-fixture.v1.json",
   "field-notes-fixture": "field-notes-fixture.v1.json",
+  "field-notes-scales": "field-notes-scales.v1.json",
+  "field-notes-distributions": "field-notes-distributions.v1.json",
+  "install-receipt": "install-receipt.v1.json",
+  series: "series.v1.json",
+  aggregate: "aggregate.v1.json",
 };
 
 export function loadSchema(name) {
@@ -34,6 +40,11 @@ function typeMatches(v, t) {
 /** Validates the JSON Schema subset these schemas use. Returns error strings. */
 export function validate(schema, value, path = "$") {
   const errors = [];
+  // `if` / `then` / `else`: a conditional subschema chosen by whether `if` validates.
+  if (schema.if) {
+    const branch = validate(schema.if, value, path).length === 0 ? schema.then : schema.else;
+    if (branch) errors.push(...validate(branch, value, path));
+  }
   if ("const" in schema && value !== schema.const)
     errors.push(`${path}: expected ${JSON.stringify(schema.const)}`);
   if (schema.enum && !schema.enum.includes(value))
@@ -63,6 +74,8 @@ export function validate(schema, value, path = "$") {
       if (props[k]) errors.push(...validate(props[k], v, `${path}.${k}`));
       else if (schema.additionalProperties === false)
         errors.push(`${path}: unexpected property ${k}`);
+      else if (schema.additionalProperties && typeof schema.additionalProperties === "object")
+        errors.push(...validate(schema.additionalProperties, v, `${path}.${k}`));
     }
   }
   return errors;

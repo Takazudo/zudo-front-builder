@@ -133,8 +133,17 @@ export function injectKillOwned(handle, killImpl = process.kill) {
   return { ok: true, pid: root.pid, signal: "SIGKILL", at: isoNow(), birth: now };
 }
 
+/**
+ * Spawn the dev server as an owned detached group and resolve `ready` from its output.
+ * Source-built: `exe` + devArgs, ready on READY_RE. Fixed-distribution: an explicit `command`
+ * and `args` with a `readiness` object (distribution.mjs createReadiness) whose `push(line)`
+ * returns { url } once ready or { failed } for a readiness contradiction (wrong port).
+ */
 export function startDevServer({
   exe,
+  command = null,
+  args: explicitArgs = null,
+  readiness = null,
   appDir,
   port,
   host = "127.0.0.1",
@@ -143,9 +152,12 @@ export function startDevServer({
   diagnostic = false,
   readyTimeoutMs,
   logPath,
+  spawnImpl = spawnOwned,
 }) {
   const log = new ServerLog(createWriteStream(logPath, { flags: "a" }));
-  const args = devArgs({ port, host, extraArgs });
+  const args = explicitArgs ?? devArgs({ port, host, extraArgs });
+  const cmd = command ?? exe;
+  let rejectReady = null;
   const effective = serverEnv(process.env, env, diagnostic);
   const lines = [];
   let linesBase = 0;
@@ -170,7 +182,11 @@ export function startDevServer({
       lines.splice(0, drop);
       linesBase += drop;
     }
-    if (resolveReady) {
+    if (resolveReady && readiness) {
+      const r = readiness.push(text);
+      if (r?.failed) rejectReady(r.failed);
+      else if (r?.url) resolveReady(r.url);
+    } else if (resolveReady) {
       const m = text.match(READY_RE);
       if (m) resolveReady(m[1].replace(/\/$/, ""));
     }
@@ -179,7 +195,7 @@ export function startDevServer({
     const ns = hrtimeNs();
     for (const line of splitters[stream].push(chunk)) take(stream, line, ns);
   };
-  const handle = spawnOwned(exe, args, {
+  const handle = spawnImpl(cmd, args, {
     cwd: appDir,
     env: effective.env,
     onStdout: writeLog("stdout"),
@@ -199,6 +215,16 @@ export function startDevServer({
       resolveReady = null;
       clearTimeout(timer);
       resolve({ baseUrl: url, readyNs: hrtimeNs() });
+    };
+    rejectReady = (failure) => {
+      resolveReady = null;
+      clearTimeout(timer);
+      reject(
+        Object.assign(new Error(`dev server readiness failed: ${JSON.stringify(failure)}`), {
+          code: "READY_CONTRADICTED",
+          failure,
+        }),
+      );
     };
     handle.exited.then((exit) => {
       if (!resolveReady) return;
@@ -239,9 +265,15 @@ export function startDevServer({
       return sample(owned.map((p) => p.pid));
     },
     /** Only owned pids whose birth identity still matches are sampled. */
-    sampleResourcesAsync: async () => {
+    sampleResourcesAsync: async (opts = {}) => {
       const live = await liveKnownAsync(handle);
-      return { ...(await sampleAsync(live.map((p) => p.pid))), birthVerified: live.length };
+      return {
+        ...(await sampleAsync(
+          live.map((p) => p.pid),
+          opts,
+        )),
+        birthVerified: live.length,
+      };
     },
     injectKill: () => injectKillOwned(handle),
     logMark: () => linesBase + lines.length,

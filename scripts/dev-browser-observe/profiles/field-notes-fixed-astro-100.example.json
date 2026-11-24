@@ -1,0 +1,175 @@
+{
+  "schema": "dev-browser-observe.profile.fixed-distribution.v1",
+  "description": "Fixed Astro 7.4.12 (archive apps/astro, original helper, native glob loader) at scale 100, timing protocol scenarios; importedCss applies the archive's imported-CSS variant. Fill distribution.installDir (install-distribution --framework astro), fixture.source.dir, outDir and pins.",
+  "mode": "fixed-distribution",
+  "diagnostic": false,
+  "framework": "astro",
+  "distribution": {
+    "installDir": "/REPLACE/with/installs/astro",
+    "launch": "direct"
+  },
+  "fixture": {
+    "kind": "field-notes",
+    "dir": "../fixtures/field-notes",
+    "adapter": "archive",
+    "scale": 100,
+    "placement": "external",
+    "importedCss": true,
+    "source": {
+      "dir": "/REPLACE/with/fieldnotes/src-100",
+      "appsZfbTreeSha256": "5e5580347095d9c5817faf3d4aa30529913e1a0c26a6b1b80905b5b01fa9ba36",
+      "contentTreeSha256": "22763056bd34e0a5dd6e4ac096e69de7e0278519235df88666124c801ea0b7a7",
+      "sharedTreeSha256": "f709ace99f2aad0d1c7c1d553c8693b66883f1055168855fb6807722b0cf226a",
+      "datasetSha256": "fcaa222e52caaedb411a4136f106d4ddb5eaa7334a3ef03f34ccd282f6bab58a"
+    }
+  },
+  "pins": {
+    "harnessTreeSha256": null,
+    "fixtureTreeSha256": null,
+    "observerSha256": null,
+    "adapterSha256": null
+  },
+  "server": {
+    "port": {
+      "mode": "ephemeral"
+    },
+    "host": "127.0.0.1",
+    "readyTimeoutMs": 180000,
+    "env": {
+      "ASTRO_TELEMETRY_DISABLED": "1",
+      "NEXT_TELEMETRY_DISABLED": "1"
+    }
+  },
+  "browser": {
+    "headless": true,
+    "args": [
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows"
+    ],
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "deviceScaleFactor": 1
+  },
+  "timeouts": {
+    "attemptMs": 30000,
+    "supplementalMs": 30000,
+    "restoreMs": 60000,
+    "stopTermMs": 5000,
+    "stopKillMs": 3000,
+    "quietMs": 3000
+  },
+  "limits": {
+    "rssCeilingKiB": 4194304,
+    "wallCeilingMs": 3600000,
+    "sampleEveryMs": 1000
+  },
+  "calibration": {
+    "repeats": 3,
+    "staleTimeoutMs": 2000,
+    "cells": [
+      "binding-round-trip",
+      "two-raf",
+      "synthetic-dom",
+      "synthetic-css",
+      "observer-init-after-navigation",
+      "stale-then-new-token",
+      "late-token",
+      "reload-survival-controller-triggered",
+      "native-reload-survival"
+    ]
+  },
+  "restoration": {
+    "writeMethod": "in-place"
+  },
+  "scenarios": [
+    {
+      "id": "fn-edit-body",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "body-05",
+          "op": "edit-body",
+          "article": "article-00005",
+          "writeMethod": "in-place",
+          "repeat": {
+            "warmups": 2,
+            "measured": 10
+          }
+        }
+      ]
+    },
+    {
+      "id": "fn-shared-component",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "footer",
+          "op": "edit-shared-component",
+          "writeMethod": "in-place",
+          "targetPath": "/",
+          "repeat": {
+            "warmups": 2,
+            "measured": 10
+          }
+        }
+      ]
+    },
+    {
+      "id": "fn-managed-css",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "managed-css",
+          "op": "edit-managed-css",
+          "writeMethod": "in-place",
+          "targetPath": "/",
+          "repeat": {
+            "warmups": 2,
+            "measured": 10
+          }
+        }
+      ]
+    },
+    {
+      "id": "fn-title-detail",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "title-05-detail",
+          "op": "edit-title",
+          "article": "article-00005",
+          "writeMethod": "in-place",
+          "repeat": {
+            "warmups": 2,
+            "measured": 10
+          }
+        }
+      ]
+    },
+    {
+      "id": "fn-category",
+      "set": "workload",
+      "warmOrder": "none",
+      "ops": [
+        {
+          "id": "category-15",
+          "op": "edit-category",
+          "article": "article-00015",
+          "writeMethod": "in-place",
+          "repeat": {
+            "warmups": 2,
+            "measured": 10
+          }
+        }
+      ]
+    }
+  ],
+  "outDir": "/tmp/dev-browser-observe-fixed"
+}

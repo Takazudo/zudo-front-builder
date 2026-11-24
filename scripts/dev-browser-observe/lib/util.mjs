@@ -1,7 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   closeSync,
+  cpSync,
   existsSync,
   fsyncSync,
   lstatSync,
@@ -190,4 +192,27 @@ export function isoNow() {
 
 export function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Give the owner write access to a copied tree (dirs u+rwx, files u+rw), without following
+ * symlinks and without touching other mode bits. cpSync keeps source modes, so a copy of a
+ * read-only (for example frozen) fixture would otherwise be a work dir nothing can write into.
+ * Tree hashes cover bytes and paths only, so this changes no identity hash.
+ */
+export function ensureOwnerWritable(root) {
+  const visit = (p) => {
+    const st = lstatSync(p);
+    if (st.isSymbolicLink()) return;
+    const want = st.isDirectory() ? 0o700 : 0o600;
+    if ((st.mode & want) !== want) chmodSync(p, (st.mode & 0o7777) | want);
+    if (st.isDirectory()) for (const name of readdirSync(p)) visit(join(p, name));
+  };
+  visit(root);
+}
+
+/** cpSync into a work dir, then make the copy owner-writable (ensureOwnerWritable). */
+export function cpSyncWritable(src, dest, opts) {
+  cpSync(src, dest, opts);
+  ensureOwnerWritable(dest);
 }

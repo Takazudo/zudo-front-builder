@@ -27,7 +27,8 @@
       "type": "string"
     },
     "mode": {
-      "enum": ["source-built", "fixed-distribution"]
+      "enum": ["source-built"],
+      "description": "source-built: a zfb binary built from this checkout, pinned by productSha and buildReceipt. A fixed-distribution profile uses the separate schema profile-fixed-distribution (dev-browser-observe.profile.fixed-distribution.v1)."
     },
     "diagnostic": {
       "type": "boolean",
@@ -104,6 +105,10 @@
               "type": ["string", "null"]
             }
           }
+        },
+        "scale": {
+          "enum": [100, 1000, 5000],
+          "description": "field-notes only: the declared corpus scale (fixtures/field-notes/scales.json); default 100. fixture.source must pin that scale's tree and dataset hashes, and the source content must have that many articles."
         }
       }
     },
@@ -458,6 +463,30 @@
                   "type": "integer",
                   "minimum": 1,
                   "description": "recovery ops: bound on waiting for the rejection server line after the broken write (default settleMs or restoreMs); no line in time is rejection-not-observed."
+                },
+                "repeat": {
+                  "type": "object",
+                  "required": ["warmups", "measured"],
+                  "additionalProperties": false,
+                  "description": "field-notes repeatable edit ops only: run the op warmups + measured times in a row in one session (fail-stop). Warmup attempts are recorded with label warmup and iteration.kind warmup, and are excluded from latency statistics.",
+                  "properties": {
+                    "warmups": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "measured": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                },
+                "breakage": {
+                  "enum": ["title-unbalanced-quote-v1", "unclosed-flow-sequence-v1"],
+                  "description": "edit-invalid-frontmatter only: the versioned breakage. Default title-unbalanced-quote-v1 (the original op, unchanged). unclosed-flow-sequence-v1 is invalid YAML for zfb's noyalib, js-yaml 3.15.2 (Next) and yaml 2.9.1 (Astro); see fixtures/field-notes/evidence/frontmatter-breakage-verification.json."
+                },
+                "acceptRouteNotExpandedWithEvidence": {
+                  "type": "boolean",
+                  "description": "fixed-distribution zfb, rename-filename-only only: a route-not-expanded detail page counts as expected only when the server output after the write contains the framework's declared rejection line (distributions.json negativeEvidence.routeNotExpanded); otherwise it stays a mismatch."
                 }
               }
             }
@@ -489,6 +518,33 @@
         "writeMethod": {
           "enum": ["in-place", "atomic-rename"],
           "description": "Method for restoring changed files; missing files are recreated with create and unexpected files removed with unlink."
+        }
+      }
+    },
+    "resourceStudy": {
+      "type": "object",
+      "required": ["protocol", "cycles", "idleAfterRestoreMs", "finalIdleMs", "sampleEveryMs"],
+      "additionalProperties": false,
+      "description": "Resource-study session (separate from timing): the single scenario is run as cycles edit+restore cycles, with an idle wait after each completed restoration and a final idle, while owned processes are sampled at sampleEveryMs. Values must equal the protocol's constants.",
+      "properties": {
+        "protocol": {
+          "const": "dev-browser-observe.resource-study.v1"
+        },
+        "cycles": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "idleAfterRestoreMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "finalIdleMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sampleEveryMs": {
+          "type": "integer",
+          "minimum": 1000
         }
       }
     }

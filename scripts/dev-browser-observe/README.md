@@ -5,8 +5,10 @@ a content file edit. The harness launches the server and one browser it owns.
 Any run that cannot be trusted stops before the next workload edit.
 
 `node scripts/dev-browser-observe/cli.mjs --help` lists every command and exit
-code. `cli.mjs schema <profile|receipt|record|build-receipt|fixture>` prints a
-JSON schema.
+code. `cli.mjs schema <name>` prints a JSON schema (`profile`, `receipt`,
+`record`, `build-receipt`, `fixture`, `field-notes-fixture`,
+`field-notes-scales`, `field-notes-distributions`, `install-receipt`,
+`profile-fixed-distribution`, `series`, `aggregate`).
 
 ## Workflow
 
@@ -303,6 +305,13 @@ batch.
   document, `navigationType` `reload` and a livereload `page` frame, then
   restores and confirms the original state live. With a memoizing adapter
   (A1) that body edit may legitimately not render, so calibrate with A0.
+  After each restoration write the cell runs the same settle as batch cleanup:
+  the restore's own native update, then `quietMs` of quiet, bounded by
+  `restoreMs`. It is recorded as `restoration.settle`, so that reload cannot
+  land in the next cycle's prepare. A navigation that still interrupts a
+  prepare records outcome `prepare-interrupted-by-navigation` and aborts the
+  cell (`aborted: "prepare-interrupted-by-navigation"`). Nothing was written in
+  that cycle, nothing is retried, and the run exits 1, not 8.
 
 ## Round-3 controls
 
@@ -437,8 +446,8 @@ batch.
 
 ## Field Notes fixture (`kind: "field-notes"`)
 
-`fixture.kind: "field-notes"` runs the original 100-article Field Notes ZFB
-app. That app is not in this repo. `fixture.source.dir` points at the
+`fixture.kind: "field-notes"` runs the original Field Notes ZFB app, at 100
+articles unless `fixture.scale` says otherwise (see "Corpus scales" below). That app is not in this repo. `fixture.source.dir` points at the
 parent-provided source dir, and the profile pins its tree hashes: `apps/zfb`
 without `lib/content.ts`, `content/`, `shared/`, and the generator's
 `datasetSha256`. `cli.mjs pins` prints all of them, and `verify-identity`
@@ -587,6 +596,196 @@ For each adapter, `*-q.example.json` (external), `*-internal-q.example.json`
 and `*-recovery-diagnostic-q.example.json` (`ZFB_DEV_TIMING=1`,
 `requireSameTick`) cover the new families.
 
+## Corpus scales (`fixture.scale`: 100, 1000, 5000)
+
+`fixtures/field-notes/scales.json` (schema `field-notes-scales`) declares each
+scale: the generator (`scripts/generate.mjs`, sha256 `f2eaa2fe…6641`), its
+argument, and the expected `apps/zfb`, `content/`, `shared/`, dataset and
+`content/manifest.json` hashes. A source dir for a scale is the archive's
+`apps/`, `shared/` and `scripts/` with `node scripts/generate.mjs <count>` run
+in it. The generator is deterministic. Its only parameter is the article count,
+and it also copies the shared spec and CSS into each app, with identical bytes.
+
+| Scale | datasetSha256 | Source |
+| --- | --- | --- |
+| 100 | `fcaa222e…b58a` | `generate.mjs 100`; batch Q's `src-100` is byte-identical to a fresh run |
+| 1000 | `96d9266a…189b` | `generate.mjs 1000`; no 1000 tree is in the archive |
+| 5000 | `fc3717b7…8c59` | `generate.mjs 5000`; byte-identical to the archive's own `content/` |
+
+All three dataset hashes equal the original benchmark's
+`results/final-audit.json` entries. `apps/zfb` and `shared/` hash the same at
+every scale.
+
+- `cli.mjs make-source --archive <archive> --scale <n> --out <dir>` builds a
+  source dir. It checks the generator's sha256 before copying anything, refuses
+  an existing `--out` or one inside a git work tree, and compares every hash
+  with `scales.json`. It exits 3 on any mismatch and prints the `source` pins.
+- A profile sets `fixture.scale` and pins that scale's hashes in
+  `fixture.source`. A profile without `fixture.scale` is scale 100, with the same
+  pins as before. `cli.mjs pins` prints the scale's declared hashes next to
+  the actual ones.
+- `verify-identity` and `run` reject the following before any edit:
+  - a source whose dataset is not the declared scale's
+    (`source-dataset-matches-manifest-declaration`);
+  - pins that differ from the declaration
+    (`source-pin-matches-scale-declaration:*`);
+  - a `content/manifest.json` with a different `articleCount`
+    (`source-article-count-matches-scale`).
+
+  Materialization refuses another scale's dataset as well. Receipts record
+  `fixture.scale` and `scaleId`.
+
+Cleanup live-checks every archive page, so a 5000 restore checks 100 archive
+pages. That cost applies equally to every variant of a series.
+
+## Repeats, series and aggregation
+
+### `repeat` (per op, Field Notes workload ops)
+
+`"repeat": { "warmups": 2, "measured": 10 }` on an op runs it 12 times in a
+row in the same session, each time with a fresh token on the current file.
+Repeat is allowed on `edit-body`, `edit-shared-component`, `edit-managed-css`,
+`edit-title`, `edit-category` and `edit-prop`, only in workload scenarios,
+and never with `inject` or `expect: "timeout"`.
+
+- `run` expands each repeat into ops `<id>#w1..` then `<id>#m1..`, each with
+  `iteration { opId, kind, index, of }`. `run-start` and `receipt.json` record
+  the expanded `schedule`.
+- Warmup attempts get label `warmup`. They are counted in `accounting` and fail
+  the batch like any attempt, but `summary.json` latency statistics exclude
+  them (`warmupsExcludedFromStats`).
+- Fail-stop is unchanged. The first failure, warmup or measured, stops the
+  session before the next edit, and the remainder is `notAttempted`.
+  Restoration runs once, at the end of the scenario.
+
+### `series --plan <plan.json>` (schema `series`)
+
+A plan names the variant profiles, `order`, `labelPrefix` and `protocol`.
+`cli.mjs protocols` prints each protocol's constants.
+
+- `dev-browser-observe.timing-abba.v1` requires all of these:
+  - the order is X,Y,Y,X;
+  - every op has `repeat { warmups: 2, measured: 10 }` and expects success;
+  - the ops come from `edit-body`, `edit-shared-component`,
+    `edit-managed-css`, `edit-title` and `edit-category`.
+- `dev-browser-observe.resource-study.v1` (see below).
+
+Before any session, the plan is rejected (exit 2) when any of these holds:
+
+- variant profiles differ outside `buildReceipt`, `productSha`,
+  `productDirtyIdentity` and `description`;
+- they do not share `outDir` and lock;
+- their build receipts differ in `build` or `toolchain` without listing it in
+  `declaredDifferences`.
+
+A timing-abba.v1 plan must run all five protocol ops at least once. To run
+fewer, the plan declares `opSubset: { ops, reason }`; the ops must then be
+exactly that subset, and the series record and aggregate report carry it.
+
+An A/A control is two receipts of the same binary with no declared difference.
+Then every variant's `verify-identity` must pass, and a frozen harness must
+pass `verify-frozen` (recorded as `preflightFrozen`), or no session runs (exit 3).
+
+Sessions run in order as separate `run`s, so each one gets a fresh server and
+browser. Labels are `<labelPrefix>-s<n>-<variant>`. The first session that
+exits non-zero stops the series, and later sessions are `not-attempted`.
+`<outDir>/<labelPrefix>.series.json` records the plan hash, profile hashes,
+preflight and each session's status and exit code. Examples:
+`profiles/series-timing-abba.example.json` and
+`profiles/field-notes-direct-read-timing-abba-5000.example.json`.
+
+### `aggregate`
+
+Run `aggregate --series <record.json>`, or
+`aggregate --sessions A=<labelDir>,B=<labelDir>,... [--declared-differences build]`.
+Add `[--out report.json]` to write the report. It reads each label dir and
+writes schema `aggregate`:
+
+- **Per session and op block:** `measured` planned, attempted, success, stale,
+  timeout, error and notAttempted, with latency n, min, median, nearest-rank
+  p95 and max. Latency covers measured successes only (`conditionalOnSuccess`,
+  `failuresPresent`). `warmup` counts are reported separately and marked
+  `excludedFromStats`.
+- **Pooled per variant and op:** counts are summed and latencies concatenated
+  across that variant's sessions.
+- **Unknown counts:** a session recorded before schedules existed has
+  `planned: null`. Any pooled op that includes such a block keeps `planned` and
+  `notAttempted` null (unknown), and `failuresPresent` is null when no failure
+  was observed. A count is never negative: more attempts than planned gives
+  `notAttempted: null` with `countsInconsistent`.
+- **Unrun sessions:** with `--series`, a session the series never ran
+  (`not-attempted`, no label dir) has no identity and adds its planned
+  attempts, from its variant's unchanged profile, to the pooled `notAttempted`.
+  If the profile changed since, its planned schedule is unknown and
+  `plannedError` says why. A missing label dir is likewise `missing`.
+- **Identity:** facets are read from each `receipt.json` of a session that ran: corpus, adapter,
+  config, toolchain, build, browser, harness, observer, host, profile and
+  schedule. Every facet must match within a variant. Across variants, every
+  facet must match except those declared.
+
+Exit codes: 3 for an identity mismatch among the sessions that ran, 1 when a
+session is missing, not attempted, stopped or incomplete, otherwise 0.
+
+## Resource study (`resourceStudy`, protocol `dev-browser-observe.resource-study.v1`)
+
+This is separate from timing. A profile declares
+`{ protocol, cycles: 30, idleAfterRestoreMs: 10000, finalIdleMs: 60000, sampleEveryMs }`,
+with `sampleEveryMs` of at least 1000. The values must equal the protocol's
+constants, and every variant uses the same profile apart from its build.
+
+A resource-study run takes exactly one scenario of repeatable edits; use
+`--scenario` or the plan's `scenarios` to pick it. It runs that scenario as 30
+cycles (`<id>@c01..30`), each an edit followed by a restoration. After each
+restoration that completes, the run idles for 10 s, and after the last cycle it
+idles a further 60 s. A stopped batch skips the final idle and records why.
+
+From start to stop, owned processes are sampled every `sampleEveryMs`, using
+the birth-verified owned pids. Each sample is one async
+`ps -o pid=,rss=,vsz=` plus one async `ps -M` per pid. Every `resource-sample`
+record carries its phase (`edit`, `restore`, `after-restore`, `final`) and its
+own `costMs`, and a tick that would overlap a running sample is skipped and
+counted. The phase turns to `restore` as each restoration starts. A sample
+that cannot be recorded halts the batch: the next op stops with a
+`controller-error` precheck (`halt`), no further idle runs, the run exits 8, and
+`summary.json` `resourceStudy.failure` says why.
+
+A field `ps` cannot read is `unavailable`. `summary.json` `resourceStudy`
+reports completed cycles, sample counts, cost, unavailable counts, the last
+sample of each idle, and min and max. It never infers a leak, a trend or an
+OOM. Attempt latencies in such a session are not timing measurements.
+
+## Frozen copy for a measurement series
+
+`cli.mjs freeze --out <dir>` copies the harness, without `__tests__`, to `<dir>/dev-browser-observe`.
+It refuses a harness dir with uncommitted changes unless `--allow-dirty` is
+given. The copy gets a `.frozen.json` stamp with the source sha and dirty
+state, the harness and full tree hashes, the fixture hashes, the observer hash,
+and the `@playwright/test` package it links. That package is linked by its
+resolved, versioned path from `<dir>/node_modules`. Every file is made
+read-only.
+
+Run the series with `node <dir>/dev-browser-observe/cli.mjs`, and point the
+profiles' `fixture.dir` at the frozen `fixtures/`. Take their `pins` from the
+frozen `cli.mjs pins`. From a frozen copy:
+
+- `harnessCapability` reports `frozen: true` and `intact` instead of git state;
+- `verify-identity` and `run` add `harness-frozen-copy-intact` and
+  `harness-frozen-playwright-link`;
+- `verify-frozen [--dir]` rechecks the hashes, the read-only bits and the
+  playwright link.
+
+Materialization copies fixture and source files into `<label>/work` and then
+makes the work copy owner-writable (dirs `u+rwx`, files `u+rw`; symlinks are
+not followed). This lets a run from a read-only frozen copy, a read-only source
+dir or a read-only install edit and restore its own work files. The frozen
+copy and the sources keep their modes. Tree hashes cover only paths and bytes,
+so no identity hash changes. The `restore-blocked` control still sets 0444 on
+the work target and reverts to the work file's mode.
+
+Development can continue in the checkout meanwhile. The Chromium binary itself
+is identified per session by `receipt.browser.executableSha256`, and
+`aggregate` compares it.
+
 ## Restoration and processes
 
 Exact source bytes are snapshotted before each scenario and restored after it
@@ -636,10 +835,234 @@ cover A0–A3 in both placements. Each warm order (`index-first`,
 the detail page, and category on `/`. Each cell is its own scenario. A1
 remains exactly the original helper.
 
-## Not implemented
+## Fixed distributions (`mode: "fixed-distribution"`)
 
-`mode: "fixed-distribution"` is accepted by the schema but rejected with
-`not-implemented` (exit 4).
+A fixed-distribution profile runs one of three pinned frameworks over the same
+Field Notes corpus and scales, instead of a zfb built from this checkout:
+
+| `framework` | Packages (archive lockfile) | App | Helper |
+| --- | --- | --- | --- |
+| `zfb` | `@takazudo/zfb` + `@takazudo/zfb-runtime` 6.0.1 | `apps/zfb` | `original-memoized` or `recovered-snapshot` (archive helper bytes) |
+| `astro` | `astro` 7.4.12 (Vite 8.3.8) | `apps/astro` | `archive`: original `src/lib/content.js`, native glob loader |
+| `next` | `next` 16.4.6, `react`/`react-dom` 19.3.1 | `apps/next` | `archive`: the authoring dev adapter `lib/content.js` |
+
+`fixtures/field-notes/distributions.json` (schema `field-notes-distributions`)
+declares each framework from the archive. It records:
+
+- the app tree, `package.json` and lockfile hashes, and the pinned versions;
+- the helper and config, and the adapter files;
+- the imported-CSS variant files and the executables;
+- the launch argv (from the archive's `devtools/dev-bench.mjs`);
+- readiness patterns from the archive's recorded server logs;
+- process-role patterns.
+
+Next's `scripts/dev-content.mjs` sidecar is the archive's own file (sha256
+`4e70fdc7…71b04d7`). It is hashed and labelled, and its watch, debounce and
+revision write fall inside the measured latency. Its volatile
+`lib/content-revision.js` is outside the tree hash. Astro needs no fixture
+adapter: its native glob loader watches the external content dir. The
+memoized `indexPromise` stays the archive original.
+
+Neither framework's core is changed. Historical fixed-ZFB results stay what
+they were: the 6.0.1 helpers are the archive bytes, and a stale or timeout
+outcome is a recorded failure. No later zfb or modified helper replaces them.
+
+### Profile schema per mode
+
+`mode` selects the schema, and source-built keeps `profile.v1` unchanged:
+
+- `profile.v1` now allows only `source-built`, and it still requires
+  `productSha`, `buildReceipt` and `pins`.
+- A fixed-distribution profile uses schema `profile-fixed-distribution`
+  (`dev-browser-observe.profile.fixed-distribution.v1`). It requires
+  `framework`, `distribution.installDir` and `pins`, and forbids `productSha`
+  and `buildReceipt`. `diagnostic` is always false. The fixture is Field Notes
+  with external placement, `fixture.scale`, the helper as `fixture.adapter`,
+  and `fixture.importedCss`.
+- Recovery scenarios are source-built only, because they read zfb's own
+  rejection lines.
+
+### Install, then run
+
+1. Build a scale source dir with `make-source` (every app is in it).
+2. `cli.mjs install-distribution --framework <fw> --source <src-100> --out <installs>/<fw>`
+   does the following:
+   1. Checks `<src>/apps/<fw>` against the declared tree, and copies nothing
+      on a mismatch.
+   2. Copies the app without `node_modules` or caches to a new `--out` that is
+      outside any git work tree.
+   3. Runs `npm ci --no-audit --no-fund` there with this node. Lifecycle
+      scripts run, as for a normal install.
+   4. Writes `install-receipt.json` with node and npm identity, the command,
+      the exit code, and the verification.
+
+   `--dry-run` prints the plan. One install serves every scale, because the
+   apps are identical across scales.
+3. `cli.mjs verify-distribution --framework <fw> --install-dir <dir>` repeats
+   the checks.
+
+The verification covers:
+
+- the app tree, `package.json` and lockfile;
+- every pinned version in `node_modules` and in the lockfile;
+- `node_modules/.package-lock.json` against the lockfile: the same packages,
+  versions and integrity strings, with optional platform packages skipped and
+  listed, and nothing extraneous or missing;
+- the version in each installed `package.json`;
+- each executable's realpath and sha256;
+- that no framework cache dir exists;
+- the `node_modules` tree hash, with symlinks recorded by target.
+
+The tarball integrity itself was npm's check at install time; extracted files
+cannot prove it.
+
+`verify-identity` and `run` refuse a fixed profile before any edit (exit 3)
+for any of these mismatches:
+
+- the corpus or scale (the same source checks as Field Notes);
+- the source app tree, config, adapter files or helper;
+- the imported-CSS files;
+- the install receipt;
+- the node binary: its version and sha256 must equal the install's;
+- the install checks above, or `node_modules` changed since the install;
+- the harness, fixture, observer or helper pins;
+- from a frozen copy, the same `harness-frozen-copy-intact` and
+  `harness-frozen-playwright-link` checks as source-built;
+- with `launch: "npm-script"`, an npm on PATH whose version or sha256 differs
+  from the npm in the install receipt (`npm-matches-install`);
+- `outDir` or `installDir` inside a git work tree.
+
+After materialization, the run also refuses (exit 3) if the copied app or the
+copied `node_modules` differs from the install. The work dir is
+`<label>/work/{content,shared,apps/<fw>}`, and the app is copied from the
+install with clone-on-write when the volume supports it.
+
+The receipt records `mode`, `framework` and `distribution`, plus the
+fixture's `pinned`, `appTreeSha256`, `helperSha256`, `importedCss`,
+`adapterFiles` and `nodeModules`.
+
+### Launch, readiness and processes
+
+- **Launch:** `direct` (default) spawns this node with the declared script:
+  the zfb shim `bin/zfb.mjs`, `astro/bin/astro.mjs dev --ignore-lock`, or Next's
+  `scripts/dev-content.mjs` sidecar, which spawns `next dev`. `npm-script`
+  spawns this node with `npm-cli.js run dev -- <args>`, for Astro and Next only.
+  With `port.mode: "ephemeral"` the harness picks a free port and passes it.
+- **Readiness:** read from each complete output line. A JSON log line with a
+  `message` (Astro's non-TTY logger) is read through that message.
+  - zfb: `→ ready on <url>`, as in `output.rs` at v6.0.1 and the archive log.
+  - astro: `astro v7.4.12 ready in N ms` plus `┃ Local <url>`.
+  - next: the sidecar's `external content watcher ready`, `▲ Next.js 16.4.6`,
+    `- Local: <url>` and `✓ Ready in`.
+
+  A printed port other than the requested one is `READY_CONTRADICTED`, not
+  readiness.
+- **Processes:** the launcher (npm, `sh -c`, the sidecar or the shim) is the
+  spawned root of a detached group. The existing ownership code adopts every
+  descendant through the group or the parent chain, including a child in its
+  own group. At readiness, `receipt.server.roles` classifies each owned
+  process by its `ps` args: `npm`, `shell`, `content-sidecar`, `next-cli`,
+  `next-server`, `astro-cli`, `zfb-shim` or `zfb-native`. Stop and absence
+  verification is the existing sequence over every known descendant.
+- **Executables at readiness:** every owned process must run an executable the
+  install recorded. The executable is lsof's first `txt` entry, or `ps -o comm=`
+  when that is an absolute path.
+  - Node-role processes must run the install's node: the same realpath, or a
+    byte-identical binary (same sha256) elsewhere. A different PATH `node`, as
+    npm's `.bin` shebang or a version manager's shim may select, is rejected.
+  - A `sh -c` must run a system shell (`/bin/sh`, `/bin/bash`, `/bin/zsh` or
+    `/bin/dash`, compared after realpath).
+  - The zfb native process must run the installed platform binary (its sha256).
+  - An unclassified process must run an executable inside the app's
+    `node_modules`, such as Vite's esbuild service.
+
+  A failure records an `identity` record with `phase: "server-ready"` and exits
+  3 before the browser opens and before any edit. `receipt.server.processIdentity`
+  keeps each result.
+
+  Processes born later (workers, compilers) get the same check before every
+  workload edit: the tree is re-snapshotted, together with descendants that
+  sampling remembered, and every process not yet checked is judged. Results
+  are kept in `receipt.server.processIdentityLate` and an `identity` record with
+  `phase: "before-edit"`. A failure stops the batch at that op's precheck with
+  outcome `identity-rejected`, before its edit, and the run exits 3.
+
+### Operations
+
+The ops run on the same corpus and selectors in every framework:
+
+- Body, title and category edit `content/articles/<slug>.md`.
+- The shared layout is `components/Layout.tsx`, `src/layouts/Site.astro` or
+  `app/layout.jsx`. Each has the same footer.
+- Public CSS is each app's `public/site.css`.
+- `edit-managed-css` needs `importedCss: true`, which applies the archive's
+  variant. That variant is zfb's native `styles/global.css`, Astro's
+  `src/styles/site.imported.css` or Next's `app/site.imported.css`, each
+  imported from the layout with the `/site.css` link removed. The op adds or
+  changes `--fn-managed-marker` in the first `:root{}` block.
+
+### Correctness fixes from the first native fixed runs
+
+None of these changes the timed endpoint (predicate confirmed, 2 rAF, binding delivery) or what
+a timed success means. They change only restoration checks, expected-negative classification,
+the settle and the mechanism label.
+
+- **Gone checks** (all frameworks): a removed page counts as gone on HTTP 404 or 410 whose body
+  lacks the page's title (recorded from the edit's model) and has no
+  `[data-article-body="<slug>"]` element. The bare slug is no longer the marker, because Astro's
+  dev 404 page prints the requested path (`astro/dist/template/4xx.js`). zfb's own 404 and stale
+  pages get the same verdict as before.
+- **Invalid-frontmatter breakage**: `edit-invalid-frontmatter` takes `breakage`.
+  - `title-unbalanced-quote-v1` is the original and stays the default, so old results keep their
+    meaning.
+  - `unclosed-flow-sequence-v1` replaces the title line with `title: [unbalanced`. js-yaml
+    3.15.2 (the Next app's gray-matter) accepts the original as a multi-line quoted title, but it
+    and yaml 2.9.1 (Astro) both reject the new variant; I ran both from the installs. zfb's
+    noyalib 0.0.58 rejects it according to its own tests and scanner rule; I did not run it.
+    The evidence is in `fixtures/field-notes/evidence/frontmatter-breakage-verification.json`.
+  - Each record's `declared.breakage` names the variant used. New fixed profiles select
+    `unclosed-flow-sequence-v1` explicitly.
+- **zfb 6.0.1 rename rejection**: in a fixed-distribution zfb profile, `rename-filename-only`
+  may set `acceptRouteNotExpandedWithEvidence`. A detail page classified `route-not-expanded`
+  then counts as expected only when the server output after the write contains the declared
+  line `paths() threw for "/articles/:slug": Article slug mismatch: <renamed>`
+  (`distributions.json` `negativeEvidence.routeNotExpanded`). Without that line it stays a
+  mismatch. Each observed page records the condition and the matched line. Source-built
+  profiles and other frameworks refuse the option.
+- **Framework update signals**: `distributions.json` `updateSignal.sockets` declares Next's HMR
+  socket and Vite's (Astro), with their message types mapped to `page`, `css`, `rsc`, `module`
+  or `activity`. Each declaration cites the installed source. Fixed runs set them on the observer.
+  - A frame mapped to `page`, `css`, `rsc` or `module` counts as the framework's own update for
+    the settle. The mechanism is then labelled `rsc-update` or `hmr-module-update`.
+  - Next's `turbopack-message` maps to `activity`: it extends the quiet window but is never
+    update evidence, so it alone cannot end a settle that requires a native update.
+  - Other frames from those sockets are kept in `otherFrames` and are never evidence.
+  - zfb's livereload socket is handled exactly as before.
+
+### Cohorts
+
+The examples are `profiles/field-notes-fixed-{zfb-original-memoized,zfb-recovered-snapshot,astro,next}-100.example.json`.
+Each fixed profile is identical apart from its framework, helper and install,
+so the pairwise plans `profiles/series-fixed-zfb-vs-{astro,next}.example.json`
+declare `framework`.
+
+- **Declaring `framework`:** allowed only when every session is
+  fixed-distribution. It lets the profiles differ in `framework`,
+  `fixture.adapter` and `pins.adapterSha256`. It also lets the adapter, config
+  and build (installed executables, `node_modules`) facets differ. Corpus,
+  browser, harness, observer, host, schedule and the node binary must still
+  match.
+- **Framework must differ:** a declared `framework` whose variants all run the
+  same framework is refused, by the series plan and by `aggregate`
+  (`framework-declared-and-differs`).
+- **Plan-time install comparison:** `series` reads each fixed variant's
+  `install-receipt.json` and refuses the plan before any session when they
+  differ undeclared. `build` covers the lockfile, the `node_modules` tree and
+  the executables; `toolchain` covers the node version and sha256. Declaring
+  `framework` allows a `build` difference.
+- **Separate ZFB reference series:** each cohort's zfb sessions are that
+  cohort's own reference series, so aggregate each series record separately.
+  The `recovered-snapshot` zfb profile is a separately labelled reference too.
 
 ## macOS process sampling
 
