@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { makeFieldNotesSource, sourceTreeHashes } from "../lib/fieldnotes.mjs";
 import { freezeHarness, unfreezeForRemoval } from "../lib/frozen.mjs";
+import { superviseController } from "../lib/session-supervisor.mjs";
 import { HARNESS_DIR, readJson } from "../lib/util.mjs";
 import { makeFakeArchive } from "./fieldnotes-fake.mjs";
 
@@ -152,5 +153,54 @@ describe("a frozen copy's own cli.mjs", () => {
       ok: false,
       actual: tmpdir(),
     });
+  });
+});
+
+describe("independent session watchdog", () => {
+  it.each([
+    ["stalled preparation", "", 900],
+    ["stalled finalization", 'process.send({ type: "finalizing" });', 10000],
+  ])("terminates its own blocked controller during %s", async (label, ready, wallMs) => {
+    const worker = join(tmp(), "controller.mjs");
+    writeFileSync(worker, ready + "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);");
+    const started = Number(process.hrtime.bigint() / 1_000_000n);
+    const messages = [];
+    const reports = [];
+    expect(
+      await superviseController({
+        worker,
+        args: { label },
+        deadline: started + wallMs,
+        terminalMs: 250,
+        stderr: (s) => messages.push(s),
+        recordFailure: (r) => reports.push(r),
+      }),
+    ).toBe(8);
+    expect(messages.join("\n")).toContain("terminal deadline reached");
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({
+      attemptedControllerSignal: "SIGKILL",
+      terminalBudgetMs: 250,
+      phase: "finalizing",
+      deadlineMonotonicMs: started + wallMs,
+    });
+    expect(Number(process.hrtime.bigint() / 1_000_000n) - started).toBeLessThan(6000);
+  });
+
+  it("rejects a controller exiting zero without the final completion message", async () => {
+    const worker = join(tmp(), "exited.mjs");
+    writeFileSync(worker, "process.exitCode = 0;");
+    const reports = [];
+    const code = await superviseController({
+      worker,
+      args: { label: "unexpected-exit" },
+      deadline: Number(process.hrtime.bigint() / 1_000_000n) + 5_000,
+      terminalMs: 200,
+      stderr() {},
+      recordFailure: (r) => reports.push(r),
+    });
+    expect(code).toBe(8);
+    expect(reports).toHaveLength(1);
+    expect(reports[0].controllerExitCode).toBe(0);
   });
 });

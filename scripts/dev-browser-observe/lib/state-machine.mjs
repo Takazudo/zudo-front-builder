@@ -1,3 +1,4 @@
+import { interruptible } from "./session-deadline.mjs";
 import { runSpecialMode } from "./special-modes.mjs";
 import { RENAME_NOOP } from "./fixture.mjs";
 import { attemptProvenance } from "./provenance.mjs";
@@ -184,7 +185,8 @@ function count(acc, outcome, rec = null) {
  * beforeCleanup runs as each restoration starts; a non-null haltReason() stops before the next op.
  */
 export async function runBatch({ scenarios, deps }) {
-  const { recorder, clock, server, page, fs, limits = {}, timeouts } = deps;
+  const { recorder, clock, server, page, fs, limits = {}, timeouts, signal } = deps;
+  const wait = (work) => interruptible(work, signal);
   const planned = scenarios.reduce((n, s) => n + s.ops.length, 0);
   const acc = newAccounting(planned);
   if (deps.accountingRef) deps.accountingRef.current = acc;
@@ -234,36 +236,42 @@ export async function runBatch({ scenarios, deps }) {
     const live = [];
     let liveSkipped = null;
     let settle = null;
-    if (restore.mismatches.length > 0) liveSkipped = "hash-mismatch";
+    if (signal?.aborted) liveSkipped = "session-deadline";
+    else if (restore.mismatches.length > 0) liveSkipped = "hash-mismatch";
     else if (!alive.alive) liveSkipped = "server-not-alive";
     else {
       if (page.settle && mark)
-        settle = await page.settle({
-          mark,
-          startNs: restoreNs,
-          quietMs: timeouts.quietMs ?? 1500,
-          boundMs: timeouts.restoreMs,
-          ...settleRule(restore.actions ?? [], fs.noAutoUpdatePaths ?? []),
-        });
+        settle = await wait(
+          page.settle({
+            mark,
+            startNs: restoreNs,
+            quietMs: timeouts.quietMs ?? 1500,
+            boundMs: timeouts.restoreMs,
+            ...settleRule(restore.actions ?? [], fs.noAutoUpdatePaths ?? []),
+          }),
+        );
       for (const check of fs.liveChecks(snapshot)) {
+        signal?.throwIfAborted();
         try {
           live.push({
             ...check,
-            ...(await page.liveCheck(check, timeouts.restoreMs, {
-              quietMs: timeouts.quietMs ?? 1500,
-              nativeUpdateConfirmed:
-                settle?.settled === true && settle?.nativeUpdateObserved === true,
-            })),
+            ...(await wait(
+              page.liveCheck(check, timeouts.restoreMs, {
+                quietMs: timeouts.quietMs ?? 1500,
+                nativeUpdateConfirmed:
+                  settle?.settled === true && settle?.nativeUpdateObserved === true,
+              }),
+            )),
           });
         } catch (error) {
           live.push({ ...check, ok: false, error: String(error?.message ?? error) });
         }
       }
     }
-    const ok = restore.mismatches.length === 0 && live.every((l) => l.ok);
+    const ok = !signal?.aborted && restore.mismatches.length === 0 && live.every((l) => l.ok);
     let quiet = null;
     if (ok && liveSkipped === null && page.quietWindow)
-      quiet = await page.quietWindow(timeouts.quietMs ?? 1500);
+      quiet = await wait(page.quietWindow(timeouts.quietMs ?? 1500));
     const cleanupRec = {
       type: "cleanup",
       label: "cleanup",
@@ -324,6 +332,7 @@ export async function runBatch({ scenarios, deps }) {
   let current = { where: null, armedToken: null, writeDone: false, resolved: false };
   try {
     outer: for (const scenario of scenarios) {
+      signal?.throwIfAborted();
       activeSnapshot = fs.snapshot();
       append({
         type: "scenario-start",
@@ -338,7 +347,7 @@ export async function runBatch({ scenarios, deps }) {
         try {
           for (const path of paths) {
             const t = clock.now();
-            const state = await page.prepare(path);
+            const state = await wait(page.prepare(path));
             visits.push({ path, docUUID: state.docUUID, ms: nsToMs(clock.now() - t) });
           }
         } catch (error) {
@@ -426,7 +435,7 @@ export async function runBatch({ scenarios, deps }) {
             attempt.write = { ...attempt.write, path: fs.missingSibling(attempt.write.path) };
             if (attempt.writes) attempt.writes = [attempt.write, ...attempt.writes.slice(1)];
           }
-          preparedState = await page.prepare(attempt.targetPath);
+          preparedState = await wait(page.prepare(attempt.targetPath));
           page.markPre?.();
         } catch (error) {
           append({
@@ -504,9 +513,11 @@ export async function runBatch({ scenarios, deps }) {
             timeouts,
             limits,
             preparedState,
+            signal,
           };
           let special;
           try {
+            signal?.throwIfAborted();
             special = await runSpecialMode(attempt.mode, specialCtx);
           } catch (error) {
             // A throw after (some) writes must not lose that the workload changed the files.
@@ -560,7 +571,7 @@ export async function runBatch({ scenarios, deps }) {
         current.armedToken = attempt.token;
         let armed;
         try {
-          armed = await page.arm(attempt.token, attempt.predicate, attempt.watch ?? null);
+          armed = await wait(page.arm(attempt.token, attempt.predicate, attempt.watch ?? null));
         } catch (error) {
           armed = { armed: false, error: String(error?.message ?? error), threw: true };
         }
@@ -596,7 +607,7 @@ export async function runBatch({ scenarios, deps }) {
             ? { reason: "notified-before-write", token: attempt.token }
             : null);
         if (unstable) {
-          await page.disarm();
+          if (!signal?.aborted) await wait(page.disarm());
           append({
             ...recBase,
             outcome: "precondition-unstable",
@@ -610,12 +621,13 @@ export async function runBatch({ scenarios, deps }) {
           break outer;
         }
 
+        signal?.throwIfAborted();
         let t0;
         let tLast = null;
         let writeSteps = null;
         try {
           if (attempt.writes && attempt.writes.length > 1 && fs.performWrites) {
-            const r = await fs.performWrites(attempt.writes, () => clock.now());
+            const r = await fs.performWrites(attempt.writes, () => clock.now(), signal);
             t0 = r.t0;
             tLast = r.tLast;
             writeSteps = r.steps;
@@ -628,7 +640,7 @@ export async function runBatch({ scenarios, deps }) {
             recBase.writeSteps = error.steps;
             recBase.failedStep = error.failedStep;
           }
-          await page.disarm();
+          if (!signal?.aborted) await wait(page.disarm());
           acc.lastArmedUnknownOperation = {
             ...where,
             token: attempt.token,
@@ -685,20 +697,22 @@ export async function runBatch({ scenarios, deps }) {
         });
         let waited;
         try {
-          waited = await Promise.race([
-            page.waitNotify(attempt.token, timeouts.attemptMs, (payload) => {
-              late.push(payload);
-              acc.lateTokens += 1;
-              append({
-                type: "late-token",
-                label: "not-success",
-                armedToken: attempt.token,
-                payload,
-              });
-            }),
-            server.waitExit().then((exit) => ({ kind: "server-exit", exit })),
-            resourceTrip,
-          ]);
+          waited = await wait(
+            Promise.race([
+              page.waitNotify(attempt.token, timeouts.attemptMs, (payload) => {
+                late.push(payload);
+                acc.lateTokens += 1;
+                append({
+                  type: "late-token",
+                  label: "not-success",
+                  armedToken: attempt.token,
+                  payload,
+                });
+              }),
+              server.waitExit().then((exit) => ({ kind: "server-exit", exit })),
+              resourceTrip,
+            ]),
+          );
         } finally {
           clearInterval(sampler);
         }
@@ -735,7 +749,7 @@ export async function runBatch({ scenarios, deps }) {
             t1Ns: String(waited.t1),
             notify: waited.payload,
           };
-          await page.disarm();
+          if (!signal?.aborted) await wait(page.disarm());
           rec.observerDisarmed = true;
           acc.lastArmedUnknownOperation = { ...where, token: attempt.token, writeCompleted: true };
         } else if (waited.kind === "notify") {
@@ -774,7 +788,7 @@ export async function runBatch({ scenarios, deps }) {
             outcome = evidence.newDocuments > 0 ? "stale" : "timeout";
             rec.timeoutMs = timeouts.attemptMs;
           }
-          const disarmed = await page.disarm();
+          const disarmed = await wait(page.disarm());
           if (attempt.watch) rec.watchSeen = disarmed?.watchSeen ?? null;
           rec.observerDisarmed = true;
           rec.nativeWorkCancelled = false;
@@ -824,9 +838,11 @@ export async function runBatch({ scenarios, deps }) {
         for (const check of attempt.supplemental) {
           let res;
           try {
-            res = await page.supplemental(check, timeouts.supplementalMs, {
-              quietMs: timeouts.quietMs ?? 1500,
-            });
+            res = await wait(
+              page.supplemental(check, timeouts.supplementalMs, {
+                quietMs: timeouts.quietMs ?? 1500,
+              }),
+            );
           } catch (error) {
             res = { ok: false, error: String(error?.message ?? error) };
           }
@@ -867,7 +883,7 @@ export async function runBatch({ scenarios, deps }) {
     }
   } catch (error) {
     try {
-      await page.disarm();
+      if (!signal?.aborted) await wait(page.disarm());
     } catch {
       // the page itself may be what failed; the record below carries the error
     }

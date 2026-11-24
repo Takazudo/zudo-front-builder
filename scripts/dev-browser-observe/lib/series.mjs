@@ -4,7 +4,8 @@ import { DECLARABLE_FACETS, allowedDifferences, stripVariantKeys } from "./aggre
 import { verifyFrozen } from "./frozen.mjs";
 import { harnessCapability } from "./identity.mjs";
 import { LABEL_RE, loadProfile } from "./profile.mjs";
-import { EXIT, execute, verifyIdentityOnly } from "./run.mjs";
+import { EXIT, verifyIdentityOnly } from "./run.mjs";
+import { superviseSession } from "./session-supervisor.mjs";
 import {
   PROTOCOLS,
   RESOURCE_STUDY_PROTOCOL,
@@ -222,7 +223,7 @@ export function loadSeriesPlan(planPath) {
 export async function runSeries({
   planPath,
   stderr = (m) => process.stderr.write(`${m}\n`),
-  executeImpl = execute,
+  executeImpl = superviseSession,
   verifyImpl = verifyIdentityOnly,
   frozenCheck = () => (harnessCapability().frozen ? verifyFrozen(HARNESS_DIR) : null),
 }) {
@@ -359,6 +360,7 @@ export function sessionsFromRecord(recordPath) {
         variant: x.variant,
         dir: join(record.outDir, x.label),
         seriesStatus: x.status,
+        seriesExitCode: x.exitCode,
         plannedSchedule: planned[x.variant].schedule,
         plannedError: planned[x.variant].error,
       };

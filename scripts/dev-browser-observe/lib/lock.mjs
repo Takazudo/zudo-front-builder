@@ -29,8 +29,15 @@ export function acquireLock(path, { perl = "perl" } = {}) {
     const child = spawn(perl, ["-e", PERL_HELPER, path], { stdio: ["pipe", "pipe", "pipe"] });
     let out = "";
     let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      reject(new Error("lock helper acquisition timed out"));
+    }, 3000);
     const exited = new Promise((r) => child.once("exit", (code, signal) => r({ code, signal })));
     child.once("error", (e) => {
+      clearTimeout(timer);
       if (!settled) {
         settled = true;
         reject(e);
@@ -40,13 +47,22 @@ export function acquireLock(path, { perl = "perl" } = {}) {
       out += d.toString();
       if (settled) return;
       if (out.startsWith("LOCKED")) {
+        clearTimeout(timer);
         settled = true;
         resolve({
           path,
           helperPid: child.pid,
           async release() {
             child.stdin.end();
-            return exited;
+            const stop = setTimeout(() => child.kill("SIGKILL"), 2000);
+            try {
+              const result = await exited;
+              if (result.code !== 0)
+                throw new Error(`lock helper stopped abnormally: ${JSON.stringify(result)}`);
+              return result;
+            } finally {
+              clearTimeout(stop);
+            }
           },
           exited,
         });
@@ -60,6 +76,7 @@ export function acquireLock(path, { perl = "perl" } = {}) {
       }
     });
     child.once("exit", (code) => {
+      clearTimeout(timer);
       if (!settled) {
         settled = true;
         reject(new Error(`lock helper exited ${code} before reporting: ${out.trim()}`));

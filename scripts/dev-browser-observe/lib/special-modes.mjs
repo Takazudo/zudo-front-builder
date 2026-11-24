@@ -3,8 +3,10 @@ import { nsToMs } from "./util.mjs";
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function doWrites(fs, writes, clock) {
-  if (writes.length > 1 && fs.performWrites) return fs.performWrites(writes, () => clock.now());
+async function doWrites(fs, writes, clock, signal) {
+  signal?.throwIfAborted();
+  if (writes.length > 1 && fs.performWrites)
+    return fs.performWrites(writes, () => clock.now(), signal);
   const t0 = fs.performWrite(writes[0], () => clock.now());
   return {
     t0,
@@ -105,7 +107,7 @@ async function runHidden(ctx) {
   }
   const mark = page.mark();
   const pre = ctx.preparedState ?? null;
-  const { t0, steps } = await doWrites(fs, attempt.writes, clock);
+  const { t0, steps } = await doWrites(fs, attempt.writes, clock, ctx.signal);
   ctx.writeDone = true;
   attempt.applied?.();
   await wait(attempt.observeMs);
@@ -157,7 +159,7 @@ async function runHidden(ctx) {
 async function runFinalState(ctx) {
   const { attempt, page, fs, clock, timeouts, recBase } = ctx;
   const mark = page.mark();
-  const { t0, tLast, steps } = await doWrites(fs, attempt.writes, clock);
+  const { t0, tLast, steps } = await doWrites(fs, attempt.writes, clock, ctx.signal);
   ctx.writeDone = true;
   attempt.applied?.();
   const settle = await page.settle({
@@ -241,7 +243,7 @@ async function runExpectedNegative(ctx) {
   const { attempt, page, fs, clock, timeouts, recBase, op, server } = ctx;
   const mark = page.mark();
   const logMark = server?.logMark?.() ?? null;
-  const { t0, tLast, steps } = await doWrites(fs, attempt.writes, clock);
+  const { t0, tLast, steps } = await doWrites(fs, attempt.writes, clock, ctx.signal);
   ctx.writeDone = true;
   const settle = await page.settle({
     mark,
@@ -275,7 +277,7 @@ async function runExpectedNegative(ctx) {
   let recoverySteps = null;
   let recoveryError = null;
   try {
-    recoverySteps = (await doWrites(fs, attempt.recovery, clock)).steps;
+    recoverySteps = (await doWrites(fs, attempt.recovery, clock, ctx.signal)).steps;
   } catch (error) {
     recoveryError = String(error?.message ?? error);
   }
@@ -491,7 +493,7 @@ async function runRecovery(ctx) {
   };
   const logMark = server.logMark?.() ?? null;
   const mark = page.mark();
-  const rej = await doWrites(fs, attempt.rejectWrites, clock);
+  const rej = await doWrites(fs, attempt.rejectWrites, clock, ctx.signal);
   ctx.writeDone = true;
   ctx.writeSteps = rej.steps;
   rec.tRejectNs = String(rej.t0);
@@ -582,7 +584,7 @@ async function runRecovery(ctx) {
 
   if (attempt.duringWrites?.length) {
     const m2 = page.mark();
-    const d = await doWrites(fs, attempt.duringWrites, clock);
+    const d = await doWrites(fs, attempt.duringWrites, clock, ctx.signal);
     rec.duringSteps = d.steps;
     rec.duringSettle = await page.settle({
       mark: m2,
@@ -617,7 +619,7 @@ async function runRecovery(ctx) {
   }
   const serverPidBefore = server.pid();
   if (armed.armed) page.markAttempt();
-  const rep = await doWrites(fs, attempt.repairWrites, clock);
+  const rep = await doWrites(fs, attempt.repairWrites, clock, ctx.signal);
   attempt.applied?.();
   rec.t0Ns = String(rep.t0);
   rec.repairSteps = rep.steps;

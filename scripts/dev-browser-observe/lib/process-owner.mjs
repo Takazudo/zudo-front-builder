@@ -1,6 +1,8 @@
 import { execFile, spawn } from "node:child_process";
+import { linuxBirth, LINUX_BIRTH, sameLinuxBirth } from "./linux-birth.mjs";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { delay, isoNow, run, tryRun } from "./util.mjs";
+import { delay, isoNow, run } from "./util.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -10,6 +12,14 @@ export class PidReuseError extends Error {
     this.code = "PID_REUSE";
     this.expected = expected;
     this.actual = actual;
+    this.differingFields = [
+      "pid",
+      "pgid",
+      "birthVersion",
+      "bootId",
+      "startTicks",
+      "birthUnverifiable",
+    ].filter((k) => expected?.[k] !== actual?.[k]);
   }
 }
 
@@ -36,6 +46,8 @@ export function psTable(psImpl = run) {
   return parsePsTable(
     psImpl("ps", ["-axo", "pid=,ppid=,pgid=,lstart=,comm="], {
       env: { ...process.env, LC_ALL: "C" },
+      timeout: 1500,
+      killSignal: "SIGKILL",
     }),
   );
 }
@@ -43,19 +55,37 @@ export function psTable(psImpl = run) {
 /** Birth identity of one pid, or null when it no longer exists. */
 export function birthIdentity(pid, psImpl = run) {
   const env = { ...process.env, LC_ALL: "C" };
+  const kernel = process.platform === "linux" && psImpl === run;
+  const first = kernel ? linuxBirth(pid) : null;
+  if (kernel && (!first || first.birthUnverifiable)) return first;
   let text = "";
   try {
-    text = psImpl("ps", ["-o", "pid=,ppid=,pgid=,lstart=,comm=", "-p", String(pid)], { env });
+    text = psImpl("ps", ["-o", "pid=,ppid=,pgid=,lstart=,comm=", "-p", String(pid)], {
+      env,
+      timeout: 1500,
+      killSignal: "SIGKILL",
+    });
   } catch {
-    return null;
+    if (!kernel) return null;
   }
   const row = parsePsTable(text).find((x) => x.pid === pid);
-  if (!row) return null;
+  if (!row && !kernel) return null;
   let args = "unavailable";
   try {
-    args = psImpl("ps", ["-o", "args=", "-p", String(pid)], { env }).trim();
+    args = psImpl("ps", ["-o", "args=", "-p", String(pid)], {
+      env,
+      timeout: 1500,
+      killSignal: "SIGKILL",
+    }).trim();
   } catch {
     args = "unavailable";
+  }
+  if (kernel) {
+    const latest = linuxBirth(pid);
+    if (!latest) return null;
+    if (!sameLinuxBirth(first, latest))
+      return { ...latest, birthUnverifiable: true, error: "birth raced during ps observation" };
+    return { ...row, ...latest, args, observedAt: isoNow() };
   }
   return { ...row, args, observedAt: isoNow() };
 }
@@ -63,13 +93,15 @@ export function birthIdentity(pid, psImpl = run) {
 const comparableArgs = (a) => (typeof a === "string" && a !== "unavailable" ? a : null);
 
 /**
- * Same process birth: pid + pgid + lstart, plus the `ps -o args=` string
+ * Linux uses PID, kernel boot ID and start ticks. Other platforms use
+ * pid + pgid + lstart, plus the `ps -o args=` string
  * when both sides recorded it. `comm` is informational only: on Linux, Node
  * renames its main thread (PR_SET_NAME) shortly after spawn, so procps
  * `comm` changes from "node" to "MainThread" for the same process.
  */
 export function sameBirth(expected, actual) {
-  if (!actual) return false;
+  if (!expected || !actual) return false;
+  if (expected.birthVersion || actual.birthVersion) return sameLinuxBirth(expected, actual);
   if (actual.pid !== expected.pid || actual.pgid !== expected.pgid) return false;
   if (actual.lstart !== expected.lstart) return false;
   const want = comparableArgs(expected.args);
@@ -109,7 +141,7 @@ export function readBirthWithRetries(
 ) {
   for (let i = 0; i < tries; i += 1) {
     const birth = birthImpl(pid);
-    if (birth) return { birth, attempts: i + 1 };
+    if (birth && !birth.birthUnverifiable) return { birth, attempts: i + 1 };
     if (i < tries - 1) sleepSync(waitMs);
   }
   return { birth: null, attempts: tries };
@@ -158,6 +190,7 @@ export function spawnOwned(
     handle.native = birth
       ? { ...birth, executable: cmd, argv: args, spawnWallMs, birthAttempts: attempts }
       : {
+          birthVersion: process.platform === "linux" ? LINUX_BIRTH : undefined,
           pid: child.pid,
           pgid: child.pid,
           executable: cmd,
@@ -188,7 +221,12 @@ export function snapshotOwnedWithArgs(handle, psImpl = run, platform = process.p
   return snapshotOwned(handle, psImpl, platform).map((p) => {
     let args = "unavailable";
     try {
-      args = psImpl("ps", ["-o", "args=", "-p", String(p.pid)], { env }).trim() || "unavailable";
+      args =
+        psImpl("ps", ["-o", "args=", "-p", String(p.pid)], {
+          env,
+          timeout: 1500,
+          killSignal: "SIGKILL",
+        }).trim() || "unavailable";
     } catch {
       args = "unavailable";
     }
@@ -196,9 +234,39 @@ export function snapshotOwnedWithArgs(handle, psImpl = run, platform = process.p
   });
 }
 
-export function snapshotOwned(handle, psImpl, platform = process.platform) {
+export function snapshotOwned(handle, psImpl, platform = process.platform, readLinux = linuxBirth) {
   if (!handle.native) return [];
-  let seen = ownedProcesses(psTable(psImpl), handle.native);
+  if (platform === "linux" && handle.native.birthVersion !== LINUX_BIRTH)
+    throw new PidReuseError(handle.native, readLinux(handle.native.pid));
+  const table = psTable(psImpl);
+  if (handle.native.birthVersion === LINUX_BIRTH) {
+    const root = handle.native;
+    const leader = readLinux(root.pid);
+    if (!leader) return [];
+    if (!sameLinuxBirth(root, leader) || root.pgid !== leader.pgid || root.pgid !== root.pid)
+      throw new PidReuseError(root, leader);
+    const observed = ownedProcesses(table, root)
+      .map((row) => {
+        const now = readLinux(row.pid);
+        if (!now) return null;
+        if (now.birthUnverifiable) throw new PidReuseError(row, now);
+        return { ...row, ...now };
+      })
+      .filter(Boolean);
+    // Rebuild ancestry from kernel observations. A ps candidate may have exited/reparented.
+    const seen = ownedProcesses(observed, root);
+    const after = readLinux(root.pid);
+    if (!after) return [];
+    if (!sameLinuxBirth(root, after) || after.pgid !== root.pgid)
+      throw new PidReuseError(root, after);
+    for (const p of seen) {
+      const old = handle.known?.get(p.pid);
+      if (old && !sameBirth(old, p)) throw new PidReuseError(old, p);
+      remember(handle, p, "snapshot");
+    }
+    return seen;
+  }
+  let seen = ownedProcesses(table, handle.native);
   if (handle.native.birthUnverifiable)
     seen = seen.filter((p) => inSpawnScope(handle.native, p, platform));
   for (const p of seen) remember(handle, p, "snapshot");
@@ -214,13 +282,22 @@ export function pgidScopeSince(table, root, platform = process.platform) {
 export async function liveKnownAsync(handle, execImpl = execFileAsync) {
   const known = [...(handle.known?.values() ?? [])];
   if (known.length === 0) return [];
+  if (handle.native?.birthVersion === LINUX_BIRTH) {
+    return known.flatMap((expected) => {
+      const actual = linuxBirth(expected.pid);
+      if (!actual) return [];
+      if (!sameLinuxBirth(expected, actual) || expected.pgid !== actual.pgid)
+        throw new PidReuseError(expected, actual);
+      return [actual];
+    });
+  }
   let text = "";
   try {
     text = (
       await execImpl(
         "ps",
         ["-o", "pid=,ppid=,pgid=,lstart=,comm=", "-p", known.map((k) => k.pid).join(",")],
-        { env: { ...process.env, LC_ALL: "C" } },
+        { env: { ...process.env, LC_ALL: "C" }, timeout: 1500, killSignal: "SIGKILL" },
       )
     ).stdout;
   } catch (error) {
@@ -275,6 +352,7 @@ export async function stopOwned(
     psImpl,
     birthImpl = birthIdentity,
     platform = process.platform,
+    signal: abortSignal,
   } = {},
 ) {
   const report = {
@@ -294,6 +372,16 @@ export async function stopOwned(
       endings: [],
       finishedAt: isoNow(),
     };
+  if (root.birthVersion === LINUX_BIRTH || platform === "linux")
+    return stopLinux(handle, report, {
+      intWaitMs,
+      termWaitMs,
+      killWaitMs,
+      killImpl,
+      psImpl,
+      abortSignal,
+      birthImpl: birthImpl === birthIdentity ? linuxBirth : birthImpl,
+    });
   report.pgidScans = [];
   const unverifiable = root.birthUnverifiable === true;
   if (unverifiable) {
@@ -313,6 +401,7 @@ export async function stopOwned(
   const rootAlive = handle.exit === null && rootNow !== null;
   if (rootAlive) snapshotOwned(handle, psImpl, platform);
   const current = () => {
+    abortSignal?.throwIfAborted();
     const table = psTable(psImpl);
     if (unverifiable) {
       for (const p of pgidScopeSince(table, root, platform))
@@ -359,6 +448,7 @@ export async function stopOwned(
       ? [{ target: -root.pgid, label: `group:${root.pgid}` }]
       : left.map((p) => ({ target: p.pid, label: p.pid }));
     for (const t of targets) {
+      abortSignal?.throwIfAborted();
       try {
         killImpl(t.target, signal);
         report.steps.push({ at: isoNow(), signal, target: t.label });
@@ -390,6 +480,127 @@ export async function stopOwned(
   report.exit = handle.exit;
   report.finishedAt = isoNow();
   return report;
+}
+
+/** Verify again after opening a pidfd so numeric reuse before delivery is harmless. */
+export function signalLinuxOwned(expected, signal, group = false) {
+  const helper = fileURLToPath(new URL("./linux-signal.py", import.meta.url));
+  const result = JSON.parse(
+    run(
+      "python3",
+      [
+        "-I",
+        helper,
+        String(expected.pid),
+        String(expected.pgid),
+        expected.bootId,
+        expected.startTicks,
+        signal,
+        group ? "group" : "process",
+      ],
+      { timeout: 1500, killSignal: "SIGKILL" },
+    ),
+  );
+  if (result.status === "mismatch") throw new PidReuseError(expected, result.actual);
+  if (result.status !== "gone" && result.status !== "sent") throw new Error("invalid pidfd result");
+  return result.status;
+}
+
+/** Never adopt an unknown member after the group leader exits. */
+async function stopLinux(
+  handle,
+  report,
+  { intWaitMs, termWaitMs, killWaitMs, killImpl, psImpl, birthImpl, abortSignal },
+) {
+  const root = handle.native;
+  const endings = new Map();
+  let lastSignal = "before-stop";
+  const fail = (expected, actual) => {
+    throw Object.assign(new PidReuseError(expected, actual), {
+      steps: [...report.steps],
+      remaining: [actual ?? expected],
+      phase: "stop",
+      exit: handle.exit,
+    });
+  };
+  function current() {
+    abortSignal?.throwIfAborted();
+    const leader = birthImpl(root.pid);
+    if (
+      leader &&
+      (!sameLinuxBirth(root, leader) || leader.pgid !== root.pid || root.pgid !== root.pid)
+    )
+      fail(root, leader);
+    if (leader && handle.exit === null) snapshotOwned(handle, psImpl, "linux", birthImpl);
+    else {
+      for (const row of psTable(psImpl).filter((p) => p.pgid === root.pgid)) {
+        const now = birthImpl(row.pid);
+        if (!now) continue;
+        if (now.birthUnverifiable) fail(handle.known?.get(row.pid) ?? row, now);
+        if (now.pgid !== root.pgid) continue;
+        const known = handle.known?.get(row.pid);
+        if (!known || !sameLinuxBirth(known, now)) fail(known ?? root, now);
+      }
+    }
+    const left = [];
+    for (const expected of handle.known?.values() ?? []) {
+      const now = birthImpl(expected.pid);
+      if (!now) {
+        if (!endings.has(expected.pid))
+          endings.set(expected.pid, { pid: expected.pid, endedAfter: lastSignal });
+      } else if (!sameLinuxBirth(expected, now) || expected.pgid !== now.pgid) fail(expected, now);
+      else left.push(now);
+    }
+    return left;
+  }
+  const waits = { SIGINT: intWaitMs, SIGTERM: termWaitMs, SIGKILL: killWaitMs };
+  try {
+    report.ownedBefore = current();
+    report.rootAlive = report.ownedBefore.some((p) => p.pid === root.pid);
+    report.pgidScans = [];
+    for (const signal of STOP_SEQUENCE) {
+      const left = current();
+      if (!left.length && handle.exit !== null) break;
+      const group = left.some((p) => p.pid === root.pid) && handle.exit === null;
+      const targets = group ? [root, ...left.filter((p) => p.pgid !== root.pgid)] : left;
+      for (const expected of targets) {
+        abortSignal?.throwIfAborted();
+        const now = birthImpl(expected.pid);
+        if (!now) continue;
+        if (!sameLinuxBirth(expected, now) || expected.pgid !== now.pgid) fail(expected, now);
+        const isGroup = group && expected === root;
+        const step = {
+          at: isoNow(),
+          signal,
+          target: isGroup ? `group:${root.pgid}` : expected.pid,
+        };
+        report.steps.push(step);
+        try {
+          if (killImpl === process.kill)
+            step.delivery = signalLinuxOwned(expected, signal, isGroup);
+          else killImpl(isGroup ? -root.pgid : expected.pid, signal);
+        } catch (error) {
+          step.error = String(error.code ?? error);
+          throw error;
+        }
+      }
+      lastSignal = signal;
+      const end = performance.now() + waits[signal];
+      while (performance.now() < end && (current().length || handle.exit === null)) await delay(50);
+    }
+    report.remaining = current();
+    report.absent = report.remaining.length === 0 && handle.exit !== null;
+    if (endings.has(root.pid)) endings.get(root.pid).exit = handle.exit;
+    report.endings = [...endings.values()];
+    report.exit = handle.exit;
+    report.known = [...(handle.known?.values() ?? [])];
+    report.finishedAt = isoNow();
+    return report;
+  } catch (error) {
+    error.steps ??= report.steps;
+    error.remaining ??= [...(handle.known?.values() ?? [])];
+    throw error;
+  }
 }
 
 /** Any recorded server identity that is still alive with the same birth. */
@@ -434,7 +645,8 @@ export function inSpawnScope(root, p, platform = process.platform) {
 }
 
 /**
- * Registry rows still alive. A verified row matches by birth identity. A row
+ * A present Linux PID in an unresolved registry row always blocks admission,
+ * including indeterminate/legacy births. A verified BSD row matches by birth identity. A row
  * whose birth was unverifiable at spawn matches by pid + pgid with a start at
  * or after its spawn second. On Linux, procps lstart can read up to 1 s early
  * (see lstartSlackMs), so that 1 s slack is allowed for a root row
@@ -448,6 +660,7 @@ export function liveOwnedFromRegistry(
   return entries.filter((e) => {
     const now = birthImpl(e.pid);
     if (!now) return false;
+    if (platform === "linux") return true;
     if (e.birthUnverifiable) return inSpawnScope(e, { ...now, pid: e.pid }, platform);
     return sameBirth(e, now);
   });

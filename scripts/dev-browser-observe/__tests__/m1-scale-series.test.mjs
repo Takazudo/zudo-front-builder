@@ -422,12 +422,15 @@ function writeSession(
       ...(fail ? {} : { latencyMs: latencies[i] }),
     });
   }
+  recs.push({ type: "server-stop", report: { absent: true } });
+  recs.push({ type: "run-end", exitCode: failAt === null ? 0 : 1 });
   writeFileSync(join(dir, "records.jsonl"), recs.map((r) => JSON.stringify(r)).join("\n") + "\n");
   const planned = schedule.length;
   writeFileSync(
     join(dir, "summary.json"),
     JSON.stringify({
       exitCode: failAt === null ? 0 : 1,
+      ownedServerAbsentAfterStop: true,
       accounting: {
         planned,
         attempted,
@@ -466,6 +469,77 @@ function writeSession(
 }
 
 describe("aggregate", () => {
+  it.each(["stopped", "running", "not-attempted", "planned"])(
+    "refuses successful worker records for a %s series session, including path-only inputs",
+    (status) => {
+      const root = tmp();
+      const label = "ser-s1-A";
+      const dir = join(root, label);
+      writeSession(dir);
+      writeFileSync(
+        join(root, "ser.series.json"),
+        JSON.stringify({
+          sessions: [{ label, status, exitCode: 8 }],
+        }),
+      );
+      for (const extra of [{}, { seriesStatus: status, seriesExitCode: 8 }]) {
+        const { report, exitCode } = aggregate({
+          sessions: [{ label, dir, variant: "A", ...extra }],
+        });
+        expect(exitCode).toBe(1);
+        expect(report).toMatchObject({
+          complete: false,
+          pooledComparable: false,
+          incompleteSessions: [label],
+        });
+      }
+    },
+  );
+
+  it("requires positive completion for supervised sessions and rejects a matching supervisor failure", () => {
+    const root = tmp();
+    const dir = join(root, "a1");
+    writeSession(dir);
+    const input = { sessions: [{ label: "a1", dir, variant: "A" }] };
+    const receipt = readJson(join(dir, "receipt.json"));
+    writeFileSync(
+      join(dir, "receipt.json"),
+      JSON.stringify({ ...receipt, supervisorId: "current" }),
+    );
+    expect(aggregate(input).exitCode).toBe(1);
+    writeFileSync(
+      join(dir, "supervisor-completion.json"),
+      JSON.stringify({
+        schema: "dev-browser-observe.supervisor-completion.v1",
+        supervisorId: "current",
+        exitCode: 0,
+      }),
+    );
+    writeFileSync(
+      join(root, "a1.supervisor-other.json"),
+      JSON.stringify({ supervisorId: "other" }),
+    );
+    expect(aggregate(input).exitCode).toBe(0);
+    writeFileSync(
+      join(root, "a1.supervisor-current.json"),
+      JSON.stringify({ supervisorId: "current" }),
+    );
+    expect(aggregate(input).report.sessions[0].terminalProblems).toContain(
+      "supervisor failure: a1.supervisor-current.json",
+    );
+    expect(aggregate(input).exitCode).toBe(1);
+  });
+
+  it("refuses missing terminal evidence in a legacy successful-looking summary", () => {
+    const dir = join(tmp(), "a1");
+    writeSession(dir);
+    const path = join(dir, "records.jsonl");
+    const records = readFileSync(path, "utf8").trim().split("\n");
+    records.pop();
+    writeFileSync(path, records.join("\n"));
+    expect(aggregate({ sessions: [{ label: "a1", dir, variant: "A" }] }).exitCode).toBe(1);
+  });
+
   it("per-session blocks: measured counts and nearest-rank stats, warmups counted apart", () => {
     const dir = join(tmp(), "s1-A");
     writeSession(dir, { latencies: [30, 10, 20] });

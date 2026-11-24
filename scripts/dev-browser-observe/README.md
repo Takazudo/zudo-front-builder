@@ -1074,3 +1074,18 @@ declare `framework`.
 - A sampled peak is not a lifetime high-water mark.
 - Summed RSS is not unique memory.
 - A SIGKILL exit is never read as OOM or a leak.
+
+### Unresolved Linux session
+
+Linux sessions reserve `~/.local/state/zfb/dev-browser-observe/active.json` before
+starting the server. Each new invocation checks the same file, including runs
+using another output directory or frozen harness. A verified shutdown releases
+the reservation. A crash, interrupted spawn or unresolved shutdown retains it.
+
+For manual reconciliation, inspect the reservation, referenced label, process
+registry and stop records. Establish that the controller has exited. Check all
+recorded identities, process groups, descendants, browser processes, listening
+ports and open handles against live kernel observations. Keep the reservation
+when any resource cannot be accounted for. After verifying absence, archive the
+reservation and the reconciliation evidence and remove that specific reservation
+before the next invocation. Never signal a process using a recorded PID alone.

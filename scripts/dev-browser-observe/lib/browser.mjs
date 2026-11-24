@@ -77,10 +77,21 @@ export async function launchOwnedBrowser(
     await observer.install();
     return { browser, context, observer, identity };
   } catch (error) {
+    // Preserve the original setup error. Return an unresolved browser to the
+    // session finalizer when this first close fails or stalls.
+    let timer;
     try {
-      await browser.close();
-    } catch {
-      // the launch error below is the one to report
+      await Promise.race([
+        browser.close(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("browser close timed out")), 2000);
+        }),
+      ]);
+    } catch (cleanupError) {
+      error.partialBrowser = { browser, context: { close: async () => {} } };
+      error.browserCleanupError = String(cleanupError);
+    } finally {
+      clearTimeout(timer);
     }
     throw error;
   }

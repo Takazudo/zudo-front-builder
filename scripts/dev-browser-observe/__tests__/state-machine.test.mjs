@@ -16,6 +16,27 @@ const three = [
 const attempts = (r) => r.filter((x) => x.type === "attempt");
 
 describe("runBatch fail-stop", () => {
+  it("interrupts stalled preparation and records unverified live restoration at the wall reserve", async () => {
+    const controller = new AbortController();
+    const page = fakePage();
+    page.prepare = () => {
+      queueMicrotask(() => controller.abort(new Error("session wall cleanup reserve reached")));
+      return new Promise(() => {});
+    };
+    const d = deps({ page });
+    const result = await runBatch({ scenarios: three, deps: { ...d, signal: controller.signal } });
+    expect(result.stopped).toBe(true);
+    expect(result.accounting).toMatchObject({
+      attempted: 0,
+      notAttempted: 3,
+      restorationFailures: 1,
+    });
+    expect(d.recorder.records.find((r) => r.type === "cleanup")).toMatchObject({
+      liveSkipped: "session-deadline",
+      ok: false,
+    });
+  });
+
   it("counts successes and classifies a native full reload from evidence", async () => {
     const page = fakePage({
       behaviors: [

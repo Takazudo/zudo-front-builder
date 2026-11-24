@@ -3,7 +3,11 @@ import { loadavg, totalmem, freemem, platform, arch, release } from "node:os";
 import { promisify } from "node:util";
 import { isoNow, run } from "./util.mjs";
 
-const C_ENV = () => ({ ...process.env, LC_ALL: "C" });
+const probeOptions = () => ({
+  env: { ...process.env, LC_ALL: "C" },
+  timeout: 1500,
+  killSignal: "SIGKILL",
+});
 
 function safe(fn) {
   try {
@@ -20,14 +24,12 @@ export const SAMPLE_LABELS = {
 };
 
 function probeField(field, pid) {
-  const out = safe(() =>
-    run("ps", ["-o", `${field}=`, "-p", String(pid)], { env: C_ENV() }).trim(),
-  );
+  const out = safe(() => run("ps", ["-o", `${field}=`, "-p", String(pid)], probeOptions()).trim());
   return out === null || out === "" ? { works: false } : { works: true, example: out };
 }
 
 export function threadCount(pid, runImpl = run) {
-  const out = safe(() => runImpl("ps", ["-M", "-p", String(pid)], { env: C_ENV() }));
+  const out = safe(() => runImpl("ps", ["-M", "-p", String(pid)], probeOptions()));
   if (out === null) return "unavailable";
   const lines = out.split("\n").filter((l) => l.trim() !== "");
   return lines.length >= 2 ? lines.length - 1 : "unavailable";
@@ -53,7 +55,7 @@ export function probeMac(pid = process.pid) {
 }
 
 export function hostIdentity() {
-  const sysctl = (name) => safe(() => run("sysctl", ["-n", name], { env: C_ENV() }).trim());
+  const sysctl = (name) => safe(() => run("sysctl", ["-n", name], probeOptions()).trim());
   const translated = sysctl("sysctl.proc_translated");
   return {
     platform: platform(),
@@ -88,7 +90,7 @@ export function sample(pids, { runImpl = run, withThreads = true } = {}) {
   // ps -p exits 1 when any listed pid is gone; its stdout still has the live rows.
   let text = "";
   try {
-    text = runImpl("ps", ["-o", "pid=,rss=,vsz=", "-p", pids.join(",")], { env: C_ENV() });
+    text = runImpl("ps", ["-o", "pid=,rss=,vsz=", "-p", pids.join(",")], probeOptions());
   } catch (error) {
     text = error?.stdout?.toString?.() ?? "";
   }
@@ -129,7 +131,7 @@ const execFileAsync = promisify(execFile);
 export async function threadCountAsync(pid, execImpl = execFileAsync) {
   let out;
   try {
-    out = (await execImpl("ps", ["-M", "-p", String(pid)], { env: C_ENV() })).stdout;
+    out = (await execImpl("ps", ["-M", "-p", String(pid)], probeOptions())).stdout;
   } catch {
     return "unavailable";
   }
@@ -151,7 +153,7 @@ export async function sampleAsync(pids, { withThreads = false, execImpl = execFi
     return { at, hrtimeNs: hr, processes: [], summedRssKiB: 0, label: SAMPLE_LABELS.rss };
   let text = "";
   try {
-    text = (await execImpl("ps", ["-o", "pid=,rss=,vsz=", "-p", pids.join(",")], { env: C_ENV() }))
+    text = (await execImpl("ps", ["-o", "pid=,rss=,vsz=", "-p", pids.join(",")], probeOptions()))
       .stdout;
   } catch (error) {
     text = error?.stdout ?? "";

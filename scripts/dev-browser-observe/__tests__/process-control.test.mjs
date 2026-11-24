@@ -7,7 +7,8 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -24,12 +25,15 @@ import {
   PidReuseError,
   birthIdentity,
   liveOwnedFromRegistry,
+  sameBirth,
+  signalLinuxOwned,
   shouldRegisterOwned,
   snapshotOwned,
   spawnOwned,
   stopOwned,
 } from "../lib/process-owner.mjs";
-import { EXIT, execute, verifyIdentityOnly } from "../lib/run.mjs";
+import { execute } from "./isolated-session.mjs";
+import { EXIT, verifyIdentityOnly } from "../lib/run.mjs";
 import { loadFieldNotesFixture, sourceTreeHashes } from "../lib/fieldnotes.mjs";
 import { makeFakeSource } from "./fieldnotes-fake.mjs";
 import { SERVER_LINES_KEPT, injectKillOwned, startDevServer } from "../lib/server.mjs";
@@ -64,11 +68,24 @@ const own = (args) => {
 // These tests read the host's real `ps`, so its lstart semantics (and the Linux procps slack) are the host's.
 const HOST_PLATFORM = process.platform;
 
+function signalFixture(expected, sig, group = false) {
+  if (!expected) throw new Error("missing fixture birth");
+  const now = birthIdentity(expected.pid);
+  if (!now) return;
+  if (!sameBirth(expected, now) || now.pgid !== expected.pgid || (group && now.pgid !== now.pid))
+    throw new Error("fixture ownership changed");
+  if (expected.birthVersion) signalLinuxOwned(expected, sig, group);
+  else process.kill(group ? -expected.pgid : expected.pid, sig);
+}
+
 afterEach(async () => {
   for (const h of children.splice(0)) {
     if (h.exit === null) {
       try {
-        process.kill(-h.native.pgid, "SIGKILL");
+        const pinned = h.testBirth ?? h.known?.get(h.child.pid);
+        const now = birthIdentity(h.child.pid);
+        if (sameBirth(pinned, now) && now.pgid === h.child.pid)
+          signalFixture(pinned, "SIGKILL", true);
       } catch {
         // already gone
       }
@@ -109,7 +126,7 @@ describe("real child processes", () => {
     expect(h.native.pid).toBeGreaterThan(0);
     const page = fakePage({
       onWait: () => {
-        setTimeout(() => process.kill(h.native.pid, "SIGKILL"), 50);
+        setTimeout(() => signalFixture(h.testBirth ?? h.native, "SIGKILL"), 50);
         return new Promise(() => {});
       },
     });
@@ -222,7 +239,7 @@ describe("real child processes", () => {
   it("refuses to signal when the birth identity no longer matches (PID reuse guard)", async () => {
     const h = own(["-e", "setInterval(() => {}, 1000)"]);
     const signals = [];
-    h.native = { ...h.native, lstart: "Mon Jan 1 00:00:00 2001" };
+    h.native = { ...h.native, lstart: "Mon Jan 1 00:00:00 2001", startTicks: "0" };
     await expect(
       stopOwned(h, { platform: HOST_PLATFORM, killImpl: (...a) => signals.push(a) }),
     ).rejects.toBeInstanceOf(PidReuseError);
@@ -234,7 +251,7 @@ describe("real child processes", () => {
     const h = own(["-e", "setInterval(() => {}, 1000)"]);
     const entry = birthIdentity(h.native.pid);
     expect(liveOwnedFromRegistry([entry], undefined, HOST_PLATFORM)).toHaveLength(1);
-    process.kill(h.native.pid, "SIGKILL");
+    signalFixture(h.testBirth ?? h.native, "SIGKILL");
     await h.exited;
     expect(liveOwnedFromRegistry([entry], undefined, HOST_PLATFORM)).toHaveLength(0);
   });
@@ -291,7 +308,7 @@ describe("kill-server-during-wait injection on a real child", () => {
 
   it("refuses to kill when the birth identity no longer matches", () => {
     const h = own(["-e", "setInterval(() => {}, 1000)"]);
-    h.native = { ...h.native, lstart: "Mon Jan 1 00:00:00 2001" };
+    h.native = { ...h.native, lstart: "Mon Jan 1 00:00:00 2001", startTicks: "0" };
     const kills = [];
     expect(injectKillOwned(h, (...a) => kills.push(a))).toMatchObject({
       ok: false,
@@ -314,7 +331,9 @@ describe("pgid scan after the root died (round 4 #5)", () => {
       }),
     );
     expect([...h.known.keys()]).toEqual([h.native.pid]);
-    process.kill(h.native.pid, "SIGKILL");
+    const pinnedChild = birthIdentity(gcPid);
+    expect(pinnedChild.ppid).toBe(h.child.pid);
+    signalFixture(h.testBirth ?? h.native, "SIGKILL");
     await h.exited;
     const alive = (pid) => {
       try {
@@ -325,6 +344,20 @@ describe("pgid scan after the root died (round 4 #5)", () => {
       }
     };
     expect(alive(gcPid)).toBe(true);
+    if (HOST_PLATFORM === "linux") {
+      try {
+        const signals = [];
+        await expect(
+          stopOwned(h, { killImpl: (...args) => signals.push(args) }),
+        ).rejects.toMatchObject({ code: "PID_REUSE" });
+        expect(signals).toEqual([]);
+      } finally {
+        const now = birthIdentity(gcPid);
+        if (sameBirth(pinnedChild, now) && now.pgid === h.child.pid)
+          signalFixture(pinnedChild, "SIGKILL");
+      }
+      return;
+    }
     const registered = [];
     h.onNewOwned = (p) => registered.push(p);
     const report = await stopOwned(h, {
@@ -413,11 +446,20 @@ describe("round 5 #5: unverifiable spawn birth", () => {
   it("records the birth as unverifiable and still stops the process within the spawn-time pgid scope", async () => {
     const h = spawnOwned(NODE, ["-e", "setInterval(() => {}, 1000)"], { birthImpl: () => null });
     children.push(h);
+    h.testBirth = birthIdentity(h.child.pid);
     expect(h.native).toMatchObject({
       birthUnverifiable: true,
       lstart: "unavailable",
       birthAttempts: 5,
     });
+    if (HOST_PLATFORM === "linux") {
+      const signals = [];
+      await expect(
+        stopOwned(h, { killImpl: (...args) => signals.push(args) }),
+      ).rejects.toMatchObject({ code: "PID_REUSE" });
+      expect(signals).toEqual([]);
+      return;
+    }
     await delay(1100);
     const report = await stopOwned(h, {
       platform: HOST_PLATFORM,
@@ -438,6 +480,12 @@ describe("round 7 #1: an unverifiable root is registered with its real birth", (
   it("snapshot registers the root once ps shows it, and the registry row then guards the next batch", async () => {
     const h = spawnOwned(NODE, ["-e", "setInterval(() => {}, 1000)"], { birthImpl: () => null });
     children.push(h);
+    h.testBirth = birthIdentity(h.child.pid);
+    if (HOST_PLATFORM === "linux") {
+      expect(() => snapshotOwned(h)).toThrow(PidReuseError);
+      expect(liveOwnedFromRegistry([h.native])).toHaveLength(1);
+      return;
+    }
     const registered = [];
     h.onNewOwned = (p) => {
       if (shouldRegisterOwned(h.native, p)) registered.push(p);
@@ -450,7 +498,7 @@ describe("round 7 #1: an unverifiable root is registered with its real birth", (
     expect(
       liveOwnedFromRegistry([{ type: "owned", ...registered[0] }], undefined, HOST_PLATFORM),
     ).toHaveLength(1);
-    process.kill(h.native.pid, "SIGKILL");
+    signalFixture(h.testBirth ?? h.native, "SIGKILL");
     await h.exited;
     expect(
       liveOwnedFromRegistry(
@@ -695,9 +743,11 @@ describe("execute (identity gate)", () => {
       const s = setup();
       const kills = [];
       const pids = [];
+      const births = new Map();
       const runNodeImpl = withOnLine((args) => {
         const started = hanging("LOCKED fake\n")(args);
         pids.push(started.child.pid);
+        births.set(started.child.pid, birthIdentity(started.child.pid));
         return started;
       });
       const t0 = Date.now();
@@ -706,7 +756,7 @@ describe("execute (identity gate)", () => {
         runNodeImpl,
         killImpl: (pid, signal) => {
           kills.push([pid, signal]);
-          process.kill(pid, signal);
+          signalFixture(births.get(pid), signal);
         },
       });
       expect(Date.now() - t0).toBeGreaterThanOrEqual(1500);
@@ -723,8 +773,10 @@ describe("execute (identity gate)", () => {
       const s = setup();
       const kills = [];
       let holderPid = null;
+      const births = new Map();
       const runNodeImpl = withOnLine((args) => {
         const started = hanging("LOCKED fake\n")(args);
+        births.set(started.child.pid, birthIdentity(started.child.pid));
         if (args[0] === "hold-lock") holderPid = started.child.pid;
         return started;
       });
@@ -732,7 +784,7 @@ describe("execute (identity gate)", () => {
       const birthImpl = (pid) => {
         const b = birthIdentity(pid);
         if (pid === holderPid && b && ++checks > 1)
-          return { ...b, lstart: "Mon Jan 1 00:00:00 2001" };
+          return { ...b, lstart: "Mon Jan 1 00:00:00 2001", startTicks: "0" };
         return b;
       };
       try {
@@ -742,7 +794,7 @@ describe("execute (identity gate)", () => {
           birthImpl,
           killImpl: (pid, signal) => {
             kills.push([pid, signal]);
-            process.kill(pid, signal);
+            signalFixture(births.get(pid), signal);
           },
         });
         expect(r).toMatchObject({ ok: false, timedOut: true });
@@ -753,7 +805,7 @@ describe("execute (identity gate)", () => {
         expect(kills.some(([pid]) => pid === holderPid)).toBe(false);
         expect(r.children.find((c) => c.role === "second-run")).toMatchObject({ killed: true });
       } finally {
-        if (holderPid && birthIdentity(holderPid)) process.kill(holderPid, "SIGKILL");
+        if (holderPid) signalFixture(births.get(holderPid), "SIGKILL");
       }
     });
   });
@@ -835,6 +887,7 @@ describe("execute (identity gate)", () => {
       command: "run",
       stderr: () => {},
       hooks: {
+        admissionPath: join(s.root, "active.json"),
         stopOwned: async (handle, opts) => {
           const real = await stopOwned(handle, opts);
           return { ...real, absent: false, simulated: "survivor" };
@@ -864,6 +917,7 @@ describe("execute (identity gate)", () => {
       command: "run",
       stderr: () => {},
       hooks: {
+        admissionPath: join(s.root, "active.json"),
         stopOwned: async (handle, opts) => {
           await stopOwned(handle, opts);
           throw Object.assign(new Error("birth identity mismatch"), { code: "PID_REUSE" });
@@ -876,6 +930,67 @@ describe("execute (identity gate)", () => {
       code: "PID_REUSE",
     });
   });
+
+  it.runIf(process.platform === "linux")(
+    "a controller exits with a living server and retains admission across output directories",
+    async () => {
+      const s = setup();
+      const exe = shellServer(s.root, "exec sleep 90");
+      acceptedIdentity(s, exe);
+      const active = join(s.root, "active-session.json");
+      const driver = join(s.root, "controller.mjs");
+      writeFileSync(
+        driver,
+        `
+      import { execute } from ${JSON.stringify(new URL("./isolated-session.mjs", import.meta.url).href)};
+      const [profilePath, label] = process.argv.slice(2);
+      process.exitCode = await execute({ profilePath, label, command: "run",
+        hooks: label === "first" ? { stopOwned: async handle => {
+          throw Object.assign(new Error("controlled refusal"), {
+            code: "PID_REUSE", expected: handle.native, actual: handle.native,
+            differingFields: [], steps: [], remaining: [handle.native]
+          });
+        }} : {}
+      });
+    `,
+      );
+      const run = (label) =>
+        promisify(execFile)(NODE, [driver, s.profilePath, label], { timeout: 20000 });
+      try {
+        await expect(run("first")).rejects.toMatchObject({ code: EXIT.ownedServerAlive });
+        const hold = readJson(active);
+        expect(hold.phase).toBe("cleanup-unresolved");
+        expect(sameBirth(hold.root, birthIdentity(hold.root.pid))).toBe(true);
+        expect(readJson(join(s.outDir, "first/summary.json")).ownedServerAbsentAfterStop).toBe(
+          false,
+        );
+        expect(readJsonl(join(s.outDir, "first/records.jsonl")).at(-1).type).toBe("run-end");
+        const profile = readJson(s.profilePath);
+        profile.outDir = "independent-output";
+        writeFileSync(s.profilePath, JSON.stringify(profile));
+        await expect(run("second")).rejects.toMatchObject({ code: EXIT.ownedServerAlive });
+        expect(existsSync(join(s.root, profile.outDir, "second"))).toBe(false);
+      } finally {
+        if (existsSync(active)) {
+          const { root } = readJson(active);
+          const live = birthIdentity(root.pid);
+          if (sameBirth(root, live) && live.pgid === root.pid) signalFixture(root, "SIGTERM");
+          for (let i = 0; i < 100 && birthIdentity(root.pid); i++) await delay(20);
+          expect(birthIdentity(root.pid)).toBeNull();
+          rmSync(active);
+        }
+      }
+      const code = await run("third").then(
+        () => EXIT.ok,
+        (error) => error.code,
+      );
+      const third = readJson(join(s.root, "independent-output/third/receipt.json"));
+      expect(code, JSON.stringify(third.identity.checks.filter((c) => !c.ok))).toBe(
+        EXIT.serverNotReady,
+      );
+      expect(existsSync(active)).toBe(false);
+    },
+  );
 
   it("round 7 #3: the server is stopped before the browser closes, and a failing record write skips neither stop nor summary", async () => {
     const s = setup();
@@ -907,9 +1022,12 @@ describe("execute (identity gate)", () => {
       },
     });
     expect(order).toEqual(["server-stop", "context.close", "browser.close"]);
-    expect(code).toBe(EXIT.ok);
+    expect(code).toBe(EXIT.controllerError);
     const summary = readJson(join(s.outDir, "C7", "summary.json"));
-    expect(summary).toMatchObject({ exitCode: EXIT.ok, ownedServerAbsentAfterStop: true });
+    expect(summary).toMatchObject({
+      exitCode: EXIT.controllerError,
+      ownedServerAbsentAfterStop: true,
+    });
     expect(existsSync(join(s.outDir, "C7", "receipt.json"))).toBe(true);
     expect(msgs.join("\n")).toMatch(/record write failed \(server-stop\)/);
     expect(msgs.join("\n")).toMatch(/record write failed \(run-end\)/);

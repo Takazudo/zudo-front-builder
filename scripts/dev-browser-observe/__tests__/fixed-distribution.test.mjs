@@ -45,7 +45,8 @@ import { currentPins } from "../lib/identity.mjs";
 import { OBSERVER_PATH } from "../lib/browser.mjs";
 import { profileSchemaFor, semanticErrors, loadProfile } from "../lib/profile.mjs";
 import { stopOwned, snapshotOwnedWithArgs } from "../lib/process-owner.mjs";
-import { EXIT, execute } from "../lib/run.mjs";
+import { execute } from "./isolated-session.mjs";
+import { EXIT } from "../lib/run.mjs";
 import { validateAs } from "../lib/schema.mjs";
 import { loadSeriesPlan } from "../lib/series.mjs";
 import { startDevServer } from "../lib/server.mjs";
@@ -961,7 +962,7 @@ describe("launcher-tree ownership and stop", () => {
 
   it("classifies the npm → sh → sidecar → next → next-server tree from ps args", () => {
     const t = tree();
-    const owned = snapshotOwnedWithArgs(t.handle, t.psImpl);
+    const owned = snapshotOwnedWithArgs(t.handle, t.psImpl, "darwin");
     expect(owned.map((p) => p.pid)).toEqual([100, 101, 102, 103, 104]);
     expect(classifyRoles(distributionOf(FIXTURE, "next"), owned).map((r) => r.role)).toEqual([
       "npm",
@@ -984,6 +985,7 @@ describe("launcher-tree ownership and stop", () => {
       if (target === 104 && signal === "SIGTERM") t.alive.delete(104);
     };
     const report = await stopOwned(t.handle, {
+      platform: "darwin", // These fixtures model BSD ps birth fields.
       intWaitMs: 150,
       termWaitMs: 150,
       killWaitMs: 150,
@@ -1009,6 +1011,7 @@ describe("launcher-tree ownership and stop", () => {
       }
     };
     const report = await stopOwned(t.handle, {
+      platform: "darwin", // These fixtures model BSD ps birth fields.
       intWaitMs: 100,
       termWaitMs: 100,
       killWaitMs: 100,
@@ -1025,11 +1028,21 @@ function fixedSession(dir, { framework, adapterSha, nodeSha = "n", corpus = "d",
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, "records.jsonl"),
-    `${JSON.stringify({ type: "run-start", schedule: [] })}\n`,
+    [
+      { type: "run-start", schedule: [] },
+      { type: "server-stop", report: { absent: true } },
+      { type: "run-end", exitCode: 0 },
+    ]
+      .map((r) => JSON.stringify(r))
+      .join("\n") + "\n",
   );
   writeFileSync(
     join(dir, "summary.json"),
-    JSON.stringify({ exitCode: 0, accounting: { stopReason: null, notAttempted: 0 } }),
+    JSON.stringify({
+      exitCode: 0,
+      ownedServerAbsentAfterStop: true,
+      accounting: { stopReason: null, notAttempted: 0 },
+    }),
   );
   writeFileSync(
     join(dir, "receipt.json"),

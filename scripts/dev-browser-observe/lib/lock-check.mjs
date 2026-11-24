@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { LockBusyError, acquireLock } from "./lock.mjs";
-import { birthIdentity, sameBirth } from "./process-owner.mjs";
+import { birthIdentity, sameBirth, signalLinuxOwned } from "./process-owner.mjs";
 import { loadProfile } from "./profile.mjs";
 import { findGitWorkTree } from "./run.mjs";
 import { HARNESS_DIR, randomHex } from "./util.mjs";
@@ -152,11 +152,12 @@ export async function lockContentionCheck(
   for (const c of children) {
     if (c.exited) continue;
     const now = birthImpl(c.child.pid);
-    if (!c.birth || !sameBirth(c.birth, now)) {
+    if (!c.birth || !sameBirth(c.birth, now) || c.birth.pgid !== now.pgid) {
       killed.push({ role: c.role, pid: c.child.pid, killed: false, reason: "birth-unverified" });
       continue;
     }
-    killImpl(c.child.pid, "SIGKILL");
+    if (c.birth.birthVersion && killImpl === process.kill) signalLinuxOwned(c.birth, "SIGKILL");
+    else killImpl(c.child.pid, "SIGKILL");
     const exit = await Promise.race([
       c.done,
       new Promise((r) => setTimeout(() => r(null), killWaitMs)),

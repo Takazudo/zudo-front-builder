@@ -1,3 +1,5 @@
+import { interruptible } from "./session-deadline.mjs";
+import { admissionPath, reserveSession } from "./admission.mjs";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { OBSERVER_PATH, closeOwnedBrowser, launchOwnedBrowser } from "./browser.mjs";
@@ -151,9 +153,15 @@ export async function execute({
   command,
   stderr = (m) => process.stderr.write(`${m}\n`),
   hooks = {},
+  signal,
+  onFinalizing,
+  supervisorId,
   scenarios = null,
 }) {
   const loaded = loadProfile(profilePath);
+  loaded.signal = signal;
+  loaded.onFinalizing = onFinalizing;
+  loaded.supervisorId = supervisorId;
   const { profile, resolved } = loaded;
   if (scenarios) {
     const known = new Set(profile.scenarios.map((s) => s.id));
@@ -198,6 +206,11 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
     return EXIT.usage;
   }
 
+  const intentPath = process.platform === "linux" ? (hooks.admissionPath ?? admissionPath()) : null;
+  if (intentPath && existsSync(intentPath)) {
+    stderr(`unresolved benchmark session: inspect ${intentPath} before running another session`);
+    return EXIT.ownedServerAlive;
+  }
   let lock;
   try {
     lock = await acquireLock(resolved.lockPath);
@@ -210,8 +223,12 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
     return EXIT.controllerError;
   }
   try {
-    const registry = readJsonl(resolved.registryPath).filter(
-      (e) => e.type === "spawn" || e.type === "owned",
+    const history = readJsonl(resolved.registryPath);
+    const completed = new Set(
+      history.filter((e) => e.type === "stopped" && e.absent === true).map((e) => e.label),
+    );
+    const registry = history.filter(
+      (e) => !completed.has(e.label) && (e.type === "spawn" || e.type === "owned"),
     );
     const alive = liveOwnedFromRegistry(registry);
     if (alive.length > 0) {
@@ -227,13 +244,13 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
       }
       throw error;
     }
-    return await executeLocked({ loaded, label, labelDir, command, stderr, hooks });
+    return await executeLocked({ loaded, label, labelDir, command, stderr, hooks, intentPath });
   } finally {
     await lock.release();
   }
 }
 
-async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {} }) {
+async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
   const { profile, resolved } = loaded;
   const rec = new Recorder(join(labelDir, "records.jsonl"));
   const startedNs = hrtimeNs();
@@ -263,6 +280,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     }
   const receipt = {
     schema: RECEIPT_SCHEMA,
+    ...(loaded.supervisorId ? { supervisorId: loaded.supervisorId } : {}),
     label,
     command,
     createdAt: isoNow(),
@@ -317,6 +335,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
 
   let m = null;
   let server = null;
+  let intent = null;
+  let spawning = false;
   let browserHandle = null;
   const samples = [];
   let study = null;
@@ -406,6 +426,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       });
       launch.port = port;
     }
+    loaded.signal?.throwIfAborted();
+    if (intentPath)
+      intent = reserveSession(intentPath, { labelDir, registryPath: resolved.registryPath });
+    spawning = true;
     server = (hooks.startDevServer ?? startDevServer)({
       ...(fixed
         ? {
@@ -421,6 +445,12 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       diagnostic: profile.diagnostic === true,
       readyTimeoutMs: profile.server.readyTimeoutMs,
       logPath: join(labelDir, "server.log"),
+    });
+    spawning = false;
+    intent?.update({
+      phase: "server-running",
+      root: server.handle.native,
+      pid: server.handle.child?.pid,
     });
     appendJsonlSync(resolved.registryPath, {
       type: "spawn",
@@ -456,7 +486,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
 
     let ready;
     try {
-      ready = await server.ready;
+      ready = await interruptible(server.ready, loaded.signal);
     } catch (error) {
       rec.append({
         type: "server-ready",
@@ -485,7 +515,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         ...(hooks.processAlive ? { alive: hooks.processAlive } : {}),
       };
       const processChecks = processIdentityChecks({ processes: owned, roles, ...identityInputs });
-      const checkedKey = (p) => `${p.pid}@${p.lstart ?? "?"}`;
+      const checkedKey = (p) => JSON.stringify([p.pid, p.bootId, p.startTicks ?? p.lstart]);
       const checked = new Set(owned.map(checkedKey));
       // Processes born after readiness: every one seen in the tree (or remembered by sampling)
       // is checked before the next workload edit; the first failure stops the batch there.
@@ -553,7 +583,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     receipt.server.baseUrl = ready.baseUrl;
     receipt.server.readyMs = nsToMs(ready.readyNs - server.startedNs);
 
+    loaded.signal?.throwIfAborted();
     browserHandle = await (hooks.launchOwnedBrowser ?? launchOwnedBrowser)(profile.browser);
+    loaded.signal?.throwIfAborted();
     const observer = browserHandle.observer;
     observer.baseUrl = ready.baseUrl;
     // Fixed distributions declare their own HMR sockets; zfb livereload needs none.
@@ -576,6 +608,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       if (profile.resourceStudy) {
         study = createResourceStudy({
           study: profile.resourceStudy,
+          signal: loaded.signal,
           sampleNow: () => server.sampleResourcesAsync({ withThreads: true }),
           append: (r) => rec.append(r),
           clock: { now: hrtimeNs },
@@ -595,6 +628,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         scenarios: runScenarios,
         deps: {
           recorder,
+          signal: loaded.signal,
           afterScenario: study ? study.afterScenario : undefined,
           beforeCleanup: study ? study.beforeCleanup : undefined,
           haltReason:
@@ -662,8 +696,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     }
     return exitCode;
   } catch (error) {
+    browserHandle ??= error.partialBrowser;
     rec.append({
       type: "controller-error",
+      browserCleanupError: error.browserCleanupError,
       outcome: "controller-error",
       error: String(error?.stack ?? error),
     });
@@ -671,42 +707,91 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     summaryExtra = { ...summaryExtra, stopReason: summaryExtra.stopReason ?? "controller-error" };
     return exitCode;
   } finally {
+    loaded.onFinalizing?.();
     // Best-effort from here on: a failing record write must never skip the server stop or the summary.
+    let evidenceFailed = false;
     const safeAppend = (r) => {
       try {
         rec.append(r);
       } catch (error) {
+        evidenceFailed = true;
         stderr(`record write failed (${r.type}): ${error?.message ?? error}`);
       }
     };
+    const terminalEnd = performance.now() + 60000;
+    const bounded = async (phase, ms, operation) => {
+      const remaining = Math.max(1, Math.min(ms, terminalEnd - performance.now()));
+      let timer;
+      try {
+        return await Promise.race([
+          operation(),
+          new Promise((_, reject) => {
+            timer = setTimeout(
+              () =>
+                reject(
+                  Object.assign(new Error(`${phase} exceeded its budget`), {
+                    code: "FINALIZATION_TIMEOUT",
+                  }),
+                ),
+              remaining,
+            );
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const unresolved = [];
     if (study) {
       try {
-        await study.stop();
+        await bounded("sampler-stop", 3000, () => study.stop());
       } catch (error) {
+        evidenceFailed = true;
         stderr(`resource-study sampler stop failed: ${error?.message ?? error}`);
       }
     }
-    let stopReport = { absent: true, reason: "no-server-started" };
+    let stopReport = {
+      absent: !spawning,
+      reason: spawning ? "spawn-interrupted" : "no-server-started",
+    };
     if (server) {
+      const cancellation = new AbortController();
       try {
-        stopReport = await (hooks.stopOwned ?? stopOwned)(server.handle, {
-          intWaitMs: profile.timeouts.stopTermMs ?? 5000,
-          termWaitMs: profile.timeouts.stopKillMs ?? 3000,
-          killWaitMs: 3000,
-        });
+        stopReport = await bounded("server-stop", 25000, () =>
+          (hooks.stopOwned ?? stopOwned)(server.handle, {
+            signal: cancellation.signal,
+            intWaitMs: profile.timeouts.stopTermMs ?? 5000,
+            termWaitMs: profile.timeouts.stopKillMs ?? 3000,
+            killWaitMs: 3000,
+          }),
+        );
       } catch (error) {
+        cancellation.abort();
         stopReport = {
           absent: false,
           error: String(error?.message ?? error),
           code: error?.code ?? null,
+          phase: "server-stop",
+          expected: error.expected ?? null,
+          actual: error.actual ?? null,
+          differingFields: error.differingFields ?? [],
+          steps: error.steps ?? [],
+          remaining: error.remaining ?? [...(server.handle.known?.values() ?? [])],
+          exit: server.handle.exit,
         };
       }
       let logClose = null;
       try {
-        logClose = await server.closeLog();
+        logClose = await bounded("log-close", 4000, () => server.closeLog());
       } catch (error) {
+        unresolved.push({ resource: "server.log", error: String(error) });
         logClose = { error: String(error?.message ?? error) };
       }
+      if (logClose?.pipes === "timeout") {
+        unresolved.push({ resource: "server-pipes", reason: "open after drain timeout" });
+        stopReport = { ...stopReport, absent: false, unresolved };
+      }
+      if (logClose?.errors?.length) evidenceFailed = true;
       safeAppend({ type: "server-stop", report: stopReport, exit: server.handle.exit, logClose });
       try {
         appendJsonlSync(resolved.registryPath, {
@@ -717,21 +802,27 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           absent: stopReport.absent,
         });
       } catch (error) {
+        evidenceFailed = true;
         stderr(`registry write failed: ${error?.message ?? error}`);
       }
     }
     if (browserHandle) {
       try {
-        for (const e of await (hooks.closeOwnedBrowser ?? closeOwnedBrowser)(browserHandle, {
-          timeoutMs: BROWSER_CLOSE_TIMEOUT_MS,
-        }))
+        for (const e of await bounded("browser-close", 21000, () =>
+          (hooks.closeOwnedBrowser ?? closeOwnedBrowser)(browserHandle, {
+            timeoutMs: BROWSER_CLOSE_TIMEOUT_MS,
+          }),
+        )) {
+          unresolved.push({ resource: "browser", ...e });
           safeAppend({
             type: "controller-error",
             phase: e.step,
             error: e.error,
             timedOut: e.timedOut ?? false,
           });
+        }
       } catch (error) {
+        unresolved.push({ resource: "browser", error: String(error) });
         safeAppend({
           type: "controller-error",
           phase: "browser-close",
@@ -740,7 +831,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       }
     }
     let stopFailure = null;
-    if (server && (!stopReport.absent || stopReport.error)) {
+    if (!stopReport.absent || stopReport.error || unresolved.length) {
       stopFailure = {
         absent: Boolean(stopReport.absent),
         error: stopReport.error ?? null,
@@ -749,6 +840,35 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       };
       exitCode = EXIT.ownedServerAlive;
     }
+    if (intent) {
+      if (stopFailure) {
+        try {
+          intent.update({
+            phase: "cleanup-unresolved",
+            stopReport,
+            unresolved,
+          });
+        } catch (error) {
+          stderr(`cannot update admission hold ${intentPath}: ${error.message}`);
+        }
+        const child = server?.handle.child;
+        child?.stdout?.destroy();
+        child?.stderr?.destroy();
+        child?.unref();
+      } else {
+        intent.release();
+      }
+    }
+    if (evidenceFailed && exitCode === EXIT.ok) exitCode = EXIT.controllerError;
+    try {
+      writeJsonSync(receiptPath, receipt);
+    } catch (error) {
+      evidenceFailed = true;
+      stderr(`receipt write failed: ${error?.message ?? error}`);
+    }
+    if (evidenceFailed && exitCode === EXIT.ok) exitCode = EXIT.controllerError;
+    safeAppend({ type: "run-end", exitCode });
+    if (evidenceFailed && exitCode === EXIT.ok) exitCode = EXIT.controllerError;
     const live = summaryExtra.accountingFinal ?? accountingRef.current;
     const accounting = live ? { ...live } : { ...newAccounting(planned) };
     if (!summaryExtra.accountingFinal && summaryExtra.stopReason) {
@@ -783,14 +903,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       };
       writeJsonSync(summaryPath, summary);
     } catch (error) {
+      evidenceFailed = true;
       stderr(`summary write failed: ${error?.message ?? error}`);
     }
-    try {
-      writeJsonSync(receiptPath, receipt);
-    } catch (error) {
-      stderr(`receipt write failed: ${error?.message ?? error}`);
-    }
-    safeAppend({ type: "run-end", exitCode });
+    if (evidenceFailed && !stopFailure) return exitCode || EXIT.controllerError; // eslint-disable-line no-unsafe-finally
     if (stopFailure) {
       stderr(
         "owned server processes were not verified absent after stop; the next batch will refuse to start",

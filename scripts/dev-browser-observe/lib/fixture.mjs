@@ -1,3 +1,4 @@
+import { interruptible } from "./session-deadline.mjs";
 import {
   chmodSync,
   closeSync,
@@ -863,13 +864,15 @@ export async function performWrites(
   now,
   fsImpl = REAL_FS,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  signal,
 ) {
   if (!Array.isArray(steps) || steps.length === 0) throw noWriteStepsError();
   const done = [];
   let t0 = null;
   for (const [i, step] of steps.entries()) {
-    if (i > 0 && step.afterMs) await sleep(step.afterMs);
     try {
+      if (i > 0 && step.afterMs) await interruptible(sleep(step.afterMs), signal);
+      signal?.throwIfAborted();
       const t = performWrite(step, now, fsImpl);
       if (t0 === null) t0 = t;
       done.push({

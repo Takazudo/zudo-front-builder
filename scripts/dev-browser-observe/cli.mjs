@@ -22,7 +22,8 @@ import { currentPins, recordBuild } from "./lib/identity.mjs";
 import { holdLock, lockContentionCheck } from "./lib/lock-check.mjs";
 import { probeMac } from "./lib/mac-process-adapter.mjs";
 import { loadProfile } from "./lib/profile.mjs";
-import { EXIT, execute, findGitWorkTree, verifyIdentityOnly } from "./lib/run.mjs";
+import { EXIT, findGitWorkTree, verifyIdentityOnly } from "./lib/run.mjs";
+import { superviseSession } from "./lib/session-supervisor.mjs";
 import { PROTOCOLS } from "./lib/schedule.mjs";
 import { aggregateInputFromRecord, runSeries } from "./lib/series.mjs";
 import { SCHEMA_FILES, loadSchema, validateAs } from "./lib/schema.mjs";
@@ -478,7 +479,7 @@ export async function main(argv) {
         process.stderr.write("--scenario needs one or more scenario ids (comma-separated)\n");
         return EXIT.usage;
       }
-      return execute({
+      return superviseSession({
         profilePath: need(args, "profile"),
         label: need(args, "label"),
         command: cmd,
