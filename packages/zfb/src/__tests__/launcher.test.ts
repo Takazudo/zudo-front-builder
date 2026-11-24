@@ -55,6 +55,68 @@ const platformPackages: Record<string, string> = {
 const platformKey = `${process.platform}-${process.arch}`;
 const platformPkg = platformPackages[platformKey];
 
+describe("launcher missing-platform diagnostics (issue #4802)", () => {
+  let tmpDir: string;
+  let launcherCopyPath: string;
+  let pkgDir: string;
+
+  beforeEach(() => {
+    if (!platformPkg) return;
+    tmpDir = mkdtempSync(join(tmpdir(), "zfb-launcher-missing-test-"));
+    const launcherDir = join(tmpDir, "node_modules", "@takazudo", "zfb", "bin");
+    copyBinDir(launcherDir);
+    launcherCopyPath = join(launcherDir, "zfb.mjs");
+    pkgDir = join(tmpDir, "node_modules", platformPkg);
+  });
+
+  afterEach(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function expectGuidance(stderr: string): void {
+    expect(stderr).toContain(platformPkg);
+    expect(stderr).toMatch(/optional dependenc/i);
+    expect(stderr).toMatch(/package-manager\s+policy/i);
+    expect(stderr).toMatch(/logs\/NDJSON/i);
+    expect(stderr).toContain(
+      "/docs/guides/troubleshooting/#missing-darwin-binary-with-pnpm-trust-policy",
+    );
+    expect(stderr).not.toMatch(/is a trust downgrade|ERR_PNPM_TRUST_DOWNGRADE/);
+  }
+
+  it("explains a carrier package that cannot be resolved", () => {
+    if (!platformPkg) return;
+    const result = spawnSync(process.execPath, [launcherCopyPath], {
+      cwd: tmpDir,
+      encoding: "utf8",
+      // Vite+ adds the workspace package store to NODE_PATH. A consumer's
+      // missing-package install must not resolve the source checkout through it.
+      env: { ...process.env, NODE_PATH: "" },
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("could not be resolved");
+    expectGuidance(result.stderr);
+  });
+
+  it("explains a resolved carrier package with no binary file", () => {
+    if (!platformPkg) return;
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(
+      join(pkgDir, "package.json"),
+      JSON.stringify({ name: platformPkg, version: "0.0.0" }),
+    );
+    const result = spawnSync(process.execPath, [launcherCopyPath], {
+      cwd: tmpDir,
+      encoding: "utf8",
+      env: { ...process.env, NODE_PATH: "" },
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("resolved, but its expected binary is missing");
+    expect(result.stderr).toContain(join(pkgDir, process.platform === "win32" ? "zfb.exe" : "zfb"));
+    expectGuidance(result.stderr);
+  });
+});
+
 describe("launcher EACCES surfacing (issue #447)", () => {
   let tmpDir: string;
   let fakeBinPath: string;

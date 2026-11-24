@@ -135,17 +135,17 @@ per run (Release-body marker or dispatch input) or by an owner-committed
 [RELEASING.md](RELEASING.md#provenance-contract-and-the-downgrade-blocker) and
 [research/npm-oidc-cutover.md](research/npm-oidc-cutover.md).
 
-### Recovery creates a trust downgrade — plan the follow-up release (issue #2623)
+### Provenance omissions and consumer admission (issue #2623)
 
 > Since #4690 this applies to a `recovery-no-provenance` run (control commit ≠
 > source commit). A recovery dispatched while `main`'s head is still the release
 > commit uses the normal `mac-local` mode with honest provenance.
 
-**A recovery run is not consequence-free for consumers.** npm records provenance
+**An exceptional recovery run is not consequence-free for consumers.** npm records provenance
 per published version and versions are immutable, so publishing a version without
 an attestation *after* earlier versions had one is a permanent **trust downgrade**
 for every affected package. A consumer who has enabled pnpm's `trustPolicy:
-no-downgrade` cannot install such a version at all:
+no-downgrade` may reject an affected version during resolution:
 
 ```text
 ERR_PNPM_TRUST_DOWNGRADE High-risk trust downgrade for "@takazudo/zfb@X.Y.Z" (possible package takeover)
@@ -165,21 +165,30 @@ policies to every entry of an already-resolved lockfile, so a committed lockfile
 pinning the bad version breaks there while the same lockfile keeps an older CI
 job green. That split is why nothing went red on release day.
 
-The publish job now emits a `::warning` and a job-summary block on every
-provenance-omitting run so the downgrade cannot ship silently again — do not
-dismiss it.
+The publish job emits a `::warning` and job-summary block for both normal
+`mac-local` and exceptional `recovery-no-provenance` runs. GitHub OIDC authenticates
+the npm publish operation; npm provenance attests the built artifact. The normal
+owner-Mac Darwin artifacts have no truthful Actions build attestation, even though
+OIDC publishes them. The producer preflight and owner acknowledgement admit those
+local artifacts for release, but do not change a consumer's pnpm policy. A pnpm
+trust rejection may omit an optional Darwin package from a successful install;
+that is different from the package being unpublished. Inspect the install log,
+resolved version and lockfile before diagnosing a missing carrier.
 
 The setting is opt-in (default `off`) and available since pnpm 10.21. It is
 `trustPolicy: no-downgrade` in `pnpm-workspace.yaml` (honored by both majors);
 pnpm 10 also accepts the older `trust-policy=no-downgrade` in `.npmrc`, which
 **pnpm 11 ignores** — pnpm 11 reads only auth/registry settings from `.npmrc`.
 
-**Required follow-up after any recovery run:** ship the next patch through the
-normal tag/release path so provenance is restored. That is the only remedy — the
-recovered version itself can never be repaired. Until that patch is out, affected
-consumers need explicit guidance; the user-facing workaround is documented in
+After an exceptional `recovery-no-provenance` run, a normal follow-up may restore
+provenance for hosted-built packages affected by that recovery. The recovered
+version itself is immutable. The same normal follow-up still publishes the two
+locally built Darwin carriers without provenance, and cannot automatically restore
+their consumer admission. Consumers who choose to accept this ongoing model need
+explicit, narrowly scoped guidance in
 [the docs troubleshooting page](docs/src/content/docs/guides/troubleshooting.mdx)
-under `ERR_PNPM_TRUST_DOWNGRADE`.
+under `ERR_PNPM_TRUST_DOWNGRADE`. A producer acknowledgement in
+`release/provenance-policy.json` does not waive pnpm's consumer checks.
 
 ## Historical: macOS-x64 escape hatch and hosted Intel leg (#437, #455)
 

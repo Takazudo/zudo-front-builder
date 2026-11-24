@@ -612,11 +612,20 @@ present keeps its observed provenance as its expectation, so a partial publish f
 recovery still verifies. `scripts/verify-npm-provenance-expectations.mjs` then checks each package
 version carries exactly its recorded attestation state.
 
+GitHub OIDC authenticates the publish operation, while npm provenance attests
+where the artifact was built. Local-artifact admission and owner acknowledgement
+allow this producer to publish honest owner-Mac bytes; they do not override a
+consumer's package-manager policy. A pnpm trust-policy rejection can omit an
+optional carrier despite a successful install and an existing npm publication.
+Another normal `mac-local` release does not restore Darwin provenance or pnpm
+consumer admission. See the [consumer troubleshooting guidance](docs/src/content/docs/guides/troubleshooting.mdx)
+for opt-in, package-specific exceptions and lockfile re-resolution.
+
 Earlier Darwin versions stay attested forever (`@takazudo/zfb-darwin-arm64` since 1.0.0,
 `@takazudo/zfb-darwin-x64` since 2.13.0). npm compares against any earlier attested version, so
-**every** local-Darwin release is a permanent trust downgrade for those two packages, not only the
-first: consumers with pnpm `trustPolicy: no-downgrade` can never install a new Darwin carrier
-version. The preflight in `release.yml` is default-deny and blocks each such release until the
+**every** local-Darwin release lacks the evidence those earlier versions carried, not only the
+first: consumers with pnpm `trustPolicy: no-downgrade` may need a deliberate, narrowly scoped
+exception for a new Darwin carrier version. The preflight in `release.yml` is default-deny and blocks each such release until the
 owner acknowledges it by one of two routes:
 
 1. **Per run:** the line `<!-- zfb-release: allow-provenance-downgrade -->` in the draft Release
