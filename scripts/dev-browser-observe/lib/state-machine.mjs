@@ -192,6 +192,7 @@ export async function runBatch({ scenarios, deps }) {
   if (deps.accountingRef) deps.accountingRef.current = acc;
   const startedNs = deps.startedNs ?? clock.now();
   let activeSnapshot = null;
+  let bodyRevision = null;
   let stopped = false;
 
   const append = (rec) => recorder.append(rec);
@@ -236,10 +237,12 @@ export async function runBatch({ scenarios, deps }) {
     const live = [];
     let liveSkipped = null;
     let settle = null;
+    const rule = settleRule(restore.actions ?? [], fs.noAutoUpdatePaths ?? []);
     if (signal?.aborted) liveSkipped = "session-deadline";
     else if (restore.mismatches.length > 0) liveSkipped = "hash-mismatch";
     else if (!alive.alive) liveSkipped = "server-not-alive";
     else {
+      const witness = rule.requireNativeUpdate ? bodyRevision : null;
       if (page.settle && mark)
         settle = await wait(
           page.settle({
@@ -247,10 +250,19 @@ export async function runBatch({ scenarios, deps }) {
             startNs: restoreNs,
             quietMs: timeouts.quietMs ?? 1500,
             boundMs: timeouts.restoreMs,
-            ...settleRule(restore.actions ?? [], fs.noAutoUpdatePaths ?? []),
+            ...rule,
+            ...(witness ? { bodyRevision: witness } : {}),
           }),
         );
-      for (const check of fs.liveChecks(snapshot)) {
+      for (const originalCheck of fs.liveChecks(snapshot)) {
+        // Recheck the exact body during its existing detail visit, preserving the navigation order.
+        const check =
+          bodyRevision && originalCheck.path === bodyRevision.path
+            ? {
+                ...originalCheck,
+                predicate: { kind: "all", of: [originalCheck.predicate, bodyRevision.predicate] },
+              }
+            : originalCheck;
         signal?.throwIfAborted();
         try {
           live.push({
@@ -268,7 +280,16 @@ export async function runBatch({ scenarios, deps }) {
         }
       }
     }
-    const ok = !signal?.aborted && restore.mismatches.length === 0 && live.every((l) => l.ok);
+    const bodyVerified =
+      !bodyRevision ||
+      (liveSkipped === null &&
+        (!rule.requireNativeUpdate || (settle?.settled && settle.bodyRevision?.matched === true)) &&
+        live.some((check) => check.path === bodyRevision.path && check.ok));
+    const ok =
+      !signal?.aborted &&
+      restore.mismatches.length === 0 &&
+      bodyVerified &&
+      live.every((l) => l.ok);
     let quiet = null;
     if (ok && liveSkipped === null && page.quietWindow)
       quiet = await wait(page.quietWindow(timeouts.quietMs ?? 1500));
@@ -334,6 +355,16 @@ export async function runBatch({ scenarios, deps }) {
     outer: for (const scenario of scenarios) {
       signal?.throwIfAborted();
       activeSnapshot = fs.snapshot();
+      bodyRevision = null;
+      const verifyBodyRevision =
+        deps.verifyBodyRevision &&
+        scenario.ops.every(
+          (op) =>
+            !op.inject &&
+            op.op === "edit-body" &&
+            op.article === scenario.ops[0].article &&
+            op.targetPath === scenario.ops[0].targetPath,
+        );
       append({
         type: "scenario-start",
         scenario: scenario.id,
@@ -595,6 +626,16 @@ export async function runBatch({ scenarios, deps }) {
           if (op.inject && r.controlPass !== true) notFired(where, op.inject, `outcome ${outcome}`);
           else stop(outcome, where);
           break outer;
+        }
+        // arm already read this value before the first edit. Reuse it across consecutive
+        // edits so a previous tokenized revision cannot become the cleanup baseline.
+        if (verifyBodyRevision && !bodyRevision) {
+          if (typeof armed.actual !== "string" || !armed.actual.trim())
+            throw new Error("missing pre-edit rendered body baseline");
+          bodyRevision = {
+            path: attempt.targetPath,
+            predicate: { kind: "text", selector: attempt.predicate.selector, equals: armed.actual },
+          };
         }
         const preDocUUID = armed.docUUID;
         const logMark = server.logMark?.() ?? null;
