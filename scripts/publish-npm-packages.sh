@@ -626,10 +626,12 @@ verify_published_md_wasm() {
 
 # Trust-downgrade advisory (issue #2623).
 # npm records a provenance attestation per PUBLISHED VERSION, and versions are
-# immutable. So a package published WITHOUT --provenance after earlier versions
-# carried it is a permanent *trust downgrade* for that package: a consumer with
-# pnpm's opt-in `trustPolicy: no-downgrade` cannot install it at all, and gets
-# ERR_PNPM_TRUST_DOWNGRADE ("possible package takeover").
+# immutable. A package published WITHOUT --provenance after earlier versions
+# carried it has a permanent provenance gap for that version. pnpm's opt-in
+# `trustPolicy: no-downgrade` can reject its resolution with
+# ERR_PNPM_TRUST_DOWNGRADE ("possible package takeover") unless the consumer's
+# own policy allows it. Optional dependencies may be omitted despite a
+# successful overall install.
 #
 # The setting is opt-in (default `off`), added in pnpm 10.21. Measured against the
 # live registry on 2026-08-27 (pnpm 10.25.0, 11.1.0, 11.2.0, 11.3.0), the blast
