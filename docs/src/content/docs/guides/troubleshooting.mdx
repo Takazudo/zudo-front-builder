@@ -144,7 +144,33 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 - If you are pinned to 3.1.0 or older on **AWS Amplify Hosting**, switch the app to a [custom build image](https://docs.aws.amazon.com/amplify/latest/userguide/custom-build-image.html) whose glibc is 2.35 or newer, e.g. `public.ecr.aws/docker/library/node:24-bookworm` (Debian 12, glibc 2.36). That image does not ship Amplify's `nvm`, so remove `nvm use` / `nvm install` lines from `amplify.yml` — the image's own Node is already on `PATH`.
 - For other hosts on glibc < 2.34, build in a Debian 12 / Ubuntu 22.04 container instead.
 
-## `ERR_PNPM_TRUST_DOWNGRADE` installing 2.12.0
+## Missing Darwin binary with pnpm trust policy
+
+Current releases build `@takazudo/zfb-darwin-arm64` and `@takazudo/zfb-darwin-x64` on the owner's Mac. GitHub OIDC authenticates the npm publication, but npm provenance would attest the build of the artifact, so these locally built packages are published honestly **without** provenance. ZFB's local-artifact admission and owner acknowledgement permit the producer's release; neither changes a consumer's pnpm policy. A normal next owner-Mac release has the same evidence model. The Darwin packages are published; pnpm can instead omit an `optionalDependency` after a policy rejection and still return a successful install status. A missing package can also result from omitted or disabled optional dependencies or an incomplete installation, so check the install evidence before assigning a cause.
+
+With [`trustPolicy: no-downgrade`](https://pnpm.io/settings/dependency-resolution#trustpolicy), pnpm compares a selected version's evidence with earlier published versions. If you explicitly accept the ongoing local-Darwin model, retain that policy and add only the two carrier names to your **existing** `trustPolicyExclude` list in `pnpm-workspace.yaml`:
+
+```yaml
+trustPolicy: no-downgrade
+trustPolicyExclude:
+  - '@takazudo/zfb-darwin-arm64'
+  - '@takazudo/zfb-darwin-x64'
+```
+
+Name-only entries also cover **future versions** of those two packages. For a per-release decision instead, use the exact resolved versions, for example:
+
+```yaml
+trustPolicy: no-downgrade
+trustPolicyExclude:
+  - '@takazudo/zfb-darwin-arm64@7.2.0'
+  - '@takazudo/zfb-darwin-x64@7.2.0'
+```
+
+Merge either pair into existing exclusions and preserve unrelated workspace settings. The exact-version pair does not exempt a later version. `minimumReleaseAgeExclude` waives only the maturity check, not a trust downgrade. [`trustPolicyIgnoreAfter: 10080`](https://pnpm.io/settings/dependency-resolution#trustpolicyignoreafter) ignores the trust check only after **each selected published version** is more than seven days old; it does not add provenance, and each newer version starts its own age window. The [pnpm 12.4.1 trust check](https://github.com/pnpm/pnpm/blob/v12.4.1/pnpm/crates/resolving-npm-resolver/src/trust_checks.rs) governs the reported behavior.
+
+If a previous lockfile omitted a Darwin carrier, waiting or editing policy alone cannot add it. On a project branch, preserve the old lockfile, then ask pnpm to re-resolve the **already pinned** ZFB version after choosing the policy: `pnpm update @takazudo/zfb@7.2.0 --lockfile-only` for a project pinned to 7.2.0 (substitute its own exact version). Inspect the lockfile diff for both Darwin entries and unchanged unrelated dependencies, then run `pnpm install --frozen-lockfile` to materialize dependencies. An ordinary `pnpm install` after the policy edit can retain an existing omitted lockfile entry. Inspect `pnpm install --reporter ndjson` output for optional-dependency `resolution_failure` / `ERR_PNPM_TRUST_DOWNGRADE`, confirm the exact ZFB and Darwin versions, and verify the native carrier file, `pnpm exec zfb --version`, and a minimal `zfb build`. Do not infer an unpublished package from a missing optional carrier.
+
+## Historical `ERR_PNPM_TRUST_DOWNGRADE` installing 2.12.0
 
 **Symptom:** installing or upgrading any `@takazudo/zfb*` package at `2.12.0` fails under pnpm's opt-in [`trustPolicy`](https://pnpm.io/settings/dependency-resolution#trustpolicy) set to `no-downgrade`:
 
@@ -171,7 +197,7 @@ Five of the six packages a default install pulls are affected. `@takazudo/zfb-da
 
 **Fix:** npm versions are immutable, so `2.12.0` itself can never gain an attestation. Prefer, in order:
 
-1. **Upgrade past it** to `2.13.0` or later. Those releases go out through the normal tag/release path with provenance restored, which clears the downgrade. This is the real fix.
+1. **For this historical all-package recovery incident, upgrade** to `2.13.0` or a later release that restored provenance for the affected hosted-built packages. This does not describe current owner-Mac Darwin publication.
 2. **Stay on `2.11.0`** if upgrading is not yet possible — it remains attested and avoids the affected `2.12.0` release.
 3. **Exempt just these packages**, if you need `2.12.0` now, with [`trustPolicyExclude`](https://pnpm.io/settings/dependency-resolution#trustpolicyexclude) in `pnpm-workspace.yaml` — it keeps the policy active for every other dependency:
 
@@ -185,9 +211,9 @@ Five of the six packages a default install pulls are affected. `@takazudo/zfb-da
      - "@takazudo/zfb-win32-x64-msvc@2.12.0"
    ```
 
-   Pin the version in each entry so the exemption expires on its own when you upgrade. A name pattern **cannot** be combined with a version (`"@takazudo/zfb*@2.12.0"` is rejected with `ERR_PNPM_INVALID_TRUST_POLICY_EXCLUDE`); use exact `name@version` entries as above, or an unversioned glob such as `"@takazudo/zfb*"` if you accept exempting all versions.
+   Pin the version in each entry so the exemption expires on its own when you upgrade. A name pattern **cannot** be combined with a version (`"@takazudo/zfb*@2.12.0"` is rejected with `ERR_PNPM_INVALID_TRUST_POLICY_EXCLUDE`); use the exact `name@version` entries above.
 
-Disabling `trustPolicy` outright also works, but drops the guard for **every** dependency rather than these five — prefer the scoped exemption.
+Keep `trustPolicy` active for other dependencies; this incident's exact-version entries are scoped to the five affected packages.
 
 ## `ERR_PNPM_TRUST_DOWNGRADE` installing `@takazudo/zfb-darwin-x64` 2.20.3
 
@@ -203,7 +229,7 @@ Because pnpm resolves all `optionalDependencies` regardless of the host platform
 
 **Fix:** npm versions are immutable, so `2.20.3` itself can never gain an attestation. Prefer, in order:
 
-1. **Upgrade to `2.20.4` or later.** Those releases go out through the normal provenance-first CI path with attestation restored, which clears the downgrade. This is the real fix.
+1. **For this historical CI-built x64 incident, upgrade** to `2.20.4` or a later release that restored attestation. This does not describe the current owner-Mac Darwin model.
 2. **Pin `2.20.2`** if upgrading is not yet possible — it remains attested and avoids the affected `2.20.3` release.
 3. **Exempt just this package**, if you need `2.20.3` now, with [`trustPolicyExclude`](https://pnpm.io/settings/dependency-resolution#trustpolicyexclude) in `pnpm-workspace.yaml`:
 
@@ -213,7 +239,7 @@ Because pnpm resolves all `optionalDependencies` regardless of the host platform
      - "@takazudo/zfb-darwin-x64@2.20.3"
    ```
 
-Disabling `trustPolicy` outright also works, but drops the guard for **every** dependency rather than this one — prefer the scoped exemption.
+Keep `trustPolicy` active for other dependencies; this incident's exact-version entry is scoped to the affected package.
 
 ## `import.meta.glob(...)` build error
 
