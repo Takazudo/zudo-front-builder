@@ -45,7 +45,8 @@ import { currentPins } from "../lib/identity.mjs";
 import { OBSERVER_PATH } from "../lib/browser.mjs";
 import { profileSchemaFor, semanticErrors, loadProfile } from "../lib/profile.mjs";
 import { stopOwned, snapshotOwnedWithArgs } from "../lib/process-owner.mjs";
-import { EXIT, execute } from "../lib/run.mjs";
+import { execute } from "./isolated-session.mjs";
+import { EXIT } from "../lib/run.mjs";
 import { validateAs } from "../lib/schema.mjs";
 import { loadSeriesPlan } from "../lib/series.mjs";
 import { startDevServer } from "../lib/server.mjs";
@@ -984,6 +985,7 @@ describe("launcher-tree ownership and stop", () => {
       if (target === 104 && signal === "SIGTERM") t.alive.delete(104);
     };
     const report = await stopOwned(t.handle, {
+      platform: "darwin", // These fixtures model BSD ps birth fields.
       intWaitMs: 150,
       termWaitMs: 150,
       killWaitMs: 150,
@@ -1009,6 +1011,7 @@ describe("launcher-tree ownership and stop", () => {
       }
     };
     const report = await stopOwned(t.handle, {
+      platform: "darwin", // These fixtures model BSD ps birth fields.
       intWaitMs: 100,
       termWaitMs: 100,
       killWaitMs: 100,
