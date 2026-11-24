@@ -44,21 +44,12 @@ describe("#1 unverifiable-birth roots reach the next-batch guard", () => {
     expect(liveOwnedFromRegistry([row], () => null, "darwin")).toHaveLength(0);
   });
 
-  it("on linux the 1 s procps lstart slack admits the previous second for the root row only", () => {
-    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 06:00:00 2026"), "linux")).toHaveLength(1);
-    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 05:59:59 2026"), "linux")).toHaveLength(1);
-    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 05:59:58 2026"), "linux")).toHaveLength(0);
-    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 06:00:05 2026", 77), "linux")).toHaveLength(
-      0,
-    );
-    expect(liveOwnedFromRegistry([row], () => null, "linux")).toHaveLength(0);
-    const member = { ...row, pid: 51 };
-    expect(
-      liveOwnedFromRegistry([member], at("Sat Nov 21 06:00:00 2026", 50, 51), "linux"),
-    ).toHaveLength(1);
-    expect(
-      liveOwnedFromRegistry([member], at("Sat Nov 21 05:59:59 2026", 50, 51), "linux"),
-    ).toHaveLength(0);
+  it("on Linux any present legacy row blocks admission despite display or group changes", () => {
+    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 05:59:58 2026"), "linux")).toEqual([row]);
+    expect(liveOwnedFromRegistry([row], at("Sat Nov 21 06:00:05 2026", 77), "linux")).toEqual([
+      row,
+    ]);
+    expect(liveOwnedFromRegistry([row], () => null, "linux")).toEqual([]);
   });
 
   it("verified rows still require the exact birth", () => {
@@ -72,7 +63,7 @@ describe("#1 unverifiable-birth roots reach the next-batch guard", () => {
           () => ({ ...verified, lstart: "Sat Nov 21 07:00:00 2026" }),
           platform,
         ),
-      ).toHaveLength(0);
+      ).toHaveLength(platform === "linux" ? 1 : 0);
   });
 });
 

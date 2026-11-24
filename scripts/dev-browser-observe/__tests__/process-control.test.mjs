@@ -26,6 +26,7 @@ import {
   birthIdentity,
   liveOwnedFromRegistry,
   sameBirth,
+  signalLinuxOwned,
   shouldRegisterOwned,
   snapshotOwned,
   spawnOwned,
@@ -67,13 +68,24 @@ const own = (args) => {
 // These tests read the host's real `ps`, so its lstart semantics (and the Linux procps slack) are the host's.
 const HOST_PLATFORM = process.platform;
 
+function signalFixture(expected, sig, group = false) {
+  if (!expected) throw new Error("missing fixture birth");
+  const now = birthIdentity(expected.pid);
+  if (!now) return;
+  if (!sameBirth(expected, now) || now.pgid !== expected.pgid || (group && now.pgid !== now.pid))
+    throw new Error("fixture ownership changed");
+  if (expected.birthVersion) signalLinuxOwned(expected, sig, group);
+  else process.kill(group ? -expected.pgid : expected.pid, sig);
+}
+
 afterEach(async () => {
   for (const h of children.splice(0)) {
     if (h.exit === null) {
       try {
         const pinned = h.testBirth ?? h.known?.get(h.child.pid);
         const now = birthIdentity(h.child.pid);
-        if (sameBirth(pinned, now) && now.pgid === h.child.pid) process.kill(-now.pgid, "SIGKILL");
+        if (sameBirth(pinned, now) && now.pgid === h.child.pid)
+          signalFixture(pinned, "SIGKILL", true);
       } catch {
         // already gone
       }
@@ -114,7 +126,7 @@ describe("real child processes", () => {
     expect(h.native.pid).toBeGreaterThan(0);
     const page = fakePage({
       onWait: () => {
-        setTimeout(() => process.kill(h.native.pid, "SIGKILL"), 50);
+        setTimeout(() => signalFixture(h.testBirth ?? h.native, "SIGKILL"), 50);
         return new Promise(() => {});
       },
     });
@@ -239,7 +251,7 @@ describe("real child processes", () => {
     const h = own(["-e", "setInterval(() => {}, 1000)"]);
     const entry = birthIdentity(h.native.pid);
     expect(liveOwnedFromRegistry([entry], undefined, HOST_PLATFORM)).toHaveLength(1);
-    process.kill(h.native.pid, "SIGKILL");
+    signalFixture(h.testBirth ?? h.native, "SIGKILL");
     await h.exited;
     expect(liveOwnedFromRegistry([entry], undefined, HOST_PLATFORM)).toHaveLength(0);
   });
@@ -321,7 +333,7 @@ describe("pgid scan after the root died (round 4 #5)", () => {
     expect([...h.known.keys()]).toEqual([h.native.pid]);
     const pinnedChild = birthIdentity(gcPid);
     expect(pinnedChild.ppid).toBe(h.child.pid);
-    process.kill(h.native.pid, "SIGKILL");
+    signalFixture(h.testBirth ?? h.native, "SIGKILL");
     await h.exited;
     const alive = (pid) => {
       try {
@@ -341,7 +353,8 @@ describe("pgid scan after the root died (round 4 #5)", () => {
         expect(signals).toEqual([]);
       } finally {
         const now = birthIdentity(gcPid);
-        if (sameBirth(pinnedChild, now) && now.pgid === h.child.pid) process.kill(gcPid, "SIGKILL");
+        if (sameBirth(pinnedChild, now) && now.pgid === h.child.pid)
+          signalFixture(pinnedChild, "SIGKILL");
       }
       return;
     }
@@ -485,7 +498,7 @@ describe("round 7 #1: an unverifiable root is registered with its real birth", (
     expect(
       liveOwnedFromRegistry([{ type: "owned", ...registered[0] }], undefined, HOST_PLATFORM),
     ).toHaveLength(1);
-    process.kill(h.native.pid, "SIGKILL");
+    signalFixture(h.testBirth ?? h.native, "SIGKILL");
     await h.exited;
     expect(
       liveOwnedFromRegistry(
@@ -730,9 +743,11 @@ describe("execute (identity gate)", () => {
       const s = setup();
       const kills = [];
       const pids = [];
+      const births = new Map();
       const runNodeImpl = withOnLine((args) => {
         const started = hanging("LOCKED fake\n")(args);
         pids.push(started.child.pid);
+        births.set(started.child.pid, birthIdentity(started.child.pid));
         return started;
       });
       const t0 = Date.now();
@@ -741,7 +756,7 @@ describe("execute (identity gate)", () => {
         runNodeImpl,
         killImpl: (pid, signal) => {
           kills.push([pid, signal]);
-          process.kill(pid, signal);
+          signalFixture(births.get(pid), signal);
         },
       });
       expect(Date.now() - t0).toBeGreaterThanOrEqual(1500);
@@ -758,8 +773,10 @@ describe("execute (identity gate)", () => {
       const s = setup();
       const kills = [];
       let holderPid = null;
+      const births = new Map();
       const runNodeImpl = withOnLine((args) => {
         const started = hanging("LOCKED fake\n")(args);
+        births.set(started.child.pid, birthIdentity(started.child.pid));
         if (args[0] === "hold-lock") holderPid = started.child.pid;
         return started;
       });
@@ -777,7 +794,7 @@ describe("execute (identity gate)", () => {
           birthImpl,
           killImpl: (pid, signal) => {
             kills.push([pid, signal]);
-            process.kill(pid, signal);
+            signalFixture(births.get(pid), signal);
           },
         });
         expect(r).toMatchObject({ ok: false, timedOut: true });
@@ -788,7 +805,7 @@ describe("execute (identity gate)", () => {
         expect(kills.some(([pid]) => pid === holderPid)).toBe(false);
         expect(r.children.find((c) => c.role === "second-run")).toMatchObject({ killed: true });
       } finally {
-        if (holderPid && birthIdentity(holderPid)) process.kill(holderPid, "SIGKILL");
+        if (holderPid) signalFixture(births.get(holderPid), "SIGKILL");
       }
     });
   });
@@ -957,7 +974,7 @@ describe("execute (identity gate)", () => {
         if (existsSync(active)) {
           const { root } = readJson(active);
           const live = birthIdentity(root.pid);
-          if (sameBirth(root, live) && live.pgid === root.pid) process.kill(root.pid, "SIGTERM");
+          if (sameBirth(root, live) && live.pgid === root.pid) signalFixture(root, "SIGTERM");
           for (let i = 0; i < 100 && birthIdentity(root.pid); i++) await delay(20);
           expect(birthIdentity(root.pid)).toBeNull();
           rmSync(active);

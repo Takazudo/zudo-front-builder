@@ -962,7 +962,7 @@ describe("launcher-tree ownership and stop", () => {
 
   it("classifies the npm → sh → sidecar → next → next-server tree from ps args", () => {
     const t = tree();
-    const owned = snapshotOwnedWithArgs(t.handle, t.psImpl);
+    const owned = snapshotOwnedWithArgs(t.handle, t.psImpl, "darwin");
     expect(owned.map((p) => p.pid)).toEqual([100, 101, 102, 103, 104]);
     expect(classifyRoles(distributionOf(FIXTURE, "next"), owned).map((r) => r.role)).toEqual([
       "npm",

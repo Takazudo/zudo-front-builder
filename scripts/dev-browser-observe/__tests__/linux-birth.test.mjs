@@ -75,6 +75,42 @@ describe("Linux survivor verification", () => {
       },
     };
   }
+  it("holds on an unreadable unknown group member after root exit", async () => {
+    const { handle, live, options } = fixture({ exitCode: 0 });
+    live.delete(42);
+    handle.known.delete(43);
+    const actual = { pid: 43, birthUnverifiable: true, error: "EACCES" };
+    const signals = [];
+    await expect(
+      stopOwned(handle, {
+        ...options,
+        birthImpl: (pid) => (pid === 43 ? actual : null),
+        killImpl: (...args) => signals.push(args),
+      }),
+    ).rejects.toMatchObject({
+      actual,
+      remaining: [actual],
+      steps: [],
+      code: "PID_REUSE",
+    });
+    expect(signals).toEqual([]);
+  });
+  it("honours cancellation after SIGINT without escalating", async () => {
+    const { handle, options } = fixture();
+    const controller = new AbortController();
+    const signals = [];
+    await expect(
+      stopOwned(handle, {
+        ...options,
+        signal: controller.signal,
+        killImpl(pid, signal) {
+          signals.push([pid, signal]);
+          controller.abort(new Error("terminal deadline"));
+        },
+      }),
+    ).rejects.toThrow("terminal deadline");
+    expect(signals).toEqual([[-42, "SIGINT"]]);
+  });
   it("signals a previously verified surviving descendant individually after leader exit", async () => {
     const { handle, live, options } = fixture({ exitCode: 0 });
     live.delete(42);

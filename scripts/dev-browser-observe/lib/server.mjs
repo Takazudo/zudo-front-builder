@@ -5,6 +5,7 @@ import {
   birthIdentity,
   liveKnownAsync,
   sameBirth,
+  signalLinuxOwned,
   snapshotOwned,
   spawnOwned,
 } from "./process-owner.mjs";
@@ -127,9 +128,10 @@ export function injectKillOwned(handle, killImpl = process.kill) {
   const root = handle.native;
   if (root == null) return { ok: false, reason: "never-spawned" };
   const now = handle.exit === null ? birthIdentity(root.pid) : null;
-  if (!sameBirth(root, now))
+  if (!sameBirth(root, now) || root.pgid !== now.pgid)
     return { ok: false, reason: "birth-identity-mismatch-or-gone", expected: root, actual: now };
-  killImpl(root.pid, "SIGKILL");
+  if (root.birthVersion && killImpl === process.kill) signalLinuxOwned(root, "SIGKILL");
+  else killImpl(root.pid, "SIGKILL");
   return { ok: true, pid: root.pid, signal: "SIGKILL", at: isoNow(), birth: now };
 }
 

@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { linuxBirth, LINUX_BIRTH, sameLinuxBirth } from "./linux-birth.mjs";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { delay, isoNow, run } from "./util.mjs";
 
@@ -235,6 +236,8 @@ export function snapshotOwnedWithArgs(handle, psImpl = run, platform = process.p
 
 export function snapshotOwned(handle, psImpl, platform = process.platform, readLinux = linuxBirth) {
   if (!handle.native) return [];
+  if (platform === "linux" && handle.native.birthVersion !== LINUX_BIRTH)
+    throw new PidReuseError(handle.native, readLinux(handle.native.pid));
   const table = psTable(psImpl);
   if (handle.native.birthVersion === LINUX_BIRTH) {
     const root = handle.native;
@@ -479,6 +482,30 @@ export async function stopOwned(
   return report;
 }
 
+/** Verify again after opening a pidfd so numeric reuse before delivery is harmless. */
+export function signalLinuxOwned(expected, signal, group = false) {
+  const helper = fileURLToPath(new URL("./linux-signal.py", import.meta.url));
+  const result = JSON.parse(
+    run(
+      "python3",
+      [
+        "-I",
+        helper,
+        String(expected.pid),
+        String(expected.pgid),
+        expected.bootId,
+        expected.startTicks,
+        signal,
+        group ? "group" : "process",
+      ],
+      { timeout: 1500, killSignal: "SIGKILL" },
+    ),
+  );
+  if (result.status === "mismatch") throw new PidReuseError(expected, result.actual);
+  if (result.status !== "gone" && result.status !== "sent") throw new Error("invalid pidfd result");
+  return result.status;
+}
+
 /** Never adopt an unknown member after the group leader exits. */
 async function stopLinux(
   handle,
@@ -508,7 +535,9 @@ async function stopLinux(
     else {
       for (const row of psTable(psImpl).filter((p) => p.pgid === root.pgid)) {
         const now = birthImpl(row.pid);
-        if (!now || now.pgid !== root.pgid) continue;
+        if (!now) continue;
+        if (now.birthUnverifiable) fail(handle.known?.get(row.pid) ?? row, now);
+        if (now.pgid !== root.pgid) continue;
         const known = handle.known?.get(row.pid);
         if (!known || !sameLinuxBirth(known, now)) fail(known ?? root, now);
       }
@@ -547,9 +576,12 @@ async function stopLinux(
         };
         report.steps.push(step);
         try {
-          killImpl(isGroup ? -root.pgid : expected.pid, signal);
+          if (killImpl === process.kill)
+            step.delivery = signalLinuxOwned(expected, signal, isGroup);
+          else killImpl(isGroup ? -root.pgid : expected.pid, signal);
         } catch (error) {
           step.error = String(error.code ?? error);
+          throw error;
         }
       }
       lastSignal = signal;
@@ -628,7 +660,7 @@ export function liveOwnedFromRegistry(
   return entries.filter((e) => {
     const now = birthImpl(e.pid);
     if (!now) return false;
-    if (platform === "linux" && now.birthVersion) return true;
+    if (platform === "linux") return true;
     if (e.birthUnverifiable) return inSpawnScope(e, { ...now, pid: e.pid }, platform);
     return sameBirth(e, now);
   });
