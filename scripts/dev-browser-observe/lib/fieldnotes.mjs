@@ -1387,7 +1387,8 @@ export function fieldNotesOps(m, { restorationWriteMethod = "in-place" } = {}) {
       a.write = a.writes[0];
       return a;
     },
-    performWrites: (writes, now) => performWrites(writes, now),
+    performWrites: (writes, now, signal) =>
+      performWrites(writes, now, undefined, undefined, signal),
     snapshot: () => {
       state.model = original;
       return snapshotPaths(snapshotSpec);

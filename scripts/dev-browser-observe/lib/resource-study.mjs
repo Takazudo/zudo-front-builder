@@ -9,7 +9,7 @@ import { nsToMs } from "./util.mjs";
  * wall cost. A sample is never started while the previous one is still running; such a tick is
  * counted in overlappingSkipped.
  */
-export function createResourceStudy({ study, sampleNow, append, clock, sleep = delay }) {
+export function createResourceStudy({ study, sampleNow, append, clock, signal, sleep = delay }) {
   const constants = PROTOCOLS[RESOURCE_STUDY_PROTOCOL];
   const state = {
     phase: { step: "start", cycle: null },
@@ -62,7 +62,9 @@ export function createResourceStudy({ study, sampleNow, append, clock, sleep = d
     state.phase = { step: kind, cycle };
     const t = clock.now();
     append({ type: "idle", label: "unmeasured", phase: kind, cycle, plannedMs: ms, step: "start" });
-    await sleep(ms);
+    signal?.throwIfAborted();
+    await sleep(ms, undefined, { signal });
+    signal?.throwIfAborted();
     append({
       type: "idle",
       label: "unmeasured",

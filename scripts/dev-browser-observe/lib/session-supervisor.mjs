@@ -1,0 +1,173 @@
+import { fork } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { admissionPath } from "./admission.mjs";
+import { readJson, writeJsonSync } from "./util.mjs";
+import { LABEL_RE, loadProfile } from "./profile.mjs";
+import { EXIT, findGitWorkTree } from "./run.mjs";
+
+export const FINALIZATION_MS = 60_000;
+
+const workerFile = new URL("./session-worker.mjs", import.meta.url);
+const monotonicMs = () => Number(process.hrtime.bigint() / 1_000_000n);
+
+// This timer lives outside the controller. Synchronous preparation, a stalled
+// teardown or a referenced pipe inside the controller cannot delay its firing.
+export function superviseSession({
+  profilePath,
+  label,
+  command,
+  scenarios = null,
+  stderr = (s) => process.stderr.write(s + "\n"),
+}) {
+  const started = monotonicMs();
+  const { profile, resolved } = loadProfile(profilePath);
+  const labelDir = join(resolved.outDir, String(label));
+  const recordFailure = (failure) => {
+    if (!LABEL_RE.test(label) || findGitWorkTree(resolved.outDir)) return;
+    const holdPath = process.platform === "linux" ? admissionPath() : null;
+    let intent = null;
+    let intentReadError = null;
+    if (holdPath && existsSync(holdPath)) {
+      try {
+        const active = readJson(holdPath);
+        if (active.controllerPid === failure.controllerPid && active.labelDir === labelDir)
+          intent = active;
+      } catch (error) {
+        intentReadError = String(error.message);
+      }
+    }
+    mkdirSync(resolved.outDir, { recursive: true });
+    const report = join(resolved.outDir, label + ".supervisor-" + randomUUID() + ".json");
+    writeJsonSync(report, {
+      schema: "dev-browser-observe.supervisor-failure.v1",
+      labelDir,
+      profilePath,
+      ...failure,
+      ownedServerAbsentAfterStop: false,
+      unresolvedResources: intent?.unresolved ?? ["session cleanup requires verification"],
+      registryPath: resolved.registryPath,
+      holdPath,
+      intent,
+      intentReadError,
+    });
+    stderr("session supervisor failure record: " + report);
+  };
+  return superviseController({
+    worker: workerFile,
+    args: { profilePath, label, command, scenarios },
+    deadline: started + profile.limits.wallCeilingMs,
+    stderr,
+    recordFailure,
+  });
+}
+
+export function superviseController({
+  worker,
+  args,
+  deadline,
+  stderr,
+  terminalMs = FINALIZATION_MS,
+  recordFailure = () => {},
+}) {
+  return new Promise((resolve) => {
+    const started = monotonicMs();
+    const workDeadline = deadline - terminalMs;
+    const child = fork(worker, [JSON.stringify({ ...args, workDeadline })], {
+      execArgv: [],
+      stdio: ["ignore", "inherit", "inherit", "ipc"],
+    });
+    let workTimer;
+    let terminalTimer;
+    let reason = null;
+    let phase = "work";
+    let completed = false;
+    let settled = false;
+    let attemptedSignal = null;
+    const finish = (code, exitSignal = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(workTimer);
+      clearTimeout(terminalTimer);
+      process.off("SIGTERM", interrupted);
+      process.off("SIGINT", interrupted);
+      if (!completed) reason ??= "controller exited without reporting completion";
+      if (exitSignal) reason ??= "controller exited on signal " + exitSignal;
+      if (reason) {
+        try {
+          recordFailure({
+            at: new Date().toISOString(),
+            phase,
+            reason,
+            startedMonotonicMs: started,
+            deadlineMonotonicMs: deadline,
+            workDeadlineMonotonicMs: workDeadline,
+            terminalBudgetMs: terminalMs,
+            elapsedMs: monotonicMs() - started,
+            controllerPid: child.pid ?? null,
+            controllerExitCode: code ?? null,
+            controllerExitSignal: exitSignal,
+            attemptedControllerSignal: attemptedSignal,
+          });
+        } catch (error) {
+          stderr("failed to persist supervisor failure: " + error.message);
+        }
+      }
+      resolve(!reason && typeof code === "number" ? code : EXIT.controllerError);
+    };
+    const finalize = () => {
+      clearTimeout(workTimer);
+      if (terminalTimer) return;
+      phase = "finalizing";
+      terminalTimer = setTimeout(
+        () => {
+          reason ??= "terminal deadline reached";
+          attemptedSignal = "SIGKILL";
+          stderr(
+            `session ${args.label}: terminal deadline reached; terminating controller; cleanup requires verification`,
+          );
+          // A ChildProcess handle references our direct, unreaped child. Never
+          // target a server PID or a process group from this independent timer.
+          child.kill("SIGKILL");
+          // A task stuck in uninterruptible kernel sleep may outlive SIGKILL.
+          // A durable intent still names the session and requires reconciliation.
+          if (child.connected) child.disconnect();
+          child.unref();
+          finish(child.exitCode, child.signalCode);
+        },
+        Math.max(0, Math.min(deadline - monotonicMs(), terminalMs)),
+      );
+    };
+    const stopWork = (cause) => {
+      if (settled) return;
+      reason ??= cause;
+      stderr(`session ${args.label}: ${cause}`);
+      finalize();
+      if (child.connected) child.send({ type: "abort", reason }, () => {});
+    };
+    const interrupted = () => stopWork("supervisor interrupted");
+    process.on("SIGTERM", interrupted);
+    process.on("SIGINT", interrupted);
+    child.on("message", (message) => {
+      if (message?.type === "finalizing") finalize();
+      if (message?.type === "finished") {
+        completed = true;
+        finalize();
+      }
+    });
+    child.once("disconnect", () => {
+      if (!completed && !settled) stopWork("controller IPC closed before completion");
+    });
+    child.once("error", (error) => {
+      reason ??= error.message;
+      if (!child.pid) finish(EXIT.controllerError);
+      stderr(`session ${args.label}: controller error: ${error.message}`);
+    });
+    child.once("exit", finish);
+    workTimer = setTimeout(
+      () => stopWork("session wall cleanup reserve reached"),
+      Math.max(0, workDeadline - monotonicMs()),
+    );
+  });
+}
