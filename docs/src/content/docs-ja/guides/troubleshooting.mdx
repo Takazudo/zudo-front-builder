@@ -141,7 +141,33 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 - 3.1.0 以前に固定していて **AWS Amplify Hosting** を使っている場合は、アプリの [カスタムビルドイメージ](https://docs.aws.amazon.com/amplify/latest/userguide/custom-build-image.html) を glibc 2.35 以降のものに切り替えてください（例: `public.ecr.aws/docker/library/node:24-bookworm`、Debian 12、glibc 2.36）。このイメージには Amplify の `nvm` が入っていないため、`amplify.yml` から `nvm use` / `nvm install` の行を削除してください。イメージ自身の Node がすでに `PATH` 上にあります。
 - glibc 2.34 未満のその他のホストでは、代わりに Debian 12 / Ubuntu 22.04 コンテナ内でビルドしてください。
 
-## 2.12.0 のインストールで `ERR_PNPM_TRUST_DOWNGRADE`
+## pnpm の trust policy で Darwin バイナリが見つからない場合
+
+現在の `@takazudo/zfb-darwin-arm64` と `@takazudo/zfb-darwin-x64` はオーナーの Mac でビルドしています。GitHub OIDC は npm への公開操作を認証しますが、npm provenance は成果物のビルドを証明するものです。そのため、ローカルでビルドした Darwin パッケージは provenance を付けずに正直に公開します。ZFB 側のローカル成果物の受け入れ判定とオーナーの承認は公開を許可しますが、利用者の pnpm ポリシーは変更しません。次の通常の Mac ローカルリリースでも Darwin の provenance は復活しません。パッケージが未公開なのではなく、pnpm がポリシーで `optionalDependency` を除外してもインストール自体は成功することがあります。optional dependencies の無効化・省略や不完全なインストールも原因になり得るため、ログを確認してください。
+
+[`trustPolicy: no-downgrade`](https://pnpm.io/settings/dependency-resolution#trustpolicy) は、選ばれたバージョンの証拠を以前に公開されたバージョンと比較します。継続する Mac ローカルビルドを明示的に受け入れる場合、`pnpm-workspace.yaml` の既存の `trustPolicyExclude` に Darwin の 2 名だけを**追加**し、ポリシーを維持してください。
+
+```yaml
+trustPolicy: no-downgrade
+trustPolicyExclude:
+  - '@takazudo/zfb-darwin-arm64'
+  - '@takazudo/zfb-darwin-x64'
+```
+
+名前だけの指定は、これら 2 パッケージの**将来のバージョン**にも適用されます。リリースごとに判断する場合は、解決されたバージョンを正確に指定します。例:
+
+```yaml
+trustPolicy: no-downgrade
+trustPolicyExclude:
+  - '@takazudo/zfb-darwin-arm64@7.2.0'
+  - '@takazudo/zfb-darwin-x64@7.2.0'
+```
+
+どちらも既存の除外リストに統合し、無関係な設定は残してください。バージョン指定の除外は次のバージョンには適用されません。`minimumReleaseAgeExclude` が免除するのは公開後の最低経過時間だけで、trust downgrade 判定は免除しません。[`trustPolicyIgnoreAfter: 10080`](https://pnpm.io/settings/dependency-resolution#trustpolicyignoreafter) は**選ばれた各公開バージョン**が 7 日より古い場合だけ trust 判定を無視します。provenance を復活させる設定ではなく、新しいバージョンには別の 7 日間があります。報告された挙動については [pnpm 12.4.1 の実装](https://github.com/pnpm/pnpm/blob/v12.4.1/pnpm/crates/resolving-npm-resolver/src/trust_checks.rs) を参照してください。
+
+以前のロックファイルから Darwin パッケージが省かれている場合、待機やポリシー変更だけではファイルは戻りません。プロジェクトの作業ブランチで元のロックファイルを保管し、ポリシーを選んだ後、**すでに固定されている** ZFB バージョンを pnpm で再解決してください。7.2.0 に固定したプロジェクトなら `pnpm update @takazudo/zfb@7.2.0 --lockfile-only` を使います（実際の正確なバージョンに読み替えてください）。ロックファイルの差分に Darwin の両エントリが増え、無関係な依存関係が変わらないことを確認し、`pnpm install --frozen-lockfile` で配置します。ポリシーの変更後に通常の `pnpm install` を実行するだけでは、以前の省略が残ることがあります。`pnpm install --reporter ndjson` の optional dependency の `resolution_failure` / `ERR_PNPM_TRUST_DOWNGRADE`、正確な ZFB / Darwin バージョン、ネイティブ環境用バイナリの有無、`pnpm exec zfb --version` と最小の `zfb build` を確認します。optional パッケージがないことだけで未公開と判断しないでください。
+
+## 2.12.0 のインストールでの過去の `ERR_PNPM_TRUST_DOWNGRADE`
 
 **症状:** pnpm のオプトイン設定 [`trustPolicy`](https://pnpm.io/settings/dependency-resolution#trustpolicy) を `no-downgrade` にしていると、`@takazudo/zfb*` のいずれかを `2.12.0` でインストール／アップグレードする際に失敗します。
 
@@ -168,7 +194,7 @@ pnpm 11.2 で、解決済みロックファイルの各エントリに対して�
 
 **対処:** npm のバージョンはイミュータブルなので、`2.12.0` 自体が後から attestation を得ることはありません。次の順で検討してください。
 
-1. **`2.13.0` 以降に上げる**。それらのリリースは通常のタグ/リリースパスを通り provenance が復活するため、ダウングレード判定が解消されます。これが本来の修正です。
+1. **この過去の全パッケージ recovery 事例では**、影響を受けた hosted-built パッケージで provenance が復活した `2.13.0` 以降に上げる。現在の Mac ローカル Darwin 公開を説明するものではありません。
 2. まだアップグレードできない場合は **`2.11.0` に留まる**。こちらは attestation があり、影響を受ける `2.12.0` を回避できます。
 3. どうしても今 `2.12.0` が必要な場合は、`pnpm-workspace.yaml` の [`trustPolicyExclude`](https://pnpm.io/settings/dependency-resolution#trustpolicyexclude) で**該当パッケージだけを除外する**。他のすべての依存関係についてはポリシーが有効なままになります。
 
@@ -182,9 +208,9 @@ pnpm 11.2 で、解決済みロックファイルの各エントリに対して�
      - "@takazudo/zfb-win32-x64-msvc@2.12.0"
    ```
 
-   各エントリでバージョンを固定しておくと、アップグレード時に除外が自動的に失効します。なお、名前のパターンとバージョンを組み合わせることは**できません**（`"@takazudo/zfb*@2.12.0"` は `ERR_PNPM_INVALID_TRUST_POLICY_EXCLUDE` で拒否されます）。上記のように厳密な `name@version` を列挙するか、全バージョンの除外を許容できる場合は `"@takazudo/zfb*"` のようなバージョンなしの glob を使ってください。
+   各エントリでバージョンを固定しておくと、アップグレード時に除外が自動的に失効します。なお、名前のパターンとバージョンを組み合わせることは**できません**（`"@takazudo/zfb*@2.12.0"` は `ERR_PNPM_INVALID_TRUST_POLICY_EXCLUDE` で拒否されます）。上記のように厳密な `name@version` を列挙してください。
 
-`trustPolicy` 自体を無効化しても回避できますが、これら 5 つではなく**すべての**依存関係についてガードが外れます。範囲を限定した除外を優先してください。
+他の依存関係では `trustPolicy` を維持してください。この事例のバージョン指定の除外は影響を受けた 5 パッケージに限定します。
 
 ## `@takazudo/zfb-darwin-x64` 2.20.3 のインストールで `ERR_PNPM_TRUST_DOWNGRADE`
 
@@ -200,7 +226,7 @@ pnpm はホストの OS に関係なくすべての `optionalDependencies` を�
 
 **対処:** npm のバージョンはイミュータブルなので、`2.20.3` 自体が後から attestation を得ることはありません。次の順で検討してください。
 
-1. **`2.20.4` 以降に上げる**。それらのリリースは通常の provenance-first な CI パスを通り attestation が復活するため、ダウングレード判定が解消されます。これが本来の修正です。
+1. **この過去の CI ビルド x64 事例では**、attestation が復活した `2.20.4` 以降に上げる。現在の Mac ローカル Darwin 公開を説明するものではありません。
 2. まだアップグレードできない場合は **`2.20.2` に留まる**。こちらは attestation があり、影響を受ける `2.20.3` を回避できます。
 3. どうしても今 `2.20.3` が必要な場合は、`pnpm-workspace.yaml` の [`trustPolicyExclude`](https://pnpm.io/settings/dependency-resolution#trustpolicyexclude) で**このパッケージだけを除外する**。
 
@@ -210,7 +236,7 @@ pnpm はホストの OS に関係なくすべての `optionalDependencies` を�
      - "@takazudo/zfb-darwin-x64@2.20.3"
    ```
 
-`trustPolicy` 自体を無効化しても回避できますが、このパッケージだけでなく**すべての**依存関係についてガードが外れます。範囲を限定した除外を優先してください。
+他の依存関係では `trustPolicy` を維持してください。この事例のバージョン指定の除外は影響を受けたパッケージに限定します。
 
 ## `import.meta.glob(...)` のビルドエラー
 

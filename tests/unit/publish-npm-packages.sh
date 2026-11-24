@@ -641,8 +641,8 @@ assert_missing_slugify_refused all-provenance
 assert_missing_slugify_refused mac-local
 
 # Case 7 — trust-downgrade advisory (#2623). Both provenance-omitting modes must
-# announce the downgrade loudly ONCE (::warning + job summary) so the release
-# operator schedules the follow-up attested release; the fully-attested mode must
+# announce the downgrade loudly ONCE (::warning + job summary), with distinct
+# ongoing-local and exceptional-recovery guidance; the fully-attested mode must
 # stay silent, or the warning trains operators to ignore it.
 # assert_advisory <desc> <mode> <want: yes|no> <scope-substring>
 assert_advisory() {
@@ -678,6 +678,16 @@ assert_advisory() {
     fail "$AD_DESC (advisory emitted more than once — it must be one-shot, not per-package)"
   elif ! grep -Fq 'ERR_PNPM_TRUST_DOWNGRADE' "$AD_SUMMARY"; then
     fail "$AD_DESC (job summary missing the consumer-facing error name)"
+  elif grep -Eiq 'ONLY remedy|only remedy|next patch.*provenance is restored|follow-up.*Darwin.*restore' "$AD_OUT" "$AD_SUMMARY"; then
+    fail "$AD_DESC (misleading automatic provenance remedy remains)"
+  elif [ "$AD_MODE" = mac-local ] && ! grep -Fq 'another normal local-Darwin release does not restore provenance' "$AD_OUT"; then
+    fail "$AD_DESC (normal mode warning missing ongoing Darwin model)"
+  elif [ "$AD_MODE" = mac-local ] && ! grep -Fq 'Another normal local-Darwin release remains unattested' "$AD_SUMMARY"; then
+    fail "$AD_DESC (normal mode summary missing ongoing Darwin model)"
+  elif [ "$AD_MODE" = recovery-no-provenance ] && ! grep -Fq 'hosted-built packages' "$AD_OUT"; then
+    fail "$AD_DESC (recovery warning missing hosted-built distinction)"
+  elif [ "$AD_MODE" = recovery-no-provenance ] && ! grep -Fq 'locally built Darwin carriers' "$AD_SUMMARY"; then
+    fail "$AD_DESC (recovery summary missing Darwin distinction)"
   else
     pass "$AD_DESC"
   fi

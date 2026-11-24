@@ -46,6 +46,17 @@ if (detectMuslLinux()) {
 }
 
 let binPath;
+const troubleshootingUrl =
+  "https://zfb.takazudomodular.com/docs/guides/troubleshooting/#missing-darwin-binary-with-pnpm-trust-policy";
+function missingPlatformDiagnostic(detail) {
+  console.error(
+    `[zfb] platform binary not installed: ${pkg}\n` +
+      `      ${detail}\n` +
+      "      Optional dependencies may be omitted or disabled, rejected by a package-manager\n" +
+      "      policy, or left incomplete. Check install logs/NDJSON for the actual cause.\n" +
+      `      Troubleshooting: ${troubleshootingUrl}`,
+  );
+}
 try {
   // Resolve the platform package's package.json to get the install directory.
   const pkgJsonPath = require.resolve(`${pkg}/package.json`);
@@ -53,12 +64,7 @@ try {
   const binName = process.platform === "win32" ? "zfb.exe" : "zfb";
   binPath = join(pkgDir, binName);
 } catch {
-  console.error(
-    `[zfb] platform binary not installed: ${pkg}\n` +
-      "      Some installers skip optionalDependencies. Reinstall with full deps,\n" +
-      "      e.g. `npm install --include=optional` or `pnpm install` without\n" +
-      "      `--no-optional` / `--ignore-scripts`.",
-  );
+  missingPlatformDiagnostic("The optional carrier package could not be resolved.");
   process.exit(1);
 }
 
@@ -66,11 +72,8 @@ try {
 // workspace) even before the Wave-5 workflow places the real binary. Without
 // this guard, spawnSync would silently ENOENT instead of printing a clear error.
 if (!existsSync(binPath)) {
-  console.error(
-    `[zfb] platform binary not installed: ${pkg}\n` +
-      "      Some installers skip optionalDependencies. Reinstall with full deps,\n" +
-      "      e.g. `npm install --include=optional` or `pnpm install` without\n" +
-      "      `--no-optional` / `--ignore-scripts`.",
+  missingPlatformDiagnostic(
+    `The carrier package resolved, but its expected binary is missing: ${binPath}`,
   );
   process.exit(1);
 }

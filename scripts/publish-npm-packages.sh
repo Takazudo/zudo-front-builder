@@ -626,10 +626,12 @@ verify_published_md_wasm() {
 
 # Trust-downgrade advisory (issue #2623).
 # npm records a provenance attestation per PUBLISHED VERSION, and versions are
-# immutable. So a package published WITHOUT --provenance after earlier versions
-# carried it is a permanent *trust downgrade* for that package: a consumer with
-# pnpm's opt-in `trustPolicy: no-downgrade` cannot install it at all, and gets
-# ERR_PNPM_TRUST_DOWNGRADE ("possible package takeover").
+# immutable. A package published WITHOUT --provenance after earlier versions
+# carried it has a permanent provenance gap for that version. pnpm's opt-in
+# `trustPolicy: no-downgrade` can reject its resolution with
+# ERR_PNPM_TRUST_DOWNGRADE ("possible package takeover") unless the consumer's
+# own policy allows it. Optional dependencies may be omitted despite a
+# successful overall install.
 #
 # The setting is opt-in (default `off`), added in pnpm 10.21. Measured against the
 # live registry on 2026-08-27 (pnpm 10.25.0, 11.1.0, 11.2.0, 11.3.0), the blast
@@ -643,24 +645,29 @@ verify_published_md_wasm() {
 # earlier attested version to compare against. That is why only 5 of the 6 v2.12.0
 # entries were flagged: zfb-darwin-x64 had no attestation through 2.12.0.
 #
-# The two provenance-omitting modes cannot avoid this (that is the point: neither
-# has an OIDC identity that would truthfully describe the artifacts). What they
-# CAN do is say so loudly, once, so the release operator schedules the only
-# remedy that exists — a subsequent normally-attested release.
+# OIDC authenticates publication, but it does not attest the build location of
+# locally produced bytes. Give each mode its own actionable advisory: a normal
+# mac-local follow-up still publishes the Darwin carriers without provenance.
 emit_trust_downgrade_advisory() {
-  local mode="$1" scope dir
+  local mode="$1" scope dir warning follow_up
   case "$mode" in
-    recovery-no-provenance) scope="EVERY package in this release" ;;
+    recovery-no-provenance)
+      scope="EVERY package in this release"
+      warning="Exceptional recovery: packages without npm provenance may be rejected by consumers using pnpm trustPolicy=no-downgrade. A normal follow-up can restore provenance for hosted-built packages, but the locally built Darwin carriers remain unattested."
+      follow_up="A normal follow-up release can restore provenance for hosted-built packages affected by this recovery. It does not restore provenance for owner-Mac Darwin carriers. Publish version-specific consumer guidance where needed."
+      ;;
     mac-local)
       scope=""
       for dir in "${LOCAL_BUILT_DIRS[@]}"; do
         scope="${scope:+${scope}, }$(tarball_field_by_dir "$dir" name)"
       done
+      warning="Normal owner-Mac build: these Darwin carriers publish without npm provenance. Consumers using pnpm trustPolicy=no-downgrade may see optional-dependency resolution rejected; another normal local-Darwin release does not restore provenance or consumer admission."
+      follow_up="This is the ongoing owner-Mac model. Another normal local-Darwin release remains unattested. Consumers who accept it can opt into narrowly scoped trustPolicyExclude entries for the two Darwin package names; inspect installation logs and the lockfile."
       ;;
     *) return 0 ;;
   esac
 
-  echo "::warning title=npm provenance trust downgrade::${scope} is being published WITHOUT npm provenance. Consumers who enable pnpm's trustPolicy=no-downgrade will fail to install this version (ERR_PNPM_TRUST_DOWNGRADE) on a fresh resolve, and on pnpm 11.2+ even with --frozen-lockfile. npm versions are immutable, so the ONLY remedy is a follow-up release published through the normal tag/release path with provenance restored. See RELEASE_DAY_CHECKLIST.md and issue #2623."
+  echo "::warning title=npm provenance trust downgrade::${scope} is being published WITHOUT npm provenance. ${warning} Affected pnpm resolutions may report ERR_PNPM_TRUST_DOWNGRADE. See RELEASE_DAY_CHECKLIST.md and docs troubleshooting."
 
   if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     {
@@ -668,15 +675,11 @@ emit_trust_downgrade_advisory() {
       echo
       echo "**${scope}** is published **without** npm provenance in this run (mode \`${mode}\`)."
       echo
-      echo "Consumers who enable pnpm's \`trustPolicy: no-downgrade\` will get"
-      echo "\`ERR_PNPM_TRUST_DOWNGRADE\`, because earlier versions of the same package carried a"
-      echo "provenance attestation. This blocks a fresh resolve on every pnpm version, and on"
-      echo "pnpm 11.2+ it also blocks \`--frozen-lockfile\` (11.2 added a verification pass"
-      echo "over already-resolved lockfile entries; earlier versions skip them)."
+      echo "${warning} Affected pnpm resolutions may report \`ERR_PNPM_TRUST_DOWNGRADE\`;"
+      echo "an optional carrier can be omitted even when publication succeeded."
       echo
-      echo "npm versions are immutable. **Required follow-up:** ship the next patch through the"
-      echo "normal tag/release path so provenance is restored, or publish explicit consumer"
-      echo "guidance. See \`RELEASE_DAY_CHECKLIST.md\` and issue #2623."
+      echo "${follow_up} npm versions are immutable. See \`RELEASE_DAY_CHECKLIST.md\`"
+      echo "and the EN/JA troubleshooting guides."
     } >>"$GITHUB_STEP_SUMMARY" || true # an advisory must never fail the publish job
   fi
 }
