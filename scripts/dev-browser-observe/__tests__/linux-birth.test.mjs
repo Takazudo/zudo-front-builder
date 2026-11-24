@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { linuxBirth, parseLinuxStat } from "../lib/linux-birth.mjs";
+import { threadCount, threadCountAsync } from "../lib/mac-process-adapter.mjs";
 import { sameBirth, liveOwnedFromRegistry, stopOwned } from "../lib/process-owner.mjs";
 
 const ticks = "100719925474099300";
@@ -34,7 +35,6 @@ describe("Linux kernel birth evidence", () => {
       ),
     ).rejects.toMatchObject({
       code: "PID_REUSE",
-      expected: record,
       actual,
       remaining: [actual],
       steps: [],
@@ -143,5 +143,38 @@ describe("Linux survivor verification", () => {
       actual: { startTicks: "777" },
     });
     expect(signals).toEqual([[-42, "SIGINT"]]);
+  });
+});
+
+describe("platform thread diagnostics", () => {
+  it.each(["0", "", "-1", "x", "9007199254740993"])(
+    "rejects malformed num_threads %j on both paths",
+    async (value) => {
+      const fields = ["S", "1", "42", ...Array(14).fill("0"), value, "0", ticks];
+      const read = (path) => (path.endsWith("stat") ? `42 (weird )) ${fields.join(" ")}` : bootId);
+      const options = { os: "linux", read };
+      expect(threadCount(record, undefined, options)).toBe("unavailable");
+      expect(await threadCountAsync(record, undefined, options)).toBe("unavailable");
+    },
+  );
+  it.each(["ENOENT", "EACCES"])("reports unavailable for %s", async (code) => {
+    const options = {
+      os: "linux",
+      read: () => {
+        throw Object.assign(new Error(code), { code });
+      },
+    };
+    expect(threadCount(record, undefined, options)).toBe("unavailable");
+    expect(await threadCountAsync(record, undefined, options)).toBe("unavailable");
+  });
+  it("keeps the macOS thread-row command on both paths", async () => {
+    const run = (cmd, args) => {
+      expect([cmd, ...args]).toEqual(["ps", "-M", "-p", "42"]);
+      return "USER PID\nu 42\nu 42\n";
+    };
+    expect(threadCount(42, run, { os: "darwin" })).toBe(2);
+    expect(
+      await threadCountAsync(42, (...args) => ({ stdout: run(...args) }), { os: "darwin" }),
+    ).toBe(2);
   });
 });

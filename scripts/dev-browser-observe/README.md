@@ -741,7 +741,7 @@ idles a further 60 s. A stopped batch skips the final idle and records why.
 
 From start to stop, owned processes are sampled every `sampleEveryMs`, using
 the birth-verified owned pids. Each sample is one async
-`ps -o pid=,rss=,vsz=` plus one async `ps -M` per pid. Every `resource-sample`
+`ps -o pid=,rss=,vsz=` with per-process thread counts from Linux `/proc/PID/stat` (num_threads and start ticks from the same row) or macOS `ps -M`. Every `resource-sample`
 record carries its phase (`edit`, `restore`, `after-restore`, `final`) and its
 own `costMs`, and a tick that would overlap a running sample is skipped and
 counted. The phase turns to `restore` as each restoration starts. A sample
@@ -1064,12 +1064,14 @@ declare `framework`.
   cohort's own reference series, so aggregate each series record separately.
   The `recovered-snapshot` zfb profile is a separately labelled reference too.
 
-## macOS process sampling
+## Process sampling on macOS and Linux
 
 `cli.mjs probe-mac` prints which `ps` fields work on the host. The fields are
-`rss`/`vsz` in KiB, threads (the `ps -M` line count), `lstart`, and the
+`rss`/`vsz` in KiB, threads (Linux `num_threads` or the macOS `ps -M` line count), `lstart`, and the
 `sysctl.proc_translated` flag. A field that does not work is recorded as
 `unavailable`.
+
+Historical Linux receipts that used `ps -M` contain procps security-information row counts. Those thread fields cannot identify thread growth.
 
 - A sampled peak is not a lifetime high-water mark.
 - Summed RSS is not unique memory.

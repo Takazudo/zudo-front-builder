@@ -264,16 +264,13 @@ export function startDevServer({
     waitExit: () => handle.exited,
     sampleResources: () => {
       const owned = handle.exit === null ? snapshotOwned(handle) : [];
-      return sample(owned.map((p) => p.pid));
+      return sample(owned);
     },
     /** Only owned pids whose birth identity still matches are sampled. */
     sampleResourcesAsync: async (opts = {}) => {
       const live = await liveKnownAsync(handle);
       return {
-        ...(await sampleAsync(
-          live.map((p) => p.pid),
-          opts,
-        )),
+        ...(await sampleAsync(live, opts)),
         birthVerified: live.length,
       };
     },

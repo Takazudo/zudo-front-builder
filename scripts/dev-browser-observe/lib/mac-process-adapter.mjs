@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { linuxBirth, parseLinuxStat, LINUX_BIRTH, sameLinuxBirth } from "./linux-birth.mjs";
 import { execFile } from "node:child_process";
 import { loadavg, totalmem, freemem, platform, arch, release } from "node:os";
 import { promisify } from "node:util";
@@ -28,11 +31,38 @@ function probeField(field, pid) {
   return out === null || out === "" ? { works: false } : { works: true, example: out };
 }
 
-export function threadCount(pid, runImpl = run) {
-  const out = safe(() => runImpl("ps", ["-M", "-p", String(pid)], probeOptions()));
-  if (out === null) return "unavailable";
-  const lines = out.split("\n").filter((l) => l.trim() !== "");
+const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id";
+
+function linuxThreadCount(expected, stat, bootId) {
+  const row = parseLinuxStat(stat, expected.pid, { withThreads: true });
+  const actual = { ...row, birthVersion: LINUX_BIRTH, bootId: bootId.trim() };
+  return sameLinuxBirth(expected, actual) && expected.pgid === row.pgid
+    ? row.threads
+    : "unavailable";
+}
+
+function macThreadRows(text) {
+  const lines = String(text ?? "")
+    .split("\n")
+    .filter((line) => line.trim() !== "");
   return lines.length >= 2 ? lines.length - 1 : "unavailable";
+}
+
+export function threadCount(
+  entry,
+  runImpl = run,
+  { os = process.platform, read = readFileSync } = {},
+) {
+  const pid = entry.pid ?? entry;
+  return (
+    safe(() => {
+      if (os !== "linux")
+        return macThreadRows(runImpl("ps", ["-M", "-p", String(pid)], probeOptions()));
+      const birth = typeof entry === "number" ? linuxBirth(pid) : entry;
+      if (!birth) return "unavailable";
+      return linuxThreadCount(birth, read(`/proc/${pid}/stat`, "utf8"), read(BOOT_ID_PATH, "utf8"));
+    }) ?? "unavailable"
+  );
 }
 
 export function probeMac(pid = process.pid) {
@@ -43,7 +73,14 @@ export function probeMac(pid = process.pid) {
   fields.threads =
     threads === "unavailable"
       ? { works: false }
-      : { works: true, example: String(threads), method: "ps -M line count minus header" };
+      : {
+          works: true,
+          example: String(threads),
+          method:
+            process.platform === "linux"
+              ? "/proc/PID/stat num_threads"
+              : "ps -M line count minus header",
+        };
   return {
     schema: "dev-browser-observe.mac-probe.v1",
     probedAt: isoNow(),
@@ -82,7 +119,8 @@ export function parseSampleRows(text) {
 }
 
 /** Instantaneous sample of the given pids; missing fields are recorded as "unavailable". */
-export function sample(pids, { runImpl = run, withThreads = true } = {}) {
+export function sample(owned, { runImpl = run, withThreads = true } = {}) {
+  const pids = owned.map((entry) => entry.pid ?? entry);
   const at = isoNow();
   const hr = process.hrtime.bigint().toString();
   if (pids.length === 0)
@@ -95,14 +133,14 @@ export function sample(pids, { runImpl = run, withThreads = true } = {}) {
     text = error?.stdout?.toString?.() ?? "";
   }
   const rows = parseSampleRows(text);
-  const processes = pids.map((pid) => {
+  const processes = pids.map((pid, index) => {
     const r = rows.find((x) => x.pid === pid);
     return {
       pid,
       present: Boolean(r),
       rssKiB: r ? r.rssKiB : "unavailable",
       vszKiB: r ? r.vszKiB : "unavailable",
-      threads: r && withThreads ? threadCount(pid, runImpl) : "unavailable",
+      threads: r && withThreads ? threadCount(owned[index], runImpl) : "unavailable",
     };
   });
   const summed = processes.reduce(
@@ -127,26 +165,40 @@ export function sampledPeak(samples) {
 
 const execFileAsync = promisify(execFile);
 
-/** Async `ps -M` line count; "unavailable" when ps fails or prints no thread rows. */
-export async function threadCountAsync(pid, execImpl = execFileAsync) {
-  let out;
+/** Linux reads num_threads and start ticks from the same kernel observation. */
+export async function threadCountAsync(
+  entry,
+  execImpl = execFileAsync,
+  { os = process.platform, read = readFile } = {},
+) {
+  const pid = entry.pid ?? entry;
   try {
-    out = (await execImpl("ps", ["-M", "-p", String(pid)], probeOptions())).stdout;
+    if (os !== "linux")
+      return macThreadRows(
+        (await execImpl("ps", ["-M", "-p", String(pid)], probeOptions())).stdout,
+      );
+    const birth = typeof entry === "number" ? linuxBirth(pid) : entry;
+    if (!birth) return "unavailable";
+    const [stat, bootId] = await Promise.all([
+      read(`/proc/${pid}/stat`, "utf8"),
+      read(BOOT_ID_PATH, "utf8"),
+    ]);
+    return linuxThreadCount(birth, stat, bootId);
   } catch {
     return "unavailable";
   }
-  const lines = String(out ?? "")
-    .split("\n")
-    .filter((l) => l.trim() !== "");
-  return lines.length >= 2 ? lines.length - 1 : "unavailable";
 }
 
 /**
  * Non-blocking variant used during the armed wait, so sampling never stalls
  * the event loop that timestamps binding delivery. Threads are sampled only with
- * withThreads (the resource study), one async ps -M per present pid.
+ * withThreads (the resource study), one platform-specific observation per present pid.
  */
-export async function sampleAsync(pids, { withThreads = false, execImpl = execFileAsync } = {}) {
+export async function sampleAsync(
+  owned,
+  { withThreads = false, execImpl = execFileAsync, os = process.platform } = {},
+) {
+  const pids = owned.map((entry) => entry.pid ?? entry);
   const at = isoNow();
   const hr = process.hrtime.bigint().toString();
   if (pids.length === 0)
@@ -160,14 +212,15 @@ export async function sampleAsync(pids, { withThreads = false, execImpl = execFi
   }
   const rows = parseSampleRows(text);
   const processes = await Promise.all(
-    pids.map(async (pid) => {
+    pids.map(async (pid, index) => {
       const r = rows.find((x) => x.pid === pid);
       return {
         pid,
         present: Boolean(r),
         rssKiB: r ? r.rssKiB : "unavailable",
         vszKiB: r ? r.vszKiB : "unavailable",
-        threads: r && withThreads ? await threadCountAsync(pid, execImpl) : "unavailable",
+        threads:
+          r && withThreads ? await threadCountAsync(owned[index], execImpl, { os }) : "unavailable",
       };
     }),
   );
