@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { policyFromSourceFiles } from "./release/npm-publication-policy.mjs";
+import { readNpmPayload } from "./release/npm-tarball-members.mjs";
 /**
  * verify-release-delivery.mjs — read-only audit of one published zfb release.
  *
@@ -66,7 +67,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
-import { HOLDING_DIST_TAG, PUBLISHED_PACKAGES, compareSemver } from "./retire-next-dist-tag.mjs";
+import { HOLDING_DIST_TAG, compareSemver } from "./retire-next-dist-tag.mjs";
 import {
   MD_WASM_PACKAGE,
   MD_WASM_PATHS,
@@ -563,24 +564,19 @@ export function parseTar(buffer) {
 }
 
 export function readNpmTarball(bytes, maxUnpacked = LIMITS.unpacked) {
-  let tar;
-  try {
-    tar = gunzipSync(bytes, { maxOutputLength: maxUnpacked });
-  } catch (error) {
-    const bound = error?.code === "ERR_BUFFER_TOO_LARGE" || error instanceof RangeError;
-    const wrapped = new Error(
-      bound
-        ? `unpacked tarball exceeds the ${maxUnpacked}-byte bound`
-        : `gunzip failed: ${error.message}`,
-    );
-    wrapped.verdict = bound ? STATUS.INCOMPLETE : STATUS.FAILED;
-    throw wrapped;
-  }
-  const files = new Map();
-  for (const [path, entry] of parseTar(tar)) {
-    files.set(path.startsWith("package/") ? path.slice("package/".length) : path, entry);
-  }
-  return files;
+  return readNpmPayload(bytes, {
+    maxOutputLength: maxUnpacked,
+    onGunzipError(error) {
+      const bound = error?.code === "ERR_BUFFER_TOO_LARGE" || error instanceof RangeError;
+      const wrapped = new Error(
+        bound
+          ? `unpacked tarball exceeds the ${maxUnpacked}-byte bound`
+          : `gunzip failed: ${error.message}`,
+      );
+      wrapped.verdict = bound ? STATUS.INCOMPLETE : STATUS.FAILED;
+      throw wrapped;
+    },
+  });
 }
 
 // ── Identity of the verifier itself ─────────────────────────────────────────
@@ -1710,9 +1706,10 @@ async function verifyNpmPackage(ctx, name) {
     });
   }
 
+  let files;
   if (integrityOk) {
     try {
-      const files = readNpmTarball(bytes);
+      files = readNpmTarball(bytes);
       const manifest = JSON.parse(files.get("package.json")?.data.toString("utf8") ?? "null");
       const problems = [];
       if (manifest?.name !== name || manifest?.version !== version)
@@ -1758,13 +1755,14 @@ async function verifyNpmPackage(ctx, name) {
     // attestation would falsely claim an Actions build. Identity comes from
     // the admitted Release bytes instead.
     const expected = ctx.ownerMacIdentity?.[ownerMacTarget];
-    const files = integrityOk ? readNpmTarball(bytes) : null;
     if (!expected) {
       mark("darwin-identity", STATUS.INCOMPLETE, {
         reason: `the Release ${ownerMacTarget} archive/addon identity could not be established`,
       });
     } else if (!files) {
-      mark("darwin-identity", STATUS.FAILED, { reason: "not inspected: tarball integrity failed" });
+      mark("darwin-identity", pkg.checks.contents.status, {
+        reason: pkg.checks.contents.reason,
+      });
     } else {
       const binary = files.get("zfb");
       const addon = files.get("zfb-css.node");

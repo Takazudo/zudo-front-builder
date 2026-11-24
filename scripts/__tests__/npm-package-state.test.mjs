@@ -5,7 +5,9 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { finalizeDecision } from "../release/finalize-gate.mjs";
+import * as npmTarball from "../release/npm-tarball-members.mjs";
 import {
   collectStates,
   darwinDigestProblems,
@@ -14,6 +16,7 @@ import {
   packageState,
   parseArgs,
   provenanceIdentity,
+  SLSA_PROVENANCE_V1,
 } from "../release/npm-package-state.mjs";
 import {
   loadReceipts,
@@ -97,13 +100,29 @@ const ctx = (request, extra = {}) => ({
   ...extra,
 });
 
+const tarballUrl = `${REG}/package.tgz`;
+const packageTarball = tarGz({ "readme.txt": "package-state fixture" });
+const packageIntegrity = integrityOf(packageTarball);
+const packageDist = { integrity: packageIntegrity, tarball: tarballUrl };
+
+function attestationForTestTarball() {
+  const bundle = JSON.parse(FIXTURE);
+  const attestation = bundle.attestations.find(
+    (entry) => entry.predicateType === SLSA_PROVENANCE_V1,
+  );
+  const envelope = attestation.bundle.dsseEnvelope;
+  const statement = JSON.parse(Buffer.from(envelope.payload, "base64").toString("utf8"));
+  statement.subject[0].digest.sha512 = createHash("sha512").update(packageTarball).digest("hex");
+  envelope.payload = Buffer.from(JSON.stringify(statement)).toString("base64");
+  return bundle;
+}
+
 function attestedRecord(overrides = {}) {
   return {
     name: REAL.name,
     version: REAL.version,
     dist: {
-      integrity: REAL.integrity,
-      tarball: `${REG}/zfb.tgz`,
+      ...packageDist,
       attestations: {
         url: `${REG}/att/zfb`,
         provenance: { predicateType: "https://slsa.dev/provenance/v1" },
@@ -129,10 +148,11 @@ describe("provenanceIdentity (real 6.0.1 bundle)", () => {
 });
 
 describe("packageState", () => {
-  it("present-verified by attestation gitCommit (real bundle)", async () => {
+  it("present-verified by attestation gitCommit and inspected tarball", async () => {
     const { request } = registry({
       [versionUrl(REAL.name, REAL.version)]: ok(attestedRecord()),
-      [`${REG}/att/zfb`]: ok(FIXTURE),
+      [`${REG}/att/zfb`]: ok(attestationForTestTarball()),
+      [tarballUrl]: ok(packageTarball),
     });
     const result = await packageState(REAL.name, ctx(request));
     expect(result).toMatchObject({ state: "present-verified", method: "attestation" });
@@ -141,7 +161,8 @@ describe("packageState", () => {
   it("present-unverified when the attestation names another commit", async () => {
     const { request } = registry({
       [versionUrl(REAL.name, REAL.version)]: ok(attestedRecord()),
-      [`${REG}/att/zfb`]: ok(FIXTURE),
+      [`${REG}/att/zfb`]: ok(attestationForTestTarball()),
+      [tarballUrl]: ok(packageTarball),
     });
     const result = await packageState(REAL.name, ctx(request, { sourceCommit: OTHER }));
     expect(result.state).toBe("present-unverified");
@@ -155,7 +176,8 @@ describe("packageState", () => {
           dist: { ...attestedRecord().dist, integrity: integrityOf(Buffer.from("x")) },
         }),
       ),
-      [`${REG}/att/zfb`]: ok(FIXTURE),
+      [`${REG}/att/zfb`]: ok(attestationForTestTarball()),
+      [tarballUrl]: ok(packageTarball),
     });
     expect((await packageState(REAL.name, ctx(request))).detail).toContain("subject digest");
   });
@@ -172,11 +194,12 @@ describe("packageState", () => {
 
   it("present-verified by gitHead when there is no attestation", async () => {
     const { request } = registry({
+      [tarballUrl]: ok(packageTarball),
       [versionUrl("@takazudo/zfb-linux-x64-gnu", REAL.version)]: ok({
         name: "@takazudo/zfb-linux-x64-gnu",
         version: REAL.version,
         gitHead: REAL.commit,
-        dist: { integrity: REAL.integrity },
+        dist: packageDist,
       }),
     });
     const result = await packageState("@takazudo/zfb-linux-x64-gnu", ctx(request));
@@ -188,7 +211,7 @@ describe("packageState", () => {
       ok({
         name: "create-zfb",
         version: REAL.version,
-        dist: { integrity: REAL.integrity },
+        dist: packageDist,
         ...extra,
       });
     let { request } = registry({
@@ -201,6 +224,64 @@ describe("packageState", () => {
     expect(none.detail).toContain("no attestation, gitHead or admitted digest");
   });
 
+  it("keeps structurally rejected content out of registry and finalization admission", async () => {
+    const name = "create-zfb";
+    const { request, calls } = registry({
+      [versionUrl(name, REAL.version)]: ok({
+        name,
+        version: REAL.version,
+        gitHead: REAL.commit,
+        dist: packageDist,
+      }),
+      [tarballUrl]: ok(packageTarball),
+    });
+    const inspect = vi.spyOn(npmTarball, "readNpmPayload").mockImplementationOnce(() => {
+      throw new Error("npm tarball duplicate file destination: package/readme.txt");
+    });
+    try {
+      const report = await collectStates({
+        ...ctx(request),
+        packages: [name],
+        tarballIntegrity: packageIntegrity,
+      });
+      expect(report.packages[0]).toMatchObject({
+        state: "present-unverified",
+        detail: "tarball contents: npm tarball duplicate file destination: package/readme.txt",
+      });
+      expect(report.allVerified).toBe(false);
+      expect(
+        finalizeDecision({
+          inventory: { ci: { missing: [] }, darwin: { missing: [] }, conflicting: [] },
+          npm: report,
+          admission: { admitted: true },
+        }),
+      ).toEqual({
+        cleared: false,
+        reasons: ["blocked: npm packages present-unverified (create-zfb)"],
+      });
+      expect(calls).toEqual([versionUrl(name, REAL.version), tarballUrl]);
+    } finally {
+      inspect.mockRestore();
+    }
+  });
+
+  it("reports unavailable registry tarball bytes as uncertain", async () => {
+    const name = "create-zfb";
+    const { request } = registry({
+      [versionUrl(name, REAL.version)]: ok({
+        name,
+        version: REAL.version,
+        gitHead: REAL.commit,
+        dist: packageDist,
+      }),
+      [tarballUrl]: notFound(),
+    });
+    expect(await packageState(name, ctx(request))).toMatchObject({
+      state: "uncertain",
+      error: `GET ${tarballUrl} answered HTTP 404`,
+    });
+  });
+
   it("absent only after every bounded re-read answers 404", async () => {
     const { request, calls } = registry({});
     const result = await packageState("create-zfb", ctx(request));
@@ -211,10 +292,16 @@ describe("packageState", () => {
   it("a 404 followed by a 200 (registry lag) is present, not absent", async () => {
     let n = 0;
     const { request } = registry({
+      [tarballUrl]: ok(packageTarball),
       [versionUrl("create-zfb", REAL.version)]: () =>
         ++n === 1
           ? notFound()
-          : ok({ name: "create-zfb", version: REAL.version, gitHead: REAL.commit, dist: {} }),
+          : ok({
+              name: "create-zfb",
+              version: REAL.version,
+              gitHead: REAL.commit,
+              dist: packageDist,
+            }),
     });
     expect((await packageState("create-zfb", ctx(request))).state).toBe("present-verified");
   });
@@ -285,10 +372,10 @@ describe("packageState", () => {
     });
 
     it("reports digest problems for a missing addon or a non-admitted verdict", () => {
-      expect(darwinDigestProblems([], { admitted: false }, "x86_64-apple-darwin")[0]).toContain(
-        "no admitted",
-      );
-      const files = [{ name: "package/zfb", data: Buffer.from(binary) }];
+      expect(
+        darwinDigestProblems(new Map(), { admitted: false }, "x86_64-apple-darwin")[0],
+      ).toContain("no admitted");
+      const files = new Map([["zfb", { data: Buffer.from(binary) }]]);
       expect(darwinDigestProblems(files, verdict(), "x86_64-apple-darwin")).toEqual([
         "package/zfb-css.node is missing from the packed carrier",
       ]);
@@ -300,7 +387,8 @@ describe("collectStates / expectations / CLI", () => {
   it("summarizes a partial publish: some verified, one absent, one unverified", async () => {
     const { request } = registry({
       [versionUrl("@takazudo/zfb", REAL.version)]: ok(attestedRecord()),
-      [`${REG}/att/zfb`]: ok(FIXTURE),
+      [`${REG}/att/zfb`]: ok(attestationForTestTarball()),
+      [tarballUrl]: ok(packageTarball),
       [versionUrl("create-zfb", REAL.version)]: ok({
         name: "create-zfb",
         version: REAL.version,
@@ -338,12 +426,13 @@ describe("collectStates / expectations / CLI", () => {
   it("finalize after a mixed partial publish: observed provenance flows into the expectations", async () => {
     const { request } = registry({
       [versionUrl("@takazudo/zfb", REAL.version)]: ok(attestedRecord()),
-      [`${REG}/att/zfb`]: ok(FIXTURE),
+      [`${REG}/att/zfb`]: ok(attestationForTestTarball()),
+      [tarballUrl]: ok(packageTarball),
       [versionUrl("create-zfb", REAL.version)]: ok({
         name: "create-zfb",
         version: REAL.version,
         gitHead: REAL.commit,
-        dist: {},
+        dist: packageDist,
       }),
     });
     const report = await collectStates({
@@ -362,14 +451,17 @@ describe("collectStates / expectations / CLI", () => {
     const record = (extra = {}) => ({
       name: "create-zfb",
       version: REAL.version,
-      dist: { integrity: REAL.integrity },
+      dist: packageDist,
       ...extra,
     });
     it("verifies on an exact dist.integrity match without gitHead or attestation", async () => {
-      const { request } = registry({ [versionUrl("create-zfb", REAL.version)]: ok(record()) });
+      const { request } = registry({
+        [versionUrl("create-zfb", REAL.version)]: ok(record()),
+        [tarballUrl]: ok(packageTarball),
+      });
       const result = await packageState(
         "create-zfb",
-        ctx(request, { tarballIntegrity: REAL.integrity }),
+        ctx(request, { tarballIntegrity: packageIntegrity }),
       );
       expect(result).toMatchObject({
         state: "present-verified",
@@ -380,16 +472,18 @@ describe("collectStates / expectations / CLI", () => {
     it("an exact match outranks a foreign gitHead", async () => {
       const { request } = registry({
         [versionUrl("create-zfb", REAL.version)]: ok(record({ gitHead: OTHER })),
+        [tarballUrl]: ok(packageTarball),
       });
       const result = await packageState(
         "create-zfb",
-        ctx(request, { tarballIntegrity: REAL.integrity }),
+        ctx(request, { tarballIntegrity: packageIntegrity }),
       );
       expect(result.method).toBe("integrity");
     });
     it("a mismatch falls back to gitHead (a recovery rebuild differs byte-wise)", async () => {
       const { request } = registry({
         [versionUrl("create-zfb", REAL.version)]: ok(record({ gitHead: REAL.commit })),
+        [tarballUrl]: ok(packageTarball),
       });
       const result = await packageState(
         "create-zfb",
@@ -400,11 +494,12 @@ describe("collectStates / expectations / CLI", () => {
     it("never overrides an attestation that names another commit", async () => {
       const { request } = registry({
         [versionUrl(REAL.name, REAL.version)]: ok(attestedRecord()),
-        [`${REG}/att/zfb`]: ok(FIXTURE),
+        [`${REG}/att/zfb`]: ok(attestationForTestTarball()),
+        [tarballUrl]: ok(packageTarball),
       });
       const result = await packageState(
         REAL.name,
-        ctx(request, { sourceCommit: OTHER, tarballIntegrity: REAL.integrity }),
+        ctx(request, { sourceCommit: OTHER, tarballIntegrity: packageIntegrity }),
       );
       expect(result.state).toBe("present-unverified");
     });
@@ -592,7 +687,8 @@ describe("processing: accepted by npm but still not visible", () => {
   it("a visible version ignores receipts", async () => {
     const { request } = registry({
       [versionUrl(REAL.name, REAL.version)]: ok({ ...attestedRecord(), gitHead: REAL.commit }),
-      [`${REG}/att/zfb`]: ok(FIXTURE),
+      [`${REG}/att/zfb`]: ok(attestationForTestTarball()),
+      [tarballUrl]: ok(packageTarball),
     });
     const result = await packageState(REAL.name, {
       ...ctx(request),

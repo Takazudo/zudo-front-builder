@@ -26,8 +26,8 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseTarGz } from "../admit-darwin-artifacts.mjs";
 import { isMain } from "./gh.mjs";
+import { readNpmPayload } from "./npm-tarball-members.mjs";
 import { PLATFORM, SCHEMA, inspectTarball } from "./pack-release-tarballs.mjs";
 
 import {
@@ -38,13 +38,6 @@ import {
 export const KNOWN_PACKAGES = KNOWN_PACKAGE_DIRS;
 
 const integrityOf = (bytes) => `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
-
-/** Does the packed @takazudo/zfb export ./css (so every carrier needs its addon)? */
-export function packedExportsCss(bytes) {
-  const entry = parseTarGz(bytes).find((e) => e.name === "package/package.json");
-  const pkg = JSON.parse(entry?.data.toString("utf8") ?? "{}");
-  return Boolean(pkg.exports?.["./css"] ?? pkg.publishConfig?.exports?.["./css"]);
-}
 
 export function verifyTarballs({
   dir,
@@ -91,10 +84,11 @@ export function verifyTarballs({
   const zfbRow = [...bytesOf.keys()].find((row) => row.name === "@takazudo/zfb");
   let hasCss = false;
   try {
-    hasCss = zfbRow ? packedExportsCss(bytesOf.get(zfbRow)) : false;
     if (zfbRow) {
-      const entry = parseTarGz(bytesOf.get(zfbRow)).find((e) => e.name === "package/package.json");
+      const entry = readNpmPayload(bytesOf.get(zfbRow)).get("package.json");
+      if (!entry) throw new Error("package/package.json is missing");
       const sdk = JSON.parse(entry.data.toString("utf8"));
+      hasCss = Boolean(sdk.exports?.["./css"] ?? sdk.publishConfig?.exports?.["./css"]);
       for (const name of policy.suspended) {
         for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
           if (Object.hasOwn(sdk[field] ?? {}, name))
@@ -103,7 +97,7 @@ export function verifyTarballs({
       }
     }
   } catch (error) {
-    problems.push(`@takazudo/zfb: unreadable packed package.json: ${error.message}`);
+    problems.push(`@takazudo/zfb: packed SDK content rejected: ${error.message}`);
   }
   for (const [row, bytes] of bytesOf) {
     if (PLATFORM[row.dir]?.triple && !verdict?.admitted) {

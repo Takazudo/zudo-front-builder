@@ -28,8 +28,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { basename, join, posix, resolve } from "node:path";
-import { parseTarGz } from "../admit-darwin-artifacts.mjs";
+import { basename, join, resolve } from "node:path";
 import {
   assertMdWasmManifest,
   verifyMdWasmArtifacts,
@@ -37,6 +36,7 @@ import {
 import { isMain } from "./gh.mjs";
 import { policyForCommit, assertPackageRows } from "./npm-publication-policy.mjs";
 import { darwinDigestProblems } from "./npm-package-state.mjs";
+import { readNpmPayload } from "./npm-tarball-members.mjs";
 
 export const PLATFORM = Object.freeze({
   "packages/zfb-darwin-arm64": { binary: "zfb", triple: "aarch64-apple-darwin" },
@@ -103,13 +103,13 @@ export function inspectTarball(
   { dir, name, version, hasCss, verdict, mdWasmManifest, expectedGitHead },
 ) {
   const problems = [];
-  let entries;
+  let files;
   try {
-    entries = parseTarGz(bytes);
+    files = readNpmPayload(bytes);
   } catch (error) {
-    return { problems: [`unreadable tarball: ${error.message}`] };
+    return { problems: [`tarball content rejected: ${error.message}`] };
   }
-  const file = (path) => entries.find((entry) => entry.name === `package/${path}`);
+  const file = (path) => files.get(path);
   let manifest = null;
   try {
     manifest = JSON.parse(file("package.json")?.data.toString("utf8") ?? "null");
@@ -122,24 +122,6 @@ export function inspectTarball(
     );
   }
   if (expectedGitHead !== undefined) {
-    // npm strips the archive's first path component when reading the manifest.
-    if (
-      entries.some(
-        ({ name, typeflag }) =>
-          !["0", "5"].includes(typeflag) ||
-          !name.startsWith("package/") ||
-          name.includes("\\") ||
-          posix.normalize(name) !== name,
-      )
-    ) {
-      problems.push("tarball has noncanonical package paths or unsupported entry types");
-    }
-    const manifests = entries.filter(
-      ({ name }) => name.replace(/\/$/, "") === "package/package.json",
-    );
-    if (manifests.length !== 1 || manifests[0]?.typeflag !== "0") {
-      problems.push("tarball must contain exactly one regular package/package.json");
-    }
     if (typeof manifest?.gitHead !== "string" || !/^[0-9a-f]{40}$/.test(manifest.gitHead)) {
       problems.push("packed package.json gitHead must be a full 40-hex source commit");
     } else if (manifest.gitHead !== expectedGitHead) {
@@ -165,7 +147,7 @@ export function inspectTarball(
     }
     if (hasCss && !file("zfb-css.node")?.data.length) problems.push("zfb-css.node is missing");
     if (platform.triple && verdict)
-      problems.push(...darwinDigestProblems(entries, verdict, platform.triple));
+      problems.push(...darwinDigestProblems(files, verdict, platform.triple));
   }
   let shipped = null;
   if (dir === MD_WASM_DIR) {

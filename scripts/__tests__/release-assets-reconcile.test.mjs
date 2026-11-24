@@ -2,11 +2,12 @@
 // finalization-only gate / release-status decision tables (#4690). Every `gh`
 // call goes to an injected in-memory fake.
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vite-plus/test";
-import { finalizeDecision } from "../release/finalize-gate.mjs";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { finalizeDecision, main as finalizeMain } from "../release/finalize-gate.mjs";
+import * as npmPackageState from "../release/npm-package-state.mjs";
 import { plan, reconcile } from "../release/reconcile-release-assets.mjs";
 import { assetInventory, expectedReleaseAssets } from "../release/release-assets-contract.mjs";
 import {
@@ -161,6 +162,48 @@ describe("finalizeDecision", () => {
       cleared: true,
       reasons: [],
     });
+  });
+
+  it("does not write expectations when registry inspection rejects package contents", async () => {
+    const dir = localDir({ "admission.json": JSON.stringify(admitted) });
+    const expectations = join(dir, "expectations.tsv");
+    const report = npmSummary({ "present-unverified": ["create-zfb"] });
+    const inspect = vi.spyOn(npmPackageState, "collectStates").mockResolvedValueOnce({
+      ...report,
+      packages: [
+        {
+          name: "create-zfb",
+          state: "present-unverified",
+          detail: "tarball contents: npm tarball duplicate file destination: package/readme.txt",
+        },
+      ],
+    });
+    const gh = (args) => {
+      if (args[0] === "release") return JSON.stringify({ assets: allAssets() });
+      return JSON.stringify({
+        tree: [{ path: "packages/zfb-slugify/package.json", type: "blob" }],
+      });
+    };
+    try {
+      expect(
+        await finalizeMain(
+          [
+            "--tag",
+            `v${V}`,
+            "--source-commit",
+            "c".repeat(40),
+            "--admission",
+            join(dir, "admission.json"),
+            "--expectations-out",
+            expectations,
+          ],
+          { gh, env: {} },
+        ),
+      ).toBe(1);
+      expect(existsSync(expectations)).toBe(false);
+    } finally {
+      inspect.mockRestore();
+    }
   });
 
   it.each([
