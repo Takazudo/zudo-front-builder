@@ -155,11 +155,13 @@ export async function execute({
   hooks = {},
   signal,
   onFinalizing,
+  supervisorId,
   scenarios = null,
 }) {
   const loaded = loadProfile(profilePath);
   loaded.signal = signal;
   loaded.onFinalizing = onFinalizing;
+  loaded.supervisorId = supervisorId;
   const { profile, resolved } = loaded;
   if (scenarios) {
     const known = new Set(profile.scenarios.map((s) => s.id));
@@ -278,6 +280,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     }
   const receipt = {
     schema: RECEIPT_SCHEMA,
+    ...(loaded.supervisorId ? { supervisorId: loaded.supervisorId } : {}),
     label,
     command,
     createdAt: isoNow(),
