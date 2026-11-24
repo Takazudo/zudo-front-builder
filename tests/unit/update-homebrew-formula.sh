@@ -61,6 +61,8 @@ done
 
 BARE="${WORK}/homebrew-tap.git"
 git init -q --bare "$BARE"
+# Runner git defaults to master; clones need HEAD on the pushed main to get an upstream.
+git -C "$BARE" symbolic-ref HEAD refs/heads/main
 
 SEED="${WORK}/seed"
 git init -q "$SEED"
@@ -145,6 +147,65 @@ if [ "$RC_4" -eq 0 ] && [ "$PUSHED" = "zfb ${VERSION}" ]; then
 else
   fail "--push: expected remote HEAD 'zfb ${VERSION}', got exit=${RC_4} subject='${PUSHED}'
 $OUT_4"
+fi
+
+# Simulates a release pushed to the tap from another checkout.
+OTHER="${WORK}/other"
+git clone -q "$BARE" "$OTHER"
+git -C "$OTHER" config user.email "test@example.com"
+git -C "$OTHER" config user.name "test"
+push_from_other() {
+  git -C "$OTHER" pull -q --ff-only
+  printf '%s\n' "$1" > "${OTHER}/Formula/zfb.rb"
+  git -C "$OTHER" commit -qam "$2"
+  git -C "$OTHER" push -q origin main
+}
+
+# ── Case 5: checkout behind its remote is fast-forwarded, then pushed ─────────
+#
+# The v7.2.0 failure: the tap missed the 7.0.0/7.1.0 commits pushed elsewhere,
+# so the push was rejected after the local formula commit already existed.
+
+TAP5="${WORK}/case5/homebrew-tap"
+git clone -q "$BARE" "$TAP5"
+git -C "$TAP5" config user.email "test@example.com"
+git -C "$TAP5" config user.name "test"
+push_from_other "older release" "zfb 9.9.8"
+
+if OUT_5="$(run_script "$TAP5" --push)"; then RC_5=0; else RC_5=$?; fi
+
+PUSHED_5="$(git -C "$BARE" log -1 --format=%s 2>/dev/null || echo "")"
+PARENT_5="$(git -C "$BARE" log -1 --skip=1 --format=%s 2>/dev/null || echo "")"
+if [ "$RC_5" -eq 0 ] && [ "$PUSHED_5" = "zfb ${VERSION}" ] && [ "$PARENT_5" = "zfb 9.9.8" ]; then
+  pass "a checkout behind its remote is fast-forwarded before the formula is committed"
+else
+  fail "behind checkout: expected 'zfb ${VERSION}' on top of 'zfb 9.9.8', got exit=${RC_5} head='${PUSHED_5}' parent='${PARENT_5}'
+$OUT_5"
+fi
+
+# ── Case 6: diverged checkout is refused before the formula is written ────────
+
+TAP6="${WORK}/case6/homebrew-tap"
+git clone -q "$BARE" "$TAP6"
+git -C "$TAP6" config user.email "test@example.com"
+git -C "$TAP6" config user.name "test"
+printf 'local only\n' > "${TAP6}/NOTES"
+git -C "$TAP6" add NOTES
+git -C "$TAP6" commit -qm "local only"
+push_from_other "remote only" "remote only"
+BEFORE_6="$(cat "${TAP6}/Formula/zfb.rb")"
+
+if OUT_6="$(run_script "$TAP6" --push)"; then RC_6=0; else RC_6=$?; fi
+
+REMOTE_6="$(git -C "$BARE" log -1 --format=%s 2>/dev/null || echo "")"
+if [ "$RC_6" -ne 0 ] \
+  && printf '%s' "$OUT_6" | grep -q "diverged" \
+  && [ "$REMOTE_6" = "remote only" ] \
+  && [ "$(cat "${TAP6}/Formula/zfb.rb")" = "$BEFORE_6" ]; then
+  pass "a diverged checkout is refused and neither the remote nor the formula changes"
+else
+  fail "diverged checkout: expected refusal, got exit=${RC_6} remote='${REMOTE_6}'
+$OUT_6"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

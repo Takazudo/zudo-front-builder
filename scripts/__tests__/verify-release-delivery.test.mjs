@@ -33,6 +33,7 @@ import {
   PROCESSING_FINALIZE_SUPERSEDED,
   parseInstallerRecords,
   processingProof,
+  resolveGitHubToken,
   summarize,
   verifyReleaseDelivery,
 } from "../verify-release-delivery.mjs";
@@ -1645,6 +1646,19 @@ describe("HTTP behavior", () => {
 });
 
 describe("helpers and CLI", () => {
+  it("prefers an exported token and falls back to the gh credential", () => {
+    const gh = () => "from-gh\n".trim();
+    expect(resolveGitHubToken({ GH_TOKEN: "a", GITHUB_TOKEN: "b" }, gh)).toBe("a");
+    expect(resolveGitHubToken({ GITHUB_TOKEN: "b" }, gh)).toBe("b");
+    expect(resolveGitHubToken({}, gh)).toBe("from-gh");
+    expect(resolveGitHubToken({}, () => "")).toBeUndefined();
+    expect(
+      resolveGitHubToken({}, () => {
+        throw new Error("gh: not logged in");
+      }),
+    ).toBeUndefined();
+  });
+
   it("parses the documented CLI and rejects bad input", () => {
     expect(
       parseArgs([

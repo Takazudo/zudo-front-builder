@@ -110,6 +110,32 @@ if [[ -d "${tap_path}/.git" ]]; then
       exit 1
     fi
   fi
+  if [[ "$do_push" == "true" ]]; then
+    # A checkout that missed commits pushed from another machine is rejected at
+    # push time, after the formula commit already exists locally (v7.2.0).
+    # Fast-forward first; refuse a diverged checkout instead of rewriting it.
+    echo "==> Syncing tap checkout with its upstream"
+    if ! git -C "$tap_path" fetch --quiet origin; then
+      echo "ERROR: failed to fetch the tap remote (${tap_origin:-origin})" >&2
+      exit 1
+    fi
+    if ! tap_upstream="$(git -C "$tap_path" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)"; then
+      echo "ERROR: ${tap_path} has no upstream branch; check out the tap's main branch" >&2
+      exit 1
+    fi
+    if git -C "$tap_path" merge-base --is-ancestor HEAD "$tap_upstream"; then
+      if ! git -C "$tap_path" merge --ff-only --quiet "$tap_upstream"; then
+        echo "ERROR: could not fast-forward ${tap_path} to ${tap_upstream}" >&2
+        echo "       (local changes conflict with it?) Inspect: git -C '${tap_path}' status" >&2
+        exit 1
+      fi
+    elif ! git -C "$tap_path" merge-base --is-ancestor "$tap_upstream" HEAD; then
+      echo "ERROR: ${tap_path} has diverged from ${tap_upstream}." >&2
+      echo "       Inspect it and reconcile by hand; this script never rewrites tap history:" >&2
+      echo "         git -C '${tap_path}' log --oneline --left-right HEAD...${tap_upstream}" >&2
+      exit 1
+    fi
+  fi
 elif [[ -e "$tap_path" ]] && [[ -n "$(ls -A "$tap_path" 2>/dev/null)" ]]; then
   # Non-empty and not a git repo — most likely the stub left by the pre-fix
   # version of this script. Do NOT auto-delete: it is outside this repo and may
