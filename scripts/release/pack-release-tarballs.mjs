@@ -7,7 +7,7 @@
 // uploads these bytes (scripts/publish-npm-packages.sh).
 //
 //   node scripts/release/pack-release-tarballs.mjs --mode <mac-local|recovery-no-provenance|all-provenance>
-//        --out DIR [--root DIR] [--local-built "packages/zfb-darwin-arm64 packages/zfb-darwin-x64"]
+//        --source-commit SHA --out DIR [--root DIR] [--local-built "packages/zfb-darwin-arm64 packages/zfb-darwin-x64"]
 //        [--admission verdict.json] [--md-wasm-manifest FILE] [--skip-prepublish]
 //
 // Per package, in publication order:
@@ -28,14 +28,14 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, join, posix, resolve } from "node:path";
 import { parseTarGz } from "../admit-darwin-artifacts.mjs";
 import {
   assertMdWasmManifest,
   verifyMdWasmArtifacts,
 } from "../verify-zfb-md-wasm-published-digests.mjs";
 import { isMain } from "./gh.mjs";
-import { policyForTree, assertPackageRows } from "./npm-publication-policy.mjs";
+import { policyForCommit, assertPackageRows } from "./npm-publication-policy.mjs";
 import { darwinDigestProblems } from "./npm-package-state.mjs";
 
 export const PLATFORM = Object.freeze({
@@ -85,8 +85,8 @@ export function parseLocalBuilt(mode, raw) {
 }
 
 /** Inventory in publication order; recovery of an older tag may lack slugify only. */
-export function inventory(root, mode) {
-  const dirs = policyForTree(root, mode).packages.map(({ dir, name }) => {
+export function inventory(root, policy) {
+  const dirs = policy.packages.map(({ dir, name }) => {
     const path = join(root, dir, "package.json");
     if (!existsSync(path))
       throw new Error(`publish target is missing expected package manifest: ${dir}/package.json`);
@@ -98,7 +98,10 @@ export function inventory(root, mode) {
 }
 
 /** Pure: problems in one packed tarball. */
-export function inspectTarball(bytes, { dir, name, version, hasCss, verdict, mdWasmManifest }) {
+export function inspectTarball(
+  bytes,
+  { dir, name, version, hasCss, verdict, mdWasmManifest, expectedGitHead },
+) {
   const problems = [];
   let entries;
   try {
@@ -117,6 +120,33 @@ export function inspectTarball(bytes, { dir, name, version, hasCss, verdict, mdW
     problems.push(
       `packed package.json is ${manifest?.name}@${manifest?.version}, not ${name}@${version}`,
     );
+  }
+  if (expectedGitHead !== undefined) {
+    // npm strips the archive's first path component when reading the manifest.
+    if (
+      entries.some(
+        ({ name, typeflag }) =>
+          !["0", "5"].includes(typeflag) ||
+          !name.startsWith("package/") ||
+          name.includes("\\") ||
+          posix.normalize(name) !== name,
+      )
+    ) {
+      problems.push("tarball has noncanonical package paths or unsupported entry types");
+    }
+    const manifests = entries.filter(
+      ({ name }) => name.replace(/\/$/, "") === "package/package.json",
+    );
+    if (manifests.length !== 1 || manifests[0]?.typeflag !== "0") {
+      problems.push("tarball must contain exactly one regular package/package.json");
+    }
+    if (typeof manifest?.gitHead !== "string" || !/^[0-9a-f]{40}$/.test(manifest.gitHead)) {
+      problems.push("packed package.json gitHead must be a full 40-hex source commit");
+    } else if (manifest.gitHead !== expectedGitHead) {
+      problems.push(
+        `packed package.json gitHead ${manifest.gitHead} differs from source ${expectedGitHead}`,
+      );
+    }
   }
   for (const field of ["dependencies", "peerDependencies", "optionalDependencies"]) {
     for (const [dep, spec] of Object.entries(manifest?.[field] ?? {})) {
@@ -172,10 +202,39 @@ function defaultRun(command, args, { cwd }) {
   });
 }
 
+function packPackage({ dir, cwd, out, name, expectedGitHead, run }) {
+  const pack = () => {
+    if (PLATFORM[dir]) {
+      const report = JSON.parse(
+        run("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", out], { cwd }),
+      );
+      const result = Array.isArray(report) ? report[0] : report[name];
+      if (!result?.filename) throw new Error(`npm pack did not report a tarball for ${name}`);
+      return basename(result.filename);
+    }
+    const args = ["pack", "--pack-destination", out];
+    if (dir === MD_WASM_DIR) args.push("--ignore-scripts");
+    return basename(run("pnpm", args, { cwd }).trim().split(/\r?\n/).at(-1));
+  };
+
+  // Legacy sources keep their original packing bytes for immutable versions.
+  if (expectedGitHead === undefined) return pack();
+  const path = join(cwd, "package.json");
+  const original = readFileSync(path);
+  const stamped = { ...JSON.parse(original), gitHead: expectedGitHead };
+  try {
+    writeFileSync(path, `${JSON.stringify(stamped, null, 2)}\n`);
+    return pack();
+  } finally {
+    writeFileSync(path, original);
+  }
+}
+
 export function packRelease({
   root,
   out,
   mode,
+  sourceCommit,
   localBuilt = [],
   verdict = null,
   mdWasmManifest = null,
@@ -184,9 +243,17 @@ export function packRelease({
   log = (line) => process.stdout.write(`${line}\n`),
 }) {
   if (!MODES.includes(mode)) throw new Error(`unknown mode ${mode}`);
+  const policy = policyForCommit(sourceCommit, { root, mode });
+  const checkout = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+  }).trim();
+  if (checkout !== sourceCommit)
+    throw new Error(`pack checkout ${checkout} differs from verified source ${sourceCommit}`);
+  const expectedGitHead = policy.requiresGitHead ? sourceCommit : undefined;
   mkdirSync(out, { recursive: true });
   if (readdirSync(out).length) throw new Error(`--out ${out} must be empty`);
-  const dirs = inventory(root, mode);
+  const dirs = inventory(root, policy);
   const zfb = readJson(join(root, "packages/zfb/package.json"));
   const version = zfb.version;
   const hasCss = Boolean(zfb.publishConfig?.exports?.["./css"]);
@@ -206,21 +273,11 @@ export function packRelease({
     if (pkg.version !== version)
       throw new Error(`${pkg.name} is ${pkg.version}, not the lockstep ${version}`);
     const cwd = join(root, dir);
-    let filename;
-    if (PLATFORM[dir]) {
-      const json = JSON.parse(
-        run("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", out], { cwd }),
-      );
-      filename = basename(json[0].filename);
-    } else {
-      if (runPrepublish && dir !== MD_WASM_DIR && pkg.scripts?.prepublishOnly) {
-        log(`→ ${pkg.name}: prepublishOnly (build + test) before pack`);
-        run("pnpm", ["run", "prepublishOnly"], { cwd });
-      }
-      const args = ["pack", "--pack-destination", out];
-      if (dir === MD_WASM_DIR) args.push("--ignore-scripts");
-      filename = basename(run("pnpm", args, { cwd }).trim().split(/\r?\n/).at(-1));
+    if (!PLATFORM[dir] && runPrepublish && dir !== MD_WASM_DIR && pkg.scripts?.prepublishOnly) {
+      log(`→ ${pkg.name}: prepublishOnly (build + test) before pack`);
+      run("pnpm", ["run", "prepublishOnly"], { cwd });
     }
+    const filename = packPackage({ dir, cwd, out, name: pkg.name, expectedGitHead, run });
     const bytes = readFileSync(join(out, filename));
     const inspected = inspectTarball(bytes, {
       dir,
@@ -229,6 +286,7 @@ export function packRelease({
       hasCss,
       verdict,
       mdWasmManifest,
+      expectedGitHead,
     });
     for (const problem of inspected.problems) problems.push(`${pkg.name}: ${problem}`);
     if (inspected.shipped) shippedCopy = inspected.shipped;
@@ -248,7 +306,7 @@ export function packRelease({
     error.problems = problems;
     throw error;
   }
-  assertPackageRows(packages, policyForTree(root, mode), version);
+  assertPackageRows(packages, policy, version);
   if (shippedCopy) writeFileSync(join(out, "zfb-md-wasm-shipped-artifacts.json"), shippedCopy);
   const manifest = { schema: SCHEMA, mode, version, packages };
   writeFileSync(join(out, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -261,9 +319,15 @@ export function main(argv, { run } = {}) {
     const arg = argv[i];
     if (arg === "--skip-prepublish") opts.runPrepublish = false;
     else if (
-      ["--mode", "--out", "--root", "--local-built", "--admission", "--md-wasm-manifest"].includes(
-        arg,
-      ) &&
+      [
+        "--mode",
+        "--source-commit",
+        "--out",
+        "--root",
+        "--local-built",
+        "--admission",
+        "--md-wasm-manifest",
+      ].includes(arg) &&
       argv[i + 1] !== undefined
     ) {
       opts[arg.slice(2)] = argv[++i];
@@ -272,9 +336,9 @@ export function main(argv, { run } = {}) {
       return 2;
     }
   }
-  if (!opts.mode || !opts.out) {
+  if (!opts.mode || !opts.out || !/^[0-9a-f]{40}$/.test(opts["source-commit"] ?? "")) {
     process.stderr.write(
-      "usage: pack-release-tarballs.mjs --mode MODE --out DIR [--root DIR] [--local-built LIST] [--admission FILE] [--md-wasm-manifest FILE] [--skip-prepublish]\n",
+      "usage: pack-release-tarballs.mjs --mode MODE --source-commit SHA --out DIR [--root DIR] [--local-built LIST] [--admission FILE] [--md-wasm-manifest FILE] [--skip-prepublish]\n",
     );
     return 2;
   }
@@ -283,6 +347,7 @@ export function main(argv, { run } = {}) {
       root: resolve(opts.root),
       out: resolve(opts.out),
       mode: opts.mode,
+      sourceCommit: opts["source-commit"],
       localBuilt: parseLocalBuilt(opts.mode, opts["local-built"]),
       verdict: opts.admission ? readJson(opts.admission) : null,
       mdWasmManifest: opts["md-wasm-manifest"] ? readFileSync(opts["md-wasm-manifest"]) : null,

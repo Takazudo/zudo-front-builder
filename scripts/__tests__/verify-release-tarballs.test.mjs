@@ -16,15 +16,21 @@ import {
   wasmFiles,
 } from "./helpers/release-tarballs-fixture.mjs";
 
-import { policyFromSourceFiles } from "../release/npm-publication-policy.mjs";
+import {
+  SOURCE_METADATA_SCHEMA,
+  policyFromSourceFiles,
+} from "../release/npm-publication-policy.mjs";
 const legacyPolicy = policyFromSourceFiles();
+const sourceMetadataPolicy = policyFromSourceFiles({
+  policyText: JSON.stringify({ schema: SOURCE_METADATA_SCHEMA, suspended: [] }),
+});
 afterEach(cleanupTmp);
 const sets = [];
 afterEach(() => {
   for (const set of sets.splice(0)) rmSync(set.base, { recursive: true, force: true });
 });
-const fresh = () => {
-  const set = makeTarballSet({ base: tmp("zfb-verify-tgz-") });
+const fresh = (sourceMetadata = false) => {
+  const set = makeTarballSet({ base: tmp("zfb-verify-tgz-"), sourceMetadata });
   sets.push(set);
   return set;
 };
@@ -79,6 +85,50 @@ describe("verify-release-tarballs", () => {
   });
   it("accepts an untouched pack output", () => {
     expect(verify(fresh())).toEqual([]);
+  });
+
+  it("admits a v2 pack against SOURCE and rejects missing or altered metadata", () => {
+    const set = fresh(true);
+    const verifySource = (sourceCommit = set.sourceCommit) =>
+      verify(set, { sourceCommit, policy: sourceMetadataPolicy });
+    expect(verifySource()).toEqual([]);
+    expect(verifySource("b".repeat(40)).join("\n")).toContain(
+      `gitHead ${set.sourceCommit} differs from source ${"b".repeat(40)}`,
+    );
+    expect(verifySource("short").join("\n")).toContain("full 40-hex source commit");
+    for (const gitHead of [undefined, "short", "b".repeat(40), ["b".repeat(40)]]) {
+      replaceTarball(set.out, "create-zfb", [pkgJson({ name: "create-zfb", version: V, gitHead })]);
+      expect(verifySource().join("\n")).toMatch(/^create-zfb: packed package.json gitHead/);
+    }
+    const valid = pkgJson({ name: "create-zfb", version: V, gitHead: set.sourceCommit });
+    const wrong = pkgJson({ name: "create-zfb", version: V, gitHead: "b".repeat(40) });
+    replaceTarball(set.out, "create-zfb", [valid, wrong]);
+    expect(verifySource().join("\n")).toContain("exactly one regular package/package.json");
+    replaceTarball(set.out, "create-zfb", [valid, { ...wrong, name: "another/package.json" }]);
+    expect(verifySource().join("\n")).toContain("tarball has noncanonical package paths");
+  });
+
+  it("admits legacy metadata only when immutable source policy permits it", () => {
+    const set = fresh();
+    const args = [
+      "--source-commit",
+      set.sourceCommit,
+      "--dir",
+      set.out,
+      "--version",
+      V,
+      "--admission",
+      set.verdictPath,
+      "--md-wasm-manifest",
+      set.buildManifestPath,
+    ];
+    const out = { write: () => {} };
+    const resolvePolicy = (policy) => (sha) => {
+      expect(sha).toBe(set.sourceCommit);
+      return policy;
+    };
+    expect(main(args, { out, resolvePolicy: resolvePolicy(legacyPolicy) })).toBe(0);
+    expect(main(args, { out, resolvePolicy: resolvePolicy(sourceMetadataPolicy) })).toBe(1);
   });
 
   it("rejects a tampered Darwin binary even with a self-consistent manifest", () => {

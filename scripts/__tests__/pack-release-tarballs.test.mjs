@@ -1,19 +1,24 @@
 // scripts/release/pack-release-tarballs.mjs — the pack job (#4690). npm/pnpm
 // are an injected fake that writes real gzip tarballs, so the packed-byte
 // checks (0755, workspace:, Darwin digests, MD/WASM manifest) run for real.
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { parseTarGz } from "../admit-darwin-artifacts.mjs";
+import { policyForTree } from "../release/npm-publication-policy.mjs";
 import { MD_WASM_PATHS } from "../verify-zfb-md-wasm-published-digests.mjs";
 import {
   PLATFORM,
   WORKSPACE,
   inventory,
+  main,
   packRelease,
   parseLocalBuilt,
   provenanceFor,
 } from "../release/pack-release-tarballs.mjs";
+import { commitFixture } from "./helpers/release-tarballs-fixture.mjs";
 import { cleanupTmp, makeTarGz, tmp } from "./helpers/darwin-fixture.mjs";
 
 const V = "6.1.0";
@@ -129,6 +134,7 @@ const pack = (root, opts = {}) => {
     root,
     out,
     mode: "mac-local",
+    sourceCommit: commitFixture(root),
     localBuilt: ["packages/zfb-darwin-arm64", "packages/zfb-darwin-x64"],
     run: fake.run,
     log: () => {},
@@ -181,6 +187,86 @@ describe("pack-release-tarballs", () => {
     );
   });
 
+  it.each(["all-provenance", "mac-local", "recovery-no-provenance"])(
+    "stamps all active packages from SOURCE and restores manifest bytes in %s",
+    (mode) => {
+      const root = tree();
+      const sourceCommit = commitFixture(root, { sourceMetadata: true });
+      writeFileSync(
+        join(root, "release/npm-publication-policy.json"),
+        JSON.stringify({ schema: "zfb-npm-publication-policy/v1", suspended: [] }),
+      );
+      const out = join(tmp("zfb-pack-out-"), "tarballs");
+      const originals = new Map(
+        Object.keys(NAMES).map((dir) => [dir, readFileSync(join(root, dir, "package.json"))]),
+      );
+      const fake = fakeRun(root);
+      const manifest = packRelease({ root, out, mode, sourceCommit, run: fake.run, log: () => {} });
+      for (const { dir, file, integrity } of manifest.packages) {
+        const bytes = readFileSync(join(out, file));
+        const [entry] = parseTarGz(bytes).filter((entry) => entry.name === "package/package.json");
+        expect(JSON.parse(entry.data.toString("utf8")).gitHead).toBe(sourceCommit);
+        expect(integrity).toBe(`sha512-${createHash("sha512").update(bytes).digest("base64")}`);
+        expect(readFileSync(join(root, dir, "package.json"))).toEqual(originals.get(dir));
+      }
+    },
+  );
+
+  it("restores exact bytes after a packer fails with the stamped manifest in place", () => {
+    const root = tree();
+    const path = join(root, "packages/zfb-darwin-arm64/package.json");
+    const original = Buffer.concat([readFileSync(path), Buffer.from("  \r\n")]);
+    writeFileSync(path, original);
+    const sourceCommit = commitFixture(root, { sourceMetadata: true });
+    const out = join(tmp("zfb-pack-out-"), "tarballs");
+    const run = () => {
+      expect(JSON.parse(readFileSync(path, "utf8")).gitHead).toBe(sourceCommit);
+      throw new Error("packer failed");
+    };
+    expect(() => packRelease({ root, out, mode: "mac-local", sourceCommit, run })).toThrow(
+      "packer failed",
+    );
+    expect(readFileSync(path)).toEqual(original);
+  });
+
+  it("requires full SOURCE and rejects CONTROL when it differs from the checkout", () => {
+    const root = tree();
+    const source = commitFixture(root, { sourceMetadata: true });
+    const out = join(tmp("zfb-pack-out-"), "tarballs");
+    const control = execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.com",
+        "commit-tree",
+        "HEAD^{tree}",
+        "-p",
+        source,
+        "-m",
+        "control fixture",
+      ],
+      { cwd: root, encoding: "utf8" },
+    ).trim();
+    const args = ["--root", root, "--out", out, "--mode", "recovery-no-provenance"];
+    const run = vi.fn();
+    expect(main(args, { run })).toBe(2);
+    expect(main([...args, "--source-commit", source.slice(0, 12)], { run })).toBe(2);
+    expect(main([...args, "--source-commit", control], { run })).toBe(1);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("retains the original unstamped bytes for sources predating the contract", () => {
+    const { manifest, out } = pack(tree());
+    for (const { file } of manifest.packages) {
+      const entry = parseTarGz(readFileSync(join(out, file))).find(
+        (entry) => entry.name === "package/package.json",
+      );
+      expect(JSON.parse(entry.data.toString("utf8"))).not.toHaveProperty("gitHead");
+    }
+  });
+
   it("refuses a carrier whose packed binary lost 0755", () => {
     expect(() => pack(tree(), { fake: { binaryMode: 0o644 } })).toThrow(
       /binary zfb has mode 644, expected 755/,
@@ -203,6 +289,7 @@ describe("pack-release-tarballs", () => {
         root,
         out: join(tmp("o-"), "t"),
         mode: "all-provenance",
+        sourceCommit: commitFixture(root),
         run: fake.run,
         log: () => {},
       }),
@@ -245,8 +332,10 @@ describe("pack-release-tarballs", () => {
 
   it("recovery of an older tag may omit only zfb-slugify; other modes refuse", () => {
     const root = tree({ omit: ["packages/zfb-slugify"] });
-    expect(inventory(root, "recovery-no-provenance")).not.toContain("packages/zfb-slugify");
-    expect(() => inventory(root, "mac-local")).toThrow(
+    expect(inventory(root, policyForTree(root, "recovery-no-provenance"))).not.toContain(
+      "packages/zfb-slugify",
+    );
+    expect(() => inventory(root, policyForTree(root, "mac-local"))).toThrow(
       /missing expected package manifest: packages\/zfb-slugify/,
     );
     const { manifest } = pack(root, { pack: { mode: "recovery-no-provenance", localBuilt: [] } });
@@ -259,7 +348,14 @@ describe("pack-release-tarballs", () => {
     const out = tmp("zfb-pack-dirty-");
     writeFileSync(join(out, "stale.tgz"), "x");
     expect(() =>
-      packRelease({ root, out, mode: "mac-local", run: fakeRun(root).run, log: () => {} }),
+      packRelease({
+        root,
+        out,
+        mode: "mac-local",
+        sourceCommit: commitFixture(root),
+        run: fakeRun(root).run,
+        log: () => {},
+      }),
     ).toThrow(/must be empty/);
   });
 

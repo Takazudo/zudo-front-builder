@@ -3,10 +3,12 @@
 // packRelease() writing manifest.json. Shared by the pack/verify suites and the
 // publish shell suite (tests/unit/publish-npm-packages.sh), which drives
 // `makeTarballSet` through `node --input-type=module`.
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { POLICY_PATH, SOURCE_METADATA_SCHEMA } from "../../release/npm-publication-policy.mjs";
 import { PLATFORM, packRelease } from "../../release/pack-release-tarballs.mjs";
 import { MD_WASM_PATHS } from "../../verify-zfb-md-wasm-published-digests.mjs";
 import { makeTarGz } from "./darwin-fixture.mjs";
@@ -59,6 +61,36 @@ export function makeTree(root, { css = true, version = V } = {}) {
     }
   }
   return root;
+}
+
+export function commitFixture(root, { sourceMetadata = false } = {}) {
+  if (sourceMetadata) {
+    mkdirSync(join(root, "release"), { recursive: true });
+    writeFileSync(
+      join(root, POLICY_PATH),
+      JSON.stringify({ schema: SOURCE_METADATA_SCHEMA, suspended: [] }),
+    );
+  }
+  const git = (...args) =>
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.com",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "commit.gpgsign=false",
+        ...args,
+      ],
+      { cwd: root, encoding: "utf8" },
+    ).trim();
+  git("init", "--quiet");
+  git("add", ".");
+  git("commit", "--quiet", "-m", "source fixture");
+  return git("rev-parse", "HEAD");
 }
 
 /** The admission verdict matching makeTree's Darwin bytes. */
@@ -136,9 +168,11 @@ export function fakePackRun(
 /** Pack a fresh tree into a fresh dir; returns { root, out, manifest, buildManifestPath }. */
 export function makeTarballSet({
   mode = "mac-local",
+  sourceMetadata = false,
   base = mkdtempSync(join(tmpdir(), "zfb-tarballs-")),
 } = {}) {
   const root = makeTree(join(base, "root"));
+  const sourceCommit = commitFixture(root, { sourceMetadata });
   const out = join(base, "tarballs");
   const localBuilt =
     mode === "mac-local" ? ["packages/zfb-darwin-arm64", "packages/zfb-darwin-x64"] : [];
@@ -146,6 +180,7 @@ export function makeTarballSet({
     root,
     out,
     mode,
+    sourceCommit,
     localBuilt,
     run: fakePackRun(root).run,
     log: () => {},
@@ -154,7 +189,7 @@ export function makeTarballSet({
   writeFileSync(buildManifestPath, wasmFiles().manifest);
   const verdictPath = join(base, "verdict.json");
   writeFileSync(verdictPath, JSON.stringify(verdictFor()));
-  return { base, root, out, manifest, buildManifestPath, verdictPath };
+  return { base, root, out, manifest, buildManifestPath, verdictPath, sourceCommit };
 }
 
 /** Replace one package's tarball and keep manifest.json self-consistent (an attacker's view). */

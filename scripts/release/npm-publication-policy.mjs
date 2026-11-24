@@ -4,6 +4,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { execGh, isMain, repoFromEnv } from "./gh.mjs";
 
+const LEGACY_SCHEMA = "zfb-npm-publication-policy/v1";
+export const SOURCE_METADATA_SCHEMA = "zfb-npm-publication-policy/v2";
+
 export const POLICY_PATH = "release/npm-publication-policy.json";
 export const SUSPENDED_PACKAGE = "@takazudo/zfb-linux-arm64-gnu";
 export const KNOWN_PACKAGE_DIRS = Object.freeze({
@@ -22,19 +25,21 @@ export const KNOWN_PACKAGE_DIRS = Object.freeze({
 
 export function policyFromSourceFiles({ policyText = null, hasSlugify = true, mode } = {}) {
   let suspended = [];
+  let requiresGitHead = false;
   if (policyText !== null) {
     const data = JSON.parse(policyText);
     const suspendedList = JSON.stringify(data.suspended);
     const allowed =
       suspendedList === JSON.stringify([]) || suspendedList === JSON.stringify([SUSPENDED_PACKAGE]);
     if (
-      data.schema !== "zfb-npm-publication-policy/v1" ||
+      ![LEGACY_SCHEMA, SOURCE_METADATA_SCHEMA].includes(data.schema) ||
       JSON.stringify(Object.keys(data).sort()) !== JSON.stringify(["schema", "suspended"]) ||
       !allowed
     ) {
       throw new Error("invalid source npm publication policy");
     }
     suspended = data.suspended;
+    requiresGitHead = data.schema === SOURCE_METADATA_SCHEMA;
     if (!hasSlugify) throw new Error("policy source is missing required slugify package");
   }
   if (!hasSlugify && mode !== "recovery-no-provenance") {
@@ -52,6 +57,7 @@ export function policyFromSourceFiles({ policyText = null, hasSlugify = true, mo
     packages,
     names: packages.map((p) => p.name),
     suspended,
+    requiresGitHead,
   };
 }
 

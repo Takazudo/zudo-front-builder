@@ -5,14 +5,15 @@
 // same content inspection on every tarball, with control scripts and Node
 // builtins only, against inputs the publish job downloads itself.
 //
-//   node scripts/release/verify-release-tarballs.mjs --dir TARBALLS --version V
+//   node scripts/release/verify-release-tarballs.mjs --dir TARBALLS --version V --source-commit SHA
 //        --admission verdict.json [--md-wasm-manifest FILE | --allow-missing-md-wasm-manifest]
 //
 // Per manifest row:
 //   - the dir names exactly its known package (a row cannot relabel a carrier);
 //   - the file's sha512 equals the row's integrity;
 //   - row version and packed package.json name/version equal the release
-//     version and the row (inspectTarball);
+//     version and the row (inspectTarball). SOURCE policy v2 requires its
+//     exact commit SHA in package.json.gitHead;
 //   - no `workspace:` specifier; non-Windows carriers' `zfb` is 0755; every
 //     carrier has zfb-css.node when the packed @takazudo/zfb exports ./css;
 //   - Darwin carriers' zfb and zfb-css.node equal the admission verdict's
@@ -52,11 +53,14 @@ export function verifyTarballs({
   mdWasmManifest,
   allowMissingMdWasmManifest,
   policy,
+  sourceCommit,
 }) {
   const problems = [];
   const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
   if (manifest.schema !== SCHEMA) return [`manifest schema is ${manifest.schema}`];
   if (!policy) return ["immutable source publication policy is required"];
+  if (policy.requiresGitHead && !/^[0-9a-f]{40}$/.test(sourceCommit ?? ""))
+    return ["expected a full 40-hex source commit for packed gitHead verification"];
   try {
     assertPackageRows(manifest.packages, policy, version);
   } catch (error) {
@@ -113,6 +117,7 @@ export function verifyTarballs({
       hasCss,
       verdict,
       mdWasmManifest,
+      expectedGitHead: policy.requiresGitHead ? sourceCommit : undefined,
     });
     for (const problem of inspected.problems) problems.push(`${row.name}: ${problem}`);
   }
@@ -146,7 +151,7 @@ export function main(
   }
   if (!opts.dir || !opts.version || !/^[0-9a-f]{40}$/.test(opts["source-commit"] ?? "")) {
     err.write(
-      "usage: verify-release-tarballs.mjs --dir DIR --version V --admission FILE [--md-wasm-manifest FILE | --allow-missing-md-wasm-manifest]\n",
+      "usage: verify-release-tarballs.mjs --dir DIR --version V --source-commit SHA --admission FILE [--md-wasm-manifest FILE | --allow-missing-md-wasm-manifest]\n",
     );
     return 2;
   }
@@ -154,6 +159,7 @@ export function main(
   try {
     problems = verifyTarballs({
       policy: resolvePolicy(opts["source-commit"], { mode: opts.mode }),
+      sourceCommit: opts["source-commit"],
       dir: opts.dir,
       version: opts.version,
       verdict: opts.admission ? JSON.parse(readFileSync(opts.admission, "utf8")) : null,

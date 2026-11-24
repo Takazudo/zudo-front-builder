@@ -5,6 +5,7 @@ import {
   policyForSource,
   assertPackageRows,
   SUSPENDED_PACKAGE,
+  SOURCE_METADATA_SCHEMA,
 } from "../release/npm-publication-policy.mjs";
 const text = JSON.stringify({
   schema: "zfb-npm-publication-policy/v1",
@@ -49,6 +50,21 @@ describe("immutable source npm publication policy", () => {
     { schema: "zfb-npm-publication-policy/v1", suspended: ["unknown"] },
   ])("rejects malformed or unexpected source policy %j", (data) => {
     expect(() => policyFromSourceFiles({ policyText: JSON.stringify(data) })).toThrow();
+  });
+  it("requires gitHead only for sources declaring the new policy schema", () => {
+    expect(policyFromSourceFiles().requiresGitHead).toBe(false);
+    expect(policyFromSourceFiles({ policyText: text }).requiresGitHead).toBe(false);
+    const policyText = JSON.stringify({ schema: SOURCE_METADATA_SCHEMA, suspended: [] });
+    expect(policyFromSourceFiles({ policyText }).requiresGitHead).toBe(true);
+    expect(() =>
+      policyFromSourceFiles({
+        policyText: JSON.stringify({
+          schema: SOURCE_METADATA_SCHEMA,
+          suspended: [],
+          requiresGitHead: false,
+        }),
+      }),
+    ).toThrow(/invalid source npm publication policy/);
   });
   it("rejects missing, duplicate, unknown, reordered, wrong-version rows", () => {
     const policy = policyFromSourceFiles({ policyText: text });
