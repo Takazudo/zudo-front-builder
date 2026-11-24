@@ -372,15 +372,25 @@ export class ObserverPage {
     return this.early.has(token);
   }
 
+  async clearDocumentToken(token) {
+    // A timed-out Playwright evaluate can still execute after navigation. Only clear the
+    // specific registration we observed, never a later check's token.
+    if (!token) return null;
+    return boundedObservation(
+      this.page.evaluate((expected) => {
+        const observer = window.__dbo;
+        return observer?.state().armed?.token === expected ? observer.disarm() : null;
+      }, token),
+      500,
+    );
+  }
+
   async disarm() {
+    const token = this.armedToken ?? this.waiter?.token;
     this.armedToken = null;
     this.cancelWait();
     this.early.clear();
-    try {
-      return await this.page.evaluate(() => (window.__dbo ? window.__dbo.disarm() : null));
-    } catch (error) {
-      return { error: String(error?.message ?? error) };
-    }
+    return this.clearDocumentToken(token);
   }
 
   /** Pre-attempt navigation (never inside a measured attempt). */
@@ -397,7 +407,10 @@ export class ObserverPage {
         notInCache:
           (document.body ? document.body.innerText : "").indexOf("page not in cache") !== -1,
       }));
-      if (state.armed) await this.page.evaluate(() => window.__dbo.disarm());
+      if (state.armed) {
+        const cleared = await this.clearDocumentToken(state.armed.token);
+        if (cleared?.error) throw new Error(cleared.error);
+      }
     } catch (error) {
       throw prepareInterruption(error, path);
     }
@@ -423,7 +436,10 @@ export class ObserverPage {
               : null,
         };
       });
-      if (state?.armed) await this.page.evaluate(() => window.__dbo.disarm());
+      if (state?.armed) {
+        const cleared = await this.clearDocumentToken(state.armed.token);
+        if (cleared?.error) throw new Error(cleared.error);
+      }
       return {
         ok: state !== null,
         url: this.page.url(),
@@ -724,7 +740,7 @@ export class ObserverPage {
           recovery,
           sinceNavigationMs: nsToMs(this.clock() - navStart),
           evidence: this.since(m, navStart),
-          failure: await this.failureSnapshot(predicate),
+          failure: await boundedObservation(this.failureSnapshot(predicate), 500),
         };
       }
       // A fresh token per arm, so a notify from an interrupted arm's persisted record stays distinct.
@@ -787,10 +803,14 @@ export class ObserverPage {
     const remainingMs = Math.max(1, timeoutMs - nsToMs(this.clock() - navStart));
     const waited = await this.waitNotify(token, remainingMs, (p) => this.onStray(p));
     const sinceNavigationMs = nsToMs(this.clock() - navStart);
-    const failure = waited.kind === "notify" ? null : await this.failureSnapshot(predicate);
+    const failure =
+      waited.kind === "notify"
+        ? null
+        : await boundedObservation(this.failureSnapshot(predicate), 500);
     const page = failure ?? (await this.failureSnapshot(predicate));
+    // Successful notification leaves its acknowledged registration in sessionStorage.
+    // Retain that token until the next prepare clears this exact registration.
     if (waited.kind !== "notify") await this.disarm();
-    this.armedToken = null;
     // zfb dev's "404 — page not in cache … rebuild may still be in flight" is a transient state, never a pass.
     const transient = page?.notInCache === true || failure?.notInCache === true;
     return {

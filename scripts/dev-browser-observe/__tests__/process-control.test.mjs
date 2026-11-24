@@ -133,10 +133,11 @@ describe("real child processes", () => {
     const d = deps({ page, server: serverFrom(h), fs: fakeFs() });
     const { accounting } = await runBatch({ scenarios: ops, deps: d });
     expect(accounting).toMatchObject({
-      stopReason: "server-exit",
+      stopReason: "server-exit+restoration-failed",
       attempted: 1,
       notAttempted: 1,
-      error: 1,
+      restorationFailures: 1,
+      error: 2,
     });
     const rec = d.recorder.records.find((r) => r.type === "attempt");
     expect(rec.exit).toMatchObject({ exitCode: null, signalCode: "SIGKILL" });
@@ -152,7 +153,7 @@ describe("real child processes", () => {
     });
     d.timeouts.attemptMs = 10_000;
     const { accounting } = await runBatch({ scenarios: ops, deps: d });
-    expect(accounting.stopReason).toBe("server-exit");
+    expect(accounting.stopReason).toBe("server-exit+restoration-failed");
     expect(d.recorder.records.find((r) => r.type === "attempt").exit).toMatchObject({
       exitCode: 3,
       signalCode: null,

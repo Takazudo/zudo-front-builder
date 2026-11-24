@@ -280,6 +280,13 @@ export async function runBatch({ scenarios, deps }) {
         }
       }
     }
+    // The declared kill-server control forbids restarting its server. Only that control
+    // can verify disk-only cleanup after server death; an unexpected exit leaves live state unknown.
+    const diskOnlyControl =
+      liveSkipped === "server-not-alive" &&
+      acc.stopReason === "server-exit" &&
+      acc.stoppedByExpectedControl;
+    const settled = settle ? settle.settled === true : !rule.requireNativeUpdate;
     const bodyVerified =
       !bodyRevision ||
       (liveSkipped === null &&
@@ -288,6 +295,7 @@ export async function runBatch({ scenarios, deps }) {
     const ok =
       !signal?.aborted &&
       restore.mismatches.length === 0 &&
+      (diskOnlyControl || (liveSkipped === null && settled)) &&
       bodyVerified &&
       live.every((l) => l.ok);
     let quiet = null;
@@ -307,6 +315,7 @@ export async function runBatch({ scenarios, deps }) {
       quiet,
       live,
       liveSkipped,
+      ...(diskOnlyControl ? { verification: "disk-only:declared-server-kill" } : {}),
       retry,
     };
     if (blocked.length) {

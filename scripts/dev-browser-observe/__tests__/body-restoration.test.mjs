@@ -110,6 +110,53 @@ describe("Field Notes body restoration", () => {
     });
   });
 
+  it("rejects an unmet native settle requirement even when all live checks later pass", async () => {
+    const fs = fakeFs();
+    const restore = fs.restore;
+    fs.restore = (snap) => ({ ...restore(snap), actions: [{ path: "a.md" }] });
+    const page = fakePage({ behaviors: [{ kind: "notify", t1: 2_000_000_000n }] });
+    page.settle = async () => ({ settled: false, reason: "bound-exceeded-without-native-update" });
+    const d = deps({ fs, page });
+    const { accounting } = await runBatch({
+      deps: d,
+      scenarios: [{ id: "title", ops: [{ op: "edit-title", article: "a" }] }],
+    });
+    expect(accounting).toMatchObject({
+      success: 1,
+      restorationFailures: 1,
+      stopReason: "restoration-failed",
+    });
+    expect(d.recorder.records.find((r) => r.type === "cleanup")).toMatchObject({
+      ok: false,
+      mismatches: [],
+      live: [{ ok: true }],
+    });
+  });
+
+  it("a stalled disarm releases the controller and cannot clear a newer token when it executes", async () => {
+    vi.useFakeTimers();
+    const p = new ObserverPage(null, "");
+    let delayed;
+    p.armedToken = "old";
+    p.page = {
+      evaluate: (fn, input) =>
+        new Promise((resolve) => {
+          delayed = () => resolve(fn(input));
+        }),
+    };
+    const old = p.disarm();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(await old).toMatchObject({ error: "observation timed out" });
+    const disarm = vi.fn();
+    vi.stubGlobal("window", { __dbo: { state: () => ({ armed: { token: "new" } }), disarm } });
+    try {
+      delayed();
+      expect(disarm).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("keeps a navigation timeout final when its diagnostic snapshot remains pending", async () => {
     vi.useFakeTimers();
     const p = new ObserverPage(null, "");
