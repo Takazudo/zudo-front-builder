@@ -61,6 +61,8 @@ done
 
 BARE="${WORK}/homebrew-tap.git"
 git init -q --bare "$BARE"
+# Runner git defaults to master; clones need HEAD on the pushed main to get an upstream.
+git -C "$BARE" symbolic-ref HEAD refs/heads/main
 
 SEED="${WORK}/seed"
 git init -q "$SEED"
