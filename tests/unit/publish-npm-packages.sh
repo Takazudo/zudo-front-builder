@@ -1133,7 +1133,7 @@ fi
 # ── promote-release-channel.sh: the all-verified gate (#4717) ────────────────
 PROMOTE_SCRIPT="$REPO_ROOT/scripts/promote-release-channel.sh"
 # Stub for npm-package-state.mjs --require-all-verified --tsv: all 11 rows,
-# MOCK_PROMOTE_PROCESSING names packages still in npm processing.
+# MOCK_PROMOTE_PROCESSING and MOCK_PROMOTE_UNVERIFIED select blocked rows.
 cat >"$MOCK_BIN/promote-state-node" <<'MOCK_PSTATE'
 #!/bin/sh
 printf 'promote-state %s\n' "$*" >>"${MOCK_STATE_LOG:-/dev/null}"
@@ -1141,6 +1141,7 @@ rc=0
 for n in $MOCK_ALL_NAMES; do
   state=present-verified
   for p in ${MOCK_PROMOTE_PROCESSING:-}; do [ "$p" = "$n" ] && state=processing; done
+  for p in ${MOCK_PROMOTE_UNVERIFIED:-}; do [ "$p" = "$n" ] && state=present-unverified; done
   [ "$state" = present-verified ] || rc=1
   printf '%s\t%s\tgitHead\tnone\n' "$n" "$state"
 done
@@ -1200,6 +1201,13 @@ if [ "$PR_RC" -ne 0 ] && [ ! -s "$PR_LOG" ]; then
   pass "promote: prerelease with processing packages moves neither next nor latest"
 else
   fail "promote: prerelease processing gate (exit=$PR_RC, writes=$(tr '\n' ' ' <"$PR_LOG"))"
+fi
+
+run_promote 1.3.0 1.2.0 DIST_TAG=latest MOCK_PROMOTE_UNVERIFIED=create-zfb
+if [ "$PR_RC" -ne 0 ] && [ ! -s "$PR_LOG" ] && grep -q 'present-unverified' "$PR_OUT"; then
+  pass "promote: unverified package contents prevent every channel write"
+else
+  fail "promote: unverified gate (exit=$PR_RC, writes=$(tr '\n' ' ' <"$PR_LOG"))"
 fi
 
 run_promote 1.3.0 1.2.0 DIST_TAG=next
@@ -1483,6 +1491,26 @@ if [ "$TV_RC" -ne 0 ] && [ ! -s "$TV_LOG" ] && ! grep -q '^npm publish' "$TV_CAL
   pass "publish: a tampered Darwin binary in a self-consistent manifest is refused before any npm publish"
 else
   fail "publish: tampered Darwin tarball rc=$TV_RC publishes=$(tr '\n' ' ' <"$TV_LOG") out=$(tail -4 "$TV_OUT" | tr '\n' ' ')"
+fi
+cat >"$MOCK_BIN/verify-reject-members" <<'MOCK_VERIFY'
+#!/bin/sh
+printf '%s\n' 'npm tarball duplicate file destination: package/readme.txt' >&2
+exit 1
+MOCK_VERIFY
+chmod +x "$MOCK_BIN/verify-reject-members"
+TV_RC=0
+PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_PUBLISH_LOG="$TV_LOG" MOCK_CALLS_LOG="$TV_CALLS" MOCK_EXISTING="" \
+  ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 ZFB_LOCAL_BUILT_PACKAGES="packages/zfb-darwin-arm64 packages/zfb-darwin-x64" \
+  ZFB_PUBLISH_TARBALLS_DIR="$TV_BASE/tarballs" ZFB_RELEASE_VERSION=6.1.0 \
+  ZFB_DARWIN_ADMISSION_VERDICT="$TV_BASE/verdict.json" ZFB_MD_WASM_BUILD_MANIFEST="$TV_BASE/build-shipped-artifacts.json" \
+  ZFB_TARBALL_VERIFY_NODE="$MOCK_BIN/verify-reject-members" \
+  bash "$SCRIPT" mac-local >"$TV_OUT" 2>&1 || TV_RC=$?
+if [ "$TV_RC" -ne 0 ] && [ ! -s "$TV_LOG" ] && ! grep -q '^npm publish' "$TV_CALLS" \
+   && grep -Fq 'duplicate file destination: package/readme.txt' "$TV_OUT" \
+   && grep -Fq 'tarball content re-verification failed; nothing was published' "$TV_OUT"; then
+  pass "publish: a structural rejection prevents every npm publish"
+else
+  fail "publish: structural rejection rc=$TV_RC out=$(tail -4 "$TV_OUT" | tr '\n' ' ')"
 fi
 # The same set fails on a release-version mismatch before the verifier runs.
 TV2_RC=0

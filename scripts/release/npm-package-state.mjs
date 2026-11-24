@@ -11,7 +11,7 @@
 //   absent              every bounded re-read answered a definitive 404
 //                       (E404/ETARGET); nothing else is ever called absent.
 //   present-verified    the version exists AND its identity matches the source
-//                       commit (see below).
+//                       commit (see below) and its tarball contents passed inspection.
 //   present-unverified  the version exists but nothing ties it to the source
 //                       commit, or something contradicts it. Fail closed.
 //   processing          npm accepted the publish but the version still reads
@@ -43,9 +43,10 @@
 // present-verified); 1 --require-all-verified not satisfied; 2 usage error.
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import { parseTarGz } from "../admit-darwin-artifacts.mjs";
 import { PUBLISHED_PACKAGES } from "../retire-next-dist-tag.mjs";
+import { readBoundedResponse, ResponseSizeError } from "./bounded-response.mjs";
 import { execGh, isMain, repoFromEnv } from "./gh.mjs";
+import { NPM_TARBALL_LIMITS, readNpmPayload } from "./npm-tarball-members.mjs";
 import {
   PROCESSING_OUTCOMES,
   loadReceipts,
@@ -92,13 +93,20 @@ function sleep(ms) {
   return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 }
 
-/** Default HTTP reader: { status, json(), bytes() } or a thrown ReadError. */
-export async function defaultRequest(url, { timeoutMs = 30000, headers } = {}) {
+/** Default HTTP reader for registry metadata and tarball bytes. */
+export async function defaultRequest(url, { timeoutMs = 30000, headers, maxBytes } = {}) {
   let response;
   try {
     response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers });
   } catch (error) {
     throw new ReadError(`GET ${url} failed: ${error.message}`, { cause: error });
+  }
+  if (maxBytes !== undefined) {
+    if (response.status !== 200) {
+      await response.body?.cancel().catch(() => {});
+      return { status: response.status, body: Buffer.alloc(0) };
+    }
+    return { status: response.status, body: await readBoundedResponse(response, maxBytes) };
   }
   const body = Buffer.from(await response.arrayBuffer());
   return { status: response.status, body };
@@ -175,14 +183,15 @@ export function darwinDigestProblems(files, verdict, triple) {
   }
   const problems = [];
   for (const [path, expected] of [
-    ["package/zfb", target.binary.sha256],
-    ["package/zfb-css.node", target.addon.sha256],
+    ["zfb", target.binary.sha256],
+    ["zfb-css.node", target.addon.sha256],
   ]) {
-    const entry = files.find((file) => file.name === path);
-    if (!entry) problems.push(`${path} is missing from the packed carrier`);
+    const entry = files.get(path);
+    if (!entry) problems.push(`package/${path} is missing from the packed carrier`);
     else {
       const actual = createHash("sha256").update(entry.data).digest("hex");
-      if (actual !== expected) problems.push(`${path} sha256 ${actual} != admitted ${expected}`);
+      if (actual !== expected)
+        problems.push(`package/${path} sha256 ${actual} != admitted ${expected}`);
     }
   }
   return problems;
@@ -336,25 +345,49 @@ export async function packageState(name, ctx) {
   }
 
   const triple = DARWIN_CARRIERS[name];
-  if (triple && verdict) {
-    let files;
-    try {
-      const response = await request(record.dist.tarball);
-      if (response.status !== 200) {
-        throw new ReadError(`GET ${record.dist.tarball} answered HTTP ${response.status}`);
-      }
-      const sha512 = createHash("sha512").update(response.body).digest("hex");
-      if (sha512 !== integrityHex(record.dist.integrity)) {
-        return {
-          ...base,
-          state: "present-unverified",
-          detail: "tarball bytes differ from dist.integrity",
-        };
-      }
-      files = parseTarGz(response.body);
-    } catch (error) {
-      return { ...base, state: "uncertain", error: error.message };
+  if (!method && !(triple && verdict)) {
+    return {
+      ...base,
+      state: "present-unverified",
+      detail: "no attestation, gitHead or admitted digest ties it to the source commit",
+    };
+  }
+  const tarball = record.dist?.tarball;
+  const expectedDigest = integrityHex(record.dist?.integrity);
+  if (!tarball || !expectedDigest) {
+    return {
+      ...base,
+      state: "present-unverified",
+      detail: "registry tarball or integrity missing",
+    };
+  }
+  let bytes;
+  try {
+    const response = await request(tarball, { maxBytes: NPM_TARBALL_LIMITS.compressed });
+    if (response.status !== 200) {
+      throw new ReadError(`GET ${tarball} answered HTTP ${response.status}`);
     }
+    bytes = response.body;
+  } catch (error) {
+    if (error instanceof ResponseSizeError) {
+      return { ...base, state: "present-unverified", detail: `tarball size: ${error.message}` };
+    }
+    return { ...base, state: "uncertain", error: error.message };
+  }
+  if (createHash("sha512").update(bytes).digest("hex") !== expectedDigest) {
+    return {
+      ...base,
+      state: "present-unverified",
+      detail: "tarball bytes differ from dist.integrity",
+    };
+  }
+  let files;
+  try {
+    files = readNpmPayload(bytes, { maxOutputLength: NPM_TARBALL_LIMITS.unpacked });
+  } catch (error) {
+    return { ...base, state: "present-unverified", detail: `tarball contents: ${error.message}` };
+  }
+  if (triple && verdict) {
     const problems = darwinDigestProblems(files, verdict, triple);
     if (problems.length) {
       return { ...base, state: "present-unverified", detail: problems.join("; ") };
@@ -362,13 +395,6 @@ export async function packageState(name, ctx) {
     method = method ? `${method}+darwin-digest` : "darwin-digest";
   }
 
-  if (!method) {
-    return {
-      ...base,
-      state: "present-unverified",
-      detail: "no attestation, gitHead or admitted digest ties it to the source commit",
-    };
-  }
   return { ...base, state: "present-verified", method };
 }
 

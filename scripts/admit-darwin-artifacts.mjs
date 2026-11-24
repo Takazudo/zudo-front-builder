@@ -47,10 +47,11 @@ function octal(buf, start, length, label) {
   return Number.parseInt(text, 8);
 }
 
-function parsePax(data) {
+function parsePax(data, strictPax) {
   const records = {};
   let offset = 0;
-  const text = data.toString("utf8");
+  // POSIX PAX record lengths count bytes.
+  const text = data.toString(strictPax ? "latin1" : "utf8");
   while (offset < text.length) {
     const space = text.indexOf(" ", offset);
     if (space === -1) throw new Error("malformed pax record");
@@ -59,17 +60,26 @@ function parsePax(data) {
     const record = text.slice(space + 1, offset + length - 1);
     const eq = record.indexOf("=");
     if (eq === -1) throw new Error("malformed pax record");
-    records[record.slice(0, eq)] = record.slice(eq + 1);
+    if (strictPax && (offset + length > text.length || text[offset + length - 1] !== "\n")) {
+      throw new Error("malformed pax record length");
+    }
+    const value = record.slice(eq + 1);
+    records[record.slice(0, eq)] = strictPax
+      ? Buffer.from(value, "latin1").toString("utf8")
+      : value;
     offset += length;
   }
   return records;
 }
 
-// Returns the regular-file entries of a gzip'd ustar/pax archive. Per-file pax
+// Returns the entries of a ustar/pax archive. Per-file pax
 // headers ('x') are folded into the next entry; every other non-regular entry
 // type is reported so the caller can reject it.
 export function parseTarGz(bytes) {
-  const tar = gunzipSync(bytes);
+  return parseTarEntries(gunzipSync(bytes));
+}
+
+export function parseTarEntries(tar, { strictPax = false } = {}) {
   const entries = [];
   let offset = 0;
   let pax = null;
@@ -88,11 +98,14 @@ export function parseTarGz(bytes) {
     const mode = octal(header, 100, 8, "mode");
     const dataStart = offset + 512;
     if (pax?.size !== undefined) size = Number(pax.size);
+    if (strictPax && (!Number.isSafeInteger(size) || size < 0)) {
+      throw new Error("invalid tar entry size");
+    }
     if (dataStart + size > tar.length) throw new Error("tar entry truncated");
     const data = tar.subarray(dataStart, dataStart + size);
     offset = dataStart + Math.ceil(size / 512) * 512;
     if (typeflag === "x") {
-      pax = parsePax(data);
+      pax = parsePax(data, strictPax);
       continue;
     }
     if (pax?.path !== undefined) name = pax.path;

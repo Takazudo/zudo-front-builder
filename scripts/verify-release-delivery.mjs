@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { policyFromSourceFiles } from "./release/npm-publication-policy.mjs";
+import { readBoundedResponse, ResponseSizeError } from "./release/bounded-response.mjs";
+import { NPM_TARBALL_LIMITS, readNpmPayload } from "./release/npm-tarball-members.mjs";
 /**
  * verify-release-delivery.mjs — read-only audit of one published zfb release.
  *
@@ -66,7 +68,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
-import { HOLDING_DIST_TAG, PUBLISHED_PACKAGES, compareSemver } from "./retire-next-dist-tag.mjs";
+import { HOLDING_DIST_TAG, compareSemver } from "./retire-next-dist-tag.mjs";
 import {
   MD_WASM_PACKAGE,
   MD_WASM_PATHS,
@@ -221,8 +223,8 @@ const LIMITS = Object.freeze({
   log: 64 * 1024 * 1024,
   text: 1024 * 1024,
   archive: 256 * 1024 * 1024,
-  tarball: 256 * 1024 * 1024,
-  unpacked: 512 * 1024 * 1024,
+  tarball: NPM_TARBALL_LIMITS.compressed,
+  unpacked: NPM_TARBALL_LIMITS.unpacked,
   jobPages: 20,
   attempts: 20,
 });
@@ -277,38 +279,6 @@ function retryWaitMs(response, attempt, nowMs) {
   return Math.min(30_000, 1000 * 2 ** (attempt - 1));
 }
 
-async function readBounded(response, maxBytes, url) {
-  const declared = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    throw new FetchError(
-      "too-large",
-      `${url}: ${declared} bytes exceeds the ${maxBytes}-byte bound`,
-      { url },
-    );
-  }
-  if (!response.body?.getReader) {
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length > maxBytes) {
-      throw new FetchError("too-large", `${url}: body exceeds the ${maxBytes}-byte bound`, { url });
-    }
-    return bytes;
-  }
-  const reader = response.body.getReader();
-  const chunks = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => {});
-      throw new FetchError("too-large", `${url}: body exceeds the ${maxBytes}-byte bound`, { url });
-    }
-    chunks.push(Buffer.from(value));
-  }
-  return Buffer.concat(chunks, total);
-}
-
 /**
  * GET-only HTTP client with bounded timeouts, finite retries for transient
  * answers, and classified errors. The GitHub token is sent to api.github.com only.
@@ -357,9 +327,11 @@ export function createHttpClient({
       }
       if (response.ok) {
         try {
-          return await readBounded(response, maxBytes, url);
+          return await readBoundedResponse(response, maxBytes);
         } catch (error) {
-          if (error instanceof FetchError) throw error;
+          if (error instanceof ResponseSizeError) {
+            throw new FetchError("too-large", `${url}: ${error.message}`, { url });
+          }
           lastError = new FetchError("network", `${url}: body read failed: ${error.message}`, {
             url,
           });
@@ -563,24 +535,19 @@ export function parseTar(buffer) {
 }
 
 export function readNpmTarball(bytes, maxUnpacked = LIMITS.unpacked) {
-  let tar;
-  try {
-    tar = gunzipSync(bytes, { maxOutputLength: maxUnpacked });
-  } catch (error) {
-    const bound = error?.code === "ERR_BUFFER_TOO_LARGE" || error instanceof RangeError;
-    const wrapped = new Error(
-      bound
-        ? `unpacked tarball exceeds the ${maxUnpacked}-byte bound`
-        : `gunzip failed: ${error.message}`,
-    );
-    wrapped.verdict = bound ? STATUS.INCOMPLETE : STATUS.FAILED;
-    throw wrapped;
-  }
-  const files = new Map();
-  for (const [path, entry] of parseTar(tar)) {
-    files.set(path.startsWith("package/") ? path.slice("package/".length) : path, entry);
-  }
-  return files;
+  return readNpmPayload(bytes, {
+    maxOutputLength: maxUnpacked,
+    onGunzipError(error) {
+      const bound = error?.code === "ERR_BUFFER_TOO_LARGE" || error instanceof RangeError;
+      const wrapped = new Error(
+        bound
+          ? `unpacked tarball exceeds the ${maxUnpacked}-byte bound`
+          : `gunzip failed: ${error.message}`,
+      );
+      wrapped.verdict = bound ? STATUS.INCOMPLETE : STATUS.FAILED;
+      throw wrapped;
+    },
+  });
 }
 
 // ── Identity of the verifier itself ─────────────────────────────────────────
@@ -1710,9 +1677,10 @@ async function verifyNpmPackage(ctx, name) {
     });
   }
 
+  let files;
   if (integrityOk) {
     try {
-      const files = readNpmTarball(bytes);
+      files = readNpmTarball(bytes);
       const manifest = JSON.parse(files.get("package.json")?.data.toString("utf8") ?? "null");
       const problems = [];
       if (manifest?.name !== name || manifest?.version !== version)
@@ -1758,13 +1726,14 @@ async function verifyNpmPackage(ctx, name) {
     // attestation would falsely claim an Actions build. Identity comes from
     // the admitted Release bytes instead.
     const expected = ctx.ownerMacIdentity?.[ownerMacTarget];
-    const files = integrityOk ? readNpmTarball(bytes) : null;
     if (!expected) {
       mark("darwin-identity", STATUS.INCOMPLETE, {
         reason: `the Release ${ownerMacTarget} archive/addon identity could not be established`,
       });
     } else if (!files) {
-      mark("darwin-identity", STATUS.FAILED, { reason: "not inspected: tarball integrity failed" });
+      mark("darwin-identity", pkg.checks.contents.status, {
+        reason: pkg.checks.contents.reason,
+      });
     } else {
       const binary = files.get("zfb");
       const addon = files.get("zfb-css.node");

@@ -4,7 +4,8 @@
 // job could; only the content checks against publish's own inputs catch it.
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import * as npmTarball from "../release/npm-tarball-members.mjs";
 import { main, verifyTarballs } from "../release/verify-release-tarballs.mjs";
 import { cleanupTmp, tmp } from "./helpers/darwin-fixture.mjs";
 import {
@@ -87,6 +88,20 @@ describe("verify-release-tarballs", () => {
     expect(verify(fresh())).toEqual([]);
   });
 
+  it("rejects a legacy SDK structure before consulting its manifest", () => {
+    const set = fresh();
+    const inspect = vi.spyOn(npmTarball, "readNpmPayload").mockImplementationOnce(() => {
+      throw new Error("npm tarball duplicate file destination: package/readme.txt");
+    });
+    try {
+      expect(verify(set).join("\n")).toContain(
+        "@takazudo/zfb: packed SDK content rejected: npm tarball duplicate file destination: package/readme.txt",
+      );
+    } finally {
+      inspect.mockRestore();
+    }
+  });
+
   it("admits a v2 pack against SOURCE and rejects missing or altered metadata", () => {
     const set = fresh(true);
     const verifySource = (sourceCommit = set.sourceCommit) =>
@@ -103,9 +118,9 @@ describe("verify-release-tarballs", () => {
     const valid = pkgJson({ name: "create-zfb", version: V, gitHead: set.sourceCommit });
     const wrong = pkgJson({ name: "create-zfb", version: V, gitHead: "b".repeat(40) });
     replaceTarball(set.out, "create-zfb", [valid, wrong]);
-    expect(verifySource().join("\n")).toContain("exactly one regular package/package.json");
+    expect(verifySource().join("\n")).toContain("duplicate file destination: package/package.json");
     replaceTarball(set.out, "create-zfb", [valid, { ...wrong, name: "another/package.json" }]);
-    expect(verifySource().join("\n")).toContain("tarball has noncanonical package paths");
+    expect(verifySource().join("\n")).toContain("noncanonical npm tarball path");
   });
 
   it("admits legacy metadata only when immutable source policy permits it", () => {

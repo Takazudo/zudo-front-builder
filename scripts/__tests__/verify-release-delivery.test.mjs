@@ -9,8 +9,9 @@ import { createHash, generateKeyPairSync, sign as cryptoSign } from "node:crypto
 import { readFileSync } from "node:fs";
 import { gunzipSync, gzipSync } from "node:zlib";
 
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
+import * as npmTarball from "../release/npm-tarball-members.mjs";
 import { PUBLISHED_PACKAGES } from "../retire-next-dist-tag.mjs";
 import {
   CI_BUILD_TARGETS,
@@ -858,6 +859,37 @@ describe("npm integrity and provenance", () => {
     const pkg = check(report, "npm", "package:@takazudo/zfb-darwin-x64");
     expect(pkg.status).toBe(STATUS.FAILED);
     expect(pkg.evidence.checks.tarball.status).toBe(STATUS.FAILED);
+  });
+
+  it("keeps a structural rejection in the delivery report before Darwin digest lookup", async () => {
+    const name = "@takazudo/zfb-darwin-x64";
+    const reason = "npm tarball duplicate file destination: package/readme.txt";
+    const read = npmTarball.readNpmPayload;
+    let targetBytes;
+    const inspect = vi.spyOn(npmTarball, "readNpmPayload").mockImplementation((bytes, options) => {
+      if (bytes.equals(targetBytes)) throw new Error(reason);
+      return read(bytes, options);
+    });
+    try {
+      const { report } = await run(
+        undefined,
+        {},
+        {
+          afterBuild: (w) => {
+            targetBytes = w.packages[name].bytes;
+          },
+        },
+      );
+      const pkg = check(report, "npm", `package:${name}`);
+      expect(pkg.status).toBe(STATUS.FAILED);
+      expect(pkg.evidence.checks.tarball.status).toBe(STATUS.VERIFIED);
+      expect(pkg.evidence.checks["registry-signature"].status).toBe(STATUS.VERIFIED);
+      expect(pkg.evidence.checks.contents).toEqual({ status: STATUS.FAILED, reason });
+      expect(pkg.evidence.checks["darwin-identity"]).toEqual({ status: STATUS.FAILED, reason });
+      expect(report.verdict).toBe(STATUS.FAILED);
+    } finally {
+      inspect.mockRestore();
+    }
   });
 
   it("fails a carrier whose binary lost its exec bit", async () => {

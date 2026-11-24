@@ -3,10 +3,11 @@
 // checks (0755, workspace:, Darwin digests, MD/WASM manifest) run for real.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { parseTarGz } from "../admit-darwin-artifacts.mjs";
+import * as npmTarball from "../release/npm-tarball-members.mjs";
 import { policyForTree } from "../release/npm-publication-policy.mjs";
 import { MD_WASM_PATHS } from "../verify-zfb-md-wasm-published-digests.mjs";
 import {
@@ -264,6 +265,22 @@ describe("pack-release-tarballs", () => {
         (entry) => entry.name === "package/package.json",
       );
       expect(JSON.parse(entry.data.toString("utf8"))).not.toHaveProperty("gitHead");
+    }
+  });
+
+  it("blocks pack output admission when a legacy package fails structural inspection", () => {
+    const out = join(tmp("zfb-pack-rejected-"), "tarballs");
+    const inspect = vi.spyOn(npmTarball, "readNpmPayload").mockImplementationOnce(() => {
+      throw new Error("npm tarball duplicate file destination: package/readme.txt");
+    });
+    try {
+      expect(() => pack(tree(), { pack: { out } })).toThrow(
+        "tarball content rejected: npm tarball duplicate file destination: package/readme.txt",
+      );
+      expect(existsSync(join(out, "manifest.json"))).toBe(false);
+      expect(existsSync(join(out, "zfb-md-wasm-shipped-artifacts.json"))).toBe(false);
+    } finally {
+      inspect.mockRestore();
     }
   });
 
