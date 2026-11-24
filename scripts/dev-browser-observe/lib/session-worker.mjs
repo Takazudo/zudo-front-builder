@@ -27,7 +27,7 @@ try {
   process.off("message", onMessage);
   process.off("disconnect", onDisconnect);
   if (process.connected) {
-    process.send({ type: "finished" }, () => {
+    process.send({ type: "finished", exitCode: process.exitCode }, () => {
       if (process.connected) process.disconnect();
     });
   }

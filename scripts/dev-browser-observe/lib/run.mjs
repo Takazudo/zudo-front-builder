@@ -857,6 +857,15 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       }
     }
     if (evidenceFailed && exitCode === EXIT.ok) exitCode = EXIT.controllerError;
+    try {
+      writeJsonSync(receiptPath, receipt);
+    } catch (error) {
+      evidenceFailed = true;
+      stderr(`receipt write failed: ${error?.message ?? error}`);
+    }
+    if (evidenceFailed && exitCode === EXIT.ok) exitCode = EXIT.controllerError;
+    safeAppend({ type: "run-end", exitCode });
+    if (evidenceFailed && exitCode === EXIT.ok) exitCode = EXIT.controllerError;
     const live = summaryExtra.accountingFinal ?? accountingRef.current;
     const accounting = live ? { ...live } : { ...newAccounting(planned) };
     if (!summaryExtra.accountingFinal && summaryExtra.stopReason) {
@@ -894,14 +903,6 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       evidenceFailed = true;
       stderr(`summary write failed: ${error?.message ?? error}`);
     }
-    try {
-      writeJsonSync(receiptPath, receipt);
-    } catch (error) {
-      evidenceFailed = true;
-      stderr(`receipt write failed: ${error?.message ?? error}`);
-    }
-    if (evidenceFailed && exitCode === EXIT.ok) exitCode = EXIT.controllerError;
-    safeAppend({ type: "run-end", exitCode });
     if (evidenceFailed && !stopFailure) return exitCode || EXIT.controllerError; // eslint-disable-line no-unsafe-finally
     if (stopFailure) {
       stderr(

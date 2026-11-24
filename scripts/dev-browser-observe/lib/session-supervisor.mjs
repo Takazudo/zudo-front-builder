@@ -83,6 +83,7 @@ export function superviseController({
     let reason = null;
     let phase = "work";
     let completed = false;
+    let reportedExitCode = null;
     let settled = false;
     let attemptedSignal = null;
     const finish = (code, exitSignal = null) => {
@@ -106,6 +107,7 @@ export function superviseController({
             terminalBudgetMs: terminalMs,
             elapsedMs: monotonicMs() - started,
             controllerPid: child.pid ?? null,
+            reportedExitCode,
             controllerExitCode: code ?? null,
             controllerExitSignal: exitSignal,
             attemptedControllerSignal: attemptedSignal,
@@ -153,6 +155,7 @@ export function superviseController({
       if (message?.type === "finalizing") finalize();
       if (message?.type === "finished") {
         completed = true;
+        reportedExitCode = message.exitCode ?? null;
         finalize();
       }
     });

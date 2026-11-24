@@ -980,7 +980,14 @@ describe("execute (identity gate)", () => {
           rmSync(active);
         }
       }
-      await expect(run("third")).rejects.toMatchObject({ code: EXIT.serverNotReady });
+      const code = await run("third").then(
+        () => EXIT.ok,
+        (error) => error.code,
+      );
+      const third = readJson(join(s.root, "independent-output/third/receipt.json"));
+      expect(code, JSON.stringify(third.identity.checks.filter((c) => !c.ok))).toBe(
+        EXIT.serverNotReady,
+      );
       expect(existsSync(active)).toBe(false);
     },
   );
