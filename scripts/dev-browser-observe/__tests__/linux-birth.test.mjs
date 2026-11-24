@@ -35,6 +35,7 @@ describe("Linux kernel birth evidence", () => {
       ),
     ).rejects.toMatchObject({
       code: "PID_REUSE",
+      expected: record,
       actual,
       remaining: [actual],
       steps: [],
