@@ -2990,6 +2990,27 @@ export function summarize(report) {
   return lines.join("\n");
 }
 
+// Job-log downloads need authentication even on a public repository, so a
+// local run with no token exported reads them as HTTP 403 (v7.2.0 A14). Fall
+// back to the gh CLI's own credential; the value is never printed.
+export function resolveGitHubToken(env = process.env, readGhToken = defaultReadGhToken) {
+  const fromEnv = env.GH_TOKEN || env.GITHUB_TOKEN;
+  if (fromEnv) return fromEnv;
+  try {
+    return readGhToken() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function defaultReadGhToken() {
+  return execFileSync("gh", ["auth", "token"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 10_000,
+  }).trim();
+}
+
 const USAGE =
   "usage: verify-release-delivery.mjs --version X.Y.Z --release-run-id ID --installer-run-id ID [--finalize-run-id ID] [--json PATH] [--repo OWNER/NAME] [--expected-source SHA] [--expect-github-latest] [--expect-npm-latest] [--expect-homebrew] [--timeout-ms N] [--retries N] [--concurrency N]";
 
@@ -3066,7 +3087,7 @@ async function main(argv) {
     console.log(USAGE);
     return EXIT.verified;
   }
-  options.token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || undefined;
+  options.token = resolveGitHubToken();
   const report = await verifyReleaseDelivery(options);
   if (options.json) writeFileSync(resolve(options.json), `${JSON.stringify(report, null, 2)}\n`);
   console.log(summarize(report));

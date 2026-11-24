@@ -400,6 +400,7 @@ Run on the working tree that becomes the bump commit, and record the
 
 ```sh
 pnpm --filter @takazudo/zfb test
+<guard> cargo build -p zfb --bin zfb   # the config/dev lib tests spawn this binary
 <guard> cargo test --package zfb --lib
 pnpm --filter docs check
 pnpm --filter docs build          # strict broken-link mode via the package script
@@ -811,7 +812,9 @@ node scripts/verify-release-delivery.mjs --version <version> \
   --expected-source "$SOURCE_SHA" --json <evidence-dir>/release-delivery-<version>.json
 ```
 
-GET-only (prefix `NODE_USE_ENV_PROXY=1` behind an `HTTPS_PROXY`). It requires the release run's
+GET-only (prefix `NODE_USE_ENV_PROXY=1` behind an `HTTPS_PROXY`). Job logs need authentication even
+on this public repository: the verifier uses `GH_TOKEN` or `GITHUB_TOKEN`, else `gh auth token`.
+With none of them it reads the logs as HTTP 403 and reports incomplete (exit 2). It requires the release run's
 `Pack npm tarballs` and `Upload MD/WASM digest asset` jobs to have succeeded, alongside the build,
 asset and publish jobs. Exit 0 verified; 1 definite
 failure; 2 incomplete evidence (never a pass; re-run once if transient); 3 usage error. Also
@@ -921,7 +924,9 @@ gh api repos/Takazudo/zudo-front-builder/releases/latest --jq .tag_name   # v<ve
 ```
 
 The Homebrew script needs a checkout of `Takazudo/homebrew-tap` (`--tap-path`, `ZFB_TAP_PATH`, or a
-clone from `ZFB_TAP_REMOTE`) and push access to it. It is idempotent; retry once at most. A session
+clone from `ZFB_TAP_REMOTE`) and push access to it. With `--push` it first fast-forwards an existing
+checkout to its upstream, and refuses a diverged one without writing anything; reconcile that by hand.
+It is idempotent; retry once at most. A session
 without tap credentials (typical in Cloud) reports the exact command for the owner instead. A
 Homebrew failure does not undo a verified release; report it separately.
 
@@ -933,6 +938,10 @@ node scripts/verify-release-delivery.mjs --version <version> \
   --expected-source "$SOURCE_SHA" --expect-github-latest --expect-npm-latest --expect-homebrew \
   --json <evidence-dir>/release-delivery-<version>-channels.json
 ```
+
+The Homebrew row reads `raw.githubusercontent.com`, which can serve the previous formula for about
+five minutes after the tap push. When the tap's `main` already holds the new formula but this read
+reports the old version, wait out that window and re-run it; keep the stale result as evidence.
 
 Prereleases skip the installer smoke, the delivery verifier, Latest and Homebrew; report
 `npm view @takazudo/zfb dist-tags`. Testers use `npm i -g @takazudo/zfb@next` or `ZFB_VERSION=latest-prerelease`.
