@@ -187,9 +187,15 @@ describe("runBatch fail-stop", () => {
     });
     const d = deps({ page, server });
     const { accounting } = await runBatch({ scenarios: three, deps: d });
-    expect(accounting).toMatchObject({ stopReason: "server-exit", error: 1, notAttempted: 2 });
+    expect(accounting).toMatchObject({
+      stopReason: "server-exit+restoration-failed",
+      restorationFailures: 1,
+      error: 2,
+      notAttempted: 2,
+    });
     expect(attempts(d.recorder.records)[0].exit).toEqual({ exitCode: 101, signalCode: null });
     expect(d.recorder.records.find((r) => r.type === "cleanup")).toMatchObject({
+      ok: false,
       liveSkipped: "server-not-alive",
     });
   });
@@ -200,7 +206,11 @@ describe("runBatch fail-stop", () => {
     const fs = fakeFs();
     const d = deps({ page: fakePage({}), server, fs });
     const { accounting } = await runBatch({ scenarios: three, deps: d });
-    expect(accounting).toMatchObject({ attempted: 0, notAttempted: 3, stopReason: "server-exit" });
+    expect(accounting).toMatchObject({
+      attempted: 0,
+      notAttempted: 3,
+      stopReason: "server-exit+restoration-failed",
+    });
     expect(fs.writes).toEqual([]);
   });
 

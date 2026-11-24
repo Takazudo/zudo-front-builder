@@ -24,6 +24,23 @@ function playwrightVersion() {
   }
 }
 
+// A failed read must not hold the next check behind a pending Playwright navigation.
+async function boundedObservation(read, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      read,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ error: "observation timed out", timeoutMs }), timeoutMs);
+      }),
+    ]);
+  } catch (error) {
+    return { error: String(error?.message ?? error) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export const PREPARE_INTERRUPTED = "PREPARE_INTERRUPTED";
 
 /**
@@ -355,15 +372,25 @@ export class ObserverPage {
     return this.early.has(token);
   }
 
+  async clearDocumentToken(token) {
+    // A timed-out Playwright evaluate can still execute after navigation. Only clear the
+    // specific registration we observed, never a later check's token.
+    if (!token) return null;
+    return boundedObservation(
+      this.page.evaluate((expected) => {
+        const observer = window.__dbo;
+        return observer?.state().armed?.token === expected ? observer.disarm() : null;
+      }, token),
+      500,
+    );
+  }
+
   async disarm() {
+    const token = this.armedToken ?? this.waiter?.token;
     this.armedToken = null;
     this.cancelWait();
     this.early.clear();
-    try {
-      return await this.page.evaluate(() => (window.__dbo ? window.__dbo.disarm() : null));
-    } catch (error) {
-      return { error: String(error?.message ?? error) };
-    }
+    return this.clearDocumentToken(token);
   }
 
   /** Pre-attempt navigation (never inside a measured attempt). */
@@ -380,7 +407,10 @@ export class ObserverPage {
         notInCache:
           (document.body ? document.body.innerText : "").indexOf("page not in cache") !== -1,
       }));
-      if (state.armed) await this.page.evaluate(() => window.__dbo.disarm());
+      if (state.armed) {
+        const cleared = await this.clearDocumentToken(state.armed.token);
+        if (cleared?.error) throw new Error(cleared.error);
+      }
     } catch (error) {
       throw prepareInterruption(error, path);
     }
@@ -406,7 +436,10 @@ export class ObserverPage {
               : null,
         };
       });
-      if (state?.armed) await this.page.evaluate(() => window.__dbo.disarm());
+      if (state?.armed) {
+        const cleared = await this.clearDocumentToken(state.armed.token);
+        if (cleared?.error) throw new Error(cleared.error);
+      }
       return {
         ok: state !== null,
         url: this.page.url(),
@@ -446,7 +479,7 @@ export class ObserverPage {
 
   /**
    * Cleanup/after-write settle. With `requireNativeUpdate`, the settle ends only
-   * after the write's own native update is observed (a livereload page/css
+   * after a native update is observed (a livereload page/css
    * frame or a new document) followed by `quietMs` of quiet; otherwise
    * `quietMs` of quiet alone suffices. Always bounded by `boundMs`.
    */
@@ -458,8 +491,10 @@ export class ObserverPage {
     requireNativeUpdate = false,
     rule = null,
     stepMs = 50,
+    bodyRevision = null,
   }) {
     const begun = this.clock();
+    let revision = null;
     for (;;) {
       const ev = this.since(mark, startNs);
       const lastNs = [
@@ -471,18 +506,60 @@ export class ObserverPage {
       const waitedMs = nsToMs(now - begun);
       const nativeUpdateObserved =
         ev.wsFrames.some((f) => UPDATE_EVENTS.has(f.event)) || ev.newDocuments > 0;
-      const done = quietFor >= quietMs && (!requireNativeUpdate || nativeUpdateObserved);
+      const doc = ev.docInits.at(-1);
+      if (
+        bodyRevision &&
+        doc &&
+        quietFor >= quietMs &&
+        waitedMs < boundMs &&
+        (revision?.docUUID !== doc.docUUID || revision?.loading)
+      ) {
+        const view = await boundedObservation(
+          this.page.evaluate(
+            (predicate) => ({
+              url: location.href,
+              docUUID: window.__dbo?.state().docUUID,
+              loading: document.readyState === "loading",
+              matched: window.__dbo?.evaluate(predicate).matched === true,
+            }),
+            bodyRevision.predicate,
+          ),
+          Math.max(1, Math.ceil(boundMs - waitedMs)),
+        );
+        revision = {
+          docUUID: doc.docUUID,
+          observedDocUUID: view.docUUID ?? null,
+          url: view.url ?? null,
+          loading: view.loading === true,
+          matched:
+            !view.loading &&
+            view.matched === true &&
+            view.docUUID === doc.docUUID &&
+            view.url === this.url(bodyRevision.path),
+          ...(view.error ? { error: view.error } : {}),
+        };
+        // Events may have arrived during evaluate. Recheck the latest UUID, quiet and deadline.
+        if (!revision.loading) continue;
+      }
+      const done =
+        quietFor >= quietMs &&
+        (!requireNativeUpdate || nativeUpdateObserved) &&
+        (!bodyRevision ||
+          (waitedMs < boundMs && revision?.matched && revision.docUUID === doc?.docUUID));
       if (done || waitedMs >= boundMs) {
         return {
-          settled: done,
+          settled: Boolean(done),
+          ...(bodyRevision ? { bodyRevision: revision ?? { matched: false } } : {}),
           rule: rule ?? (requireNativeUpdate ? "require-native-update" : "quiet-only"),
           reason: done
             ? nativeUpdateObserved
               ? "native-update-observed-then-quiet"
               : "no-frame-for-quietMs"
-            : requireNativeUpdate && !nativeUpdateObserved
-              ? "bound-exceeded-without-native-update"
-              : "bound-exceeded",
+            : bodyRevision
+              ? "bound-exceeded-without-restored-body"
+              : requireNativeUpdate && !nativeUpdateObserved
+                ? "bound-exceeded-without-native-update"
+                : "bound-exceeded",
           nativeUpdateObserved,
           quietMs,
           boundMs,
@@ -608,7 +685,8 @@ export class ObserverPage {
       transientReads,
       recovery,
       evidence: this.since(m, navStart),
-      failure: await this.failureSnapshot(predicate),
+      sinceNavigationMs: nsToMs(this.clock() - navStart),
+      failure: await boundedObservation(this.failureSnapshot(predicate), 500),
     });
     let state = null;
     let armed;
@@ -662,7 +740,7 @@ export class ObserverPage {
           recovery,
           sinceNavigationMs: nsToMs(this.clock() - navStart),
           evidence: this.since(m, navStart),
-          failure: await this.failureSnapshot(predicate),
+          failure: await boundedObservation(this.failureSnapshot(predicate), 500),
         };
       }
       // A fresh token per arm, so a notify from an interrupted arm's persisted record stays distinct.
@@ -725,10 +803,14 @@ export class ObserverPage {
     const remainingMs = Math.max(1, timeoutMs - nsToMs(this.clock() - navStart));
     const waited = await this.waitNotify(token, remainingMs, (p) => this.onStray(p));
     const sinceNavigationMs = nsToMs(this.clock() - navStart);
-    const failure = waited.kind === "notify" ? null : await this.failureSnapshot(predicate);
+    const failure =
+      waited.kind === "notify"
+        ? null
+        : await boundedObservation(this.failureSnapshot(predicate), 500);
     const page = failure ?? (await this.failureSnapshot(predicate));
+    // Successful notification leaves its acknowledged registration in sessionStorage.
+    // Retain that token until the next prepare clears this exact registration.
     if (waited.kind !== "notify") await this.disarm();
-    this.armedToken = null;
     // zfb dev's "404 — page not in cache … rebuild may still be in flight" is a transient state, never a pass.
     const transient = page?.notInCache === true || failure?.notInCache === true;
     return {
