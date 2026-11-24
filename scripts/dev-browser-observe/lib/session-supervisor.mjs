@@ -14,7 +14,7 @@ const monotonicMs = () => Number(process.hrtime.bigint() / 1_000_000n);
 
 // This timer lives outside the controller. Synchronous preparation, a stalled
 // teardown or a referenced pipe inside the controller cannot delay its firing.
-export function superviseSession({
+export async function superviseSession({
   profilePath,
   label,
   command,
@@ -23,6 +23,7 @@ export function superviseSession({
 }) {
   const started = monotonicMs();
   const { profile, resolved } = loadProfile(profilePath);
+  const supervisorId = randomUUID();
   const labelDir = join(resolved.outDir, String(label));
   const recordFailure = (failure) => {
     if (!LABEL_RE.test(label) || findGitWorkTree(resolved.outDir)) return;
@@ -39,9 +40,10 @@ export function superviseSession({
       }
     }
     mkdirSync(resolved.outDir, { recursive: true });
-    const report = join(resolved.outDir, label + ".supervisor-" + randomUUID() + ".json");
+    const report = join(resolved.outDir, label + ".supervisor-" + supervisorId + ".json");
     writeJsonSync(report, {
       schema: "dev-browser-observe.supervisor-failure.v1",
+      supervisorId,
       labelDir,
       profilePath,
       ...failure,
@@ -54,13 +56,23 @@ export function superviseSession({
     });
     stderr("session supervisor failure record: " + report);
   };
-  return superviseController({
+  const code = await superviseController({
     worker: workerFile,
-    args: { profilePath, label, command, scenarios },
+    args: { profilePath, label, command, scenarios, supervisorId },
     deadline: started + profile.limits.wallCeilingMs,
     stderr,
     recordFailure,
   });
+  if (code === EXIT.ok) {
+    // Only the supervisor can attest that the controller actually exited.
+    writeJsonSync(join(labelDir, "supervisor-completion.json"), {
+      schema: "dev-browser-observe.supervisor-completion.v1",
+      supervisorId,
+      exitCode: code,
+      at: new Date().toISOString(),
+    });
+  }
+  return code;
 }
 
 export function superviseController({
@@ -94,6 +106,8 @@ export function superviseController({
       process.off("SIGTERM", interrupted);
       process.off("SIGINT", interrupted);
       if (!completed) reason ??= "controller exited without reporting completion";
+      if (completed && reportedExitCode !== code)
+        reason ??= "controller exit differs from reported result";
       if (exitSignal) reason ??= "controller exited on signal " + exitSignal;
       if (reason) {
         try {

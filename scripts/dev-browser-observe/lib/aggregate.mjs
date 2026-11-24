@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { distribution } from "./stats.mjs";
 import { readJson, readJsonl } from "./util.mjs";
 
@@ -312,6 +312,58 @@ export function blocksFrom(records, schedule) {
   };
 }
 
+// A worker can report success before its process exits. Look for contrary outer
+// evidence even for --sessions, which supplies paths without a series record.
+function terminalEvidence(dir, receipt, summary, records, seriesStatus, seriesExitCode) {
+  const label = basename(dir);
+  const outDir = dirname(dir);
+  const problems = [];
+  if (seriesStatus !== null && (seriesStatus !== "completed" || seriesExitCode !== 0))
+    problems.push("series session did not complete with exit 0");
+  if (summary?.ownedServerAbsentAfterStop !== true || summary.stopFailure)
+    problems.push("summary lacks verified server cleanup");
+  const end = records.at(-1);
+  if (end?.type !== "run-end" || end.exitCode !== 0)
+    problems.push("missing successful final run-end");
+  const stops = records.filter((r) => r.type === "server-stop");
+  if (stops.length !== 1 || stops[0].report?.absent !== true || stops[0].report?.error)
+    problems.push("missing verified server-stop");
+  if (receipt?.supervisorId != null) {
+    const completion = readJson(join(dir, "supervisor-completion.json"));
+    if (
+      completion.schema !== "dev-browser-observe.supervisor-completion.v1" ||
+      completion.supervisorId !== receipt.supervisorId ||
+      completion.exitCode !== 0
+    )
+      problems.push("supervisor completion does not match this session");
+  }
+  // A series label is generated from its prefix, session index and variant.
+  if (seriesStatus === null) {
+    const match = /^(.*)-s[1-9][0-9]*-[A-Za-z0-9]+$/.exec(label);
+    if (match) {
+      const path = join(outDir, match[1] + ".series.json");
+      if (existsSync(path)) {
+        const record = readJson(path);
+        const row = record.sessions.find((x) => x.label === label);
+        if (!row || row.status !== "completed" || row.exitCode !== 0)
+          problems.push("series record lacks completed session with exit 0");
+      }
+    }
+  }
+  const prefix = label + ".supervisor-";
+  for (const name of readdirSync(outDir)) {
+    if (!name.startsWith(prefix) || !name.endsWith(".json")) continue;
+    const failure = readJson(join(outDir, name));
+    if (
+      !receipt?.supervisorId ||
+      !failure.supervisorId ||
+      failure.supervisorId === receipt.supervisorId
+    )
+      problems.push("supervisor failure: " + name);
+  }
+  return problems;
+}
+
 /** Read one session: receipt facets, summary, blocks, and whether it ran to completion. */
 export function readSession({
   label,
@@ -319,6 +371,7 @@ export function readSession({
   dir,
   index = null,
   seriesStatus = null,
+  seriesExitCode = null,
   plannedSchedule = null,
   plannedError = null,
 }) {
@@ -350,9 +403,20 @@ export function readSession({
   } catch {
     summary = null;
   }
-  const { blocks, schedulePresent } = sessionBlocks(dir);
+  let records = [];
+  let problems;
+  try {
+    records = readJsonl(join(dir, "records.jsonl"));
+    problems = terminalEvidence(dir, receipt, summary, records, seriesStatus, seriesExitCode);
+  } catch (error) {
+    problems = ["unreadable terminal evidence: " + error.message];
+  }
+  const schedule = records.find((r) => r.type === "run-start")?.schedule ?? null;
+  const { blocks, schedulePresent } = blocksFrom(records, schedule);
   const acc = summary?.accounting ?? null;
   const complete =
+    problems.length === 0 &&
+    schedulePresent &&
     summary?.exitCode === 0 &&
     acc !== null &&
     acc.stopReason === null &&
@@ -362,6 +426,8 @@ export function readSession({
     ...s,
     status: complete ? "complete" : "incomplete",
     exitCode: summary?.exitCode ?? null,
+    seriesStatus,
+    terminalProblems: problems,
     stopReason: acc?.stopReason ?? null,
     stoppedAfter: acc?.stoppedAfter ?? null,
     identityOk: receipt?.identity?.ok ?? null,
@@ -433,6 +499,7 @@ export function aggregate({ sessions, declaredDifferences = [], protocol = null,
     incompleteSessions: incomplete,
     sessions: read.map(({ facets: _f, ...rest }) => rest),
     facets: Object.fromEntries(read.filter((s) => s.ran).map((s) => [s.label, s.facets])),
+    pooledComparable: incomplete.length === 0 && identity.ok,
     pooled: poolVariants(read),
   };
   const exitCode = !identity.ok ? 3 : incomplete.length > 0 ? 1 : 0;

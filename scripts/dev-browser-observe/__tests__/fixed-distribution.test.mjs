@@ -1028,11 +1028,21 @@ function fixedSession(dir, { framework, adapterSha, nodeSha = "n", corpus = "d",
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, "records.jsonl"),
-    `${JSON.stringify({ type: "run-start", schedule: [] })}\n`,
+    [
+      { type: "run-start", schedule: [] },
+      { type: "server-stop", report: { absent: true } },
+      { type: "run-end", exitCode: 0 },
+    ]
+      .map((r) => JSON.stringify(r))
+      .join("\n") + "\n",
   );
   writeFileSync(
     join(dir, "summary.json"),
-    JSON.stringify({ exitCode: 0, accounting: { stopReason: null, notAttempted: 0 } }),
+    JSON.stringify({
+      exitCode: 0,
+      ownedServerAbsentAfterStop: true,
+      accounting: { stopReason: null, notAttempted: 0 },
+    }),
   );
   writeFileSync(
     join(dir, "receipt.json"),

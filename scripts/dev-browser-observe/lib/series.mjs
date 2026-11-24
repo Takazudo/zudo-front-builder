@@ -360,6 +360,7 @@ export function sessionsFromRecord(recordPath) {
         variant: x.variant,
         dir: join(record.outDir, x.label),
         seriesStatus: x.status,
+        seriesExitCode: x.exitCode,
         plannedSchedule: planned[x.variant].schedule,
         plannedError: planned[x.variant].error,
       };
