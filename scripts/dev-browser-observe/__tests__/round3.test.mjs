@@ -491,6 +491,8 @@ describe("negative-control injections (state machine)", () => {
       notAttempted: 1,
     });
     expect(d.recorder.records.find((r) => r.type === "cleanup")).toMatchObject({
+      ok: true,
+      verification: "disk-only:declared-server-kill",
       liveSkipped: "server-not-alive",
     });
   });

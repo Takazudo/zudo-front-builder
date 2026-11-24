@@ -16,7 +16,7 @@ export const PROTOCOLS = {
     finalIdleMs: 60000,
     minSampleEveryMs: 1000,
     sampleMethod:
-      "async ps -o pid=,rss=,vsz= over the birth-verified owned pids, plus one async ps -M per pid for threads",
+      "async ps -o pid=,rss=,vsz= over the birth-verified owned pids, plus async Linux /proc/PID/stat num_threads or macOS ps -M for threads",
     labels: {
       rss: "instantaneous RSS in KiB; summed across owned processes it is not unique memory",
       peak: "sampled values over discrete samples, not a lifetime high-water mark",

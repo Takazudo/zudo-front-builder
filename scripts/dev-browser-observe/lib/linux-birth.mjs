@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 export const LINUX_BIRTH = "linux-proc-v1";
 
 // Field 2 (comm) is quoted with parentheses but may itself contain ')' and newlines.
-export function parseLinuxStat(text, pid) {
+export function parseLinuxStat(text, pid, { withThreads = false } = {}) {
   const open = text.indexOf("(");
   const close = text.lastIndexOf(")");
   const fields = text
@@ -26,6 +26,14 @@ export function parseLinuxStat(text, pid) {
     state: fields[0],
     comm: text.slice(open + 1, close),
     startTicks: fields[19],
+    ...(withThreads
+      ? {
+          threads:
+            /^[1-9]\d*$/.test(fields[17]) && Number.isSafeInteger(Number(fields[17]))
+              ? Number(fields[17])
+              : "unavailable",
+        }
+      : {}),
   };
 }
 

@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +21,7 @@ import {
   sourcePackagesAtSha,
 } from "../lib/identity.mjs";
 import { LockBusyError, acquireLock } from "../lib/lock.mjs";
-import { sample } from "../lib/mac-process-adapter.mjs";
+import { sample, sampleAsync } from "../lib/mac-process-adapter.mjs";
 import {
   PidReuseError,
   birthIdentity,
@@ -133,10 +134,11 @@ describe("real child processes", () => {
     const d = deps({ page, server: serverFrom(h), fs: fakeFs() });
     const { accounting } = await runBatch({ scenarios: ops, deps: d });
     expect(accounting).toMatchObject({
-      stopReason: "server-exit",
+      stopReason: "server-exit+restoration-failed",
       attempted: 1,
       notAttempted: 1,
-      error: 1,
+      restorationFailures: 1,
+      error: 2,
     });
     const rec = d.recorder.records.find((r) => r.type === "attempt");
     expect(rec.exit).toMatchObject({ exitCode: null, signalCode: "SIGKILL" });
@@ -152,7 +154,7 @@ describe("real child processes", () => {
     });
     d.timeouts.attemptMs = 10_000;
     const { accounting } = await runBatch({ scenarios: ops, deps: d });
-    expect(accounting.stopReason).toBe("server-exit");
+    expect(accounting.stopReason).toBe("server-exit+restoration-failed");
     expect(d.recorder.records.find((r) => r.type === "attempt").exit).toMatchObject({
       exitCode: 3,
       signalCode: null,
@@ -255,6 +257,44 @@ describe("real child processes", () => {
     await h.exited;
     expect(liveOwnedFromRegistry([entry], undefined, HOST_PLATFORM)).toHaveLength(0);
   });
+
+  it.skipIf(process.platform !== "linux")(
+    "counts a stable four-thread Linux child across both sampling paths",
+    async () => {
+      const child = spawn(
+        "python3",
+        [
+          "-IS",
+          "-c",
+          [
+            "import sys, threading",
+            "stop = threading.Event()",
+            "workers = [threading.Thread(target=stop.wait) for _ in range(3)]",
+            "for worker in workers: worker.start()",
+            "print('ready', flush=True)",
+            "try: sys.stdin.buffer.read(1)",
+            "finally: stop.set()",
+          ].join("\n"),
+        ],
+        { stdio: ["pipe", "pipe", "inherit"] },
+      );
+      const exited = once(child, "exit");
+      try {
+        await once(child.stdout, "data");
+        const birth = birthIdentity(child.pid);
+        expect(sample([birth]).processes[0].threads).toBe(4);
+        expect((await sampleAsync([birth], { withThreads: true })).summedThreads).toBe(4);
+        const wrong = { ...birth, startTicks: "0" };
+        expect(sample([wrong]).processes[0].threads).toBe("unavailable");
+        expect((await sampleAsync([wrong], { withThreads: true })).summedThreads).toBe(
+          "unavailable",
+        );
+      } finally {
+        child.stdin.end();
+        await exited;
+      }
+    },
+  );
 
   it("samples rss/vsz/threads for a live pid", () => {
     const s = sample([process.pid]);

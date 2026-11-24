@@ -639,6 +639,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           server: { ...server, sampleResources: sampleServer },
           page: observer,
           fs: fixtureOps,
+          verifyBodyRevision: !fixed && profile.fixture.kind === "field-notes",
           limits: profile.limits,
           timeouts: profile.timeouts,
           startedNs,

@@ -912,8 +912,8 @@ describe("resource study", () => {
       if (args[2] === "11") return { stdout: "USER PID\nu 11\nu 11\nu 11\n" };
       throw new Error("ps failed");
     };
-    expect(await threadCountAsync(11, exec)).toBe(3);
-    const s = await sampleAsync([11, 12], { withThreads: true, execImpl: exec });
+    expect(await threadCountAsync(11, exec, { os: "darwin" })).toBe(3);
+    const s = await sampleAsync([11, 12], { withThreads: true, execImpl: exec, os: "darwin" });
     expect(s.processes.map((p) => p.threads)).toEqual([3, "unavailable"]);
     expect(s.summedRssKiB).toBe(400);
     expect(s.summedThreads).toBe("unavailable");

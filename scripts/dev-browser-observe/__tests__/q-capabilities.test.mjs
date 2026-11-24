@@ -1012,7 +1012,10 @@ describe("review round: recovery premises are verified, never assumed", () => {
       expect(rec.outcome).toBe("open-page-replaced");
       expect(rec.openPage.reasons.length).toBeGreaterThan(0);
       expect(rec.repairSteps).toBeUndefined();
-      expect(accounting.error).toBe(1);
+      // This fake supplies the same settle result for rejection and final cleanup.
+      const failedCleanup = c.settle?.settled === false;
+      expect(accounting.restorationFailures).toBe(failedCleanup ? 1 : 0);
+      expect(accounting.error).toBe(failedCleanup ? 2 : 1);
     }
   });
 
