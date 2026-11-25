@@ -135,6 +135,14 @@ const ALLOCATOR_PHASES = [
   "retirement_after",
   "refresh_return",
 ];
+const ALLOCATOR_COMPLETION_FIELDS = [
+  "allocator_started_us",
+  "allocator_completed_us",
+  "allocator_duration_us",
+  "allocator_outcome",
+  "allocator_unavailable_reason",
+  "allocator",
+];
 const ALLOCATOR_FIELDS = [
   "arena_bytes",
   "uordblks_bytes",
@@ -293,11 +301,26 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
     if (
       e.metric_domain !== ALLOCATOR_DOMAIN ||
       !ALLOCATOR_PHASES.includes(e.allocator_phase) ||
-      !positive(e.refresh_id)
+      !positive(e.refresh_id) ||
+      [e.tick, e.host_id, e.snapshot_gen].some((value) => value !== undefined && !positive(value))
     )
       return fail("allocator metric identity or phase mismatch");
-    if (e.allocator_outcome === "limit" && e.phase === ALLOCATOR_COMPLETE)
+    const startFields = e.phase === ALLOCATOR_START;
+    if (startFields && ALLOCATOR_COMPLETION_FIELDS.some((field) => Object.hasOwn(e, field)))
+      return fail("allocator start contains completion fields");
+    if (e.allocator_outcome === "limit") {
+      if (
+        call !== ALLOCATOR_LIMIT + 1 ||
+        lastCheckpoint !== ALLOCATOR_LIMIT ||
+        Object.hasOwn(e, "allocator") ||
+        Object.hasOwn(e, "allocator_unavailable_reason") ||
+        e.allocator_started_us !== e.occurred_us ||
+        e.allocator_completed_us !== e.occurred_us ||
+        e.allocator_duration_us !== 0
+      )
+        return fail("invalid native allocator ceiling record");
       return fail("allocator native invocation ceiling reached");
+    }
     if (!positive(call) || call > ALLOCATOR_LIMIT)
       return fail("invalid native allocator invocation number");
     if (e.phase === ALLOCATOR_START || e.allocator_outcome === "unavailable") {
@@ -309,6 +332,7 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
       if (e.allocator_outcome === "unavailable") {
         if (
           !unavailable.has(e.allocator_unavailable_reason) ||
+          Object.hasOwn(e, "allocator") ||
           e.allocator_started_us !== e.occurred_us ||
           e.allocator_completed_us !== e.occurred_us ||
           e.allocator_duration_us !== 0
@@ -333,6 +357,7 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
       start.refresh_id !== e.refresh_id ||
       start.allocator_phase !== e.allocator_phase ||
       start.snapshot_gen !== e.snapshot_gen ||
+      start.host_id !== e.host_id ||
       start.tick !== e.tick ||
       start.allocator_boundary_outcome !== e.allocator_boundary_outcome
     )
@@ -350,6 +375,8 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
     report.completed += 1;
     if (
       e.allocator_outcome !== "ok" ||
+      Object.hasOwn(e, "allocator_unavailable_reason") ||
+      Object.keys(e.allocator ?? {}).length !== ALLOCATOR_FIELDS.length ||
       !ALLOCATOR_FIELDS.every((field) => counter(e.allocator?.[field]))
     )
       return fail("invalid allocator completion or counters");
@@ -364,26 +391,51 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
     }));
   if (report.unavailable.length)
     return fail(`GNU allocator getter unavailable: ${report.unavailable[0].reason}`);
-  if (!final) return report;
-  if (report.unfinished.length) return fail("allocator getter started but did not complete");
-  if (!byRefresh.size || !report.started)
+  if (final && report.unfinished.length)
+    return fail("allocator getter started but did not complete");
+  if (final && (!byRefresh.size || !report.started))
     return fail("mandatory allocator refresh observations missing");
   const joins = new Map(
     lifecycle
       .filter((row) => row.phase.startsWith("join_") && row.retired_by_refresh_id)
       .map((row) => [row.retired_by_refresh_id, row]),
   );
+  const hostCreates = new Map();
+  for (const row of lifecycle) {
+    if (row.phase !== "host_create") continue;
+    if (!hostCreates.has(row.refresh_id)) hostCreates.set(row.refresh_id, []);
+    hostCreates.get(row.refresh_id).push(row);
+  }
+  for (const row of byCallPhase.values()) {
+    const context = byRefresh
+      .get(row.refresh_id)
+      ?.find((candidate) => candidate.phase === "refresh_start");
+    if (!context) return fail("allocator checkpoint attached to unknown refresh");
+    const host = hostCreates
+      .get(row.refresh_id)
+      ?.findLast((candidate) => candidate.occurrence < row.occurrence);
+    if (row.tick !== context.tick || row.host_id !== host?.host_id)
+      return fail(`allocator checkpoint has foreign tick or host for refresh ${row.refresh_id}`);
+  }
   for (const [id, refresh] of byRefresh) {
     const phase = (name) => refresh.find((e) => e.phase === name);
     const started = phase("refresh_start");
     const finished =
       phase("refresh_complete") ?? phase("refresh_skipped") ?? phase("refresh_failed");
+    // RefreshComplete/Skipped/Failed is still an inner-function boundary. A
+    // periodic observation can validate the preceding phases once this marker
+    // is in a contiguous occurrence prefix. The post-return getter can still
+    // be legitimately absent or in flight at that point.
+    if (!finished && !final) continue;
     const bundle = phase("bundle_start");
     const snapshot = phase("snapshot_start");
     const snapshotEnd = phase("snapshot_ready") ?? phase("snapshot_failed");
     const join = joins.get(id);
     if (!started || typeof started.boot !== "boolean" || !finished || (snapshot && !snapshotEnd))
       return fail(`refresh ${id} lacks boot or finish context for allocator phases`);
+    const returned = byCallPhase.get(`${id}/refresh_return`);
+    const returnComplete = returned && completed.has(returned.allocator_call);
+    const expectReturn = !started.boot && (final || returnComplete);
     const expected = [
       ["entry", started, snapshot ?? finished],
       ...(snapshot
@@ -409,7 +461,7 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
           ]
         : []),
       ...(join ? [["retirement_after", join, finished, ["returned", "failed"]]] : []),
-      ...(!started.boot
+      ...(expectReturn
         ? [
             [
               "refresh_return",
@@ -424,7 +476,11 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
           ]
         : []),
     ];
-    const got = ALLOCATOR_PHASES.map((name) => byCallPhase.get(`${id}/${name}`)).filter(Boolean);
+    const got = ALLOCATOR_PHASES.filter(
+      (name) => name !== "refresh_return" || expectReturn || started.boot,
+    )
+      .map((name) => byCallPhase.get(`${id}/${name}`))
+      .filter(Boolean);
     if (got.length !== expected.length)
       return fail(`allocator schedule incomplete for refresh ${id}`);
     let previous = started.occurrence;
@@ -432,6 +488,7 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
       const start = got[index];
       const finish = completed.get(start.allocator_call);
       if (
+        !finish ||
         start.allocator_phase !== name ||
         start.occurrence <= previous ||
         (snapshotEnd &&
@@ -451,8 +508,6 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
       previous = finish.occurrence;
     }
   }
-  if ([...starts.values()].some((row) => !byRefresh.has(row.refresh_id)))
-    return fail("allocator getter attached to unknown refresh");
   return report;
 }
 
@@ -525,11 +580,13 @@ export function inspectRendererLifecycle(
   const byHost = new Map();
   const byRefresh = new Map();
   const allocatorRows = [];
+  let contiguous = 0;
   for (const e of events.sort((a, b) => a.occurrence - b.occurrence)) {
     if (!positive(e.occurrence) || seen.has(e.occurrence) || !counter(e.occurred_us)) {
       return fail("invalid native occurrence sequence or timestamp");
     }
     seen.add(e.occurrence);
+    if (e.occurrence === contiguous + 1) contiguous += 1;
     if (e.phase === ALLOCATOR_START || e.phase === ALLOCATOR_COMPLETE) {
       if (!withAllocator) return fail("unexpected allocator telemetry in renderer-memory.v1");
       allocatorRows.push(e);
@@ -561,7 +618,20 @@ export function inspectRendererLifecycle(
     }
   }
   if (withAllocator) {
-    result.allocator = inspectAllocator(allocatorRows, byRefresh, events, final);
+    // Stderr can emit a later occurrence before an earlier producer. A missing
+    // event is actionable only inside the proven prefix or at finalization.
+    const established = (row) => final || row.occurrence <= contiguous;
+    const knownRefreshes = new Map(
+      [...byRefresh]
+        .map(([id, rows]) => [id, rows.filter(established)])
+        .filter(([, rows]) => rows.length),
+    );
+    result.allocator = inspectAllocator(
+      allocatorRows.filter(established),
+      knownRefreshes,
+      events.filter(established),
+      final,
+    );
     if (!final && result.allocator.failure) return fail(result.allocator.failure);
   }
   if (final) {
@@ -569,6 +639,7 @@ export function inspectRendererLifecycle(
       !last ||
       !positive(last.attempted) ||
       last.attempted > 4096 ||
+      events.some((row) => row.seq >= last.seq) ||
       last.attempted !== seen.size ||
       last.emitted !== seen.size
     ) {

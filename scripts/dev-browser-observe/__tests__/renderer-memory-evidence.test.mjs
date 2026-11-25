@@ -196,7 +196,7 @@ function allocatorStream({ unavailable, unfinished, omit, corrupt = () => {} } =
   let occurrence = 0;
   const append = (row) => {
     occurrence += 1;
-    rows.push({ ...row, occurrence, occurred_us: occurrence });
+    rows.push({ tick: 23, ...row, occurrence, occurred_us: occurrence });
   };
   const getter = (allocator_phase, allocator_boundary_outcome, hasSnapshot = true) => {
     if (allocator_phase === omit) return;
@@ -205,6 +205,7 @@ function allocatorStream({ unavailable, unfinished, omit, corrupt = () => {} } =
       metric_domain: "gnu_mallinfo2.v1",
       refresh_id: 1,
       ...(hasSnapshot && { snapshot_gen: 1 }),
+      ...(allocator_phase === "refresh_return" && { host_id: 1 }),
       allocator_phase,
       allocator_call: ++call,
       allocator_boundary_outcome,
@@ -253,7 +254,7 @@ function allocatorStream({ unavailable, unfinished, omit, corrupt = () => {} } =
   const byOccurrence = rest.sort((a, b) => a.occurrence - b.occurrence);
   for (const name of ["host_create", "host_initialized", "host_boot", "validation_ok", "adopted"])
     append(byOccurrence.find((row) => row.phase === name));
-  append(phase("refresh_complete"));
+  append({ ...phase("refresh_complete"), host_id: 1 });
   getter("refresh_return", "refreshed");
   for (const name of ["retire_requested", "host_final_heap", "host_destroyed", "join_completed"])
     append(byOccurrence.find((row) => row.phase === name));
@@ -342,4 +343,77 @@ test("makes an explicit application lock exclusion incomplete without inventing 
   assert.deepEqual(report.allocator.unavailable, [
     { call: 6, refreshId: 1, phase: "refresh_return", reason: "application_write_exclusion" },
   ]);
+});
+
+test("rejects mismatched completion hosts and foreign refresh correlation", () => {
+  for (const mutate of [
+    (row) => {
+      if (row.allocator_phase === "refresh_return" && row.phase === "allocator_complete")
+        row.host_id = 81;
+    },
+    (row) => {
+      if (row.allocator_phase === "refresh_return") row.host_id = 81;
+    },
+    (row) => {
+      if (row.allocator_phase === "entry") row.tick = 85;
+    },
+  ]) {
+    const report = inspectRendererLifecycle(allocatorStream({ corrupt: mutate }), {
+      final: true,
+      withAllocator: true,
+    });
+    assert.equal(report.complete, false);
+    assert.match(report.failure.detail, /matching start|foreign tick or host/);
+  }
+});
+
+test("rejects allocator completion fields on start and fabricated counters on unavailable", () => {
+  for (const mutate of [
+    (row) => {
+      if (row.phase === "allocator_start") row.allocator_outcome = "unavailable";
+    },
+    (row) => {
+      if (row.allocator_outcome === "unavailable") row.allocator = {};
+    },
+  ]) {
+    const report = inspectRendererLifecycle(
+      allocatorStream({ unavailable: "refresh_return", corrupt: mutate }),
+      { final: true, withAllocator: true },
+    );
+    assert.equal(report.complete, false);
+    assert.match(report.failure.detail, /completion fields|invalid unavailable/);
+  }
+});
+
+test("checks a closed refresh in the contiguous prefix and tolerates reordered emission", () => {
+  const missing = inspectRendererLifecycle(allocatorStream({ omit: "snapshot_after" }), {
+    withAllocator: true,
+  });
+  assert.match(missing.failure.detail, /schedule incomplete/);
+
+  const server = allocatorStream();
+  const rows = server.provSince().lines.map(({ text }) => JSON.parse(text.slice(11)));
+  const index = rows.findIndex((row) => row.allocator_phase === "snapshot_after");
+  // Temporarily unseen first half of the pair, not unexplained loss: it will be
+  // emitted after the closed refresh marker, while its occurrence stays earlier.
+  const delayed = rows.splice(index, 1)[0];
+  const inspect = (rows, final) =>
+    inspectRendererLifecycle(
+      {
+        ...server,
+        provSince: () => ({
+          droppedBeforeMark: 0,
+          lines: rows.map((row, i) => ({
+            text: "[zfb-prov] " + JSON.stringify({ ...row, seq: i + 1 }),
+          })),
+        }),
+      },
+      { withAllocator: true, final },
+    );
+  assert.equal(inspect(rows.slice(0, -1), false).failure, null);
+  rows.splice(-1, 0, delayed);
+  assert.equal(inspect(rows, true).failure, null);
+  const watermark = rows.pop();
+  rows.splice(-1, 0, watermark);
+  assert.match(inspect(rows, true).failure.detail, /terminal watermark/);
 });
