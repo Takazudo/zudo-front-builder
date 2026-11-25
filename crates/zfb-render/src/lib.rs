@@ -39,6 +39,9 @@ pub use zfb_js_host::{
     native::NativeHost as EmbeddedV8RenderHost,
 };
 
+#[cfg(feature = "renderer-memory-observe")]
+pub use zfb_js_host::native::HeapObservation;
+
 /// Call on the process main thread before starting any host threads.
 #[cfg(feature = "direct-v8")]
 pub use zfb_js_host::process::initialize as initialize_v8;

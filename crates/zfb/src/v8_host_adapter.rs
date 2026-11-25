@@ -22,6 +22,8 @@
 //!   `RendererError::EmbeddedV8` so the build surfaces a clear error
 //!   rather than a silent hang.
 
+#[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+use crate::renderer_memory::{BootFailure, Host, Owner, Phase};
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
@@ -84,6 +86,8 @@ pub struct ThreadedV8Host {
     tx: Option<mpsc::SyncSender<HostRequest>>,
     /// Join handle for clean shutdown on drop.
     thread: Option<thread::JoinHandle<()>>,
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    observation: Option<Host>,
 }
 
 // `ThreadedV8Host` is `Send` automatically: it contains only a `SyncSender`
@@ -97,6 +101,10 @@ impl Drop for ThreadedV8Host {
     /// Close the request channel first (so the V8 thread's receive loop
     /// exits), then join the thread with a deadline to bound teardown time.
     fn drop(&mut self) {
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        if let Some(observation) = &self.observation {
+            observation.retirement(Phase::RetireRequested);
+        }
         // Drop the sender; the V8 thread's `for req in rx` loop will see
         // the channel closed and exit its async block.
         drop(self.tx.take());
@@ -104,8 +112,20 @@ impl Drop for ThreadedV8Host {
             // Bounded join: if isolate teardown inside deno_core wedges, we
             // detach rather than hang the process.  A generous deadline is
             // fine — the goal is bounding the worst case, not a tight cutoff.
-            let _ =
-                crate::bounded_join::join_with_deadline(handle, std::time::Duration::from_secs(10));
+            let deadline = std::time::Duration::from_secs(10);
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            if let Some(observation) = &self.observation {
+                use crate::bounded_join::JoinOutcome;
+                let phase = match crate::bounded_join::observe_join(handle, deadline) {
+                    JoinOutcome::Completed(()) => Phase::JoinCompleted,
+                    JoinOutcome::Panicked => Phase::JoinPanicked,
+                    JoinOutcome::TimedOut => Phase::JoinTimeout,
+                    JoinOutcome::Disconnected => Phase::JoinDisconnected,
+                };
+                observation.retirement(phase);
+                return;
+            }
+            let _ = crate::bounded_join::join_with_deadline(handle, deadline);
         }
     }
 }
@@ -146,6 +166,11 @@ impl ThreadedV8Host {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
 
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        let observation = Host::create();
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        let thread_observation = observation.clone();
+
         #[cfg(test)]
         let exit_observer = tests::capture_thread_exit();
         let thread_handle = thread::Builder::new()
@@ -153,6 +178,8 @@ impl ThreadedV8Host {
             .spawn(move || {
                 #[cfg(test)]
                 let _exit_observer = exit_observer;
+                #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                let owner = thread_observation.as_ref().map(Host::on_owner);
                 // Each V8 host needs its own single-thread tokio runtime
                 // because `dispatch_fetch` is async and calls
                 // `with_event_loop_promise`. We use `current_thread` so the
@@ -163,6 +190,10 @@ impl ThreadedV8Host {
                 {
                     Ok(rt) => rt,
                     Err(e) => {
+                        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                        if let Some(owner) = &owner {
+                            owner.boot_failed();
+                        }
                         let _ = boot_tx.send(Err(format!("tokio runtime build failed: {e}")));
                         return;
                     }
@@ -179,18 +210,32 @@ impl ThreadedV8Host {
                     let mut host = match EmbeddedV8RenderHost::with_loader(loader) {
                         Ok(h) => h,
                         Err(e) => {
+                            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                            if let Some(owner) = &owner {
+                                owner.boot_failed();
+                            }
                             let _ = boot_tx.send(Err(format!("V8 host init failed: {e}")));
                             return;
                         }
                     };
+                    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                    if let Some(owner) = &owner {
+                        owner.record(Phase::HostInitialized, None);
+                    }
                     // Load the bundle as the main ESM module.
                     let bundle_src = match std::fs::read_to_string(&bundle_path_owned) {
                         Ok(s) => s,
                         Err(e) => {
+                            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                            if let Some(owner) = &owner {
+                                owner.boot_failed();
+                            }
                             let _ = boot_tx.send(Err(format!(
                                 "could not read bundle {}: {e}",
                                 bundle_path_owned.display()
                             )));
+                            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                            destroy_observed_host(host, owner.as_ref(), false);
                             return;
                         }
                     };
@@ -221,11 +266,21 @@ impl ThreadedV8Host {
                                  worker console output during bundle load:\n{console_logs}"
                             )
                         };
+                        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                        if let Some(owner) = &owner {
+                            owner.boot_failed();
+                        }
                         let _ = boot_tx.send(Err(msg));
+                        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                        destroy_observed_host(host, owner.as_ref(), false);
                         return;
                     }
 
                     // Signal successful boot before entering the request loop.
+                    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                    if let Some(owner) = &owner {
+                        owner.record(Phase::HostBoot, Some(host.observe_heap()));
+                    }
                     let _ = boot_tx.send(Ok(()));
                     // Drop boot_tx so the caller side's recv returns.
                     drop(boot_tx);
@@ -238,10 +293,20 @@ impl ThreadedV8Host {
                     // own refactor. That freeze was scoped to #1712 and is
                     // lifted here on purpose — two copies of the render loop
                     // drift, and drift here is expensive to find.
-                    serve_v8_host_requests(host, rx).await;
+                    serve_v8_host_requests(
+                        host,
+                        rx,
+                        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                        owner.as_ref(),
+                    )
+                    .await;
                 });
             })
             .map_err(|e| {
+                #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                if let Some(observation) = &observation {
+                    observation.boot_failed(BootFailure::Spawn);
+                }
                 RendererError::EmbeddedV8(format!("could not spawn V8 host thread: {e}"))
             })?;
 
@@ -249,13 +314,25 @@ impl ThreadedV8Host {
         match boot_rx.recv() {
             Ok(Ok(())) => {}
             Ok(Err(msg)) => {
-                let _ = thread_handle.join();
+                finish_failed_boot(
+                    thread_handle,
+                    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                    observation
+                        .as_ref()
+                        .map(|host| (host, BootFailure::Reported)),
+                );
                 return Err(RendererError::EmbeddedV8(msg));
             }
             Err(_) => {
                 // Thread exited before signalling — should not happen, but treat
                 // as a boot failure.
-                let _ = thread_handle.join();
+                finish_failed_boot(
+                    thread_handle,
+                    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                    observation
+                        .as_ref()
+                        .map(|host| (host, BootFailure::Channel)),
+                );
                 return Err(RendererError::EmbeddedV8(
                     "V8 host thread exited during boot without signalling".into(),
                 ));
@@ -265,6 +342,8 @@ impl ThreadedV8Host {
         Ok(Box::new(ThreadedV8Host {
             tx: Some(tx),
             thread: Some(thread_handle),
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            observation,
         }))
     }
 
@@ -297,6 +376,11 @@ impl ThreadedV8Host {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
 
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        let observation = Host::create();
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        let thread_observation = observation.clone();
+
         #[cfg(test)]
         let exit_observer = tests::capture_thread_exit();
         let thread_handle = thread::Builder::new()
@@ -304,12 +388,18 @@ impl ThreadedV8Host {
             .spawn(move || {
                 #[cfg(test)]
                 let _exit_observer = exit_observer;
+                #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                let owner = thread_observation.as_ref().map(Host::on_owner);
                 let rt = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                 {
                     Ok(rt) => rt,
                     Err(e) => {
+                        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                        if let Some(owner) = &owner {
+                            owner.boot_failed();
+                        }
                         let _ = boot_tx.send(Err(format!("tokio runtime build failed: {e}")));
                         return;
                     }
@@ -321,6 +411,10 @@ impl ThreadedV8Host {
                     let bundle_src = match std::fs::read_to_string(&bundle_path_owned) {
                         Ok(s) => s,
                         Err(e) => {
+                            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                            if let Some(owner) = &owner {
+                                owner.boot_failed();
+                            }
                             let _ = boot_tx.send(Err(format!(
                                 "could not read bundle {}: {e}",
                                 bundle_path_owned.display()
@@ -336,10 +430,18 @@ impl ThreadedV8Host {
                     let mut host = match EmbeddedV8RenderHost::with_loader(loader) {
                         Ok(h) => h,
                         Err(e) => {
+                            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                            if let Some(owner) = &owner {
+                                owner.boot_failed();
+                            }
                             let _ = boot_tx.send(Err(format!("V8 host init failed: {e}")));
                             return;
                         }
                     };
+                    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                    if let Some(owner) = &owner {
+                        owner.record(Phase::HostInitialized, None);
+                    }
                     // Sub-issue #1764 follow-up: strictly validate the INNER
                     // worker's shape BEFORE running the wrapper. The
                     // generated wrapper's own `default` export is always
@@ -366,7 +468,13 @@ impl ThreadedV8Host {
                                  worker console output during bundle load:\n{console_logs}"
                             )
                         };
+                        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                        if let Some(owner) = &owner {
+                            owner.boot_failed();
+                        }
                         let _ = boot_tx.send(Err(msg));
+                        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                        destroy_observed_host(host, owner.as_ref(), false);
                         return;
                     }
                     // Run the wrapper as the main module. `execute_worker_module`
@@ -396,29 +504,61 @@ impl ThreadedV8Host {
                                  worker console output during bundle load:\n{console_logs}"
                             )
                         };
+                        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                        if let Some(owner) = &owner {
+                            owner.boot_failed();
+                        }
                         let _ = boot_tx.send(Err(msg));
+                        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                        destroy_observed_host(host, owner.as_ref(), false);
                         return;
                     }
 
+                    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                    if let Some(owner) = &owner {
+                        owner.record(Phase::HostBoot, Some(host.observe_heap()));
+                    }
                     let _ = boot_tx.send(Ok(()));
                     drop(boot_tx);
 
                     // Serve requests one at a time until the channel closes.
-                    serve_v8_host_requests(host, rx).await;
+                    serve_v8_host_requests(
+                        host,
+                        rx,
+                        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                        owner.as_ref(),
+                    )
+                    .await;
                 });
             })
             .map_err(|e| {
+                #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                if let Some(observation) = &observation {
+                    observation.boot_failed(BootFailure::Spawn);
+                }
                 RendererError::EmbeddedV8(format!("could not spawn V8 host thread: {e}"))
             })?;
 
         match boot_rx.recv() {
             Ok(Ok(())) => {}
             Ok(Err(msg)) => {
-                let _ = thread_handle.join();
+                finish_failed_boot(
+                    thread_handle,
+                    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                    observation
+                        .as_ref()
+                        .map(|host| (host, BootFailure::Reported)),
+                );
                 return Err(RendererError::EmbeddedV8(msg));
             }
             Err(_) => {
-                let _ = thread_handle.join();
+                finish_failed_boot(
+                    thread_handle,
+                    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                    observation
+                        .as_ref()
+                        .map(|host| (host, BootFailure::Channel)),
+                );
                 return Err(RendererError::EmbeddedV8(
                     "V8 host thread exited during boot without signalling".into(),
                 ));
@@ -428,7 +568,47 @@ impl ThreadedV8Host {
         Ok(Box::new(ThreadedV8Host {
             tx: Some(tx),
             thread: Some(thread_handle),
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            observation,
         }))
+    }
+}
+
+fn finish_failed_boot(
+    handle: thread::JoinHandle<()>,
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))] observation: Option<(
+        &Host,
+        BootFailure,
+    )>,
+) {
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    if let Some((host, failure)) = observation {
+        if matches!(failure, BootFailure::Channel) {
+            host.boot_failed(failure);
+        }
+        let phase = if handle.join().is_ok() {
+            Phase::JoinCompleted
+        } else {
+            Phase::JoinPanicked
+        };
+        host.retirement(phase);
+        return;
+    }
+    // Preserve the pre-existing join on a boot channel error. The owner
+    // has returned or is already on an early-return path.
+    let _ = handle.join();
+}
+
+#[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+fn destroy_observed_host(mut host: EmbeddedV8RenderHost, owner: Option<&Owner<'_>>, booted: bool) {
+    if let Some(owner) = owner.filter(|_| booted) {
+        owner.record(Phase::HostFinalHeap, Some(host.observe_heap()));
+    }
+    // This returns only after all NativeHost fields, including OwnedIsolate,
+    // have finished destruction. Thread termination is observed separately.
+    drop(host);
+    if let Some(owner) = owner {
+        owner.record(Phase::HostDestroyed, None);
     }
 }
 
@@ -488,7 +668,11 @@ pub(crate) fn inner_bundle_specifier(bundle_path: &Path) -> String {
 /// [`ThreadedV8Host::new_with_dev_content_trace_wrapper`] call it. `new_with_hooks`
 /// carried a byte-identical inline copy until issue #1735 folded it onto this
 /// helper — see the fold-site comment there for why that freeze was lifted.
-async fn serve_v8_host_requests(mut host: EmbeddedV8RenderHost, rx: mpsc::Receiver<HostRequest>) {
+async fn serve_v8_host_requests(
+    mut host: EmbeddedV8RenderHost,
+    rx: mpsc::Receiver<HostRequest>,
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))] owner: Option<&Owner<'_>>,
+) {
     for host_req in rx {
         let req = match host_req {
             HostRequest::Dispatch(req) => req,
@@ -556,6 +740,8 @@ async fn serve_v8_host_requests(mut host: EmbeddedV8RenderHost, rx: mpsc::Receiv
         let _ = req.reply.send(result);
     }
     // rx is closed (ThreadedV8Host was dropped); exit cleanly.
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    destroy_observed_host(host, owner, true);
 }
 
 impl EmbeddedV8Host for ThreadedV8Host {
@@ -891,15 +1077,37 @@ mod tests {
             export default { notFetch: 1 };
             "#,
         );
-        let err = ThreadedV8Host::new(&bundle_path)
-            .err()
-            .expect("boot must fail — no false Ok(()) for a malformed worker shape");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("has no `fetch` property"),
-            "boot error must carry the ORIGINAL shape-validation diagnostic, \
-             not a generic failure: {msg}"
-        );
+        let exercise = || {
+            let err = ThreadedV8Host::new(&bundle_path)
+                .err()
+                .expect("boot must fail — no false Ok(()) for a malformed worker shape");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("has no `fetch` property"),
+                "boot error must carry the ORIGINAL shape-validation diagnostic, \
+                 not a generic failure: {msg}"
+            );
+        };
+        #[cfg(not(all(feature = "renderer-memory-observe", target_os = "linux")))]
+        exercise();
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        {
+            let events = crate::renderer_memory::tests::capture_host_events(exercise);
+            assert_eq!(events.len(), 7);
+            for phase in [
+                Phase::HostCreate,
+                Phase::HostInitialized,
+                Phase::HostBootFailed,
+                Phase::HostDestroyed,
+                Phase::JoinCompleted,
+            ] {
+                assert!(
+                    events.iter().any(|event| event.phase == phase),
+                    "missing {phase:?}"
+                );
+            }
+            assert!(events.iter().all(|event| event.heap.is_none()));
+        }
     }
 
     /// Real adapter integration proof for the dev content-trace wrapper seam
@@ -2246,24 +2454,63 @@ export { worker as default };
             boot_via_new_with_hooks as fn(&Path) -> Box<dyn EmbeddedV8Host>,
             boot_via_dev_content_trace_wrapper,
         ] {
-            let (exit_tx, exit_rx) = mpsc::channel();
-            THREAD_EXIT.with(|slot| *slot.borrow_mut() = Some(exit_tx));
-            let mut host = boot(&bundle_path);
-            THREAD_EXIT.with(|slot| *slot.borrow_mut() = None);
-            // Exercise the host once so the thread is proven live, then
-            // measure how long a clean shutdown takes.
-            host.dispatch_fetch("/").expect("dispatch before drop");
-            let start = std::time::Instant::now();
-            drop(host);
-            let elapsed = start.elapsed();
-            assert!(exit_rx.recv_timeout(std::time::Duration::from_secs(1)).expect(
-                "the isolate owner thread must actually exit; a detached join is not clean shutdown"
-            ), "the isolate owner thread panicked during shutdown");
-            assert!(
-                elapsed < std::time::Duration::from_secs(5),
-                "Drop must join the V8 thread promptly on a healthy host \
-                 (well under the 10s bounded-join deadline), took {elapsed:?}"
-            );
+            let exercise = || {
+                let (exit_tx, exit_rx) = mpsc::channel();
+                THREAD_EXIT.with(|slot| *slot.borrow_mut() = Some(exit_tx));
+                let mut host = boot(&bundle_path);
+                THREAD_EXIT.with(|slot| *slot.borrow_mut() = None);
+                // Exercise the host once so the thread is proven live, then
+                // measure how long a clean shutdown takes.
+                host.dispatch_fetch("/").expect("dispatch before drop");
+                let start = std::time::Instant::now();
+                drop(host);
+                let elapsed = start.elapsed();
+                assert!(exit_rx.recv_timeout(std::time::Duration::from_secs(1)).expect(
+                    "the isolate owner thread must actually exit; a detached join is not clean shutdown"
+                ), "the isolate owner thread panicked during shutdown");
+                assert!(
+                    elapsed < std::time::Duration::from_secs(5),
+                    "Drop must join the V8 thread promptly on a healthy host \
+                     (well under the 10s bounded-join deadline), took {elapsed:?}"
+                );
+            };
+            #[cfg(not(all(feature = "renderer-memory-observe", target_os = "linux")))]
+            exercise();
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            {
+                let events = crate::renderer_memory::tests::capture_host_events(exercise);
+                let phases: Vec<_> = events.iter().map(|event| event.phase).collect();
+                assert_eq!(
+                    phases,
+                    [
+                        Phase::RefreshStart,
+                        Phase::HostCreate,
+                        Phase::HostInitialized,
+                        Phase::HostBoot,
+                        Phase::RetireRequested,
+                        Phase::HostFinalHeap,
+                        Phase::HostDestroyed,
+                        Phase::JoinCompleted,
+                        Phase::RefreshComplete,
+                    ],
+                );
+                let boot = &events[3];
+                let final_heap = &events[5];
+                let destroyed = &events[6];
+                assert_ne!(boot.tid, crate::renderer_memory::tests::current_tid());
+                assert!(boot.tid > 0 && boot.tid_start_ticks > 0);
+                for event in [&events[2], final_heap, destroyed] {
+                    assert_eq!(event.tid, boot.tid);
+                    assert_eq!(event.tid_start_ticks, boot.tid_start_ticks);
+                }
+                for event in [boot, final_heap] {
+                    let heap = event.heap.expect("owner-thread isolate accounting");
+                    assert!(heap.used_heap_size > 0);
+                    assert!(heap.total_heap_size >= heap.used_heap_size);
+                    assert!(heap.number_of_native_contexts > 0);
+                }
+                assert!(destroyed.heap.is_none());
+            }
         }
     }
 

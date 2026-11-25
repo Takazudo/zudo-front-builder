@@ -17,6 +17,8 @@ mod worker_modules;
 pub use worker::ModuleHandle;
 
 pub use config::evaluate_config_bundle;
+#[cfg(feature = "renderer-memory-observe")]
+pub use core::HeapObservation;
 pub use core::NativeHost;
 pub use diagnostics::NativeError;
 
