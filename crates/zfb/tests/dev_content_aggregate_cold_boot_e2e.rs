@@ -3507,31 +3507,141 @@ fn overwrite_same_length(path: &Path, bytes: &[u8]) {
     file.sync_all().expect("fsync overwrite");
 }
 
+// The gate holds an actual earlier SSR bundle after the content read. An
+// SSE quiet window cannot establish this ordering: CSS-only ticks can be in
+// flight without sending an event.
+async fn hold_css_test_bundle(
+    session: &DevSession,
+    gate: &Path,
+    path: &Path,
+    new_bytes: &[u8],
+) -> usize {
+    let start = read_log(&session.stderr_path).len();
+    fs::write(gate, b"").expect("arm native bundle test gate");
+    overwrite_same_length(path, new_bytes);
+    let (_, held) = wait_for_stderr_line(
+        session,
+        start,
+        &["native bundle waiting for test release"],
+        "hold the previous bundle after its successful content snapshot",
+    )
+    .await;
+    let logs = read_log(&session.stderr_path);
+    let intake = intake_lines(&logs[start..held]);
+    let path = format!("{}:", path.display());
+    assert!(
+        intake
+            .last()
+            .and_then(|line| line.split_once("intake paths: "))
+            .is_some_and(|(_, paths)| paths.starts_with(&path) && !paths.contains(", ")),
+        "the held tick must be for {path} alone; intake: {intake:#?}\n{}",
+        session.logs()
+    );
+    held
+}
+
+async fn queue_edit_behind_held_bundle(
+    session: &DevSession,
+    offset: usize,
+    file: &Path,
+    bytes: &[u8],
+) -> usize {
+    overwrite_same_length(file, bytes);
+    let path = file.to_str().expect("test fixture path is UTF-8");
+    wait_for_stderr_line_where(
+        session,
+        offset,
+        |line| {
+            line.split_once("watcher test delivery: ")
+                .is_some_and(|(_, paths)| paths.split(", ").any(|sent| sent == path))
+        },
+        &format!("confirming watcher delivery of {path}"),
+        "queue edit while the previous native bundle is held",
+    )
+    .await
+    .1
+}
+
+async fn queue_css_and_content(
+    session: &DevSession,
+    held: usize,
+    stylesheet: &Path,
+    css: &[u8],
+    article: &Path,
+    malformed: &[u8],
+) {
+    let css_queued = queue_edit_behind_held_bundle(session, held, stylesheet, css).await;
+    queue_edit_behind_held_bundle(session, css_queued, article, malformed).await;
+}
+
+async fn wait_for_coalesced_css_rejection(session: &DevSession, offset: usize) -> usize {
+    let (_, end) = wait_for_stderr_line(
+        session,
+        offset,
+        &["rebuild tick failed", "content snapshot build failed"],
+        "coalesced CSS and content tick rejected after returning from the pipeline",
+    )
+    .await;
+    let stderr = read_log(&session.stderr_path);
+    let intake = intake_lines(&stderr[offset..end]);
+    assert!(
+        intake.last().is_some_and(|line| {
+            line.contains("content/articles/b.md:") && line.contains("styles/global.css:")
+        }),
+        "the rejected tick's own intake must contain both edits: {intake:#?}\n{}",
+        session.logs()
+    );
+    end
+}
+
 /// A stylesheet edit coalesced into a tick whose content snapshot is rejected
 /// must still be published once the content is fixed. The rejected tick aborts
-/// at the renderer reload, before its CSS pass; the fixing tick's own change
-/// set holds only b.md, so the CSS edit has to be carried forward. Ticks are
-/// drained first so one already in flight cannot split the pair. The first
-/// repair writes a new valid title so the repaired detail page proves the
-/// recovering generation itself was published; the second restores the
-/// last-good bytes, where the content alone changes nothing.
+/// at the renderer reload, before its CSS pass. The fixing tick's intake holds
+/// only b.md, so it must carry the earlier CSS work forward.
 async fn run_css_edit_in_rejected_tick(mode: DevMode, boot_lazy: Option<&str>) {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
 
     let temp = tempfile::tempdir().expect("create tempdir for memo-helper fixture");
-    let (root, data_probe_path) = memo_session_root(&temp);
+    let (root, data_probe) = memo_session_root(&temp);
     let stylesheet = root.join("styles/global.css");
     fs::create_dir_all(root.join("styles")).expect("create styles/");
     fs::write(&stylesheet, ":root { --memo-css-marker: css-v1; }\n").expect("write global.css");
-    let mut session = spawn_dev_with_timing(root, mode, boot_lazy, true);
+    let b_md = root.join("content/articles/b.md");
+    let repaired = b"---\ntitle: Beta Repaired After Rejection\n---\n\nBeta body.\n";
+    let mut original = fs::read(&b_md).expect("read baseline article");
+    original.resize(repaired.len(), b' ');
+    fs::write(&b_md, original).expect("pad baseline for nontruncating writes");
+    let mut invalid = MEMO_INVALID_B.to_vec();
+    invalid.resize(repaired.len(), b' ');
+    let mut still_invalid = b"---\ntitle: [still unclosed\n---\n\nBeta body.\n".to_vec();
+    still_invalid.resize(repaired.len(), b' ');
+    let gate_dir = tempfile::tempdir().expect("gate outside watched project");
+    let gate = gate_dir.path().join("bundle-gate");
+    let mut session = spawn_dev_with_env(
+        root,
+        mode,
+        boot_lazy,
+        true,
+        &[(
+            "ZFB_DEV_TEST_NATIVE_BUNDLE_GATE",
+            gate.to_str().expect("test gate path is UTF-8"),
+        )],
+    );
     let pgid = session.guard.pgid;
     let body = async {
-        let Some((base, client)) =
-            boot_handshake_for_mode(&mut session, mode, &data_probe_path).await
-        else {
+        let Some(port) = wait_for_ready_port(&mut session).await else {
             return ScenarioOutcome::Skipped;
         };
+        wait_for_stderr_line(
+            &session,
+            0,
+            &["[zfb-timing] boot: render complete"],
+            "boot hook finished",
+        )
+        .await;
+        let base = format!("http://localhost:{port}");
+        let client = build_reqwest_client();
         let css_url = format!("{base}/assets/styles.css");
         let detail_b = format!("{base}/articles/b/");
         poll_until_response_contains(&client, &css_url, "css-v1", "baseline css", &session).await;
@@ -3545,26 +3655,24 @@ async fn run_css_edit_in_rejected_tick(mode: DevMode, boot_lazy: Option<&str>) {
         .await;
         poll_until_response_contains(&client, &detail_b, "Beta Memo V1", "baseline", &session)
             .await;
-        drain_ticks_until_quiescent(&base).await;
 
-        let b_md = session.root.join("content/articles/b.md");
-        let offset = read_log(&session.stderr_path).len();
-        overwrite_same_length(&stylesheet, b":root { --memo-css-marker: css-v2; }\n");
-        write_in_place(&b_md, MEMO_INVALID_B);
-        let (_, rejected_end) =
-            wait_for_stderr_line(&session, offset, &["was not published"], "rejected tick").await;
-        assert_stylesheet_shares_rejected_intake(
-            &read_log(&session.stderr_path)[offset..rejected_end],
-            "articles/b.md:",
-            "rejected tick",
+        // A data-only tick gives both watcher notifications time to arrive
+        // after a valid snapshot, without being able to publish the CSS.
+        let held = hold_css_test_bundle(&session, &gate, &data_probe, b"{\"revision\":1}\n").await;
+        queue_css_and_content(
             &session,
-        );
+            held,
+            &stylesheet,
+            b":root { --memo-css-marker: css-v2; }\n",
+            &b_md,
+            &invalid,
+        )
+        .await;
+        fs::remove_file(&gate).expect("release data-only bundle");
+        let rejected_end = wait_for_coalesced_css_rejection(&session, held).await;
         assert_css_lacks(&client, &css_url, "css-v2", "after the rejection", &session).await;
 
-        write_in_place(
-            &b_md,
-            b"---\ntitle: Beta Repaired After Rejection\n---\n\nBeta body.\n",
-        );
+        overwrite_same_length(&b_md, repaired);
         poll_until_response_contains(
             &client,
             &detail_b,
@@ -3583,27 +3691,22 @@ async fn run_css_edit_in_rejected_tick(mode: DevMode, boot_lazy: Option<&str>) {
         .await;
         assert_no_stylesheet_intake_after(rejected_end, "carried stylesheet", &session);
 
-        // Second cycle: the repair restores b.md to exactly the bytes of the
-        // last good generation, so the recovering content equals what is
-        // already served and only the carried CSS work can change output.
-        drain_ticks_until_quiescent(&base).await;
+        // The recovery above published CSS. The next transaction is queued
+        // behind another data-only bundle, so no earlier CSS pass can consume
+        // css-v3 from disk. The repair restores the exact last-good bytes.
         let last_good_b = fs::read(&b_md).expect("read last-good b.md");
-        let offset = read_log(&session.stderr_path).len();
-        overwrite_same_length(&stylesheet, b":root { --memo-css-marker: css-v3; }\n");
-        write_in_place(&b_md, MEMO_INVALID_B);
-        let (_, rejected_end) = wait_for_stderr_line(
+        let held = hold_css_test_bundle(&session, &gate, &data_probe, b"{\"revision\":2}\n").await;
+        queue_css_and_content(
             &session,
-            offset,
-            &["was not published"],
-            "second rejected tick",
+            held,
+            &stylesheet,
+            b":root { --memo-css-marker: css-v3; }\n",
+            &b_md,
+            &invalid,
         )
         .await;
-        assert_stylesheet_shares_rejected_intake(
-            &read_log(&session.stderr_path)[offset..rejected_end],
-            "articles/b.md:",
-            "second rejected tick",
-            &session,
-        );
+        fs::remove_file(&gate).expect("release second data-only bundle");
+        let rejected_end = wait_for_coalesced_css_rejection(&session, held).await;
         assert_css_lacks(
             &client,
             &css_url,
@@ -3613,7 +3716,33 @@ async fn run_css_edit_in_rejected_tick(mode: DevMode, boot_lazy: Option<&str>) {
         )
         .await;
 
-        write_in_place(&b_md, &last_good_b);
+        overwrite_same_length(&b_md, &still_invalid);
+        let (_, rejected_again_end) = wait_for_stderr_line(
+            &session,
+            rejected_end,
+            &["rebuild tick failed", "content snapshot build failed"],
+            "changed malformed frontmatter rejected again before repair",
+        )
+        .await;
+        let stderr = read_log(&session.stderr_path);
+        let repeated = &stderr[rejected_end..rejected_again_end];
+        assert!(
+            intake_lines(repeated)
+                .last()
+                .is_some_and(|line| line.contains("content/articles/b.md:"))
+                && !repeated.contains("css phase="),
+            "the repeated rejection must process a new article intake before CSS\n{}",
+            session.logs()
+        );
+        assert_css_lacks(
+            &client,
+            &css_url,
+            "css-v3",
+            "after the repeated rejection",
+            &session,
+        )
+        .await;
+        overwrite_same_length(&b_md, &last_good_b);
         poll_until_response_contains(
             &client,
             &css_url,
@@ -3635,6 +3764,104 @@ async fn run_css_edit_in_rejected_tick(mode: DevMode, boot_lazy: Option<&str>) {
             "carried stylesheet after a last-good restore",
             &session,
         );
+
+        // Reproduce #4816's historical overlap: the earlier CSS-only tick
+        // already took a successful content snapshot before the next CSS and
+        // article edits reached its queue. The earlier tick reads authored CSS
+        // from disk after bundling, so it publishes css-v5 before the next
+        // coalesced tick rejects the article. That rejected tick publishes
+        // neither content nor CSS.
+        let held = hold_css_test_bundle(
+            &session,
+            &gate,
+            &stylesheet,
+            b":root { --memo-css-marker: css-v4; }\n",
+        )
+        .await;
+        queue_css_and_content(
+            &session,
+            held,
+            &stylesheet,
+            b":root { --memo-css-marker: css-v5; }\n",
+            &b_md,
+            &invalid,
+        )
+        .await;
+        assert_css_lacks(
+            &client,
+            &css_url,
+            "css-v5",
+            "before the earlier CSS pass",
+            &session,
+        )
+        .await;
+        fs::remove_file(&gate).expect("release earlier CSS-only bundle");
+        let (_, css_publish_end) = wait_for_stderr_line(
+            &session,
+            held,
+            &["css phase=publish"],
+            "earlier CSS-only tick published",
+        )
+        .await;
+        let rejected_end = wait_for_coalesced_css_rejection(&session, css_publish_end).await;
+        let stderr = read_log(&session.stderr_path);
+        assert!(
+            intake_lines(&stderr[held..css_publish_end]).is_empty()
+                && !stderr[css_publish_end..rejected_end].contains("css phase="),
+            "the CSS publication must precede intake of the subsequently rejected tick\n{}",
+            session.logs()
+        );
+        let (status, _, css) = get_status_and_body(&client, &css_url).await;
+        assert!(
+            status == 200 && css.contains("css-v5"),
+            "the earlier CSS-only tick read css-v5 from disk before rejection\n{}",
+            session.logs()
+        );
+        let (status, _, html) = get_status_and_body(&client, &detail_b).await;
+        assert!(
+            status == 200 && html.contains("Beta Repaired After Rejection"),
+            "the rejected tick must keep serving the last-good article\n{}",
+            session.logs()
+        );
+
+        overwrite_same_length(&b_md, &last_good_b);
+        let (_, repaired_end) = wait_for_stderr_line(
+            &session,
+            rejected_end,
+            &["css phase=publish"],
+            "recovered and drained carried CSS before the standalone update",
+        )
+        .await;
+        assert_no_stylesheet_intake_after(
+            rejected_end,
+            "no stylesheet edit during recovery",
+            &session,
+        );
+        overwrite_same_length(&stylesheet, b":root { --memo-css-marker: css-v6; }\n");
+        let (_, standalone_end) = wait_for_stderr_line(
+            &session,
+            repaired_end,
+            &["css phase=publish"],
+            "standalone CSS tick after recovery",
+        )
+        .await;
+        let stderr = read_log(&session.stderr_path);
+        assert!(
+            intake_lines(&stderr[repaired_end..standalone_end])
+                .last()
+                .is_some_and(|line| line.contains("styles/global.css:")
+                    && !line.contains("content/articles/b.md:")),
+            "the standalone stylesheet tick must not include a content edit\n{}",
+            session.logs()
+        );
+        poll_until_response_contains(
+            &client,
+            &css_url,
+            "css-v6",
+            "standalone stylesheet",
+            &session,
+        )
+        .await;
         ScenarioOutcome::Completed
     };
 
