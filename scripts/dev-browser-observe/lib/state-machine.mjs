@@ -962,6 +962,17 @@ export async function runBatch({ scenarios, deps }) {
           break outer;
         }
       }
+      if (diagnostic?.afterEdits) {
+        // Every edit has resolved. A boundary failure belongs to the scenario,
+        // with no last armed edit to classify as unknown.
+        current = {
+          where: { scenario: scenario.id, op: null },
+          armedToken: null,
+          writeDone: false,
+          resolved: false,
+        };
+        await diagnostic.afterEdits();
+      }
       const ok = await cleanup(activeSnapshot, "scenario-end");
       activeSnapshot = null;
       if (!ok) {
