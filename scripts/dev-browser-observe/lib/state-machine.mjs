@@ -822,7 +822,6 @@ export async function runBatch({ scenarios, deps }) {
         } finally {
           clearInterval(sampler);
         }
-        current.resolved = true;
         const evidence = page.collectAttempt(t0);
         const serverPidAfter = server.pid();
         const serverLog = logMark === null ? null : server.logSince(logMark, t0);
@@ -920,6 +919,9 @@ export async function runBatch({ scenarios, deps }) {
         rec.sampleAfter = server.sampleResources();
         withProvenance(rec);
         append(rec);
+        // Post-apply validation can fail after a persisted attempt. Before
+        // this point, a browser notification alone cannot resolve the write.
+        current.resolved = true;
         count(acc, outcome);
         if (op.inject && op.inject !== "restore-blocked" && rec.controlPass !== true) {
           notFired(

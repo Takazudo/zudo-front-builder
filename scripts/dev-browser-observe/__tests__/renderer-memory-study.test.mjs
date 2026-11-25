@@ -156,6 +156,7 @@ async function simulate({
   studyProtocol = protocol,
   mappingFailure = null,
   missingPostApply = null,
+  collectFailure = null,
 } = {}) {
   let now = 0n;
   const clock = () => now;
@@ -202,6 +203,11 @@ async function simulate({
       );
     },
   });
+  const collectAttempt = page.collectAttempt;
+  page.collectAttempt = (...args) => {
+    if (edits === collectFailure) throw new Error("browser evidence collection failed");
+    return collectAttempt(...args);
+  };
   const arm = page.arm;
   page.arm = async (...args) => ({ ...(await arm(...args)), actual: fs.files["article-00005.md"] });
   page.settle = async ({ bodyRevision }) => {
@@ -409,6 +415,21 @@ describe("post-apply workload admission", () => {
     });
     expect(report.observationComplete).toBe(true);
     expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([60_000]);
+  });
+
+  it("retains an unknown written slot when browser evidence fails after notification", async () => {
+    const { accounting, fs } = await simulate({
+      studyProtocol: postApplyProtocol,
+      collectFailure: 3,
+    });
+    expect(accounting).toMatchObject({
+      attempted: 3,
+      success: 2,
+      notAttempted: 9,
+      stopReason: expect.stringContaining("controller-error"),
+      lastArmedUnknownOperation: { writeCompleted: true },
+    });
+    expect(fs.restores).toBe(1);
   });
 
   it("stops before the next write on an incomplete getter", async () => {
