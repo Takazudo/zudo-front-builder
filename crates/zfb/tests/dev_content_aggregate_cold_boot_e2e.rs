@@ -3552,8 +3552,9 @@ async fn queue_edit_behind_held_bundle(
         session,
         offset,
         |line| {
-            line.split_once("watcher test delivery: ")
-                .is_some_and(|(_, paths)| paths.split(", ").any(|sent| sent == path))
+            line.strip_suffix('\n')
+                .and_then(|line| line.strip_prefix("[zfb-timing] watcher test delivery: "))
+                .is_some_and(|paths| paths.split(", ").any(|sent| sent == path))
         },
         &format!("confirming watcher delivery of {path}"),
         "queue edit while the previous native bundle is held",
