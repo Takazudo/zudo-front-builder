@@ -975,8 +975,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         evidenceFailed = true;
         stderr(`renderer-memory evidence verification failed: ${error?.message ?? error}`);
       }
-      if (exitCode === EXIT.ok && !memoryReport?.observationComplete)
-        exitCode = EXIT.controllerError;
+      if (exitCode === EXIT.ok) {
+        if (!memoryReport?.observationComplete) exitCode = EXIT.controllerError;
+        else if (memoryReport.failure) exitCode = EXIT.stopped;
+      }
     }
     let stopFailure = null;
     if (!stopReport.absent || stopReport.error || unresolved.length) {
