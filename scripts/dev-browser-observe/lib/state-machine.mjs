@@ -717,8 +717,8 @@ export async function runBatch({ scenarios, deps }) {
         }
 
         signal?.throwIfAborted();
-        diagnostic?.clamp("attempt write", timeouts.attemptMs, attemptStart);
         diagnostic?.beforeMutation?.();
+        diagnostic?.clamp("attempt write", timeouts.attemptMs, attemptStart);
         let t0;
         let tLast = null;
         let writeSteps = null;

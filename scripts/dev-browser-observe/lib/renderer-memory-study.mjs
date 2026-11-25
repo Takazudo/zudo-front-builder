@@ -218,6 +218,7 @@ export function createRendererMemoryStudy({
         const endpoint = report.postApply?.endpoints[mutations.length - 1];
         if (endpoint) {
           requireAttributed();
+          clamp("post-apply observation", maximum, stageStart);
           break;
         }
         const remaining = clamp("post-apply observation", maximum, stageStart);
@@ -321,7 +322,7 @@ export function createRendererMemoryStudy({
           restoreNs,
         );
         checkTrace({ final: false, requireCompletePostApply: true });
-        workSignal.throwIfAborted();
+        clamp("post-apply restoration observation", limits.timeouts.restoreMs, restoreNs);
       },
     }),
     afterEdits: withAllocator
