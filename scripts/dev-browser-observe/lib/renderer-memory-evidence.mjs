@@ -541,16 +541,19 @@ function inspectAllocator(rows, byRefresh, lifecycle, final, withPostApply) {
 const sameRefresh = (a, b) =>
   ["refresh_id", "tick", "snapshot_gen", "host_id"].every((field) => a[field] === b[field]);
 
-// Rust's intake timestamp is floored to milliseconds. Bracket it against the
-// observed Linux monotonic clock rather than using when stderr delivered a line.
-function intakeIntervalNs(intake, anchor) {
+// Both sides of the anchor are floored to microseconds. Take the wider
+// epoch interval, then allow for the timestamp's own rounding (intake logs
+// floor to ms; lifecycle occurrences floor to us). Stderr arrival is unused.
+function nativeIntervalNs(anchor, offsetUs, precisionUs) {
   const sampledUs = BigInt(anchor.clock_monotonic_us);
-  const msUs = BigInt(intake.ms) * 1000n;
   return [
-    (sampledUs - BigInt(anchor.anchor_after_us) + msUs) * 1000n,
-    (sampledUs + 1n - BigInt(anchor.anchor_before_us) + msUs + 1000n) * 1000n,
+    (sampledUs - BigInt(anchor.anchor_after_us) - 1n + offsetUs) * 1000n,
+    (sampledUs + 1n - BigInt(anchor.anchor_before_us) + offsetUs + precisionUs) * 1000n,
   ];
 }
+
+const intakeIntervalNs = (intake, anchor) =>
+  nativeIntervalNs(anchor, BigInt(intake.ms) * 1000n, 1000n);
 
 const refreshEnd = {
   refreshed: "refresh_complete",
@@ -695,12 +698,8 @@ function inspectPostApply({
     if (
       from >= until ||
       (previous &&
-        from <=
-          (BigInt(anchor.clock_monotonic_us) +
-            1n -
-            BigInt(anchor.anchor_before_us) +
-            BigInt(previous.getterCompletedUs)) *
-            1000n)
+        (from <= BigInt(previous.mutation.witnessNs) ||
+          from <= nativeIntervalNs(anchor, BigInt(previous.getterCompletedUs), 1n)[1]))
     )
       return fail("post-apply mutation windows overlap");
     const related = intakes.filter((intake) => {

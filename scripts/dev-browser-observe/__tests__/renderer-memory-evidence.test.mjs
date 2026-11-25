@@ -662,6 +662,28 @@ test.each([
     /ambiguous or coalesced native intake/,
   ],
   [
+    "intake within anchor rounding of the write",
+    (_rows, mutations) => {
+      // The anchor puts intake's earliest possible timestamp at 299989000.
+      // The elapsed-us floor makes this intake overlap rather than follow t0.
+      mutations[0].t0Ns = "299989500";
+    },
+    /ambiguous or coalesced native intake/,
+  ],
+  [
+    "next write within endpoint rounding",
+    (rows, mutations) => {
+      // Preserve a real DOM witness before a getter that finishes later.
+      const completion = firstGetter(rows);
+      completion.allocator_completed_us += 20_000;
+      completion.allocator_duration_us += 20_000;
+      completion.occurred_us += 20_000;
+      const floorUs = rows[0].clock_monotonic_us + completion.allocator_completed_us;
+      mutations[1].t0Ns = String(floorUs * 1000 + 1500);
+    },
+    /mutation windows overlap/,
+  ],
+  [
     "native refresh clock before intake",
     (rows) => {
       const intake = firstIntake(rows);

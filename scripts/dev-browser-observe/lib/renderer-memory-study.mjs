@@ -217,7 +217,7 @@ export function createRendererMemoryStudy({
         workSignal.throwIfAborted();
         const endpoint = report.postApply?.endpoints[mutations.length - 1];
         if (endpoint) {
-          requireAttributed();
+          requireAttributed(kind === "restoration");
           clamp("post-apply observation", maximum, stageStart);
           break;
         }
@@ -234,8 +234,8 @@ export function createRendererMemoryStudy({
       throw error;
     }
   };
-  const requireAttributed = () => {
-    checkTrace({ final: false, requireAttributedPostApply: true });
+  const requireAttributed = (requireCompletePostApply = false) => {
+    checkTrace({ final: false, requireAttributedPostApply: true, requireCompletePostApply });
     workSignal.throwIfAborted();
   };
   record({ type: "renderer-memory-phase", step: "start", supervisorStartedMs, workDeadline });
@@ -295,7 +295,8 @@ export function createRendererMemoryStudy({
         );
     },
     ...(withPostApply && {
-      beforeMutation: requireAttributed,
+      requiresPostApply: true,
+      beforeMutation: () => requireAttributed(),
       async afterRestoration({ actions, mismatches, restoreNs, witnessNs }) {
         const edit = mutations.findLast((mutation) => mutation.kind === "edit");
         const action = actions?.[0];
@@ -321,8 +322,6 @@ export function createRendererMemoryStudy({
           limits.timeouts.restoreMs,
           restoreNs,
         );
-        checkTrace({ final: false, requireCompletePostApply: true });
-        clamp("post-apply restoration observation", limits.timeouts.restoreMs, restoreNs);
       },
     }),
     afterEdits: withAllocator

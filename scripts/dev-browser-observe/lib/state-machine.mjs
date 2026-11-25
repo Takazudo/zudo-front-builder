@@ -1005,7 +1005,11 @@ export async function runBatch({ scenarios, deps }) {
     } catch {
       // the page itself may be what failed; the record below carries the error
     }
-    if (current.armedToken && current.writeDone && !current.resolved)
+    if (
+      current.armedToken &&
+      current.writeDone &&
+      (!diagnostic?.requiresPostApply || !current.resolved)
+    )
       acc.lastArmedUnknownOperation = {
         ...current.where,
         token: current.armedToken,
