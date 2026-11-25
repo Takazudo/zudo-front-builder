@@ -10,6 +10,7 @@ import {
   RENDERER_MEMORY_ALLOCATOR_PROTOCOL as allocatorProtocol,
   RENDERER_MEMORY_FEATURE as feature,
   RENDERER_MEMORY_LIMITS as limits,
+  RENDERER_MEMORY_POST_APPLY_PROTOCOL as postApplyProtocol,
   RENDERER_MEMORY_PROTOCOL as protocol,
 } from "../lib/renderer-memory-protocol.mjs";
 import { createRendererMemoryStudy } from "../lib/renderer-memory-study.mjs";
@@ -25,7 +26,7 @@ function profile(studyProtocol = protocol) {
     readFileSync(join(HARNESS_DIR, "profiles", "field-notes-direct-read.example.json")),
   );
   const [scenario] = input.scenarios;
-  const allocator = studyProtocol === allocatorProtocol;
+  const allocator = studyProtocol !== protocol;
   scenario.ops[0].repeat = allocator ? { warmups: 0, measured: 12 } : { warmups: 2, measured: 10 };
   return {
     ...input,
@@ -38,7 +39,10 @@ function profile(studyProtocol = protocol) {
     fixture: { ...input.fixture, scale: 100 },
     server: {
       ...input.server,
-      env: { ZFB_DEV_PROVENANCE_TRACE: "1", ...(allocator && { [allocatorEnv]: "1" }) },
+      env: {
+        ZFB_DEV_PROVENANCE_TRACE: "1",
+        ...(allocator && { [allocatorEnv]: studyProtocol === postApplyProtocol ? "2" : "1" }),
+      },
       readyTimeoutMs: limits.readyTimeoutMs,
     },
     limits: limits.limits,
@@ -80,6 +84,19 @@ describe("renderer-memory profile and build identity", () => {
     expect(semanticErrors(old).join("\n")).toContain("requires renderer-memory.v2");
   });
 
+  it("requires the separate post-apply mode and preserves strict v2 profile admission", () => {
+    const postApply = profile(postApplyProtocol);
+    const locked = profile(allocatorProtocol);
+    expect(validateAs("profile", postApply)).toEqual([]);
+    expect(semanticErrors(postApply)).toEqual([]);
+    expect(serverEnv({ [allocatorEnv]: "2" }, {}, true).zfbEnv[allocatorEnv]).toBeUndefined();
+    expect(serverEnv({}, { [allocatorEnv]: "2" }, true).zfbEnv[allocatorEnv]).toBe("2");
+    postApply.server.env[allocatorEnv] = "1";
+    expect(semanticErrors(postApply).join("\n")).toContain(`${allocatorEnv}: "2"`);
+    locked.server.env[allocatorEnv] = "2";
+    expect(semanticErrors(locked).join("\n")).toContain(`${allocatorEnv}: "1"`);
+  });
+
   it("matches the diagnostic build only to its declared study", () => {
     const diagnosticBuild = {
       diagnostic: true,
@@ -96,7 +113,7 @@ describe("renderer-memory profile and build identity", () => {
     expect(check({}, { build: { features: [] } })).toBeUndefined();
   });
 
-  it.each([null, protocol, allocatorProtocol])(
+  it.each([null, protocol, allocatorProtocol, postApplyProtocol])(
     "excludes diagnostic receipt %s from timing",
     (studyProtocol) => {
       const root = mkdtempSync(join(tmpdir(), "zfb-memory-aggregate-"));
@@ -138,6 +155,7 @@ async function simulate({
   routeFailure = false,
   studyProtocol = protocol,
   mappingFailure = null,
+  missingPostApply = null,
 } = {}) {
   let now = 0n;
   const clock = () => now;
@@ -151,7 +169,7 @@ async function simulate({
   fs.restore = (snapshot) => {
     const output = restore(snapshot);
     expect(fs.files["article-00005.md"]).toBe("original body");
-    return { ...output, actions: [{ path: "article-00005.md" }] };
+    return { ...output, actions: [{ path: "article-00005.md", method: "in-place" }] };
   };
   fs.liveChecks = () =>
     [
@@ -203,7 +221,18 @@ async function simulate({
     clock,
     sleep,
     sample: async () => ({ summedRssKiB: 1000 }),
-    inspect: () => ({ failure: null, start: {} }),
+    inspect: (_server, { mutations, final, withPostApply }) => ({
+      failure: null,
+      start: {},
+      complete: final,
+      ...(withPostApply && {
+        postApply: {
+          endpoints:
+            missingPostApply !== null ? mutations.slice(0, missingPostApply - 1) : mutations,
+          complete: missingPostApply === null && mutations.length === 13,
+        },
+      }),
+    }),
   });
   try {
     study.startSampling(server);
@@ -364,5 +393,36 @@ describe("v2 mapping boundaries", () => {
       study.finishSampling();
       vi.useRealTimers();
     }
+  });
+});
+
+describe("post-apply workload admission", () => {
+  it("matches each edit and the verified restoration before the existing live checks", async () => {
+    const { records, sleep, report } = await simulate({ studyProtocol: postApplyProtocol });
+    const rows = records.filter((row) => row.type === "renderer-memory-mutation");
+    expect(rows.slice(0, -1).map((row) => row.mutation.edit)).toEqual(
+      Array.from({ length: 12 }, (_, index) => index + 1),
+    );
+    expect(rows.at(-1)).toMatchObject({
+      phase: "restoration",
+      mutation: { kind: "restoration", paths: expect.arrayContaining(["article-00005.md"]) },
+    });
+    expect(report.observationComplete).toBe(true);
+    expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([60_000]);
+  });
+
+  it("stops before the next write on an incomplete getter", async () => {
+    const { accounting, report, liveChecks, fs, records } = await simulate({
+      studyProtocol: postApplyProtocol,
+      missingPostApply: 3,
+    });
+    expect(accounting).toMatchObject({ attempted: 3, success: 3, notAttempted: 9 });
+    expect(accounting.lastArmedUnknownOperation).toBeNull();
+    expect(report.failure.reason).toBe("renderer-memory-post-apply-incomplete");
+    expect(report.scheduleComplete).toBe(false);
+    expect(report.observationComplete).toBe(false);
+    expect(fs.restores).toBe(1);
+    expect(liveChecks).toBe(0);
+    expect(records.filter((row) => row.type === "renderer-memory-mapping")).toHaveLength(1);
   });
 });

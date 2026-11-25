@@ -262,6 +262,23 @@ export async function runBatch({ scenarios, deps }) {
           if (!diagnostic) throw error;
           settle = { settled: false, error: String(error?.message ?? error) };
         }
+      if (
+        diagnostic?.afterRestoration &&
+        reason === "scenario-end" &&
+        settle?.settled === true &&
+        settle.bodyRevision?.matched === true
+      )
+        try {
+          await diagnostic.afterRestoration({
+            actions: restore.actions,
+            mismatches: restore.mismatches,
+            restoreNs,
+            witnessNs: clock.now(),
+          });
+        } catch (error) {
+          liveSkipped = "restoration-observation-incomplete";
+          settle = { ...settle, observerError: String(error?.message ?? error) };
+        }
       if (diagnostic && (reason !== "scenario-end" || settle?.settled !== true)) {
         liveSkipped = reason === "scenario-end" ? "restoration-unverified" : "fail-stop-cleanup";
       }
@@ -701,6 +718,7 @@ export async function runBatch({ scenarios, deps }) {
 
         signal?.throwIfAborted();
         diagnostic?.clamp("attempt write", timeouts.attemptMs, attemptStart);
+        diagnostic?.beforeMutation?.();
         let t0;
         let tLast = null;
         let writeSteps = null;
@@ -916,10 +934,10 @@ export async function runBatch({ scenarios, deps }) {
           acc.stoppedByClassifyTimeout =
             rec.expect === "classify" && (outcome === "timeout" || outcome === "stale");
           stop(outcome, where);
-          if (diagnostic) await diagnostic.afterAttempt(rec);
+          if (diagnostic) await diagnostic.afterAttempt(rec, attemptStart);
           break outer;
         }
-        if (diagnostic) await diagnostic.afterAttempt(rec);
+        if (diagnostic) await diagnostic.afterAttempt(rec, attemptStart);
         if (rec.expect === "timeout") {
           stop("negative-control-unexpected-success", where);
           break outer;
@@ -987,7 +1005,7 @@ export async function runBatch({ scenarios, deps }) {
     } catch {
       // the page itself may be what failed; the record below carries the error
     }
-    if (current.armedToken && current.writeDone)
+    if (current.armedToken && current.writeDone && !current.resolved)
       acc.lastArmedUnknownOperation = {
         ...current.where,
         token: current.armedToken,

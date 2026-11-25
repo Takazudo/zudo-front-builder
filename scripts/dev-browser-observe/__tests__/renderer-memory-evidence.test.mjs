@@ -420,3 +420,286 @@ test("checks a closed refresh in the contiguous prefix and tolerates reordered e
   rows.splice(-1, 0, watermark);
   assert.match(inspect(rows, true).failure.detail, /terminal watermark/);
 });
+
+function postApplyStream({ omitLastGetter = false, change = () => {} } = {}) {
+  const source = stream({ adoptions: 14 })
+    .provSince()
+    .lines.map(({ text }) => JSON.parse(text.slice(11)));
+  const rows = [
+    {
+      ...source[0],
+      allocator_metric_domain: "gnu_mallinfo2.v1",
+      allocator_call_limit: 128,
+      allocator_post_apply: true,
+    },
+  ];
+  const path = "/corpus/article-00005.md";
+  const mutations = [];
+  let occurrence = 0;
+  let calls = 0;
+  let relativeUs = 0;
+  const append = (row) =>
+    rows.push({
+      ...row,
+      ev: "renderer_lifecycle",
+      occurrence: ++occurrence,
+      occurred_us: ++relativeUs,
+    });
+  for (let host = 1; host <= 14; host++) {
+    const boot = host === 1;
+    const tick = boot ? undefined : host - 1;
+    relativeUs = host * 100_000;
+    if (!boot) {
+      rows.push({ ev: "intake", ms: relativeUs / 1000, tick, paths: [{ path, kind: "Modified" }] });
+      mutations.push({
+        kind: host === 14 ? "restoration" : "edit",
+        ...(host !== 14 && { edit: tick }),
+        paths: [path],
+        t0Ns: String((relativeUs + 95_000) * 1000),
+        witnessNs: String((relativeUs + 110_000) * 1000),
+      });
+    }
+    const base = { refresh_id: host, tick };
+    const snapshot = { ...base, snapshot_gen: host };
+    const identity = { ...snapshot, host_id: host };
+    const counters = {
+      arena_bytes: 170 + host,
+      uordblks_bytes: 10,
+      fordblks_bytes: 160 + host,
+      hblkhd_bytes: 62,
+      hblks: 2,
+      fsmblks_bytes: 0,
+    };
+    const getter = (name, boundary, context, { locked = !boot, fields = {} } = {}) => {
+      const row = {
+        ...context,
+        ...fields,
+        metric_domain: "gnu_mallinfo2.v1",
+        allocator_phase: name,
+        allocator_call: ++calls,
+        allocator_boundary_outcome: boundary,
+      };
+      if (!locked) append({ ...row, phase: "allocator_start" });
+      append({
+        ...row,
+        phase: "allocator_complete",
+        allocator_started_us: relativeUs + (locked ? 1 : 0),
+        allocator_completed_us: relativeUs + 1,
+        allocator_duration_us: locked ? 0 : 1,
+        allocator_outcome: locked ? "unavailable" : "ok",
+        ...(locked
+          ? { allocator_unavailable_reason: "application_write_exclusion" }
+          : { allocator: counters }),
+      });
+    };
+    const hostRow = (id, phase) => {
+      const original = source.find((row) => row.host_id === id && row.phase === phase);
+      append({ ...original, tick: id === 1 ? undefined : id - 1 });
+    };
+    append({ ...base, phase: "refresh_start", boot });
+    getter("entry", undefined, base);
+    append({ ...base, phase: "snapshot_start" });
+    getter("snapshot_before", undefined, base);
+    append({ ...snapshot, phase: "snapshot_ready" });
+    getter("snapshot_after", "ok", snapshot);
+    append({ ...snapshot, phase: "bundle_start" });
+    getter("bundle_before", undefined, snapshot);
+    getter("bundle_after", "ok", snapshot);
+    append({ ...snapshot, phase: "bundle_ready" });
+    for (const phase of [
+      "host_create",
+      "host_initialized",
+      "host_boot",
+      "validation_ok",
+      "adopted",
+    ])
+      hostRow(host, phase);
+    if (!boot) {
+      for (const phase of [
+        "retire_requested",
+        "host_final_heap",
+        "host_destroyed",
+        "join_completed",
+      ])
+        hostRow(host - 1, phase);
+      getter("retirement_after", "returned", identity);
+    }
+    append({ ...identity, phase: "refresh_complete" });
+    if (!boot) {
+      getter("refresh_return", "refreshed", identity);
+      const fields = { apply_id: host, apply_outcome: "ok", refresh_outcome: "refreshed" };
+      append({ ...identity, ...fields, phase: "apply_return", apply_association: "associated" });
+      if (host !== 14 || !omitLastGetter)
+        getter("post_apply_return", "returned", identity, { locked: false, fields });
+    } else {
+      append({
+        refresh_id: 0,
+        phase: "apply_return",
+        apply_id: host,
+        apply_outcome: "ok",
+        apply_association: "no_refresh",
+      });
+    }
+    if (host === 14)
+      for (const phase of [
+        "retire_requested",
+        "host_final_heap",
+        "host_destroyed",
+        "join_completed",
+      ])
+        hostRow(host, phase);
+  }
+  rows.push({
+    ev: "renderer_lifecycle_terminal",
+    attempted: occurrence,
+    emitted: occurrence,
+    contention: 0,
+    overflow: 0,
+    output_dropped: 0,
+  });
+  change(rows, mutations);
+  return {
+    server: {
+      handle: { native: { pid: 20 } },
+      provSince: () => ({
+        droppedBeforeMark: 0,
+        lines: rows.map((row, i) => ({
+          // Arrival is deliberately after every browser witness.
+          ns: "9999999999",
+          text: "[zfb-prov] " + JSON.stringify({ ...row, seq: i + 1, ms: row.ms ?? i }),
+        })),
+      }),
+    },
+    mutations,
+  };
+}
+
+function inspectPostApplyStream(options) {
+  const { server, mutations } = postApplyStream(options);
+  return inspectRendererLifecycle(server, {
+    final: true,
+    withAllocator: true,
+    withPostApply: true,
+    requireCompletePostApply: true,
+    mutations,
+  });
+}
+
+test("post-apply uses 13 attributed endpoints and eleven same-boundary body transitions", () => {
+  const report = inspectPostApplyStream();
+  assert.equal(report.failure, null);
+  assert.equal(report.complete, true);
+  assert.equal(report.allocator.started, 18);
+  assert.equal(report.allocator.unavailable.length, 91);
+  assert.equal(report.postApply.endpoints.length, 13);
+  assert.equal(report.postApply.transitions.length, 11);
+  assert.equal(report.postApply.transitions.at(-1).toApply, 13);
+  assert.equal(report.postApply.transitions.at(-1).delta.fordblks_bytes, 1);
+  assert.equal(report.postApply.restoration.applyId, 14);
+  assert.equal(report.postApply.restoration.mutation.kind, "restoration");
+  assert.match(report.allocator.endIdle, /unavailable/);
+});
+
+test("v2 rejects a post-apply startup contract", () => {
+  const { server } = postApplyStream();
+  const report = inspectRendererLifecycle(server, { final: true, withAllocator: true });
+  assert.equal(report.failure.reason, "renderer-telemetry");
+});
+
+const firstApply = (rows) => rows.find((row) => row.apply_id === 2 && row.phase === "apply_return");
+const firstGetter = (rows) =>
+  rows.find((row) => row.apply_id === 2 && row.phase === "allocator_complete");
+const firstIntake = (rows) => rows.find((row) => row.ev === "intake");
+
+test.each([
+  [
+    "wrong-snapshot apply",
+    (rows) => {
+      firstApply(rows).snapshot_gen++;
+    },
+    /inner refresh return/,
+  ],
+  [
+    "duplicate apply identity",
+    (rows) => {
+      firstApply(rows).apply_id = 1;
+    },
+    /duplicate post-apply return/,
+  ],
+  [
+    "foreign token",
+    (rows) => {
+      firstApply(rows).apply_association = "foreign";
+    },
+    /invalid post-apply association/,
+  ],
+  [
+    "getter after an error",
+    (rows) => {
+      firstApply(rows).apply_outcome = "error";
+    },
+    /matching successful apply return/,
+  ],
+  [
+    "foreign completion",
+    (rows) => {
+      firstGetter(rows).apply_id++;
+    },
+    /completion lacks its matching start/,
+  ],
+  [
+    "unrelated getter",
+    (_rows, mutations) => {
+      mutations.shift();
+    },
+    /unrelated post-apply observation/,
+  ],
+  [
+    "coalesced intake",
+    (rows) => {
+      firstIntake(rows).paths.push({ path: "/unrelated.css", kind: "Modified" });
+    },
+    /ambiguous or coalesced native intake/,
+  ],
+  [
+    "native refresh clock before intake",
+    (rows) => {
+      const intake = firstIntake(rows);
+      const refresh = rows.find((row) => row.tick === intake.tick && row.phase === "refresh_start");
+      refresh.occurred_us = intake.ms * 1000 - 1;
+    },
+    /unique successful apply for its intake/,
+  ],
+  [
+    "unknown allocation provider",
+    (rows) => {
+      const phase = rows.find((row) => row.allocator_unavailable_reason);
+      phase.allocator_unavailable_reason = "unsupported_target";
+    },
+    /GNU allocator getter unavailable/,
+  ],
+  [
+    "loss",
+    (rows) => {
+      rows.at(-1).contention++;
+    },
+    /reported telemetry loss/,
+  ],
+  [
+    "an invalid terminal watermark",
+    (rows) => {
+      rows.at(-1).attempted++;
+    },
+    /terminal watermark/,
+  ],
+])("post-apply rejects %s", (_name, change, detail) => {
+  const report = inspectPostApplyStream({ change });
+  assert.equal(report.complete, false);
+  assert.match(report.failure.detail, detail);
+});
+
+test("post-apply requires the final successful apply's completed getter", () => {
+  const report = inspectPostApplyStream({ omitLastGetter: true });
+  assert.equal(report.complete, false);
+  assert.match(report.failure.detail, /missing its completed getter/);
+});
