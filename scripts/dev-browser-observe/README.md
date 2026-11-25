@@ -786,6 +786,76 @@ Development can continue in the checkout meanwhile. The Chromium binary itself
 is identified per session by `receipt.browser.executableSha256`, and
 `aggregate` compares it.
 
+## Linux renderer memory diagnostics
+
+Build the source with the nondefault `renderer-memory-observe` feature and retain the explicit
+feature in its build receipt. Use the existing `ZFB_DEV_PROVENANCE_TRACE=1` switch in a diagnostic
+profile. Linux native lifecycle collection is compiled out of ordinary builds. A diagnostic
+build receipt or result is excluded from timing aggregation.
+
+```sh
+CARGO_BUILD_JOBS=1 bash "$HOME/.codex/scripts/heavy-guard.sh" -- \
+  cargo +1.99.1 build --locked -p zfb --bin zfb --features renderer-memory-observe
+
+node scripts/dev-browser-observe/cli.mjs record-build \
+  --exe "$diagnostic_binary" --repo "$diagnostic_checkout" --target-dir "$diagnostic_target" \
+  --profile dev --toolchain 1.99.1 --features renderer-memory-observe \
+  --build-command "$recorded_build_command" --out "$diagnostic_build_receipt"
+
+node scripts/dev-browser-observe/cli.mjs verify-identity --profile "$diagnostic_profile"
+node scripts/dev-browser-observe/cli.mjs run --profile "$diagnostic_profile" --label "$fresh_label"
+```
+
+Use the `dev-browser-observe.renderer-memory.v1` profile capability for the dedicated Linux
+schedule. Set `diagnostic: true` and set `rendererMemoryStudy` to an object with `protocol`,
+`browserExecutable` (the absolute Chromium headless-shell path), and
+`browserExecutableSha256`. Pin the frozen harness, the existing 100-article direct-read Field
+Notes source, and the diagnostic build receipt. Declare one workload scenario, no warm order,
+and one in-place `edit-body` operation with 12 total repetitions. Every repetition contributes a
+memory boundary, including any warmups. Use in-place restoration. The runner performs one
+restoration, checks the exact original body in a fresh detail document, runs the six live route
+checks, and keeps the server alive through a full 60 seconds of final idle before teardown. The
+30-cycle resource study is a separate workload.
+
+The supervisor starts the 300,000 ms session clock before profile loading and worker startup.
+The final 60,000 ms is reserved for finalization. The work limits are 90,000 ms for readiness,
+60,000 ms each for an attempt and supplemental check, and 120,000 ms for restoration. Stage
+limits are clamped to the applicable time remaining. The quiet interval is 3,000 ms. Safety
+samples run every 1,000 ms against a summed owned server RSS ceiling of 4,194,304 KiB. A failure
+stops further edits. Cleanup still runs within the applicable deadline. Idle is skipped if the
+full interval cannot finish within the work budget, and the schedule remains incomplete.
+
+The existing `[zfb-prov]` stream carries `renderer_lifecycle_start`, `renderer_lifecycle`,
+`renderer_lifecycle_loss` when loss is observed, and `renderer_lifecycle_terminal`. The
+diagnostic producer queue and drain batch each hold at most 128 numeric records, with 4,096
+attempts admitted and lines bounded to 1,024 bytes. The sink uses a Linux stderr pipe or
+stream socket. The
+producer uses a try-lock and never waits for the sink. Contention, overflow, sink loss,
+malformed records, and a missing terminal watermark invalidate completeness. `occurrence`
+and `occurred_us` describe native events. `seq` and `ms` describe emitted provenance lines.
+The native startup anchor brackets Linux `CLOCK_MONOTONIC` against the native trace epoch.
+The controller timestamps sampler intervals and pipe receipt in its Linux monotonic clock.
+Use the anchor for time alignment and native tick/refresh/snapshot/host identities for
+attribution. Controller edit labels and log arrival order cannot establish lifecycle causation.
+
+Boot and final V8 statistics are collected on the actual owner thread. The record carries its
+Linux TID and kernel birth ticks. Successful join establishes return of that thread after the
+explicit old-host destruction boundary. Join panic, timeout, and channel disconnection remain
+distinct. The harness samples birth-verified process RSS, anonymous/file/shared residency and
+swap from `/proc/PID/status`, and private memory and PSS when `smaps_rollup` is readable. The
+process observation retains PID, boot ID, start ticks, group, executable inode, and named
+renderer thread births. Sampling is discrete and process-scoped. Route verification and idle
+have separate phases.
+
+V8 counters cover used/total heap, physical heap size, external memory, current and peak V8
+malloc accounting, cumulative allocated bytes, global handles, and native/detached contexts.
+Used heap alone does not establish reachable-live bytes. Cumulative bytes describe allocation
+history. V8 malloc accounting can be shared and covers only V8's accounting. Counters may
+overlap. GNU allocator totals are unavailable because the allocator and ABI coverage were not
+established for this diagnostic. The statistics and Linux sampling can perturb the process.
+Interpret changes in the measured domains and retain uncertainty about unmeasured allocation
+and larger workloads.
+
 ## Restoration and processes
 
 Exact source bytes are snapshotted before each scenario and restored after it
