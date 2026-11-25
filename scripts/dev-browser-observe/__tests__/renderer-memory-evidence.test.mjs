@@ -1125,3 +1125,41 @@ test("raw rollup parsing rejects truncation, duplicates, overflow and header amb
     assert.throws(() => parseReclamationRollup(Buffer.from(text)));
   assert.throws(() => parseReclamationRollup(Buffer.alloc(16385)));
 });
+
+test.each([11, 12])(
+  "cleanup can reach ordinal thirteen after only %s witnessed body edits",
+  (witnessedEdits) => {
+    const { server, mutations } = reclamationStream();
+    const report = inspectRendererLifecycle(server, {
+      final: true,
+      withAllocator: true,
+      withPostApply: true,
+      reclamationArm: "trim",
+      mutations: mutations.slice(0, witnessedEdits),
+      restorationWitness: false,
+      requireCompletePostApply: false,
+    });
+    assert.equal(report.complete, false);
+    assert.equal(report.reclamation.targetValid, false);
+    assert.equal(report.reclamation.performed, true);
+    assert.equal(report.reclamation.actionReceipts.length, 1);
+  },
+);
+
+test("losing every bracket row leaves trim execution unknown", () => {
+  const report = inspectReclamationStream({
+    change(rows) {
+      for (let index = rows.length - 1; index >= 0; index--)
+        if (
+          rows[index].phase?.startsWith("reclamation_") ||
+          rows[index].allocator_phase === "reclamation_after"
+        )
+          rows.splice(index, 1);
+    },
+  });
+  assert.equal(report.complete, false);
+  assert.equal(report.reclamation.targetValid, false);
+  assert.equal(report.reclamation.performed, null);
+  assert.equal(report.reclamation.executionUnknown, true);
+  assert.equal(report.reclamation.actionReceipts.length, 0);
+});

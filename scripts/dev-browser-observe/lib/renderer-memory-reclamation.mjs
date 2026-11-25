@@ -50,15 +50,28 @@ export function parseReclamationRollup(bytes) {
 }
 
 /** Retain performed evidence even when identity, telemetry or later validation fails. */
-export function reclamationDisposition(events, arm) {
+export function reclamationDisposition(events, arm, { uncertain = false } = {}) {
   const completions = events.filter((event) => event.phase === "reclamation_action_complete");
   const terminals = events.filter((event) => event.phase === "reclamation_complete");
   const starts = events.filter((event) => event.phase === "reclamation_action_start");
-  const performed = [...completions, ...terminals].some(
-    (event) => event.reclamation?.performed === true,
-  )
+  const outcomes = [...completions, ...terminals];
+  const performedEvidence = outcomes.some((event) => event.reclamation?.performed === true);
+  const preventedEvidence =
+    outcomes.some((event) => event.reclamation?.performed === false) ||
+    events.some((event) => event.phase === "reclamation_disarmed");
+  const targetMayHaveRun =
+    uncertain ||
+    starts.length > 0 ||
+    events.filter(
+      (event) =>
+        event.phase === "apply_return" &&
+        event.apply_outcome === "ok" &&
+        event.apply_association === "associated" &&
+        event.refresh_outcome === "refreshed",
+    ).length >= LIMITS.target;
+  const performed = performedEvidence
     ? true
-    : arm === "trim" && starts.length && !completions.length && !terminals.length
+    : arm === "trim" && !preventedEvidence && targetMayHaveRun
       ? null
       : false;
   return {

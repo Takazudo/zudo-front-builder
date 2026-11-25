@@ -866,7 +866,7 @@ export function inspectRendererLifecycle(
     ...(rawReclamation && {
       reclamation: {
         ...result.reclamation,
-        ...rawReclamation,
+        ...reclamationDisposition(events, reclamationArm, { uncertain: true }),
         failure: result.reclamation?.failure ?? detail,
       },
     }),
