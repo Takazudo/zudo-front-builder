@@ -103,3 +103,6 @@ mod bundler_selection_tests {
         }
     }
 }
+
+#[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+mod renderer_memory;

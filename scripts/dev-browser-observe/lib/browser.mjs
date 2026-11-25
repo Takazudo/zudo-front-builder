@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { HARNESS_DIR, hrtimeNs, isoNow, nsToMs, sha256File } from "./util.mjs";
@@ -68,7 +68,16 @@ export async function launchOwnedBrowser(
   const cfg = { ...DEFAULT_BROWSER, ...opts };
   const chromium = chromiumImpl ?? (await import("@playwright/test")).chromium;
   const executablePath = chromium.executablePath();
-  const browser = await chromium.launch({ headless: cfg.headless, args: cfg.args });
+  const diagnosticExecutable = cfg.diagnosticExecutable;
+  const actualPath = diagnosticExecutable ? realpathSync(diagnosticExecutable.path) : null;
+  const actualHash = actualPath ? sha256File(actualPath) : null;
+  if (diagnosticExecutable && actualHash !== diagnosticExecutable.sha256)
+    throw new Error(`diagnostic browser executable digest differs: ${actualPath}`);
+  const browser = await chromium.launch({
+    headless: cfg.headless,
+    args: cfg.args,
+    ...(actualPath ? { executablePath: actualPath, timeout: diagnosticExecutable.timeoutMs } : {}),
+  });
   try {
     const context = await browser.newContext({
       viewport: cfg.viewport,
@@ -79,6 +88,9 @@ export async function launchOwnedBrowser(
       engine: "chromium",
       executablePath,
       executableSha256: sha256File(executablePath),
+      ...(actualPath
+        ? { launchedExecutablePath: actualPath, launchedExecutableSha256: actualHash }
+        : {}),
       version: browser.version(),
       headless: cfg.headless,
       args: cfg.args,

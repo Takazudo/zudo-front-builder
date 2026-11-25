@@ -66,6 +66,9 @@
 // continues to surface real unused-item warnings.
 #![cfg_attr(not(feature = "direct-v8"), allow(unused_imports, dead_code))]
 
+#[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+use crate::renderer_memory::{self as renderer_memory, Phase as MemoryPhase};
+
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 #[cfg(feature = "direct-v8")]
@@ -1296,6 +1299,18 @@ fn leave_publication_pending_for_failures(
 /// was built without V8 support.
 #[cfg(feature = "direct-v8")]
 pub async fn run(args: &DevArgs) -> Result<()> {
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    let capture = renderer_memory::Capture::start();
+    let result = run_dev(args).await;
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    if let Some(capture) = capture {
+        capture.finish();
+    }
+    result
+}
+
+#[cfg(feature = "direct-v8")]
+async fn run_dev(args: &DevArgs) -> Result<()> {
     // 1. Resolve the project root and load configuration.
     let project_root =
         zfb_types::current_dir_long().context("failed to read current working dir")?;
@@ -8301,6 +8316,8 @@ impl DevRenderSession {
 
     #[cfg(feature = "direct-v8")]
     fn refresh_bundle_and_routes_unlatched(&self) -> Result<BundleRefresh> {
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        let memory_refresh = renderer_memory::Refresh::begin(false);
         let _in_flight = RouteRefreshInFlight::enter(&self.inner.route_refreshes_in_flight);
         let project_root = &self.inner.project_root;
         let inputs = &self.inner.rebuild_inputs;
@@ -8453,6 +8470,10 @@ impl DevRenderSession {
                 .page_sources
                 .clone();
             self.publish_known_page_sources(&sources);
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            if let Some(refresh) = memory_refresh {
+                refresh.finish(MemoryPhase::RefreshSkipped);
+            }
             return Ok(BundleRefresh::Skipped);
         }
 
@@ -8523,6 +8544,8 @@ impl DevRenderSession {
         ) = match candidate_tables {
             Ok(tables) => tables,
             Err(error) => {
+                #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                renderer_memory::record_refresh(MemoryPhase::ValidationRejected);
                 shutdown_renderer_candidate(&candidate_renderer);
                 return Err(error).context(
                     "dev refresh: route-table rebuild failed (candidate discarded; previous renderer kept serving)",
@@ -8548,6 +8571,9 @@ impl DevRenderSession {
         }
         let p3_ms = p3_start.map(|t| t.elapsed().as_millis());
 
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        renderer_memory::record_refresh(MemoryPhase::ValidationOk);
+
         // The candidate bundle and its entire route namespace are now valid.
         // Adopt the host through the long-lived shared slot, then switch trace
         // ownership and retire the previous worker. No fallible publication
@@ -8569,6 +8595,8 @@ impl DevRenderSession {
             let previous = lock.replace(started);
             let event =
                 zfb_build::provenance_trace::adopt_worker(candidate_snapshot_gen, "refresh");
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            renderer_memory::adopted(event.as_ref().and_then(|event| event.worker_generation()));
             (previous, event)
         };
         if let Some(event) = prov_worker_event {
@@ -8579,6 +8607,8 @@ impl DevRenderSession {
 
         let p2_shutdown_start = tick_start.map(|_| std::time::Instant::now());
         if let Some(prev) = previous {
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            let _retirement = renderer_memory::Replacing::current_refresh();
             if let Err(err) = shutdown(prev) {
                 tracing::warn!(
                     site = "refresh_bundle_and_routes",
@@ -8710,6 +8740,10 @@ impl DevRenderSession {
             );
         }
 
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        if let Some(refresh) = memory_refresh {
+            refresh.finish(MemoryPhase::RefreshComplete);
+        }
         Ok(BundleRefresh::Refreshed {
             changed,
             vanished: vanished_output_paths,
@@ -9879,9 +9913,19 @@ fn assemble_and_bundle_dev(
     // Issue #4781: a failed snapshot is not an empty one. Rejecting it here
     // aborts the refresh before P4, so the last successful renderer, route
     // tables, outputs and provenance stay published.
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    renderer_memory::record_refresh(MemoryPhase::SnapshotStart);
     let snapshot = crate::commands::build::dev_content_snapshot_json(project_root, cfg);
     let snapshot_gen = zfb_build::provenance_trace::next_snapshot_gen();
     if let Some(snapshot_gen) = snapshot_gen {
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        renderer_memory::record_snapshot(
+            snapshot_gen,
+            matches!(
+                &snapshot,
+                crate::commands::build::DevContentSnapshot::Failed(_)
+            ),
+        );
         emit_snapshot_event(snapshot_gen, &snapshot);
     }
     let (content_snapshot_json, content_files) = match snapshot {
@@ -9949,8 +9993,12 @@ fn assemble_and_bundle_dev(
         None
     };
     let browser_build_token = bundler_input.zudo_react_build.clone();
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    renderer_memory::record_refresh(MemoryPhase::BundleStart);
     let bundler_out: BundlerOutput =
         bundle_with_session(bundler_input, shadow_session).context("bundler step failed")?;
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    renderer_memory::record_refresh(MemoryPhase::BundleReady);
     let bundle_ms = bnd_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
     let sub_timing = if timing_enabled {
@@ -10959,6 +11007,9 @@ fn boot_dev_renderer(
             }
         }
 
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        let memory_refresh = renderer_memory::Refresh::begin(true);
+
         // Boot path — timing not collected here (one-shot at startup, not a
         // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
         let read_since = zfb_build::ssr_read_start();
@@ -11012,7 +11063,13 @@ fn boot_dev_renderer(
         })
         .map_err(anyhow::Error::from)
         .context("renderer start failed")?;
-        if let Some(event) = zfb_build::provenance_trace::adopt_worker(boot_snapshot_gen, "boot") {
+        let boot_worker_event =
+            zfb_build::provenance_trace::adopt_worker(boot_snapshot_gen, "boot");
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        let boot_worker_gen = boot_worker_event
+            .as_ref()
+            .and_then(|event| event.worker_generation());
+        if let Some(event) = boot_worker_event {
             event.emit();
         }
 
@@ -11034,8 +11091,15 @@ fn boot_dev_renderer(
         // Build the route tables from the router scan + the live host (#659:
         // extracted into `build_dev_route_tables` so the watch-ADD rebuild
         // reproduces the boot tables exactly).
-        let (mut routes_by_source, ssr_routes, mut url_index) =
-            build_dev_route_tables(&router, &plan, project_root, &renderer, &mut paths_cache)?;
+        let tables =
+            build_dev_route_tables(&router, &plan, project_root, &renderer, &mut paths_cache);
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        renderer_memory::record_refresh(if tables.is_ok() {
+            MemoryPhase::ValidationOk
+        } else {
+            MemoryPhase::ValidationRejected
+        });
+        let (mut routes_by_source, ssr_routes, mut url_index) = tables?;
 
         // S3 (#1231) — seed the STATIC injected routes into the boot tables so
         // `lookup_by_url` resolves their URLs (URL == pattern). The router scan
@@ -11050,6 +11114,13 @@ fn boot_dev_renderer(
             url_index = build_url_index(&routes_by_source);
         }
 
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        if let Some(refresh) = memory_refresh {
+            // The eager startup's route state is now accepted for serving.
+            // The legacy worker provenance event above retains its timing.
+            renderer_memory::adopted(boot_worker_gen);
+            refresh.finish(MemoryPhase::RefreshComplete);
+        }
         (
             renderer,
             routes_by_source,

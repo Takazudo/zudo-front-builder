@@ -187,6 +187,9 @@ function count(acc, outcome, rec = null) {
 export async function runBatch({ scenarios, deps }) {
   const { recorder, clock, server, page, fs, limits = {}, timeouts, signal } = deps;
   const wait = (work) => interruptible(work, signal);
+  const diagnostic = deps.rendererMemory;
+  const stage = (name, maximum, started, action) =>
+    diagnostic ? diagnostic.runStage(name, maximum, started, action) : wait(action(maximum));
   const planned = scenarios.reduce((n, s) => n + s.ops.length, 0);
   const acc = newAccounting(planned);
   if (deps.accountingRef) deps.accountingRef.current = acc;
@@ -244,17 +247,26 @@ export async function runBatch({ scenarios, deps }) {
     else {
       const witness = rule.requireNativeUpdate ? bodyRevision : null;
       if (page.settle && mark)
-        settle = await wait(
-          page.settle({
-            mark,
-            startNs: restoreNs,
-            quietMs: timeouts.quietMs ?? 1500,
-            boundMs: timeouts.restoreMs,
-            ...rule,
-            ...(witness ? { bodyRevision: witness } : {}),
-          }),
-        );
-      for (const originalCheck of fs.liveChecks(snapshot)) {
+        try {
+          settle = await stage("restorative update", timeouts.restoreMs, restoreNs, (boundMs) =>
+            page.settle({
+              mark,
+              startNs: restoreNs,
+              quietMs: timeouts.quietMs ?? 1500,
+              boundMs,
+              ...rule,
+              ...(witness ? { bodyRevision: witness } : {}),
+            }),
+          );
+        } catch (error) {
+          if (!diagnostic) throw error;
+          settle = { settled: false, error: String(error?.message ?? error) };
+        }
+      if (diagnostic && (reason !== "scenario-end" || settle?.settled !== true)) {
+        liveSkipped = reason === "scenario-end" ? "restoration-unverified" : "fail-stop-cleanup";
+      }
+      if (diagnostic && !liveSkipped) diagnostic.enter("route-verification");
+      for (const originalCheck of liveSkipped ? [] : fs.liveChecks(snapshot)) {
         // Recheck the exact body during its existing detail visit, preserving the navigation order.
         const check =
           bodyRevision && originalCheck.path === bodyRevision.path
@@ -263,12 +275,12 @@ export async function runBatch({ scenarios, deps }) {
                 predicate: { kind: "all", of: [originalCheck.predicate, bodyRevision.predicate] },
               }
             : originalCheck;
-        signal?.throwIfAborted();
+        if (!diagnostic) signal?.throwIfAborted();
         try {
           live.push({
             ...check,
-            ...(await wait(
-              page.liveCheck(check, timeouts.restoreMs, {
+            ...(await stage("route verification", timeouts.restoreMs, restoreNs, (timeoutMs) =>
+              page.liveCheck(check, timeoutMs, {
                 quietMs: timeouts.quietMs ?? 1500,
                 nativeUpdateConfirmed:
                   settle?.settled === true && settle?.nativeUpdateObserved === true,
@@ -278,6 +290,7 @@ export async function runBatch({ scenarios, deps }) {
         } catch (error) {
           live.push({ ...check, ok: false, error: String(error?.message ?? error) });
         }
+        if (diagnostic && !live.at(-1).ok) break;
       }
     }
     // The declared kill-server control forbids restarting its server. Only that control
@@ -292,7 +305,7 @@ export async function runBatch({ scenarios, deps }) {
       (liveSkipped === null &&
         (!rule.requireNativeUpdate || (settle?.settled && settle.bodyRevision?.matched === true)) &&
         live.some((check) => check.path === bodyRevision.path && check.ok));
-    const ok =
+    let ok =
       !signal?.aborted &&
       restore.mismatches.length === 0 &&
       (diskOnlyControl || (liveSkipped === null && settled)) &&
@@ -300,7 +313,15 @@ export async function runBatch({ scenarios, deps }) {
       live.every((l) => l.ok);
     let quiet = null;
     if (ok && liveSkipped === null && page.quietWindow)
-      quiet = await wait(page.quietWindow(timeouts.quietMs ?? 1500));
+      try {
+        quiet = await stage("restoration quiet window", timeouts.restoreMs, restoreNs, () =>
+          page.quietWindow(timeouts.quietMs ?? 1500),
+        );
+      } catch (error) {
+        if (!diagnostic) throw error;
+        quiet = { error: String(error?.message ?? error) };
+        ok = false;
+      }
     const cleanupRec = {
       type: "cleanup",
       label: "cleanup",
@@ -460,6 +481,7 @@ export async function runBatch({ scenarios, deps }) {
           break outer;
         }
 
+        const attemptStart = diagnostic ? clock.now() : null;
         let attempt;
         let preparedState = null;
         try {
@@ -475,7 +497,11 @@ export async function runBatch({ scenarios, deps }) {
             attempt.write = { ...attempt.write, path: fs.missingSibling(attempt.write.path) };
             if (attempt.writes) attempt.writes = [attempt.write, ...attempt.writes.slice(1)];
           }
-          preparedState = await wait(page.prepare(attempt.targetPath));
+          preparedState = diagnostic
+            ? await stage("attempt prepare", timeouts.attemptMs, attemptStart, (ms) =>
+                page.prepare(attempt.targetPath, Math.min(ms, 30000)),
+              )
+            : await wait(page.prepare(attempt.targetPath));
           page.markPre?.();
         } catch (error) {
           append({
@@ -611,7 +637,9 @@ export async function runBatch({ scenarios, deps }) {
         current.armedToken = attempt.token;
         let armed;
         try {
-          armed = await wait(page.arm(attempt.token, attempt.predicate, attempt.watch ?? null));
+          armed = await stage("attempt arm", timeouts.attemptMs, attemptStart, () =>
+            page.arm(attempt.token, attempt.predicate, attempt.watch ?? null),
+          );
         } catch (error) {
           armed = { armed: false, error: String(error?.message ?? error), threw: true };
         }
@@ -672,6 +700,7 @@ export async function runBatch({ scenarios, deps }) {
         }
 
         signal?.throwIfAborted();
+        diagnostic?.clamp("attempt write", timeouts.attemptMs, attemptStart);
         let t0;
         let tLast = null;
         let writeSteps = null;
@@ -732,24 +761,33 @@ export async function runBatch({ scenarios, deps }) {
           everyMs: limits.sampleEveryMs ?? 1000,
         };
         let sampler = null;
-        const resourceTrip = new Promise((resolve) => {
-          sampler = setInterval(async () => {
-            const s = server.sampleResourcesAsync
-              ? await server.sampleResourcesAsync()
-              : server.sampleResources();
-            waitSamples.count += 1;
-            if (typeof s?.summedRssKiB === "number")
-              waitSamples.peakSummedRssKiB = Math.max(waitSamples.peakSummedRssKiB, s.summedRssKiB);
-            const wall = nsToMs(clock.now() - startedNs);
-            const trip = overLimits(limits, s, wall);
-            if (trip) resolve({ kind: "resource-limit", sample: s, tripped: trip, wallMs: wall });
-          }, waitSamples.everyMs);
-        });
+        const resourceTrip = diagnostic
+          ? null
+          : new Promise((resolve) => {
+              sampler = setInterval(async () => {
+                const s = server.sampleResourcesAsync
+                  ? await server.sampleResourcesAsync()
+                  : server.sampleResources();
+                waitSamples.count += 1;
+                if (typeof s?.summedRssKiB === "number")
+                  waitSamples.peakSummedRssKiB = Math.max(
+                    waitSamples.peakSummedRssKiB,
+                    s.summedRssKiB,
+                  );
+                const wall = nsToMs(clock.now() - startedNs);
+                const trip = overLimits(limits, s, wall);
+                if (trip)
+                  resolve({ kind: "resource-limit", sample: s, tripped: trip, wallMs: wall });
+              }, waitSamples.everyMs);
+            });
         let waited;
         try {
+          const timeoutMs = diagnostic
+            ? diagnostic.clamp("attempt observation", timeouts.attemptMs, attemptStart)
+            : timeouts.attemptMs;
           waited = await wait(
             Promise.race([
-              page.waitNotify(attempt.token, timeouts.attemptMs, (payload) => {
+              page.waitNotify(attempt.token, timeoutMs, (payload) => {
                 late.push(payload);
                 acc.lateTokens += 1;
                 append({
@@ -760,7 +798,7 @@ export async function runBatch({ scenarios, deps }) {
                 });
               }),
               server.waitExit().then((exit) => ({ kind: "server-exit", exit })),
-              resourceTrip,
+              ...(resourceTrip ? [resourceTrip] : []),
             ]),
           );
         } finally {
@@ -878,20 +916,21 @@ export async function runBatch({ scenarios, deps }) {
           acc.stoppedByClassifyTimeout =
             rec.expect === "classify" && (outcome === "timeout" || outcome === "stale");
           stop(outcome, where);
+          if (diagnostic) await diagnostic.afterAttempt(rec);
           break outer;
         }
+        if (diagnostic) await diagnostic.afterAttempt(rec);
         if (rec.expect === "timeout") {
           stop("negative-control-unexpected-success", where);
           break outer;
         }
 
+        const supplementalStart = diagnostic ? clock.now() : null;
         for (const check of attempt.supplemental) {
           let res;
           try {
-            res = await wait(
-              page.supplemental(check, timeouts.supplementalMs, {
-                quietMs: timeouts.quietMs ?? 1500,
-              }),
+            res = await stage("supplemental", timeouts.supplementalMs, supplementalStart, (ms) =>
+              page.supplemental(check, ms, { quietMs: timeouts.quietMs ?? 1500 }),
             );
           } catch (error) {
             res = { ok: false, error: String(error?.message ?? error) };
@@ -952,7 +991,7 @@ export async function runBatch({ scenarios, deps }) {
       error: String(error?.stack ?? error),
     });
     acc.error += 1;
-    stop("controller-error", current.where);
+    if (!stopped) stop(diagnostic?.failure?.reason ?? "controller-error", current.where);
   }
 
   if (activeSnapshot) {

@@ -75,6 +75,9 @@ Commands:
                                repeat { warmups, measured } runs that many times in a row
                                (warmups recorded, excluded from stats); a profile with
                                resourceStudy runs its one scenario as restore cycles.
+                               A rendererMemoryStudy profile is diagnostic-only on Linux:
+                               12 consecutive body edits, one verified restoration, and
+                               a full 60-second idle with the owned server alive.
                                A profile with mode "fixed-distribution" (schema
                                profile-fixed-distribution) runs a pinned zfb 6.0.1, astro
                                7.4.12 or next 16.4.6 install from install-distribution; its

@@ -15,6 +15,8 @@ import {
   gitToplevelAndHead,
 } from "./util.mjs";
 
+import { rendererMemoryBuild } from "./renderer-memory-protocol.mjs";
+
 export const BUILD_RECEIPT_SCHEMA = "dev-browser-observe.build-receipt.v1";
 
 // Mirrors crates/zfb/build.rs `embed_runtime()`: (source package dir, vendor name).
@@ -272,6 +274,7 @@ export function recordBuild(opts) {
   const honoDir = chosen ? join(chosen.vendorDir, "hono") : null;
   return {
     schema: BUILD_RECEIPT_SCHEMA,
+    ...(rendererMemoryBuild({ build: { features: opts.features } }) ? { diagnostic: true } : {}),
     recordedAt: new Date().toISOString(),
     exe: {
       path: exe,
@@ -511,6 +514,21 @@ export function evaluateIdentity(profile, receipt, facts) {
       receipt?.source?.sha,
     ),
   );
+  const rendererFeature = rendererMemoryBuild(receipt);
+  const rendererStudy = Boolean(profile.rendererMemoryStudy);
+  if (rendererFeature || rendererStudy || receipt?.diagnostic === true)
+    checks.push(
+      check(
+        "renderer-memory-diagnostic-build",
+        rendererStudy &&
+          rendererFeature &&
+          receipt?.diagnostic === true &&
+          receipt?.build?.profile === "dev" &&
+          receipt?.build?.noDefaultFeatures === false,
+        "renderer-memory study with a declared diagnostic dev build and default features",
+        { rendererStudy, rendererFeature, diagnostic: receipt?.diagnostic, build: receipt?.build },
+      ),
+    );
   const declaredDirty = profile.productDirtyIdentity ?? null;
   const receiptDirty = receipt?.source?.dirty ? receipt.source.dirtyIdentitySha256 : null;
   checks.push(check("product-patch", declaredDirty === receiptDirty, declaredDirty, receiptDirty));

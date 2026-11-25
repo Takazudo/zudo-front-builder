@@ -16,6 +16,7 @@
   "properties": {
     "schema": { "const": "dev-browser-observe.build-receipt.v1" },
     "recordedAt": { "type": "string" },
+    "diagnostic": { "type": "boolean" },
     "exe": {
       "type": "object",
       "required": ["path", "sha256", "bytes"],

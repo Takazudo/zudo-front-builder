@@ -23,6 +23,12 @@ export async function superviseSession({
 }) {
   const started = monotonicMs();
   const { profile, resolved } = loadProfile(profilePath);
+  const diagnostic = Boolean(profile.rendererMemoryStudy);
+  if (diagnostic && (command !== "run" || scenarios !== null || process.platform !== "linux")) {
+    stderr("renderer-memory diagnostics require a standalone Linux run without --scenario");
+    return EXIT.usage;
+  }
+  const deadline = started + profile.limits.wallCeilingMs;
   const supervisorId = randomUUID();
   const labelDir = join(resolved.outDir, String(label));
   const recordFailure = (failure) => {
@@ -56,20 +62,40 @@ export async function superviseSession({
     });
     stderr("session supervisor failure record: " + report);
   };
+  let controllerExit = null;
   const code = await superviseController({
     worker: workerFile,
-    args: { profilePath, label, command, scenarios, supervisorId },
-    deadline: started + profile.limits.wallCeilingMs,
+    args: {
+      profilePath,
+      label,
+      command,
+      scenarios,
+      supervisorId,
+      ...(diagnostic ? { supervisorStartedMs: started, supervisorDeadlineMs: deadline } : {}),
+    },
+    deadline,
+    diagnostic,
+    onVerifiedExit: (result) => {
+      controllerExit = result;
+    },
     stderr,
     recordFailure,
   });
-  if (code === EXIT.ok) {
+  if (code === EXIT.ok || (diagnostic && controllerExit && existsSync(labelDir))) {
     // Only the supervisor can attest that the controller actually exited.
     writeJsonSync(join(labelDir, "supervisor-completion.json"), {
       schema: "dev-browser-observe.supervisor-completion.v1",
       supervisorId,
       exitCode: code,
       at: new Date().toISOString(),
+      ...(diagnostic
+        ? {
+            diagnostic: true,
+            startedMonotonicMs: started,
+            deadlineMonotonicMs: deadline,
+            ...controllerExit,
+          }
+        : {}),
     });
   }
   return code;
@@ -81,6 +107,8 @@ export function superviseController({
   deadline,
   stderr,
   terminalMs = FINALIZATION_MS,
+  diagnostic = false,
+  onVerifiedExit,
   recordFailure = () => {},
 }) {
   return new Promise((resolve) => {
@@ -109,17 +137,18 @@ export function superviseController({
       if (completed && reportedExitCode !== code)
         reason ??= "controller exit differs from reported result";
       if (exitSignal) reason ??= "controller exited on signal " + exitSignal;
+      if (diagnostic && monotonicMs() > deadline) reason ??= "terminal deadline reached";
       if (reason) {
         try {
           recordFailure({
             at: new Date().toISOString(),
             phase,
             reason,
-            startedMonotonicMs: started,
+            startedMonotonicMs: args.supervisorStartedMs ?? started,
             deadlineMonotonicMs: deadline,
             workDeadlineMonotonicMs: workDeadline,
             terminalBudgetMs: terminalMs,
-            elapsedMs: monotonicMs() - started,
+            elapsedMs: monotonicMs() - (args.supervisorStartedMs ?? started),
             controllerPid: child.pid ?? null,
             reportedExitCode,
             controllerExitCode: code ?? null,
@@ -130,6 +159,8 @@ export function superviseController({
           stderr("failed to persist supervisor failure: " + error.message);
         }
       }
+      if (!reason && typeof code === "number")
+        onVerifiedExit?.({ controllerPid: child.pid, controllerExitMonotonicMs: monotonicMs() });
       resolve(!reason && typeof code === "number" ? code : EXIT.controllerError);
     };
     const finalize = () => {

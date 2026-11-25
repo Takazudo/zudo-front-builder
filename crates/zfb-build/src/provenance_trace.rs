@@ -177,6 +177,13 @@ impl PendingEvent {
         Self { ev, fields }
     }
 
+    /// The generation in this owned adoption event, without reading shared
+    /// generation state again or acquiring any lock at the diagnostic seam.
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    pub fn worker_generation(&self) -> Option<u64> {
+        self.fields["worker_gen"].as_u64()
+    }
+
     pub fn emit(self) {
         emit(self.ev, self.fields);
     }
@@ -309,9 +316,150 @@ pub fn emit(ev: &str, fields: Value) {
     eprintln!("{}", format_line(ev, *seq, ms, tick, fields));
 }
 
+/// Actual native watcher tick captured on the refresh thread before spawning.
+#[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+pub fn renderer_tick() -> Option<u64> {
+    CURRENT_TICK.with(Cell::get)
+}
+
+/// Relative monotonic time shared by the existing trace and delayed numeric
+/// renderer observations. Callers first check the existing runtime opt-in.
+#[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+pub fn elapsed_us() -> u64 {
+    EPOCH
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_micros()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+/// Linux diagnostic output which leaves ordinary stderr's flags untouched.
+/// Node's child-process stderr is a socket on Linux. Shell pipes use a
+/// separately opened file description with O_NONBLOCK.
+#[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+pub struct NonblockingTraceSink(TraceSink);
+
+#[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+enum TraceSink {
+    Socket(std::os::fd::RawFd),
+    Pipe(std::fs::File),
+}
+
+#[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+impl TraceSink {
+    fn write_once(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        use std::io::Write;
+        match self {
+            Self::Pipe(file) => file.write(bytes),
+            Self::Socket(fd) => {
+                // SAFETY: bytes describes readable storage for the duration of
+                // send. An invalid/closed fd is reported as an I/O error.
+                let sent = unsafe {
+                    libc::send(
+                        *fd,
+                        bytes.as_ptr().cast(),
+                        bytes.len(),
+                        libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+                    )
+                };
+                usize::try_from(sent).map_err(|_| std::io::Error::last_os_error())
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+pub enum TraceWrite {
+    Written,
+    Retry,
+    Dropped,
+}
+
+#[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+impl NonblockingTraceSink {
+    pub const LINE_LIMIT_BYTES: usize = 1024;
+
+    pub fn open() -> std::io::Result<Self> {
+        use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+        const STDERR_PATH: &str = "/proc/self/fd/2";
+        let file_type = std::fs::metadata(STDERR_PATH)?.file_type();
+        if file_type.is_socket() {
+            return Ok(Self(TraceSink::Socket(libc::STDERR_FILENO)));
+        }
+        if file_type.is_fifo() {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(STDERR_PATH)?;
+            // Check the actual open file too, so a racing replacement cannot
+            // turn this into a blocking regular-file write.
+            if file.metadata()?.file_type().is_fifo() {
+                return Ok(Self(TraceSink::Pipe(file)));
+            }
+        }
+        Err(std::io::Error::other(
+            "renderer observation requires a stderr socket or pipe",
+        ))
+    }
+
+    /// A single nonblocking send/write bounded below Linux PIPE_BUF, with no
+    /// retry while the existing trace sequencing lock is held. A short
+    /// socket write is reported as loss, never continued as a second line.
+    pub fn try_emit(&mut self, ev: &str, fields: Value) -> TraceWrite {
+        use std::io::ErrorKind;
+        let Ok(mut seq) = EMIT_LOCK.try_lock() else {
+            return TraceWrite::Retry;
+        };
+        let Some(next) = seq.checked_add(1) else {
+            return TraceWrite::Dropped;
+        };
+        let mut line = format_line(ev, next, elapsed_us() / 1000, None, fields);
+        line.push('\n');
+        if line.len() > Self::LINE_LIMIT_BYTES {
+            return TraceWrite::Dropped;
+        }
+        match self.0.write_once(line.as_bytes()) {
+            Ok(n) if n == line.len() => {
+                *seq = next;
+                TraceWrite::Written
+            }
+            Err(error)
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) =>
+            {
+                TraceWrite::Retry
+            }
+            _ => TraceWrite::Dropped,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    #[test]
+    fn renderer_trace_returns_on_full_socket_without_changing_flags() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::UnixStream;
+
+        let (socket, _reader) = UnixStream::pair().unwrap();
+        let fd = socket.as_raw_fd();
+        // SAFETY: fd is held open by socket for the duration of the test.
+        let before = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        assert!(before >= 0);
+        assert_eq!(before & libc::O_NONBLOCK, 0);
+
+        let mut sink = NonblockingTraceSink(TraceSink::Socket(fd));
+        while sink.0.write_once(&[0; 1024]).is_ok() {}
+        assert!(matches!(
+            sink.try_emit("renderer_lifecycle", serde_json::json!({"occurrence": 1})),
+            TraceWrite::Retry
+        ));
+        // SAFETY: socket still owns fd.
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFL) }, before);
+    }
 
     #[test]
     fn gate_parses_only_truthy_values() {
