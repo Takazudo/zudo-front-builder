@@ -12,6 +12,7 @@ import {
   fnWarmPaths,
 } from "./fieldnotes.mjs";
 import { OP_WRITE_METHODS } from "./fixture.mjs";
+import { rendererMemoryProfileErrors } from "./renderer-memory-protocol.mjs";
 import { scheduleErrors } from "./schedule.mjs";
 import { validateAs } from "./schema.mjs";
 import { DIAGNOSTIC_ENV } from "./server.mjs";
@@ -199,7 +200,7 @@ export function semanticErrors(profile) {
     errors.push("$.fixture.placement is required for kind tiny");
   if (kind !== "field-notes" && profile.fixture?.scale !== undefined)
     errors.push("$.fixture.scale is field-notes only");
-  errors.push(...scheduleErrors(profile));
+  errors.push(...scheduleErrors(profile), ...rendererMemoryProfileErrors(profile));
   for (const s of profile.scenarios ?? [])
     if (s.set === "recovery" && kind !== "field-notes")
       errors.push(`$.scenarios[${s.id}]: set "recovery" is field-notes only`);

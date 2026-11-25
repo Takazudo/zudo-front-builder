@@ -1,5 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { rendererMemoryBuild } from "./renderer-memory-protocol.mjs";
 import { distribution } from "./stats.mjs";
 import { readJson, readJsonl } from "./util.mjs";
 
@@ -397,6 +398,23 @@ export function readSession({
   } catch (error) {
     s.error = String(error?.message ?? error);
   }
+  // Do not read or pool observer timings from a renderer-memory run, even if its
+  // declared profile and build are inconsistent or the session itself failed.
+  if (
+    receipt?.profile?.rendererMemoryStudy ||
+    receipt?.rendererMemoryStudy ||
+    receipt?.buildReceipt?.diagnostic === true ||
+    rendererMemoryBuild(receipt?.buildReceipt)
+  )
+    return {
+      ...s,
+      status: "incomplete",
+      seriesStatus,
+      terminalProblems: ["renderer-memory diagnostic excluded from timing aggregation"],
+      facets: receipt ? sessionFacets(receipt) : null,
+      blocks: [],
+      timingExcluded: true,
+    };
   let summary = null;
   try {
     summary = readJson(join(dir, "summary.json"));
@@ -407,6 +425,8 @@ export function readSession({
   let problems;
   try {
     records = readJsonl(join(dir, "records.jsonl"));
+    if (records.find((r) => r.type === "run-start")?.rendererMemoryStudy)
+      return { ...s, status: "incomplete", facets: null, blocks: [], timingExcluded: true };
     problems = terminalEvidence(dir, receipt, summary, records, seriesStatus, seriesExitCode);
   } catch (error) {
     problems = ["unreadable terminal evidence: " + error.message];
@@ -500,7 +520,7 @@ export function aggregate({ sessions, declaredDifferences = [], protocol = null,
     sessions: read.map(({ facets: _f, ...rest }) => rest),
     facets: Object.fromEntries(read.filter((s) => s.ran).map((s) => [s.label, s.facets])),
     pooledComparable: incomplete.length === 0 && identity.ok,
-    pooled: poolVariants(read),
+    pooled: poolVariants(read.filter((s) => !s.timingExcluded)),
   };
   const exitCode = !identity.ok ? 3 : incomplete.length > 0 ? 1 : 0;
   return { report, exitCode };
