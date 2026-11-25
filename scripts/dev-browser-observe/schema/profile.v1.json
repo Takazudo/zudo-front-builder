@@ -43,9 +43,11 @@
           "enum": [
             "dev-browser-observe.renderer-memory.v1",
             "dev-browser-observe.renderer-memory.v2",
-            "dev-browser-observe.renderer-memory.post-apply.v1"
+            "dev-browser-observe.renderer-memory.post-apply.v1",
+            "dev-browser-observe.renderer-memory.reclamation.v1"
           ]
         },
+        "reclamationArm": { "enum": ["sham", "trim"] },
         "browserExecutable": { "type": "string", "pattern": "^/" },
         "browserExecutableSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }

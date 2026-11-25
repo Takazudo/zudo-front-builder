@@ -2,6 +2,15 @@ export const RENDERER_MEMORY_PROTOCOL = "dev-browser-observe.renderer-memory.v1"
 export const RENDERER_MEMORY_ALLOCATOR_PROTOCOL = "dev-browser-observe.renderer-memory.v2";
 export const RENDERER_MEMORY_POST_APPLY_PROTOCOL =
   "dev-browser-observe.renderer-memory.post-apply.v1";
+export const RENDERER_MEMORY_RECLAMATION_PROTOCOL =
+  "dev-browser-observe.renderer-memory.reclamation.v1";
+export const RENDERER_MEMORY_RECLAMATION_LIMITS = {
+  target: 13,
+  rollupBytes: 16 * 1024,
+  readAttempts: 8,
+  bracketUs: 2_000_000,
+  chunkBytes: 128,
+};
 export const RENDERER_MEMORY_ALLOCATOR_ENV = "ZFB_DEV_RENDERER_MEMORY_ALLOCATOR";
 export const RENDERER_MEMORY_ALLOCATOR_DOMAIN = "gnu_mallinfo2.v1";
 export const RENDERER_MEMORY_ALLOCATOR_LIMIT = 128;
@@ -43,20 +52,24 @@ export function rendererMemoryBuild(receipt) {
 }
 
 export function rendererMemoryAllocatorProtocol(protocol) {
-  return [RENDERER_MEMORY_ALLOCATOR_PROTOCOL, RENDERER_MEMORY_POST_APPLY_PROTOCOL].includes(
-    protocol,
-  );
+  return [
+    RENDERER_MEMORY_ALLOCATOR_PROTOCOL,
+    RENDERER_MEMORY_POST_APPLY_PROTOCOL,
+    RENDERER_MEMORY_RECLAMATION_PROTOCOL,
+  ].includes(protocol);
 }
 
 export function rendererMemoryProfileErrors(profile) {
   const protocol = profile.rendererMemoryStudy?.protocol;
   const allocator = rendererMemoryAllocatorProtocol(protocol);
-  const postApply = protocol === RENDERER_MEMORY_POST_APPLY_PROTOCOL;
-  const allocatorMode = postApply ? "2" : "1";
+  const reclamation = protocol === RENDERER_MEMORY_RECLAMATION_PROTOCOL;
+  const postApply = protocol === RENDERER_MEMORY_POST_APPLY_PROTOCOL || reclamation;
+  const arm = profile.rendererMemoryStudy?.reclamationArm;
+  const allocatorMode = reclamation ? (arm === "sham" ? "3" : "4") : postApply ? "2" : "1";
   const configured = profile.server?.env?.[RENDERER_MEMORY_ALLOCATOR_ENV];
   if (!allocator && configured !== undefined)
     return [
-      `$.server.env.${RENDERER_MEMORY_ALLOCATOR_ENV} requires renderer-memory.v2 or renderer-memory.post-apply.v1`,
+      `$.server.env.${RENDERER_MEMORY_ALLOCATOR_ENV} requires renderer-memory.v2, renderer-memory.post-apply.v1 or renderer-memory.reclamation.v1`,
     ];
   if (!profile.rendererMemoryStudy) return [];
   const require = (condition, message) => {
@@ -65,6 +78,9 @@ export function rendererMemoryProfileErrors(profile) {
   const errors = [];
   const limits = RENDERER_MEMORY_LIMITS;
   require(profile.diagnostic === true, "requires diagnostic: true");
+  require(reclamation ? ["sham", "trim"].includes(arm) : arm === undefined, reclamation
+    ? "requires reclamationArm sham or trim"
+    : "reclamationArm requires renderer-memory.reclamation.v1");
   require(profile.mode === "source-built" &&
     profile.fixture?.kind === "field-notes" &&
     profile.fixture?.adapter === "direct-read" &&

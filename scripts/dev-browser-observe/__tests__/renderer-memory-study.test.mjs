@@ -12,6 +12,7 @@ import {
   RENDERER_MEMORY_LIMITS as limits,
   RENDERER_MEMORY_POST_APPLY_PROTOCOL as postApplyProtocol,
   RENDERER_MEMORY_PROTOCOL as protocol,
+  RENDERER_MEMORY_RECLAMATION_PROTOCOL as reclamationProtocol,
 } from "../lib/renderer-memory-protocol.mjs";
 import { createRendererMemoryStudy } from "../lib/renderer-memory-study.mjs";
 import { expandSchedule } from "../lib/schedule.mjs";
@@ -33,6 +34,7 @@ function profile(studyProtocol = protocol) {
     diagnostic: true,
     rendererMemoryStudy: {
       protocol: studyProtocol,
+      ...(studyProtocol === reclamationProtocol && { reclamationArm: "trim" }),
       browserExecutable: "/chromium/headless_shell",
       browserExecutableSha256: "a".repeat(64),
     },
@@ -41,7 +43,14 @@ function profile(studyProtocol = protocol) {
       ...input.server,
       env: {
         ZFB_DEV_PROVENANCE_TRACE: "1",
-        ...(allocator && { [allocatorEnv]: studyProtocol === postApplyProtocol ? "2" : "1" }),
+        ...(allocator && {
+          [allocatorEnv]:
+            studyProtocol === reclamationProtocol
+              ? "4"
+              : studyProtocol === postApplyProtocol
+                ? "2"
+                : "1",
+        }),
       },
       readyTimeoutMs: limits.readyTimeoutMs,
     },
@@ -113,7 +122,7 @@ describe("renderer-memory profile and build identity", () => {
     expect(check({}, { build: { features: [] } })).toBeUndefined();
   });
 
-  it.each([null, protocol, allocatorProtocol, postApplyProtocol])(
+  it.each([null, protocol, allocatorProtocol, postApplyProtocol, reclamationProtocol])(
     "excludes diagnostic receipt %s from timing",
     (studyProtocol) => {
       const root = mkdtempSync(join(tmpdir(), "zfb-memory-aggregate-"));
@@ -157,6 +166,8 @@ async function simulate({
   mappingFailure = null,
   missingPostApply = null,
   collectFailure = null,
+  actionDelayPolls = 0,
+  invalidAction = false,
 } = {}) {
   let now = 0n;
   const clock = () => now;
@@ -183,6 +194,9 @@ async function simulate({
     ].map((path) => ({ path, predicate: { kind: "present" } }));
   let liveChecks = 0;
   let edits = 0;
+  let actionPolls = 0;
+  let actionObserved = false;
+  let restorationNavigations = 0;
   const page = fakePage({
     liveCheck(check) {
       liveChecks += 1;
@@ -211,6 +225,8 @@ async function simulate({
   const arm = page.arm;
   page.arm = async (...args) => ({ ...(await arm(...args)), actual: fs.files["article-00005.md"] });
   page.settle = async ({ bodyRevision }) => {
+    restorationNavigations++;
+    if (studyProtocol === reclamationProtocol) expect(actionObserved).toBe(true);
     expect(bodyRevision.predicate.equals).toBe("original body");
     return { settled: true, nativeUpdateObserved: true, bodyRevision: { matched: true } };
   };
@@ -218,6 +234,7 @@ async function simulate({
   const study = createRendererMemoryStudy({
     append: (r) => d.recorder.append(r),
     protocol: studyProtocol,
+    reclamationArm: studyProtocol === reclamationProtocol ? "trim" : null,
     captureMappings: async (_server, boundary) => {
       if (boundary === mappingFailure) throw new Error("mapping input exceeded cap");
       return { boundary, edits, liveChecks, restores: fs.restores, elapsedNs: String(now) };
@@ -227,18 +244,32 @@ async function simulate({
     clock,
     sleep,
     sample: async () => ({ summedRssKiB: 1000 }),
-    inspect: (_server, { mutations, final, withPostApply }) => ({
-      failure: null,
-      start: {},
-      complete: final,
-      ...(withPostApply && {
-        postApply: {
-          endpoints:
-            missingPostApply !== null ? mutations.slice(0, missingPostApply - 1) : mutations,
-          complete: missingPostApply === null && mutations.length === 13,
-        },
-      }),
-    }),
+    inspect: (_server, { mutations, final, withPostApply, reclamationArm, restorationWitness }) => {
+      const atAction = reclamationArm && mutations.length === 13;
+      if (atAction && ++actionPolls > actionDelayPolls) actionObserved = !invalidAction;
+      return {
+        failure:
+          atAction && invalidAction
+            ? { reason: "renderer-telemetry", detail: "invalid action" }
+            : null,
+        start: {},
+        complete: final,
+        ...(reclamationArm && {
+          reclamation: {
+            bracketComplete: actionObserved,
+            associationValid: actionObserved,
+            complete: actionObserved && restorationWitness,
+          },
+        }),
+        ...(withPostApply && {
+          postApply: {
+            endpoints:
+              missingPostApply !== null ? mutations.slice(0, missingPostApply - 1) : mutations,
+            complete: missingPostApply === null && mutations.length === 13,
+          },
+        }),
+      };
+    },
   });
   try {
     study.startSampling(server);
@@ -265,7 +296,16 @@ async function simulate({
       completedSchedule: study.idleMs !== null,
       serverAbsent: true,
     });
-    return { accounting, records: d.recorder.records, fs, liveChecks, study, sleep, report };
+    return {
+      accounting,
+      records: d.recorder.records,
+      fs,
+      liveChecks,
+      study,
+      sleep,
+      report,
+      restorationNavigations,
+    };
   } finally {
     study.finishSampling();
   }
@@ -446,4 +486,66 @@ describe("post-apply workload admission", () => {
     expect(liveChecks).toBe(0);
     expect(records.filter((row) => row.type === "renderer-memory-mapping")).toHaveLength(1);
   });
+});
+
+describe("reclamation admission and restoration ordering", () => {
+  it("requires an arm matching the separate runtime mode", () => {
+    const admitted = profile(reclamationProtocol);
+    expect(validateAs("profile", admitted)).toEqual([]);
+    expect(semanticErrors(admitted)).toEqual([]);
+    admitted.rendererMemoryStudy.reclamationArm = "sham";
+    expect(semanticErrors(admitted).join("\n")).toContain(`${allocatorEnv}: "3"`);
+    admitted.server.env[allocatorEnv] = "3";
+    expect(semanticErrors(admitted)).toEqual([]);
+    delete admitted.rendererMemoryStudy.reclamationArm;
+    expect(semanticErrors(admitted).join("\n")).toContain("requires reclamationArm");
+    const old = profile(postApplyProtocol);
+    old.rendererMemoryStudy.reclamationArm = "sham";
+    expect(semanticErrors(old).join("\n")).toContain("reclamationArm requires");
+  });
+
+  it("waits for the bracket after restoring bytes and before fresh navigation", async () => {
+    const { records, report, fs, liveChecks, restorationNavigations, sleep } = await simulate({
+      studyProtocol: reclamationProtocol,
+      actionDelayPolls: 2,
+    });
+    expect(report.observationComplete).toBe(true);
+    expect(report.lifecycle.reclamation.complete).toBe(true);
+    expect(fs.writes).toHaveLength(12);
+    expect(fs.restores).toBe(1);
+    expect(liveChecks).toBe(6);
+    expect(restorationNavigations).toBe(1);
+    const gate = records.find(
+      (row) => row.type === "renderer-memory-reclamation-gate" && row.step === "complete",
+    );
+    expect(gate.originalBodyWitnessPending).toBe(true);
+    expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([25, 25, 60000]);
+  });
+
+  it("cancels restoration navigation, route checks and idle on invalid action evidence", async () => {
+    const { report, fs, liveChecks, restorationNavigations, records } = await simulate({
+      studyProtocol: reclamationProtocol,
+      invalidAction: true,
+    });
+    expect(report.observationComplete).toBe(false);
+    expect(report.scheduleComplete).toBe(false);
+    expect(fs.restores).toBe(1);
+    expect(restorationNavigations).toBe(0);
+    expect(liveChecks).toBe(0);
+    expect(records.find((row) => row.type === "renderer-memory-idle").step).toBe("skipped");
+  });
+});
+
+it("a missing reclamation bracket exhausts its enclosing budget without navigation or idle", async () => {
+  const { report, fs, liveChecks, restorationNavigations, records } = await simulate({
+    studyProtocol: reclamationProtocol,
+    actionDelayPolls: Infinity,
+  });
+  expect(report.observationComplete).toBe(false);
+  expect(report.scheduleComplete).toBe(false);
+  expect(report.failure.reason).toBe("renderer-memory-reclamation-incomplete");
+  expect(fs.restores).toBe(1);
+  expect(restorationNavigations).toBe(0);
+  expect(liveChecks).toBe(0);
+  expect(records.find((row) => row.type === "renderer-memory-idle").step).toBe("skipped");
 });
