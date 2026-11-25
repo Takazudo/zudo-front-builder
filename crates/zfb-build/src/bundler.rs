@@ -4516,6 +4516,31 @@ fn collect_zudo_react_linked_package(
     )
 }
 
+/// An opt-in process-test barrier at the native dev bundle, after the SSR
+/// content snapshot and before the tick's CSS pass. The test creates the file
+/// to arm the barrier and removes it after the watcher has queued later edits.
+fn wait_for_native_bundle_test_gate() -> Result<()> {
+    let Some(path) = std::env::var_os("ZFB_DEV_TEST_NATIVE_BUNDLE_GATE") else {
+        return Ok(());
+    };
+    let path = Path::new(&path);
+    if !path.try_exists()? {
+        return Ok(());
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    eprintln!("[zfb-timing] native bundle waiting for test release");
+    while path.try_exists()? {
+        if std::time::Instant::now() >= deadline {
+            bail!(
+                "native bundle test gate was not released: {}",
+                path.display()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    Ok(())
+}
+
 /// [`bundle`] with an optional persistent dev [`ShadowSession`]
 /// (issue #993). `None` is the production path; `Some` reuses the
 /// session's shadow tree across calls, skipping byte-identical rewrites
@@ -6680,6 +6705,9 @@ pub fn bundle_with_session(
             )
         })?;
     } else {
+        if input.mode == BundleMode::Development {
+            wait_for_native_bundle_test_gate()?;
+        }
         run_native_bundle(
             &input,
             shadow,
