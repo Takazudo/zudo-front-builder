@@ -24,6 +24,8 @@ import {
   rendererMemoryAllocatorProtocol,
   RENDERER_MEMORY_LIMITS,
   RENDERER_MEMORY_MAPPING_LIMITS,
+  RENDERER_MEMORY_RECLAMATION_PROTOCOL,
+  RENDERER_MEMORY_RECLAMATION_LIMITS,
 } from "./renderer-memory-protocol.mjs";
 import { createResourceStudy, summarizeResourceStudy } from "./resource-study.mjs";
 import { expandSchedule, scheduleOf } from "./schedule.mjs";
@@ -337,6 +339,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
             ...(rendererMemoryAllocatorProtocol(memoryProfile.protocol) && {
               mappingLimits: RENDERER_MEMORY_MAPPING_LIMITS,
             }),
+            ...(memoryProfile.protocol === RENDERER_MEMORY_RECLAMATION_PROTOCOL && {
+              reclamationLimits: RENDERER_MEMORY_RECLAMATION_LIMITS,
+            }),
             supervisorStartedMs: loaded.supervisorStartedMs,
             workDeadlineMs: loaded.workDeadline,
             supervisorDeadlineMs: loaded.supervisorDeadlineMs,
@@ -396,6 +401,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
             diagnostic: true,
             rendererMemoryStudy: {
               protocol: memoryProfile.protocol,
+              reclamationArm: memoryProfile.reclamationArm,
               scheduleComplete: false,
               observationComplete: false,
             },
@@ -433,6 +439,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       }
       rendererMemory = createRendererMemoryStudy({
         protocol: memoryProfile.protocol,
+        reclamationArm: memoryProfile.reclamationArm,
         append: (r) => rec.append(r),
         signal: loaded.signal,
         supervisorStartedMs: loaded.supervisorStartedMs,
@@ -1084,6 +1091,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
               diagnostic: true,
               rendererMemoryStudy: memoryReport ?? {
                 protocol: memoryProfile.protocol,
+                reclamationArm: memoryProfile.reclamationArm,
                 scheduleComplete: false,
                 observationComplete: false,
               },

@@ -2,10 +2,12 @@ import { readFile, readdir, readlink, stat } from "node:fs/promises";
 import { linuxBirth, parseLinuxStat, sameLinuxBirth } from "./linux-birth.mjs";
 import { snapshotOwned } from "./process-owner.mjs";
 import { parseProvLines } from "./provenance.mjs";
+import { inspectReclamation, reclamationDisposition } from "./renderer-memory-reclamation.mjs";
 import {
   RENDERER_MEMORY_ALLOCATOR_DOMAIN as ALLOCATOR_DOMAIN,
   RENDERER_MEMORY_ALLOCATOR_LIMIT as ALLOCATOR_LIMIT,
   RENDERER_MEMORY_LIMITS as LIMITS,
+  RENDERER_MEMORY_RECLAMATION_LIMITS as RECLAMATION_LIMITS,
 } from "./renderer-memory-protocol.mjs";
 
 const STATUS_FIELDS = ["VmRSS", "RssAnon", "RssFile", "RssShmem", "VmSwap"];
@@ -283,7 +285,7 @@ function checkHost(events, final) {
  * A pending getter is normal during a periodic check. At termination it is
  * incomplete evidence, even if the server needed forced shutdown.
  */
-function inspectAllocator(rows, byRefresh, lifecycle, final, withPostApply) {
+function inspectAllocator(rows, byRefresh, lifecycle, final, withPostApply, withReclamation) {
   const starts = new Map();
   const completed = new Map();
   const byCallPhase = new Map();
@@ -302,7 +304,10 @@ function inspectAllocator(rows, byRefresh, lifecycle, final, withPostApply) {
   const fail = (detail) => ({ ...report, failure: detail });
   for (const e of rows) {
     const call = e.allocator_call;
-    const postApply = withPostApply && e.allocator_phase === POST_APPLY;
+    const postApply =
+      withPostApply &&
+      (e.allocator_phase === POST_APPLY ||
+        (withReclamation && e.allocator_phase === "reclamation_after"));
     if (
       e.metric_domain !== ALLOCATOR_DOMAIN ||
       (!postApply && !ALLOCATOR_PHASES.includes(e.allocator_phase)) ||
@@ -435,7 +440,9 @@ function inspectAllocator(rows, byRefresh, lifecycle, final, withPostApply) {
   }
   const unexpectedUnavailable = report.unavailable.find(
     (row) =>
-      !withPostApply || row.phase === POST_APPLY || row.reason !== "application_write_exclusion",
+      !withPostApply ||
+      [POST_APPLY, "reclamation_after"].includes(row.phase) ||
+      row.reason !== "application_write_exclusion",
   );
   if (unexpectedUnavailable)
     return fail(`GNU allocator getter unavailable: ${unexpectedUnavailable.reason}`);
@@ -572,6 +579,7 @@ function inspectPostApply({
   final,
   requireComplete,
   requireAttributed,
+  withReclamation,
 }) {
   const endpoints = [];
   const report = { endpoints, failure: null };
@@ -648,6 +656,7 @@ function inspectPostApply({
         (row) =>
           row.refresh_id === id &&
           row.allocator_phase !== POST_APPLY &&
+          !(withReclamation && row.allocator_phase === "reclamation_after") &&
           row.allocator_unavailable_reason !== "application_write_exclusion",
       )
     )
@@ -825,6 +834,8 @@ export function inspectRendererLifecycle(
     minimumAdoptions = 0,
     withAllocator = false,
     withPostApply = false,
+    reclamationArm = null,
+    restorationWitness = false,
     mutations = [],
     requireCompletePostApply = false,
     requireAttributedPostApply = false,
@@ -846,8 +857,20 @@ export function inspectRendererLifecycle(
     adoptions: events.filter((e) => e.phase === "adopted").length,
     terminal: last ?? null,
     nativeFailures: [],
+    ...(reclamationArm && { reclamation: reclamationDisposition(events, reclamationArm) }),
   };
-  const fail = (detail) => ({ ...result, failure: { reason: "renderer-telemetry", detail } });
+  const rawReclamation = reclamationArm ? reclamationDisposition(events, reclamationArm) : null;
+  const fail = (detail) => ({
+    ...result,
+    failure: { reason: "renderer-telemetry", detail },
+    ...(rawReclamation && {
+      reclamation: {
+        ...result.reclamation,
+        ...rawReclamation,
+        failure: result.reclamation?.failure ?? detail,
+      },
+    }),
+  });
   if (
     droppedBeforeMark ||
     parsed.parseErrors.length ||
@@ -864,6 +887,13 @@ export function inspectRendererLifecycle(
   ) {
     return fail("native producer or sink reported telemetry loss");
   }
+  if (
+    reclamationArm &&
+    lines.some(
+      (line) => Buffer.byteLength(typeof line === "string" ? line : line.text, "utf8") + 1 > 1024,
+    )
+  )
+    return fail("reclamation trace line exceeded 1024 bytes");
   if (starts.length > 1) return fail("multiple native startup anchors");
   if ((requireStart || final) && !start) return fail("native diagnostic startup anchor missing");
   if (
@@ -880,6 +910,14 @@ export function inspectRendererLifecycle(
       (withPostApply
         ? start.allocator_post_apply !== true
         : start.allocator_post_apply !== undefined) ||
+      (reclamationArm
+        ? start.allocator_reclamation !== reclamationArm ||
+          start.reclamation_target !== RECLAMATION_LIMITS.target ||
+          start.reclamation_rollup_bytes !== RECLAMATION_LIMITS.rollupBytes ||
+          start.reclamation_read_limit !== RECLAMATION_LIMITS.readAttempts ||
+          start.reclamation_bracket_us !== RECLAMATION_LIMITS.bracketUs ||
+          start.reclamation_chunk_bytes !== RECLAMATION_LIMITS.chunkBytes
+        : start.allocator_reclamation !== undefined) ||
       !positive(start.pid) ||
       (server.handle?.native?.pid != null && start.pid !== server.handle.native.pid) ||
       !positive(start.clock_monotonic_us) ||
@@ -895,6 +933,7 @@ export function inspectRendererLifecycle(
   const byRefresh = new Map();
   const allocatorRows = [];
   const applications = [];
+  const reclamationRows = [];
   let contiguous = 0;
   for (const e of events.sort((a, b) => a.occurrence - b.occurrence)) {
     if (!positive(e.occurrence) || seen.has(e.occurrence) || !counter(e.occurred_us)) {
@@ -910,6 +949,11 @@ export function inspectRendererLifecycle(
     if (e.phase === APPLY_RETURN) {
       if (!withPostApply) return fail("unexpected post-apply telemetry");
       applications.push(e);
+      continue;
+    }
+    if (e.phase?.startsWith("reclamation_")) {
+      if (!reclamationArm) return fail("unexpected reclamation telemetry");
+      reclamationRows.push(e);
       continue;
     }
     const refreshPhase = REFRESH_PHASES.has(e.phase);
@@ -953,6 +997,7 @@ export function inspectRendererLifecycle(
       events.filter(established),
       final,
       withPostApply,
+      Boolean(reclamationArm),
     );
     result.allocator = allocator;
     if (withPostApply && !allocator.failure) {
@@ -967,9 +1012,28 @@ export function inspectRendererLifecycle(
         final,
         requireComplete: requireCompletePostApply,
         requireAttributed: requireAttributedPostApply,
+        withReclamation: Boolean(reclamationArm),
       });
     }
-    const observerFailure = allocator.failure ?? result.postApply?.failure;
+    if (reclamationArm && !allocator.failure) {
+      result.reclamation = inspectReclamation({
+        rows: reclamationRows.filter(established),
+        allocatorRows: knownAllocator,
+        postApply: result.postApply,
+        arm: reclamationArm,
+        final,
+        restorationWitness,
+        anchor: start,
+      });
+      Object.assign(result.reclamation, {
+        performed: rawReclamation.performed,
+        executionUnknown: rawReclamation.executionUnknown,
+        actionReceipts: rawReclamation.actionReceipts,
+        terminalReceipts: rawReclamation.terminalReceipts,
+      });
+    }
+    const observerFailure =
+      allocator.failure ?? result.postApply?.failure ?? result.reclamation?.failure;
     if (!final && observerFailure) return fail(observerFailure);
   }
   if (final) {
@@ -984,6 +1048,7 @@ export function inspectRendererLifecycle(
       return fail(
         result.allocator?.failure ??
           result.postApply?.failure ??
+          result.reclamation?.failure ??
           "missing native terminal watermark or occurrence records",
       );
     }
@@ -1036,7 +1101,8 @@ export function inspectRendererLifecycle(
       }
     }
   }
-  const observerFailure = result.allocator?.failure ?? result.postApply?.failure;
+  const observerFailure =
+    result.allocator?.failure ?? result.postApply?.failure ?? result.reclamation?.failure;
   if (observerFailure) return { ...fail(observerFailure), lifecycleComplete: final };
   return {
     ...result,
