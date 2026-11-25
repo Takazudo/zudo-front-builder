@@ -1783,6 +1783,17 @@ async fn emit_ready_racing_shutdown(
     shutdown: &mut oneshot::Receiver<()>,
 ) -> DrainOutcome {
     let (handoff_batch_id, handoff_batch_size) = next_handoff_batch(ready.len());
+    // The process-test bundle barrier needs proof of actual delivery rather
+    // than the normal handoff marker (which precedes potentially blocked sends).
+    let test_delivery_paths = (handoff_batch_id != 0
+        && std::env::var_os("ZFB_DEV_TEST_NATIVE_BUNDLE_GATE").is_some())
+    .then(|| {
+        ready
+            .iter()
+            .map(|(path, _)| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
     let mut ready = std::collections::VecDeque::from(ready);
     while let Some((path, kind)) = ready.pop_front() {
         let kind = resolve_emit_kind(&path, kind);
@@ -1813,6 +1824,9 @@ async fn emit_ready_racing_shutdown(
                 }
             }
         }
+    }
+    if let Some(paths) = test_delivery_paths {
+        eprintln!("[zfb-timing] watcher test delivery: {paths}");
     }
     DrainOutcome::Drained
 }
