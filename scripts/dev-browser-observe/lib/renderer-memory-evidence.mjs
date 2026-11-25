@@ -1,7 +1,7 @@
 import { readFile, readdir, readlink, stat } from "node:fs/promises";
 import { linuxBirth, parseLinuxStat, sameLinuxBirth } from "./linux-birth.mjs";
 import { snapshotOwned } from "./process-owner.mjs";
-import { parseProvLines } from "./provenance.mjs";
+import { parseProvLines, PROV_PREFIX } from "./provenance.mjs";
 import { inspectReclamation, reclamationDisposition } from "./renderer-memory-reclamation.mjs";
 import {
   RENDERER_MEMORY_ALLOCATOR_DOMAIN as ALLOCATOR_DOMAIN,
@@ -889,9 +889,14 @@ export function inspectRendererLifecycle(
   }
   if (
     reclamationArm &&
-    lines.some(
-      (line) => Buffer.byteLength(typeof line === "string" ? line : line.text, "utf8") + 1 > 1024,
-    )
+    parsed.events.some((event) => {
+      if (![LIFECYCLE, START, TERMINAL, LOSS].includes(event.ev)) return false;
+      const text = lines[event._line].text;
+      // This bound belongs to the renderer's NonblockingTraceSink. Other
+      // provenance producers have their own record shapes and output paths.
+      const nativeLine = text.slice(text.indexOf(PROV_PREFIX));
+      return Buffer.byteLength(nativeLine, "utf8") + 1 > 1024;
+    })
   )
     return fail("reclamation trace line exceeded 1024 bytes");
   if (starts.length > 1) return fail("multiple native startup anchors");
