@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { inspectRendererLifecycle, parseMemoryKiB } from "../lib/renderer-memory-evidence.mjs";
+import { parseReclamationRollup } from "../lib/renderer-memory-reclamation.mjs";
 
 const heap = {
   used_heap_size: 41,
@@ -724,4 +725,488 @@ test("post-apply requires the final successful apply's completed getter", () => 
   const report = inspectPostApplyStream({ omitLastGetter: true });
   assert.equal(report.complete, false);
   assert.match(report.failure.detail, /missing its completed getter/);
+});
+
+function reclamationStream({ arm = "trim", trimReturn = 1, change = () => {} } = {}) {
+  return postApplyStream({
+    change(rows, mutations) {
+      Object.assign(rows[0], {
+        allocator_reclamation: arm,
+        reclamation_target: 13,
+        reclamation_rollup_bytes: 16384,
+        reclamation_read_limit: 8,
+        reclamation_bracket_us: 2_000_000,
+        reclamation_chunk_bytes: 128,
+      });
+      const index = rows.findLastIndex((row) => row.allocator_phase === "post_apply_return");
+      const pre = rows[index];
+      const identity = Object.fromEntries(
+        ["apply_id", "refresh_id", "tick", "snapshot_gen", "host_id"].map((field) => [
+          field,
+          pre[field],
+        ]),
+      );
+      const extra = [];
+      let time = pre.occurred_us;
+      const append = (phase, reclamation) => {
+        const row = {
+          ...identity,
+          ev: "renderer_lifecycle",
+          phase,
+          occurred_us: ++time,
+          reclamation,
+        };
+        extra.push(row);
+        return row;
+      };
+      const rollup = (side, rss) => {
+        const text = `1000-2000 ---p 00000000 00:00 0 [rollup]\nRss: ${rss} kB\nAnonymous: ${rss - 10} kB\nPrivate_Clean: 2 kB\nPrivate_Dirty: ${rss - 20} kB\nSwap: 0 kB\nAnonHugePages: 0 kB\n`;
+        const bytes = Buffer.from(text);
+        const started_us = time + 1;
+        append("reclamation_rollup_start", { side, started_us });
+        append("reclamation_rollup_complete", {
+          side,
+          started_us,
+          completed_us: time + 1,
+          duration_us: 1,
+          bytes: bytes.length,
+          reads: 2,
+          eof: true,
+          outcome: "ok",
+          rollup: {
+            rss_kib: rss,
+            anonymous_kib: rss - 10,
+            private_clean_kib: 2,
+            private_dirty_kib: rss - 20,
+            swap_kib: 0,
+            anon_huge_pages_kib: 0,
+          },
+        });
+        return () => {
+          for (let offset = 0; offset < bytes.length; offset += 128)
+            append("reclamation_rollup_chunk", {
+              side,
+              offset,
+              hex: bytes.subarray(offset, offset + 128).toString("hex"),
+            });
+        };
+      };
+      rollup("before", 300000)();
+      const started_us = time + 1;
+      append("reclamation_action_start", { arm, eligible: 13, started_us });
+      const performed = arm === "trim";
+      append("reclamation_action_complete", {
+        arm,
+        eligible: 13,
+        started_us,
+        completed_us: time + 1,
+        duration_us: 1,
+        performed,
+        trim_return: performed ? trimReturn : null,
+      });
+      const chunks = rollup("after", performed ? 100000 : 300000);
+      extra.push({
+        ...pre,
+        phase: "allocator_start",
+        allocator_phase: "reclamation_after",
+        allocator_call: pre.allocator_call + 1,
+        occurred_us: ++time,
+        allocator_started_us: undefined,
+        allocator_completed_us: undefined,
+        allocator_duration_us: undefined,
+        allocator_outcome: undefined,
+        allocator: undefined,
+      });
+      extra.push({
+        ...pre,
+        allocator_phase: "reclamation_after",
+        allocator_call: pre.allocator_call + 1,
+        occurred_us: ++time,
+        allocator_started_us: time - 1,
+        allocator_completed_us: time,
+        allocator_duration_us: 1,
+      });
+      chunks();
+      append("reclamation_complete", {
+        arm,
+        eligible: 13,
+        started_us: pre.allocator_started_us,
+        completed_us: time + 1,
+        duration_us: time + 1 - pre.allocator_started_us,
+        performed,
+        outcome: "ok",
+      });
+      for (const row of rows.slice(index + 1))
+        if (row.ev === "renderer_lifecycle") row.occurred_us = ++time;
+      rows.splice(index + 1, 0, ...extra);
+      let occurrence = 0;
+      for (const row of rows) if (row.ev === "renderer_lifecycle") row.occurrence = ++occurrence;
+      Object.assign(rows.at(-1), { attempted: occurrence, emitted: occurrence });
+      change(rows, mutations);
+    },
+  });
+}
+
+function inspectReclamationStream({
+  change,
+  arm = "trim",
+  trimReturn = 1,
+  restorationWitness = true,
+} = {}) {
+  const { server, mutations } = reclamationStream({ arm, trimReturn, change });
+  return inspectRendererLifecycle(server, {
+    final: true,
+    withAllocator: true,
+    withPostApply: true,
+    reclamationArm: arm,
+    restorationWitness,
+    mutations,
+    requireCompletePostApply: true,
+  });
+}
+
+test.each(["sham", "trim"])(
+  "reclamation validates %s with full native and restoration identities",
+  (arm) => {
+    const report = inspectReclamationStream({ arm });
+    assert.equal(report.failure, null);
+    assert.equal(report.complete, true);
+    assert.equal(report.postApply.endpoints.length, 13);
+    assert.equal(report.reclamation.targetValid, true);
+    assert.equal(report.reclamation.complete, true);
+    assert.equal(report.reclamation.performed, arm === "trim");
+    assert.equal(report.reclamation.deltaKiB.rss_kib, arm === "trim" ? -200000 : 0);
+    assert.equal(report.allocator.completed, 19); // The test fixture has eager boot's five getters.
+  },
+);
+
+test("a zero trim return remains complete evidence", () => {
+  const report = inspectReclamationStream({ trimReturn: 0 });
+  assert.equal(report.failure, null);
+  assert.equal(report.reclamation.action.trim_return, 0);
+});
+
+test("reclamation requires a fresh original-body witness after its bracket", () => {
+  const report = inspectReclamationStream({ restorationWitness: false });
+  assert.match(report.failure.detail, /restoration attribution/);
+  assert.equal(report.reclamation.performed, true);
+  assert.equal(report.reclamation.targetValid, false);
+});
+
+const reclamationRow = (rows, phase, side) =>
+  rows.find((row) => row.phase === phase && (!side || row.reclamation.side === side));
+
+test.each([
+  [
+    "wrong target",
+    (rows) => {
+      reclamationRow(rows, "reclamation_action_complete").reclamation.eligible = 12;
+    },
+    /wrong reclamation arm or eligible/,
+  ],
+  [
+    "foreign action",
+    (rows) => {
+      reclamationRow(rows, "reclamation_action_complete").apply_id++;
+    },
+    /foreign or duplicate/,
+  ],
+  [
+    "duplicate action",
+    (rows) => {
+      rows.splice(-1, 0, {
+        ...reclamationRow(rows, "reclamation_action_complete"),
+        occurrence: rows.at(-1).attempted + 1,
+      });
+    },
+    /duplicate one-shot/,
+  ],
+  [
+    "wrong trim count",
+    (rows) => {
+      reclamationRow(rows, "reclamation_action_complete").reclamation.performed = false;
+    },
+    /trim count/,
+  ],
+  [
+    "bad pre-read",
+    (rows) => {
+      reclamationRow(rows, "reclamation_rollup_complete", "before").reclamation.outcome =
+        "read_limit";
+    },
+    /incomplete reclamation rollup/,
+  ],
+  [
+    "non-EOF read",
+    (rows) => {
+      reclamationRow(rows, "reclamation_rollup_complete", "after").reclamation.eof = false;
+    },
+    /incomplete reclamation rollup/,
+  ],
+  [
+    "read-attempt overflow",
+    (rows) => {
+      reclamationRow(rows, "reclamation_rollup_complete", "before").reclamation.reads = 9;
+    },
+    /incomplete reclamation rollup/,
+  ],
+  [
+    "oversized input",
+    (rows) => {
+      reclamationRow(rows, "reclamation_rollup_complete", "after").reclamation.bytes = 16385;
+    },
+    /incomplete reclamation rollup/,
+  ],
+  [
+    "numeric mismatch",
+    (rows) => {
+      reclamationRow(rows, "reclamation_rollup_complete", "after").reclamation.rollup.rss_kib++;
+    },
+    /disagrees with raw/,
+  ],
+  [
+    "duplicate raw offset",
+    (rows) => {
+      rows.filter(
+        (row) => row.phase === "reclamation_rollup_chunk" && row.reclamation.side === "before",
+      )[1].reclamation.offset = 0;
+    },
+    /rollup chunk/,
+  ],
+  [
+    "truncated raw",
+    (rows) => {
+      reclamationRow(rows, "reclamation_rollup_chunk", "after").reclamation.hex = "00";
+    },
+    /rollup chunk|missing reclamation rollup/,
+  ],
+  [
+    "bad post-action",
+    (rows) => {
+      reclamationRow(rows, "reclamation_complete").reclamation.outcome = "malformed";
+    },
+    /incomplete: malformed/,
+  ],
+  [
+    "elapsed bracket",
+    (rows) => {
+      const end = reclamationRow(rows, "reclamation_complete");
+      end.occurred_us += 2000001;
+      end.reclamation.completed_us += 2000001;
+      end.reclamation.duration_us += 2000001;
+    },
+    /bracket order, duration/,
+  ],
+  [
+    "unmatched action start",
+    (rows) => {
+      rows.splice(
+        rows.findIndex((row) => row.phase === "reclamation_action_complete"),
+        1,
+      );
+    },
+    /terminal watermark|missing complete/,
+  ],
+  [
+    "record loss",
+    (rows) => {
+      rows.at(-1).overflow = 1;
+    },
+    /reported telemetry loss/,
+  ],
+  [
+    "wrong restoration path",
+    (_rows, mutations) => {
+      mutations.at(-1).paths = ["/foreign.md"];
+    },
+    /missing its native intake/,
+  ],
+])("reclamation rejects %s while retaining any performed action", (_name, change, reason) => {
+  const report = inspectReclamationStream({ change });
+  assert.equal(report.complete, false);
+  assert.equal(report.reclamation.targetValid, false);
+  assert.match(report.failure.detail, reason);
+});
+
+test("legacy post-apply protocol rejects reclamation records", () => {
+  const { server, mutations } = reclamationStream();
+  const report = inspectRendererLifecycle(server, {
+    final: true,
+    withAllocator: true,
+    withPostApply: true,
+    mutations,
+  });
+  assert.match(report.failure.detail, /startup identity, contract/);
+});
+
+test("a gap before the bracket preserves the visible action receipt", () => {
+  const { server, mutations } = reclamationStream({
+    change(rows) {
+      rows.splice(
+        rows.findIndex((row) => row.phase === "reclamation_rollup_start"),
+        1,
+      );
+    },
+  });
+  for (const final of [false, true]) {
+    const report = inspectRendererLifecycle(server, {
+      final,
+      withAllocator: true,
+      withPostApply: true,
+      reclamationArm: "trim",
+      mutations,
+      restorationWitness: true,
+    });
+    assert.equal(report.reclamation.performed, true);
+    assert.equal(report.reclamation.actionReceipts.length, 1);
+    assert.equal(report.reclamation.targetValid, false);
+    if (final) assert.equal(report.complete, false);
+  }
+});
+
+test("a final performed action survives a lost action-complete record", () => {
+  const report = inspectReclamationStream({
+    change(rows) {
+      rows.splice(
+        rows.findIndex((row) => row.phase === "reclamation_action_complete"),
+        1,
+      );
+    },
+  });
+  assert.equal(report.complete, false);
+  assert.equal(report.reclamation.performed, true);
+  assert.equal(report.reclamation.actionReceipts.length, 0);
+  assert.equal(report.reclamation.terminalReceipts.length, 1);
+});
+
+test("an unfinished trim call has an unknown execution outcome", () => {
+  const report = inspectReclamationStream({
+    change(rows) {
+      rows.splice(rows.findIndex((row) => row.phase === "reclamation_action_start") + 1);
+    },
+  });
+  assert.equal(report.complete, false);
+  assert.equal(report.reclamation.performed, null);
+  assert.equal(report.reclamation.executionUnknown, true);
+});
+
+test("the body witness must follow the complete native bracket", () => {
+  const report = inspectReclamationStream({
+    change(rows, mutations) {
+      const action = reclamationRow(rows, "reclamation_complete");
+      // Keep the intake's millisecond uncertainty wholly inside the mutation
+      // window, while placing its body witness inside the bracket's final rounding.
+      action.occurred_us += 5000;
+      action.reclamation.completed_us += 5000;
+      action.reclamation.duration_us += 5000;
+      for (const row of rows) if (row.occurrence > action.occurrence) row.occurred_us += 5000;
+      mutations.at(-1).witnessNs = String((100000 + action.reclamation.completed_us) * 1000);
+    },
+  });
+  assert.equal(report.complete, false);
+  assert.match(report.failure.detail, /body witness precedes/);
+  assert.equal(report.reclamation.performed, true);
+});
+
+test("raw rollup parsing rejects truncation, duplicates, overflow and header ambiguity", () => {
+  const valid =
+    "1000-2000 ---p 00000000 00:00 0 [rollup]\nRss: 5 kB\nAnonymous: 4 kB\nPrivate_Clean: 1 kB\nPrivate_Dirty: 3 kB\nSwap: 0 kB\nAnonHugePages: 0 kB\n";
+  assert.equal(parseReclamationRollup(Buffer.from(valid)).values.rss_kib, 5);
+  for (const text of [
+    valid.slice(0, -1),
+    valid + "Rss: 6 kB\n",
+    valid.replace("Rss: 5", "Rss: 18446744073709551616"),
+    valid.replace("1000-2000", "2000-1000"),
+    valid.replace("1000-2000", "1000-10000000000000000"),
+    valid.replace("Private_Dirty: 3 kB\n", ""),
+    valid.replace("Swap: 0 kB", "Swap: 0 MB"),
+    valid + Array.from({ length: 65 }, (_, i) => `Extra${i}: 0 kB\n`).join(""),
+  ])
+    assert.throws(() => parseReclamationRollup(Buffer.from(text)));
+  assert.throws(() => parseReclamationRollup(Buffer.alloc(16385)));
+});
+
+test.each([11, 12])(
+  "cleanup can reach ordinal thirteen after only %s witnessed body edits",
+  (witnessedEdits) => {
+    const { server, mutations } = reclamationStream();
+    const report = inspectRendererLifecycle(server, {
+      final: true,
+      withAllocator: true,
+      withPostApply: true,
+      reclamationArm: "trim",
+      mutations: mutations.slice(0, witnessedEdits),
+      restorationWitness: false,
+      requireCompletePostApply: false,
+    });
+    assert.equal(report.complete, false);
+    assert.equal(report.reclamation.targetValid, false);
+    assert.equal(report.reclamation.performed, true);
+    assert.equal(report.reclamation.actionReceipts.length, 1);
+  },
+);
+
+test("losing every bracket row leaves trim execution unknown", () => {
+  const report = inspectReclamationStream({
+    change(rows) {
+      for (let index = rows.length - 1; index >= 0; index--)
+        if (
+          rows[index].phase?.startsWith("reclamation_") ||
+          rows[index].allocator_phase === "reclamation_after"
+        )
+          rows.splice(index, 1);
+    },
+  });
+  assert.equal(report.complete, false);
+  assert.equal(report.reclamation.targetValid, false);
+  assert.equal(report.reclamation.performed, null);
+  assert.equal(report.reclamation.executionUnknown, true);
+  assert.equal(report.reclamation.actionReceipts.length, 0);
+});
+
+test("reclamation retains ordinary provenance rows above the lifecycle sink's line bound", () => {
+  const report = inspectReclamationStream({
+    change(rows) {
+      rows.splice(-1, 0, { ev: "observations", observations: "x".repeat(1100) });
+    },
+  });
+  assert.equal(report.failure, null);
+  assert.equal(report.reclamation.complete, true);
+});
+
+test("reclamation rejects renderer lifecycle records above their native line bound", () => {
+  const report = inspectReclamationStream({
+    change(rows) {
+      reclamationRow(rows, "reclamation_action_complete").extra = "x".repeat(1100);
+    },
+  });
+  assert.match(report.failure.detail, /trace line exceeded 1024 bytes/);
+  assert.equal(report.reclamation.performed, true);
+  assert.equal(report.reclamation.targetValid, false);
+});
+
+test("the lifecycle line bound measures native bytes after any captured log prefix", () => {
+  const { server, mutations } = reclamationStream();
+  const captured = server.provSince();
+  const wrapped = {
+    ...server,
+    provSince: () => ({
+      ...captured,
+      lines: captured.lines.map((line) => ({
+        ...line,
+        text: "external-log-prefix".repeat(60) + line.text,
+      })),
+    }),
+  };
+  const report = inspectRendererLifecycle(wrapped, {
+    final: true,
+    withAllocator: true,
+    withPostApply: true,
+    reclamationArm: "trim",
+    mutations,
+    restorationWitness: true,
+    requireCompletePostApply: true,
+  });
+  assert.equal(report.failure, null);
+  assert.equal(report.reclamation.complete, true);
 });

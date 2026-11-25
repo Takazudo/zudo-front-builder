@@ -246,7 +246,19 @@ export async function runBatch({ scenarios, deps }) {
     else if (!alive.alive) liveSkipped = "server-not-alive";
     else {
       const witness = rule.requireNativeUpdate ? bodyRevision : null;
-      if (page.settle && mark)
+      if (diagnostic?.beforeRestorationWitness && reason === "scenario-end") {
+        try {
+          await diagnostic.beforeRestorationWitness({
+            actions: restore.actions,
+            mismatches: restore.mismatches,
+            restoreNs,
+          });
+        } catch (error) {
+          liveSkipped = "restoration-observation-incomplete";
+          settle = { settled: false, observerError: String(error?.message ?? error) };
+        }
+      }
+      if (!liveSkipped && page.settle && mark)
         try {
           settle = await stage("restorative update", timeouts.restoreMs, restoreNs, (boundMs) =>
             page.settle({

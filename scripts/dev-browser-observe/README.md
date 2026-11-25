@@ -938,6 +938,68 @@ invalidates observation completeness. The independent supervisor bounds cleanup 
 synchronous GNU call stalls. All versions of renderer memory diagnostics are excluded from
 formal timing aggregation.
 
+## GNU allocator reclamation diagnostic
+
+Use `dev-browser-observe.renderer-memory.reclamation.v1` with the nondefault
+`renderer-memory-observe` Cargo feature, `ZFB_DEV_PROVENANCE_TRACE=1`, and explicit
+`rendererMemoryStudy.reclamationArm`. The `sham` arm requires
+`ZFB_DEV_RENDERER_MEMORY_ALLOCATOR=3` and the `trim` arm requires mode `4`.
+Use one exact qualified binary for both arms, with separately frozen profiles and labels.
+Modes `1` and `2` retain their observation protocols. Every diagnostic receipt remains
+excluded from formal timing aggregation.
+
+The native one-shot counts uniquely associated successful ordinary refresh/apply endpoints
+and acts at eligible endpoint thirteen, after the full delegated pipeline call returns.
+The slot is consumed before the rollup/action bracket proceeds and permanently disarmed after a relevant invalid
+association, progression, failed apply or unwinding. The ordinal carries no semantic
+restoration proof. The harness requires twelve ordinary in-place writes and the restoration
+write to match distinct native intake paths, ticks, applies, refreshes, snapshots and hosts.
+If an unintended endpoint occupies the slot, the evidence retains any performed action and
+marks restoration attribution invalid.
+
+The normal endpoint GNU reading supplies the pre-action accounting. The subsequent sequence
+is a native `/proc/self/smaps_rollup` read, action start, zero calls for sham or exactly one
+`malloc_trim(0)` for trim, action completion, a second rollup read and a separately identified
+`reclamation_after` GNU getter. Raw rollup bytes use fixed 128-byte hexadecimal chunks. Both
+reads must reach EOF within 16 KiB and eight read syscalls, with a valid header, at most
+64 unique fields, required counters and complete loss-free records. The parsed byte values
+are independently checked against the native summary. Each read, getter and action retains
+its own monotonic interval. Read buffers are allocated before the baseline. The bracket
+runs outside application, renderer and telemetry queue locks, and its completion must occur
+within two seconds of the pre-action getter's start. This elapsed acceptance check cannot
+interrupt a blocked native call or syscall. The independent supervisor owns the hard wall
+and RSS limits and the verified termination escalation.
+
+The controller restores the bytes, waits for the complete associated bracket, then performs
+its existing fresh-document original-body witness and six live checks. Other threads and
+natural browser activity may run during the bracket. Full maps/smaps captures remain before
+edits, after edit twelve, after restoration and live checks, and after the full sixty-second
+idle. These observations retain their own intervals and process identities.
+
+A complete seedless cold-lazy run ordinarily has 111 allocator checkpoint attempts, including
+91 unavailable locked phases and twenty GNU calls. The lifecycle count is 361 plus the number
+of 128-byte raw chunks for both rollup inputs. All observations share the 128 checkpoint and
+4096 lifecycle record limits. Native terminal watermarks and loss counters validate the exact
+count. Missing, malformed, foreign, unavailable or incomplete mandatory observations fail
+the run and preserve whether a trim call occurred or remains unknown after an unmatched start.
+A zero `malloc_trim` return is valid. It carries no byte count.
+
+The finite study freezes four fresh runs in order sham, trim, trim, sham, with zero retries.
+Each startup consumes a launch slot. The next run requires a valid predecessor and verified
+cleanup. The established 100-article twelve-edit schedule, one restoration, six live checks,
+full idle, 300-second supervisor ceiling, 240-second work budget, RSS ceiling, independent
+one-second safety samples and bounded mapping helpers apply. Freeze the sources, build and
+runtime provider, corpus, profiles, call schedule and analysis before the first launch.
+
+Report immediate signed Rss, Anonymous, Private_Clean, Private_Dirty and Swap changes and
+both paired sham comparisons, alongside GNU categories and later mapped residency. These
+process counters describe separate domains. A repeatable trim-only residency decrease
+supports reclaimability by the sampled operation. The readings cannot identify individual
+pages or allocation clients. Arena/free accounting can stay elevated while RSS falls.
+Used-category accounting describes allocation state, and trim's return value describes
+whether glibc released memory. End-idle GNU accounting remains unavailable. Four diagnostic
+runs provide no formal noise estimate or production trimming policy.
+
 ## Restoration and processes
 
 Exact source bytes are snapshotted before each scenario and restored after it

@@ -8,6 +8,7 @@ import {
   RENDERER_MEMORY_MAPPING_LIMITS,
   RENDERER_MEMORY_POST_APPLY_PROTOCOL,
   RENDERER_MEMORY_PROTOCOL,
+  RENDERER_MEMORY_RECLAMATION_PROTOCOL,
 } from "./renderer-memory-protocol.mjs";
 import { hrtimeNs, nsToMs } from "./util.mjs";
 
@@ -19,6 +20,7 @@ export function createRendererMemoryStudy({
   supervisorStartedMs,
   workDeadline,
   protocol = RENDERER_MEMORY_PROTOCOL,
+  reclamationArm = null,
   sample,
   inspect,
   captureMappings,
@@ -44,7 +46,10 @@ export function createRendererMemoryStudy({
   let peakSummedRssKiB = null;
   let samplingStopped = false;
   const withAllocator = rendererMemoryAllocatorProtocol(protocol);
-  const withPostApply = protocol === RENDERER_MEMORY_POST_APPLY_PROTOCOL;
+  const withReclamation = protocol === RENDERER_MEMORY_RECLAMATION_PROTOCOL;
+  const withPostApply = protocol === RENDERER_MEMORY_POST_APPLY_PROTOCOL || withReclamation;
+  let pendingRestoration = null;
+  let restorationWitness = false;
   const mutations = [];
   const mappingResults = [];
 
@@ -67,6 +72,7 @@ export function createRendererMemoryStudy({
   const checkTrace = (options) => {
     const mark = server.provMark?.();
     if (
+      !pendingRestoration &&
       !options.final &&
       !options.requireStart &&
       !options.requireAttributedPostApply &&
@@ -76,8 +82,22 @@ export function createRendererMemoryStudy({
       lastInspection.mutationCount === mutations.length
     )
       return lastInspection.report;
-    const report = inspect(server, { ...options, withAllocator, withPostApply, mutations });
-    if (!options.requireAttributedPostApply && !options.requireCompletePostApply)
+    const observedMutations = pendingRestoration
+      ? [...mutations, { ...pendingRestoration, witnessNs: String(clock()) }]
+      : mutations;
+    const report = inspect(server, {
+      ...options,
+      withAllocator,
+      withPostApply,
+      reclamationArm: withReclamation ? reclamationArm : null,
+      restorationWitness,
+      mutations: observedMutations,
+    });
+    if (
+      !pendingRestoration &&
+      !options.requireAttributedPostApply &&
+      !options.requireCompletePostApply
+    )
       lastInspection = { mark, mutationCount: mutations.length, report };
     if (report.failure) fail(report.failure);
     return report;
@@ -294,6 +314,60 @@ export function createRendererMemoryStudy({
           stageStart,
         );
     },
+    ...(withReclamation && {
+      async beforeRestorationWitness({ actions, mismatches, restoreNs }) {
+        const action = actions?.[0];
+        const edit = mutations.at(-1);
+        if (
+          mutations.length !== limits.edits ||
+          mismatches.length !== 0 ||
+          actions?.length !== 1 ||
+          action.method !== "in-place" ||
+          action.error ||
+          !edit.paths.some((path) => pathAliases(action.path).includes(path))
+        ) {
+          fail({ reason: "renderer-memory-reclamation-invalid-restoration-write" });
+          workSignal.throwIfAborted();
+        }
+        pendingRestoration = {
+          kind: "restoration",
+          paths: pathAliases(action.path),
+          t0Ns: String(restoreNs),
+        };
+        record({
+          type: "renderer-memory-reclamation-gate",
+          step: "start",
+          mutation: pendingRestoration,
+        });
+        try {
+          while (true) {
+            const report = checkTrace({ final: false });
+            workSignal.throwIfAborted();
+            const remaining = clamp("reclamation bracket", limits.timeouts.restoreMs, restoreNs);
+            if (report.reclamation?.bracketComplete && report.reclamation.associationValid) {
+              record({
+                type: "renderer-memory-reclamation-gate",
+                step: "complete",
+                reclamation: report.reclamation,
+                originalBodyWitnessPending: true,
+              });
+              return;
+            }
+            await sleep(Math.min(25, remaining), undefined, { signal: workSignal });
+          }
+        } catch (error) {
+          if (!workSignal.aborted)
+            fail({
+              reason: "renderer-memory-reclamation-incomplete",
+              error: String(error?.message ?? error),
+            });
+          throw error;
+        } finally {
+          pendingRestoration = null;
+          lastInspection = null;
+        }
+      },
+    }),
     ...(withPostApply && {
       requiresPostApply: true,
       beforeMutation: () => requireAttributed(),
@@ -312,6 +386,8 @@ export function createRendererMemoryStudy({
           fail({ reason: "renderer-memory-post-apply-invalid-restoration-write" });
           workSignal.throwIfAborted();
         }
+        restorationWitness = true;
+        lastInspection = null;
         await observeMutation(
           {
             kind: "restoration",
@@ -411,6 +487,7 @@ export function createRendererMemoryStudy({
       return {
         diagnostic: true,
         protocol,
+        ...(withReclamation && { reclamationArm }),
         scheduleComplete: completedSchedule,
         observationComplete:
           lifecycle?.complete === true &&
@@ -418,7 +495,8 @@ export function createRendererMemoryStudy({
           serverAbsent &&
           !evidenceFailure &&
           (!withAllocator || mappingsComplete) &&
-          (!withPostApply || lifecycle.postApply?.complete === true),
+          (!withPostApply || lifecycle.postApply?.complete === true) &&
+          (!withReclamation || lifecycle.reclamation?.complete === true),
         ...(withAllocator && {
           mappings: {
             complete: mappingsComplete,
