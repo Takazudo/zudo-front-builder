@@ -832,7 +832,7 @@ pub(crate) fn record_allocator(phase: AllocatorPhase, boundary_outcome: Option<B
     }) else {
         return;
     };
-    record_allocator_for(
+    let _ = record_allocator_for(
         &observation.buffer,
         observation.context,
         observation.allocator_context,
