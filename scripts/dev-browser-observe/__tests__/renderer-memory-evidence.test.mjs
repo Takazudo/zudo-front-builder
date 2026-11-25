@@ -357,13 +357,16 @@ test("rejects mismatched completion hosts and foreign refresh correlation", () =
     (row) => {
       if (row.allocator_phase === "entry") row.tick = 85;
     },
+    (row) => {
+      if (row.allocator_phase === "entry") row.snapshot_gen = 82;
+    },
   ]) {
     const report = inspectRendererLifecycle(allocatorStream({ corrupt: mutate }), {
       final: true,
       withAllocator: true,
     });
     assert.equal(report.complete, false);
-    assert.match(report.failure.detail, /matching start|foreign tick or host/);
+    assert.match(report.failure.detail, /matching start|foreign tick, host or snapshot/);
   }
 });
 
