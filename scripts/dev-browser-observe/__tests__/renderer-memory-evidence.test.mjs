@@ -1163,3 +1163,50 @@ test("losing every bracket row leaves trim execution unknown", () => {
   assert.equal(report.reclamation.executionUnknown, true);
   assert.equal(report.reclamation.actionReceipts.length, 0);
 });
+
+test("reclamation retains ordinary provenance rows above the lifecycle sink's line bound", () => {
+  const report = inspectReclamationStream({
+    change(rows) {
+      rows.splice(-1, 0, { ev: "observations", observations: "x".repeat(1100) });
+    },
+  });
+  assert.equal(report.failure, null);
+  assert.equal(report.reclamation.complete, true);
+});
+
+test("reclamation rejects renderer lifecycle records above their native line bound", () => {
+  const report = inspectReclamationStream({
+    change(rows) {
+      reclamationRow(rows, "reclamation_action_complete").extra = "x".repeat(1100);
+    },
+  });
+  assert.match(report.failure.detail, /trace line exceeded 1024 bytes/);
+  assert.equal(report.reclamation.performed, true);
+  assert.equal(report.reclamation.targetValid, false);
+});
+
+test("the lifecycle line bound measures native bytes after any captured log prefix", () => {
+  const { server, mutations } = reclamationStream();
+  const captured = server.provSince();
+  const wrapped = {
+    ...server,
+    provSince: () => ({
+      ...captured,
+      lines: captured.lines.map((line) => ({
+        ...line,
+        text: "external-log-prefix".repeat(60) + line.text,
+      })),
+    }),
+  };
+  const report = inspectRendererLifecycle(wrapped, {
+    final: true,
+    withAllocator: true,
+    withPostApply: true,
+    reclamationArm: "trim",
+    mutations,
+    restorationWitness: true,
+    requireCompletePostApply: true,
+  });
+  assert.equal(report.failure, null);
+  assert.equal(report.reclamation.complete, true);
+});
