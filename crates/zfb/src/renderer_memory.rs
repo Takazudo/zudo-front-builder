@@ -14,6 +14,8 @@ use serde_json::{json, Value};
 use zfb_build::provenance_trace::{self as prov, NonblockingTraceSink, TraceWrite};
 use zfb_render::HeapObservation;
 
+mod reclamation;
+
 const CAPACITY: usize = 128;
 const ATTEMPT_LIMIT: u64 = 4096;
 const ALLOCATOR_ENV_VAR: &str = "ZFB_DEV_RENDERER_MEMORY_ALLOCATOR";
@@ -58,6 +60,13 @@ pub(crate) enum Phase {
     AllocatorStart,
     AllocatorComplete,
     ApplyReturn,
+    ReclamationRollupStart,
+    ReclamationRollupComplete,
+    ReclamationRollupChunk,
+    ReclamationActionStart,
+    ReclamationActionComplete,
+    ReclamationComplete,
+    ReclamationDisarmed,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -71,6 +80,7 @@ pub(crate) enum AllocatorPhase {
     RetirementAfter,
     RefreshReturn,
     PostApplyReturn,
+    ReclamationAfter,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -191,6 +201,10 @@ struct Details {
     allocator_record: Option<AllocatorRecord>,
     #[serde(flatten)]
     apply: Option<ApplyRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reclamation: Option<reclamation::Record>,
+    #[serde(rename = "apply_id", skip_serializing_if = "is_zero")]
+    reclamation_apply_id: u64,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -216,10 +230,21 @@ struct Buffer {
     applies: AtomicU64,
     allocator_calls: AtomicU64,
     closed: AtomicBool,
+    output_failed: AtomicBool,
+    reclamation: Option<reclamation::Observation>,
 }
 
 impl Buffer {
+    #[cfg(test)]
     fn new(allocator_enabled: bool, post_apply_enabled: bool) -> Self {
+        Self::with_reclamation(allocator_enabled, post_apply_enabled, None)
+    }
+
+    fn with_reclamation(
+        allocator_enabled: bool,
+        post_apply_enabled: bool,
+        arm: Option<reclamation::Arm>,
+    ) -> Self {
         Self {
             queue: Mutex::new(VecDeque::with_capacity(CAPACITY)),
             attempted: AtomicU64::new(0),
@@ -232,6 +257,8 @@ impl Buffer {
             applies: AtomicU64::new(0),
             allocator_calls: AtomicU64::new(0),
             closed: AtomicBool::new(false),
+            output_failed: AtomicBool::new(false),
+            reclamation: arm.map(reclamation::Observation::new),
         }
     }
 
@@ -324,7 +351,10 @@ impl Drain {
             match self.pipe.try_emit("renderer_lifecycle", fields) {
                 TraceWrite::Written => self.emitted += 1,
                 TraceWrite::Retry => break,
-                TraceWrite::Dropped => self.output_dropped += 1,
+                TraceWrite::Dropped => {
+                    self.output_dropped += 1;
+                    buffer.output_failed.store(true, Relaxed);
+                }
             }
             self.pending.pop_front();
         }
@@ -343,11 +373,20 @@ impl Capture {
         }
         let pipe = NonblockingTraceSink::open().ok()?;
         let allocator_mode = std::env::var_os(ALLOCATOR_ENV_VAR);
-        let post_apply_enabled = allocator_mode.as_deref().is_some_and(|mode| mode == "2");
+        let arm = reclamation::Arm::from_mode(allocator_mode.as_deref());
+        let post_apply_enabled =
+            arm.is_some() || allocator_mode.as_deref().is_some_and(|mode| mode == "2");
         let allocator_enabled =
             post_apply_enabled || allocator_mode.as_deref().is_some_and(|mode| mode == "1");
-        let startup = clock_anchor(allocator_enabled, post_apply_enabled)?;
-        let buffer = Arc::new(Buffer::new(allocator_enabled, post_apply_enabled));
+        let mut startup = clock_anchor(allocator_enabled, post_apply_enabled)?;
+        if let Some(arm) = arm {
+            reclamation::add_startup(&mut startup, arm);
+        }
+        let buffer = Arc::new(Buffer::with_reclamation(
+            allocator_enabled,
+            post_apply_enabled,
+            arm,
+        ));
         let drain = Arc::new(Mutex::new(Drain {
             pipe,
             startup: Some(startup),
@@ -522,6 +561,7 @@ pub(crate) struct ApplyScope<'a> {
     id: u64,
     tick: Option<u64>,
     expected_refresh: bool,
+    returned: bool,
 }
 
 impl ApplyScope<'static> {
@@ -558,6 +598,7 @@ impl<'a> ApplyScope<'a> {
             id,
             tick,
             expected_refresh,
+            returned: false,
         }
     }
 
@@ -602,7 +643,7 @@ impl<'a> ApplyScope<'a> {
         APPLY.set(Some(state));
     }
 
-    pub(crate) fn returned(self, success: bool) {
+    pub(crate) fn returned(mut self, success: bool) {
         let refresh = match APPLY.take() {
             Some(state) if state.id == self.id && state.tick == self.tick => state.refresh,
             Some(_) => ApplyRefresh::Invalid(ApplyAssociation::Foreign),
@@ -612,6 +653,7 @@ impl<'a> ApplyScope<'a> {
         let id = self.id;
         let tick = self.tick;
         let expected_refresh = self.expected_refresh;
+        self.returned = true;
         drop(self);
         let (association, token) = match refresh {
             ApplyRefresh::Captured(token) => (ApplyAssociation::Associated, Some(token)),
@@ -644,7 +686,7 @@ impl<'a> ApplyScope<'a> {
                 ..Details::default()
             },
         );
-        if success && apply.refresh_outcome == Some(BoundaryOutcome::Refreshed) {
+        let completion = if success && apply.refresh_outcome == Some(BoundaryOutcome::Refreshed) {
             record_allocator_for(
                 buffer,
                 context,
@@ -655,7 +697,12 @@ impl<'a> ApplyScope<'a> {
                     apply_association: None,
                     ..apply
                 }),
-            );
+            )
+        } else {
+            None
+        };
+        if let Some(reclamation) = &buffer.reclamation {
+            reclamation.returned(buffer, context, apply, completion);
         }
     }
 }
@@ -663,6 +710,19 @@ impl<'a> ApplyScope<'a> {
 impl Drop for ApplyScope<'_> {
     fn drop(&mut self) {
         APPLY.set(self.previous.take());
+        if !self.returned {
+            if let Some(reclamation) = &self.buffer.reclamation {
+                reclamation.disarm(
+                    self.buffer,
+                    Context {
+                        tick: self.tick,
+                        ..Context::default()
+                    },
+                    self.id,
+                    "unwind",
+                );
+            }
+        }
     }
 }
 
@@ -789,9 +849,9 @@ fn record_allocator_for(
     phase: AllocatorPhase,
     boundary_outcome: Option<BoundaryOutcome>,
     apply: Option<ApplyRecord>,
-) {
+) -> Option<AllocatorCompletion> {
     if buffer.closed.load(Relaxed) {
-        return;
+        return None;
     }
     let limit_record = ALLOCATOR_CALL_LIMIT + 1;
     let Ok(previous) = buffer
@@ -800,7 +860,7 @@ fn record_allocator_for(
             (count < limit_record).then_some(count + 1)
         })
     else {
-        return;
+        return None;
     };
     let call = previous + 1;
     let mut record = AllocatorRecord {
@@ -863,6 +923,7 @@ fn record_allocator_for(
         record,
         completion.allocator_completed_us,
     );
+    Some(completion)
 }
 
 impl AllocatorCompletion {
