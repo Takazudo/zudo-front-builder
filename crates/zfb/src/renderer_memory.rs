@@ -16,6 +16,9 @@ use zfb_render::HeapObservation;
 
 const CAPACITY: usize = 128;
 const ATTEMPT_LIMIT: u64 = 4096;
+const ALLOCATOR_ENV_VAR: &str = "ZFB_DEV_RENDERER_MEMORY_ALLOCATOR";
+const ALLOCATOR_CALL_LIMIT: u64 = 128;
+const ALLOCATOR_METRIC_DOMAIN: &str = "gnu_mallinfo2.v1";
 const DRAIN_POLL: Duration = Duration::from_millis(25);
 const TERMINAL_BUDGET: Duration = Duration::from_millis(250);
 
@@ -51,6 +54,100 @@ pub(crate) enum Phase {
     JoinPanicked,
     JoinTimeout,
     JoinDisconnected,
+    #[cfg(target_env = "gnu")]
+    AllocatorStart,
+    AllocatorComplete,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AllocatorPhase {
+    Entry,
+    SnapshotBefore,
+    SnapshotAfter,
+    BundleBefore,
+    BundleAfter,
+    RetirementAfter,
+    RefreshReturn,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BoundaryOutcome {
+    Ok,
+    Rejected,
+    Failed,
+    Returned,
+    Refreshed,
+    Skipped,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AllocatorOutcome {
+    #[cfg(target_env = "gnu")]
+    Ok,
+    Unavailable,
+    Limit,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum UnavailableReason {
+    ApplicationWriteExclusion,
+    #[cfg(not(target_env = "gnu"))]
+    UnsupportedTarget,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AllocatorContext {
+    Unlocked,
+    PublicationLocked,
+}
+
+impl AllocatorContext {
+    fn unavailable(self) -> Option<UnavailableReason> {
+        match self {
+            Self::PublicationLocked => Some(UnavailableReason::ApplicationWriteExclusion),
+            #[cfg(target_env = "gnu")]
+            Self::Unlocked => None,
+            #[cfg(not(target_env = "gnu"))]
+            Self::Unlocked => Some(UnavailableReason::UnsupportedTarget),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct AllocatorCounters {
+    arena_bytes: usize,
+    uordblks_bytes: usize,
+    fordblks_bytes: usize,
+    hblkhd_bytes: usize,
+    hblks: usize,
+    fsmblks_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct AllocatorCompletion {
+    allocator_started_us: u64,
+    allocator_completed_us: u64,
+    allocator_duration_us: u64,
+    allocator_outcome: AllocatorOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allocator_unavailable_reason: Option<UnavailableReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allocator: Option<AllocatorCounters>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct AllocatorRecord {
+    metric_domain: &'static str,
+    allocator_phase: AllocatorPhase,
+    allocator_call: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allocator_boundary_outcome: Option<BoundaryOutcome>,
+    #[serde(flatten)]
+    completion: Option<AllocatorCompletion>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -88,6 +185,8 @@ struct Details {
     heap: Option<HeapObservation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure: Option<BootFailure>,
+    #[serde(flatten)]
+    allocator_record: Option<AllocatorRecord>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -108,11 +207,13 @@ struct Buffer {
     overflow: AtomicU64,
     refreshes: AtomicU64,
     hosts: AtomicU64,
+    allocator_enabled: bool,
+    allocator_calls: AtomicU64,
     closed: AtomicBool,
 }
 
 impl Buffer {
-    fn new() -> Self {
+    fn new(allocator_enabled: bool) -> Self {
         Self {
             queue: Mutex::new(VecDeque::with_capacity(CAPACITY)),
             attempted: AtomicU64::new(0),
@@ -120,15 +221,20 @@ impl Buffer {
             overflow: AtomicU64::new(0),
             refreshes: AtomicU64::new(0),
             hosts: AtomicU64::new(0),
+            allocator_enabled,
+            allocator_calls: AtomicU64::new(0),
             closed: AtomicBool::new(false),
         }
     }
 
     fn record(&self, context: Context, phase: Phase, details: Details) {
+        self.record_at(context, phase, details, prov::elapsed_us());
+    }
+
+    fn record_at(&self, context: Context, phase: Phase, details: Details, occurred_us: u64) {
         if self.closed.load(Relaxed) {
             return;
         }
-        let occurred_us = prov::elapsed_us();
         let occurrence = self.attempted.fetch_add(1, Relaxed) + 1;
         if occurrence > ATTEMPT_LIMIT {
             self.overflow.fetch_add(1, Relaxed);
@@ -228,8 +334,10 @@ impl Capture {
             return None;
         }
         let pipe = NonblockingTraceSink::open().ok()?;
-        let startup = clock_anchor()?;
-        let buffer = Arc::new(Buffer::new());
+        let allocator_enabled =
+            std::env::var_os(ALLOCATOR_ENV_VAR).is_some_and(|value| value == "1");
+        let startup = clock_anchor(allocator_enabled)?;
+        let buffer = Arc::new(Buffer::new(allocator_enabled));
         let drain = Arc::new(Mutex::new(Drain {
             pipe,
             startup: Some(startup),
@@ -289,7 +397,7 @@ impl Capture {
     }
 }
 
-fn clock_anchor() -> Option<Value> {
+fn clock_anchor(allocator_enabled: bool) -> Option<Value> {
     let anchor_before_us = prov::elapsed_us();
     let mut monotonic = libc::timespec {
         tv_sec: 0,
@@ -304,7 +412,7 @@ fn clock_anchor() -> Option<Value> {
         .ok()?
         .checked_mul(1_000_000)?
         .checked_add(u64::try_from(monotonic.tv_nsec).ok()? / 1000)?;
-    Some(json!({
+    let mut record = json!({
         "schema_version": 1,
         "buffer_capacity": CAPACITY,
         "drain_capacity": CAPACITY,
@@ -315,13 +423,19 @@ fn clock_anchor() -> Option<Value> {
         "clock_monotonic_us": clock_monotonic_us,
         "anchor_before_us": anchor_before_us,
         "anchor_after_us": anchor_after_us,
-    }))
+    });
+    if allocator_enabled {
+        record["allocator_metric_domain"] = json!(ALLOCATOR_METRIC_DOMAIN);
+        record["allocator_call_limit"] = json!(ALLOCATOR_CALL_LIMIT);
+    }
+    Some(record)
 }
 
 #[derive(Clone)]
 struct Observation {
     buffer: Arc<Buffer>,
     context: Context,
+    allocator_context: AllocatorContext,
 }
 
 impl Observation {
@@ -341,14 +455,19 @@ pub(crate) struct Refresh {
 }
 
 impl Refresh {
-    pub(crate) fn begin(boot: bool) -> Option<Self> {
-        Some(Self::with_buffer(TRACE.get()?.clone(), boot))
+    pub(crate) fn begin(boot: bool, allocator_context: AllocatorContext) -> Option<Self> {
+        Some(Self::with_buffer(
+            TRACE.get()?.clone(),
+            boot,
+            allocator_context,
+        ))
     }
 
-    fn with_buffer(buffer: Arc<Buffer>, boot: bool) -> Self {
+    fn with_buffer(buffer: Arc<Buffer>, boot: bool, allocator_context: AllocatorContext) -> Self {
         let refresh_id = buffer.refreshes.fetch_add(1, Relaxed) + 1;
         let observation = Observation {
             buffer,
+            allocator_context,
             context: Context {
                 refresh_id,
                 tick: prov::renderer_tick(),
@@ -369,9 +488,16 @@ impl Refresh {
         }
     }
 
-    pub(crate) fn finish(mut self, phase: Phase) {
+    pub(crate) fn finish(&mut self, phase: Phase) {
         record_refresh(phase);
         self.complete = true;
+    }
+
+    pub(crate) fn returned(&mut self, outcome: BoundaryOutcome) {
+        if !self.complete {
+            self.finish(Phase::RefreshFailed);
+        }
+        record_allocator(AllocatorPhase::RefreshReturn, Some(outcome));
     }
 }
 
@@ -390,6 +516,109 @@ pub(crate) fn record_refresh(phase: Phase) {
             observation.record(phase, Details::default());
         }
     });
+}
+
+pub(crate) fn allocator_can_run() -> bool {
+    REFRESH.with_borrow(|observation| {
+        observation.as_ref().is_some_and(|obs| {
+            obs.buffer.allocator_enabled && obs.allocator_context.unavailable().is_none()
+        })
+    })
+}
+
+/// Synchronous diagnostic call on the refresh thread, outside shared
+/// application locks and host shutdown. A start record is queued before
+/// entering the native call so a blocked getter leaves explicit evidence.
+pub(crate) fn record_allocator(phase: AllocatorPhase, boundary_outcome: Option<BoundaryOutcome>) {
+    let Some(observation) = REFRESH.with_borrow(|slot| {
+        slot.as_ref()
+            .filter(|obs| obs.buffer.allocator_enabled && !obs.buffer.closed.load(Relaxed))
+            .cloned()
+    }) else {
+        return;
+    };
+    let buffer = &observation.buffer;
+    let limit_record = ALLOCATOR_CALL_LIMIT + 1;
+    let Ok(previous) = buffer
+        .allocator_calls
+        .fetch_update(Relaxed, Relaxed, |count| {
+            (count < limit_record).then_some(count + 1)
+        })
+    else {
+        return;
+    };
+    let call = previous + 1;
+    let mut record = AllocatorRecord {
+        metric_domain: ALLOCATOR_METRIC_DOMAIN,
+        allocator_phase: phase,
+        allocator_call: call,
+        allocator_boundary_outcome: boundary_outcome,
+        completion: None,
+    };
+    let emit = |phase, allocator_record, occurred_us| {
+        buffer.record_at(
+            observation.context,
+            phase,
+            Details {
+                allocator_record: Some(allocator_record),
+                ..Details::default()
+            },
+            occurred_us,
+        );
+    };
+    let requested_us = prov::elapsed_us();
+    let completion = if call == limit_record {
+        AllocatorCompletion::skipped(requested_us, AllocatorOutcome::Limit, None)
+    } else if let Some(reason) = observation.allocator_context.unavailable() {
+        AllocatorCompletion::skipped(requested_us, AllocatorOutcome::Unavailable, Some(reason))
+    } else {
+        #[cfg(target_env = "gnu")]
+        {
+            emit(Phase::AllocatorStart, record, requested_us);
+            let started_us = prov::elapsed_us();
+            // SAFETY: the pinned libc binding uses the GNU ABI and takes no
+            // arguments. The refresh caller holds no shared application
+            // locks and is outside both owner destruction and bounded join.
+            let counters = unsafe { libc::mallinfo2() };
+            let completed_us = prov::elapsed_us();
+            AllocatorCompletion {
+                allocator_started_us: started_us,
+                allocator_completed_us: completed_us,
+                allocator_duration_us: completed_us - started_us,
+                allocator_outcome: AllocatorOutcome::Ok,
+                allocator_unavailable_reason: None,
+                allocator: Some(AllocatorCounters {
+                    arena_bytes: counters.arena,
+                    uordblks_bytes: counters.uordblks,
+                    fordblks_bytes: counters.fordblks,
+                    hblkhd_bytes: counters.hblkhd,
+                    hblks: counters.hblks,
+                    fsmblks_bytes: counters.fsmblks,
+                }),
+            }
+        }
+        #[cfg(not(target_env = "gnu"))]
+        unreachable!("unsupported targets were handled above")
+    };
+    record.completion = Some(completion);
+    emit(
+        Phase::AllocatorComplete,
+        record,
+        completion.allocator_completed_us,
+    );
+}
+
+impl AllocatorCompletion {
+    fn skipped(at_us: u64, outcome: AllocatorOutcome, reason: Option<UnavailableReason>) -> Self {
+        Self {
+            allocator_started_us: at_us,
+            allocator_completed_us: at_us,
+            allocator_duration_us: 0,
+            allocator_outcome: outcome,
+            allocator_unavailable_reason: reason,
+            allocator: None,
+        }
+    }
 }
 
 pub(crate) fn record_snapshot(snapshot_gen: u64, failed: bool) {
@@ -537,9 +766,10 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn capture_host_events(f: impl FnOnce()) -> Vec<HostEvent> {
-        let buffer = Arc::new(Buffer::new());
+        let buffer = Arc::new(Buffer::new(false));
         {
-            let refresh = Refresh::with_buffer(buffer.clone(), true);
+            let mut refresh =
+                Refresh::with_buffer(buffer.clone(), true, AllocatorContext::Unlocked);
             f();
             refresh.finish(Phase::RefreshComplete);
         }
@@ -557,8 +787,93 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn allocator_opt_out_preserves_old_record_shape() {
+        let buffer = Arc::new(Buffer::new(false));
+        let mut refresh = Refresh::with_buffer(buffer.clone(), false, AllocatorContext::Unlocked);
+        record_allocator(AllocatorPhase::Entry, None);
+        refresh.finish(Phase::RefreshComplete);
+        refresh.returned(BoundaryOutcome::Refreshed);
+        let queue = buffer.queue.lock().unwrap();
+        assert_eq!(queue.len(), 2);
+        assert_eq!(buffer.allocator_calls.load(Relaxed), 0);
+        assert!(json!(queue[0]).get("metric_domain").is_none());
+        assert!(clock_anchor(false)
+            .unwrap()
+            .get("allocator_call_limit")
+            .is_none());
+    }
+
+    #[cfg(target_env = "gnu")]
+    #[test]
+    fn allocator_pairs_safely_record_real_counter_outcome_and_cap() {
+        let buffer = Arc::new(Buffer::new(true));
+        let mut refresh = Refresh::with_buffer(buffer.clone(), false, AllocatorContext::Unlocked);
+        record_allocator(AllocatorPhase::Entry, None);
+        record_snapshot(9, false);
+        refresh.finish(Phase::RefreshComplete);
+        refresh.returned(BoundaryOutcome::Refreshed);
+        buffer.allocator_calls.store(ALLOCATOR_CALL_LIMIT, Relaxed);
+        record_allocator(AllocatorPhase::SnapshotBefore, None);
+        record_allocator(AllocatorPhase::SnapshotAfter, Some(BoundaryOutcome::Ok));
+
+        let queue = buffer.queue.lock().unwrap();
+        let events: Vec<_> = queue.iter().map(|record| json!(record)).collect();
+        assert_eq!(events.len(), 8);
+        assert_eq!(events[1]["phase"], "allocator_start");
+        assert_eq!(events[2]["phase"], "allocator_complete");
+        assert_eq!(events[2]["metric_domain"], ALLOCATOR_METRIC_DOMAIN);
+        assert_eq!(events[2]["allocator_call"], 1);
+        assert_eq!(events[2]["allocator_outcome"], "ok");
+        let counters = events[2]["allocator"].as_object().unwrap();
+        assert_eq!(counters.len(), 6);
+        assert!(counters.values().all(|field| field.as_u64().is_some()));
+        let requested = events[1]["occurred_us"].as_u64().unwrap();
+        let started = events[2]["allocator_started_us"].as_u64().unwrap();
+        let completed = events[2]["allocator_completed_us"].as_u64().unwrap();
+        assert!(requested <= started && started <= completed);
+        assert_eq!(events[2]["allocator_duration_us"], completed - started);
+        assert_eq!(events[2]["occurred_us"], completed);
+
+        assert_eq!(events[4]["phase"], "refresh_complete");
+        assert_eq!(events[5]["allocator_phase"], "refresh_return");
+        assert_eq!(events[5]["allocator_boundary_outcome"], "refreshed");
+        assert_eq!(events[6]["refresh_id"], events[0]["refresh_id"]);
+        assert_eq!(events[6]["snapshot_gen"], 9);
+
+        assert_eq!(events[7]["phase"], "allocator_complete");
+        assert_eq!(events[7]["allocator_outcome"], "limit");
+        assert_eq!(events[7]["allocator_call"], ALLOCATOR_CALL_LIMIT + 1);
+        assert_eq!(events[7]["allocator_duration_us"], 0);
+        assert!(events[7].get("allocator").is_none());
+        assert_eq!(
+            clock_anchor(true).unwrap()["allocator_call_limit"],
+            ALLOCATOR_CALL_LIMIT
+        );
+    }
+
+    #[test]
+    fn allocator_reports_publication_locked_checkpoint_without_start() {
+        let buffer = Arc::new(Buffer::new(true));
+        let _refresh =
+            Refresh::with_buffer(buffer.clone(), false, AllocatorContext::PublicationLocked);
+        assert!(!allocator_can_run());
+        record_allocator(AllocatorPhase::Entry, None);
+        let queue = buffer.queue.lock().unwrap();
+        assert_eq!(queue.len(), 2);
+        let event = json!(queue[1]);
+        assert_eq!(event["phase"], "allocator_complete");
+        assert_eq!(event["allocator_outcome"], "unavailable");
+        assert_eq!(
+            event["allocator_unavailable_reason"],
+            "application_write_exclusion"
+        );
+        assert_eq!(event["allocator_duration_us"], 0);
+        assert!(event.get("allocator").is_none());
+    }
+
+    #[test]
     fn producer_never_waits_for_contended_or_full_buffers() {
-        let buffer = Buffer::new();
+        let buffer = Buffer::new(false);
         let guard = buffer.queue.lock().unwrap();
         buffer.record(Context::default(), Phase::HostCreate, Details::default());
         assert_eq!(buffer.contention.load(Relaxed), 1);

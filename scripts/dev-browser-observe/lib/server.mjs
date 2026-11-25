@@ -1,3 +1,4 @@
+import { RENDERER_MEMORY_ALLOCATOR_ENV } from "./renderer-memory-protocol.mjs";
 import { createWriteStream } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { sample, sampleAsync } from "./mac-process-adapter.mjs";
@@ -118,6 +119,15 @@ export function serverEnv(baseEnv, overrides, diagnostic) {
         delete env[k];
       }
     }
+  }
+  // Unlike general tracing, allocator collection must be explicitly declared
+  // by this session. An inherited flag cannot upgrade the v1 contract.
+  if (
+    (!diagnostic || !Object.hasOwn(overrides ?? {}, RENDERER_MEMORY_ALLOCATOR_ENV)) &&
+    RENDERER_MEMORY_ALLOCATOR_ENV in env
+  ) {
+    removed.push(RENDERER_MEMORY_ALLOCATOR_ENV);
+    delete env[RENDERER_MEMORY_ALLOCATOR_ENV];
   }
   const zfbEnv = Object.fromEntries(Object.entries(env).filter(([k]) => k.startsWith("ZFB_")));
   return { env, removedDiagnosticEnv: removed, zfbEnv };

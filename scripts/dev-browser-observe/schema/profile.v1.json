@@ -39,7 +39,12 @@
       "required": ["protocol", "browserExecutable", "browserExecutableSha256"],
       "additionalProperties": false,
       "properties": {
-        "protocol": { "const": "dev-browser-observe.renderer-memory.v1" },
+        "protocol": {
+          "enum": [
+            "dev-browser-observe.renderer-memory.v1",
+            "dev-browser-observe.renderer-memory.v2"
+          ]
+        },
         "browserExecutable": { "type": "string", "pattern": "^/" },
         "browserExecutableSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }

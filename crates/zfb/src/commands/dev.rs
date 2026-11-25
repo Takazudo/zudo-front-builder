@@ -67,7 +67,10 @@
 #![cfg_attr(not(feature = "direct-v8"), allow(unused_imports, dead_code))]
 
 #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
-use crate::renderer_memory::{self as renderer_memory, Phase as MemoryPhase};
+use crate::renderer_memory::{
+    self as renderer_memory, AllocatorContext, AllocatorPhase, BoundaryOutcome,
+    Phase as MemoryPhase,
+};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -2859,7 +2862,12 @@ async fn run_dev(args: &DevArgs) -> Result<()> {
         let ssr_handle_for_reload = ssr_route_set.clone();
         Arc::new(move || {
             let (changed, vanished_rel) = match session
-                .refresh_bundle_and_routes()
+                .refresh_bundle_and_routes(
+                    // DevAssetPipeline::apply_tick holds its write
+                    // exclusion across this callback and the return.
+                    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                    AllocatorContext::PublicationLocked,
+                )
                 .context("edit-tick bundle refresh failed")?
             {
                 // Phase-B skip (issue #940): the live host, route tables,
@@ -3458,7 +3466,10 @@ async fn run_dev(args: &DevArgs) -> Result<()> {
                     }
                 }
                 if let Some(ref session) = dev_session_for_boot {
-                    match session.refresh_bundle_and_routes() {
+                    match session.refresh_bundle_and_routes(
+                        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                        AllocatorContext::Unlocked,
+                    ) {
                         Ok(_) => {
                             document_routes_usable = true;
                             // Publish the live SSR route handle now the route
@@ -8202,7 +8213,12 @@ impl DevRenderSession {
         if created.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
-        match self.refresh_bundle_and_routes()? {
+        match self.refresh_bundle_and_routes(
+            // Discovery runs synchronously before the orchestrator
+            // dispatches the plan to the asset pipeline.
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            AllocatorContext::Unlocked,
+        )? {
             BundleRefresh::Skipped => Ok((Vec::new(), Vec::new())),
             BundleRefresh::Refreshed { changed, vanished } => {
                 self.inner.note_discovery_document_boundary();
@@ -8262,8 +8278,28 @@ impl DevRenderSession {
     /// `direct-v8`-gated like `boot_dev_renderer` — the host start +
     /// `paths()` runtime eval need the embedded V8 host.
     #[cfg(feature = "direct-v8")]
-    fn refresh_bundle_and_routes(&self) -> Result<BundleRefresh> {
-        let result = match self.refresh_bundle_and_routes_unlatched() {
+    fn refresh_bundle_and_routes(
+        &self,
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        allocator_context: AllocatorContext,
+    ) -> Result<BundleRefresh> {
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        let mut memory_refresh = renderer_memory::Refresh::begin(false, allocator_context);
+        let unlatched = self.refresh_bundle_and_routes_unlatched(
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            memory_refresh.as_mut(),
+        );
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        if let Some(mut refresh) = memory_refresh {
+            // The inner refresh's local data and guards have been dropped.
+            // This is before the wrapper's own recovery/publication work.
+            refresh.returned(match &unlatched {
+                Ok(BundleRefresh::Refreshed { .. }) => BoundaryOutcome::Refreshed,
+                Ok(BundleRefresh::Skipped) => BoundaryOutcome::Skipped,
+                Err(_) => BoundaryOutcome::Failed,
+            });
+        }
+        let result = match unlatched {
             Err(error) => {
                 self.inner.arm_generation_rejected();
                 Err(error)
@@ -8315,9 +8351,13 @@ impl DevRenderSession {
     }
 
     #[cfg(feature = "direct-v8")]
-    fn refresh_bundle_and_routes_unlatched(&self) -> Result<BundleRefresh> {
+    fn refresh_bundle_and_routes_unlatched(
+        &self,
         #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
-        let memory_refresh = renderer_memory::Refresh::begin(false);
+        memory_refresh: Option<&mut renderer_memory::Refresh>,
+    ) -> Result<BundleRefresh> {
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        renderer_memory::record_allocator(AllocatorPhase::Entry, None);
         let _in_flight = RouteRefreshInFlight::enter(&self.inner.route_refreshes_in_flight);
         let project_root = &self.inner.project_root;
         let inputs = &self.inner.rebuild_inputs;
@@ -8366,13 +8406,23 @@ impl DevRenderSession {
             // previous renderer keeps serving and the session's dirty
             // flag (set inside bundle_with_session) forces a from-scratch
             // materialise next tick.
-            let mut session_guard = self.inner.shadow_session.lock().unwrap_or_else(|p| {
-                tracing::warn!(
-                    site = "refresh_bundle_and_routes",
-                    "shadow session mutex poisoned, recovered"
-                );
-                p.into_inner()
-            });
+            let lock_shadow_session = || {
+                self.inner.shadow_session.lock().unwrap_or_else(|p| {
+                    tracing::warn!(
+                        site = "refresh_bundle_and_routes",
+                        "shadow session mutex poisoned, recovered"
+                    );
+                    p.into_inner()
+                })
+            };
+            // Preserve the ordinary lock scope. With allocator observations
+            // enabled, acquire it only where the shadow is actually accessed
+            // so neither snapshot nor bundle checkpoints hold a shared lock.
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            let unlock_for_observations = renderer_memory::allocator_can_run();
+            #[cfg(not(all(feature = "renderer-memory-observe", target_os = "linux")))]
+            let unlock_for_observations = false;
+            let mut session_guard = (!unlock_for_observations).then(lock_shadow_session);
             let result = assemble_and_bundle_dev(
                 project_root,
                 &inputs.bundle_outdir,
@@ -8380,7 +8430,14 @@ impl DevRenderSession {
                 inputs.plugin_alias_entries.clone(),
                 inputs.plugin_virtual_modules(),
                 timing_enabled,
-                session_guard.as_mut(),
+                |input| {
+                    if let Some(guard) = &mut session_guard {
+                        bundle_with_session(input, guard.as_mut())
+                    } else {
+                        let mut guard = lock_shadow_session();
+                        bundle_with_session(input, guard.as_mut())
+                    }
+                },
                 inputs.empty_user_pages_root(),
                 // S2 (#1230) — re-include the injected modules on every tick
                 // from the SAME session-lifetime staging dir (not
@@ -8607,9 +8664,21 @@ impl DevRenderSession {
 
         let p2_shutdown_start = tick_start.map(|_| std::time::Instant::now());
         if let Some(prev) = previous {
+            let shutdown_result = {
+                #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+                let _retirement = renderer_memory::Replacing::current_refresh();
+                shutdown(prev)
+            };
             #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
-            let _retirement = renderer_memory::Replacing::current_refresh();
-            if let Err(err) = shutdown(prev) {
+            renderer_memory::record_allocator(
+                AllocatorPhase::RetirementAfter,
+                Some(if shutdown_result.is_ok() {
+                    BoundaryOutcome::Returned
+                } else {
+                    BoundaryOutcome::Failed
+                }),
+            );
+            if let Err(err) = shutdown_result {
                 tracing::warn!(
                     site = "refresh_bundle_and_routes",
                     error = %err,
@@ -9867,7 +9936,7 @@ fn assemble_and_bundle_dev(
     // bundle and every refresh pass the SAME session through this seam,
     // so boot and refresh share one assembly path AND one shadow tree —
     // #659 configuration parity by construction.
-    shadow_session: Option<&mut ShadowSession>,
+    bundle: impl FnOnce(zfb_build::bundler::BundlerInput) -> Result<BundlerOutput>,
     // #1518 — a true zero-pages consumer has no real project-root `pages/`
     // directory. When surviving injected routes make it runnable, boot creates
     // a session-lifetime EMPTY internal root and passes it through this
@@ -9915,17 +9984,27 @@ fn assemble_and_bundle_dev(
     // tables, outputs and provenance stay published.
     #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
     renderer_memory::record_refresh(MemoryPhase::SnapshotStart);
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    renderer_memory::record_allocator(AllocatorPhase::SnapshotBefore, None);
     let snapshot = crate::commands::build::dev_content_snapshot_json(project_root, cfg);
     let snapshot_gen = zfb_build::provenance_trace::next_snapshot_gen();
     if let Some(snapshot_gen) = snapshot_gen {
         #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
-        renderer_memory::record_snapshot(
-            snapshot_gen,
-            matches!(
+        {
+            let rejected = matches!(
                 &snapshot,
                 crate::commands::build::DevContentSnapshot::Failed(_)
-            ),
-        );
+            );
+            renderer_memory::record_snapshot(snapshot_gen, rejected);
+            renderer_memory::record_allocator(
+                AllocatorPhase::SnapshotAfter,
+                Some(if rejected {
+                    BoundaryOutcome::Rejected
+                } else {
+                    BoundaryOutcome::Ok
+                }),
+            );
+        }
         emit_snapshot_event(snapshot_gen, &snapshot);
     }
     let (content_snapshot_json, content_files) = match snapshot {
@@ -9995,8 +10074,19 @@ fn assemble_and_bundle_dev(
     let browser_build_token = bundler_input.zudo_react_build.clone();
     #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
     renderer_memory::record_refresh(MemoryPhase::BundleStart);
-    let bundler_out: BundlerOutput =
-        bundle_with_session(bundler_input, shadow_session).context("bundler step failed")?;
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    renderer_memory::record_allocator(AllocatorPhase::BundleBefore, None);
+    let bundle_result = bundle(bundler_input);
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    renderer_memory::record_allocator(
+        AllocatorPhase::BundleAfter,
+        Some(if bundle_result.is_ok() {
+            BoundaryOutcome::Ok
+        } else {
+            BoundaryOutcome::Failed
+        }),
+    );
+    let bundler_out = bundle_result.context("bundler step failed")?;
     #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
     renderer_memory::record_refresh(MemoryPhase::BundleReady);
     let bundle_ms = bnd_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
@@ -11008,7 +11098,9 @@ fn boot_dev_renderer(
         }
 
         #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
-        let memory_refresh = renderer_memory::Refresh::begin(true);
+        let mut memory_refresh = renderer_memory::Refresh::begin(true, AllocatorContext::Unlocked);
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        renderer_memory::record_allocator(AllocatorPhase::Entry, None);
 
         // Boot path — timing not collected here (one-shot at startup, not a
         // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
@@ -11020,7 +11112,7 @@ fn boot_dev_renderer(
             plugin_alias_entries,
             plugin_virtual_modules,
             false,
-            Some(&mut shadow_session),
+            |input| bundle_with_session(input, Some(&mut shadow_session)),
             rebuild_inputs.empty_user_pages_root(),
             // S2 (#1230) — include the injected modules in the BOOT bundle from
             // the staging dir materialised above. `None` on the parity path.
@@ -11115,7 +11207,7 @@ fn boot_dev_renderer(
         }
 
         #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
-        if let Some(refresh) = memory_refresh {
+        if let Some(refresh) = &mut memory_refresh {
             // The eager startup's route state is now accepted for serving.
             // The legacy worker provenance event above retains its timing.
             renderer_memory::adopted(boot_worker_gen);
@@ -16310,7 +16402,10 @@ mod tests {
 
         // The source is syntactically valid for scanner preflight, then fails
         // in the bundler because the stub project has no dependency to resolve.
-        let Err(err) = session.refresh_bundle_and_routes() else {
+        let Err(err) = session.refresh_bundle_and_routes(
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            AllocatorContext::Unlocked,
+        ) else {
             panic!("the broken page must fail the refresh");
         };
         let err = format!("{err:#}");

@@ -1,8 +1,11 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { interruptible } from "./session-deadline.mjs";
 import {
+  RENDERER_MEMORY_ALLOCATOR_PROTOCOL,
   RENDERER_MEMORY_LIMITS as limits,
-  RENDERER_MEMORY_PROTOCOL as protocol,
+  RENDERER_MEMORY_MAPPING_BOUNDARIES,
+  RENDERER_MEMORY_MAPPING_LIMITS,
+  RENDERER_MEMORY_PROTOCOL,
 } from "./renderer-memory-protocol.mjs";
 import { hrtimeNs, nsToMs } from "./util.mjs";
 
@@ -13,8 +16,10 @@ export function createRendererMemoryStudy({
   signal,
   supervisorStartedMs,
   workDeadline,
+  protocol = RENDERER_MEMORY_PROTOCOL,
   sample,
   inspect,
+  captureMappings,
   clock = hrtimeNs,
   sleep = delay,
 }) {
@@ -36,6 +41,8 @@ export function createRendererMemoryStudy({
   let samples = 0;
   let peakSummedRssKiB = null;
   let samplingStopped = false;
+  const withAllocator = protocol === RENDERER_MEMORY_ALLOCATOR_PROTOCOL;
+  const mappingResults = [];
 
   const record = (entry) =>
     append({
@@ -57,7 +64,7 @@ export function createRendererMemoryStudy({
     const mark = server.provMark?.();
     if (!options.final && !options.requireStart && mark != null && lastInspection?.mark === mark)
       return lastInspection.report;
-    const report = inspect(server, options);
+    const report = inspect(server, { ...options, withAllocator });
     lastInspection = { mark, report };
     if (report.failure) fail(report.failure);
     return report;
@@ -142,6 +149,30 @@ export function createRendererMemoryStudy({
       throw new Error(`${stage}: no time remains within the stage and session work budgets`);
     return remaining;
   };
+  const capture = async (boundary) => {
+    if (!withAllocator) return;
+    const startedHrtimeNs = String(clock());
+    try {
+      checkTrace({ final: false });
+      const timeoutMs = clamp(`mappings: ${boundary}`, RENDERER_MEMORY_MAPPING_LIMITS.timeMs);
+      const result = await captureMappings(server, boundary, { timeoutMs, signal: workSignal });
+      workSignal.throwIfAborted();
+      if (workRemainingMs() <= 0) throw new Error("mapping observation exceeded the work budget");
+      mappingResults.push({ boundary, ok: true });
+      record({ type: "renderer-memory-mapping", boundary, startedHrtimeNs, ok: true, result });
+    } catch (error) {
+      const details = {
+        boundary,
+        ok: false,
+        error: String(error?.message ?? error),
+        partial: error.mappingEvidence ?? null,
+      };
+      mappingResults.push(details);
+      record({ type: "renderer-memory-mapping", startedHrtimeNs, ...details });
+      fail({ reason: "renderer-memory-mapping-invalid", ...details });
+      throw error;
+    }
+  };
   const runStage = async (stage, maximum, stageStart, operation) => {
     const timeoutMs = clamp(stage, maximum, stageStart);
     let timer;
@@ -185,6 +216,7 @@ export function createRendererMemoryStudy({
       }
       checkTrace({ final: false, requireStart: true });
       workSignal.throwIfAborted();
+      await capture("before-edits");
       enter("edits");
     },
     async afterAttempt(record) {
@@ -200,6 +232,7 @@ export function createRendererMemoryStudy({
       });
       await interruptible(work, workSignal);
     },
+    afterEdits: withAllocator ? () => capture("after-edits") : undefined,
     async finalIdle({ stopped, stopReason, cleanup }) {
       if (
         stopped ||
@@ -216,6 +249,7 @@ export function createRendererMemoryStudy({
       }
       workSignal.throwIfAborted();
       await interruptible(take("before-idle"), workSignal);
+      await capture("after-route-verification");
       if (workRemainingMs() < limits.idleMs) {
         fail({ reason: "insufficient-final-idle-budget", workRemainingMs: workRemainingMs() });
         record({ type: "renderer-memory-idle", step: "skipped", plannedMs: limits.idleMs });
@@ -249,6 +283,7 @@ export function createRendererMemoryStudy({
         });
         throw error;
       }
+      await capture("after-idle");
     },
     beginShutdown() {
       // No process scans during expected server exit. Keep the in-flight
@@ -270,12 +305,27 @@ export function createRendererMemoryStudy({
         : null;
       const logComplete =
         logClose?.pipes === "closed" && !logClose.droppedAfterEnd && !logClose.errors?.length;
+      const mappingsComplete = RENDERER_MEMORY_MAPPING_BOUNDARIES.every(
+        (boundary, index) =>
+          mappingResults[index]?.boundary === boundary && mappingResults[index].ok,
+      );
       return {
         diagnostic: true,
         protocol,
         scheduleComplete: completedSchedule,
         observationComplete:
-          lifecycle?.complete === true && logComplete && serverAbsent && !evidenceFailure,
+          lifecycle?.complete === true &&
+          logComplete &&
+          serverAbsent &&
+          !evidenceFailure &&
+          (!withAllocator || mappingsComplete),
+        ...(withAllocator && {
+          mappings: {
+            complete: mappingsComplete,
+            planned: RENDERER_MEMORY_MAPPING_BOUNDARIES,
+            results: mappingResults,
+          },
+        }),
         lifecycle,
         logComplete,
         failure,

@@ -856,6 +856,56 @@ established for this diagnostic. The statistics and Linux sampling can perturb t
 Interpret changes in the measured domains and retain uncertainty about unmeasured allocation
 and larger workloads.
 
+## Renderer memory v2 allocator and mapping observations
+
+The separate `dev-browser-observe.renderer-memory.v2` protocol retains the v1 workload and adds
+GNU allocator and Linux process-mapping observations. Use a newly identified diagnostic build,
+profile, and run label. Set the profile's `server.env.ZFB_DEV_RENDERER_MEMORY_ALLOCATOR` to
+`"1"` alongside `ZFB_DEV_PROVENANCE_TRACE="1"`. The allocator flag is stripped when inherited
+without an explicit profile declaration. Specify `repeat: {"warmups": 0, "measured": 12}`.
+Both v1 and v2 profiles and diagnostic build receipts are excluded from timing aggregation.
+
+On GNU Linux, `gnu_mallinfo2.v1` collects glibc counters for the admitted allocation providers.
+Before using the data, verify the loaded libc, symbol bindings and allocator interposition for
+the actual binary and environment. An unavailable getter invalidates a v2 observation. In-place refreshes can run while the
+application holds its write exclusion guard. These checkpoints report
+`application_write_exclusion` without entering glibc. This path requires a different
+qualification before the 100-article in-place cohort can run.
+`arena_bytes`, `uordblks_bytes`, `fordblks_bytes`, `hblkhd_bytes`, and `fsmblks_bytes` are
+bytes. `hblks` counts allocator-tracked mappings. glibc 2.39 visits the arenas one at a time.
+The result is an aggregate of sequential reads. Thread-cache contents are outside the free-bin
+traversal, and allocator-tracked direct mappings cover only part of the process mapping space.
+`uordblks_bytes` reflects allocator accounting, which includes uses other than reachable live
+objects. Compare these domains to residency on the recorded timeline and avoid subtraction
+against RSS.
+
+A normal boot samples entry and both sides of snapshot construction and native bundling. A
+replacement refresh samples these boundaries, the return from previous-host shutdown, and the
+return from the inner refresh function. Failed or skipped paths retain the reached boundaries
+and the outcome of any return observation. The boot path has neither retirement nor an inner
+refresh-wrapper return. `refresh_complete` still occurs inside the function. The separate
+post-return checkpoint observes after its locals have been dropped and before wrapper publication
+work continues. Other activity can continue during this observation. The GNU getter can wait on allocator
+locks. Its start and completion share the lifecycle watermark and carry a refresh identity,
+invocation number, and monotonic times. An unfinished getter is an observation failure, and
+the independent supervisor still enforces wall limits. There are at most 128 invocations and
+4,096 total native lifecycle record attempts per session. End-idle GNU accounting is unavailable.
+
+Each v2 run captures a pair of `/proc/PID/maps` and `/proc/PID/smaps` files before edits, after
+the last edit and its checks, after restoration and route verification, and after the full idle
+before shutdown. Each pair has a combined 16 MiB input cap enforced during reads and a 2,000 ms
+deadline, including the independently killable helper and artifact processing. There is one
+attempt per required capture. A failure cancels later captures and takes the workload's existing
+restoration and shutdown path. The status/rollup safety sampler continues once per second. The collector also exits when the
+controller IPC closes or its own deadline expires. The admission hold retains the most recent
+collector PID and the path to its Linux birth receipt if a kernel stall prevents confirming its exit.
+The records link the raw files by path and digest and retain Linux boot/PID birth, executable
+and group identity observations around both read intervals. The two files can reflect different
+instants. The summaries classify `[heap]` as the main heap and other kernel bracket tags as named regions
+even when a tag carries an inode. Other mappings with an inode are file-backed. Unnamed mappings
+without an inode are unclassified anonymous regions.
+An anonymous region alone carries no allocator, V8 or thread-stack ownership information.
+
 ## Restoration and processes
 
 Exact source bytes are snapshotted before each scenario and restored after it
