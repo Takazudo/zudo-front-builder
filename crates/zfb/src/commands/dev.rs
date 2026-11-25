@@ -2405,6 +2405,8 @@ async fn run_dev(args: &DevArgs) -> Result<()> {
                 }) as zfb_build::PreTickRefreshFuture
             })
         });
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    let pipeline = DevPipeline(pipeline);
     let orchestrator = BuildOrchestrator::new(orch_config, graph, pipeline);
 
     let render_pages: PageRenderer = match dev_session.as_ref() {
@@ -3323,7 +3325,7 @@ async fn run_dev(args: &DevArgs) -> Result<()> {
         //     watcher tick uses — a browser that got the dev 404 page (with
         //     its live-reload script) during the pre-render window
         //     auto-refreshes the instant the eager render lands.
-        let boot = move |orchestrator: &BuildOrchestrator<DevAssetPipeline>,
+        let boot = move |orchestrator: &BuildOrchestrator<DevPipeline>,
                          ctx: &BuildContext|
               -> Option<BuildOutcome> {
             // Test-only window injection (issue #1166 Finding 2 regression
@@ -4534,9 +4536,52 @@ struct BootRenderResult {
     boundary: BootDocumentBoundary,
 }
 
+#[cfg(not(all(feature = "renderer-memory-observe", target_os = "linux")))]
+type DevPipeline = DevAssetPipeline;
+
+#[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+struct DevPipeline(DevAssetPipeline);
+
+#[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+impl DevPipeline {
+    fn apply_then(
+        &self,
+        plan: &zfb_build::RebuildPlan,
+        ctx: &BuildContext,
+        after_return: impl FnOnce(&Result<BuildOutcome>),
+    ) -> Result<BuildOutcome> {
+        let result = zfb_build::AssetPipeline::apply(&self.0, plan, ctx);
+        after_return(&result);
+        result
+    }
+}
+
+#[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+impl zfb_build::AssetPipeline for DevPipeline {
+    fn apply(&self, plan: &zfb_build::RebuildPlan, ctx: &BuildContext) -> Result<BuildOutcome> {
+        let scope = renderer_memory::ApplyScope::begin(|| {
+            let has_pages = match &plan.pages {
+                zfb_build::PageSelection::All => true,
+                zfb_build::PageSelection::Specific(pages) => !pages.is_empty(),
+            };
+            ctx.reload_renderer.is_some()
+                && !plan.renderer_fresh
+                && (plan.ssr_reload_needed || has_pages)
+        });
+        match scope {
+            Some(scope) => self.apply_then(plan, ctx, |result| scope.returned(result.is_ok())),
+            None => zfb_build::AssetPipeline::apply(&self.0, plan, ctx),
+        }
+    }
+
+    fn defer_css(&self, rerun_css: bool, changes: zfb_build::CssChangeSet) {
+        zfb_build::AssetPipeline::defer_css(&self.0, rerun_css, changes);
+    }
+}
+
 #[cfg(feature = "direct-v8")]
 fn run_boot_render(
-    orchestrator: &BuildOrchestrator<DevAssetPipeline>,
+    orchestrator: &BuildOrchestrator<DevPipeline>,
     ctx: &BuildContext,
     dev_session: Option<&DevRenderSession>,
     dist_seed: Option<&Path>,
@@ -15987,6 +16032,82 @@ mod tests {
             run_client_scripts: None,
             reload_renderer: None,
         }
+    }
+
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    #[test]
+    fn post_apply_follows_publication_and_css_error_and_releases_request_writer() {
+        use std::sync::mpsc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let pipeline = DevPipeline(DevAssetPipeline::new());
+        let writer = pipeline.0.request_writer();
+        let document = dir.path().join("index.html");
+        let mut ctx = noop_build_ctx(dir.path());
+        ctx.render_pages = Arc::new(|pages, _| {
+            Ok(vec![RenderedPage {
+                page: pages[0].clone(),
+                output_path: RelDistPath::new("index.html").unwrap(),
+                html: "published in apply".into(),
+                content_type: None,
+            }])
+        });
+        let content_visible_during_css = document.clone();
+        ctx.run_css = Some(Arc::new(move |request| {
+            assert!(request.rerun_requested);
+            assert!(request
+                .changes
+                .upserted
+                .contains(Path::new("styles/deferred.css")));
+            assert_eq!(
+                std::fs::read_to_string(&content_visible_during_css).unwrap(),
+                "published in apply"
+            );
+            anyhow::bail!("intentional late CSS failure")
+        }));
+        let mut changes = zfb_build::CssChangeSet::default();
+        changes.record_upsert(PathBuf::from("styles/deferred.css"));
+        pipeline.defer_css(true, changes);
+        let mut plan = zfb_build::RebuildPlan::empty();
+        plan.pages = zfb_build::PageSelection::Specific(BTreeSet::from([PageId::new(
+            PathBuf::from("pages/index.tsx"),
+        )]));
+        let result = pipeline.apply_then(&plan, &ctx, |result| {
+            assert_eq!(
+                result.as_ref().unwrap_err().to_string(),
+                "intentional late CSS failure"
+            );
+            // The request writer uses the same real exclusion lock as apply.
+            // Waiting on this write from inside the callback would time out
+            // if the callback still ran under apply's lock.
+            let (sent, received) = mpsc::channel();
+            let dest = dir.path().to_path_buf();
+            let write = std::thread::spawn(move || {
+                let result = writer.request_write(
+                    &dest,
+                    Path::new("request.html"),
+                    b"request after apply".to_vec(),
+                );
+                let _ = sent.send(result);
+            });
+            received
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("apply still holds the request-writer exclusion")
+                .unwrap();
+            write.join().unwrap();
+        });
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "intentional late CSS failure"
+        );
+        assert_eq!(
+            std::fs::read_to_string(document).unwrap(),
+            "published in apply"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("request.html")).unwrap(),
+            "request after apply"
+        );
     }
 
     /// Injection-level proof: feed the probe's own marker + lock-file
