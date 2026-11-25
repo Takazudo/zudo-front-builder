@@ -906,6 +906,38 @@ even when a tag carries an inode. Other mappings with an inode are file-backed. 
 without an inode are unclassified anonymous regions.
 An anonymous region alone carries no allocator, V8 or thread-stack ownership information.
 
+## Renderer memory post-apply observations
+
+Use `dev-browser-observe.renderer-memory.post-apply.v1` with
+`ZFB_DEV_PROVENANCE_TRACE=1` and `ZFB_DEV_RENDERER_MEMORY_ALLOCATOR=2` for the same
+bounded 12-edit and restoration schedule and four mapping captures. Pin a fresh diagnostic
+build, harness, profile, and run label. This mode retains the inner refresh rows. An
+`application_write_exclusion` row identifies a phase at which the getter did not run.
+The earlier v2 protocol still requires its own available phase observations.
+
+The post-apply getter runs after the full delegated dev pipeline apply returns. The
+current call has released its publication exclusion. Request-time writes and other threads
+may still run, and the result covers allocator accounting across the process. The
+`apply_return` record identifies the actual native tick and apply invocation and carries
+the refresh, snapshot, and host identity when a refresh was associated. The refresh and apply
+outcomes are separate because a later apply error can follow renderer adoption or document
+publication. A no-refresh, skipped, rejected, failed, or ambiguous association cannot
+supply a required successful endpoint. The getter's start and completion follow the apply
+return record and share its identity.
+
+A complete run requires a distinct matched endpoint for each of the twelve in-place body
+edits and one for the final in-place restoration. The first body endpoint is the first GNU
+reference for eleven successive body transitions. Report restoration separately. The
+pre-edit mapping pair describes residency and there is no measured pre-edit or end-idle
+GNU endpoint. A post-apply endpoint cannot attribute changes to the inner snapshot or bundle
+phases of a single refresh.
+
+Both the inner phases and the post-apply getter share the 128-checkpoint-attempt cap,
+including unavailable rows. Loss, an unfinished getter, or a missing required endpoint
+invalidates observation completeness. The independent supervisor bounds cleanup if a
+synchronous GNU call stalls. All versions of renderer memory diagnostics are excluded from
+formal timing aggregation.
+
 ## Restoration and processes
 
 Exact source bytes are snapshotted before each scenario and restored after it
