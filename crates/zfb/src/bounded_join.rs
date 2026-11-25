@@ -2,7 +2,7 @@
 //!
 //! [`join_with_deadline`] wraps an arbitrary [`std::thread::JoinHandle`] and
 //! returns either the thread's return value (on a clean join within the
-//! deadline) or `None` (on timeout or panic), **without blocking the caller
+//! deadline) or `None` (on timeout, panic or channel failure), **without blocking the caller
 //! indefinitely**.  On timeout the watcher thread and the original handle are
 //! both detached; the OS reaps them on process exit.
 //!
@@ -21,20 +21,43 @@ use std::time::Duration;
 /// Returns:
 /// - `Some(value)` — the thread finished and returned `value` within the
 ///   deadline.
-/// - `None` — timeout elapsed (or the thread panicked).  The watcher thread
+/// - `None` — timeout, thread panic or watcher-channel failure. The watcher thread
 ///   and the original handle are detached; the OS cleans them up on exit.
 pub fn join_with_deadline<T: Send + 'static>(
     handle: thread::JoinHandle<T>,
     timeout: Duration,
 ) -> Option<T> {
+    match observe_join(handle, timeout) {
+        JoinOutcome::Completed(value) => Some(value),
+        _ => None,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum JoinOutcome<T> {
+    Completed(T),
+    Panicked,
+    TimedOut,
+    Disconnected,
+}
+
+pub(crate) fn observe_join<T: Send + 'static>(
+    handle: thread::JoinHandle<T>,
+    timeout: Duration,
+) -> JoinOutcome<T> {
     let (tx, rx) = mpsc::channel::<thread::Result<T>>();
     thread::spawn(move || {
         let _ = tx.send(handle.join());
     });
+    receive_join(&rx, timeout)
+}
+
+fn receive_join<T>(rx: &mpsc::Receiver<thread::Result<T>>, timeout: Duration) -> JoinOutcome<T> {
     match rx.recv_timeout(timeout) {
-        Ok(Ok(value)) => Some(value),
-        // Thread panicked or timed out / disconnected — detach.
-        _ => None,
+        Ok(Ok(value)) => JoinOutcome::Completed(value),
+        Ok(Err(_)) => JoinOutcome::Panicked,
+        Err(mpsc::RecvTimeoutError::Timeout) => JoinOutcome::TimedOut,
+        Err(mpsc::RecvTimeoutError::Disconnected) => JoinOutcome::Disconnected,
     }
 }
 
@@ -49,6 +72,23 @@ mod tests {
         let handle = thread::spawn(|| 42u32);
         let result = join_with_deadline(handle, Duration::from_secs(5));
         assert_eq!(result, Some(42));
+    }
+
+    #[test]
+    fn observation_distinguishes_join_outcomes() {
+        let deadline = Duration::from_secs(5);
+        assert_eq!(
+            observe_join(thread::spawn(|| 17), deadline),
+            JoinOutcome::Completed(17),
+        );
+        assert_eq!(
+            observe_join(thread::spawn(|| panic!("join test panic")), deadline),
+            JoinOutcome::<()>::Panicked,
+        );
+        let (tx, rx) = mpsc::channel::<thread::Result<()>>();
+        assert_eq!(receive_join(&rx, Duration::ZERO), JoinOutcome::TimedOut);
+        drop(tx);
+        assert_eq!(receive_join(&rx, deadline), JoinOutcome::Disconnected);
     }
 
     #[test]

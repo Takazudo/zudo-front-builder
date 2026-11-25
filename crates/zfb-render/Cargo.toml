@@ -14,6 +14,7 @@ description = "zfb render: SWC TSX→JS pipeline + JS runtime + page render orch
 # workspace `cargo build`/`cargo test` exercises it; tooling that only needs
 # the SWC pipeline opts out with `--no-default-features`.
 [features]
+renderer-memory-observe = ["direct-v8", "zfb-js-host/renderer-memory-observe"]
 # Default JS runtime (#4390); the deno_core host was removed in #4395.
 direct-v8 = ["zfb-js-host/direct-v8", "dep:tokio"]
 

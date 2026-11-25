@@ -7,6 +7,7 @@ publish = false
 description = "Internal shared ZFB host services and the direct-V8 JS host"
 
 [features]
+renderer-memory-observe = ["direct-v8"]
 default = []
 # Existing embedded-host transport, crypto and authorized module reads.
 services = ["dep:serde", "dep:serde_json", "dep:thiserror", "dep:getrandom", "dep:reqwest", "dep:sha1", "dep:sha2", "dep:tokio", "dep:url", "dep:base64"]

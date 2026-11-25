@@ -23,7 +23,42 @@ pub struct NativeHost {
     _thread_guard: HostThreadGuard,
 }
 
+/// Owned isolate accounting, sampled on the thread that owns the isolate.
+#[cfg(feature = "renderer-memory-observe")]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct HeapObservation {
+    pub used_heap_size: usize,
+    pub total_heap_size: usize,
+    pub total_physical_size: usize,
+    pub external_memory: usize,
+    pub malloced_memory: usize,
+    pub peak_malloced_memory: usize,
+    pub total_allocated_bytes: u64,
+    pub total_global_handles_size: usize,
+    pub used_global_handles_size: usize,
+    pub number_of_native_contexts: usize,
+    pub number_of_detached_contexts: usize,
+}
+
 impl NativeHost {
+    #[cfg(feature = "renderer-memory-observe")]
+    pub fn observe_heap(&mut self) -> HeapObservation {
+        let stats = self.isolate.get_heap_statistics();
+        HeapObservation {
+            used_heap_size: stats.used_heap_size(),
+            total_heap_size: stats.total_heap_size(),
+            total_physical_size: stats.total_physical_size(),
+            external_memory: stats.external_memory(),
+            malloced_memory: stats.malloced_memory(),
+            peak_malloced_memory: stats.peak_malloced_memory(),
+            total_allocated_bytes: stats.total_allocated_bytes(),
+            total_global_handles_size: stats.total_global_handles_size(),
+            used_global_handles_size: stats.used_global_handles_size(),
+            number_of_native_contexts: stats.number_of_native_contexts(),
+            number_of_detached_contexts: stats.number_of_detached_contexts(),
+        }
+    }
+
     pub fn new_config() -> Result<Self, NativeError> {
         Self::new_config_with_polyfills(crate::shims::WEB_POLYFILLS_SRC)
     }
