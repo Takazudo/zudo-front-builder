@@ -5,6 +5,7 @@ import { parseProvLines } from "./provenance.mjs";
 import {
   RENDERER_MEMORY_ALLOCATOR_DOMAIN as ALLOCATOR_DOMAIN,
   RENDERER_MEMORY_ALLOCATOR_LIMIT as ALLOCATOR_LIMIT,
+  RENDERER_MEMORY_LIMITS as LIMITS,
 } from "./renderer-memory-protocol.mjs";
 
 const STATUS_FIELDS = ["VmRSS", "RssAnon", "RssFile", "RssShmem", "VmSwap"];
@@ -126,6 +127,9 @@ const positive = (n) => Number.isSafeInteger(n) && n > 0;
 const counter = (n) => Number.isSafeInteger(n) && n >= 0;
 const ALLOCATOR_START = "allocator_start";
 const ALLOCATOR_COMPLETE = "allocator_complete";
+const APPLY_RETURN = "apply_return";
+const POST_APPLY = "post_apply_return";
+const APPLY_FIELDS = ["apply_id", "apply_outcome", "refresh_outcome"];
 const ALLOCATOR_PHASES = [
   "entry",
   "snapshot_before",
@@ -279,7 +283,7 @@ function checkHost(events, final) {
  * A pending getter is normal during a periodic check. At termination it is
  * incomplete evidence, even if the server needed forced shutdown.
  */
-function inspectAllocator(rows, byRefresh, lifecycle, final) {
+function inspectAllocator(rows, byRefresh, lifecycle, final, withPostApply) {
   const starts = new Map();
   const completed = new Map();
   const byCallPhase = new Map();
@@ -298,9 +302,16 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
   const fail = (detail) => ({ ...report, failure: detail });
   for (const e of rows) {
     const call = e.allocator_call;
+    const postApply = withPostApply && e.allocator_phase === POST_APPLY;
     if (
       e.metric_domain !== ALLOCATOR_DOMAIN ||
-      !ALLOCATOR_PHASES.includes(e.allocator_phase) ||
+      (!postApply && !ALLOCATOR_PHASES.includes(e.allocator_phase)) ||
+      (postApply
+        ? !positive(e.apply_id) ||
+          e.apply_outcome !== "ok" ||
+          e.refresh_outcome !== "refreshed" ||
+          e.allocator_boundary_outcome !== "returned"
+        : APPLY_FIELDS.some((field) => Object.hasOwn(e, field))) ||
       !positive(e.refresh_id) ||
       [e.tick, e.host_id, e.snapshot_gen].some((value) => value !== undefined && !positive(value))
     )
@@ -359,7 +370,8 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
       start.snapshot_gen !== e.snapshot_gen ||
       start.host_id !== e.host_id ||
       start.tick !== e.tick ||
-      start.allocator_boundary_outcome !== e.allocator_boundary_outcome
+      start.allocator_boundary_outcome !== e.allocator_boundary_outcome ||
+      APPLY_FIELDS.some((field) => start[field] !== e[field])
     )
       return fail("allocator completion lacks its matching start");
     if (
@@ -421,8 +433,12 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
         `allocator checkpoint has foreign tick, host or snapshot for refresh ${row.refresh_id}`,
       );
   }
-  if (report.unavailable.length)
-    return fail(`GNU allocator getter unavailable: ${report.unavailable[0].reason}`);
+  const unexpectedUnavailable = report.unavailable.find(
+    (row) =>
+      !withPostApply || row.phase === POST_APPLY || row.reason !== "application_write_exclusion",
+  );
+  if (unexpectedUnavailable)
+    return fail(`GNU allocator getter unavailable: ${unexpectedUnavailable.reason}`);
   if (final && report.unfinished.length)
     return fail("allocator getter started but did not complete");
   if (final && (!byRefresh.size || !report.started))
@@ -444,7 +460,10 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
     if (!started || typeof started.boot !== "boolean" || !finished || (snapshot && !snapshotEnd))
       return fail(`refresh ${id} lacks boot or finish context for allocator phases`);
     const returned = byCallPhase.get(`${id}/refresh_return`);
-    const returnComplete = returned && completed.has(returned.allocator_call);
+    const resolved = (start) =>
+      completed.get(start.allocator_call) ??
+      (start.allocator_outcome === "unavailable" ? start : null);
+    const returnComplete = returned && resolved(returned);
     const expectReturn = !started.boot && (final || returnComplete);
     const expected = [
       ["entry", started, snapshot ?? finished],
@@ -496,7 +515,7 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
     let previous = started.occurrence;
     for (const [index, [name, after, before, outcome]] of expected.entries()) {
       const start = got[index];
-      const finish = completed.get(start.allocator_call);
+      const finish = resolved(start);
       if (
         !finish ||
         start.allocator_phase !== name ||
@@ -509,7 +528,289 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
       previous = finish.occurrence;
     }
   }
-  return report;
+  return {
+    ...report,
+    ...(withPostApply && {
+      postApplyCheckpoints: [...byCallPhase.values()]
+        .filter((row) => row.allocator_phase === POST_APPLY)
+        .map((start) => ({ start, completion: completed.get(start.allocator_call) ?? null })),
+    }),
+  };
+}
+
+const sameRefresh = (a, b) =>
+  ["refresh_id", "tick", "snapshot_gen", "host_id"].every((field) => a[field] === b[field]);
+
+// Both sides of the anchor are floored to microseconds. Take the wider
+// epoch interval, then allow for the timestamp's own rounding (intake logs
+// floor to ms; lifecycle occurrences floor to us). Stderr arrival is unused.
+function nativeIntervalNs(anchor, offsetUs, precisionUs) {
+  const sampledUs = BigInt(anchor.clock_monotonic_us);
+  return [
+    (sampledUs - BigInt(anchor.anchor_after_us) - 1n + offsetUs) * 1000n,
+    (sampledUs + 1n - BigInt(anchor.anchor_before_us) + offsetUs + precisionUs) * 1000n,
+  ];
+}
+
+const intakeIntervalNs = (intake, anchor) =>
+  nativeIntervalNs(anchor, BigInt(intake.ms) * 1000n, 1000n);
+
+const refreshEnd = {
+  refreshed: "refresh_complete",
+  skipped: "refresh_skipped",
+  failed: "refresh_failed",
+};
+
+function inspectPostApply({
+  anchor,
+  applications,
+  allocatorRows,
+  checkpoints,
+  byRefresh,
+  intakes,
+  mutations,
+  final,
+  requireComplete,
+  requireAttributed,
+}) {
+  const endpoints = [];
+  const report = { endpoints, failure: null };
+  const fail = (failure) => ({ ...report, failure });
+  const byId = new Map();
+  const associatedRefresh = new Map();
+  const returns = new Map(
+    allocatorRows
+      .filter((row) => row.allocator_phase === "refresh_return")
+      .map((row) => [row.refresh_id, row]),
+  );
+  const lockedRefreshes = new Set(
+    allocatorRows
+      .filter((row) => row.allocator_unavailable_reason === "application_write_exclusion")
+      .map((row) => row.refresh_id),
+  );
+  for (const row of applications) {
+    if (
+      !positive(row.apply_id) ||
+      byId.has(row.apply_id) ||
+      !["ok", "error"].includes(row.apply_outcome) ||
+      (row.tick !== undefined && !positive(row.tick))
+    )
+      return fail("invalid or duplicate post-apply return identity");
+    byId.set(row.apply_id, row);
+    if (row.apply_association === "no_refresh") {
+      if (
+        row.refresh_id !== 0 ||
+        ["snapshot_gen", "host_id", "refresh_outcome"].some((key) => Object.hasOwn(row, key))
+      )
+        return fail("no-refresh apply carries a refresh token");
+      continue;
+    }
+    if (row.apply_association !== "associated")
+      return fail(`invalid post-apply association: ${row.apply_association}`);
+    const refresh = byRefresh.get(row.refresh_id);
+    const finished = refresh?.find(
+      (e) => e.phase.startsWith("refresh_") && e.phase !== "refresh_start",
+    );
+    const returned = returns.get(row.refresh_id);
+    if (
+      !positive(row.refresh_id) ||
+      associatedRefresh.has(row.refresh_id) ||
+      !finished ||
+      !returned ||
+      returned.allocator_unavailable_reason !== "application_write_exclusion" ||
+      !sameRefresh(row, returned) ||
+      row.refresh_outcome !== returned.allocator_boundary_outcome ||
+      refreshEnd[row.refresh_outcome] !== finished.phase ||
+      finished.occurrence >= returned.occurrence ||
+      returned.occurrence >= row.occurrence ||
+      returned.occurred_us > row.occurred_us
+    )
+      return fail("post-apply token does not match its inner refresh return");
+    if (row.refresh_outcome === "refreshed") {
+      const adopted = refresh.filter((event) => event.phase === "adopted");
+      if (
+        adopted.length !== 1 ||
+        !positive(row.host_id) ||
+        !positive(row.snapshot_gen) ||
+        !sameRefresh(row, adopted[0]) ||
+        adopted[0].occurrence >= returned.occurrence
+      )
+        return fail("post-apply token has no matching native host adoption");
+    }
+    associatedRefresh.set(row.refresh_id, row);
+  }
+  for (const id of lockedRefreshes) {
+    if (final && !associatedRefresh.has(id))
+      return fail("locked refresh is missing its apply return");
+    if (
+      associatedRefresh.has(id) &&
+      allocatorRows.some(
+        (row) =>
+          row.refresh_id === id &&
+          row.allocator_phase !== POST_APPLY &&
+          row.allocator_unavailable_reason !== "application_write_exclusion",
+      )
+    )
+      return fail("associated refresh collected an inner allocator checkpoint under exclusion");
+  }
+  const getters = new Map();
+  for (const { start, completion } of checkpoints) {
+    const row = byId.get(start.apply_id);
+    if (
+      !row ||
+      getters.has(start.apply_id) ||
+      row.apply_association !== "associated" ||
+      row.apply_outcome !== "ok" ||
+      row.refresh_outcome !== "refreshed" ||
+      !sameRefresh(start, row) ||
+      start.occurrence <= row.occurrence ||
+      start.occurred_us < row.occurred_us
+    )
+      return fail("post-apply getter is missing its matching successful apply return");
+    getters.set(start.apply_id, { start, completion });
+  }
+  if (
+    final &&
+    applications.some(
+      (row) =>
+        row.apply_outcome === "ok" &&
+        row.refresh_outcome === "refreshed" &&
+        !getters.get(row.apply_id)?.completion,
+    )
+  )
+    return fail("successful post-apply return is missing its completed getter");
+
+  const usedApplies = new Set();
+  const usedRefreshes = new Set();
+  for (const mutation of mutations) {
+    if (
+      !anchor ||
+      !["edit", "restoration"].includes(mutation.kind) ||
+      !Array.isArray(mutation.paths) ||
+      !mutation.paths.length ||
+      !/^[0-9]+$/.test(mutation.t0Ns) ||
+      !/^[0-9]+$/.test(mutation.witnessNs)
+    )
+      return fail("invalid post-apply mutation witness");
+    const from = BigInt(mutation.t0Ns);
+    const until = BigInt(mutation.witnessNs);
+    const previous = endpoints.at(-1);
+    if (
+      from >= until ||
+      (previous &&
+        (from <= BigInt(previous.mutation.witnessNs) ||
+          from <= nativeIntervalNs(anchor, BigInt(previous.getterCompletedUs), 1n)[1]))
+    )
+      return fail("post-apply mutation windows overlap");
+    const related = intakes.filter((intake) => {
+      if (!Array.isArray(intake.paths) || !counter(intake.ms)) return false;
+      if (!intake.paths.some((path) => mutation.paths.includes(path?.path))) return false;
+      const [first, last] = intakeIntervalNs(intake, anchor);
+      return last >= from && first <= until;
+    });
+    const intake = related[0];
+    if (!intake) {
+      if (final) return fail("post-apply mutation is missing its native intake");
+      break;
+    }
+    const [first, last] = intakeIntervalNs(intake, anchor);
+    if (
+      related.length !== 1 ||
+      !positive(intake.tick) ||
+      intake.paths.length !== 1 ||
+      intake.paths_truncated ||
+      intake.paths[0].kind !== "Modified" ||
+      intakes.filter((event) => event.tick === intake.tick).length !== 1 ||
+      first < from ||
+      last > until
+    )
+      return fail("post-apply mutation has an ambiguous or coalesced native intake");
+    const matching = applications.filter((row) => row.tick === intake.tick);
+    if (!matching.length && !final) break;
+    const row = matching[0];
+    const refreshed = row && byRefresh.get(row.refresh_id)?.[0];
+    if (
+      matching.length !== 1 ||
+      row.apply_outcome !== "ok" ||
+      row.refresh_outcome !== "refreshed" ||
+      !refreshed ||
+      refreshed.seq <= intake.seq ||
+      // A real tick can enter the refresh in the same native millisecond.
+      // Reject a refresh timestamp before even the floor of intake's clock.
+      refreshed.occurred_us < intake.ms * 1000 ||
+      refreshed.tick !== intake.tick ||
+      usedApplies.has(row.apply_id) ||
+      usedRefreshes.has(row.refresh_id)
+    )
+      return fail("post-apply mutation lacks a unique successful apply for its intake");
+    const { start, completion } = getters.get(row.apply_id) ?? {};
+    if (!completion) {
+      if (final) return fail("post-apply mutation lacks a completed getter");
+      break;
+    }
+    usedApplies.add(row.apply_id);
+    usedRefreshes.add(row.refresh_id);
+    endpoints.push({
+      mutation,
+      intake: {
+        seq: intake.seq,
+        tick: intake.tick,
+        path: intake.paths[0].path,
+        kind: intake.paths[0].kind,
+        earliestNs: String(first),
+        latestNs: String(last),
+      },
+      applyId: row.apply_id,
+      applyOutcome: row.apply_outcome,
+      refreshOutcome: row.refresh_outcome,
+      refreshId: row.refresh_id,
+      refreshStartedUs: refreshed.occurred_us,
+      snapshotGen: row.snapshot_gen,
+      hostId: row.host_id,
+      applyReturnedUs: row.occurred_us,
+      applyOccurrence: row.occurrence,
+      getterOccurrence: { start: start.occurrence, completion: completion.occurrence },
+      getterStartedUs: completion.allocator_started_us,
+      getterCompletedUs: completion.allocator_completed_us,
+      getterDurationUs: completion.allocator_duration_us,
+      allocatorCall: completion.allocator_call,
+      counters: completion.allocator,
+    });
+  }
+  const edits = endpoints.filter((row) => row.mutation.kind === "edit");
+  const restoration = endpoints.find((row) => row.mutation.kind === "restoration") ?? null;
+  const transitions = edits.slice(1).map((to, index) => {
+    const from = edits[index];
+    return {
+      fromApply: from.applyId,
+      toApply: to.applyId,
+      delta: Object.fromEntries(
+        ALLOCATOR_FIELDS.map((field) => [field, to.counters[field] - from.counters[field]]),
+      ),
+    };
+  });
+  const unassociated = [...byRefresh.entries()].filter(([id]) => !usedRefreshes.has(id));
+  const onlyStartup =
+    unassociated.length === 1 &&
+    unassociated[0][1][0]?.tick === undefined &&
+    unassociated[0][1].filter((row) => row.phase === "adopted").length === 1;
+  const complete =
+    edits.length === LIMITS.edits &&
+    edits.every((row, index) => row.mutation.edit === index + 1) &&
+    endpoints.length === LIMITS.edits + 1 &&
+    restoration === endpoints.at(-1) &&
+    endpoints.every((row) => row.intake.path === endpoints[0].intake.path) &&
+    onlyStartup;
+  if (
+    (requireComplete || requireAttributed) &&
+    (usedApplies.size !== getters.size ||
+      unassociated.length > 1 ||
+      unassociated.some(([, rows]) => rows[0]?.tick !== undefined))
+  )
+    return fail("unrelated post-apply observation or refresh");
+  if (requireComplete && !complete)
+    return fail("post-apply run requires twelve body endpoints and one restoration");
+  return { ...report, complete, transitions, restoration };
 }
 
 /**
@@ -518,7 +819,16 @@ function inspectAllocator(rows, byRefresh, lifecycle, final) {
  */
 export function inspectRendererLifecycle(
   server,
-  { final = false, requireStart = false, minimumAdoptions = 0, withAllocator = false } = {},
+  {
+    final = false,
+    requireStart = false,
+    minimumAdoptions = 0,
+    withAllocator = false,
+    withPostApply = false,
+    mutations = [],
+    requireCompletePostApply = false,
+    requireAttributedPostApply = false,
+  } = {},
 ) {
   const { lines, droppedBeforeMark } = server.provSince(0);
   const parsed = parseProvLines(lines);
@@ -567,6 +877,9 @@ export function inspectRendererLifecycle(
         ? start.allocator_metric_domain !== ALLOCATOR_DOMAIN ||
           start.allocator_call_limit !== ALLOCATOR_LIMIT
         : start.allocator_metric_domain !== undefined) ||
+      (withPostApply
+        ? start.allocator_post_apply !== true
+        : start.allocator_post_apply !== undefined) ||
       !positive(start.pid) ||
       (server.handle?.native?.pid != null && start.pid !== server.handle.native.pid) ||
       !positive(start.clock_monotonic_us) ||
@@ -581,6 +894,7 @@ export function inspectRendererLifecycle(
   const byHost = new Map();
   const byRefresh = new Map();
   const allocatorRows = [];
+  const applications = [];
   let contiguous = 0;
   for (const e of events.sort((a, b) => a.occurrence - b.occurrence)) {
     if (!positive(e.occurrence) || seen.has(e.occurrence) || !counter(e.occurred_us)) {
@@ -591,6 +905,11 @@ export function inspectRendererLifecycle(
     if (e.phase === ALLOCATOR_START || e.phase === ALLOCATOR_COMPLETE) {
       if (!withAllocator) return fail("unexpected allocator telemetry in renderer-memory.v1");
       allocatorRows.push(e);
+      continue;
+    }
+    if (e.phase === APPLY_RETURN) {
+      if (!withPostApply) return fail("unexpected post-apply telemetry");
+      applications.push(e);
       continue;
     }
     const refreshPhase = REFRESH_PHASES.has(e.phase);
@@ -627,13 +946,31 @@ export function inspectRendererLifecycle(
         .map(([id, rows]) => [id, rows.filter(established)])
         .filter(([, rows]) => rows.length),
     );
-    result.allocator = inspectAllocator(
-      allocatorRows.filter(established),
+    const knownAllocator = allocatorRows.filter(established);
+    const { postApplyCheckpoints, ...allocator } = inspectAllocator(
+      knownAllocator,
       knownRefreshes,
       events.filter(established),
       final,
+      withPostApply,
     );
-    if (!final && result.allocator.failure) return fail(result.allocator.failure);
+    result.allocator = allocator;
+    if (withPostApply && !allocator.failure) {
+      result.postApply = inspectPostApply({
+        anchor: start,
+        applications: applications.filter(established),
+        allocatorRows: knownAllocator,
+        checkpoints: postApplyCheckpoints,
+        byRefresh: knownRefreshes,
+        intakes: parsed.events.filter((event) => event.ev === "intake"),
+        mutations,
+        final,
+        requireComplete: requireCompletePostApply,
+        requireAttributed: requireAttributedPostApply,
+      });
+    }
+    const observerFailure = allocator.failure ?? result.postApply?.failure;
+    if (!final && observerFailure) return fail(observerFailure);
   }
   if (final) {
     if (
@@ -645,7 +982,9 @@ export function inspectRendererLifecycle(
       last.emitted !== seen.size
     ) {
       return fail(
-        result.allocator?.failure ?? "missing native terminal watermark or occurrence records",
+        result.allocator?.failure ??
+          result.postApply?.failure ??
+          "missing native terminal watermark or occurrence records",
       );
     }
     for (let occurrence = 1; occurrence <= last.attempted; occurrence++)
@@ -697,8 +1036,8 @@ export function inspectRendererLifecycle(
       }
     }
   }
-  if (result.allocator?.failure)
-    return { ...fail(result.allocator.failure), lifecycleComplete: final };
+  const observerFailure = result.allocator?.failure ?? result.postApply?.failure;
+  if (observerFailure) return { ...fail(observerFailure), lifecycleComplete: final };
   return {
     ...result,
     complete: final,

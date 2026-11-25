@@ -21,7 +21,7 @@ import { LABEL_RE, loadProfile } from "./profile.mjs";
 import { Recorder } from "./recorder.mjs";
 import { createRendererMemoryStudy } from "./renderer-memory-study.mjs";
 import {
-  RENDERER_MEMORY_ALLOCATOR_PROTOCOL,
+  rendererMemoryAllocatorProtocol,
   RENDERER_MEMORY_LIMITS,
   RENDERER_MEMORY_MAPPING_LIMITS,
 } from "./renderer-memory-protocol.mjs";
@@ -334,7 +334,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           rendererMemoryStudy: {
             ...memoryProfile,
             limits: RENDERER_MEMORY_LIMITS,
-            ...(memoryProfile.protocol === RENDERER_MEMORY_ALLOCATOR_PROTOCOL && {
+            ...(rendererMemoryAllocatorProtocol(memoryProfile.protocol) && {
               mappingLimits: RENDERER_MEMORY_MAPPING_LIMITS,
             }),
             supervisorStartedMs: loaded.supervisorStartedMs,
@@ -427,7 +427,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     if (memoryProfile) {
       const { sampleRendererMemory, inspectRendererLifecycle } =
         hooks.rendererMemoryEvidence ?? (await import("./renderer-memory-evidence.mjs"));
-      if (memoryProfile.protocol === RENDERER_MEMORY_ALLOCATOR_PROTOCOL) {
+      if (rendererMemoryAllocatorProtocol(memoryProfile.protocol)) {
         const { createMappingCollector } = await import("./renderer-memory-mappings.mjs");
         mappingCollector = (hooks.createMappingCollector ?? createMappingCollector)();
       }
