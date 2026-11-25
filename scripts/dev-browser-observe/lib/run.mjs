@@ -1,6 +1,6 @@
 import { interruptible } from "./session-deadline.mjs";
 import { admissionPath, reserveSession } from "./admission.mjs";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { OBSERVER_PATH, closeOwnedBrowser, launchOwnedBrowser } from "./browser.mjs";
 import { runCalibration, CALIBRATION_CELLS } from "./calibrate.mjs";
@@ -19,6 +19,8 @@ import { hostIdentity, probeMac, sampledPeak } from "./mac-process-adapter.mjs";
 import { liveOwnedFromRegistry, shouldRegisterOwned, stopOwned } from "./process-owner.mjs";
 import { LABEL_RE, loadProfile } from "./profile.mjs";
 import { Recorder } from "./recorder.mjs";
+import { createRendererMemoryStudy } from "./renderer-memory-study.mjs";
+import { RENDERER_MEMORY_LIMITS } from "./renderer-memory-protocol.mjs";
 import { createResourceStudy, summarizeResourceStudy } from "./resource-study.mjs";
 import { expandSchedule, scheduleOf } from "./schedule.mjs";
 import { startDevServer } from "./server.mjs";
@@ -128,6 +130,21 @@ function identityVerdict({ profile, resolved, manifest, receipt, extraAppDirs })
       provenance: variant.provenance,
     });
   }
+  if (profile.rendererMemoryStudy) {
+    const { browserExecutable, browserExecutableSha256 } = profile.rendererMemoryStudy;
+    let actual = null;
+    try {
+      actual = sha256File(realpathSync(browserExecutable));
+    } catch (error) {
+      actual = { error: String(error?.message ?? error) };
+    }
+    extra.push({
+      name: "renderer-memory-browser-executable",
+      ok: actual === browserExecutableSha256,
+      expected: { path: browserExecutable, sha256: browserExecutableSha256 },
+      actual,
+    });
+  }
   extra.push(...kind.extraChecks(profile, resolved, manifest));
   extra.push(...frozenIdentityChecks());
   const gitTree = findGitWorkTree(resolved.outDir);
@@ -156,13 +173,30 @@ export async function execute({
   signal,
   onFinalizing,
   supervisorId,
+  supervisorStartedMs,
+  workDeadline,
+  supervisorDeadlineMs,
   scenarios = null,
 }) {
   const loaded = loadProfile(profilePath);
   loaded.signal = signal;
   loaded.onFinalizing = onFinalizing;
   loaded.supervisorId = supervisorId;
+  loaded.supervisorStartedMs = supervisorStartedMs;
+  loaded.workDeadline = workDeadline;
+  loaded.supervisorDeadlineMs = supervisorDeadlineMs;
   const { profile, resolved } = loaded;
+  if (
+    profile.rendererMemoryStudy &&
+    (command !== "run" ||
+      scenarios !== null ||
+      process.platform !== "linux" ||
+      !supervisorId ||
+      ![supervisorStartedMs, workDeadline, supervisorDeadlineMs].every(Number.isSafeInteger))
+  ) {
+    stderr("renderer-memory diagnostics require a standalone Linux run with a supervisor");
+    return EXIT.usage;
+  }
   if (scenarios) {
     const known = new Set(profile.scenarios.map((s) => s.id));
     const unknown = scenarios.filter((id) => !known.has(id));
@@ -253,7 +287,8 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
 async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
   const { profile, resolved } = loaded;
   const rec = new Recorder(join(labelDir, "records.jsonl"));
-  const startedNs = hrtimeNs();
+  const memoryProfile = profile.rendererMemoryStudy ?? null;
+  const startedNs = memoryProfile ? BigInt(loaded.supervisorStartedMs) * 1_000_000n : hrtimeNs();
   const runScenarios = loaded.runScenarios ?? profile.scenarios;
   const schedule = command === "run" ? scheduleOf(runScenarios) : [];
   const planned = command === "run" ? plannedCount(runScenarios) : 0;
@@ -266,6 +301,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     scenarioSelection: loaded.scenarioSelection ?? null,
     schedule,
     resourceStudy: command === "run" ? (profile.resourceStudy ?? null) : null,
+    ...(memoryProfile ? { diagnostic: true, rendererMemoryStudy: memoryProfile } : {}),
   });
 
   const kind = kindFor(profile);
@@ -289,6 +325,24 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     productSha: profile.productSha ?? null,
     productDirtyIdentity: profile.productDirtyIdentity ?? null,
     diagnostic: profile.diagnostic === true,
+    ...(memoryProfile
+      ? {
+          rendererMemoryStudy: {
+            ...memoryProfile,
+            limits: RENDERER_MEMORY_LIMITS,
+            supervisorStartedMs: loaded.supervisorStartedMs,
+            workDeadlineMs: loaded.workDeadline,
+            supervisorDeadlineMs: loaded.supervisorDeadlineMs,
+            clock:
+              "Linux process.hrtime.bigint (monotonic nanoseconds); supervisor deadlines in floored milliseconds",
+            node: {
+              version: process.version,
+              path: realpathSync(process.execPath),
+              sha256: sha256File(process.execPath),
+            },
+          },
+        }
+      : {}),
     restorationWriteMethod: profile.restoration.writeMethod,
     harnessCapability: harnessCapability(),
     buildReceipt,
@@ -327,7 +381,20 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   if (!verdict.ok) {
     writeJsonSync(receiptPath, receipt);
     const acc = { ...newAccounting(planned), stopReason: "identity-rejected", error: 1 };
-    writeJsonSync(summaryPath, { ...summarize(rec.records, acc), identityRejected: true });
+    writeJsonSync(summaryPath, {
+      ...summarize(rec.records, acc),
+      identityRejected: true,
+      ...(memoryProfile
+        ? {
+            diagnostic: true,
+            rendererMemoryStudy: {
+              protocol: memoryProfile.protocol,
+              scheduleComplete: false,
+              observationComplete: false,
+            },
+          }
+        : {}),
+    });
     rec.append({ type: "run-end", exitCode: EXIT.identityRejected });
     stderr("identity rejected before any workload edit; see receipt.json identity.checks");
     return EXIT.identityRejected;
@@ -340,12 +407,29 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   let browserHandle = null;
   const samples = [];
   let study = null;
+  let rendererMemory = null;
+  let memoryReport = null;
+  let logClose = null;
   let checkLateProcesses = null;
   let lateFailure = null;
   let exitCode = EXIT.ok;
   let summaryExtra = {};
   const accountingRef = { current: null };
   try {
+    if (memoryProfile) {
+      const { sampleRendererMemory, inspectRendererLifecycle } =
+        hooks.rendererMemoryEvidence ?? (await import("./renderer-memory-evidence.mjs"));
+      rendererMemory = createRendererMemoryStudy({
+        append: (r) => rec.append(r),
+        signal: loaded.signal,
+        supervisorStartedMs: loaded.supervisorStartedMs,
+        workDeadline: loaded.workDeadline,
+        sample: (owned) => sampleRendererMemory(owned, buildReceipt.exe.path),
+        inspect: inspectRendererLifecycle,
+        clock: hooks.rendererMemoryClock,
+        sleep: hooks.sleep,
+      });
+    }
     try {
       m = fixed
         ? materializeFixed({
@@ -427,6 +511,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       launch.port = port;
     }
     loaded.signal?.throwIfAborted();
+    const readyTimeoutMs = rendererMemory
+      ? rendererMemory.clamp("server readiness", profile.server.readyTimeoutMs)
+      : profile.server.readyTimeoutMs;
     if (intentPath)
       intent = reserveSession(intentPath, { labelDir, registryPath: resolved.registryPath });
     spawning = true;
@@ -443,10 +530,11 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       host: profile.server.host,
       env: profile.server.env ?? {},
       diagnostic: profile.diagnostic === true,
-      readyTimeoutMs: profile.server.readyTimeoutMs,
+      readyTimeoutMs,
       logPath: join(labelDir, "server.log"),
     });
     spawning = false;
+    rendererMemory?.startSampling(server);
     intent?.update({
       phase: "server-running",
       root: server.handle.native,
@@ -486,7 +574,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
 
     let ready;
     try {
-      ready = await interruptible(server.ready, loaded.signal);
+      ready = await interruptible(server.ready, rendererMemory?.signal ?? loaded.signal);
     } catch (error) {
       rec.append({
         type: "server-ready",
@@ -584,7 +672,18 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     receipt.server.readyMs = nsToMs(ready.readyNs - server.startedNs);
 
     loaded.signal?.throwIfAborted();
-    browserHandle = await (hooks.launchOwnedBrowser ?? launchOwnedBrowser)(profile.browser);
+    browserHandle = await (hooks.launchOwnedBrowser ?? launchOwnedBrowser)({
+      ...profile.browser,
+      ...(memoryProfile
+        ? {
+            diagnosticExecutable: {
+              path: memoryProfile.browserExecutable,
+              sha256: memoryProfile.browserExecutableSha256,
+              timeoutMs: rendererMemory.clamp("browser startup", 30_000),
+            },
+          }
+        : {}),
+    });
     loaded.signal?.throwIfAborted();
     const observer = browserHandle.observer;
     observer.baseUrl = ready.baseUrl;
@@ -605,6 +704,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     const fixtureOps = kind.ops(m, profile);
 
     if (command === "run") {
+      if (rendererMemory) await rendererMemory.beforeEdits();
       if (profile.resourceStudy) {
         study = createResourceStudy({
           study: profile.resourceStudy,
@@ -628,12 +728,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         scenarios: runScenarios,
         deps: {
           recorder,
-          signal: loaded.signal,
-          afterScenario: study ? study.afterScenario : undefined,
-          beforeCleanup: study ? study.beforeCleanup : undefined,
+          signal: rendererMemory?.signal ?? loaded.signal,
+          rendererMemory,
+          afterScenario: study?.afterScenario,
+          beforeCleanup: rendererMemory
+            ? () => rendererMemory.enter("restoration")
+            : study?.beforeCleanup,
           haltReason:
-            study || checkLateProcesses
-              ? () => study?.haltReason() ?? checkLateProcesses?.() ?? null
+            rendererMemory || study || checkLateProcesses
+              ? () =>
+                  rendererMemory?.failure ?? study?.haltReason() ?? checkLateProcesses?.() ?? null
               : undefined,
           clock: { now: hrtimeNs },
           server: { ...server, sampleResources: sampleServer },
@@ -645,7 +749,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           startedNs,
           accountingRef,
           provenance:
-            profile.diagnostic === true
+            profile.diagnostic === true && !rendererMemory
               ? {
                   traceEnabled: traceEnabledIn(server.zfbEnv),
                   renderMode: resolveLazyDevRender(server.zfbEnv),
@@ -654,6 +758,14 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
               : null,
         },
       });
+      if (rendererMemory) {
+        summaryExtra.accountingFinal = accounting;
+        await rendererMemory.finalIdle({
+          stopped,
+          stopReason: accounting.stopReason,
+          cleanup: rec.records.findLast((r) => r.type === "cleanup"),
+        });
+      }
       let studyFailure = null;
       if (study) {
         await study.finalIdle({ stopped, stopReason: accounting.stopReason });
@@ -664,7 +776,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       summaryExtra = { accountingFinal: accounting, resourceStudyFailure: studyFailure };
       exitCode = lateFailure
         ? EXIT.identityRejected
-        : studyFailure
+        : studyFailure || rendererMemory?.failure
           ? EXIT.controllerError
           : batchExitOk(accounting, stopped)
             ? EXIT.ok
@@ -719,7 +831,13 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         stderr(`record write failed (${r.type}): ${error?.message ?? error}`);
       }
     };
-    const terminalEnd = performance.now() + 60000;
+    const terminalNow = performance.now();
+    const terminalEnd =
+      terminalNow +
+      Math.min(
+        60000,
+        rendererMemory ? loaded.supervisorDeadlineMs - Number(hrtimeNs() / 1_000_000n) : 60000,
+      );
     const bounded = async (phase, ms, operation) => {
       const remaining = Math.max(1, Math.min(ms, terminalEnd - performance.now()));
       let timer;
@@ -742,6 +860,13 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         clearTimeout(timer);
       }
     };
+    if (rendererMemory)
+      try {
+        rendererMemory.beginShutdown();
+      } catch (error) {
+        evidenceFailed = true;
+        stderr(`renderer-memory shutdown phase write failed: ${error?.message ?? error}`);
+      }
     const unresolved = [];
     if (study) {
       try {
@@ -781,7 +906,6 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           exit: server.handle.exit,
         };
       }
-      let logClose = null;
       try {
         logClose = await bounded("log-close", 4000, () => server.closeLog());
       } catch (error) {
@@ -829,6 +953,31 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           phase: "browser-close",
           error: String(error?.message ?? error),
         });
+      }
+    }
+    if (rendererMemory) {
+      rendererMemory.finishSampling();
+      const accounting = summaryExtra.accountingFinal;
+      const completedSchedule =
+        rendererMemory.idleMs !== null &&
+        accounting?.attempted === RENDERER_MEMORY_LIMITS.edits &&
+        accounting.success === accounting.attempted &&
+        accounting.stopReason === null;
+      try {
+        memoryReport = rendererMemory.finish({
+          logClose,
+          completedSchedule,
+          cleanup: rec.records.findLast((r) => r.type === "cleanup"),
+          serverAbsent: stopReport.absent && !stopReport.error && unresolved.length === 0,
+        });
+        safeAppend({ type: "renderer-memory-evidence", ...memoryReport });
+      } catch (error) {
+        evidenceFailed = true;
+        stderr(`renderer-memory evidence verification failed: ${error?.message ?? error}`);
+      }
+      if (exitCode === EXIT.ok) {
+        if (!memoryReport?.observationComplete) exitCode = EXIT.controllerError;
+        else if (memoryReport.failure) exitCode = EXIT.stopped;
       }
     }
     let stopFailure = null;
@@ -889,6 +1038,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         exitCode,
         identityRejected: summaryExtra.identityRejected === true,
         calibration: summaryExtra.calibration ?? null,
+        ...(memoryProfile
+          ? {
+              diagnostic: true,
+              rendererMemoryStudy: memoryReport ?? {
+                protocol: memoryProfile.protocol,
+                scheduleComplete: false,
+                observationComplete: false,
+              },
+            }
+          : {}),
         resourceSamples: { count: samples.length, peak: sampledPeak(samples) },
         resourceStudy:
           command === "run" && profile.resourceStudy
@@ -915,6 +1074,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       // Returning from finally deliberately overrides the try block's exit code.
       return exitCode; // eslint-disable-line no-unsafe-finally
     }
+    if (memoryProfile) return exitCode; // eslint-disable-line no-unsafe-finally
   }
 }
 

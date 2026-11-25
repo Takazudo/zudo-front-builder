@@ -33,7 +33,12 @@
         "control-not-fired",
         "idle",
         "resource-sample",
-        "resource-study"
+        "resource-study",
+        "renderer-memory-phase",
+        "renderer-memory-sample",
+        "renderer-memory-idle",
+        "renderer-memory-failure",
+        "renderer-memory-evidence"
       ]
     },
     "label": {

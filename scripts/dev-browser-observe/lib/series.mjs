@@ -4,6 +4,7 @@ import { DECLARABLE_FACETS, allowedDifferences, stripVariantKeys } from "./aggre
 import { verifyFrozen } from "./frozen.mjs";
 import { harnessCapability } from "./identity.mjs";
 import { LABEL_RE, loadProfile } from "./profile.mjs";
+import { rendererMemoryBuild } from "./renderer-memory-protocol.mjs";
 import { EXIT, verifyIdentityOnly } from "./run.mjs";
 import { superviseSession } from "./session-supervisor.mjs";
 import {
@@ -157,6 +158,12 @@ export function loadSeriesPlan(planPath) {
   const proto = PROTOCOLS[plan.protocol];
   for (const [v, x] of Object.entries(out.variants)) {
     const prof = x.selected;
+    if (
+      prof.rendererMemoryStudy ||
+      builds[v]?.diagnostic === true ||
+      rendererMemoryBuild(builds[v])
+    )
+      errors.push(`$.variants.${v}: renderer-memory diagnostics require a standalone run`);
     if ((prof.fixture.kind ?? "tiny") !== "field-notes")
       errors.push(`$.variants.${v}: ${plan.protocol} needs a field-notes profile`);
     if (plan.protocol === TIMING_ABBA_PROTOCOL) {

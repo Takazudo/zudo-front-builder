@@ -62,6 +62,8 @@
         }
       }
     },
+    "diagnostic": { "type": "boolean" },
+    "rendererMemoryStudy": { "type": ["object", "null"] },
     "profile": {
       "type": "object"
     },
