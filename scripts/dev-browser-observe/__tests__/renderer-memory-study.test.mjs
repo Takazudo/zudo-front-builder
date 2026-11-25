@@ -6,6 +6,8 @@ import { aggregate } from "../lib/aggregate.mjs";
 import { evaluateIdentity } from "../lib/identity.mjs";
 import { semanticErrors } from "../lib/profile.mjs";
 import {
+  RENDERER_MEMORY_ALLOCATOR_ENV as allocatorEnv,
+  RENDERER_MEMORY_ALLOCATOR_PROTOCOL as allocatorProtocol,
   RENDERER_MEMORY_FEATURE as feature,
   RENDERER_MEMORY_LIMITS as limits,
   RENDERER_MEMORY_PROTOCOL as protocol,
@@ -13,28 +15,30 @@ import {
 import { createRendererMemoryStudy } from "../lib/renderer-memory-study.mjs";
 import { expandSchedule } from "../lib/schedule.mjs";
 import { validateAs } from "../lib/schema.mjs";
+import { serverEnv } from "../lib/server.mjs";
 import { runBatch } from "../lib/state-machine.mjs";
 import { HARNESS_DIR } from "../lib/util.mjs";
 import { deps, fakeFs, fakePage, fakeServer } from "./fakes.mjs";
 
-function profile() {
+function profile(studyProtocol = protocol) {
   const input = JSON.parse(
     readFileSync(join(HARNESS_DIR, "profiles", "field-notes-direct-read.example.json")),
   );
   const [scenario] = input.scenarios;
-  scenario.ops[0].repeat = { warmups: 2, measured: 10 };
+  const allocator = studyProtocol === allocatorProtocol;
+  scenario.ops[0].repeat = allocator ? { warmups: 0, measured: 12 } : { warmups: 2, measured: 10 };
   return {
     ...input,
     diagnostic: true,
     rendererMemoryStudy: {
-      protocol,
+      protocol: studyProtocol,
       browserExecutable: "/chromium/headless_shell",
       browserExecutableSha256: "a".repeat(64),
     },
     fixture: { ...input.fixture, scale: 100 },
     server: {
       ...input.server,
-      env: { ZFB_DEV_PROVENANCE_TRACE: "1" },
+      env: { ZFB_DEV_PROVENANCE_TRACE: "1", ...(allocator && { [allocatorEnv]: "1" }) },
       readyTimeoutMs: limits.readyTimeoutMs,
     },
     limits: limits.limits,
@@ -58,6 +62,24 @@ describe("renderer-memory profile and build identity", () => {
     expect(semanticErrors(accepted).join("\n")).toContain("12 consecutive");
   });
 
+  it("requires explicit v2 opt-in and strips the inherited allocator switch", () => {
+    const accepted = profile(allocatorProtocol);
+    expect(validateAs("profile", accepted)).toEqual([]);
+    expect(semanticErrors(accepted)).toEqual([]);
+    expect(serverEnv({ [allocatorEnv]: "1" }, {}, true).removedDiagnosticEnv).toEqual([
+      allocatorEnv,
+    ]);
+    expect(serverEnv({}, { [allocatorEnv]: "1" }, true).zfbEnv[allocatorEnv]).toBe("1");
+    expect(serverEnv({}, { [allocatorEnv]: "1" }, false).zfbEnv[allocatorEnv]).toBeUndefined();
+    accepted.scenarios[0].ops[0].repeat = { warmups: 2, measured: 10 };
+    expect(semanticErrors(accepted).join("\n")).toContain("v2 requires zero warmup attempts");
+    delete accepted.server.env[allocatorEnv];
+    expect(semanticErrors(accepted).join("\n")).toContain(allocatorEnv);
+    const old = profile();
+    old.server.env[allocatorEnv] = "1";
+    expect(semanticErrors(old).join("\n")).toContain("requires renderer-memory.v2");
+  });
+
   it("matches the diagnostic build only to its declared study", () => {
     const diagnosticBuild = {
       diagnostic: true,
@@ -74,39 +96,49 @@ describe("renderer-memory profile and build identity", () => {
     expect(check({}, { build: { features: [] } })).toBeUndefined();
   });
 
-  it("never pools diagnostic latency rows even if a diagnostic build has an ordinary profile", () => {
-    const root = mkdtempSync(join(tmpdir(), "zfb-memory-aggregate-"));
-    try {
-      const dir = join(root, "diagnostic");
-      mkdirSync(dir);
-      writeFileSync(
-        join(dir, "receipt.json"),
-        JSON.stringify({
-          buildReceipt: { build: { features: [`zfb/${feature}`] } },
-          profile: {},
-        }),
-      );
-      writeFileSync(
-        join(dir, "records.jsonl"),
-        JSON.stringify({
-          type: "attempt",
-          op: "edit-body",
-          scenario: "body",
-          outcome: "success",
-          latencyMs: 10,
-        }),
-      );
-      const { report } = aggregate({ sessions: [{ dir, variant: "A", label: "diagnostic" }] });
-      expect(report.sessions[0]).toMatchObject({ timingExcluded: true, blocks: [] });
-      expect(report.pooled).toEqual({});
-      expect(report.pooledComparable).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true });
-    }
-  });
+  it.each([null, protocol, allocatorProtocol])(
+    "excludes diagnostic receipt %s from timing",
+    (studyProtocol) => {
+      const root = mkdtempSync(join(tmpdir(), "zfb-memory-aggregate-"));
+      try {
+        const dir = join(root, "diagnostic");
+        mkdirSync(dir);
+        writeFileSync(
+          join(dir, "receipt.json"),
+          JSON.stringify({
+            ...(studyProtocol
+              ? { profile: { rendererMemoryStudy: { protocol: studyProtocol } } }
+              : { buildReceipt: { build: { features: [`zfb/${feature}`] } }, profile: {} }),
+          }),
+        );
+        writeFileSync(
+          join(dir, "records.jsonl"),
+          JSON.stringify({
+            type: "attempt",
+            op: "edit-body",
+            scenario: "body",
+            outcome: "success",
+            latencyMs: 10,
+          }),
+        );
+        const { report } = aggregate({ sessions: [{ dir, variant: "A", label: "diagnostic" }] });
+        expect(report.sessions[0]).toMatchObject({ timingExcluded: true, blocks: [] });
+        expect(report.pooled).toEqual({});
+        expect(report.pooledComparable).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true });
+      }
+    },
+  );
 });
 
-async function simulate({ failPoll = null, workDeadline = 240_000, routeFailure = false } = {}) {
+async function simulate({
+  failPoll = null,
+  workDeadline = 240_000,
+  routeFailure = false,
+  studyProtocol = protocol,
+  mappingFailure = null,
+} = {}) {
   let now = 0n;
   const clock = () => now;
   const sleep = vi.fn(async (ms) => {
@@ -161,6 +193,11 @@ async function simulate({ failPoll = null, workDeadline = 240_000, routeFailure 
   const d = deps({ fs, page, server, clock: { now: clock } });
   const study = createRendererMemoryStudy({
     append: (r) => d.recorder.append(r),
+    protocol: studyProtocol,
+    captureMappings: async (_server, boundary) => {
+      if (boundary === mappingFailure) throw new Error("mapping input exceeded cap");
+      return { boundary, edits, liveChecks, restores: fs.restores, elapsedNs: String(now) };
+    },
     supervisorStartedMs: 0,
     workDeadline,
     clock,
@@ -172,7 +209,7 @@ async function simulate({ failPoll = null, workDeadline = 240_000, routeFailure 
     study.startSampling(server);
     await study.beforeEdits();
     const { accounting, stopped } = await runBatch({
-      scenarios: expandSchedule(profile()),
+      scenarios: expandSchedule(profile(studyProtocol)),
       deps: {
         ...d,
         timeouts: limits.timeouts,
@@ -188,7 +225,12 @@ async function simulate({ failPoll = null, workDeadline = 240_000, routeFailure 
       cleanup: d.recorder.records.findLast((r) => r.type === "cleanup"),
     });
     study.beginShutdown();
-    return { accounting, records: d.recorder.records, fs, liveChecks, study, sleep };
+    const report = study.finish({
+      logClose: { pipes: "closed" },
+      completedSchedule: study.idleMs !== null,
+      serverAbsent: true,
+    });
+    return { accounting, records: d.recorder.records, fs, liveChecks, study, sleep, report };
   } finally {
     study.finishSampling();
   }
@@ -245,5 +287,82 @@ describe("bounded renderer-memory schedule", () => {
     expect(records.find((r) => r.type === "renderer-memory-idle")).toMatchObject({
       step: "skipped",
     });
+  });
+});
+
+describe("v2 mapping boundaries", () => {
+  it("takes exactly four observations in workload order with twelve edits and an intact idle", async () => {
+    const result = await simulate({ studyProtocol: allocatorProtocol });
+    expect(result.accounting).toMatchObject({ attempted: 12, success: 12, notAttempted: 0 });
+    const mapping = result.records.filter((row) => row.type === "renderer-memory-mapping");
+    expect(
+      mapping.map((row) => [
+        row.boundary,
+        row.phase,
+        row.result.edits,
+        row.result.liveChecks,
+        row.result.restores,
+        row.result.elapsedNs,
+      ]),
+    ).toEqual([
+      ["before-edits", "startup", 0, 0, 0, "0"],
+      ["after-edits", "edits", 12, 0, 0, "0"],
+      ["after-route-verification", "route-verification", 12, 6, 1, "0"],
+      ["after-idle", "idle", 12, 6, 1, "60000000000"],
+    ]);
+    expect(mapping.every((row) => row.ok && row.protocol === allocatorProtocol)).toBe(true);
+    expect(result.report.mappings.complete).toBe(true);
+  });
+
+  it("takes no later mapping after a failed attempt or mapping read and restores the source", async () => {
+    for (const options of [{ failPoll: 3 }, { mappingFailure: "after-edits" }]) {
+      const result = await simulate({ studyProtocol: allocatorProtocol, ...options });
+      const mapping = result.records.filter((row) => row.type === "renderer-memory-mapping");
+      expect(mapping.map((row) => [row.boundary, row.ok])).toEqual([
+        ["before-edits", true],
+        ...(options.mappingFailure ? [["after-edits", false]] : []),
+      ]);
+      expect(result.fs.restores).toBe(1);
+      expect(result.liveChecks).toBe(0);
+      expect(result.study.idleMs).toBeNull();
+      expect(result.report.mappings.complete).toBe(false);
+    }
+  });
+
+  it("keeps the one-second safety sampling cadence during a permitted mapping read", async () => {
+    vi.useFakeTimers();
+    const sampler = vi.fn(async () => ({ summedRssKiB: 100 }));
+    const started = Date.now();
+    let resolveMapping;
+    const captureMappings = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveMapping = resolve;
+        }),
+    );
+    const study = createRendererMemoryStudy({
+      append: () => {},
+      protocol: allocatorProtocol,
+      supervisorStartedMs: 0,
+      workDeadline: 240_000,
+      sample: sampler,
+      inspect: () => ({ start: {} }),
+      captureMappings,
+      clock: () => BigInt(Date.now() - started) * 1_000_000n,
+    });
+    try {
+      study.startSampling(fakeServer());
+      const ready = study.beforeEdits();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(captureMappings).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(sampler.mock.calls.length).toBeGreaterThan(1);
+      expect(study.failure).toBeNull();
+      resolveMapping({});
+      await ready;
+    } finally {
+      study.finishSampling();
+      vi.useRealTimers();
+    }
   });
 });

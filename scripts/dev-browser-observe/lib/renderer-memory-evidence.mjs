@@ -2,6 +2,10 @@ import { readFile, readdir, readlink, stat } from "node:fs/promises";
 import { linuxBirth, parseLinuxStat, sameLinuxBirth } from "./linux-birth.mjs";
 import { snapshotOwned } from "./process-owner.mjs";
 import { parseProvLines } from "./provenance.mjs";
+import {
+  RENDERER_MEMORY_ALLOCATOR_DOMAIN as ALLOCATOR_DOMAIN,
+  RENDERER_MEMORY_ALLOCATOR_LIMIT as ALLOCATOR_LIMIT,
+} from "./renderer-memory-protocol.mjs";
 
 const STATUS_FIELDS = ["VmRSS", "RssAnon", "RssFile", "RssShmem", "VmSwap"];
 const PRIVATE_FIELDS = ["Rss", "Pss", "Private_Clean", "Private_Dirty", "Private_Hugetlb", "Swap"];
@@ -120,6 +124,33 @@ const TERMINAL = "renderer_lifecycle_terminal";
 const LOSS = "renderer_lifecycle_loss";
 const positive = (n) => Number.isSafeInteger(n) && n > 0;
 const counter = (n) => Number.isSafeInteger(n) && n >= 0;
+const ALLOCATOR_START = "allocator_start";
+const ALLOCATOR_COMPLETE = "allocator_complete";
+const ALLOCATOR_PHASES = [
+  "entry",
+  "snapshot_before",
+  "snapshot_after",
+  "bundle_before",
+  "bundle_after",
+  "retirement_after",
+  "refresh_return",
+];
+const ALLOCATOR_COMPLETION_FIELDS = [
+  "allocator_started_us",
+  "allocator_completed_us",
+  "allocator_duration_us",
+  "allocator_outcome",
+  "allocator_unavailable_reason",
+  "allocator",
+];
+const ALLOCATOR_FIELDS = [
+  "arena_bytes",
+  "uordblks_bytes",
+  "fordblks_bytes",
+  "hblkhd_bytes",
+  "hblks",
+  "fsmblks_bytes",
+];
 const HEAP_FIELDS = [
   "used_heap_size",
   "total_heap_size",
@@ -244,12 +275,250 @@ function checkHost(events, final) {
 }
 
 /**
+ * Check only occurrence order. Emission can be reordered by producer contention.
+ * A pending getter is normal during a periodic check. At termination it is
+ * incomplete evidence, even if the server needed forced shutdown.
+ */
+function inspectAllocator(rows, byRefresh, lifecycle, final) {
+  const starts = new Map();
+  const completed = new Map();
+  const byCallPhase = new Map();
+  let lastCheckpoint = 0;
+  const unavailable = new Set(["application_write_exclusion", "unsupported_target"]);
+  const report = {
+    domain: ALLOCATOR_DOMAIN,
+    limit: ALLOCATOR_LIMIT,
+    started: 0,
+    completed: 0,
+    unfinished: [],
+    unavailable: [],
+    endIdle: "unavailable: no end-idle GNU allocator call",
+    failure: null,
+  };
+  const fail = (detail) => ({ ...report, failure: detail });
+  for (const e of rows) {
+    const call = e.allocator_call;
+    if (
+      e.metric_domain !== ALLOCATOR_DOMAIN ||
+      !ALLOCATOR_PHASES.includes(e.allocator_phase) ||
+      !positive(e.refresh_id) ||
+      [e.tick, e.host_id, e.snapshot_gen].some((value) => value !== undefined && !positive(value))
+    )
+      return fail("allocator metric identity or phase mismatch");
+    const startFields = e.phase === ALLOCATOR_START;
+    if (startFields && ALLOCATOR_COMPLETION_FIELDS.some((field) => Object.hasOwn(e, field)))
+      return fail("allocator start contains completion fields");
+    if (e.allocator_outcome === "limit") {
+      if (
+        call !== ALLOCATOR_LIMIT + 1 ||
+        lastCheckpoint !== ALLOCATOR_LIMIT ||
+        Object.hasOwn(e, "allocator") ||
+        Object.hasOwn(e, "allocator_unavailable_reason") ||
+        e.allocator_started_us !== e.occurred_us ||
+        e.allocator_completed_us !== e.occurred_us ||
+        e.allocator_duration_us !== 0
+      )
+        return fail("invalid native allocator ceiling record");
+      return fail("allocator native invocation ceiling reached");
+    }
+    if (!positive(call) || call > ALLOCATOR_LIMIT)
+      return fail("invalid native allocator invocation number");
+    if (e.phase === ALLOCATOR_START || e.allocator_outcome === "unavailable") {
+      if (call !== lastCheckpoint + 1) return fail("missing or repeated allocator checkpoint");
+      lastCheckpoint = call;
+      if (byCallPhase.has(`${e.refresh_id}/${e.allocator_phase}`))
+        return fail("duplicate allocator phase within refresh");
+      byCallPhase.set(`${e.refresh_id}/${e.allocator_phase}`, e);
+      if (e.allocator_outcome === "unavailable") {
+        if (
+          !unavailable.has(e.allocator_unavailable_reason) ||
+          Object.hasOwn(e, "allocator") ||
+          e.allocator_started_us !== e.occurred_us ||
+          e.allocator_completed_us !== e.occurred_us ||
+          e.allocator_duration_us !== 0
+        )
+          return fail("invalid unavailable allocator checkpoint");
+        report.unavailable.push({
+          call,
+          refreshId: e.refresh_id,
+          phase: e.allocator_phase,
+          reason: e.allocator_unavailable_reason,
+        });
+        continue;
+      }
+      starts.set(call, e);
+      report.started += 1;
+      continue;
+    }
+    const start = starts.get(call);
+    if (
+      !start ||
+      completed.has(call) ||
+      start.refresh_id !== e.refresh_id ||
+      start.allocator_phase !== e.allocator_phase ||
+      start.snapshot_gen !== e.snapshot_gen ||
+      start.host_id !== e.host_id ||
+      start.tick !== e.tick ||
+      start.allocator_boundary_outcome !== e.allocator_boundary_outcome
+    )
+      return fail("allocator completion lacks its matching start");
+    if (
+      !counter(e.allocator_started_us) ||
+      e.allocator_started_us < start.occurred_us ||
+      !counter(e.allocator_completed_us) ||
+      e.allocator_completed_us !== e.occurred_us ||
+      !counter(e.allocator_duration_us) ||
+      e.allocator_completed_us - e.allocator_started_us !== e.allocator_duration_us
+    )
+      return fail("invalid allocator getter clock or duration");
+    completed.set(call, e);
+    report.completed += 1;
+    if (
+      e.allocator_outcome !== "ok" ||
+      Object.hasOwn(e, "allocator_unavailable_reason") ||
+      Object.keys(e.allocator ?? {}).length !== ALLOCATOR_FIELDS.length ||
+      !ALLOCATOR_FIELDS.every((field) => counter(e.allocator?.[field]))
+    )
+      return fail("invalid allocator completion or counters");
+  }
+  report.unfinished = [...starts.entries()]
+    .filter(([call]) => !completed.has(call))
+    .map(([call, row]) => ({
+      call,
+      refreshId: row.refresh_id,
+      phase: row.allocator_phase,
+      startedUs: row.occurred_us,
+    }));
+  const joins = new Map(
+    lifecycle
+      .filter((row) => row.phase.startsWith("join_") && row.retired_by_refresh_id)
+      .map((row) => [row.retired_by_refresh_id, row]),
+  );
+  const hostCreates = new Map();
+  for (const row of lifecycle) {
+    if (row.phase !== "host_create") continue;
+    if (!hostCreates.has(row.refresh_id)) hostCreates.set(row.refresh_id, []);
+    hostCreates.get(row.refresh_id).push(row);
+  }
+  for (const row of byCallPhase.values()) {
+    const refresh = byRefresh.get(row.refresh_id);
+    const context = refresh?.find((candidate) => candidate.phase === "refresh_start");
+    if (!context) return fail("allocator checkpoint attached to unknown refresh");
+    const host = hostCreates
+      .get(row.refresh_id)
+      ?.findLast((candidate) => candidate.occurrence < row.occurrence);
+    const snapshot = refresh.findLast(
+      (candidate) =>
+        candidate.occurrence < row.occurrence &&
+        ["snapshot_ready", "snapshot_failed"].includes(candidate.phase),
+    );
+    if (
+      row.tick !== context.tick ||
+      row.host_id !== host?.host_id ||
+      row.snapshot_gen !== snapshot?.snapshot_gen
+    )
+      return fail(
+        `allocator checkpoint has foreign tick, host or snapshot for refresh ${row.refresh_id}`,
+      );
+  }
+  if (report.unavailable.length)
+    return fail(`GNU allocator getter unavailable: ${report.unavailable[0].reason}`);
+  if (final && report.unfinished.length)
+    return fail("allocator getter started but did not complete");
+  if (final && (!byRefresh.size || !report.started))
+    return fail("mandatory allocator refresh observations missing");
+  for (const [id, refresh] of byRefresh) {
+    const phase = (name) => refresh.find((e) => e.phase === name);
+    const started = phase("refresh_start");
+    const finished =
+      phase("refresh_complete") ?? phase("refresh_skipped") ?? phase("refresh_failed");
+    // RefreshComplete/Skipped/Failed is still an inner-function boundary. A
+    // periodic observation can validate the preceding phases once this marker
+    // is in a contiguous occurrence prefix. The post-return getter can still
+    // be legitimately absent or in flight at that point.
+    if (!finished && !final) continue;
+    const bundle = phase("bundle_start");
+    const snapshot = phase("snapshot_start");
+    const snapshotEnd = phase("snapshot_ready") ?? phase("snapshot_failed");
+    const join = joins.get(id);
+    if (!started || typeof started.boot !== "boolean" || !finished || (snapshot && !snapshotEnd))
+      return fail(`refresh ${id} lacks boot or finish context for allocator phases`);
+    const returned = byCallPhase.get(`${id}/refresh_return`);
+    const returnComplete = returned && completed.has(returned.allocator_call);
+    const expectReturn = !started.boot && (final || returnComplete);
+    const expected = [
+      ["entry", started, snapshot ?? finished],
+      ...(snapshot
+        ? [
+            ["snapshot_before", snapshot, snapshotEnd],
+            [
+              "snapshot_after",
+              snapshotEnd,
+              bundle ?? finished,
+              snapshotEnd?.phase === "snapshot_failed" ? "rejected" : "ok",
+            ],
+          ]
+        : []),
+      ...(bundle
+        ? [
+            ["bundle_before", bundle, phase("bundle_ready") ?? finished],
+            [
+              "bundle_after",
+              null,
+              phase("bundle_ready") ?? finished,
+              phase("bundle_ready") ? "ok" : "failed",
+            ],
+          ]
+        : []),
+      ...(join ? [["retirement_after", join, finished, ["returned", "failed"]]] : []),
+      ...(expectReturn
+        ? [
+            [
+              "refresh_return",
+              finished,
+              null,
+              {
+                refresh_complete: "refreshed",
+                refresh_failed: "failed",
+                refresh_skipped: "skipped",
+              }[finished.phase],
+            ],
+          ]
+        : []),
+    ];
+    const got = ALLOCATOR_PHASES.filter(
+      (name) => name !== "refresh_return" || expectReturn || started.boot,
+    )
+      .map((name) => byCallPhase.get(`${id}/${name}`))
+      .filter(Boolean);
+    if (got.length !== expected.length)
+      return fail(`allocator schedule incomplete for refresh ${id}`);
+    let previous = started.occurrence;
+    for (const [index, [name, after, before, outcome]] of expected.entries()) {
+      const start = got[index];
+      const finish = completed.get(start.allocator_call);
+      if (
+        !finish ||
+        start.allocator_phase !== name ||
+        start.occurrence <= previous ||
+        (after && start.occurrence <= after.occurrence) ||
+        (before && finish.occurrence >= before.occurrence) ||
+        ![outcome].flat().includes(finish.allocator_boundary_outcome)
+      )
+        return fail(`invalid allocator ${name} boundary in refresh ${id}`);
+      previous = finish.occurrence;
+    }
+  }
+  return report;
+}
+
+/**
  * Validate the recorded stream independent of controller edit labels. Events can reach
  * stderr in a different order than they occurred. Only a terminal watermark can close gaps.
  */
 export function inspectRendererLifecycle(
   server,
-  { final = false, requireStart = false, minimumAdoptions = 0 } = {},
+  { final = false, requireStart = false, minimumAdoptions = 0, withAllocator = false } = {},
 ) {
   const { lines, droppedBeforeMark } = server.provSince(0);
   const parsed = parseProvLines(lines);
@@ -294,6 +563,10 @@ export function inspectRendererLifecycle(
       start.drain_capacity !== 128 ||
       start.attempt_limit !== 4096 ||
       start.line_limit_bytes !== 1024 ||
+      (withAllocator
+        ? start.allocator_metric_domain !== ALLOCATOR_DOMAIN ||
+          start.allocator_call_limit !== ALLOCATOR_LIMIT
+        : start.allocator_metric_domain !== undefined) ||
       !positive(start.pid) ||
       (server.handle?.native?.pid != null && start.pid !== server.handle.native.pid) ||
       !positive(start.clock_monotonic_us) ||
@@ -307,11 +580,19 @@ export function inspectRendererLifecycle(
   const seen = new Set();
   const byHost = new Map();
   const byRefresh = new Map();
+  const allocatorRows = [];
+  let contiguous = 0;
   for (const e of events.sort((a, b) => a.occurrence - b.occurrence)) {
     if (!positive(e.occurrence) || seen.has(e.occurrence) || !counter(e.occurred_us)) {
       return fail("invalid native occurrence sequence or timestamp");
     }
     seen.add(e.occurrence);
+    if (e.occurrence === contiguous + 1) contiguous += 1;
+    if (e.phase === ALLOCATOR_START || e.phase === ALLOCATOR_COMPLETE) {
+      if (!withAllocator) return fail("unexpected allocator telemetry in renderer-memory.v1");
+      allocatorRows.push(e);
+      continue;
+    }
     const refreshPhase = REFRESH_PHASES.has(e.phase);
     if (!refreshPhase && !HOST_PHASES.has(e.phase)) return fail("unknown lifecycle phase");
     if (refreshPhase || e.phase === "adopted") {
@@ -337,14 +618,35 @@ export function inspectRendererLifecycle(
       }
     }
   }
+  if (withAllocator) {
+    // Stderr can emit a later occurrence before an earlier producer. A missing
+    // event is actionable only inside the proven prefix or at finalization.
+    const established = (row) => final || row.occurrence <= contiguous;
+    const knownRefreshes = new Map(
+      [...byRefresh]
+        .map(([id, rows]) => [id, rows.filter(established)])
+        .filter(([, rows]) => rows.length),
+    );
+    result.allocator = inspectAllocator(
+      allocatorRows.filter(established),
+      knownRefreshes,
+      events.filter(established),
+      final,
+    );
+    if (!final && result.allocator.failure) return fail(result.allocator.failure);
+  }
   if (final) {
     if (
       !last ||
       !positive(last.attempted) ||
+      last.attempted > 4096 ||
+      events.some((row) => row.seq >= last.seq) ||
       last.attempted !== seen.size ||
       last.emitted !== seen.size
     ) {
-      return fail("missing native terminal watermark or occurrence records");
+      return fail(
+        result.allocator?.failure ?? "missing native terminal watermark or occurrence records",
+      );
     }
     for (let occurrence = 1; occurrence <= last.attempted; occurrence++)
       if (!seen.has(occurrence)) return fail(`missing occurrence ${occurrence}`);
@@ -395,6 +697,8 @@ export function inspectRendererLifecycle(
       }
     }
   }
+  if (result.allocator?.failure)
+    return { ...fail(result.allocator.failure), lifecycleComplete: final };
   return {
     ...result,
     complete: final,

@@ -183,3 +183,240 @@ test("a recorded timeout can establish an observed join failure without claiming
   assert.equal(report.nativeFailures[0].phase, "join_timeout");
   assert.equal(report.complete, true);
 });
+
+function allocatorStream({ unavailable, unfinished, omit, corrupt = () => {} } = {}) {
+  const original = stream()
+    .provSince()
+    .lines.map(({ text }) => JSON.parse(text.slice(11)));
+  const [anchor, ...rest] = original;
+  const rows = [
+    { ...anchor, allocator_metric_domain: "gnu_mallinfo2.v1", allocator_call_limit: 128 },
+  ];
+  let call = 0;
+  let occurrence = 0;
+  const append = (row) => {
+    occurrence += 1;
+    rows.push({ tick: 23, ...row, occurrence, occurred_us: occurrence });
+  };
+  const getter = (allocator_phase, allocator_boundary_outcome, hasSnapshot = true) => {
+    if (allocator_phase === omit) return;
+    const identity = {
+      ev: "renderer_lifecycle",
+      metric_domain: "gnu_mallinfo2.v1",
+      refresh_id: 1,
+      ...(hasSnapshot && { snapshot_gen: 1 }),
+      ...(allocator_phase === "refresh_return" && { host_id: 1 }),
+      allocator_phase,
+      allocator_call: ++call,
+      allocator_boundary_outcome,
+    };
+    const absent = unavailable === allocator_phase;
+    if (!absent) append({ ...identity, phase: "allocator_start" });
+    if (unfinished === allocator_phase) return;
+    const completed = occurrence + 1;
+    append({
+      ...identity,
+      phase: "allocator_complete",
+      allocator_started_us: absent ? completed : completed - 1,
+      allocator_completed_us: completed,
+      allocator_duration_us: absent ? 0 : 1,
+      allocator_outcome: absent ? "unavailable" : "ok",
+      ...(absent
+        ? { allocator_unavailable_reason: "application_write_exclusion" }
+        : {
+            allocator: {
+              arena_bytes: 171,
+              uordblks_bytes: 11,
+              fordblks_bytes: 160,
+              hblkhd_bytes: 62,
+              hblks: 2,
+              fsmblks_bytes: 0,
+            },
+          }),
+    });
+  };
+  const phase = (name) => ({
+    ev: "renderer_lifecycle",
+    phase: name,
+    refresh_id: 1,
+    snapshot_gen: 1,
+  });
+  append({ ...phase("refresh_start"), boot: false });
+  getter("entry", undefined, false);
+  append(phase("snapshot_start"));
+  getter("snapshot_before", undefined, false);
+  append(phase("snapshot_ready"));
+  getter("snapshot_after", "ok");
+  append(phase("bundle_start"));
+  getter("bundle_before");
+  getter("bundle_after", "ok");
+  append(phase("bundle_ready"));
+  const byOccurrence = rest.sort((a, b) => a.occurrence - b.occurrence);
+  for (const name of ["host_create", "host_initialized", "host_boot", "validation_ok", "adopted"])
+    append(byOccurrence.find((row) => row.phase === name));
+  append({ ...phase("refresh_complete"), host_id: 1 });
+  getter("refresh_return", "refreshed");
+  for (const name of ["retire_requested", "host_final_heap", "host_destroyed", "join_completed"])
+    append(byOccurrence.find((row) => row.phase === name));
+  if (!unfinished)
+    rows.push({
+      ev: "renderer_lifecycle_terminal",
+      attempted: occurrence,
+      emitted: occurrence,
+      contention: 0,
+      overflow: 0,
+      output_dropped: 0,
+    });
+  for (const row of rows) corrupt(row);
+  return {
+    handle: { native: { pid: 20 } },
+    provSince: () => ({
+      droppedBeforeMark: 0,
+      lines: rows.map((row, i) => ({
+        text: "[zfb-prov] " + JSON.stringify({ ...row, seq: i + 1, ms: i }),
+      })),
+    }),
+  };
+}
+
+test("validates v2 GNU checkpoint units, clock, occurrence and explicit post-return phase", () => {
+  const report = inspectRendererLifecycle(allocatorStream(), { final: true, withAllocator: true });
+  assert.equal(report.complete, true, JSON.stringify(report.failure));
+  assert.equal(report.failure, null);
+  assert.deepEqual(report.allocator, {
+    domain: "gnu_mallinfo2.v1",
+    limit: 128,
+    started: 6,
+    completed: 6,
+    unfinished: [],
+    unavailable: [],
+    endIdle: "unavailable: no end-idle GNU allocator call",
+    failure: null,
+  });
+  for (const server of [
+    allocatorStream({ omit: "refresh_return" }),
+    allocatorStream({
+      corrupt(row) {
+        if (row.phase === "allocator_complete" && row.allocator_phase === "refresh_return")
+          row.allocator_duration_us += 1;
+      },
+    }),
+    allocatorStream({
+      corrupt(row) {
+        if (row.phase === "allocator_complete" && row.allocator_phase === "entry")
+          row.allocator.arena_bytes = null;
+      },
+    }),
+    stream(),
+  ]) {
+    const invalid = inspectRendererLifecycle(server, { final: true, withAllocator: true });
+    assert.equal(invalid.complete, false);
+    assert.equal(invalid.failure.reason, "renderer-telemetry");
+  }
+});
+
+test("reports in-flight and unfinished GNU getters independently of native join outcomes", () => {
+  const server = allocatorStream({ unfinished: "refresh_return" });
+  const ongoing = inspectRendererLifecycle(server, { withAllocator: true });
+  assert.equal(ongoing.failure, null);
+  assert.deepEqual(
+    ongoing.allocator.unfinished.map((entry) => entry.phase),
+    ["refresh_return"],
+  );
+  const final = inspectRendererLifecycle(server, { final: true, withAllocator: true });
+  assert.equal(final.complete, false);
+  assert.match(final.failure.detail, /started but did not complete/);
+  assert.deepEqual(final.nativeFailures, []);
+});
+
+test("makes an explicit application lock exclusion incomplete without inventing a getter start", () => {
+  const report = inspectRendererLifecycle(allocatorStream({ unavailable: "refresh_return" }), {
+    final: true,
+    withAllocator: true,
+  });
+  assert.equal(report.complete, false);
+  assert.match(report.failure.detail, /application_write_exclusion/);
+  assert.equal(report.lifecycleComplete, true);
+  assert.equal(report.allocator.started, 5);
+  assert.equal(report.allocator.completed, 5);
+  assert.deepEqual(report.allocator.unfinished, []);
+  assert.deepEqual(report.allocator.unavailable, [
+    { call: 6, refreshId: 1, phase: "refresh_return", reason: "application_write_exclusion" },
+  ]);
+});
+
+test("rejects mismatched completion hosts and foreign refresh correlation", () => {
+  for (const mutate of [
+    (row) => {
+      if (row.allocator_phase === "refresh_return" && row.phase === "allocator_complete")
+        row.host_id = 81;
+    },
+    (row) => {
+      if (row.allocator_phase === "refresh_return") row.host_id = 81;
+    },
+    (row) => {
+      if (row.allocator_phase === "entry") row.tick = 85;
+    },
+    (row) => {
+      if (row.allocator_phase === "entry") row.snapshot_gen = 82;
+    },
+  ]) {
+    const report = inspectRendererLifecycle(allocatorStream({ corrupt: mutate }), {
+      final: true,
+      withAllocator: true,
+    });
+    assert.equal(report.complete, false);
+    assert.match(report.failure.detail, /matching start|foreign tick, host or snapshot/);
+  }
+});
+
+test("rejects allocator completion fields on start and fabricated counters on unavailable", () => {
+  for (const mutate of [
+    (row) => {
+      if (row.phase === "allocator_start") row.allocator_outcome = "unavailable";
+    },
+    (row) => {
+      if (row.allocator_outcome === "unavailable") row.allocator = {};
+    },
+  ]) {
+    const report = inspectRendererLifecycle(
+      allocatorStream({ unavailable: "refresh_return", corrupt: mutate }),
+      { final: true, withAllocator: true },
+    );
+    assert.equal(report.complete, false);
+    assert.match(report.failure.detail, /completion fields|invalid unavailable/);
+  }
+});
+
+test("checks a closed refresh in the contiguous prefix and tolerates reordered emission", () => {
+  const missing = inspectRendererLifecycle(allocatorStream({ omit: "snapshot_after" }), {
+    withAllocator: true,
+  });
+  assert.match(missing.failure.detail, /schedule incomplete/);
+
+  const server = allocatorStream();
+  const rows = server.provSince().lines.map(({ text }) => JSON.parse(text.slice(11)));
+  const index = rows.findIndex((row) => row.allocator_phase === "snapshot_after");
+  // Temporarily unseen first half of the pair, not unexplained loss: it will be
+  // emitted after the closed refresh marker, while its occurrence stays earlier.
+  const delayed = rows.splice(index, 1)[0];
+  const inspect = (rows, final) =>
+    inspectRendererLifecycle(
+      {
+        ...server,
+        provSince: () => ({
+          droppedBeforeMark: 0,
+          lines: rows.map((row, i) => ({
+            text: "[zfb-prov] " + JSON.stringify({ ...row, seq: i + 1 }),
+          })),
+        }),
+      },
+      { withAllocator: true, final },
+    );
+  assert.equal(inspect(rows.slice(0, -1), false).failure, null);
+  rows.splice(-1, 0, delayed);
+  assert.equal(inspect(rows, true).failure, null);
+  const watermark = rows.pop();
+  rows.splice(-1, 0, watermark);
+  assert.match(inspect(rows, true).failure.detail, /terminal watermark/);
+});

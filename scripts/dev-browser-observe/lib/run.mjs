@@ -20,7 +20,11 @@ import { liveOwnedFromRegistry, shouldRegisterOwned, stopOwned } from "./process
 import { LABEL_RE, loadProfile } from "./profile.mjs";
 import { Recorder } from "./recorder.mjs";
 import { createRendererMemoryStudy } from "./renderer-memory-study.mjs";
-import { RENDERER_MEMORY_LIMITS } from "./renderer-memory-protocol.mjs";
+import {
+  RENDERER_MEMORY_ALLOCATOR_PROTOCOL,
+  RENDERER_MEMORY_LIMITS,
+  RENDERER_MEMORY_MAPPING_LIMITS,
+} from "./renderer-memory-protocol.mjs";
 import { createResourceStudy, summarizeResourceStudy } from "./resource-study.mjs";
 import { expandSchedule, scheduleOf } from "./schedule.mjs";
 import { startDevServer } from "./server.mjs";
@@ -330,6 +334,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           rendererMemoryStudy: {
             ...memoryProfile,
             limits: RENDERER_MEMORY_LIMITS,
+            ...(memoryProfile.protocol === RENDERER_MEMORY_ALLOCATOR_PROTOCOL && {
+              mappingLimits: RENDERER_MEMORY_MAPPING_LIMITS,
+            }),
             supervisorStartedMs: loaded.supervisorStartedMs,
             workDeadlineMs: loaded.workDeadline,
             supervisorDeadlineMs: loaded.supervisorDeadlineMs,
@@ -408,6 +415,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   const samples = [];
   let study = null;
   let rendererMemory = null;
+  let mappingCollector = null;
   let memoryReport = null;
   let logClose = null;
   let checkLateProcesses = null;
@@ -419,13 +427,27 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     if (memoryProfile) {
       const { sampleRendererMemory, inspectRendererLifecycle } =
         hooks.rendererMemoryEvidence ?? (await import("./renderer-memory-evidence.mjs"));
+      if (memoryProfile.protocol === RENDERER_MEMORY_ALLOCATOR_PROTOCOL) {
+        const { createMappingCollector } = await import("./renderer-memory-mappings.mjs");
+        mappingCollector = (hooks.createMappingCollector ?? createMappingCollector)();
+      }
       rendererMemory = createRendererMemoryStudy({
+        protocol: memoryProfile.protocol,
         append: (r) => rec.append(r),
         signal: loaded.signal,
         supervisorStartedMs: loaded.supervisorStartedMs,
         workDeadline: loaded.workDeadline,
         sample: (owned) => sampleRendererMemory(owned, buildReceipt.exe.path),
         inspect: inspectRendererLifecycle,
+        captureMappings: (owned, boundary, { timeoutMs, signal }) =>
+          mappingCollector.collect({
+            expected: owned.handle.native,
+            executablePath: buildReceipt.exe.path,
+            artifactDir: labelDir,
+            boundary,
+            timeoutMs,
+            signal,
+          }),
         clock: hooks.rendererMemoryClock,
         sleep: hooks.sleep,
       });
@@ -952,6 +974,25 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           type: "controller-error",
           phase: "browser-close",
           error: String(error?.message ?? error),
+        });
+      }
+    }
+    if (mappingCollector) {
+      try {
+        await bounded("mapping-collector-stop", 3000, () => mappingCollector.stop());
+      } catch (error) {
+        mappingCollector.releaseUnresolvedHandle();
+        unresolved.push({
+          resource: "mapping-collector",
+          pid: mappingCollector.activePid,
+          boundary: mappingCollector.activeBoundary,
+          collectorReceipt: join("mappings", `${mappingCollector.activeBoundary}.collector.json`),
+          error: String(error),
+        });
+        safeAppend({
+          type: "controller-error",
+          phase: "mapping-collector-stop",
+          error: String(error),
         });
       }
     }
