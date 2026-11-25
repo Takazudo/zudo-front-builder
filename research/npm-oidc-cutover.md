@@ -4,14 +4,15 @@ Owner-only steps that complete the move to OIDC-only npm publishing. The reposit
 #4688 (no `NPM_TOKEN` anywhere; `scripts/npm-oidc-preflight.mjs` fails closed without OIDC or with
 any stored npm credential; npm 12.2.1 on Node 24.22.1 in the publish job) and #4690 (the
 procedure in [`RELEASING.md`](../RELEASING.md)). Nothing in this file is done by an agent on the
-owner's behalf. Order: **(a) → (b) during the next authorized release → (c) before or at that
-release → (d) only after (b) is proven.**
+owner's behalf. Confirm (a) and (c) before or at the next authorized release, collect the live
+evidence in (b) during that release, and proceed to (d) only after (b) is proven.
 
 ## (a) Trusted publisher on every package
 
 Grants are **per package**: a package without its own trusted publisher cannot publish or move a
-dist-tag, even when the other ten work. For each of the eleven packages, open the settings URL,
-add a trusted publisher, and save:
+dist-tag even when every other package can. For each active package in the selected release
+SOURCE, open its settings URL, add a trusted publisher, and save. The table below lists the
+eleven active packages on current main.
 
 | Field | Value |
 | --- | --- |
@@ -48,34 +49,67 @@ Constraints worth knowing:
 
 ## (b) Live proof at the next authorized release
 
-The cutover is unproven until a real release publishes through it. Dry runs, skipped steps,
-`finalize_only` runs that publish nothing, and public registry reads do **not** prove OIDC
-publication or dist-tag writes. Record for that release:
+Use this checklist at a separately authorized legitimate release. Count only fresh publishes and
+actual dist-tag mutations as evidence of those OIDC writes. Dry runs, existing-version skips,
+`finalize_only` runs that publish nothing, and public registry reads supply no publication proof.
+A finalizer can supply dist-tag write evidence when it actually changes a tag.
 
-- [ ] `release.yml` run ID and attempt (run name exactly `Release v<version>`), and the job IDs of
-      `Pack npm tarballs` and `publish`; the `npm-oidc-preflight` step passed on attempt 1 (or
-      every retry recorded).
-- [ ] The `publish` job verified each tarball's sha512 against the pack manifest, then ran
-      `npm publish <tgz>` eleven times under npm **12.2.1** through OIDC (no token auth, no stored
-      credential; the preflight would have failed otherwise), with an explicit `--provenance` on the
-      nine CI-built packages and `--provenance=false` on the two Darwin carriers. This is the
-      first live evidence that publishing a **tarball** (not a directory) with OIDC provenance
-      works on that npm version; record it either way.
-- [ ] Tarball publishes record no `gitHead` in the registry metadata. Identity therefore comes
-      from the attestation's source `gitCommit` (nine attested packages) and, for the Darwin
-      carriers, from the binary/addon digests matching the admission verdict — record that
-      `npm-package-state.mjs` used those routes, not `gitHead`.
-- [ ] `scripts/verify-npm-provenance-expectations.mjs` passed on the publish job's expectations
-      file: nine packages `attested`, both Darwin carriers `none`, exactly as intended.
-- [ ] Independent read: `node scripts/release/npm-package-state.mjs --version <v>
-      --source-commit <sha> --admission <admission.json> --json` reports `present-verified` for
-      all eleven.
-- [ ] Dist-tag writes happened through OIDC: for a stable, `retire-next-dist-tag.mjs` output in the
-      log (a removal, or "still ahead"/"absent" when nothing needed changing — record which; a
-      no-op does not prove the write permission). For a release where `ALSO_LATEST` applies,
-      `advance-latest-dist-tag.sh` output. If no dist-tag write was needed, the dist-tag grant
-      remains **unproven** until a release that needs one.
-- [ ] `npm view <pkg> dist-tags --json` for all eleven matches the CLAUDE.md dist-tag rule.
+The [v7.1.0 ledger](https://github.com/Takazudo/zudo-front-builder/issues/4691#issuecomment-7067197306)
+records real OIDC publishes and finalizer dist-tag writes, the original publish job's first
+provenance verification failure (exit 3), and the delivery verifier's exit 1. Account
+configuration, credential retirement and Cloud initiation remained unobserved. Overall cutover
+acceptance remains open in [#4691](https://github.com/Takazudo/zudo-front-builder/issues/4691).
+
+Use the immutable release SOURCE commit to resolve the active package inventory and publication
+policy version through [the source policy resolver](../scripts/release/source-publication-policy.mjs).
+Derive counts from that inventory and provenance expectations from the publication mode and
+observed state of any already-published versions. In a normal `mac-local` run, new CI-built
+packages expect provenance and new owner-Mac Darwin carriers expect none. For new packages,
+`all-provenance` expects attestation across the set and `recovery-no-provenance` expects none. For
+packages already present, use the observed provenance expectation recorded by the publisher.
+
+With source policy v2, every active package's packed `package.json.gitHead` must equal the exact
+verified SOURCE commit. The [packer](../scripts/release/pack-release-tarballs.mjs) verifies its
+checkout against SOURCE, stamps each input manifest before packing and computing tarball integrity,
+and restores the original manifest bytes even if packing fails. The [prepublication validator](../scripts/release/verify-release-tarballs.mjs)
+independently checks SHA-512 and reads the actual tarball contents, including the packed `gitHead`.
+Historical sources with v1 or no policy file keep their original packing and admission contracts.
+Use the evidence recorded for those releases under their original requirements.
+
+- [ ] Record the `release.yml` run ID and attempt (run name exactly `Release v<version>`), and the
+      job IDs of `Pack npm tarballs` and `publish`. Record the first `npm-oidc-preflight` result
+      and every retry.
+- [ ] Record the `publish` job's tarball integrity and content validation results, its pinned npm
+      version (currently **12.2.1**), the actual `npm publish <tgz>` operations through OIDC and
+      their explicit provenance flags, and any existing-version skips.
+- [ ] For every active package subject to the v2 contract, record the observed registry
+      `gitHead` and compare it with the exact SOURCE SHA. Missing, malformed or foreign values
+      are unresolved findings even when another identity check succeeds. Packing and independent
+      prepublication validation prove the tarball metadata offline. The live registry acceptance
+      remains tracked in [#4803](https://github.com/Takazudo/zudo-front-builder/issues/4803#issuecomment-7135475528).
+- [ ] Record the first result of `scripts/verify-npm-provenance-expectations.mjs` on the publish
+      job's expectations file, with its per-package `attested` or `none` expectations and every
+      retry or separate finalizer result.
+- [ ] Independent read: `node scripts/release/npm-package-state.mjs --version <v> --source-commit
+      <sha> --admission <admission.json> --json` reports `present-verified` for every active
+      package. Record the reported identity method and evidence. The tool checks a supported
+      SLSA attestation's SOURCE commit and subject digest first. It adds integrity to that
+      method when supplied packed integrity equals registry `dist.integrity`. Without a
+      supported attestation it tries the exact integrity match, then registry `gitHead`, then
+      admitted Darwin payload digests when applicable. A rejected supported attestation or a
+      foreign `gitHead` checked as the identity method stops verification. The tool checks
+      the downloaded tarball's SHA-512 against registry `dist.integrity` and verifies admitted
+      Darwin binary and addon digests when the applicable admission verdict is supplied, even
+      when another identity method succeeds. `gitHead` supplies
+      source metadata only. Provenance, artifact integrity and consumer admission have their
+      own requirements.
+- [ ] Record OIDC dist-tag operations and the job that performed them. Include channel
+      promotion after provenance verification (`latest` for stable, `next` for prerelease,
+      plus `latest` when `ALSO_LATEST` applies), and applicable sweeps of the holding tag and
+      stale `next`. Record actual mutations separately from no-ops such as an absent or
+      still-ahead tag. If no dist-tag write was needed, the dist-tag grant remains
+      **unproven** until a release that needs one.
+- [ ] `npm view <pkg> dist-tags --json` for every active package matches the CLAUDE.md dist-tag rule.
 - [ ] `scripts/verify-release-delivery.mjs` exit and JSON path.
 
 Unknown evidence stays unknown. A failure is recorded with its first result; do not re-run until
@@ -88,38 +122,36 @@ provenance (`@takazudo/zfb-darwin-arm64` attested since 1.0.0, `@takazudo/zfb-da
 2.13.0). From #4687 on they are built on the owner's Mac and published **without** provenance,
 because an Actions attestation would falsely claim an Actions build of bytes the Mac produced.
 
-Consequence: npm records provenance per version, permanently. A consumer with pnpm
-`trustPolicy: no-downgrade` (pnpm ≥ 10.21; pnpm 11.2+ also re-checks an existing lockfile under
-`--frozen-lockfile`) fails to install that version with `ERR_PNPM_TRUST_DOWNGRADE`. Because pnpm
-resolves all `optionalDependencies`, this affects Linux and Windows consumers of `@takazudo/zfb`
-too, not only Mac users. The earlier attested versions stay attested forever, so **every**
-local-Darwin release is a downgrade, not only the first: those consumers can never install a new
-Darwin carrier version while this build model holds.
+Earlier versions keep their attestations, so each owner-Mac release has the same potential
+trust downgrade for consumers. In the [recorded ZFB 7.2.0 installation](https://github.com/Takazudo/zudo-front-builder/issues/4691#issuecomment-7130227216),
+pnpm 12.4.1 with `trustPolicy: no-downgrade` and `trustPolicyIgnoreAfter: 10080` exited
+successfully while reporting trust-related optional dependency resolution failures and omitting
+both Darwin carriers from the lockfile. On arm64 macOS the native CLI then failed because its
+carrier was absent. An absent carrier alone leaves both the cause and the package's publication
+status unverified.
 
-`release.yml`'s preflight is default-deny: each such release blocks before publishing until the
-owner acknowledges it, by one of two routes (see
-[RELEASING.md](../RELEASING.md#provenance-contract-and-the-downgrade-blocker) for the schema and
-limits):
+Darwin receipts and CI admission bind the payload to SOURCE and the owner's Mac qualification.
+That admission and the owner's acknowledgement permit publication without npm provenance.
+The consumer's package manager applies its own trust policy. Trust-age settings and deliberate,
+scoped exclusions can affect admission while the published provenance stays the same. A lockfile
+that omitted carriers can require explicit re-resolution of the already selected ZFB version.
+See the [English troubleshooting guide](../docs/src/content/docs/guides/troubleshooting.mdx#missing-darwin-binary-with-pnpm-trust-policy)
+and the [Japanese troubleshooting guide](../docs/src/content/docs-ja/guides/troubleshooting.mdx#pnpm-の-trust-policy-で-darwin-バイナリが見つからない場合)
+for diagnosis and configuration details.
 
-- **Per run:** this exact line in the draft Release body, or `allow_provenance_downgrade=true` on a
-  dispatch:
+The release preflight is default-deny for an unacknowledged downgrade. The owner can acknowledge
+one per run with the exact Release body marker `<!-- zfb-release: allow-provenance-downgrade -->`
+on its own line or the `allow_provenance_downgrade=true` dispatch input, or use a durable
+decision under the [provenance contract](../RELEASING.md#provenance-contract-and-the-downgrade-blocker).
+Main-based recovery requires the owner-only dispatch input for an acknowledged downgrade.
 
-  ```text
-  <!-- zfb-release: allow-provenance-downgrade -->
-  ```
-
-- **Durable:** an owner-authored, committed `release/provenance-policy.json`
-  (`zfb-provenance-policy/v1`), one decision per Darwin package with `unattested_from_version`,
-  `reason`, `decided_by` and `issue`. It applies only in `mac-local` mode, only to the run's
-  locally built Darwin carriers, only from that version upward, and is read only from `main`'s
-  committed tree (`origin/main`), never from a working tree or the release commit. It is absent
-  by default; agents never create or edit it.
-
-The decision is the owner's alone (option 3 under "Owner options and follow-ups"). Options:
-acknowledge per release or once by policy (and add release-note and troubleshooting guidance for affected consumers), or hold the
-release. The Darwin receipts and the
-CI admission bind the published bytes to the source and the Mac qualification, but they are not an
-npm attestation, and pnpm's trust policy does not read them.
+The owner has already committed [the durable policy](../release/provenance-policy.json) linked
+to [#4687](https://github.com/Takazudo/zudo-front-builder/issues/4687). It covers both locally
+built Darwin carriers in `mac-local` mode from 6.1.1 onward. The release process reads it from
+committed `main` via `origin/main`. The package inventory and v2 metadata requirement come from
+the immutable release SOURCE. For a covered downgrade, record the preflight's `ACKNOWLEDGED`
+lines. A downgrade outside those decisions remains subject to default-deny and the owner-only
+acknowledgement rules.
 
 ## Owner options and follow-ups
 
@@ -135,8 +167,8 @@ The owner decides each of these; agents never change npm, GitHub or repository s
    `enabled: false`. Turning it on conflicts with the current flow, in which `release-assets` (and
    `md-wasm-asset`) upload assets after the Release is published; the flow would have to be
    reordered so every asset is attached before publication first.
-3. **Darwin provenance policy (M1).** Section (c): acknowledge per release, commit
-   `release/provenance-policy.json`, or hold.
+3. **Darwin provenance policy (M1).** The owner's committed decision already covers the normal
+   owner-Mac releases described in section (c).
 4. **Receipts are unsigned.** Darwin qualification receipts and their admission bind bytes to the
    source, not to an operator: anyone with Release write access could upload a self-consistent
    receipt. Release write access is the trust anchor; keep it limited to the owner.
