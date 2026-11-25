@@ -42,7 +42,8 @@
         "protocol": {
           "enum": [
             "dev-browser-observe.renderer-memory.v1",
-            "dev-browser-observe.renderer-memory.v2"
+            "dev-browser-observe.renderer-memory.v2",
+            "dev-browser-observe.renderer-memory.post-apply.v1"
           ]
         },
         "browserExecutable": { "type": "string", "pattern": "^/" },

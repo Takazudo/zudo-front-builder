@@ -57,6 +57,7 @@ pub(crate) enum Phase {
     #[cfg(target_env = "gnu")]
     AllocatorStart,
     AllocatorComplete,
+    ApplyReturn,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -69,9 +70,10 @@ pub(crate) enum AllocatorPhase {
     BundleAfter,
     RetirementAfter,
     RefreshReturn,
+    PostApplyReturn,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum BoundaryOutcome {
     Ok,
@@ -187,6 +189,8 @@ struct Details {
     failure: Option<BootFailure>,
     #[serde(flatten)]
     allocator_record: Option<AllocatorRecord>,
+    #[serde(flatten)]
+    apply: Option<ApplyRecord>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -208,12 +212,14 @@ struct Buffer {
     refreshes: AtomicU64,
     hosts: AtomicU64,
     allocator_enabled: bool,
+    post_apply_enabled: bool,
+    applies: AtomicU64,
     allocator_calls: AtomicU64,
     closed: AtomicBool,
 }
 
 impl Buffer {
-    fn new(allocator_enabled: bool) -> Self {
+    fn new(allocator_enabled: bool, post_apply_enabled: bool) -> Self {
         Self {
             queue: Mutex::new(VecDeque::with_capacity(CAPACITY)),
             attempted: AtomicU64::new(0),
@@ -222,6 +228,8 @@ impl Buffer {
             refreshes: AtomicU64::new(0),
             hosts: AtomicU64::new(0),
             allocator_enabled,
+            post_apply_enabled,
+            applies: AtomicU64::new(0),
             allocator_calls: AtomicU64::new(0),
             closed: AtomicBool::new(false),
         }
@@ -334,10 +342,12 @@ impl Capture {
             return None;
         }
         let pipe = NonblockingTraceSink::open().ok()?;
+        let allocator_mode = std::env::var_os(ALLOCATOR_ENV_VAR);
+        let post_apply_enabled = allocator_mode.as_deref().is_some_and(|mode| mode == "2");
         let allocator_enabled =
-            std::env::var_os(ALLOCATOR_ENV_VAR).is_some_and(|value| value == "1");
-        let startup = clock_anchor(allocator_enabled)?;
-        let buffer = Arc::new(Buffer::new(allocator_enabled));
+            post_apply_enabled || allocator_mode.as_deref().is_some_and(|mode| mode == "1");
+        let startup = clock_anchor(allocator_enabled, post_apply_enabled)?;
+        let buffer = Arc::new(Buffer::new(allocator_enabled, post_apply_enabled));
         let drain = Arc::new(Mutex::new(Drain {
             pipe,
             startup: Some(startup),
@@ -397,7 +407,7 @@ impl Capture {
     }
 }
 
-fn clock_anchor(allocator_enabled: bool) -> Option<Value> {
+fn clock_anchor(allocator_enabled: bool, post_apply_enabled: bool) -> Option<Value> {
     let anchor_before_us = prov::elapsed_us();
     let mut monotonic = libc::timespec {
         tv_sec: 0,
@@ -428,6 +438,9 @@ fn clock_anchor(allocator_enabled: bool) -> Option<Value> {
         record["allocator_metric_domain"] = json!(ALLOCATOR_METRIC_DOMAIN);
         record["allocator_call_limit"] = json!(ALLOCATOR_CALL_LIMIT);
     }
+    if post_apply_enabled {
+        record["allocator_post_apply"] = json!(true);
+    }
     Some(record)
 }
 
@@ -447,11 +460,216 @@ impl Observation {
 thread_local! {
     static REFRESH: RefCell<Option<Observation>> = const { RefCell::new(None) };
     static RETIRED_BY: Cell<u64> = const { Cell::new(0) };
+    static APPLY: Cell<Option<ApplyState>> = const { Cell::new(None) };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ApplyAssociation {
+    Associated,
+    NoRefresh,
+    Missing,
+    Duplicate,
+    Foreign,
+    Nested,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ApplyOutcome {
+    Ok,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct ApplyRecord {
+    apply_id: u64,
+    apply_outcome: ApplyOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    apply_association: Option<ApplyAssociation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refresh_outcome: Option<BoundaryOutcome>,
+}
+
+#[derive(Clone, Copy)]
+struct RefreshToken {
+    apply_id: u64,
+    context: Context,
+    outcome: BoundaryOutcome,
+}
+
+#[derive(Clone, Copy)]
+enum ApplyRefresh {
+    Waiting,
+    Running(u64),
+    Captured(RefreshToken),
+    Invalid(ApplyAssociation),
+}
+
+#[derive(Clone, Copy)]
+struct ApplyState {
+    id: u64,
+    tick: Option<u64>,
+    refresh: ApplyRefresh,
+}
+
+/// Thread-local handoff for the one refresh invoked by this delegated apply.
+/// Only fixed-size diagnostic state crosses the apply return; no product
+/// objects are retained. Nested scopes invalidate both associations.
+pub(crate) struct ApplyScope<'a> {
+    previous: Option<ApplyState>,
+    buffer: &'a Buffer,
+    id: u64,
+    tick: Option<u64>,
+    expected_refresh: bool,
+}
+
+impl ApplyScope<'static> {
+    pub(crate) fn begin(expected_refresh: impl FnOnce() -> bool) -> Option<Self> {
+        let buffer = TRACE.get()?;
+        if !buffer.post_apply_enabled || buffer.closed.load(Relaxed) {
+            return None;
+        }
+        Some(Self::with_buffer(buffer, expected_refresh()))
+    }
+}
+
+impl<'a> ApplyScope<'a> {
+    fn with_buffer(buffer: &'a Buffer, expected_refresh: bool) -> Self {
+        let mut previous = APPLY.take();
+        if let Some(state) = &mut previous {
+            state.refresh = ApplyRefresh::Invalid(ApplyAssociation::Nested);
+        }
+        let nested = previous.is_some() || REFRESH.with_borrow(Option::is_some);
+        let id = buffer.applies.fetch_add(1, Relaxed) + 1;
+        let tick = prov::renderer_tick();
+        APPLY.set(Some(ApplyState {
+            id,
+            tick,
+            refresh: if nested {
+                ApplyRefresh::Invalid(ApplyAssociation::Nested)
+            } else {
+                ApplyRefresh::Waiting
+            },
+        }));
+        Self {
+            previous,
+            buffer,
+            id,
+            tick,
+            expected_refresh,
+        }
+    }
+
+    fn begin_refresh(
+        context: Context,
+        boot: bool,
+        allocator_context: AllocatorContext,
+    ) -> Option<u64> {
+        let mut state = APPLY.get()?;
+        let nested = REFRESH.with_borrow(Option::is_some);
+        state.refresh = match state.refresh {
+            ApplyRefresh::Invalid(_) => return None,
+            _ if nested => ApplyRefresh::Invalid(ApplyAssociation::Nested),
+            _ if boot
+                || !matches!(allocator_context, AllocatorContext::PublicationLocked)
+                || state.tick != context.tick =>
+            {
+                ApplyRefresh::Invalid(ApplyAssociation::Foreign)
+            }
+            ApplyRefresh::Waiting => ApplyRefresh::Running(context.refresh_id),
+            _ => ApplyRefresh::Invalid(ApplyAssociation::Duplicate),
+        };
+        APPLY.set(Some(state));
+        matches!(state.refresh, ApplyRefresh::Running(_)).then_some(state.id)
+    }
+
+    fn capture(token: RefreshToken) {
+        let Some(mut state) = APPLY.get() else {
+            return;
+        };
+        state.refresh = match state.refresh {
+            ApplyRefresh::Invalid(_) => return,
+            _ if state.id != token.apply_id || state.tick != token.context.tick => {
+                ApplyRefresh::Invalid(ApplyAssociation::Foreign)
+            }
+            ApplyRefresh::Running(id) if id == token.context.refresh_id => {
+                ApplyRefresh::Captured(token)
+            }
+            ApplyRefresh::Captured(_) => ApplyRefresh::Invalid(ApplyAssociation::Duplicate),
+            _ => ApplyRefresh::Invalid(ApplyAssociation::Foreign),
+        };
+        APPLY.set(Some(state));
+    }
+
+    pub(crate) fn returned(self, success: bool) {
+        let refresh = match APPLY.take() {
+            Some(state) if state.id == self.id && state.tick == self.tick => state.refresh,
+            Some(_) => ApplyRefresh::Invalid(ApplyAssociation::Foreign),
+            None => ApplyRefresh::Invalid(ApplyAssociation::Missing),
+        };
+        let buffer = self.buffer;
+        let id = self.id;
+        let tick = self.tick;
+        let expected_refresh = self.expected_refresh;
+        drop(self);
+        let (association, token) = match refresh {
+            ApplyRefresh::Captured(token) => (ApplyAssociation::Associated, Some(token)),
+            ApplyRefresh::Invalid(reason) => (reason, None),
+            ApplyRefresh::Waiting if !expected_refresh => (ApplyAssociation::NoRefresh, None),
+            _ => (ApplyAssociation::Missing, None),
+        };
+        let context = token.map_or(
+            Context {
+                tick,
+                ..Context::default()
+            },
+            |token| token.context,
+        );
+        let apply = ApplyRecord {
+            apply_id: id,
+            apply_outcome: if success {
+                ApplyOutcome::Ok
+            } else {
+                ApplyOutcome::Error
+            },
+            apply_association: Some(association),
+            refresh_outcome: token.map(|token| token.outcome),
+        };
+        buffer.record(
+            context,
+            Phase::ApplyReturn,
+            Details {
+                apply: Some(apply),
+                ..Details::default()
+            },
+        );
+        if success && apply.refresh_outcome == Some(BoundaryOutcome::Refreshed) {
+            record_allocator_for(
+                buffer,
+                context,
+                AllocatorContext::Unlocked,
+                AllocatorPhase::PostApplyReturn,
+                Some(BoundaryOutcome::Returned),
+                Some(ApplyRecord {
+                    apply_association: None,
+                    ..apply
+                }),
+            );
+        }
+    }
+}
+
+impl Drop for ApplyScope<'_> {
+    fn drop(&mut self) {
+        APPLY.set(self.previous.take());
+    }
 }
 
 pub(crate) struct Refresh {
     previous: Option<Observation>,
     complete: bool,
+    apply_id: Option<u64>,
 }
 
 impl Refresh {
@@ -481,10 +699,16 @@ impl Refresh {
                 ..Details::default()
             },
         );
+        let apply_id = observation
+            .buffer
+            .post_apply_enabled
+            .then(|| ApplyScope::begin_refresh(observation.context, boot, allocator_context))
+            .flatten();
         let previous = REFRESH.with(|slot| slot.replace(Some(observation)));
         Self {
             previous,
             complete: false,
+            apply_id,
         }
     }
 
@@ -498,6 +722,17 @@ impl Refresh {
             self.finish(Phase::RefreshFailed);
         }
         record_allocator(AllocatorPhase::RefreshReturn, Some(outcome));
+        if let Some(apply_id) = self.apply_id {
+            REFRESH.with_borrow(|observation| {
+                if let Some(observation) = observation {
+                    ApplyScope::capture(RefreshToken {
+                        apply_id,
+                        context: observation.context,
+                        outcome,
+                    });
+                }
+            });
+        }
     }
 }
 
@@ -537,7 +772,27 @@ pub(crate) fn record_allocator(phase: AllocatorPhase, boundary_outcome: Option<B
     }) else {
         return;
     };
-    let buffer = &observation.buffer;
+    record_allocator_for(
+        &observation.buffer,
+        observation.context,
+        observation.allocator_context,
+        phase,
+        boundary_outcome,
+        None,
+    );
+}
+
+fn record_allocator_for(
+    buffer: &Buffer,
+    context: Context,
+    allocator_context: AllocatorContext,
+    phase: AllocatorPhase,
+    boundary_outcome: Option<BoundaryOutcome>,
+    apply: Option<ApplyRecord>,
+) {
+    if buffer.closed.load(Relaxed) {
+        return;
+    }
     let limit_record = ALLOCATOR_CALL_LIMIT + 1;
     let Ok(previous) = buffer
         .allocator_calls
@@ -557,10 +812,11 @@ pub(crate) fn record_allocator(phase: AllocatorPhase, boundary_outcome: Option<B
     };
     let emit = |phase, allocator_record, occurred_us| {
         buffer.record_at(
-            observation.context,
+            context,
             phase,
             Details {
                 allocator_record: Some(allocator_record),
+                apply,
                 ..Details::default()
             },
             occurred_us,
@@ -569,7 +825,7 @@ pub(crate) fn record_allocator(phase: AllocatorPhase, boundary_outcome: Option<B
     let requested_us = prov::elapsed_us();
     let completion = if call == limit_record {
         AllocatorCompletion::skipped(requested_us, AllocatorOutcome::Limit, None)
-    } else if let Some(reason) = observation.allocator_context.unavailable() {
+    } else if let Some(reason) = allocator_context.unavailable() {
         AllocatorCompletion::skipped(requested_us, AllocatorOutcome::Unavailable, Some(reason))
     } else {
         #[cfg(target_env = "gnu")]
@@ -577,8 +833,9 @@ pub(crate) fn record_allocator(phase: AllocatorPhase, boundary_outcome: Option<B
             emit(Phase::AllocatorStart, record, requested_us);
             let started_us = prov::elapsed_us();
             // SAFETY: the pinned libc binding uses the GNU ABI and takes no
-            // arguments. The refresh caller holds no shared application
-            // locks and is outside both owner destruction and bounded join.
+            // arguments. Both the unlocked refresh and the completed apply
+            // caller hold no shared application locks, and are outside both
+            // owner destruction and bounded join.
             let counters = unsafe { libc::mallinfo2() };
             let completed_us = prov::elapsed_us();
             AllocatorCompletion {
@@ -766,7 +1023,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn capture_host_events(f: impl FnOnce()) -> Vec<HostEvent> {
-        let buffer = Arc::new(Buffer::new(false));
+        let buffer = Arc::new(Buffer::new(false, false));
         {
             let mut refresh =
                 Refresh::with_buffer(buffer.clone(), true, AllocatorContext::Unlocked);
@@ -788,7 +1045,7 @@ pub(crate) mod tests {
 
     #[test]
     fn allocator_opt_out_preserves_old_record_shape() {
-        let buffer = Arc::new(Buffer::new(false));
+        let buffer = Arc::new(Buffer::new(false, false));
         let mut refresh = Refresh::with_buffer(buffer.clone(), false, AllocatorContext::Unlocked);
         record_allocator(AllocatorPhase::Entry, None);
         refresh.finish(Phase::RefreshComplete);
@@ -797,7 +1054,7 @@ pub(crate) mod tests {
         assert_eq!(queue.len(), 2);
         assert_eq!(buffer.allocator_calls.load(Relaxed), 0);
         assert!(json!(queue[0]).get("metric_domain").is_none());
-        assert!(clock_anchor(false)
+        assert!(clock_anchor(false, false)
             .unwrap()
             .get("allocator_call_limit")
             .is_none());
@@ -806,7 +1063,7 @@ pub(crate) mod tests {
     #[cfg(target_env = "gnu")]
     #[test]
     fn allocator_pairs_safely_record_real_counter_outcome_and_cap() {
-        let buffer = Arc::new(Buffer::new(true));
+        let buffer = Arc::new(Buffer::new(true, false));
         let mut refresh = Refresh::with_buffer(buffer.clone(), false, AllocatorContext::Unlocked);
         record_allocator(AllocatorPhase::Entry, None);
         record_snapshot(9, false);
@@ -846,14 +1103,14 @@ pub(crate) mod tests {
         assert_eq!(events[7]["allocator_duration_us"], 0);
         assert!(events[7].get("allocator").is_none());
         assert_eq!(
-            clock_anchor(true).unwrap()["allocator_call_limit"],
+            clock_anchor(true, false).unwrap()["allocator_call_limit"],
             ALLOCATOR_CALL_LIMIT
         );
     }
 
     #[test]
     fn allocator_reports_publication_locked_checkpoint_without_start() {
-        let buffer = Arc::new(Buffer::new(true));
+        let buffer = Arc::new(Buffer::new(true, false));
         let _refresh =
             Refresh::with_buffer(buffer.clone(), false, AllocatorContext::PublicationLocked);
         assert!(!allocator_can_run());
@@ -871,9 +1128,182 @@ pub(crate) mod tests {
         assert!(event.get("allocator").is_none());
     }
 
+    fn locked_refresh(buffer: &Arc<Buffer>, outcome: BoundaryOutcome) {
+        let mut refresh =
+            Refresh::with_buffer(buffer.clone(), false, AllocatorContext::PublicationLocked);
+        record_snapshot(9, outcome == BoundaryOutcome::Failed);
+        if outcome == BoundaryOutcome::Refreshed {
+            let _host = Host::create().unwrap();
+            adopted(Some(2));
+            refresh.finish(Phase::RefreshComplete);
+        } else if outcome == BoundaryOutcome::Skipped {
+            refresh.finish(Phase::RefreshSkipped);
+        }
+        refresh.returned(outcome);
+    }
+
+    #[test]
+    fn post_apply_retains_the_consumed_refresh_identity_and_uses_the_shared_cap() {
+        let buffer = Arc::new(Buffer::new(true, true));
+        let _tick = prov::TickScope::enter(Some(23));
+        let scope = ApplyScope::with_buffer(&buffer, true);
+        locked_refresh(&buffer, BoundaryOutcome::Refreshed);
+        assert!(REFRESH.with_borrow(Option::is_none));
+        scope.returned(true);
+        assert!(APPLY.get().is_none());
+
+        let scope = ApplyScope::with_buffer(&buffer, true);
+        locked_refresh(&buffer, BoundaryOutcome::Refreshed);
+        buffer.allocator_calls.store(ALLOCATOR_CALL_LIMIT, Relaxed);
+        scope.returned(true);
+
+        let queue = buffer.queue.lock().unwrap();
+        let events: Vec<_> = queue.iter().map(|record| json!(record)).collect();
+        let adoption = events
+            .iter()
+            .find(|event| event["phase"] == "adopted")
+            .unwrap();
+        let returned = events
+            .iter()
+            .find(|event| event["phase"] == "apply_return")
+            .unwrap();
+        assert_eq!(returned["apply_association"], "associated");
+        for identity in ["refresh_id", "host_id", "snapshot_gen", "tick"] {
+            assert_eq!(returned[identity], adoption[identity]);
+        }
+        assert_eq!(returned["tick"], 23);
+        let post_apply: Vec<_> = events
+            .iter()
+            .filter(|event| event["allocator_phase"] == "post_apply_return")
+            .collect();
+        #[cfg(target_env = "gnu")]
+        assert_eq!(post_apply[0]["phase"], "allocator_start");
+        let first = post_apply
+            .iter()
+            .find(|event| event["phase"] == "allocator_complete")
+            .unwrap();
+        assert_eq!(first["allocator_call"], 2, "locked return also counts");
+        #[cfg(target_env = "gnu")]
+        assert_eq!(first["allocator_outcome"], "ok");
+        #[cfg(not(target_env = "gnu"))]
+        assert_eq!(first["allocator_unavailable_reason"], "unsupported_target");
+        for key in [
+            "apply_id",
+            "refresh_id",
+            "snapshot_gen",
+            "host_id",
+            "tick",
+            "refresh_outcome",
+            "apply_outcome",
+        ] {
+            assert_eq!(first[key], returned[key]);
+        }
+        assert!(first["occurrence"].as_u64() > returned["occurrence"].as_u64());
+        assert!(first.get("apply_association").is_none());
+        assert_eq!(post_apply.last().unwrap()["allocator_outcome"], "limit");
+        assert_eq!(
+            post_apply.last().unwrap()["allocator_call"],
+            ALLOCATOR_CALL_LIMIT + 1
+        );
+        assert_eq!(
+            clock_anchor(true, true).unwrap()["allocator_post_apply"],
+            true
+        );
+        assert!(clock_anchor(true, false)
+            .unwrap()
+            .get("allocator_post_apply")
+            .is_none());
+    }
+
+    #[test]
+    fn post_apply_records_failures_without_borrowing_tokens_from_other_scopes() {
+        let buffer = Arc::new(Buffer::new(true, true));
+        let _tick = prov::TickScope::enter(Some(23));
+
+        let scope = ApplyScope::with_buffer(&buffer, true);
+        locked_refresh(&buffer, BoundaryOutcome::Refreshed);
+        scope.returned(false); // e.g. late CSS failure after document publication
+        let scope = ApplyScope::with_buffer(&buffer, true);
+        locked_refresh(&buffer, BoundaryOutcome::Failed);
+        scope.returned(false);
+        let scope = ApplyScope::with_buffer(&buffer, true);
+        locked_refresh(&buffer, BoundaryOutcome::Skipped);
+        scope.returned(true);
+        ApplyScope::with_buffer(&buffer, true).returned(false); // early prerequisite failure
+        ApplyScope::with_buffer(&buffer, false).returned(true); // CSS-only or boot
+
+        let scope = ApplyScope::with_buffer(&buffer, true);
+        locked_refresh(&buffer, BoundaryOutcome::Refreshed);
+        locked_refresh(&buffer, BoundaryOutcome::Refreshed);
+        scope.returned(true);
+
+        let scope = ApplyScope::with_buffer(&buffer, true);
+        {
+            let _different_tick = prov::TickScope::enter(Some(24));
+            locked_refresh(&buffer, BoundaryOutcome::Refreshed);
+        }
+        scope.returned(true);
+
+        let outer = ApplyScope::with_buffer(&buffer, true);
+        locked_refresh(&buffer, BoundaryOutcome::Refreshed);
+        let inner = ApplyScope::with_buffer(&buffer, true);
+        locked_refresh(&buffer, BoundaryOutcome::Refreshed);
+        inner.returned(true);
+        outer.returned(true);
+
+        let panic = std::panic::catch_unwind(|| {
+            let _scope = ApplyScope::with_buffer(&buffer, true);
+            locked_refresh(&buffer, BoundaryOutcome::Refreshed);
+            panic!("intentional delegated unwind");
+        });
+        assert!(panic.is_err());
+        assert!(APPLY.get().is_none());
+        assert!(REFRESH.with_borrow(Option::is_none));
+        ApplyScope::with_buffer(&buffer, false).returned(true);
+
+        let queue = buffer.queue.lock().unwrap();
+        assert!(!queue
+            .iter()
+            .any(|row| row.details.allocator_record.is_some_and(|row| {
+                matches!(row.allocator_phase, AllocatorPhase::PostApplyReturn)
+            })));
+        let dispositions: Vec<_> = queue
+            .iter()
+            .filter(|r| r.phase == Phase::ApplyReturn)
+            .map(|r| {
+                let row = json!(r);
+                (
+                    row["apply_association"].as_str().unwrap().to_owned(),
+                    row["apply_outcome"].as_str().unwrap().to_owned(),
+                    row["refresh_outcome"].as_str().unwrap_or("").to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            dispositions,
+            [
+                ("associated", "error", "refreshed"),
+                ("associated", "error", "failed"),
+                ("associated", "ok", "skipped"),
+                ("missing", "error", ""),
+                ("no_refresh", "ok", ""),
+                ("duplicate", "ok", ""),
+                ("foreign", "ok", ""),
+                ("nested", "ok", ""),
+                ("nested", "ok", ""),
+                ("no_refresh", "ok", ""),
+            ]
+            .map(|(association, apply, refresh)| (
+                association.to_owned(),
+                apply.to_owned(),
+                refresh.to_owned()
+            )),
+        );
+    }
+
     #[test]
     fn producer_never_waits_for_contended_or_full_buffers() {
-        let buffer = Buffer::new(false);
+        let buffer = Buffer::new(false, false);
         let guard = buffer.queue.lock().unwrap();
         buffer.record(Context::default(), Phase::HostCreate, Details::default());
         assert_eq!(buffer.contention.load(Relaxed), 1);

@@ -262,6 +262,23 @@ export async function runBatch({ scenarios, deps }) {
           if (!diagnostic) throw error;
           settle = { settled: false, error: String(error?.message ?? error) };
         }
+      if (
+        diagnostic?.afterRestoration &&
+        reason === "scenario-end" &&
+        settle?.settled === true &&
+        settle.bodyRevision?.matched === true
+      )
+        try {
+          await diagnostic.afterRestoration({
+            actions: restore.actions,
+            mismatches: restore.mismatches,
+            restoreNs,
+            witnessNs: clock.now(),
+          });
+        } catch (error) {
+          liveSkipped = "restoration-observation-incomplete";
+          settle = { ...settle, observerError: String(error?.message ?? error) };
+        }
       if (diagnostic && (reason !== "scenario-end" || settle?.settled !== true)) {
         liveSkipped = reason === "scenario-end" ? "restoration-unverified" : "fail-stop-cleanup";
       }
@@ -700,6 +717,7 @@ export async function runBatch({ scenarios, deps }) {
         }
 
         signal?.throwIfAborted();
+        diagnostic?.beforeMutation?.();
         diagnostic?.clamp("attempt write", timeouts.attemptMs, attemptStart);
         let t0;
         let tLast = null;
@@ -804,7 +822,6 @@ export async function runBatch({ scenarios, deps }) {
         } finally {
           clearInterval(sampler);
         }
-        current.resolved = true;
         const evidence = page.collectAttempt(t0);
         const serverPidAfter = server.pid();
         const serverLog = logMark === null ? null : server.logSince(logMark, t0);
@@ -902,6 +919,9 @@ export async function runBatch({ scenarios, deps }) {
         rec.sampleAfter = server.sampleResources();
         withProvenance(rec);
         append(rec);
+        // Post-apply validation can fail after a persisted attempt. Before
+        // this point, a browser notification alone cannot resolve the write.
+        current.resolved = true;
         count(acc, outcome);
         if (op.inject && op.inject !== "restore-blocked" && rec.controlPass !== true) {
           notFired(
@@ -916,10 +936,10 @@ export async function runBatch({ scenarios, deps }) {
           acc.stoppedByClassifyTimeout =
             rec.expect === "classify" && (outcome === "timeout" || outcome === "stale");
           stop(outcome, where);
-          if (diagnostic) await diagnostic.afterAttempt(rec);
+          if (diagnostic) await diagnostic.afterAttempt(rec, attemptStart);
           break outer;
         }
-        if (diagnostic) await diagnostic.afterAttempt(rec);
+        if (diagnostic) await diagnostic.afterAttempt(rec, attemptStart);
         if (rec.expect === "timeout") {
           stop("negative-control-unexpected-success", where);
           break outer;
@@ -987,7 +1007,11 @@ export async function runBatch({ scenarios, deps }) {
     } catch {
       // the page itself may be what failed; the record below carries the error
     }
-    if (current.armedToken && current.writeDone)
+    if (
+      current.armedToken &&
+      current.writeDone &&
+      (!diagnostic?.requiresPostApply || !current.resolved)
+    )
       acc.lastArmedUnknownOperation = {
         ...current.where,
         token: current.armedToken,

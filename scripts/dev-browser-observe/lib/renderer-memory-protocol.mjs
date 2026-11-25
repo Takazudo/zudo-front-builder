@@ -1,5 +1,7 @@
 export const RENDERER_MEMORY_PROTOCOL = "dev-browser-observe.renderer-memory.v1";
 export const RENDERER_MEMORY_ALLOCATOR_PROTOCOL = "dev-browser-observe.renderer-memory.v2";
+export const RENDERER_MEMORY_POST_APPLY_PROTOCOL =
+  "dev-browser-observe.renderer-memory.post-apply.v1";
 export const RENDERER_MEMORY_ALLOCATOR_ENV = "ZFB_DEV_RENDERER_MEMORY_ALLOCATOR";
 export const RENDERER_MEMORY_ALLOCATOR_DOMAIN = "gnu_mallinfo2.v1";
 export const RENDERER_MEMORY_ALLOCATOR_LIMIT = 128;
@@ -40,11 +42,22 @@ export function rendererMemoryBuild(receipt) {
   );
 }
 
+export function rendererMemoryAllocatorProtocol(protocol) {
+  return [RENDERER_MEMORY_ALLOCATOR_PROTOCOL, RENDERER_MEMORY_POST_APPLY_PROTOCOL].includes(
+    protocol,
+  );
+}
+
 export function rendererMemoryProfileErrors(profile) {
-  const allocator = profile.rendererMemoryStudy?.protocol === RENDERER_MEMORY_ALLOCATOR_PROTOCOL;
+  const protocol = profile.rendererMemoryStudy?.protocol;
+  const allocator = rendererMemoryAllocatorProtocol(protocol);
+  const postApply = protocol === RENDERER_MEMORY_POST_APPLY_PROTOCOL;
+  const allocatorMode = postApply ? "2" : "1";
   const configured = profile.server?.env?.[RENDERER_MEMORY_ALLOCATOR_ENV];
   if (!allocator && configured !== undefined)
-    return [`$.server.env.${RENDERER_MEMORY_ALLOCATOR_ENV} requires renderer-memory.v2`];
+    return [
+      `$.server.env.${RENDERER_MEMORY_ALLOCATOR_ENV} requires renderer-memory.v2 or renderer-memory.post-apply.v1`,
+    ];
   if (!profile.rendererMemoryStudy) return [];
   const require = (condition, message) => {
     if (!condition) errors.push(`$.rendererMemoryStudy: ${message}`);
@@ -61,7 +74,8 @@ export function rendererMemoryProfileErrors(profile) {
   require(profile.server?.env?.ZFB_DEV_PROVENANCE_TRACE ===
     "1", 'requires server.env.ZFB_DEV_PROVENANCE_TRACE: "1"');
   if (allocator)
-    require(configured === "1", `requires server.env.${RENDERER_MEMORY_ALLOCATOR_ENV}: "1"`);
+    require(configured ===
+      allocatorMode, `requires server.env.${RENDERER_MEMORY_ALLOCATOR_ENV}: "${allocatorMode}"`);
   require(profile.browser?.headless === true, "requires a headless browser");
   require(profile.server?.port?.mode === "ephemeral" &&
     profile.server?.host === "127.0.0.1", "requires an ephemeral loopback server");
@@ -87,6 +101,8 @@ export function rendererMemoryProfileErrors(profile) {
     (op.expect ?? "success") === "success" &&
     (op.repeat?.warmups ?? 0) + (op.repeat?.measured ?? 0) ===
       limits.edits, "requires one scenario with no warming and 12 consecutive in-place edit-body attempts on article-00005");
-  if (allocator) require((op?.repeat?.warmups ?? 0) === 0, "v2 requires zero warmup attempts");
+  if (allocator)
+    require((op?.repeat?.warmups ?? 0) ===
+      0, `${postApply ? "post-apply" : "v2"} requires zero warmup attempts`);
   return errors;
 }

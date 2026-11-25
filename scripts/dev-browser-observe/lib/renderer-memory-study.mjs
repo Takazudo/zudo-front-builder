@@ -1,10 +1,12 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { pathAliases } from "./provenance.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import {
-  RENDERER_MEMORY_ALLOCATOR_PROTOCOL,
+  rendererMemoryAllocatorProtocol,
   RENDERER_MEMORY_LIMITS as limits,
   RENDERER_MEMORY_MAPPING_BOUNDARIES,
   RENDERER_MEMORY_MAPPING_LIMITS,
+  RENDERER_MEMORY_POST_APPLY_PROTOCOL,
   RENDERER_MEMORY_PROTOCOL,
 } from "./renderer-memory-protocol.mjs";
 import { hrtimeNs, nsToMs } from "./util.mjs";
@@ -41,7 +43,9 @@ export function createRendererMemoryStudy({
   let samples = 0;
   let peakSummedRssKiB = null;
   let samplingStopped = false;
-  const withAllocator = protocol === RENDERER_MEMORY_ALLOCATOR_PROTOCOL;
+  const withAllocator = rendererMemoryAllocatorProtocol(protocol);
+  const withPostApply = protocol === RENDERER_MEMORY_POST_APPLY_PROTOCOL;
+  const mutations = [];
   const mappingResults = [];
 
   const record = (entry) =>
@@ -62,10 +66,19 @@ export function createRendererMemoryStudy({
   };
   const checkTrace = (options) => {
     const mark = server.provMark?.();
-    if (!options.final && !options.requireStart && mark != null && lastInspection?.mark === mark)
+    if (
+      !options.final &&
+      !options.requireStart &&
+      !options.requireAttributedPostApply &&
+      !options.requireCompletePostApply &&
+      mark != null &&
+      lastInspection?.mark === mark &&
+      lastInspection.mutationCount === mutations.length
+    )
       return lastInspection.report;
-    const report = inspect(server, { ...options, withAllocator });
-    lastInspection = { mark, report };
+    const report = inspect(server, { ...options, withAllocator, withPostApply, mutations });
+    if (!options.requireAttributedPostApply && !options.requireCompletePostApply)
+      lastInspection = { mark, mutationCount: mutations.length, report };
     if (report.failure) fail(report.failure);
     return report;
   };
@@ -192,6 +205,39 @@ export function createRendererMemoryStudy({
       clearTimeout(timer);
     }
   };
+  // Wait only for this already-issued write's trace to complete. The stage
+  // and work clocks keep running, and no further mutation can start meanwhile.
+  const observeMutation = async ({ kind, edit, path, t0Ns, witnessNs }, maximum, stageStart) => {
+    const mutation = { kind, ...(edit && { edit }), paths: pathAliases(path), t0Ns, witnessNs };
+    mutations.push(mutation);
+    record({ type: "renderer-memory-mutation", mutation });
+    try {
+      while (true) {
+        const report = checkTrace({ final: false });
+        workSignal.throwIfAborted();
+        const endpoint = report.postApply?.endpoints[mutations.length - 1];
+        if (endpoint) {
+          requireAttributed(kind === "restoration");
+          clamp("post-apply observation", maximum, stageStart);
+          break;
+        }
+        const remaining = clamp("post-apply observation", maximum, stageStart);
+        await sleep(Math.min(25, remaining), undefined, { signal: workSignal });
+      }
+    } catch (error) {
+      if (!workSignal.aborted)
+        fail({
+          reason: "renderer-memory-post-apply-incomplete",
+          mutation,
+          error: String(error?.message ?? error),
+        });
+      throw error;
+    }
+  };
+  const requireAttributed = (requireCompletePostApply = false) => {
+    checkTrace({ final: false, requireAttributedPostApply: true, requireCompletePostApply });
+    workSignal.throwIfAborted();
+  };
   record({ type: "renderer-memory-phase", step: "start", supervisorStartedMs, workDeadline });
   return {
     signal: workSignal,
@@ -214,12 +260,16 @@ export function createRendererMemoryStudy({
           signal: workSignal,
         });
       }
-      checkTrace({ final: false, requireStart: true });
+      checkTrace({
+        final: false,
+        requireStart: true,
+        requireAttributedPostApply: withPostApply,
+      });
       workSignal.throwIfAborted();
       await capture("before-edits");
       enter("edits");
     },
-    async afterAttempt(record) {
+    async afterAttempt(record, stageStart) {
       // The bracket is a controller observation. Attribution of lifecycle
       // events stays with their native host/refresh IDs and occurrence clock.
       const work = take({
@@ -231,8 +281,56 @@ export function createRendererMemoryStudy({
         outcome: record.outcome,
       });
       await interruptible(work, workSignal);
+      if (withPostApply && record.outcome === "success")
+        await observeMutation(
+          {
+            kind: "edit",
+            edit: mutations.length + 1,
+            path: record.write.path,
+            t0Ns: record.t0Ns,
+            witnessNs: record.t1Ns,
+          },
+          limits.timeouts.attemptMs,
+          stageStart,
+        );
     },
-    afterEdits: withAllocator ? () => capture("after-edits") : undefined,
+    ...(withPostApply && {
+      requiresPostApply: true,
+      beforeMutation: () => requireAttributed(),
+      async afterRestoration({ actions, mismatches, restoreNs, witnessNs }) {
+        const edit = mutations.findLast((mutation) => mutation.kind === "edit");
+        const action = actions?.[0];
+        if (
+          !edit ||
+          mutations.length !== limits.edits ||
+          mismatches.length !== 0 ||
+          actions?.length !== 1 ||
+          action.method !== "in-place" ||
+          action.error ||
+          !edit.paths.some((path) => pathAliases(action.path).includes(path))
+        ) {
+          fail({ reason: "renderer-memory-post-apply-invalid-restoration-write" });
+          workSignal.throwIfAborted();
+        }
+        await observeMutation(
+          {
+            kind: "restoration",
+            path: action.path,
+            t0Ns: String(restoreNs),
+            witnessNs: String(witnessNs),
+          },
+          limits.timeouts.restoreMs,
+          restoreNs,
+        );
+      },
+    }),
+    afterEdits: withAllocator
+      ? async () => {
+          if (withPostApply) requireAttributed();
+          await capture("after-edits");
+          if (withPostApply) requireAttributed();
+        }
+      : undefined,
     async finalIdle({ stopped, stopReason, cleanup }) {
       if (
         stopped ||
@@ -301,6 +399,7 @@ export function createRendererMemoryStudy({
             final: true,
             requireStart: true,
             minimumAdoptions: completedSchedule ? 14 : 0,
+            requireCompletePostApply: withPostApply && completedSchedule,
           })
         : null;
       const logComplete =
@@ -318,7 +417,8 @@ export function createRendererMemoryStudy({
           logComplete &&
           serverAbsent &&
           !evidenceFailure &&
-          (!withAllocator || mappingsComplete),
+          (!withAllocator || mappingsComplete) &&
+          (!withPostApply || lifecycle.postApply?.complete === true),
         ...(withAllocator && {
           mappings: {
             complete: mappingsComplete,

@@ -37,6 +37,7 @@
         "renderer-memory-phase",
         "renderer-memory-sample",
         "renderer-memory-mapping",
+        "renderer-memory-mutation",
         "renderer-memory-idle",
         "renderer-memory-failure",
         "renderer-memory-evidence"
