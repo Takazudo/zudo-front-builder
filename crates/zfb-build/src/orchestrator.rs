@@ -7841,10 +7841,9 @@ mod tests {
             .with_policy(policy_with_plugin_watch_files([watched.clone()]))
             .with_pre_tick_refresh(hook);
 
-        // Returning normally IS the assertion — an `Err` must be logged and
-        // swallowed, never propagated (the loop would otherwise die and the
-        // dev server would stop rebuilding).
-        maybe_pre_tick_refresh(&config, &[(watched, ChangeKind::Modified)]).await;
+        // A failed refresh leaves the loop alive and informs diagnostics
+        // before the next apply can be admitted.
+        assert!(!maybe_pre_tick_refresh(&config, &[(watched, ChangeKind::Modified)]).await);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 

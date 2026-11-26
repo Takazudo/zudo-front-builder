@@ -421,6 +421,25 @@ mod tests {
     }
 
     #[test]
+    fn bounded_queue_and_lifecycle_headroom_are_required_before_entry() {
+        for exhausted_queue in [true, false] {
+            let b = Buffer::new(true, true);
+            if exhausted_queue {
+                for _ in 0..CAPACITY - 2 {
+                    b.record(Context::default(), Phase::RefreshStart, Details::default());
+                }
+            } else {
+                b.attempted.store(ATTEMPT_LIMIT - 2, Relaxed);
+            }
+            let o = Observation::new(reclamation::Arm::Trim, 4);
+            let (c, a) = endpoint(1);
+            o.observe(&b, c, a, true, || panic!("insufficient headroom"));
+            assert_eq!(o.gate.load(SeqCst), STOPPED);
+            assert_eq!(o.ordinal.load(Relaxed), 0);
+        }
+    }
+
+    #[test]
     fn unwinding_scope_disarms_repeated_actions() {
         let mut b = Buffer::new(true, true);
         b.repeated_apply = Some(Observation::new(reclamation::Arm::Trim, 4));
