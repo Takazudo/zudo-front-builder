@@ -3517,7 +3517,11 @@ async fn hold_css_test_bundle(
     new_bytes: &[u8],
 ) -> usize {
     let start = read_log(&session.stderr_path).len();
-    fs::write(gate, b"").expect("arm native bundle test gate");
+    let request = gate.with_extension("request");
+    let staged = gate.with_extension("staged");
+    fs::write(&staged, path.to_str().expect("UTF-8 test fixture path"))
+        .expect("stage native bundle test request");
+    fs::rename(staged, request).expect("request a gate for the next matching intake");
     overwrite_same_length(path, new_bytes);
     let (_, held) = wait_for_stderr_line(
         session,

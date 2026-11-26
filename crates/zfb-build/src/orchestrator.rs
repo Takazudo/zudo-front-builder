@@ -2612,6 +2612,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         let mut this = self;
         let mut ctx = ctx;
         let mut discover = discover;
+        let native_bundle_gate = std::env::var_os("ZFB_DEV_TEST_NATIVE_BUNDLE_GATE");
         let mut handoff_intake_id = 0u64;
         loop {
             // Synthesized edits (issue #3190) go first, without waiting for
@@ -2627,6 +2628,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 batch.push(c);
             }
 
+            if let Some(gate) = &native_bundle_gate {
+                arm_requested_bundle_gate(Path::new(gate), &batch)?;
+            }
             if dev_timing_enabled() {
                 handoff_intake_id = handoff_intake_id.wrapping_add(1);
                 let mut watcher_batches: BTreeMap<u64, (usize, usize)> = BTreeMap::new();
@@ -2791,6 +2795,23 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     }
 }
 
+/// The test requests a barrier for one intake path. Only the matching tick
+/// may arm the native bundle barrier; a preceding article refresh may still
+/// be bundling after its last-good response has become visible.
+fn arm_requested_bundle_gate(gate: &Path, batch: &[Change]) -> std::io::Result<()> {
+    let [change] = batch else { return Ok(()) };
+    let request = gate.with_extension("request");
+    let target = match std::fs::read_to_string(&request) {
+        Ok(target) => target,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if change.path == Path::new(&target) {
+        std::fs::rename(request, gate)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2798,6 +2819,26 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::PathBuf;
     use zfb_graph::{DepKind, PageDeps, PageId};
+
+    #[test]
+    fn bundle_gate_skips_prior_article_tick_and_requires_requested_intake_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let gate = dir.path().join("bundle-gate");
+        let request = gate.with_extension("request");
+        let article = Change::new("content/articles/b.md".into(), ChangeKind::Modified);
+        for path in ["data/handshake-probe.json", "styles/global.css"] {
+            let target = Change::new(path.into(), ChangeKind::Modified);
+            std::fs::write(&request, path).unwrap();
+            arm_requested_bundle_gate(&gate, std::slice::from_ref(&article)).unwrap();
+            assert!(!gate.exists());
+            arm_requested_bundle_gate(&gate, &[article.clone(), target.clone()]).unwrap();
+            assert!(!gate.exists());
+            arm_requested_bundle_gate(&gate, &[target]).unwrap();
+            assert_eq!(std::fs::read_to_string(&gate).unwrap(), path);
+            assert!(!request.exists());
+            std::fs::remove_file(&gate).unwrap();
+        }
+    }
 
     /// Test pipeline that records what it was asked to do.
     #[derive(Debug, Default, Clone)]
