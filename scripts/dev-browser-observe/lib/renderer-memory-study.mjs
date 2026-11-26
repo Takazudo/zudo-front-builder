@@ -45,6 +45,9 @@ export function createRendererMemoryStudy({
   let samples = 0;
   let peakSummedRssKiB = null;
   let samplingStopped = false;
+  let ending = false;
+  let samplerFailure = null;
+  let unresolvedHelper = null;
   const withAllocator = rendererMemoryAllocatorProtocol(protocol);
   const withReclamation = protocol === RENDERER_MEMORY_RECLAMATION_PROTOCOL;
   const withPostApply = protocol === RENDERER_MEMORY_POST_APPLY_PROTOCOL || withReclamation;
@@ -103,6 +106,7 @@ export function createRendererMemoryStudy({
     return report;
   };
   const take = (boundary = null) => {
+    if (ending || samplingStopped || samplerFailure) return Promise.resolve();
     if (inflight) {
       if (boundary) return inflight.then(() => take(boundary));
       overlapSkipped += 1;
@@ -113,7 +117,6 @@ export function createRendererMemoryStudy({
         });
       return inflight;
     }
-    if (samplingStopped) return Promise.resolve();
     const started = clock();
     sampleStarted = started;
     const phaseAtStart = phase;
@@ -122,11 +125,28 @@ export function createRendererMemoryStudy({
       try {
         result = await sample(server);
       } catch (error) {
-        if (!samplingStopped && phase !== "shutdown")
+        const details = error?.details ?? null;
+        const partial = details?.summedRssKiB;
+        if (Number.isSafeInteger(partial) && partial >= 0)
+          peakSummedRssKiB = Math.max(peakSummedRssKiB ?? 0, partial);
+        samplerFailure ??= {
+          reason: "renderer-memory-sample-invalid",
+          error: String(error?.message ?? error),
+          details,
+          startedHrtimeNs: String(started),
+          phase: phaseAtStart,
+        };
+        if (details?.helper?.closed === false || details?.helper?.pipesClosed === false)
+          unresolvedHelper = details.helper;
+        evidenceFailure ??= samplerFailure;
+        // An invalid final row cannot erase RSS already observed by the helper.
+        if (partial > limits.limits.rssCeilingKiB)
           fail({
-            reason: "renderer-memory-sample-invalid",
-            error: String(error?.message ?? error),
+            reason: "resource-limit",
+            rssCeilingKiB: limits.limits.rssCeilingKiB,
+            partialSample: samplerFailure,
           });
+        else fail(samplerFailure);
         return;
       }
       if (samplingStopped) return;
@@ -156,16 +176,16 @@ export function createRendererMemoryStudy({
     });
     return inflight;
   };
-  const takePeriodic = () => {
-    Promise.resolve()
-      .then(() => take())
-      .catch((error) => {
-        try {
-          fail({ reason: "renderer-memory-record-failed", error: String(error?.message ?? error) });
-        } catch {
-          // The abort precedes the record write, including when the evidence sink fails.
-        }
-      });
+  const takePeriodic = async () => {
+    try {
+      await take();
+    } catch (error) {
+      try {
+        fail({ reason: "renderer-memory-record-failed", error: String(error?.message ?? error) });
+      } catch {
+        // The abort precedes the record write, including when the evidence sink fails.
+      }
+    }
   };
   const enter = (next) => {
     phase = next;
@@ -267,7 +287,7 @@ export function createRendererMemoryStudy({
     startSampling(ownedServer) {
       server = ownedServer;
       interval = setInterval(takePeriodic, limits.limits.sampleEveryMs);
-      takePeriodic();
+      return takePeriodic();
     },
     async beforeEdits() {
       await interruptible(take("before-edits"), workSignal);
@@ -463,7 +483,9 @@ export function createRendererMemoryStudy({
       // No process scans during expected server exit. Keep the in-flight
       // sample if it finishes, with the phase captured when it started.
       clearInterval(interval);
+      ending = true;
       enter("shutdown");
+      return inflight;
     },
     finishSampling() {
       clearInterval(interval);
@@ -508,6 +530,7 @@ export function createRendererMemoryStudy({
         logComplete,
         failure,
         evidenceFailure,
+        samplerFailure,
         restoration: cleanup
           ? {
               outcome: cleanup.ok ? "verified" : "incomplete",
@@ -526,6 +549,12 @@ export function createRendererMemoryStudy({
         peakSummedRssKiB,
         overlapSkipped,
       };
+    },
+    get unresolvedHelper() {
+      return unresolvedHelper;
+    },
+    get samplerFailure() {
+      return samplerFailure;
     },
     get failure() {
       return failure;

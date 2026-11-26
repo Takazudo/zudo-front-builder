@@ -23,8 +23,18 @@ export async function superviseSession({
 }) {
   const started = monotonicMs();
   const { profile, resolved } = loadProfile(profilePath);
-  const diagnostic = Boolean(profile.rendererMemoryStudy);
-  if (diagnostic && (command !== "run" || scenarios !== null || process.platform !== "linux")) {
+  const startup = Boolean(profile.startupAcceptance);
+  const diagnostic = Boolean(profile.rendererMemoryStudy || startup);
+  if ((command === "startup-acceptance") !== startup) {
+    stderr("startup-acceptance requires its own profile and command");
+    return EXIT.usage;
+  }
+  if (
+    diagnostic &&
+    (command !== (startup ? "startup-acceptance" : "run") ||
+      scenarios !== null ||
+      process.platform !== "linux")
+  ) {
     stderr("renderer-memory diagnostics require a standalone Linux run without --scenario");
     return EXIT.usage;
   }

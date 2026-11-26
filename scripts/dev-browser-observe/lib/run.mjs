@@ -22,12 +22,14 @@ import { Recorder } from "./recorder.mjs";
 import { createRendererMemoryStudy } from "./renderer-memory-study.mjs";
 import {
   rendererMemoryAllocatorProtocol,
+  LINUX_RSS_SAMPLER_VERSION,
   RENDERER_MEMORY_LIMITS,
   RENDERER_MEMORY_MAPPING_LIMITS,
   RENDERER_MEMORY_RECLAMATION_PROTOCOL,
   RENDERER_MEMORY_RECLAMATION_LIMITS,
 } from "./renderer-memory-protocol.mjs";
 import { createResourceStudy, summarizeResourceStudy } from "./resource-study.mjs";
+import { checkStartupArticles, verifyStartup } from "./startup-acceptance.mjs";
 import { expandSchedule, scheduleOf } from "./schedule.mjs";
 import { startDevServer } from "./server.mjs";
 import {
@@ -192,9 +194,14 @@ export async function execute({
   loaded.workDeadline = workDeadline;
   loaded.supervisorDeadlineMs = supervisorDeadlineMs;
   const { profile, resolved } = loaded;
+  const startup = Boolean(profile.startupAcceptance);
+  if ((command === "startup-acceptance") !== startup) {
+    stderr("startup-acceptance requires its own profile and command");
+    return EXIT.usage;
+  }
   if (
-    profile.rendererMemoryStudy &&
-    (command !== "run" ||
+    (profile.rendererMemoryStudy || startup) &&
+    (command !== (startup ? "startup-acceptance" : "run") ||
       scenarios !== null ||
       process.platform !== "linux" ||
       !supervisorId ||
@@ -294,7 +301,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   const { profile, resolved } = loaded;
   const rec = new Recorder(join(labelDir, "records.jsonl"));
   const memoryProfile = profile.rendererMemoryStudy ?? null;
-  const startedNs = memoryProfile ? BigInt(loaded.supervisorStartedMs) * 1_000_000n : hrtimeNs();
+  const startup = profile.startupAcceptance;
+  const memoryDiagnostic = memoryProfile ?? startup;
+  const startedNs = memoryDiagnostic ? BigInt(loaded.supervisorStartedMs) * 1_000_000n : hrtimeNs();
   const runScenarios = loaded.runScenarios ?? profile.scenarios;
   const schedule = command === "run" ? scheduleOf(runScenarios) : [];
   const planned = command === "run" ? plannedCount(runScenarios) : 0;
@@ -308,6 +317,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     schedule,
     resourceStudy: command === "run" ? (profile.resourceStudy ?? null) : null,
     ...(memoryProfile ? { diagnostic: true, rendererMemoryStudy: memoryProfile } : {}),
+    ...(startup && { diagnostic: true, startupAcceptance: startup }),
   });
 
   const kind = kindFor(profile);
@@ -331,10 +341,23 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     productSha: profile.productSha ?? null,
     productDirtyIdentity: profile.productDirtyIdentity ?? null,
     diagnostic: profile.diagnostic === true,
+    ...(startup && {
+      startupAcceptance: {
+        ...startup,
+        samplerVersion: LINUX_RSS_SAMPLER_VERSION,
+        complete: false,
+        timingEligible: false,
+        studyEligible: false,
+        supervisorStartedMs: loaded.supervisorStartedMs,
+        workDeadlineMs: loaded.workDeadline,
+        supervisorDeadlineMs: loaded.supervisorDeadlineMs,
+      },
+    }),
     ...(memoryProfile
       ? {
           rendererMemoryStudy: {
             ...memoryProfile,
+            samplerVersion: LINUX_RSS_SAMPLER_VERSION,
             limits: RENDERER_MEMORY_LIMITS,
             ...(rendererMemoryAllocatorProtocol(memoryProfile.protocol) && {
               mappingLimits: RENDERER_MEMORY_MAPPING_LIMITS,
@@ -396,6 +419,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     writeJsonSync(summaryPath, {
       ...summarize(rec.records, acc),
       identityRejected: true,
+      ...(startup && { diagnostic: true, startupAcceptance: receipt.startupAcceptance }),
       ...(memoryProfile
         ? {
             diagnostic: true,
@@ -430,16 +454,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   let summaryExtra = {};
   const accountingRef = { current: null };
   try {
-    if (memoryProfile) {
+    if (memoryDiagnostic) {
       const { sampleRendererMemory, inspectRendererLifecycle } =
         hooks.rendererMemoryEvidence ?? (await import("./renderer-memory-evidence.mjs"));
-      if (rendererMemoryAllocatorProtocol(memoryProfile.protocol)) {
+      if (rendererMemoryAllocatorProtocol(memoryDiagnostic.protocol)) {
         const { createMappingCollector } = await import("./renderer-memory-mappings.mjs");
         mappingCollector = (hooks.createMappingCollector ?? createMappingCollector)();
       }
       rendererMemory = createRendererMemoryStudy({
-        protocol: memoryProfile.protocol,
-        reclamationArm: memoryProfile.reclamationArm,
+        protocol: memoryDiagnostic.protocol,
+        reclamationArm: memoryProfile?.reclamationArm,
         append: (r) => rec.append(r),
         signal: loaded.signal,
         supervisorStartedMs: loaded.supervisorStartedMs,
@@ -504,6 +528,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
             },
           ]
         : [];
+    if (startup)
+      postChecks.push({ name: "two-article-startup-fixture", ok: checkStartupArticles(m) });
     if (fixed) receipt.fixture.materializedChecks = postChecks;
     if (postChecks.some((c) => !c.ok)) {
       receipt.identity = {
@@ -563,7 +589,11 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       logPath: join(labelDir, "server.log"),
     });
     spawning = false;
-    rendererMemory?.startSampling(server);
+    server.handle.onNewOwned = (p) => {
+      if (shouldRegisterOwned(server.handle.native, p))
+        appendJsonlSync(resolved.registryPath, { type: "owned", label, at: isoNow(), ...p });
+    };
+    const firstSample = rendererMemory?.startSampling(server);
     intent?.update({
       phase: "server-running",
       root: server.handle.native,
@@ -575,10 +605,6 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       at: isoNow(),
       ...server.handle.native,
     });
-    server.handle.onNewOwned = (p) => {
-      if (shouldRegisterOwned(server.handle.native, p))
-        appendJsonlSync(resolved.registryPath, { type: "owned", label, at: isoNow(), ...p });
-    };
     receipt.server = {
       launcher: server.handle.launcher,
       native: server.handle.native,
@@ -700,6 +726,20 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     receipt.server.baseUrl = ready.baseUrl;
     receipt.server.readyMs = nsToMs(ready.readyNs - server.startedNs);
 
+    if (startup) {
+      Object.assign(
+        receipt.startupAcceptance,
+        await verifyStartup({
+          server,
+          ready,
+          firstSample,
+          records: rec.records,
+          study: rendererMemory,
+          fetchImpl: hooks.fetch,
+        }),
+      );
+      return exitCode;
+    }
     loaded.signal?.throwIfAborted();
     browserHandle = await (hooks.launchOwnedBrowser ?? launchOwnedBrowser)({
       ...profile.browser,
@@ -889,14 +929,22 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         clearTimeout(timer);
       }
     };
+    const unresolved = [];
     if (rendererMemory)
       try {
-        rendererMemory.beginShutdown();
+        // Stop launching samples, finish the bounded helper and retain its discoveries
+        // while the product is still alive. Only then may teardown signal the server.
+        await bounded("renderer-memory-sampler-stop", 1000, () => rendererMemory.beginShutdown());
+        if (rendererMemory.unresolvedHelper)
+          unresolved.push({
+            resource: "renderer-memory-sampler",
+            helper: rendererMemory.unresolvedHelper,
+          });
       } catch (error) {
         evidenceFailed = true;
-        stderr(`renderer-memory shutdown phase write failed: ${error?.message ?? error}`);
+        unresolved.push({ resource: "renderer-memory-sampler", error: String(error) });
+        stderr(`renderer-memory sampler stop failed: ${error?.message ?? error}`);
       }
-    const unresolved = [];
     if (study) {
       try {
         await bounded("sampler-stop", 3000, () => study.stop());
@@ -1005,6 +1053,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     }
     if (rendererMemory) {
       rendererMemory.finishSampling();
+      // The original sampler outcome survives readiness or trace-finalization failure.
+      if (memoryProfile) receipt.rendererMemoryStudy.samplerFailure = rendererMemory.samplerFailure;
+      if (startup) receipt.startupAcceptance.samplerFailure = rendererMemory.samplerFailure;
       const accounting = summaryExtra.accountingFinal;
       const completedSchedule =
         rendererMemory.idleMs !== null &&
@@ -1018,6 +1069,19 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           cleanup: rec.records.findLast((r) => r.type === "cleanup"),
           serverAbsent: stopReport.absent && !stopReport.error && unresolved.length === 0,
         });
+        if (startup)
+          Object.assign(receipt.startupAcceptance, {
+            samples: memoryReport.samples,
+            bodyEdits: rec.records.filter((r) => r.type === "attempt" && r.op === "edit-body")
+              .length,
+            // A complete native trace with the observation-only startup anchor excludes actions.
+            reclamationActions: memoryReport.lifecycle?.complete === true ? 0 : null,
+            peakSummedRssKiB: memoryReport.peakSummedRssKiB,
+            failure: memoryReport.failure,
+            lifecycleComplete: memoryReport.lifecycle?.complete === true,
+            logComplete: memoryReport.logComplete,
+            stop: stopReport,
+          });
         safeAppend({ type: "renderer-memory-evidence", ...memoryReport });
       } catch (error) {
         evidenceFailed = true;
@@ -1058,6 +1122,11 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       }
     }
     if (evidenceFailed && exitCode === EXIT.ok) exitCode = EXIT.controllerError;
+    if (startup) {
+      receipt.startupAcceptance.complete =
+        exitCode === EXIT.ok && Boolean(receipt.startupAcceptance.live?.markerMatched);
+      receipt.startupAcceptance.unresolvedResources = unresolved;
+    }
     try {
       writeJsonSync(receiptPath, receipt);
     } catch (error) {
@@ -1086,6 +1155,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         exitCode,
         identityRejected: summaryExtra.identityRejected === true,
         calibration: summaryExtra.calibration ?? null,
+        ...(startup && { diagnostic: true, startupAcceptance: receipt.startupAcceptance }),
         ...(memoryProfile
           ? {
               diagnostic: true,
@@ -1123,7 +1193,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       // Returning from finally deliberately overrides the try block's exit code.
       return exitCode; // eslint-disable-line no-unsafe-finally
     }
-    if (memoryProfile) return exitCode; // eslint-disable-line no-unsafe-finally
+    if (memoryDiagnostic) return exitCode; // eslint-disable-line no-unsafe-finally
   }
 }
 

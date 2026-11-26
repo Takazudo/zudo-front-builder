@@ -515,7 +515,7 @@ export function evaluateIdentity(profile, receipt, facts) {
     ),
   );
   const rendererFeature = rendererMemoryBuild(receipt);
-  const rendererStudy = Boolean(profile.rendererMemoryStudy);
+  const rendererStudy = Boolean(profile.rendererMemoryStudy || profile.startupAcceptance);
   if (rendererFeature || rendererStudy || receipt?.diagnostic === true)
     checks.push(
       check(
@@ -525,7 +525,7 @@ export function evaluateIdentity(profile, receipt, facts) {
           receipt?.diagnostic === true &&
           receipt?.build?.profile === "dev" &&
           receipt?.build?.noDefaultFeatures === false,
-        "renderer-memory study with a declared diagnostic dev build and default features",
+        "renderer-memory diagnostic with a declared dev build and default features",
         { rendererStudy, rendererFeature, diagnostic: receipt?.diagnostic, build: receipt?.build },
       ),
     );

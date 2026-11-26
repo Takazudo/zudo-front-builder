@@ -841,11 +841,33 @@ attribution. Controller edit labels and log arrival order cannot establish lifec
 Boot and final V8 statistics are collected on the actual owner thread. The record carries its
 Linux TID and kernel birth ticks. Successful join establishes return of that thread after the
 explicit old-host destruction boundary. Join panic, timeout, and channel disconnection remain
-distinct. The harness samples birth-verified process RSS, anonymous/file/shared residency and
-swap from `/proc/PID/status`, and private memory and PSS when `smaps_rollup` is readable. The
-process observation retains PID, boot ID, start ticks, group, executable inode, and named
-renderer thread births. Sampling is discrete and process-scoped. Route verification and idle
-have separate phases.
+distinct. The Linux safety sampler records RSS, anonymous/file/shared residency and swap
+from `/proc/PID/status`, plus RSS, private memory and PSS from `smaps_rollup`. It retains PID,
+boot ID, start ticks, group, executable identity and named renderer-thread births.
+
+The `linux-pidfd-rss.v1` receipt identifies each sampling interval and its coverage. A read-only
+helper discovers the owned set and binds each birth to a process pidfd and proc directory
+before collecting metadata. The controller journals verified discoveries as they arrive,
+including discoveries from a helper that subsequently fails. Root loss, inconsistent identity
+and disappearance before binding reject a sample. A bound descendant can be recorded as
+departed when the process pidfd reports whole-thread-group termination. A zombie leader
+alone supplies no such proof. Keep terminal proofs by birth, independently of teardown
+verification. A departed descendant can have unavailable metrics or retained partial readings.
+
+The safety sum uses the larger observed RSS counter per birth in the cycle. It retains sound
+RSS from a descendant that subsequently exits or from a sample that later fails. This is a
+discrete observation over the recorded collection interval. Very short-lived processes can
+fall outside that coverage. Route verification and idle have separate phases.
+
+Each cycle has 750 ms for helper work, including spawn, and at most 200 ms for cancellation
+and pipe closure. The helper is separate from the product RSS sum. It has a 96 MiB
+address-space cap, a 160-descriptor cap, and no child commands. It scans at most 4,096 proc
+directory entries and retains up to 64 owned births and 256 task entries per process. Proc
+input is capped at 16 MiB and 32,768 reads per cycle, with 8 KiB for each stat, 64 KiB for
+status and 16 KiB for each rollup. The request is capped at 64 KiB. Output is capped at
+512 KiB on stdout, 128 KiB per line and 4 KiB on stderr. The controller rejects incomplete
+coverage, preserves verified discoveries, and retains the admission hold if helper closure
+cannot be verified.
 
 V8 counters cover used/total heap, physical heap size, external memory, current and peak V8
 malloc accounting, cumulative allocated bytes, global handles, and native/detached contexts.
@@ -855,6 +877,26 @@ overlap. GNU allocator totals are unavailable because the allocator and ABI cove
 established for this diagnostic. The statistics and Linux sampling can perturb the process.
 Interpret changes in the measured domains and retain uncertainty about unmeasured allocation
 and larger workloads.
+
+### Linux startup sampling acceptance
+
+Use `cli.mjs startup-acceptance --profile /absolute/path/to/profile.json --label fresh-label`
+for a two-article functional check. Start with the tiny internal A0 example. Pin the
+historical diagnostic build and the current harness, observer, fixture, and adapter.
+Use an empty scenarios array, omit calibration, and set `diagnostic: true` and
+`startupAcceptance: { "protocol": "dev-browser-observe.renderer-memory.startup-acceptance.v1" }`.
+Set the server to ephemeral loopback, readiness to 90,000 ms and its environment to
+`{ "ZFB_DEV_PROVENANCE_TRACE": "1" }`. Run in the cohort's seedless default boot mode.
+Set limits to 180,000 ms wall time, 4,194,304 KiB sampled owned RSS and 1,000 ms cadence.
+
+The supervisor reserves the last 60 seconds for finalization. The controller uses
+the same server, registry, admission, pre-readiness sampling and teardown paths as a
+renderer-memory study. It records the first live root sample initiated before the
+ready banner and requires the original body marker in one HTTP 200 response from
+`/articles/a`, bounded to ten seconds and 128 KiB. No browser or mutation is scheduled.
+The startup receipt and summary identify the protocol, sample, request, native
+lifecycle completion and cleanup. The independent supervisor verifies controller
+exit. Startup acceptance is excluded from study and timing aggregation.
 
 ## Renderer memory v2 allocator and mapping observations
 
