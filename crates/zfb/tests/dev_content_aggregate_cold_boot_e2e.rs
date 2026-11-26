@@ -3551,6 +3551,10 @@ async fn queue_edit_behind_held_bundle(
     bytes: &[u8],
 ) -> usize {
     overwrite_same_length(file, bytes);
+    wait_for_queued_edit(session, offset, file).await
+}
+
+async fn wait_for_queued_edit(session: &DevSession, offset: usize, file: &Path) -> usize {
     let path = file.to_str().expect("test fixture path is UTF-8");
     wait_for_stderr_line_where(
         session,
@@ -3904,7 +3908,20 @@ async fn run_css_edit_in_rejected_discovery_tick(mode: DevMode, boot_lazy: Optio
     let stylesheet = root.join("styles/global.css");
     fs::create_dir_all(root.join("styles")).expect("create styles/");
     fs::write(&stylesheet, ":root { --slug-css-marker: css-v1; }\n").expect("write global.css");
-    let mut session = spawn_dev_with_timing(root, mode, boot_lazy, true);
+    let gate_probe = root.join("data/discovery-gate.json");
+    fs::write(&gate_probe, b"{\"revision\":0}\n").expect("seed the data-only gate probe");
+    let gate_dir = tempfile::tempdir().expect("gate outside watched project");
+    let gate = gate_dir.path().join("bundle-gate");
+    let mut session = spawn_dev_with_env(
+        root,
+        mode,
+        boot_lazy,
+        true,
+        &[(
+            "ZFB_DEV_TEST_NATIVE_BUNDLE_GATE",
+            gate.to_str().expect("test gate path is UTF-8"),
+        )],
+    );
     let pgid = session.guard.pgid;
     let body = async {
         let Some((base, client)) =
@@ -3914,18 +3931,26 @@ async fn run_css_edit_in_rejected_discovery_tick(mode: DevMode, boot_lazy: Optio
         };
         let css_url = format!("{base}/assets/styles.css");
         poll_until_response_contains(&client, &css_url, "css-v1", "baseline css", &session).await;
-        // A tick still bundling when c.md lands can read it and turn its
-        // Created event into a Modified one, which skips discovery.
-        drain_ticks_until_quiescent(&base).await;
-
+        // Hold a data-only tick after its content snapshot. Both notifications
+        // must reach the watcher queue before the next intake can run; otherwise
+        // an earlier stylesheet-only tick can legitimately publish css-v2.
+        let offset =
+            hold_css_test_bundle(&session, &gate, &gate_probe, b"{\"revision\":1}\n").await;
         let created = session.root.join("content/articles/c.md");
-        let offset = read_log(&session.stderr_path).len();
-        overwrite_same_length(&stylesheet, b":root { --slug-css-marker: css-v2; }\n");
+        let css_queued = queue_edit_behind_held_bundle(
+            &session,
+            offset,
+            &stylesheet,
+            b":root { --slug-css-marker: css-v2; }\n",
+        )
+        .await;
         fs::write(
             &created,
             "---\ntitle: Gamma Slug\nslug: not-c\n---\n\nGamma body.\n",
         )
         .expect("create c.md with a disagreeing slug");
+        wait_for_queued_edit(&session, css_queued, &created).await;
+        fs::remove_file(&gate).expect("release the data-only bundle after both deliveries");
         let (_, rejected_end) = wait_for_stderr_line(
             &session,
             offset,
