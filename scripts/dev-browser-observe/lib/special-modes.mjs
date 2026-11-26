@@ -1,3 +1,4 @@
+import { interruptible } from "./session-deadline.mjs";
 import { classifyMechanism } from "./state-machine.mjs";
 import { nsToMs } from "./util.mjs";
 
@@ -110,9 +111,10 @@ async function runHidden(ctx) {
   const { t0, steps } = await doWrites(fs, attempt.writes, clock, ctx.signal);
   ctx.writeDone = true;
   attempt.applied?.();
-  await wait(attempt.observeMs);
+  await interruptible(wait(attempt.observeMs), ctx.signal);
   const activeEffects = page.since(mark, t0);
-  await wait(attempt.accessDelayMs);
+  await interruptible(wait(attempt.accessDelayMs), ctx.signal);
+  ctx.signal?.throwIfAborted();
   const beforeNav = page.since(mark, t0);
   const prefetchRequests = beforeNav.requests.filter((r) => {
     try {
@@ -121,11 +123,14 @@ async function runHidden(ctx) {
       return false;
     }
   });
-  const nav = await page.navigateAndAwait(
-    attempt.hiddenPath,
-    attempt.hiddenPredicate,
-    timeouts.attemptMs,
-    "hidden",
+  const nav = await interruptible(
+    page.navigateAndAwait(
+      attempt.hiddenPath,
+      attempt.hiddenPredicate,
+      timeouts.attemptMs,
+      "hidden",
+    ),
+    ctx.signal,
   );
   const outcome = hiddenOutcome(nav);
   return {
@@ -162,23 +167,30 @@ async function runFinalState(ctx) {
   const { t0, tLast, steps } = await doWrites(fs, attempt.writes, clock, ctx.signal);
   ctx.writeDone = true;
   attempt.applied?.();
-  const settle = await page.settle({
-    mark,
-    startNs: tLast,
-    quietMs: timeouts.quietMs ?? 1500,
-    requireNativeUpdate: true,
-    rule: "require-native-update",
-    boundMs: timeouts.attemptMs,
-  });
+  const settle = await interruptible(
+    page.settle({
+      mark,
+      startNs: tLast,
+      quietMs: timeouts.quietMs ?? 1500,
+      requireNativeUpdate: true,
+      rule: "require-native-update",
+      boundMs: timeouts.attemptMs,
+    }),
+    ctx.signal,
+  );
   const checks = [];
   for (const check of attempt.finalChecks) {
+    ctx.signal?.throwIfAborted();
     try {
       checks.push({
         check,
-        ...(await page.supplemental(check, timeouts.supplementalMs, {
-          quietMs: timeouts.quietMs ?? 1500,
-          nativeUpdateConfirmed: settle.settled === true && settle.nativeUpdateObserved === true,
-        })),
+        ...(await interruptible(
+          page.supplemental(check, timeouts.supplementalMs, {
+            quietMs: timeouts.quietMs ?? 1500,
+            nativeUpdateConfirmed: settle.settled === true && settle.nativeUpdateObserved === true,
+          }),
+          ctx.signal,
+        )),
       });
     } catch (error) {
       checks.push({ check, ok: false, error: String(error?.message ?? error) });
