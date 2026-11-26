@@ -401,6 +401,9 @@ export function readSession({
   // Do not read or pool observer timings from a renderer-memory run, even if its
   // declared profile and build are inconsistent or the session itself failed.
   if (
+    receipt?.profile?.tinyAcceptance ||
+    receipt?.tinyAcceptance ||
+    receipt?.command === "tiny-acceptance" ||
     receipt?.profile?.startupAcceptance ||
     receipt?.startupAcceptance ||
     receipt?.command === "startup-acceptance" ||
@@ -431,6 +434,8 @@ export function readSession({
     const start = records.find((r) => r.type === "run-start");
     if (
       start?.rendererMemoryStudy ||
+      start?.tinyAcceptance ||
+      start?.command === "tiny-acceptance" ||
       start?.startupAcceptance ||
       start?.command === "startup-acceptance"
     )

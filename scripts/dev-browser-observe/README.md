@@ -898,6 +898,43 @@ The startup receipt and summary identify the protocol, sample, request, native
 lifecycle completion and cleanup. The independent supervisor verifies controller
 exit. Startup acceptance is excluded from study and timing aggregation.
 
+### Linux sampler timing and tiny acceptance
+
+Linux renderer-memory diagnostics keep core sampler timing with each sample or
+sample failure and write bounded dispatch and synchronous-stage observations to
+`controller-timing.json`. The core starts before spawning the helper and still
+requires controller-observed completion within 750 ms. The additional 200 ms is
+reserved for resolving cancellation and closure.
+
+Helper timestamps describe work inside the Python process. Parent child-exit, data,
+EOF, and close timestamps describe Node callback observations. Subtract timestamps
+across processes only when the recorded clock identity and request/reply bounds
+qualify a shared domain. A helper flush to a parent callback includes transport
+and dispatch. The helper's final output and actual kernel exit leave a residual.
+Missing stages remain unavailable. Controller timestamps record nominal timer
+positions, sampler invocations, overlap, and synchronous work, including record
+open/write/fsync/close, trace validation, and ordinary resource snapshots. Nested
+durations include their children. Check overlap with the interval under investigation
+before attributing a delay. Per-cycle acceptance and periodic coverage are separate.
+
+Use `cli.mjs tiny-acceptance --profile /absolute/path/to/profile.json --label fresh-label`
+with the same internal A0 two-article fixture, pinned diagnostic build, and
+provenance-only server as startup acceptance. Omit `startupAcceptance` and set
+`tinyAcceptance.protocol` to `dev-browser-observe.renderer-memory.tiny-acceptance.v1`.
+
+- Probe `A` uses an empty schedule. It makes the original-body HTTP check and
+  observes a full 30 seconds of passive sampling.
+- Probe `B` also requires `tinyAcceptance.browserExecutable` and
+  `browserExecutableSha256`. It uses one ordinary scenario with one in-place
+  `edit-body` operation for article `a`, zero warmups and twelve measured
+  repetitions. It requires in-place restoration, the original rendered body in a
+  fresh document, the four tiny-fixture live checks, and ten seconds of final idle.
+
+Both probes activate the same real sampler before readiness. They allow 160 helper
+starts and use the startup acceptance wall, RSS, readiness, and finalization limits.
+An exhausted helper allowance ends the probe. These receipts are diagnostic and
+excluded from timing and reclamation aggregation.
+
 ## Renderer memory v2 allocator and mapping observations
 
 The separate `dev-browser-observe.renderer-memory.v2` protocol retains the v1 workload and adds

@@ -43,7 +43,8 @@ export function scheduleErrors(profile) {
     for (const [i, op] of (s.ops ?? []).entries()) {
       if (!op.repeat) continue;
       const at = `$.scenarios[${s.id}].ops[${i}]`;
-      if (!fieldNotes) errors.push(`${at}: repeat is field-notes only`);
+      if (!fieldNotes && profile.tinyAcceptance?.probe !== "B")
+        errors.push(`${at}: repeat is field-notes only`);
       if (!REPEATABLE_OPS.has(op.op))
         errors.push(
           `${at}: ${op.op} cannot repeat (repeatable: ${[...REPEATABLE_OPS].join(", ")})`,

@@ -465,6 +465,7 @@ export async function runBatch({ scenarios, deps }) {
       }
       for (const op of scenario.ops) {
         const where = { scenario: scenario.id, op: op.id ?? op.op };
+        diagnostic?.setActiveEdit?.(op.iteration?.index ?? null);
         current = { where, armedToken: null, writeDone: false, resolved: false };
         const base = {
           type: "attempt",
@@ -696,7 +697,11 @@ export async function runBatch({ scenarios, deps }) {
         // arm already read this value before the first edit. Reuse it across consecutive
         // edits so a previous tokenized revision cannot become the cleanup baseline.
         if (verifyBodyRevision && !bodyRevision) {
-          if (typeof armed.actual !== "string" || !armed.actual.trim())
+          if (
+            typeof armed.actual !== "string" ||
+            !armed.actual.trim() ||
+            (deps.requiredBodyBaseline && armed.actual !== deps.requiredBodyBaseline)
+          )
             throw new Error("missing pre-edit rendered body baseline");
           bodyRevision = {
             path: attempt.targetPath,

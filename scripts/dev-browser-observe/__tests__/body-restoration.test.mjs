@@ -174,3 +174,44 @@ describe("Field Notes body restoration", () => {
     });
   });
 });
+
+it("rejects a fresh tiny article-a document still rendering the last edit after disk restoration", async () => {
+  vi.useFakeTimers();
+  const clock = () => BigInt(Date.now()) * 1_000_000n;
+  const observer = new ObserverPage(null, "", clock);
+  observer.baseUrl = "http://127.0.0.1:9999";
+  const path = "/articles/a";
+  const url = observer.url(path);
+  const mark = observer.mark();
+  const original = "Body marker body-a-v0 for article a.";
+  const stale = "Body marker twelfth-edit for article a.";
+  observer.page = {
+    evaluate: async (_fn, predicate) => ({
+      docUUID: "after-restoration",
+      url,
+      loading: false,
+      matched: stale === predicate.equals,
+    }),
+  };
+  const startNs = clock();
+  const waiting = observer.settle({
+    mark,
+    startNs,
+    requireNativeUpdate: true,
+    boundMs: 10,
+    quietMs: 2,
+    stepMs: 1,
+    bodyRevision: {
+      path,
+      predicate: { kind: "text", selector: '[data-article-body="a"]', equals: original },
+    },
+  });
+  observer.docInits.push({ ns: String(clock()), docUUID: "after-restoration", url });
+  await vi.advanceTimersByTimeAsync(10);
+  expect(await waiting).toMatchObject({
+    settled: false,
+    nativeUpdateObserved: true,
+    reason: "bound-exceeded-without-restored-body",
+    bodyRevision: { docUUID: "after-restoration", matched: false },
+  });
+});

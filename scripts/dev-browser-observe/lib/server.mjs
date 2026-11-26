@@ -1,3 +1,4 @@
+import { timed } from "./controller-timing.mjs";
 import { RENDERER_MEMORY_ALLOCATOR_ENV } from "./renderer-memory-protocol.mjs";
 import { createWriteStream } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
@@ -109,9 +110,16 @@ export function devArgs({ port, host, extraArgs = [] }) {
  * Effective child env. Outside diagnostic profiles every DIAGNOSTIC_ENV key is
  * removed, including one inherited from the controller's own environment.
  */
-export function serverEnv(baseEnv, overrides, diagnostic) {
+export function serverEnv(baseEnv, overrides, diagnostic, declaredZfbEnvOnly = false) {
   const env = { ...baseEnv, NO_COLOR: "1", ...overrides };
   const removed = [];
+  if (declaredZfbEnvOnly) {
+    for (const key of Object.keys(env))
+      if (key.startsWith("ZFB_") && !Object.hasOwn(overrides ?? {}, key)) {
+        removed.push(key);
+        delete env[key];
+      }
+  }
   if (!diagnostic) {
     for (const k of DIAGNOSTIC_ENV) {
       if (k in env) {
@@ -162,6 +170,7 @@ export function startDevServer({
   extraArgs = [],
   env = {},
   diagnostic = false,
+  declaredZfbEnvOnly = false,
   readyTimeoutMs,
   logPath,
   spawnImpl = spawnOwned,
@@ -170,7 +179,7 @@ export function startDevServer({
   const args = explicitArgs ?? devArgs({ port, host, extraArgs });
   const cmd = command ?? exe;
   let rejectReady = null;
-  const effective = serverEnv(process.env, env, diagnostic);
+  const effective = serverEnv(process.env, env, diagnostic, declaredZfbEnvOnly);
   const lines = [];
   let linesBase = 0;
   const provLines = [];
@@ -272,10 +281,18 @@ export function startDevServer({
     isAlive: () => ({ alive: handle.exit === null, exit: handle.exit }),
     pid: () => handle.native?.pid ?? null,
     waitExit: () => handle.exited,
-    sampleResources: () => {
-      const owned = handle.exit === null ? snapshotOwned(handle) : [];
-      return sample(owned);
-    },
+    sampleResources: (timing) =>
+      timed(timing, "server.sampleResources", {}, () => {
+        const owned =
+          handle.exit === null
+            ? timed(timing, "snapshotOwned", {}, () =>
+                snapshotOwned(handle, undefined, undefined, undefined, timing),
+              )
+            : [];
+        return timed(timing, "adapter.sample", { processes: owned.length }, () =>
+          sample(owned, { timing }),
+        );
+      }),
     /** Only owned pids whose birth identity still matches are sampled. */
     sampleResourcesAsync: async (opts = {}) => {
       const live = await liveKnownAsync(handle);
