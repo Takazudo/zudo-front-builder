@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import { linuxBirth } from "../lib/linux-birth.mjs";
-import { sampleRendererMemory } from "../lib/linux-rss-sample.mjs";
+import { checkFixedV2Observation, sampleRendererMemory } from "../lib/linux-rss-sample.mjs";
 import { startFixedRssSafety } from "../lib/fixed-rss-safety.mjs";
 import { runSpecialMode } from "../lib/special-modes.mjs";
 
@@ -156,6 +156,45 @@ linux(
     }
   },
 );
+
+test("v2 terminal observations reconcile their bound parent and any captured image", () => {
+  const root = { pid: 3, pgid: 3 },
+    binding = { ppid: 4 };
+  const fixed = { child: { path: "/dev", device: "1", inode: "234" } };
+  const parent = { pid: 4, ppid: 3, disposition: "live", executable: fixed.child };
+  const p = {
+    pid: 5,
+    ppid: 4,
+    pgid: 5,
+    disposition: "proved-departure",
+    terminalProof: { birth: { ppid: 4 } },
+    fixedRole: "unknown",
+    executable: null,
+    rssKiB: null,
+    statusKiB: null,
+    smapsRollupKiB: null,
+    threads: null,
+  };
+  const verify = (row) => checkFixedV2Observation(row, binding, root, fixed, [parent]);
+  verify(p);
+  for (const change of [
+    { ppid: 3 },
+    { terminalProof: { birth: { ppid: 3 } } },
+    { fixedRole: "compiler" },
+    { rssKiB: 0 },
+    { disposition: "live" },
+    { fixedRole: undefined, executable: { ...fixed.child, path: "/foreign" } },
+    { fixedRole: undefined, executable: { ...fixed.child, workerArg: "wrong" } },
+  ])
+    assert.throws(() => verify({ ...p, ...change }));
+  verify({
+    ...p,
+    fixedRole: undefined,
+    executable: { ...fixed.child, workerArg: "__zfb-compiler-worker" },
+    rssKiB: 122,
+    statusKiB: { VmRSS: 122 },
+  });
+});
 
 test("periodic fixed safety failure during hidden observation aborts before navigation", async () => {
   const controller = new AbortController(),

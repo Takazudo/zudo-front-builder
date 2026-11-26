@@ -44,6 +44,36 @@ function matchesFixedChild(process, root, native, observations) {
   );
 }
 
+// Validate the identity fields against the binding before interpreting a v2
+// observation. A never-observed role is possible only after proved departure.
+export function checkFixedV2Observation(process, binding, root, fixed, observations) {
+  requireValue(binding?.ppid === process.ppid, "fixed observation parent contradicts binding");
+  if (process.disposition === "proved-departure")
+    requireValue(
+      process.terminalProof?.birth?.ppid === process.ppid,
+      "fixed terminal proof parent mismatch",
+    );
+  if (process.executable === null) {
+    requireValue(
+      process.disposition === "proved-departure" &&
+        process.fixedRole === "unknown" &&
+        process.rssKiB === null &&
+        process.statusKiB === null &&
+        process.smapsRollupKiB === null &&
+        process.threads === null,
+      "invalid unknown fixed role",
+    );
+  } else {
+    requireValue(
+      process.fixedRole === undefined &&
+        (process.pid === root.pid
+          ? matchesExecutable(process.executable, fixed.root)
+          : matchesFixedChild(process, root, fixed.child, observations)),
+      "invalid observed fixed role",
+    );
+  }
+}
+
 function requireValue(ok, msg) {
   if (!ok) throw new Error(msg);
 }
@@ -601,6 +631,8 @@ export function sampleRendererMemory(
           );
         } else {
           requireValue(same(bound.get(p.pid), p), "observation without a matching binding");
+          if (fixedExecutables?.protocol === "linux-fixed-zfb.v2")
+            checkFixedV2Observation(p, bound.get(p.pid), root, fixedExecutables, processes);
           if (p.disposition === "proved-departure") {
             requireValue(p.pid !== root.pid, "sampling root terminated");
             checkProof(p.terminalProof, p);
@@ -615,9 +647,8 @@ export function sampleRendererMemory(
                 uint(p.smapsRollupKiB?.Rss) &&
                 p.smapsRollupKiB.Rss === rssSources.get(p.pid)?.["rollup.Rss"] &&
                 (fixedExecutables && p.pid !== root.pid
-                  ? fixedExecutables.protocol === "linux-fixed-zfb.v2"
-                    ? matchesFixedChild(p, root, fixedExecutables.child, processes)
-                    : p.ppid === root.pid && matchesExecutable(p.executable, fixedExecutables.child)
+                  ? fixedExecutables.protocol === "linux-fixed-zfb.v2" ||
+                    (p.ppid === root.pid && matchesExecutable(p.executable, fixedExecutables.child))
                   : matchesExecutable(p.executable, executable)) &&
                 uint(p.threads?.listed) &&
                 Array.isArray(p.threads?.rendererHosts),
