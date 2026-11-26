@@ -3428,15 +3428,20 @@ fn intake_lines(window: &str) -> Vec<&str> {
 
 /// Inspect the intake immediately preceding the discovery error. An earlier
 /// CSS/create batch cannot establish which changes the rejected tick received.
-fn discovery_rejection_matches_intake(window: &str) -> bool {
+fn discovery_rejection_matches_intake(window: &str, stylesheet: &Path, created: &Path) -> bool {
     let Some((_, last_tick)) = window.rsplit_once("[zfb-timing] intake paths: ") else {
         return false;
     };
     let Some((paths, processing)) = last_tick.split_once('\n') else {
         return false;
     };
-    paths.contains("styles/global.css:")
-        && paths.contains("content/articles/c.md:Created")
+    let changes = || {
+        paths
+            .split(", ")
+            .filter_map(|change| change.rsplit_once(':'))
+    };
+    changes().any(|(path, _)| Path::new(path) == stylesheet)
+        && changes().any(|(path, kind)| Path::new(path) == created && kind == "Created")
         && processing
             .lines()
             .any(|line| line.contains("[zfb-timing] discovery: created=") && line.contains("c.md"))
@@ -3448,12 +3453,15 @@ fn discovery_rejection_requires_the_joint_intake_on_the_rejected_tick() {
         "[zfb-timing] intake paths: styles/global.css:Modified, content/articles/c.md:Created\n";
     let create_only = "[zfb-timing] intake paths: content/articles/c.md:Created\n";
     let discovery = "[zfb-timing] discovery: created=[\"content/articles/c.md\"]\n[zfb-timing] discovery: err\n";
-    assert!(discovery_rejection_matches_intake(&format!(
-        "{joint}{discovery}"
-    )));
-    assert!(!discovery_rejection_matches_intake(&format!(
-        "{joint}{create_only}{discovery}"
-    )));
+    let matches = |log: &str| {
+        discovery_rejection_matches_intake(
+            log,
+            Path::new("styles/global.css"),
+            Path::new("content/articles/c.md"),
+        )
+    };
+    assert!(matches(&format!("{joint}{discovery}")));
+    assert!(!matches(&format!("{joint}{create_only}{discovery}")));
 }
 
 /// After the content repair publishes the stylesheet, prove the CSS came from
@@ -3965,7 +3973,7 @@ async fn run_css_edit_in_rejected_discovery_tick(mode: DevMode, boot_lazy: Optio
         .await;
         let tick_log = read_log(&session.stderr_path)[offset..rejected_end].to_string();
         assert!(
-            discovery_rejection_matches_intake(&tick_log),
+            discovery_rejection_matches_intake(&tick_log, &stylesheet, &created),
             "the final intake must carry the stylesheet and c.md creation into discovery:\n{tick_log}\n{}",
             session.logs()
         );
