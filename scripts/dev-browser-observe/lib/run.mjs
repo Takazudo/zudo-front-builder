@@ -3,6 +3,7 @@ import { admissionPath, reserveSession } from "./admission.mjs";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { OBSERVER_PATH, closeOwnedBrowser, launchOwnedBrowser } from "./browser.mjs";
+import { BrowserTiming, timeBrowserSync } from "./browser-timing.mjs";
 import { runCalibration, CALIBRATION_CELLS } from "./calibrate.mjs";
 import { kindFor } from "./fixture-kinds.mjs";
 import { resolveLazyDevRender, traceEnabledIn } from "./provenance.mjs";
@@ -31,6 +32,7 @@ import {
 } from "./renderer-memory-protocol.mjs";
 import { createResourceStudy, summarizeResourceStudy } from "./resource-study.mjs";
 import { checkStartupArticles, verifyStartup, verifyStartupSample } from "./startup-acceptance.mjs";
+import { StartupEventLoop } from "./startup-event-loop.mjs";
 import { expandSchedule, scheduleOf } from "./schedule.mjs";
 import { startDevServer } from "./server.mjs";
 import {
@@ -73,6 +75,7 @@ export const EXIT = {
 export const BROWSER_CLOSE_TIMEOUT_MS = 10000;
 
 export const RECEIPT_SCHEMA = "dev-browser-observe.receipt.v1";
+const BROWSER_STARTUP_TIMING_FILE = "browser-startup-timing.json";
 
 export function notImplementedResult(profile) {
   return {
@@ -309,6 +312,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     tiny || profile.rendererMemoryStudy || profile.startupAcceptance
       ? new ControllerTiming(hooks.rendererMemoryClock)
       : null;
+  const browserTiming = tiny?.probe === "B" ? new BrowserTiming() : null;
+  const startupLoop = browserTiming ? new StartupEventLoop() : null;
+  const writeBrowserStartupTiming = () => {
+    if (!browserTiming) return;
+    writeJsonSync(join(labelDir, BROWSER_STARTUP_TIMING_FILE), {
+      schema: "dev-browser-observe.browser-startup-timing.v1",
+      browser: browserTiming.snapshot(),
+      eventLoop: startupLoop.report,
+    });
+  };
   const rec = new Recorder(join(labelDir, "records.jsonl"), timing);
   const memoryProfile = profile.rendererMemoryStudy ?? null;
   const acceptance = profile.startupAcceptance ?? tiny;
@@ -361,6 +374,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         complete: false,
         timingEligible: false,
         studyEligible: false,
+        ...(browserTiming && { browserStartupTiming: BROWSER_STARTUP_TIMING_FILE }),
         supervisorStartedMs: loaded.supervisorStartedMs,
         workDeadlineMs: loaded.workDeadline,
         supervisorDeadlineMs: loaded.supervisorDeadlineMs,
@@ -447,6 +461,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     });
     rec.append({ type: "run-end", exitCode: EXIT.identityRejected });
     if (timing) writeJsonSync(join(labelDir, "controller-timing.json"), timing.report);
+    writeBrowserStartupTiming();
     stderr("identity rejected before any workload edit; see receipt.json identity.checks");
     return EXIT.identityRejected;
   }
@@ -588,6 +603,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     if (intentPath)
       intent = reserveSession(intentPath, { labelDir, registryPath: resolved.registryPath });
     spawning = true;
+    startupLoop?.start(rendererMemory.signal);
     server = (hooks.startDevServer ?? startDevServer)({
       ...(fixed
         ? {
@@ -647,13 +663,17 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     let ready;
     try {
       ready = await interruptible(server.ready, rendererMemory?.signal ?? loaded.signal);
+      browserTiming?.mark("server-readiness-observed");
     } catch (error) {
-      rec.append({
-        type: "server-ready",
-        outcome: "ready-failed",
-        error: String(error?.message ?? error),
-        exit: server.handle.exit,
-      });
+      browserTiming?.mark("server-readiness-failed");
+      timeBrowserSync(browserTiming, "server-ready.append", null, { ready: false }, () =>
+        rec.append({
+          type: "server-ready",
+          outcome: "ready-failed",
+          error: String(error?.message ?? error),
+          exit: server.handle.exit,
+        }),
+      );
       exitCode = EXIT.serverNotReady;
       summaryExtra = { stopReason: "ready-failed" };
       return exitCode;
@@ -732,14 +752,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         return exitCode;
       }
     }
-    rec.append({
-      type: "server-ready",
-      baseUrl: ready.baseUrl,
-      readyMs: nsToMs(ready.readyNs - server.startedNs),
-      native: server.handle.native,
-      launcher: fixed ? (receipt.server.rootRole ?? "unclassified") : "none",
-      ...(fixed ? { roles } : {}),
-    });
+    timeBrowserSync(browserTiming, "server-ready.append", null, { ready: true }, () =>
+      rec.append({
+        type: "server-ready",
+        baseUrl: ready.baseUrl,
+        readyMs: nsToMs(ready.readyNs - server.startedNs),
+        native: server.handle.native,
+        launcher: fixed ? (receipt.server.rootRole ?? "unclassified") : "none",
+        ...(fixed ? { roles } : {}),
+      }),
+    );
     receipt.server.baseUrl = ready.baseUrl;
     receipt.server.readyMs = nsToMs(ready.readyNs - server.startedNs);
 
@@ -758,19 +780,21 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       if (tiny) await rendererMemory.passiveIdle();
       return exitCode;
     }
-    if (tiny?.probe === "B")
+    if (browserTiming)
       Object.assign(
         receipt[acceptanceKey],
-        await verifyStartupSample({
-          server,
-          ready,
-          firstSample,
-          records: rec.records,
-          study: rendererMemory,
-        }),
+        await browserTiming.asyncSpan("initial-sample.verify", null, () =>
+          verifyStartupSample({
+            server,
+            ready,
+            firstSample,
+            records: rec.records,
+            study: rendererMemory,
+          }),
+        ),
       );
     loaded.signal?.throwIfAborted();
-    browserHandle = await (hooks.launchOwnedBrowser ?? launchOwnedBrowser)({
+    const browserOptions = {
       ...profile.browser,
       ...(memoryProfile || tiny
         ? {
@@ -781,7 +805,14 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
             },
           }
         : {}),
-    });
+    };
+    const launchBrowser = hooks.launchOwnedBrowser ?? launchOwnedBrowser;
+    browserHandle = browserTiming
+      ? await browserTiming.asyncSpan("browser.initialize", null, (parentId) =>
+          launchBrowser(browserOptions, { timing: browserTiming, parentId }),
+        )
+      : await launchBrowser(browserOptions);
+    browserTiming?.mark("browser-initialization-return-observed");
     loaded.signal?.throwIfAborted();
     const observer = browserHandle.observer;
     observer.baseUrl = ready.baseUrl;
@@ -790,7 +821,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     observer.onStray = (payload) =>
       rec.append({ type: "late-token", label: "not-success", armedToken: null, payload });
     receipt.browser = browserHandle.identity;
-    rec.append({ type: "browser-ready", browser: browserHandle.identity });
+    timeBrowserSync(browserTiming, "browser-ready.append", null, {}, () =>
+      rec.append({ type: "browser-ready", browser: browserHandle.identity }),
+    );
+    startupLoop?.browserReady();
     writeJsonSync(receiptPath, receipt);
 
     const sampleServer = () =>
@@ -804,6 +838,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
 
     if (batch) {
       if (rendererMemory) await rendererMemory.beforeEdits();
+      startupLoop?.stop("before-edits");
       if (profile.resourceStudy) {
         study = createResourceStudy({
           study: profile.resourceStudy,
@@ -922,6 +957,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     summaryExtra = { ...summaryExtra, stopReason: summaryExtra.stopReason ?? "controller-error" };
     return exitCode;
   } finally {
+    startupLoop?.stop("finalizing");
     loaded.onFinalizing?.();
     // Best-effort from here on: a failing record write must never skip the server stop or the summary.
     let evidenceFailed = false;
@@ -1178,6 +1214,12 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       } else {
         intent.release();
       }
+    }
+    try {
+      writeBrowserStartupTiming();
+    } catch (error) {
+      evidenceFailed = true;
+      stderr(`browser startup timing write failed: ${error?.message ?? error}`);
     }
     if (evidenceFailed && exitCode === EXIT.ok) exitCode = EXIT.controllerError;
     if (acceptance) {
