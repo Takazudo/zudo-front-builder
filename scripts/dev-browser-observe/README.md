@@ -935,6 +935,23 @@ starts and use the startup acceptance wall, RSS, readiness, and finalization lim
 An exhausted helper allowance ends the probe. These receipts are diagnostic and
 excluded from timing and reclamation aggregation.
 
+Probe B also writes `browser-startup-timing.json`. It records readiness and
+record-persistence boundaries, browser operation spans, and a startup-scoped
+Node event-loop observation. The browser spans distinguish synchronous work
+from the time between a Promise return and observed settlement. That latter
+interval can include unrelated controller work. The selected executable and
+Playwright's library-default executable have separate identity records, with
+file reads and digests timed separately.
+
+The event-loop delay histogram is cumulative for the observation window and
+includes the 20 ms sampling resolution. Its counts and maximum depend on what
+the monitor observed before shutdown. Empty or incomplete observations remain
+explicit. Event-loop utilization describes the Node loop's active and idle
+time. To investigate a dispatch gap, intersect synchronous spans with the
+nominal overdue interval and account for overlapping spans once. An asynchronous
+span may locate the gap within an operation but cannot explain why the
+controller missed dispatch.
+
 ## Renderer memory v2 allocator and mapping observations
 
 The separate `dev-browser-observe.renderer-memory.v2` protocol retains the v1 workload and adds
