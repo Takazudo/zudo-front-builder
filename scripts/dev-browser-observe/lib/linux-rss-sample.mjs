@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readFileSync, readlinkSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { LINUX_BIRTH, sameLinuxBirth } from "./linux-birth.mjs";
 import { LINUX_RSS_SAMPLER_VERSION as samplerVersion } from "./renderer-memory-protocol.mjs";
@@ -57,6 +58,143 @@ function checkProof(proof, birth) {
   );
 }
 
+const timingVersion = "linux-rss-timing.v1";
+const now = () => process.hrtime.bigint().toString();
+const nullFields = (names) => Object.fromEntries(names.map((name) => [name, null]));
+const requestTimes = ["entryNs", "requestReadStartNs", "requestReadEndNs", "requestDecodedNs"];
+const outputTimes = ["serializeStartNs", "serializedNs", "writtenNs", "flushedNs"];
+const stageTimes = {
+  request: requestTimes,
+  finalRootBegin: ["finalRootBeginNs"],
+  finalRoot: ["finalRootStartNs", "finalRootEndNs"],
+  cleanupBegin: ["cleanupBeginNs"],
+  fdCleanup: ["cleanupStartNs", "cleanupEndNs"],
+  terminalOutput: [
+    "terminalPrepareStartNs",
+    "terminalPreparedNs",
+    "terminalSerializeStartNs",
+    "terminalSerializedNs",
+    "terminalWrittenNs",
+    "terminalFlushedNs",
+  ],
+  preExit: ["preExitNs"],
+  observationOutput: outputTimes,
+};
+
+function parentClock() {
+  const clock = {
+    implementation: "process.hrtime.bigint/uv_hrtime",
+    clockId: process.platform === "linux" ? "CLOCK_MONOTONIC" : null,
+    platform: process.platform,
+    libuv: process.versions.uv,
+    bootId: null,
+    timeNamespace: null,
+  };
+  if (process.platform === "linux") {
+    try {
+      clock.bootId = readFileSync("/proc/sys/kernel/random/boot_id", "ascii").trim();
+      clock.timeNamespace = readlinkSync("/proc/self/ns/time");
+    } catch {
+      // Missing clock evidence leaves both per-process timelines usable.
+    }
+  }
+  return clock;
+}
+
+function newTiming(start, deadline) {
+  const parent = {
+    ...nullFields([
+      "spawnCallNs",
+      "spawnReturnNs",
+      "spawnEventNs",
+      "requestStartNs",
+      "requestEndNs",
+      "requestFinishedNs",
+      "firstDataNs",
+      "lastDataNs",
+      "lastDataEndNs",
+      "parsingNs",
+      "journalNs",
+      "exitNs",
+      "exitCode",
+      "exitSignal",
+      "stdinCloseNs",
+      "stdoutEndNs",
+      "stdoutCloseNs",
+      "stderrEndNs",
+      "stderrCloseNs",
+      "closeNs",
+      "deadlineDispatchNs",
+      "closureDeadlineNs",
+      "closureDispatchNs",
+      "terminalReceiptNs",
+      "terminalFrameCallbackNs",
+      "preExitFrameCallbackNs",
+      "terminalOutputFrameCallbackNs",
+      "dataHandlingNs",
+      "parseAndValidateNs",
+      "requestBytes",
+      "resultNs",
+    ]),
+    entryNs: String(start),
+    deadlineNs: String(deadline),
+    dataCallbacks: 0,
+    parsedRows: 0,
+    journalCalls: 0,
+    journal: [],
+    stdoutBytes: 0,
+    stderrBytes: 0,
+  };
+  return {
+    version: timingVersion,
+    parent,
+    helper: {
+      ...nullFields(
+        Object.entries(stageTimes)
+          .filter(([stage]) => stage !== "observationOutput")
+          .flatMap(([, names]) => names),
+      ),
+      observations: [],
+      frames: 0,
+    },
+    clock: {
+      parent: parentClock(),
+      helper: null,
+      qualified: false,
+      reason: "missing-helper-clock",
+      preExitToExitDeliveryResidualNs: null,
+    },
+  };
+}
+
+function qualify(timing, envelopeOk) {
+  const { parent, helper, clock } = timing;
+  const p = clock.parent;
+  const h = clock.helper;
+  if (!h) return;
+  if (p.platform !== "linux" || !p.libuv || h.implementation !== "clock_gettime(CLOCK_MONOTONIC)")
+    clock.reason = "clock-implementation";
+  else if (!p.bootId || p.bootId !== h.bootId) clock.reason = "boot-identity";
+  else if (!/^time:\[\d+\]$/.test(p.timeNamespace) || p.timeNamespace !== h.timeNamespace)
+    clock.reason = "time-namespace";
+  else if (
+    !envelopeOk ||
+    (helper.preExitNs !== null &&
+      parent.exitNs !== null &&
+      BigInt(helper.preExitNs) > BigInt(parent.exitNs))
+  )
+    clock.reason = "causal-envelope";
+  else {
+    clock.qualified = true;
+    clock.reason = null;
+    // Includes the last timing frame, interpreter shutdown, OS exit, and parent delivery.
+    if (helper.preExitNs !== null && parent.exitNs !== null)
+      clock.preExitToExitDeliveryResidualNs = String(
+        BigInt(parent.exitNs) - BigInt(helper.preExitNs),
+      );
+  }
+}
+
 /** A single direct child scans, pins and samples the owned set in one bounded cycle. */
 export function sampleRendererMemory(
   server,
@@ -71,6 +209,10 @@ export function sampleRendererMemory(
   const at = new Date().toISOString();
   const start = process.hrtime.bigint();
   const deadline = start + BigInt(budgetMs) * 1_000_000n;
+  const timing = newTiming(start, deadline);
+  const parent = timing.parent;
+  const stamps = timing.helper;
+  let envelopeOk = true;
   const { handle } = server;
   const root = handle.native;
   const proofs = terminalProofs.get(handle) ?? new Map();
@@ -95,7 +237,8 @@ export function sampleRendererMemory(
     samplerVersion,
     at,
     hrtimeNs: String(start),
-    endHrtimeNs: String(process.hrtime.bigint()),
+    endHrtimeNs: parent.resultNs,
+    timing,
     helper,
     verifiedDiscoveries: discoveries,
     journalFailures,
@@ -116,6 +259,8 @@ export function sampleRendererMemory(
       finished = true;
       clearTimeout(timer);
       clearTimeout(closeTimer);
+      qualify(timing, envelopeOk);
+      parent.resultNs = now();
       const record = details();
       if (fault)
         reject(
@@ -136,14 +281,17 @@ export function sampleRendererMemory(
 
     const kill = () => {
       if (child?.pid && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); // direct, unreaped ChildProcess handle only
-      if (child && !closeTimer)
+      if (child && !closeTimer) {
+        parent.closureDeadlineNs = String(process.hrtime.bigint() + BigInt(closeMs) * 1_000_000n);
         closeTimer = setTimeout(() => {
+          parent.closureDispatchNs = now();
           fail("helper-close", "sampling helper closure unverified");
           // Leave the failed resource identity in the receipt for admission.
           for (const pipe of [child.stdin, child.stdout, child.stderr]) pipe.destroy();
           child.unref();
           finish();
         }, closeMs);
+      }
     };
     let request, spawnHrtimeNs;
     try {
@@ -169,8 +317,9 @@ export function sampleRendererMemory(
         terminalProofs: [...proofs.values()],
         executablePath: expectedExecutablePath,
       };
-      spawnHrtimeNs = String(process.hrtime.bigint());
+      spawnHrtimeNs = parent.spawnCallNs = now();
       child = launch();
+      parent.spawnReturnNs = now();
     } catch (error) {
       fail("start", String(error.message));
       finish();
@@ -187,8 +336,113 @@ export function sampleRendererMemory(
     let partial = Buffer.alloc(0);
     let bytes = 0;
     let protocolBroken = false;
+    let requiredStage = "request";
+    let pendingObservation = null;
+    let callbackNs;
+    let lastFrameNs = 0n;
+    const consumeTiming = (row) => {
+      const { stage, ns } = row;
+      requireValue(
+        typeof stage === "string" &&
+          Object.hasOwn(stageTimes, stage) &&
+          row.version === timingVersion &&
+          row.seq === stamps.frames &&
+          row.seq < maxOwned + 8 &&
+          Array.isArray(ns) &&
+          ns.length === stageTimes[stage].length &&
+          ns.every(ticks) &&
+          Object.keys(row).length === (["request", "observationOutput"].includes(stage) ? 6 : 5) &&
+          ns.every((n, i) => !i || BigInt(n) >= BigInt(ns[i - 1])),
+        "invalid helper timing frame",
+      );
+      requireValue(
+        (requiredStage === null || requiredStage === stage) &&
+          stamps.preExitNs === null &&
+          (row.seq === 0) === (stage === "request") &&
+          (pendingObservation !== null) === (stage === "observationOutput") &&
+          (stage === "observationOutput" || stamps[stageTimes[stage][0]] === null),
+        "unexpected helper timing frame",
+      );
+      // A deferred failure can be prepared before earlier rows are flushed. Its
+      // actual serialization still follows every previously received timing span.
+      const first = stage === "terminalOutput" ? ns[2] : ns[0];
+      requireValue(BigInt(first) >= lastFrameNs, "out-of-order helper timing span");
+      lastFrameNs = BigInt(ns.at(-1));
+      if (lastFrameNs > BigInt(callbackNs)) envelopeOk = false;
+      if (stage === "request") {
+        const c = row.clock;
+        const optionalString = (s) => s === null || (typeof s === "string" && s.length <= 80);
+        requireValue(
+          c &&
+            Object.keys(c).length === 3 &&
+            typeof c.implementation === "string" &&
+            c.implementation.length <= 80 &&
+            optionalString(c.timeNamespace) &&
+            optionalString(c.bootId),
+          "malformed helper clock",
+        );
+        timing.clock.helper = c;
+        if (
+          BigInt(ns[0]) < BigInt(parent.spawnCallNs) ||
+          BigInt(ns[2]) < BigInt(parent.requestStartNs)
+        )
+          envelopeOk = false;
+      } else if (stage === "observationOutput") {
+        requireValue(
+          pendingObservation.pid === row.pid &&
+            BigInt(ns[0]) >= BigInt(pendingObservation.metadataEndNs),
+          "unmatched observation timing",
+        );
+        for (const [i, name] of outputTimes.entries()) pendingObservation[name] = ns[i];
+        pendingObservation.outputFrameCallbackNs = callbackNs;
+        pendingObservation = null;
+      } else if (stage === "finalRootBegin") {
+        requireValue(
+          !summary && stamps.cleanupBeginNs === null && observed.size === handle.known.size,
+          "unexpected final root timing",
+        );
+      } else if (stage === "finalRoot") {
+        requireValue(
+          !summary && stamps.finalRootBeginNs !== null && stamps.cleanupBeginNs === null,
+          "unexpected final root span",
+        );
+      } else if (stage === "cleanupBegin") {
+        requireValue(
+          stamps.finalRootBeginNs === null || stamps.finalRootEndNs !== null,
+          "unexpected cleanup timing",
+        );
+      } else if (stage === "fdCleanup") {
+        requireValue(stamps.cleanupBeginNs !== null, "unexpected cleanup span");
+      } else if (stage === "terminalOutput") {
+        requireValue(summary, "terminal timing without a terminal result");
+        parent.terminalOutputFrameCallbackNs = callbackNs;
+      } else {
+        parent.preExitFrameCallbackNs = callbackNs;
+        requireValue(
+          stamps.terminalFlushedNs !== null &&
+            (stamps.cleanupBeginNs === null || stamps.cleanupEndNs !== null),
+          "incomplete pre-exit timing",
+        );
+      }
+      if (stage !== "observationOutput")
+        for (const [i, name] of stageTimes[stage].entries()) stamps[name] = ns[i];
+      stamps.frames++;
+      // Paired checkpoints cannot be interleaved. A failure can precede or
+      // follow descriptor cleanup, depending on where it was observed.
+      requiredStage =
+        { finalRootBegin: "finalRoot", finalRoot: "cleanupBegin", cleanupBegin: "fdCleanup" }[
+          stage
+        ] ?? null;
+    };
     const consume = (row) => {
+      if (row.type === "timing") return consumeTiming(row);
+      requireValue(requiredStage === null, "missing helper timing frame");
       requireValue(!summary, "sample output after terminal row");
+      requireValue(
+        (stamps.finalRootBeginNs === null && stamps.cleanupBeginNs === null) ||
+          ["complete", "failure"].includes(row.type),
+        "sample row during finalization",
+      );
       if (row.type === "helper") {
         const birth = row.birth;
         checkBirth(birth, root.bootId);
@@ -247,7 +501,19 @@ export function sampleRendererMemory(
           discoveries.push(entry);
           try {
             requireValue(typeof handle.onNewOwned === "function", "ownership journal unavailable");
-            handle.onNewOwned(entry);
+            const journalStart = process.hrtime.bigint();
+            parent.journalCalls++;
+            try {
+              handle.onNewOwned(entry);
+            } finally {
+              const end = process.hrtime.bigint();
+              parent.journal.push({
+                pid: p.pid,
+                startNs: String(journalStart),
+                endNs: String(end),
+              });
+              parent.journalNs = String(BigInt(parent.journalNs ?? 0) + end - journalStart);
+            }
           } catch (error) {
             const message = String(error.message).slice(0, 256);
             journalFailures.push({ pid: p.pid, error: message });
@@ -321,6 +587,16 @@ export function sampleRendererMemory(
         }
         observed.add(p.pid);
         processes.push(p);
+        pendingObservation = {
+          pid: p.pid,
+          metadataStartNs: p.startedNs,
+          metadataEndNs: p.endNs,
+          receivedNs: callbackNs,
+          outputFrameCallbackNs: null,
+          ...nullFields(outputTimes),
+        };
+        stamps.observations.push(pendingObservation);
+        requiredStage = "observationOutput";
       } else if (row.type === "failure") {
         requireValue(
           typeof row.stage === "string" && typeof row.error === "string",
@@ -368,10 +644,15 @@ export function sampleRendererMemory(
           procInputBytes,
           helperMaxRssKiB,
         };
+        parent.terminalFrameCallbackNs = callbackNs;
+        parent.terminalReceiptNs = now();
+        requiredStage = "terminalOutput";
         summary = { helperResult: "invalid" };
       } else {
         requireValue(
           row.type === "complete" &&
+            stamps.finalRootEndNs !== null &&
+            stamps.cleanupEndNs !== null &&
             uint(row.helperMaxRssKiB) &&
             uint(row.readCalls) &&
             uint(row.procInputBytes) &&
@@ -379,6 +660,9 @@ export function sampleRendererMemory(
             processes.some((p) => p.pid === root.pid && p.disposition === "live"),
           "invalid or incomplete sampler completion",
         );
+        parent.terminalFrameCallbackNs = callbackNs;
+        parent.terminalReceiptNs = now();
+        requiredStage = "terminalOutput";
         summary = {
           helperResult: "complete",
           readCalls: row.readCalls,
@@ -390,7 +674,13 @@ export function sampleRendererMemory(
     child.stdout.on("data", (chunk) => {
       // Even after an operational fault, drain complete, verified birth and RSS
       // rows already flushed to the pipe. A protocol violation ends this prefix.
-      if (protocolBroken || finished) return;
+      if (finished) return;
+      parent.stdoutBytes += chunk.length;
+      if (protocolBroken) return;
+      callbackNs = now();
+      parent.firstDataNs ??= callbackNs;
+      parent.lastDataNs = callbackNs;
+      parent.dataCallbacks++;
       try {
         const allowed = Math.max(0, maxOutput - bytes);
         bytes += chunk.length;
@@ -398,7 +688,23 @@ export function sampleRendererMemory(
         let end;
         while ((end = partial.indexOf(10)) !== -1) {
           requireValue(end < maxLine, "helper line byte cap");
-          consume(JSON.parse(partial.subarray(0, end).toString("utf8")));
+          const parseStart = process.hrtime.bigint();
+          try {
+            let row;
+            try {
+              row = JSON.parse(partial.subarray(0, end).toString("utf8"));
+              parent.parsedRows++;
+            } finally {
+              parent.parsingNs = String(
+                BigInt(parent.parsingNs ?? 0) + process.hrtime.bigint() - parseStart,
+              );
+            }
+            consume(row);
+          } finally {
+            parent.parseAndValidateNs = String(
+              BigInt(parent.parseAndValidateNs ?? 0) + process.hrtime.bigint() - parseStart,
+            );
+          }
           partial = partial.subarray(end + 1);
         }
         requireValue(bytes <= maxOutput, "helper output byte cap");
@@ -407,10 +713,17 @@ export function sampleRendererMemory(
         protocolBroken = true;
         fail("protocol", String(error.message));
         kill();
+      } finally {
+        parent.lastDataEndNs = now();
+        parent.dataHandlingNs = String(
+          BigInt(parent.dataHandlingNs ?? 0) + BigInt(parent.lastDataEndNs) - BigInt(callbackNs),
+        );
       }
     });
     child.stderr.on("data", (chunk) => {
-      if (stderr.length + chunk.length > 4096) {
+      if (finished) return;
+      parent.stderrBytes += chunk.length;
+      if (parent.stderrBytes > 4096) {
         fail("protocol", "helper stderr byte cap");
         kill();
       } else stderr += chunk.toString("utf8");
@@ -425,21 +738,51 @@ export function sampleRendererMemory(
       fail("spawn", String(error.message));
       kill();
     });
+    const markEvent = (emitter, event, field) => {
+      const record = () => {
+        if (!finished) parent[field] = now();
+      };
+      // Node may emit ChildProcess.close inside its own last pipe close listener.
+      if (event === "close") emitter.prependOnceListener(event, record);
+      else emitter.once(event, record);
+    };
+    markEvent(child, "spawn", "spawnEventNs");
+    markEvent(child.stdin, "finish", "requestFinishedNs");
+    markEvent(child.stdin, "close", "stdinCloseNs");
+    for (const [name, stream] of [
+      ["stdout", child.stdout],
+      ["stderr", child.stderr],
+    ]) {
+      markEvent(stream, "end", name + "EndNs");
+      markEvent(stream, "close", name + "CloseNs");
+    }
+    child.once("exit", (code, signal) => {
+      if (finished) return;
+      parent.exitNs = now();
+      parent.exitCode = code;
+      parent.exitSignal = signal;
+    });
     child.once("close", (code, signal) => {
       if (finished) return;
+      parent.closeNs = now();
       helper = { ...helper, closed: true, pipesClosed: true, code, signal };
-      if (partial.length || !summary || code !== 0 || signal)
+      if (partial.length || !summary || stamps.preExitNs === null || code !== 0 || signal)
         fail("helper-close", "sampling helper failed or returned incomplete output");
       if (process.hrtime.bigint() > deadline) fail("deadline", "sampling helper deadline reached");
       finish();
     });
     timer = setTimeout(
       () => {
+        parent.deadlineDispatchNs = now();
         fail("deadline", "sampling helper deadline reached");
         kill();
       },
       Math.max(0, Number(deadline - process.hrtime.bigint()) / 1e6),
     );
-    child.stdin.end(JSON.stringify(request));
+    parent.requestStartNs = now();
+    const encodedRequest = JSON.stringify(request);
+    parent.requestBytes = Buffer.byteLength(encodedRequest);
+    child.stdin.end(encodedRequest);
+    parent.requestEndNs = now();
   });
 }

@@ -1,5 +1,10 @@
 """One bounded, read-only Linux renderer RSS sample. Stdout is a JSONL journal."""
 
+import time
+
+# First script observation. Interpreter startup and importing time precede it.
+ENTRY_NS = time.monotonic_ns()
+
 import contextlib
 import ctypes
 import errno
@@ -10,7 +15,6 @@ import resource
 import select
 import signal
 import sys
-import time
 
 MAX_OWNED = 64
 MAX_TABLE = 4096
@@ -29,6 +33,7 @@ GONE = (FileNotFoundError, ProcessLookupError)
 STATUS = ("VmRSS", "RssAnon", "RssFile", "RssShmem", "VmSwap")
 ROLLUP = ("Rss", "Pss", "Private_Clean", "Private_Dirty", "Private_Hugetlb", "Swap")
 CLOCK = time.monotonic_ns
+TIMING_VERSION = "linux-rss-timing.v1"
 
 
 class Invalid(Exception):
@@ -97,12 +102,13 @@ def terminal(fd):
 
 
 class Sample:
-    def __init__(self, request, emit):
+    def __init__(self, request, emit, timing=lambda *args: None):
         self.root = request["root"]
         self.known = {p["pid"]: p for p in request["known"]}
         self.proofs = {p["birth"]["pid"]: p for p in request["terminalProofs"]}
         self.exe = request["executable"]
         self.emit = emit
+        self.timing = timing
         self.bytes = self.reads = 0
         self.stage = "discovery"
         self.expected = self.root
@@ -292,8 +298,9 @@ class Sample:
             "pidfdFlags": 0, "fdinfoPid": row["pid"], "verifiedNs": str(CLOCK())}})
 
     def problem(self, exc):
+        prepared = CLOCK()
         observed = getattr(exc, "observed", None)
-        return dict(type="failure", stage=self.stage, error=str(exc)[:256],
+        result = dict(type="failure", _preparedNs=str(prepared), stage=self.stage, error=str(exc)[:256],
                     errno=getattr(exc, "errno", None),
                     syscallError=errno.errorcode.get(getattr(exc, "errno", None)),
                     expected=self.expected, observed=observed if observed is not None else self.observed,
@@ -302,10 +309,29 @@ class Sample:
                     readCalls=self.reads, procInputBytes=self.bytes,
                     helperMaxRssKiB=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
 
+        result["_preparedEndNs"] = str(CLOCK())
+        return result
+
+    @contextlib.contextmanager
+    def descriptors(self):
+        stack = contextlib.ExitStack()
+        try:
+            yield stack
+        finally:
+            # Even a broken output pipe cannot skip descriptor cleanup.
+            try:
+                self.timing("cleanupBegin", [CLOCK()])
+            finally:
+                started = CLOCK()
+                try:
+                    stack.close()
+                finally:
+                    self.timing("fdCleanup", [started, CLOCK()])
+
     def run(self):
         if len(self.known) > MAX_OWNED or self.root["pgid"] != self.root["pid"]:
             raise Invalid("invalid-root-or-known-cap")
-        with contextlib.ExitStack() as stack:
+        with self.descriptors() as stack:
             root = self.bind(stack, self.root)
             self.check_root(root)
             self.handoff(root[0])
@@ -398,10 +424,52 @@ class Sample:
                     self.emit(self.problem(exc))
                     return False
                 self.partial = None
-            self.check_root(root)
-        self.emit(dict(type="complete", readCalls=self.reads, procInputBytes=self.bytes,
+            self.timing("finalRootBegin", [CLOCK()])
+            started = CLOCK()
+            try:
+                self.check_root(root)
+            finally:
+                self.timing("finalRoot", [started, CLOCK()])
+        prepared = CLOCK()
+        self.emit(dict(type="complete", _preparedNs=str(prepared), readCalls=self.reads, procInputBytes=self.bytes,
                     helperMaxRssKiB=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
         return True
+
+
+class Journal:
+    """Cap timing bytes and semantic bytes together. No frame times its own flush."""
+    def __init__(self, stream):
+        self.stream = stream
+        self.bytes = self.sequence = 0
+
+    def write(self, row):
+        start = CLOCK()
+        line = json.dumps(row, separators=(",", ":"), ensure_ascii=True).encode() + b"\n"
+        serialized = CLOCK()
+        self.bytes += len(line)
+        if len(line) > MAX_LINE or self.bytes > MAX_OUTPUT:
+            raise Invalid("output-cap")
+        self.stream.write(line)
+        written = CLOCK()
+        self.stream.flush()
+        return [start, serialized, written, CLOCK()]
+
+    def timing(self, stage, ns, **fields):
+        self.write(dict(type="timing", version=TIMING_VERSION, seq=self.sequence,
+                        stage=stage, ns=[str(n) for n in ns], **fields))
+        self.sequence += 1
+
+    def emit(self, row):
+        kind = row["type"]
+        prepared = row.pop("_preparedNs", None)
+        prepared_end = row.pop("_preparedEndNs", None)
+        if prepared is not None and prepared_end is None:
+            prepared_end = CLOCK()
+        spans = self.write(row)
+        if kind == "observation":
+            self.timing("observationOutput", spans, pid=row["process"]["pid"])
+        elif kind in ("complete", "failure"):
+            self.timing("terminalOutput", [prepared, prepared_end, *spans])
 
 
 def main():
@@ -417,25 +485,30 @@ def main():
     # Two retained fds per selected process, with margin for transient reads.
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     resource.setrlimit(resource.RLIMIT_NOFILE, (FD_LIMIT if soft == -1 else min(soft, FD_LIMIT), hard))
+    read_started = CLOCK()
     raw = sys.stdin.buffer.read(MAX_REQUEST + 1)
+    read_ended = CLOCK()
     if len(raw) > MAX_REQUEST:
         raise Invalid("request-byte-cap")
-    output = 0
-
-    def emit(row):
-        nonlocal output
-        line = json.dumps(row, separators=(",", ":"), ensure_ascii=True).encode() + b"\n"
-        output += len(line)
-        if len(line) > MAX_LINE or output > MAX_OUTPUT:
-            raise Invalid("output-cap")
-        sys.stdout.buffer.write(line)
-        sys.stdout.buffer.flush()
-
     request = json.loads(raw)
-    sample = Sample(dict(request, executable=None), emit)
+    decoded = CLOCK()
+    journal = Journal(sys.stdout.buffer)
+    emit = journal.emit
+    sample = Sample(dict(request, executable=None), emit, journal.timing)
     try:
         sample.mark("helper-start", sample.root)
         pid = os.getpid()
+        try:
+            namespace = os.readlink("/proc/self/ns/time")
+        except OSError:
+            namespace = None
+        try:
+            boot = sample.read("/proc/sys/kernel/random/boot_id", 64).strip().decode("ascii")
+        except (OSError, ValueError, Invalid):
+            boot = None
+        journal.timing("request", [ENTRY_NS, read_started, read_ended, decoded],
+                       clock=dict(implementation=time.get_clock_info("monotonic").implementation,
+                                  bootId=boot, timeNamespace=namespace))
         birth = dict(stat_row(sample.read("/proc/self/stat", MAX_STAT), pid),
                      bootId=sample.boot(), birthVersion="linux-proc-v1")
         emit(dict(type="helper", birth=birth))
@@ -444,10 +517,12 @@ def main():
         stat = os.stat(path)
         sample.exe = dict(path=path, device=str(stat.st_dev), inode=str(stat.st_ino))
         emit(dict(type="executable", pathInput=request["executablePath"], executable=sample.exe))
-        return 0 if sample.run() else 1
+        code = 0 if sample.run() else 1
     except (OSError, ValueError, Invalid) as exc:
         emit(sample.problem(exc))
-        return 1
+        code = 1
+    journal.timing("preExit", [CLOCK()])
+    return code
 
 
 if __name__ == "__main__":

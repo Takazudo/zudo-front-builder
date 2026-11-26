@@ -2,12 +2,14 @@
 
 import ctypes
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import resource
 import select
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -126,6 +128,61 @@ class Sampling(unittest.TestCase):
         self.assertEqual({p["pid"] for p in obs}, {self.pid, self.child.pid})
         self.assertTrue(all(p["rssKiB"] > 0 and p["disposition"] == "live" for p in obs))
         self.assertEqual(obs[-1]["pgid"], self.pid)
+
+    def test_final_root_and_cleanup_are_independently_bracketed(self):
+        self.spawn()
+        now = 1_000_000
+        spans = {}
+        def record(stage, ns):
+            spans[stage] = ns
+        self.sample.timing = record
+        check = self.sample.check_root
+        def checked(bound):
+            nonlocal now
+            if "finalRootBegin" in spans:
+                now += 43_000_000
+            return check(bound)
+        close = rss.contextlib.ExitStack.close
+        def closed(stack):
+            nonlocal now
+            now += 37_000_000
+            return close(stack)
+        with patch.object(rss, "CLOCK", side_effect=lambda: now), \
+             patch.object(self.sample, "check_root", checked), \
+             patch.object(rss.contextlib.ExitStack, "close", closed):
+            self.assertEqual(self.outcome()["type"], "complete")
+        self.assertEqual(spans["finalRoot"][1]-spans["finalRoot"][0], 43_000_000)
+        self.assertEqual(spans["fdCleanup"][1]-spans["fdCleanup"][0], 37_000_000)
+        self.assertLessEqual(spans["finalRoot"][1], spans["fdCleanup"][0])
+
+    def test_observation_and_terminal_output_time_the_actual_writer(self):
+        now = 1
+        class Writer(io.BytesIO):
+            def write(self, data):
+                nonlocal now
+                now += 17
+                return super().write(data)
+            def flush(self):
+                nonlocal now
+                now += 23
+                return super().flush()
+        stream = Writer()
+        journal = rss.Journal(stream)
+        encode = json.dumps
+        def serialize(*args, **kwargs):
+            nonlocal now
+            now += 11
+            return encode(*args, **kwargs)
+        with patch.object(rss, "CLOCK", side_effect=lambda: now), \
+             patch.object(json, "dumps", serialize):
+            journal.emit(dict(type="observation", process=dict(pid=789)))
+            journal.emit(dict(type="complete", _preparedNs="1", _preparedEndNs="1"))
+        rows = [json.loads(line) for line in stream.getvalue().splitlines()]
+        for frame in (rows[1], rows[3]):
+            a, b, c, d = map(int, frame["ns"][-4:])
+            self.assertEqual([b-a, c-b, d-c], [11, 17, 23])
+        self.assertEqual(journal.bytes, len(stream.getvalue()))
+        self.assertEqual([r["stage"] for r in rows[1::2]], ["observationOutput", "terminalOutput"])
 
     def test_exit_before_binding(self):
         self.spawn()
@@ -318,8 +375,56 @@ os._exit(0)
         self.assertEqual(set(rss.owned(rows, root)), {12,20,30,50})
 
 
+def instrumented(mode):
+    # The actual helper protocol, with controlled delays/faults in fixtures only.
+    signal.alarm(5)
+    sys.argv = [sys.argv[0], str(os.getppid())]
+    emit_timing = rss.Journal.timing
+    def timing(journal, stage, ns, **fields):
+        if stage == "request" and mode == "other-namespace":
+            fields["clock"]["timeNamespace"] = "time:[0]"
+        elif stage == "request" and mode == "bad-envelope":
+            ns = [0, *ns[1:]]
+        elif stage == "preExit" and mode == "missing-pre-exit":
+            return
+        return emit_timing(journal, stage, ns, **fields)
+    with patch.object(rss.Journal, "timing", timing):
+        if mode == "semantic-failure":
+            with patch.object(rss.Sample, "threads", side_effect=PermissionError(13,"test")):
+                return rss.main()
+        code = rss.main()
+    if mode == "slow-exit":
+        time.sleep(.055)
+    if mode.startswith("held-"):
+        # Transfer a stdout writer to a second direct child of the test runner.
+        # Ack ensures custody before this helper exits. The runner reaps both.
+        with socket.socket(fileno=3) as ctl:
+            ctl.setblocking(True)
+            socket.send_fds(ctl, [b'f'], [sys.stdout.fileno()])
+            assert ctl.recv(1) == b'a'
+    return code
+
+
+def hold_stdout():
+    signal.alarm(5)
+    resource.setrlimit(resource.RLIMIT_AS, (96 << 20, 96 << 20))
+    with socket.socket(fileno=3) as ctl:
+        ctl.setblocking(True)
+        _, writers, *_ = socket.recv_fds(ctl, 1, 1)
+        assert len(writers) == 1
+        ctl.sendall(b'a')
+    try:
+        sys.stdin.buffer.read(1)
+    finally:
+        os.close(writers[0])
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "fixture":
         fixture()
+    elif sys.argv[1:2] == ["instrumented"]:
+        sys.exit(instrumented(sys.argv[2]))
+    elif sys.argv[1:2] == ["hold-stdout"]:
+        hold_stdout()
     else:
         unittest.main(argv=[sys.argv[0]], verbosity=2)
