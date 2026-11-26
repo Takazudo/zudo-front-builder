@@ -20,6 +20,8 @@ import {
   BUILD_RECEIPT_SCHEMA,
   sourcePackagesAtSha,
 } from "../lib/identity.mjs";
+import { STARTUP_ACCEPTANCE, STARTUP_WALL_MS } from "../lib/startup-acceptance.mjs";
+import { aggregate } from "../lib/aggregate.mjs";
 import { LockBusyError, acquireLock } from "../lib/lock.mjs";
 import { sample, sampleAsync } from "../lib/mac-process-adapter.mjs";
 import {
@@ -916,6 +918,131 @@ describe("execute (identity gate)", () => {
     p.server.readyTimeoutMs = 300;
     writeFileSync(s.profilePath, JSON.stringify(p));
   }
+
+  it.runIf(process.platform === "linux").each(["live", "high-partial", "open-helper"])(
+    "startup acceptance exercises shared admission, pre-ready sampling, and stop (%s)",
+    async (disposition) => {
+      const s = setup();
+      acceptedIdentity(s, join(s.root, "fake-zfb"));
+      const profile = readJson(s.profilePath);
+      profile.diagnostic = true;
+      profile.scenarios = [];
+      delete profile.calibration;
+      profile.startupAcceptance = { protocol: STARTUP_ACCEPTANCE };
+      profile.server.readyTimeoutMs = 90000;
+      profile.server.env = { ZFB_DEV_PROVENANCE_TRACE: "1" };
+      profile.limits.wallCeilingMs = STARTUP_WALL_MS;
+      writeFileSync(s.profilePath, JSON.stringify(profile));
+      const receiptFile = join(s.root, "build-receipt.json");
+      const build = readJson(receiptFile);
+      build.build = {
+        profile: "dev",
+        features: ["renderer-memory-observe"],
+        noDefaultFeatures: false,
+      };
+      build.diagnostic = true;
+      writeFileSync(receiptFile, JSON.stringify(build));
+
+      const calls = [];
+      const birth = { pid: 258, pgid: 258, bootId: "boot", startTicks: "99" };
+      const helper = {
+        pid: 262,
+        closed: disposition !== "open-helper",
+        pipesClosed: disposition !== "open-helper",
+      };
+      const admission = join(s.root, "active-session.json");
+      const started = Number(process.hrtime.bigint() / 1_000_000n);
+      const code = await execute({
+        profilePath: s.profilePath,
+        label: "startup",
+        command: "startup-acceptance",
+        supervisorId: "test",
+        supervisorStartedMs: started,
+        workDeadline: started + 120000,
+        supervisorDeadlineMs: started + STARTUP_WALL_MS,
+        stderr: () => {},
+        hooks: {
+          startDevServer() {
+            expect(existsSync(admission)).toBe(true);
+            calls.push("spawn");
+            const ready = Promise.resolve().then(() => {
+              calls.push("ready");
+              return { baseUrl: "http://127.0.0.1:18765", readyNs: process.hrtime.bigint() };
+            });
+            return {
+              ready,
+              startedNs: process.hrtime.bigint(),
+              handle: { native: birth, exit: null },
+              isAlive: () => ({ alive: true }),
+              closeLog: () => ({ pipes: "closed", errors: [] }),
+            };
+          },
+          rendererMemoryEvidence: {
+            async sampleRendererMemory(server) {
+              calls.push("sample");
+              helper.spawnHrtimeNs = String(process.hrtime.bigint());
+              server.handle.onNewOwned({ ...birth, pid: 259, ppid: birth.pid });
+              await Promise.resolve();
+              const result = { helper, samplerVersion: "linux-pidfd-rss.v1", summedRssKiB: 100 };
+              if (disposition !== "live") {
+                result.summedRssKiB = disposition === "high-partial" ? 4194305 : null;
+                throw Object.assign(new Error("synthetic helper read failure"), {
+                  details: result,
+                });
+              }
+              return { ...result, processes: [{ ...birth, rssKiB: 100, disposition: "live" }] };
+            },
+            inspectRendererLifecycle: (_server, { final }) => ({ complete: final, failure: null }),
+          },
+          fetch() {
+            calls.push("request");
+            return new Response("Body marker body-a-v0 for article a.");
+          },
+          stopOwned() {
+            calls.push("stop");
+            return { absent: true };
+          },
+          launchOwnedBrowser() {
+            throw new Error("unexpected browser");
+          },
+        },
+      });
+      const labelDir = join(s.outDir, "startup");
+      const receipt = readJson(join(labelDir, "receipt.json"));
+      const summary = readJson(join(labelDir, "summary.json"));
+      expect(readJsonl(join(s.outDir, ".dev-browser-observe-owned.jsonl"))).toContainEqual(
+        expect.objectContaining({ type: "owned", pid: 259 }),
+      );
+      expect(summary.accounting.attempted).toBe(0);
+      expect(receipt.startupAcceptance.complete).toBe(disposition === "live");
+      expect(receipt.rendererMemoryStudy).toBeUndefined();
+      expect(
+        aggregate({ sessions: [{ dir: labelDir, variant: "A", label: "startup" }] }).report
+          .sessions[0].timingExcluded,
+      ).toBe(true);
+      if (disposition === "live") {
+        expect(code).toBe(EXIT.ok);
+        expect(calls).toEqual(["spawn", "sample", "ready", "request", "stop"]);
+        expect(receipt.startupAcceptance.live.markerMatched).toBe(true);
+      } else {
+        expect(code).not.toBe(EXIT.ok);
+        expect(calls).toEqual(["spawn", "sample", "ready", "stop"]);
+        expect(receipt.startupAcceptance.samplerFailure.details.helper).toEqual(helper);
+        if (disposition === "high-partial") {
+          expect(receipt.startupAcceptance.failure.reason).toBe("resource-limit");
+          expect(receipt.startupAcceptance.peakSummedRssKiB).toBe(4194305);
+        }
+      }
+      expect(existsSync(admission)).toBe(disposition === "open-helper");
+      if (disposition === "open-helper") {
+        expect(readJson(admission).unresolved).toContainEqual({
+          resource: "renderer-memory-sampler",
+          helper,
+        });
+        expect(code).toBe(EXIT.ownedServerAlive);
+      }
+    },
+  );
 
   it("round 5 #2: a stop that cannot verify absence exits 6 and records stopFailure", async () => {
     const s = setup();

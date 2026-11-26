@@ -1,3 +1,4 @@
+export const LINUX_RSS_SAMPLER_VERSION = "linux-pidfd-rss.v1";
 export const RENDERER_MEMORY_PROTOCOL = "dev-browser-observe.renderer-memory.v1";
 export const RENDERER_MEMORY_ALLOCATOR_PROTOCOL = "dev-browser-observe.renderer-memory.v2";
 export const RENDERER_MEMORY_POST_APPLY_PROTOCOL =

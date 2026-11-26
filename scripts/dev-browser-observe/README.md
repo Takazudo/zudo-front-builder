@@ -856,6 +856,26 @@ established for this diagnostic. The statistics and Linux sampling can perturb t
 Interpret changes in the measured domains and retain uncertainty about unmeasured allocation
 and larger workloads.
 
+### Linux startup sampling acceptance
+
+Use `cli.mjs startup-acceptance --profile /absolute/path/to/profile.json --label fresh-label`
+for a two-article functional check. Start with the tiny internal A0 example. Pin the
+historical diagnostic build and the current harness, observer, fixture, and adapter.
+Use an empty scenarios array, omit calibration, and set `diagnostic: true` and
+`startupAcceptance: { "protocol": "dev-browser-observe.renderer-memory.startup-acceptance.v1" }`.
+Set the server to ephemeral loopback, readiness to 90,000 ms and its environment to
+`{ "ZFB_DEV_PROVENANCE_TRACE": "1" }`. Run in the cohort's seedless default boot mode.
+Set limits to 180,000 ms wall time, 4,194,304 KiB sampled owned RSS and 1,000 ms cadence.
+
+The supervisor reserves the last 60 seconds for finalization. The controller uses
+the same server, registry, admission, pre-readiness sampling and teardown paths as a
+renderer-memory study. It records the first live root sample initiated before the
+ready banner and requires the original body marker in one HTTP 200 response from
+`/articles/a`, bounded to ten seconds and 128 KiB. No browser or mutation is scheduled.
+The startup receipt and summary identify the protocol, sample, request, native
+lifecycle completion and cleanup. The independent supervisor verifies controller
+exit. Startup acceptance is excluded from study and timing aggregation.
+
 ## Renderer memory v2 allocator and mapping observations
 
 The separate `dev-browser-observe.renderer-memory.v2` protocol retains the v1 workload and adds

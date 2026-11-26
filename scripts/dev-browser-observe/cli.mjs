@@ -68,6 +68,8 @@ Commands:
                                a second \`run\` must exit 5 without a label dir.
   calibrate --profile <p.json> --label <unique>
                                Run calibration cells through the same observer.
+  startup-acceptance --profile <p.json> --label <unique>
+                               Exercise supervised Linux startup on the two-article fixture.
   run --profile <p.json> --label <unique> [--scenario id[,id]]
                                Run the profile's scenarios (fail-stop). --scenario runs
                                only the named scenarios, in profile order; the selection
@@ -474,6 +476,7 @@ export async function main(argv) {
       print(probeMac());
       return EXIT.ok;
     case "run":
+    case "startup-acceptance":
     case "calibrate":
       if (
         args.scenario === true ||

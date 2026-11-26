@@ -20,7 +20,7 @@
       "type": "string"
     },
     "command": {
-      "enum": ["run", "calibrate"]
+      "enum": ["run", "calibrate", "startup-acceptance"]
     },
     "createdAt": {
       "type": "string"
@@ -63,6 +63,7 @@
       }
     },
     "diagnostic": { "type": "boolean" },
+    "startupAcceptance": { "type": "object", "required": ["protocol", "complete"] },
     "rendererMemoryStudy": { "type": ["object", "null"] },
     "profile": {
       "type": "object"
