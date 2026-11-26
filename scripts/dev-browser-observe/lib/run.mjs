@@ -18,6 +18,7 @@ import { LockBusyError, acquireLock } from "./lock.mjs";
 import { hostIdentity, probeMac, sampledPeak } from "./mac-process-adapter.mjs";
 import { liveOwnedFromRegistry, shouldRegisterOwned, stopOwned } from "./process-owner.mjs";
 import { LABEL_RE, loadProfile } from "./profile.mjs";
+import { ControllerTiming, timed } from "./controller-timing.mjs";
 import { Recorder } from "./recorder.mjs";
 import { createRendererMemoryStudy } from "./renderer-memory-study.mjs";
 import {
@@ -29,7 +30,7 @@ import {
   RENDERER_MEMORY_RECLAMATION_LIMITS,
 } from "./renderer-memory-protocol.mjs";
 import { createResourceStudy, summarizeResourceStudy } from "./resource-study.mjs";
-import { checkStartupArticles, verifyStartup } from "./startup-acceptance.mjs";
+import { checkStartupArticles, verifyStartup, verifyStartupSample } from "./startup-acceptance.mjs";
 import { expandSchedule, scheduleOf } from "./schedule.mjs";
 import { startDevServer } from "./server.mjs";
 import {
@@ -195,13 +196,14 @@ export async function execute({
   loaded.supervisorDeadlineMs = supervisorDeadlineMs;
   const { profile, resolved } = loaded;
   const startup = Boolean(profile.startupAcceptance);
-  if ((command === "startup-acceptance") !== startup) {
-    stderr("startup-acceptance requires its own profile and command");
+  const tiny = Boolean(profile.tinyAcceptance);
+  if ((command === "startup-acceptance") !== startup || (command === "tiny-acceptance") !== tiny) {
+    stderr("acceptance requires its own profile and command");
     return EXIT.usage;
   }
   if (
-    (profile.rendererMemoryStudy || startup) &&
-    (command !== (startup ? "startup-acceptance" : "run") ||
+    (profile.rendererMemoryStudy || startup || tiny) &&
+    (command !== (tiny ? "tiny-acceptance" : startup ? "startup-acceptance" : "run") ||
       scenarios !== null ||
       process.platform !== "linux" ||
       !supervisorId ||
@@ -234,7 +236,10 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
     return EXIT.usage;
   }
   try {
-    loaded.runScenarios = command === "run" ? expandSchedule(profile) : profile.scenarios;
+    loaded.runScenarios =
+      command === "run" || profile.tinyAcceptance?.probe === "B"
+        ? expandSchedule(profile)
+        : profile.scenarios;
   } catch (error) {
     stderr(String(error?.message ?? error));
     return EXIT.usage;
@@ -299,14 +304,21 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
 
 async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
   const { profile, resolved } = loaded;
-  const rec = new Recorder(join(labelDir, "records.jsonl"));
+  const tiny = profile.tinyAcceptance;
+  const timing =
+    tiny || profile.rendererMemoryStudy || profile.startupAcceptance
+      ? new ControllerTiming(hooks.rendererMemoryClock)
+      : null;
+  const rec = new Recorder(join(labelDir, "records.jsonl"), timing);
   const memoryProfile = profile.rendererMemoryStudy ?? null;
-  const startup = profile.startupAcceptance;
-  const memoryDiagnostic = memoryProfile ?? startup;
+  const acceptance = profile.startupAcceptance ?? tiny;
+  const acceptanceKey = tiny ? "tinyAcceptance" : "startupAcceptance";
+  const batch = command === "run" || tiny?.probe === "B";
+  const memoryDiagnostic = memoryProfile ?? acceptance;
   const startedNs = memoryDiagnostic ? BigInt(loaded.supervisorStartedMs) * 1_000_000n : hrtimeNs();
   const runScenarios = loaded.runScenarios ?? profile.scenarios;
-  const schedule = command === "run" ? scheduleOf(runScenarios) : [];
-  const planned = command === "run" ? plannedCount(runScenarios) : 0;
+  const schedule = batch ? scheduleOf(runScenarios) : [];
+  const planned = batch ? plannedCount(runScenarios) : 0;
   rec.append({
     type: "run-start",
     command,
@@ -317,7 +329,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     schedule,
     resourceStudy: command === "run" ? (profile.resourceStudy ?? null) : null,
     ...(memoryProfile ? { diagnostic: true, rendererMemoryStudy: memoryProfile } : {}),
-    ...(startup && { diagnostic: true, startupAcceptance: startup }),
+    ...(acceptance && { diagnostic: true, [acceptanceKey]: acceptance }),
   });
 
   const kind = kindFor(profile);
@@ -341,9 +353,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     productSha: profile.productSha ?? null,
     productDirtyIdentity: profile.productDirtyIdentity ?? null,
     diagnostic: profile.diagnostic === true,
-    ...(startup && {
-      startupAcceptance: {
-        ...startup,
+    ...(timing && { controllerTiming: "controller-timing.json" }),
+    ...(acceptance && {
+      [acceptanceKey]: {
+        ...acceptance,
         samplerVersion: LINUX_RSS_SAMPLER_VERSION,
         complete: false,
         timingEligible: false,
@@ -419,7 +432,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     writeJsonSync(summaryPath, {
       ...summarize(rec.records, acc),
       identityRejected: true,
-      ...(startup && { diagnostic: true, startupAcceptance: receipt.startupAcceptance }),
+      ...(acceptance && { diagnostic: true, [acceptanceKey]: receipt[acceptanceKey] }),
       ...(memoryProfile
         ? {
             diagnostic: true,
@@ -433,6 +446,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         : {}),
     });
     rec.append({ type: "run-end", exitCode: EXIT.identityRejected });
+    if (timing) writeJsonSync(join(labelDir, "controller-timing.json"), timing.report);
     stderr("identity rejected before any workload edit; see receipt.json identity.checks");
     return EXIT.identityRejected;
   }
@@ -463,6 +477,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       }
       rendererMemory = createRendererMemoryStudy({
         protocol: memoryDiagnostic.protocol,
+        tinyProbe: tiny?.probe,
+        timing,
         reclamationArm: memoryProfile?.reclamationArm,
         append: (r) => rec.append(r),
         signal: loaded.signal,
@@ -528,7 +544,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
             },
           ]
         : [];
-    if (startup)
+    if (acceptance)
       postChecks.push({ name: "two-article-startup-fixture", ok: checkStartupArticles(m) });
     if (fixed) receipt.fixture.materializedChecks = postChecks;
     if (postChecks.some((c) => !c.ok)) {
@@ -585,6 +601,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       host: profile.server.host,
       env: profile.server.env ?? {},
       diagnostic: profile.diagnostic === true,
+      declaredZfbEnvOnly: Boolean(tiny),
       readyTimeoutMs,
       logPath: join(labelDir, "server.log"),
     });
@@ -726,9 +743,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     receipt.server.baseUrl = ready.baseUrl;
     receipt.server.readyMs = nsToMs(ready.readyNs - server.startedNs);
 
-    if (startup) {
+    if (profile.startupAcceptance || tiny?.probe === "A") {
       Object.assign(
-        receipt.startupAcceptance,
+        receipt[acceptanceKey],
         await verifyStartup({
           server,
           ready,
@@ -738,16 +755,28 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           fetchImpl: hooks.fetch,
         }),
       );
+      if (tiny) await rendererMemory.passiveIdle();
       return exitCode;
     }
+    if (tiny?.probe === "B")
+      Object.assign(
+        receipt[acceptanceKey],
+        await verifyStartupSample({
+          server,
+          ready,
+          firstSample,
+          records: rec.records,
+          study: rendererMemory,
+        }),
+      );
     loaded.signal?.throwIfAborted();
     browserHandle = await (hooks.launchOwnedBrowser ?? launchOwnedBrowser)({
       ...profile.browser,
-      ...(memoryProfile
+      ...(memoryProfile || tiny
         ? {
             diagnosticExecutable: {
-              path: memoryProfile.browserExecutable,
-              sha256: memoryProfile.browserExecutableSha256,
+              path: memoryDiagnostic.browserExecutable,
+              sha256: memoryDiagnostic.browserExecutableSha256,
               timeoutMs: rendererMemory.clamp("browser startup", 30_000),
             },
           }
@@ -764,15 +793,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     rec.append({ type: "browser-ready", browser: browserHandle.identity });
     writeJsonSync(receiptPath, receipt);
 
-    const sampleServer = () => {
-      const s = server.sampleResources();
-      samples.push(s);
-      return s;
-    };
+    const sampleServer = () =>
+      timed(timing, "run.sampleServer", {}, () => {
+        const s = server.sampleResources(timing);
+        samples.push(s);
+        return s;
+      });
 
     const fixtureOps = kind.ops(m, profile);
 
-    if (command === "run") {
+    if (batch) {
       if (rendererMemory) await rendererMemory.beforeEdits();
       if (profile.resourceStudy) {
         study = createResourceStudy({
@@ -812,7 +842,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           server: { ...server, sampleResources: sampleServer },
           page: observer,
           fs: fixtureOps,
-          verifyBodyRevision: !fixed && profile.fixture.kind === "field-notes",
+          verifyBodyRevision:
+            tiny?.probe === "B" || (!fixed && profile.fixture.kind === "field-notes"),
+          requiredBodyBaseline: tiny?.probe === "B" ? "Body marker body-a-v0 for article a." : null,
           limits: profile.limits,
           timeouts: profile.timeouts,
           startedNs,
@@ -830,6 +862,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       if (rendererMemory) {
         summaryExtra.accountingFinal = accounting;
         await rendererMemory.finalIdle({
+          expectedRestorationPath: tiny?.probe === "B" ? m.articles.a : null,
           stopped,
           stopReason: accounting.stopReason,
           cleanup: rec.records.findLast((r) => r.type === "cleanup"),
@@ -1055,7 +1088,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       rendererMemory.finishSampling();
       // The original sampler outcome survives readiness or trace-finalization failure.
       if (memoryProfile) receipt.rendererMemoryStudy.samplerFailure = rendererMemory.samplerFailure;
-      if (startup) receipt.startupAcceptance.samplerFailure = rendererMemory.samplerFailure;
+      if (acceptance) receipt[acceptanceKey].samplerFailure = rendererMemory.samplerFailure;
       const accounting = summaryExtra.accountingFinal;
       const completedSchedule =
         rendererMemory.idleMs !== null &&
@@ -1069,19 +1102,44 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           cleanup: rec.records.findLast((r) => r.type === "cleanup"),
           serverAbsent: stopReport.absent && !stopReport.error && unresolved.length === 0,
         });
-        if (startup)
-          Object.assign(receipt.startupAcceptance, {
+        if (acceptance)
+          Object.assign(receipt[acceptanceKey], {
+            ...(tiny && {
+              controllerTiming: "controller-timing.json",
+              idleMs: memoryReport.idleMs,
+              sampleInvocations: memoryReport.sampleInvocations,
+              helperStarts: memoryReport.helperStarts,
+              helperLaunchAttempts: memoryReport.helperLaunchAttempts,
+              restoration: memoryReport.restoration,
+              scheduleComplete:
+                tiny.probe === "B" ? completedSchedule : memoryReport.idleMs >= 30_000,
+            }),
             samples: memoryReport.samples,
             bodyEdits: rec.records.filter((r) => r.type === "attempt" && r.op === "edit-body")
               .length,
             // A complete native trace with the observation-only startup anchor excludes actions.
-            reclamationActions: memoryReport.lifecycle?.complete === true ? 0 : null,
+            reclamationActions: tiny
+              ? memoryReport.lifecycle?.performedActionCompletions ||
+                (memoryReport.lifecycle?.complete &&
+                memoryReport.lifecycle.reclamationActionStarts === 0
+                  ? 0
+                  : null)
+              : memoryReport.lifecycle?.complete === true
+                ? 0
+                : null,
             peakSummedRssKiB: memoryReport.peakSummedRssKiB,
             failure: memoryReport.failure,
             lifecycleComplete: memoryReport.lifecycle?.complete === true,
             logComplete: memoryReport.logComplete,
             stop: stopReport,
           });
+        if (
+          tiny &&
+          (!receipt[acceptanceKey].scheduleComplete ||
+            receipt[acceptanceKey].reclamationActions !== 0 ||
+            timing.report.dropped)
+        )
+          evidenceFailed = true;
         safeAppend({ type: "renderer-memory-evidence", ...memoryReport });
       } catch (error) {
         evidenceFailed = true;
@@ -1122,10 +1180,11 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       }
     }
     if (evidenceFailed && exitCode === EXIT.ok) exitCode = EXIT.controllerError;
-    if (startup) {
-      receipt.startupAcceptance.complete =
-        exitCode === EXIT.ok && Boolean(receipt.startupAcceptance.live?.markerMatched);
-      receipt.startupAcceptance.unresolvedResources = unresolved;
+    if (acceptance) {
+      receipt[acceptanceKey].complete =
+        exitCode === EXIT.ok &&
+        (tiny?.probe === "B" || Boolean(receipt[acceptanceKey].live?.markerMatched));
+      receipt[acceptanceKey].unresolvedResources = unresolved;
     }
     try {
       writeJsonSync(receiptPath, receipt);
@@ -1143,6 +1202,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       accounting.error += 1;
     }
     try {
+      if (timing) writeJsonSync(join(labelDir, "controller-timing.json"), timing.report);
       const summary = {
         ...summarize(rec.records, accounting),
         accountingSource: summaryExtra.accountingFinal
@@ -1155,7 +1215,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         exitCode,
         identityRejected: summaryExtra.identityRejected === true,
         calibration: summaryExtra.calibration ?? null,
-        ...(startup && { diagnostic: true, startupAcceptance: receipt.startupAcceptance }),
+        ...(acceptance && { diagnostic: true, [acceptanceKey]: receipt[acceptanceKey] }),
         ...(memoryProfile
           ? {
               diagnostic: true,

@@ -68,6 +68,8 @@ Commands:
                                a second \`run\` must exit 5 without a label dir.
   calibrate --profile <p.json> --label <unique>
                                Run calibration cells through the same observer.
+  tiny-acceptance --profile <p.json> --label <unique>
+                               Run tiny RSS diagnostic probe A or B.
   startup-acceptance --profile <p.json> --label <unique>
                                Exercise supervised Linux startup on the two-article fixture.
   run --profile <p.json> --label <unique> [--scenario id[,id]]
@@ -476,6 +478,7 @@ export async function main(argv) {
       print(probeMac());
       return EXIT.ok;
     case "run":
+    case "tiny-acceptance":
     case "startup-acceptance":
     case "calibrate":
       if (

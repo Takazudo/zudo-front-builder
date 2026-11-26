@@ -515,7 +515,9 @@ export function evaluateIdentity(profile, receipt, facts) {
     ),
   );
   const rendererFeature = rendererMemoryBuild(receipt);
-  const rendererStudy = Boolean(profile.rendererMemoryStudy || profile.startupAcceptance);
+  const rendererStudy = Boolean(
+    profile.rendererMemoryStudy || profile.startupAcceptance || profile.tinyAcceptance,
+  );
   if (rendererFeature || rendererStudy || receipt?.diagnostic === true)
     checks.push(
       check(

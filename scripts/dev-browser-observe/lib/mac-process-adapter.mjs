@@ -1,3 +1,4 @@
+import { timed } from "./controller-timing.mjs";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { linuxBirth, parseLinuxStat, LINUX_BIRTH, sameLinuxBirth } from "./linux-birth.mjs";
@@ -119,7 +120,7 @@ export function parseSampleRows(text) {
 }
 
 /** Instantaneous sample of the given pids; missing fields are recorded as "unavailable". */
-export function sample(owned, { runImpl = run, withThreads = true } = {}) {
+export function sample(owned, { runImpl = run, withThreads = true, timing } = {}) {
   const pids = owned.map((entry) => entry.pid ?? entry);
   const at = isoNow();
   const hr = process.hrtime.bigint().toString();
@@ -128,7 +129,9 @@ export function sample(owned, { runImpl = run, withThreads = true } = {}) {
   // ps -p exits 1 when any listed pid is gone; its stdout still has the live rows.
   let text = "";
   try {
-    text = runImpl("ps", ["-o", "pid=,rss=,vsz=", "-p", pids.join(",")], probeOptions());
+    text = timed(timing, "RSS ps", { pids: pids.length }, () =>
+      runImpl("ps", ["-o", "pid=,rss=,vsz=", "-p", pids.join(",")], probeOptions()),
+    );
   } catch (error) {
     text = error?.stdout?.toString?.() ?? "";
   }
@@ -140,7 +143,10 @@ export function sample(owned, { runImpl = run, withThreads = true } = {}) {
       present: Boolean(r),
       rssKiB: r ? r.rssKiB : "unavailable",
       vszKiB: r ? r.vszKiB : "unavailable",
-      threads: r && withThreads ? threadCount(owned[index], runImpl) : "unavailable",
+      threads:
+        r && withThreads
+          ? timed(timing, "thread reads", { pid }, () => threadCount(owned[index], runImpl))
+          : "unavailable",
     };
   });
   const summed = processes.reduce(

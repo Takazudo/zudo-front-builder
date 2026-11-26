@@ -27,11 +27,13 @@ export function summarize(records, accounting) {
   // hidden-edit and final-state successes carry no update latency, so they are left out of the distribution.
   // Warmup attempts (op.repeat) are recorded and counted in accounting but never enter a distribution.
   const isWarmup = (r) => r.iteration?.kind === "warmup";
+  const tinyDiagnostic = records.some((r) => r.type === "run-start" && r.tinyAcceptance);
   const successes = records.filter(
     (r) =>
       r.type === "attempt" &&
       r.outcome === "success" &&
       typeof r.latencyMs === "number" &&
+      !tinyDiagnostic &&
       !isWarmup(r),
   );
   const warmups = records.filter((r) => r.type === "attempt" && isWarmup(r));

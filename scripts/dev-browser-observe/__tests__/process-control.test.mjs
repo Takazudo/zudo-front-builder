@@ -20,7 +20,11 @@ import {
   BUILD_RECEIPT_SCHEMA,
   sourcePackagesAtSha,
 } from "../lib/identity.mjs";
-import { STARTUP_ACCEPTANCE, STARTUP_WALL_MS } from "../lib/startup-acceptance.mjs";
+import {
+  STARTUP_ACCEPTANCE,
+  STARTUP_WALL_MS,
+  TINY_ACCEPTANCE,
+} from "../lib/startup-acceptance.mjs";
 import { aggregate } from "../lib/aggregate.mjs";
 import { LockBusyError, acquireLock } from "../lib/lock.mjs";
 import { sample, sampleAsync } from "../lib/mac-process-adapter.mjs";
@@ -919,29 +923,35 @@ describe("execute (identity gate)", () => {
     writeFileSync(s.profilePath, JSON.stringify(p));
   }
 
+  function acceptanceProfile(s) {
+    acceptedIdentity(s, join(s.root, "fake-zfb"));
+    const profile = readJson(s.profilePath);
+    profile.diagnostic = true;
+    profile.scenarios = [];
+    delete profile.calibration;
+    profile.server.readyTimeoutMs = 90000;
+    profile.server.env = { ZFB_DEV_PROVENANCE_TRACE: "1" };
+    profile.limits.wallCeilingMs = STARTUP_WALL_MS;
+    const receiptFile = join(s.root, "build-receipt.json");
+    const build = readJson(receiptFile);
+    build.build = {
+      profile: "dev",
+      features: ["renderer-memory-observe"],
+      noDefaultFeatures: false,
+    };
+    build.diagnostic = true;
+    writeFileSync(receiptFile, JSON.stringify(build));
+
+    return profile;
+  }
+
   it.runIf(process.platform === "linux").each(["live", "high-partial", "open-helper"])(
     "startup acceptance exercises shared admission, pre-ready sampling, and stop (%s)",
     async (disposition) => {
       const s = setup();
-      acceptedIdentity(s, join(s.root, "fake-zfb"));
-      const profile = readJson(s.profilePath);
-      profile.diagnostic = true;
-      profile.scenarios = [];
-      delete profile.calibration;
+      const profile = acceptanceProfile(s);
       profile.startupAcceptance = { protocol: STARTUP_ACCEPTANCE };
-      profile.server.readyTimeoutMs = 90000;
-      profile.server.env = { ZFB_DEV_PROVENANCE_TRACE: "1" };
-      profile.limits.wallCeilingMs = STARTUP_WALL_MS;
       writeFileSync(s.profilePath, JSON.stringify(profile));
-      const receiptFile = join(s.root, "build-receipt.json");
-      const build = readJson(receiptFile);
-      build.build = {
-        profile: "dev",
-        features: ["renderer-memory-observe"],
-        noDefaultFeatures: false,
-      };
-      build.diagnostic = true;
-      writeFileSync(receiptFile, JSON.stringify(build));
 
       const calls = [];
       const birth = { pid: 258, pgid: 258, bootId: "boot", startTicks: "99" };
@@ -1041,6 +1051,167 @@ describe("execute (identity gate)", () => {
         });
         expect(code).toBe(EXIT.ownedServerAlive);
       }
+    },
+  );
+
+  it.runIf(process.platform === "linux").each(["A", "B", "stale"])(
+    "executes tiny probe through normal controller with a controlled observer (%s)",
+    async (mode) => {
+      const probe = mode === "A" ? "A" : "B";
+      const s = setup();
+      const profile = acceptanceProfile(s);
+      profile.tinyAcceptance = { protocol: TINY_ACCEPTANCE, probe };
+      if (probe === "B") {
+        Object.assign(profile.tinyAcceptance, {
+          browserExecutable: "/fixture/chromium",
+          browserExecutableSha256: "a".repeat(64),
+        });
+        profile.scenarios = [
+          {
+            id: "article-a-body",
+            set: "workload",
+            warmOrder: "none",
+            ops: [
+              {
+                id: "body-a",
+                op: "edit-body",
+                article: "a",
+                writeMethod: "in-place",
+                repeat: { warmups: 0, measured: 12 },
+              },
+            ],
+          },
+        ];
+      }
+      writeFileSync(s.profilePath, JSON.stringify(profile));
+      const original = "Body marker body-a-v0 for article a.";
+      const birth = { pid: 258, pgid: 258, bootId: "boot", startTicks: "99" };
+      let timeOffset = 0n;
+      const clock = () => process.hrtime.bigint() + timeOffset;
+      const started = Number(clock() / 1_000_000n);
+      const page = fakePage({
+        onWait: (token) =>
+          Promise.resolve({
+            kind: "notify",
+            t1: clock(),
+            payload: { token, docUUID: "updated" },
+          }),
+      });
+      page.arm = async () => ({ armed: true, actual: original, docUUID: "previous" });
+      page.settle = async ({ bodyRevision, requireNativeUpdate }) => {
+        expect(requireNativeUpdate).toBe(true);
+        expect(bodyRevision).toMatchObject({
+          path: "/articles/a",
+          predicate: { equals: original },
+        });
+        return {
+          settled: mode !== "stale",
+          nativeUpdateObserved: true,
+          bodyRevision: { docUUID: "fresh", observedDocUUID: "fresh", matched: mode !== "stale" },
+        };
+      };
+      const calls = [];
+      let launches = 0;
+      const code = await execute({
+        profilePath: s.profilePath,
+        label: "tiny",
+        command: "tiny-acceptance",
+        supervisorId: "fixture",
+        supervisorStartedMs: started,
+        workDeadline: started + 120000,
+        supervisorDeadlineMs: started + 180000,
+        stderr: () => {},
+        hooks: {
+          rendererMemoryClock: clock,
+          sleep: async (ms) => {
+            timeOffset += BigInt(ms) * 1_000_000n;
+          },
+          startDevServer(options) {
+            launches++;
+            expect(options.declaredZfbEnvOnly).toBe(true);
+            expect(options.env).toEqual({ ZFB_DEV_PROVENANCE_TRACE: "1" });
+            expect(options.readyTimeoutMs).toBeLessThanOrEqual(90_000);
+            return {
+              ready: Promise.resolve().then(() => ({
+                baseUrl: "http://127.0.0.1:18765",
+                readyNs: clock(),
+              })),
+              startedNs: clock(),
+              handle: { native: birth, exit: null },
+              isAlive: () => ({ alive: true }),
+              closeLog: () => ({ pipes: "closed", errors: [] }),
+              pid: () => birth.pid,
+              waitExit: () => new Promise(() => {}),
+              sampleResources: () => ({ summedRssKiB: 20 }),
+            };
+          },
+          rendererMemoryEvidence: {
+            async sampleRendererMemory() {
+              const now = String(clock());
+              return {
+                hrtimeNs: now,
+                helper: { pid: 42, spawnHrtimeNs: now, closed: true, pipesClosed: true },
+                processes: [{ ...birth, rssKiB: 44, disposition: "live" }],
+                samplerVersion: "linux-pidfd-rss.v1",
+                summedRssKiB: 44,
+              };
+            },
+            inspectRendererLifecycle: (_server, { final }) => ({
+              start: true,
+              failure: null,
+              complete: final,
+              reclamationActionStarts: 0,
+              performedActionCompletions: 0,
+            }),
+          },
+          launchOwnedBrowser: () => {
+            calls.push("browser");
+            return { observer: page, identity: {} };
+          },
+          closeOwnedBrowser: () => [],
+          fetch: () => {
+            calls.push("http");
+            return new Response(original);
+          },
+          stopOwned: () => {
+            calls.push("stop");
+            return { absent: true };
+          },
+        },
+      });
+      const dir = join(s.outDir, "tiny");
+      const summary = readJson(join(dir, "summary.json"));
+      const receipt = readJson(join(dir, "receipt.json")).tinyAcceptance;
+      const records = readJsonl(join(dir, "records.jsonl"));
+      const cleanup = records.find((r) => r.type === "cleanup");
+      expect(launches).toBe(1);
+      expect(code === EXIT.ok, JSON.stringify({ receipt, summary })).toBe(mode !== "stale");
+      expect(receipt).toMatchObject({
+        probe,
+        complete: mode !== "stale",
+        studyEligible: false,
+        timingEligible: false,
+        reclamationActions: 0,
+        bodyEdits: probe === "A" ? 0 : 12,
+      });
+      expect(receipt.firstSampleStartedHrtimeNs).toBeTruthy();
+      expect(summary.latencyConditionalOnSuccessMs.n).toBe(0);
+      expect(readJson(join(dir, "controller-timing.json")).dropped).toBe(0);
+      expect(calls).toEqual(probe === "A" ? ["http", "stop"] : ["browser", "stop"]);
+      if (mode !== "stale")
+        expect(receipt.idleMs).toBeGreaterThanOrEqual(probe === "A" ? 30000 : 10000);
+      if (probe === "B") {
+        expect(records.filter((r) => r.type === "scenario-start")).toHaveLength(1);
+        expect(records.filter((r) => r.type === "cleanup")).toHaveLength(1);
+        expect(cleanup).toMatchObject({
+          ok: mode !== "stale",
+          mismatches: [],
+          actions: [{ method: "in-place" }],
+        });
+        expect(cleanup.live).toHaveLength(mode === "stale" ? 0 : 4);
+        if (mode === "stale") expect(receipt.idleMs).toBeNull();
+      }
+      expect(existsSync(join(s.root, "active-session.json"))).toBe(false);
     },
   );
 

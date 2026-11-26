@@ -1,3 +1,4 @@
+import { timed } from "./controller-timing.mjs";
 import { execFile, spawn } from "node:child_process";
 import { linuxBirth, LINUX_BIRTH, sameLinuxBirth } from "./linux-birth.mjs";
 import { fileURLToPath } from "node:url";
@@ -42,13 +43,15 @@ export function parsePsTable(text) {
   return rows;
 }
 
-export function psTable(psImpl = run) {
+export function psTable(psImpl = run, timing) {
   return parsePsTable(
-    psImpl("ps", ["-axo", "pid=,ppid=,pgid=,lstart=,comm="], {
-      env: { ...process.env, LC_ALL: "C" },
-      timeout: 1500,
-      killSignal: "SIGKILL",
-    }),
+    timed(timing, "process-table ps", {}, () =>
+      psImpl("ps", ["-axo", "pid=,ppid=,pgid=,lstart=,comm="], {
+        env: { ...process.env, LC_ALL: "C" },
+        timeout: 1500,
+        killSignal: "SIGKILL",
+      }),
+    ),
   );
 }
 
@@ -234,20 +237,27 @@ export function snapshotOwnedWithArgs(handle, psImpl = run, platform = process.p
   });
 }
 
-export function snapshotOwned(handle, psImpl, platform = process.platform, readLinux = linuxBirth) {
+export function snapshotOwned(
+  handle,
+  psImpl,
+  platform = process.platform,
+  readLinux = linuxBirth,
+  timing,
+) {
+  const birth = (pid) => timed(timing, "proc/birth", { pid }, () => readLinux(pid));
   if (!handle.native) return [];
   if (platform === "linux" && handle.native.birthVersion !== LINUX_BIRTH)
-    throw new PidReuseError(handle.native, readLinux(handle.native.pid));
-  const table = psTable(psImpl);
+    throw new PidReuseError(handle.native, birth(handle.native.pid));
+  const table = psTable(psImpl, timing);
   if (handle.native.birthVersion === LINUX_BIRTH) {
     const root = handle.native;
-    const leader = readLinux(root.pid);
+    const leader = birth(root.pid);
     if (!leader) return [];
     if (!sameLinuxBirth(root, leader) || root.pgid !== leader.pgid || root.pgid !== root.pid)
       throw new PidReuseError(root, leader);
     const observed = ownedProcesses(table, root)
       .map((row) => {
-        const now = readLinux(row.pid);
+        const now = birth(row.pid);
         if (!now) return null;
         if (now.birthUnverifiable) throw new PidReuseError(row, now);
         return { ...row, ...now };
@@ -255,7 +265,7 @@ export function snapshotOwned(handle, psImpl, platform = process.platform, readL
       .filter(Boolean);
     // Rebuild ancestry from kernel observations. A ps candidate may have exited/reparented.
     const seen = ownedProcesses(observed, root);
-    const after = readLinux(root.pid);
+    const after = birth(root.pid);
     if (!after) return [];
     if (!sameLinuxBirth(root, after) || after.pgid !== root.pgid)
       throw new PidReuseError(root, after);

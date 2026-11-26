@@ -1,3 +1,4 @@
+import { timed } from "./controller-timing.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
@@ -71,13 +72,14 @@ export function treeHashDir(root, opts = {}) {
 }
 
 /** Append one JSON line and fsync before returning. */
-export function appendJsonlSync(path, record) {
-  const fd = openSync(path, "a");
+export function appendJsonlSync(path, record, timing) {
+  const fd = timed(timing, "open", {}, () => openSync(path, "a"));
   try {
-    writeSync(fd, `${JSON.stringify(record)}\n`);
-    fsyncSync(fd);
+    const line = JSON.stringify(record) + "\n";
+    timed(timing, "write", {}, () => writeSync(fd, line));
+    timed(timing, "fsync", {}, () => fsyncSync(fd));
   } finally {
-    closeSync(fd);
+    timed(timing, "close", {}, () => closeSync(fd));
   }
 }
 

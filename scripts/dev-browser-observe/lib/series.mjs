@@ -160,6 +160,7 @@ export function loadSeriesPlan(planPath) {
     const prof = x.selected;
     if (
       prof.rendererMemoryStudy ||
+      prof.tinyAcceptance ||
       builds[v]?.diagnostic === true ||
       rendererMemoryBuild(builds[v])
     )

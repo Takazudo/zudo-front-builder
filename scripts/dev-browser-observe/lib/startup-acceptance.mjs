@@ -2,17 +2,56 @@ import { readdirSync } from "node:fs";
 import { LINUX_RSS_SAMPLER_VERSION, RENDERER_MEMORY_LIMITS } from "./renderer-memory-protocol.mjs";
 
 export const STARTUP_ACCEPTANCE = "dev-browser-observe.renderer-memory.startup-acceptance.v1";
+export const TINY_ACCEPTANCE = "dev-browser-observe.renderer-memory.tiny-acceptance.v1";
+export const TINY_HELPER_CAP = 160;
 export const STARTUP_WALL_MS = 180_000;
 const REQUEST_MS = 10_000;
 const REQUEST_BYTES = 128 * 1024;
 
 export function startupProfileErrors(profile) {
-  if (!profile.startupAcceptance) return [];
+  const tiny = profile.tinyAcceptance;
+  if (!profile.startupAcceptance && !tiny) return [];
   const errors = [];
   const check = (condition, why) => {
-    if (!condition) errors.push("$.startupAcceptance: " + why);
+    if (!condition) errors.push((tiny ? "$.tinyAcceptance: " : "$.startupAcceptance: ") + why);
   };
-  check(profile.startupAcceptance.protocol === STARTUP_ACCEPTANCE, "unknown startup protocol");
+  if (tiny) {
+    check(
+      !profile.startupAcceptance && tiny.protocol === TINY_ACCEPTANCE,
+      "requires its own tiny protocol",
+    );
+    check(["A", "B"].includes(tiny.probe), "unknown probe");
+    if (tiny.probe === "B") {
+      const [scenario] = profile.scenarios ?? [];
+      const op = scenario?.ops?.[0];
+      check(
+        profile.scenarios?.length === 1 &&
+          (scenario.set ?? "workload") === "workload" &&
+          (scenario.warmOrder ?? "none") === "none" &&
+          scenario.ops?.length === 1 &&
+          op?.op === "edit-body" &&
+          op.article === "a" &&
+          op.writeMethod === "in-place" &&
+          op.repeat?.warmups === 0 &&
+          op.repeat?.measured === 12 &&
+          (op.expect ?? "success") === "success" &&
+          Object.keys(op).every((key) =>
+            ["id", "op", "article", "writeMethod", "repeat", "expect"].includes(key),
+          ),
+        "requires exactly 12 serial default article-a body edits in a single scenario",
+      );
+      check(profile.restoration?.writeMethod === "in-place", "requires in-place restoration");
+      check(
+        profile.browser?.headless === true &&
+          tiny.browserExecutable?.startsWith("/") &&
+          /^[0-9a-f]{64}$/.test(tiny.browserExecutableSha256),
+        "requires a pinned headless browser",
+      );
+    } else {
+      check(!tiny.browserExecutable && !tiny.browserExecutableSha256, "probe A uses no browser");
+    }
+  } else
+    check(profile.startupAcceptance.protocol === STARTUP_ACCEPTANCE, "unknown startup protocol");
   check(
     profile.mode === "source-built" &&
       (profile.fixture?.kind ?? "tiny") === "tiny" &&
@@ -27,7 +66,7 @@ export function startupProfileErrors(profile) {
       !profile.rendererMemoryStudy &&
       !profile.resourceStudy &&
       !profile.calibration &&
-      profile.scenarios?.length === 0,
+      (tiny?.probe === "B" || profile.scenarios?.length === 0),
     "requires a diagnostic profile with no other workloads",
   );
   check(
@@ -99,14 +138,7 @@ async function requestArticle(baseUrl, signal, timeoutMs, fetchImpl) {
   };
 }
 
-export async function verifyStartup({
-  server,
-  ready,
-  firstSample,
-  records,
-  study,
-  fetchImpl = fetch,
-}) {
+export async function verifyStartupSample({ server, ready, firstSample, records, study }) {
   await firstSample;
   study.signal.throwIfAborted();
   const sample = records.find((r) => r.type === "renderer-memory-sample");
@@ -132,17 +164,28 @@ export async function verifyStartup({
     result.summedRssKiB < observed.rssKiB
   )
     throw new Error("missing a bounded live root sample initiated before readiness");
+  return {
+    readyHrtimeNs: String(ready.readyNs),
+    firstSampleSeq: sample.seq,
+    firstSampleStartedHrtimeNs: sample.startedHrtimeNs,
+    firstHelperSpawnHrtimeNs: result.helper.spawnHrtimeNs,
+  };
+}
+
+export async function verifyStartup({
+  server,
+  ready,
+  firstSample,
+  records,
+  study,
+  fetchImpl = fetch,
+}) {
+  const anchor = await verifyStartupSample({ server, ready, firstSample, records, study });
   const live = await study.runStage(
     "startup live request",
     REQUEST_MS,
     process.hrtime.bigint(),
     (timeoutMs) => requestArticle(ready.baseUrl, study.signal, timeoutMs, fetchImpl),
   );
-  return {
-    live,
-    readyHrtimeNs: String(ready.readyNs),
-    firstSampleSeq: sample.seq,
-    firstSampleStartedHrtimeNs: sample.startedHrtimeNs,
-    firstHelperSpawnHrtimeNs: result.helper.spawnHrtimeNs,
-  };
+  return { ...anchor, live };
 }
