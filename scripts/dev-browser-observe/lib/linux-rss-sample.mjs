@@ -15,6 +15,14 @@ const uint = (n) => Number.isSafeInteger(n) && n >= 0;
 const ticks = (s) => typeof s === "string" && /^\d{1,20}$/.test(s);
 const same = (a, b) => sameLinuxBirth(a, b) && a.pgid === b.pgid;
 
+function matchesExecutable(observed, expected) {
+  return (
+    observed?.path === expected.path &&
+    observed.device === expected.device &&
+    observed.inode === expected.inode
+  );
+}
+
 function requireValue(ok, msg) {
   if (!ok) throw new Error(msg);
 }
@@ -200,6 +208,7 @@ export function sampleRendererMemory(
   server,
   expectedExecutablePath,
   {
+    fixedExecutables = null,
     launch = () =>
       spawn("python3", ["-I", "-B", script, String(process.pid)], {
         stdio: ["pipe", "pipe", "pipe"],
@@ -317,6 +326,7 @@ export function sampleRendererMemory(
         known: [...handle.known.values()].map(compactBirth),
         terminalProofs: [...proofs.values()],
         executablePath: expectedExecutablePath,
+        ...(fixedExecutables && { fixedChildExecutable: fixedExecutables.child }),
       };
       spawnHrtimeNs = parent.spawnCallNs = now();
       child = launch();
@@ -464,7 +474,8 @@ export function sampleRendererMemory(
             exe.path.startsWith("/") &&
             Buffer.byteLength(exe.path) <= 4096 &&
             ticks(exe.device) &&
-            ticks(exe.inode),
+            ticks(exe.inode) &&
+            (!fixedExecutables || matchesExecutable(exe, fixedExecutables.root)),
           "invalid expected executable identity",
         );
         executable = exe;
@@ -577,9 +588,9 @@ export function sampleRendererMemory(
                 p.statusKiB.VmRSS === rssSources.get(p.pid)?.VmRSS &&
                 uint(p.smapsRollupKiB?.Rss) &&
                 p.smapsRollupKiB.Rss === rssSources.get(p.pid)?.["rollup.Rss"] &&
-                p.executable?.path === executable.path &&
-                p.executable?.device === executable.device &&
-                p.executable?.inode === executable.inode &&
+                (fixedExecutables && p.pid !== root.pid
+                  ? p.ppid === root.pid && matchesExecutable(p.executable, fixedExecutables.child)
+                  : matchesExecutable(p.executable, executable)) &&
                 uint(p.threads?.listed) &&
                 Array.isArray(p.threads?.rendererHosts),
               "invalid live process observation",

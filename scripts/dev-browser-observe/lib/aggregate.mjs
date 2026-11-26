@@ -401,6 +401,8 @@ export function readSession({
   // Do not read or pool observer timings from a renderer-memory run, even if its
   // declared profile and build are inconsistent or the session itself failed.
   if (
+    receipt?.profile?.fixedRssSafety ||
+    receipt?.fixedRssSafety ||
     receipt?.profile?.tinyAcceptance ||
     receipt?.tinyAcceptance ||
     receipt?.command === "tiny-acceptance" ||
@@ -416,7 +418,11 @@ export function readSession({
       ...s,
       status: "incomplete",
       seriesStatus,
-      terminalProblems: ["renderer-memory diagnostic excluded from timing aggregation"],
+      terminalProblems: [
+        receipt?.fixedRssSafety || receipt?.profile?.fixedRssSafety
+          ? "fixed RSS correctness run excluded from timing aggregation"
+          : "renderer-memory diagnostic excluded from timing aggregation",
+      ],
       facets: receipt ? sessionFacets(receipt) : null,
       blocks: [],
       timingExcluded: true,
@@ -433,6 +439,7 @@ export function readSession({
     records = readJsonl(join(dir, "records.jsonl"));
     const start = records.find((r) => r.type === "run-start");
     if (
+      start?.fixedRssSafety ||
       start?.rendererMemoryStudy ||
       start?.tinyAcceptance ||
       start?.command === "tiny-acceptance" ||

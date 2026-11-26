@@ -107,6 +107,7 @@ class Sample:
         self.known = {p["pid"]: p for p in request["known"]}
         self.proofs = {p["birth"]["pid"]: p for p in request["terminalProofs"]}
         self.exe = request["executable"]
+        self.fixed_child = request.get("fixedChildExecutable")
         self.emit = emit
         self.timing = timing
         self.bytes = self.reads = 0
@@ -187,13 +188,18 @@ class Sample:
             raise Invalid("root-lost-or-unverified", got)
         return got
 
-    def exe_identity(self, directory):
+    def exe_identity(self, directory, row=None):
+        expected = self.exe
+        if self.fixed_child and row["pid"] != self.root["pid"]:
+            if row["ppid"] != self.root["pid"]:
+                raise Invalid("unexpected-fixed-process-role", row)
+            expected = self.fixed_child
         path = os.readlink("exe", dir_fd=directory)
-        if path != self.exe["path"]:
+        if path != expected["path"]:
             raise Invalid("unexpected-executable", {"path": path})
         info = os.stat("exe", dir_fd=directory)
         exe = dict(path=path, device=str(info.st_dev), inode=str(info.st_ino))
-        if exe != self.exe:
+        if exe != expected:
             raise Invalid("unexpected-executable", exe)
         return exe
 
@@ -226,7 +232,7 @@ class Sample:
         ended = terminal(fd)
         if not ended:
             try:
-                result["executable"] = self.exe_identity(directory)
+                result["executable"] = self.exe_identity(directory, row)
                 self.stage = "status"
                 def memory(path, cap, names, field, source):
                     raw = self.read(path, cap, directory)
@@ -248,7 +254,7 @@ class Sample:
                 self.stage = "threads"
                 result["threads"] = self.threads(directory, row["bootId"])
                 self.stage = "final-executable"
-                self.exe_identity(directory)
+                self.exe_identity(directory, row)
             except GONE as error:
                 ended = terminal(fd)
                 if not ended:

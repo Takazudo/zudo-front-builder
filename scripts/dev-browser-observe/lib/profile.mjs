@@ -50,6 +50,21 @@ export const FIXED_ADAPTERS = {
 /** fixed-distribution rules: the framework's declared helper, no zfb-only diagnostic/recovery families. */
 function fixedErrors(profile) {
   const errors = [];
+  if (
+    profile.fixedRssSafety &&
+    (profile.framework !== "zfb" ||
+      (profile.distribution?.launch ?? "direct") !== "direct" ||
+      profile.fixture?.scale !== 100 ||
+      profile.limits?.rssCeilingKiB !== 4194304 ||
+      profile.limits?.sampleEveryMs !== 1000 ||
+      profile.resourceStudy ||
+      profile.scenarios?.some((s) =>
+        s.ops?.some((op) => !["hidden-edit", "burst", "rapid-sequence"].includes(op.op)),
+      ))
+  )
+    errors.push(
+      "$.fixedRssSafety requires direct fixed zfb at 100 articles with the 1 Hz, 4 GiB safety ceiling and hidden, burst or rapid correctness scenarios",
+    );
   const allowed = FIXED_ADAPTERS[profile.framework] ?? [];
   if (!allowed.includes(profile.fixture?.adapter))
     errors.push(
