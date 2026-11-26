@@ -188,8 +188,10 @@ export async function runBatch({ scenarios, deps }) {
   const { recorder, clock, server, page, fs, limits = {}, timeouts, signal } = deps;
   const wait = (work) => interruptible(work, signal);
   const diagnostic = deps.rendererMemory;
-  const stage = (name, maximum, started, action) =>
-    diagnostic ? diagnostic.runStage(name, maximum, started, action) : wait(action(maximum));
+  const stage = (name, maximum, started, action) => {
+    deps.safetySignal?.throwIfAborted();
+    return diagnostic ? diagnostic.runStage(name, maximum, started, action) : wait(action(maximum));
+  };
   const planned = scenarios.reduce((n, s) => n + s.ops.length, 0);
   const acc = newAccounting(planned);
   if (deps.accountingRef) deps.accountingRef.current = acc;
@@ -216,6 +218,21 @@ export async function runBatch({ scenarios, deps }) {
   };
 
   const cleanup = async (snapshot, reason, blocked = [], { retry = false } = {}) => {
+    // A refused safety observation leaves this disposable work copy intact.
+    // Restoring it while its server is live would trigger another rebuild.
+    if (deps.safetySignal?.aborted) {
+      append({
+        type: "cleanup",
+        label: "cleanup",
+        measured: false,
+        reason,
+        ok: false,
+        liveSkipped: "fixed-rss-safety-stop",
+        restored: false,
+      });
+      acc.restorationFailures++;
+      return false;
+    }
     deps.beforeCleanup?.({ reason });
     const blocks = [];
     for (const path of blocked) {
