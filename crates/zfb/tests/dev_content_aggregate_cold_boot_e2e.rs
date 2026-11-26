@@ -236,6 +236,7 @@ fn spawn_dev_with_env(
         .env_remove("ZFB_DEV_BOOT_LAZY")
         .env_remove("ZFB_DEV_DEFER_BUNDLE")
         .env_remove("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS")
+        .env_remove("ZFB_DEV_TEST_FIRST_DRAIN_GATE")
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     if matches!(mode, DevMode::Eager) {
@@ -3392,32 +3393,6 @@ async fn eager_edits_during_rejected_generation_survive_recovery() {
     run_edits_during_rejected_generation(DevMode::Eager, None).await;
 }
 
-/// Boot handshake shared by the eager and cold-lazy variants of the
-/// rejected-tick CSS scenarios below. Eager renders nothing for a data probe,
-/// so no SSE event would prove the watcher live; the boot hook runs after it
-/// is armed. Skips only through [`wait_for_ready_port`]'s known-unavailable
-/// dependency check, like every other scenario in this file.
-async fn boot_handshake_for_mode(
-    session: &mut DevSession,
-    mode: DevMode,
-    data_probe_path: &Path,
-) -> Option<(String, reqwest::Client)> {
-    match mode {
-        DevMode::Eager => {
-            let port = wait_for_ready_port(session).await?;
-            wait_for_stderr_line(
-                session,
-                0,
-                &["[zfb-timing] boot: render complete"],
-                "eager boot hook finished",
-            )
-            .await;
-            Some((format!("http://localhost:{port}"), build_reqwest_client()))
-        }
-        DevMode::Lazy => boot_and_handshake_banner_only(session, data_probe_path).await,
-    }
-}
-
 /// The `[zfb-timing] intake paths:` lines of `window`.
 fn intake_lines(window: &str) -> Vec<&str> {
     window
@@ -3557,7 +3532,7 @@ async fn hold_css_test_bundle(
     held
 }
 
-async fn queue_edit_behind_held_bundle(
+async fn queue_edit_and_wait_for_delivery(
     session: &DevSession,
     offset: usize,
     file: &Path,
@@ -3578,7 +3553,7 @@ async fn wait_for_queued_edit(session: &DevSession, offset: usize, file: &Path) 
                 .is_some_and(|paths| paths.split(", ").any(|sent| sent == path))
         },
         &format!("confirming watcher delivery of {path}"),
-        "queue edit while the previous native bundle is held",
+        "awaiting watcher queue delivery",
     )
     .await
     .1
@@ -3592,8 +3567,8 @@ async fn queue_css_and_content(
     article: &Path,
     malformed: &[u8],
 ) {
-    let css_queued = queue_edit_behind_held_bundle(session, held, stylesheet, css).await;
-    queue_edit_behind_held_bundle(session, css_queued, article, malformed).await;
+    let css_queued = queue_edit_and_wait_for_delivery(session, held, stylesheet, css).await;
+    queue_edit_and_wait_for_delivery(session, css_queued, article, malformed).await;
 }
 
 async fn wait_for_coalesced_css_rejection(session: &DevSession, offset: usize) -> usize {
@@ -3917,40 +3892,55 @@ async fn run_css_edit_in_rejected_discovery_tick(mode: DevMode, boot_lazy: Optio
     let _serial = SERIAL.lock().await;
 
     let temp = tempfile::tempdir().expect("create slug-agreement fixture");
-    let (root, data_probe_path) = slug_session_root(&temp);
+    let (root, _) = slug_session_root(&temp);
     let stylesheet = root.join("styles/global.css");
     fs::create_dir_all(root.join("styles")).expect("create styles/");
     fs::write(&stylesheet, ":root { --slug-css-marker: css-v1; }\n").expect("write global.css");
-    let gate_probe = root.join("data/discovery-gate.json");
-    fs::write(&gate_probe, b"{\"revision\":0}\n").expect("seed the data-only gate probe");
     let gate_dir = tempfile::tempdir().expect("gate outside watched project");
-    let gate = gate_dir.path().join("bundle-gate");
+    let gate = gate_dir.path().join("first-drain.sock");
+    let listener = tokio::net::UnixListener::bind(&gate).expect("bind first-drain gate");
     let mut session = spawn_dev_with_env(
         root,
         mode,
         boot_lazy,
         true,
         &[(
-            "ZFB_DEV_TEST_NATIVE_BUNDLE_GATE",
+            "ZFB_DEV_TEST_FIRST_DRAIN_GATE",
             gate.to_str().expect("test gate path is UTF-8"),
         )],
     );
     let pgid = session.guard.pgid;
     let body = async {
-        let Some((base, client)) =
-            boot_handshake_for_mode(&mut session, mode, &data_probe_path).await
-        else {
+        let Some(port) = wait_for_ready_port(&mut session).await else {
             return ScenarioOutcome::Skipped;
         };
+        let base = format!("http://localhost:{port}");
+        let client = build_reqwest_client();
+        let (mut release, _) = tokio::time::timeout(SCENARIO_DEADLINE, listener.accept())
+            .await
+            .expect("orchestrator did not reach its first drain")
+            .expect("accept post-boot gate connection");
+        match mode {
+            DevMode::Eager => {
+                wait_for_stderr_line(
+                    &session,
+                    0,
+                    &["[zfb-timing] boot: render complete"],
+                    "eager boot hook finished",
+                )
+                .await;
+            }
+            DevMode::Lazy => {
+                // Keep the cold path free of page requests. The two watcher
+                // delivery receipts below provide its live watch witness.
+                assert_eq!(zfb_test_utils::open_sse(&base).await.status().as_u16(), 200);
+            }
+        }
         let css_url = format!("{base}/assets/styles.css");
         poll_until_response_contains(&client, &css_url, "css-v1", "baseline css", &session).await;
-        // Hold a data-only tick after its content snapshot. Both notifications
-        // must reach the watcher queue before the next intake can run; otherwise
-        // an earlier stylesheet-only tick can legitimately publish css-v2.
-        let offset =
-            hold_css_test_bundle(&session, &gate, &gate_probe, b"{\"revision\":1}\n").await;
+        let offset = read_log(&session.stderr_path).len();
         let created = session.root.join("content/articles/c.md");
-        let css_queued = queue_edit_behind_held_bundle(
+        let css_queued = queue_edit_and_wait_for_delivery(
             &session,
             offset,
             &stylesheet,
@@ -3963,7 +3953,12 @@ async fn run_css_edit_in_rejected_discovery_tick(mode: DevMode, boot_lazy: Optio
         )
         .expect("create c.md with a disagreeing slug");
         wait_for_queued_edit(&session, css_queued, &created).await;
-        fs::remove_file(&gate).expect("release the data-only bundle after both deliveries");
+        use tokio::io::AsyncWriteExt;
+        release
+            .write_u8(b'G')
+            .await
+            .expect("release the first drain");
+        drop(release);
         let (_, rejected_end) = wait_for_stderr_line(
             &session,
             offset,
