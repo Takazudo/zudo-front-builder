@@ -1,15 +1,21 @@
-import { readFileSync } from "node:fs";
+import { getEventListeners } from "node:events";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BrowserTiming } from "../lib/browser-timing.mjs";
 import { DEFAULT_BROWSER, OBSERVER_PATH, launchOwnedBrowser } from "../lib/browser.mjs";
 import { ControllerTiming } from "../lib/controller-timing.mjs";
-import { HARNESS_DIR, sha256File } from "../lib/util.mjs";
+import { HARNESS_DIR, sha256, sha256File } from "../lib/util.mjs";
 
-function fixture({ contextError = null, closeError = null } = {}) {
-  const selected = join(HARNESS_DIR, "cli.mjs");
-  const library = join(HARNESS_DIR, "lib", "util.mjs");
+function fixture({
+  contextError = null,
+  closeError = null,
+  selected = join(HARNESS_DIR, "cli.mjs"),
+  library = join(HARNESS_DIR, "lib", "util.mjs"),
+} = {}) {
   const events = [];
   const page = {
     on: (name) => events.push(name),
@@ -187,7 +193,9 @@ describe("browser startup timing", () => {
       "request",
       "websocket",
     ]);
-    const files = report.syncSpans.filter((row) => row.name.startsWith("browser.file."));
+    const files = [...report.asyncSpans, ...report.syncSpans]
+      .filter((row) => ["browser.file.read", "browser.file.digest"].includes(row.name))
+      .sort((a, b) => a.id - b.id);
     expect(files.map(({ name, role, path }) => [name, role, path])).toEqual(
       [
         ["selected-launched", f.selected],
@@ -203,10 +211,20 @@ describe("browser startup timing", () => {
       expect(row.bytes).toBe(readFileSync(row.path).length);
       if (row.name === "browser.file.digest") expect(row.digest).toBe(sha256File(row.path));
     }
+    for (const index of [0, 2]) {
+      expect(files[index]).toMatchObject({ returnKind: "promise", outcome: "fulfilled" });
+      expect(BigInt(files[index].returnNs)).toBeLessThanOrEqual(
+        BigInt(files[index].settledObservedNs),
+      );
+      expect(BigInt(files[index].settledObservedNs)).toBeLessThanOrEqual(
+        BigInt(files[index + 1].startNs),
+      );
+    }
+    expect(files[4].outcome).toBe("returned");
     const launch = report.asyncSpans.find((row) => row.name === "browser.chromium.launch");
     expect(BigInt(files[1].endNs)).toBeLessThanOrEqual(BigInt(launch.enterNs));
     const context = report.asyncSpans.find((row) => row.name === "browser.context.create");
-    expect(BigInt(context.settledObservedNs)).toBeLessThanOrEqual(BigInt(files[2].startNs));
+    expect(BigInt(context.settledObservedNs)).toBeLessThanOrEqual(BigInt(files[2].enterNs));
     const install = report.asyncSpans.find((row) => row.name === "browser.observer.install");
     expect(
       report.asyncSpans.filter((row) => row.parentId === install.id).map(({ name }) => name),
@@ -237,7 +255,10 @@ describe("browser startup timing", () => {
     ).rejects.toThrow(/digest differs/);
     expect(f.events).toEqual(["lookup"]);
     const report = timing.snapshot();
-    expect(report.asyncSpans).toMatchObject([{ name: "browser.initialize", outcome: "rejected" }]);
+    expect(report.asyncSpans).toMatchObject([
+      { name: "browser.initialize", outcome: "rejected" },
+      { name: "browser.file.read", role: "selected-launched", outcome: "fulfilled" },
+    ]);
     expect(report.syncSpans.at(-1)).toMatchObject({
       name: "browser.file.digest",
       role: "selected-launched",
@@ -266,6 +287,7 @@ describe("browser startup timing", () => {
             outcome: "rejected",
             settledObservedNs: expect.any(String),
           },
+          { name: "browser.file.read", role: "selected-launched", outcome: "fulfilled" },
           { name: "browser.chromium.launch", outcome: "fulfilled" },
           {
             name: "browser.context.create",
@@ -283,4 +305,196 @@ describe("browser startup timing", () => {
       }
     },
   );
+});
+
+describe.each([false, true])("executable identity with browser timing %s", (enabled) => {
+  const options = (f) => ({
+    chromiumImpl: f.chromium,
+    timing: enabled ? new BrowserTiming() : null,
+  });
+
+  it("reads fresh bytes twice even when both roles use the same path", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "dbo-executable-"));
+    const path = join(dir, "browser");
+    try {
+      writeFileSync(path, "selected");
+      const f = fixture({ selected: path, library: path });
+      const opts = options(f);
+      f.browser.newContext = async () => {
+        writeFileSync(path, "library after launch");
+        return f.context;
+      };
+      const { identity } = await launchOwnedBrowser(f.config, opts);
+      expect(identity.launchedExecutableSha256).toBe(sha256("selected"));
+      expect(identity.executableSha256).toBe(sha256("library after launch"));
+      f.events.length = 0;
+      await expect(launchOwnedBrowser(f.config, opts)).rejects.toThrow(/digest differs/);
+      expect(f.events).toEqual(["lookup"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads only the default executable for ordinary launches and releases its abort listener", async () => {
+    const f = fixture();
+    const opts = options(f);
+    f.chromium.launch = async () => f.browser;
+    const abort = new AbortController();
+    const readExecutable = vi.fn(readFile);
+    const { identity } = await launchOwnedBrowser(
+      {},
+      { ...opts, signal: abort.signal, readExecutable },
+    );
+    expect(readExecutable.mock.calls).toEqual([[f.library, { signal: abort.signal }]]);
+    expect(identity.executableSha256).toBe(sha256File(f.library));
+    expect(identity.launchedExecutableSha256).toBeUndefined();
+    expect(getEventListeners(abort.signal, "abort")).toHaveLength(0);
+    abort.abort();
+    if (enabled)
+      expect(
+        opts.timing.snapshot().asyncSpans.find((row) => row.role === "library-default")
+          .cancelRequestedNs,
+      ).toBeNull();
+  });
+
+  it.each(["selected-launched", "library-default"])(
+    "keeps ownership of the pending %s read through late fulfillment and abort",
+    async (role) => {
+      const f = fixture();
+      const opts = options(f);
+      const abort = new AbortController();
+      const entered = Promise.withResolvers();
+      const gate = Promise.withResolvers();
+      const target = role === "selected-launched" ? f.selected : f.library;
+      const states = [];
+      const startup = launchOwnedBrowser(f.config, {
+        ...opts,
+        signal: abort.signal,
+        onReadState: (details, state) => states.push([details.role, state]),
+        readExecutable: (path, { signal }) => {
+          expect(signal).toBe(abort.signal);
+          if (path !== target) return readFile(path, { signal });
+          entered.resolve();
+          return gate.promise;
+        },
+      });
+      const rejection = expect(startup).rejects.toThrow("cancel during read");
+      await entered.promise;
+      abort.abort(new Error("cancel during read"));
+      await setImmediate();
+      expect(states.at(-1)).toEqual([role, "pending"]);
+      expect(f.events).toEqual(
+        role === "selected-launched" ? ["lookup"] : ["lookup", "launch", "context"],
+      );
+      if (enabled)
+        expect(opts.timing.snapshot().asyncSpans.at(-1)).toMatchObject({
+          role,
+          cancelRequestedNs: expect.any(String),
+          outcome: "pending",
+          settledObservedNs: null,
+        });
+      gate.resolve(readFileSync(target));
+      await rejection;
+      expect(states.at(-1)).toEqual([role, "fulfilled"]);
+      expect(f.events).toEqual(
+        role === "selected-launched" ? ["lookup"] : ["lookup", "launch", "context", "close"],
+      );
+      expect(getEventListeners(abort.signal, "abort")).toHaveLength(0);
+      if (enabled) {
+        const { asyncSpans, syncSpans, pending } = opts.timing.snapshot();
+        expect(pending).toBe(0);
+        expect(asyncSpans.find((row) => row.role === role)).toMatchObject({
+          outcome: "fulfilled",
+          settledObservedNs: expect.any(String),
+        });
+        expect(
+          syncSpans.some((row) => row.name === "browser.file.digest" && row.role === role),
+        ).toBe(false);
+      }
+    },
+  );
+
+  it.each(["selected-launched", "library-default"])(
+    "propagates a rejected %s read and owns incomplete close",
+    async (role) => {
+      const failure = new Error("read rejected");
+      const f = fixture({ closeError: new Error("browser still open") });
+      const opts = options(f);
+      const target = role === "selected-launched" ? f.selected : f.library;
+      await expect(
+        launchOwnedBrowser(f.config, {
+          ...opts,
+          readExecutable: (path, options) =>
+            path === target ? Promise.reject(failure) : readFile(path, options),
+        }),
+      ).rejects.toBe(failure);
+      if (role === "selected-launched") {
+        expect(f.events).toEqual(["lookup"]);
+        expect(failure.partialBrowser).toBeUndefined();
+      } else {
+        expect(f.events).toEqual(["lookup", "launch", "context", "close"]);
+        expect(failure.partialBrowser.browser).toBe(f.browser);
+        expect(failure.browserCleanupError).toContain("browser still open");
+      }
+      if (enabled)
+        expect(opts.timing.snapshot().asyncSpans.find((row) => row.role === role)).toMatchObject({
+          role,
+          outcome: "rejected",
+          settledObservedNs: expect.any(String),
+        });
+    },
+  );
+
+  it("cancels before submission when admission bookkeeping sees an abort", async () => {
+    const f = fixture();
+    const abort = new AbortController();
+    const readExecutable = vi.fn(readFile);
+    const states = [];
+    await expect(
+      launchOwnedBrowser(f.config, {
+        ...options(f),
+        signal: abort.signal,
+        readExecutable,
+        onReadState(_details, state) {
+          states.push(state);
+          if (state === "pending") abort.abort(new Error("stopped before read"));
+        },
+      }),
+    ).rejects.toThrow("stopped before read");
+    expect(readExecutable).not.toHaveBeenCalled();
+    expect(states).toEqual(["pending", "cancelled-before-read"]);
+  });
+
+  it("returns partial ownership even when the abort reason is immutable", async () => {
+    const f = fixture({ closeError: new Error("failed close") });
+    const abort = new AbortController();
+    const reason = Object.freeze(new Error("stop setup"));
+    const opts = {
+      ...options(f),
+      signal: abort.signal,
+      observerFactory: () => ({
+        install: () => abort.abort(reason),
+      }),
+    };
+    await expect(launchOwnedBrowser(f.config, opts)).rejects.toMatchObject({
+      cause: reason,
+      partialBrowser: { browser: f.browser },
+      browserCleanupError: "Error: failed close",
+    });
+  });
+
+  it("skips an already cancelled read and suppresses post-install readiness on cancellation", async () => {
+    const f = fixture();
+    const abort = new AbortController();
+    const readExecutable = vi.fn(readFile);
+    const opts = { ...options(f), readExecutable, signal: abort.signal };
+    const install = () => abort.abort(new Error("stopped"));
+    await expect(
+      launchOwnedBrowser(f.config, { ...opts, observerFactory: () => ({ install }) }),
+    ).rejects.toThrow("stopped");
+    expect(f.events).toEqual(["lookup", "launch", "context", "close"]);
+    readExecutable.mockClear();
+    await expect(launchOwnedBrowser(f.config, opts)).rejects.toThrow("stopped");
+    expect(readExecutable).not.toHaveBeenCalled();
+  });
 });

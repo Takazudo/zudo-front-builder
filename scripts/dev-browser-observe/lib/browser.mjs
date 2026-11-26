@@ -1,4 +1,5 @@
 import { readFileSync, realpathSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { timeBrowserAsync, timeBrowserSync } from "./browser-timing.mjs";
@@ -35,15 +36,63 @@ function timingPath(path, name = "path") {
   };
 }
 
-function browserFileDigest(path, role, timing, parentId) {
+function observerFileDigest(timing, parentId) {
+  const path = OBSERVER_PATH;
   if (!timing) return sha256File(path);
-  const details = { role, ...timingPath(path) };
+  const details = { role: "observer-source", ...timingPath(path) };
   const bytes = timing.syncSpan("browser.file.read", parentId, details, (row) => {
     const value = readFileSync(path);
     if (row) row.bytes = value.length;
     return value;
   });
-  return timing.syncSpan(
+  return digestBytes(bytes, timing, parentId, details);
+}
+
+async function executableDigest(
+  path,
+  role,
+  { timing, parentId, readExecutable, signal, onReadState },
+) {
+  signal?.throwIfAborted();
+  const details = { role, ...timingPath(path) };
+  onReadState?.(details, "pending");
+  let invoked = false;
+  let readRow;
+  const cancelled = () => {
+    if (readRow) readRow.cancelRequestedNs = String(timing.clock());
+  };
+  let bytes;
+  try {
+    signal?.throwIfAborted();
+    // Await the original read, including when cancellation is requested. The
+    // session still owns startup and any launched browser until it settles.
+    bytes = await timeBrowserAsync(
+      timing,
+      "browser.file.read",
+      parentId,
+      (_id, row) => {
+        readRow = row;
+        if (readRow && signal) signal.addEventListener("abort", cancelled, { once: true });
+        invoked = true;
+        return readExecutable(path, { signal: signal ?? undefined });
+      },
+      { ...details, cancelRequestedNs: null },
+    );
+    if (readRow) readRow.bytes = bytes.length;
+  } catch (error) {
+    onReadState?.(details, invoked ? "rejected" : "cancelled-before-read");
+    throw error;
+  } finally {
+    if (readRow && signal) signal.removeEventListener("abort", cancelled);
+  }
+  onReadState?.(details, "fulfilled");
+  signal?.throwIfAborted();
+  return digestBytes(bytes, timing, parentId, details);
+}
+
+function digestBytes(bytes, timing, parentId, details) {
+  return timeBrowserSync(
+    timing,
     "browser.file.digest",
     parentId,
     { ...details, bytes: bytes.length },
@@ -94,8 +143,18 @@ export function prepareInterruption(error, path) {
  */
 export async function launchOwnedBrowser(
   opts = {},
-  { chromiumImpl = null, observerFactory = null, timing = null, parentId = null } = {},
+  {
+    chromiumImpl = null,
+    observerFactory = null,
+    readExecutable = readFile,
+    onReadState,
+    signal,
+    launchTimeoutMs,
+    timing = null,
+    parentId = null,
+  } = {},
 ) {
+  signal?.throwIfAborted();
   const cfg = { ...DEFAULT_BROWSER, ...opts };
   // Keep Playwright import, identity reads and actual launch in their original order.
   const chromium =
@@ -108,6 +167,7 @@ export async function launchOwnedBrowser(
         () => import("@playwright/test"),
       )
     ).chromium;
+  signal?.throwIfAborted();
   const executablePath = timeBrowserSync(
     timing,
     "browser.executable.default-path",
@@ -134,21 +194,24 @@ export async function launchOwnedBrowser(
         },
       )
     : null;
+  const readOptions = { timing, parentId, readExecutable, signal, onReadState };
   const actualHash = actualPath
-    ? browserFileDigest(actualPath, "selected-launched", timing, parentId)
+    ? await executableDigest(actualPath, "selected-launched", readOptions)
     : null;
+  signal?.throwIfAborted();
   if (diagnosticExecutable && actualHash !== diagnosticExecutable.sha256)
     throw new Error(`diagnostic browser executable digest differs: ${actualPath}`);
+  const timeout = actualPath ? (launchTimeoutMs?.() ?? diagnosticExecutable.timeoutMs) : undefined;
+  signal?.throwIfAborted();
   const browser = await timeBrowserAsync(timing, "browser.chromium.launch", parentId, () =>
     chromium.launch({
       headless: cfg.headless,
       args: cfg.args,
-      ...(actualPath
-        ? { executablePath: actualPath, timeout: diagnosticExecutable.timeoutMs }
-        : {}),
+      ...(actualPath ? { executablePath: actualPath, timeout } : {}),
     }),
   );
   try {
+    signal?.throwIfAborted();
     const context = await timeBrowserAsync(timing, "browser.context.create", parentId, () =>
       browser.newContext({
         viewport: cfg.viewport,
@@ -156,10 +219,12 @@ export async function launchOwnedBrowser(
         serviceWorkers: "block",
       }),
     );
+    const executableSha256 = await executableDigest(executablePath, "library-default", readOptions);
+    signal?.throwIfAborted();
     const identity = {
       engine: "chromium",
       executablePath,
-      executableSha256: browserFileDigest(executablePath, "library-default", timing, parentId),
+      executableSha256,
       ...(actualPath
         ? { launchedExecutablePath: actualPath, launchedExecutableSha256: actualHash }
         : {}),
@@ -176,7 +241,7 @@ export async function launchOwnedBrowser(
         {},
         playwrightVersion,
       ),
-      observerSha256: browserFileDigest(OBSERVER_PATH, "observer-source", timing, parentId),
+      observerSha256: observerFileDigest(timing, parentId),
     };
     const observer = timeBrowserSync(timing, "browser.observer.create", parentId, {}, (create) => {
       if (observerFactory) return observerFactory(context);
@@ -193,9 +258,11 @@ export async function launchOwnedBrowser(
       );
       return new ObserverPage(context, source);
     });
+    signal?.throwIfAborted();
     await timeBrowserAsync(timing, "browser.observer.install", parentId, (id) =>
-      observerFactory || !timing ? observer.install() : observer.install(timing, id),
+      observerFactory ? observer.install() : observer.install(timing, id, signal),
     );
+    signal?.throwIfAborted();
     return { browser, context, observer, identity };
   } catch (error) {
     // Preserve the original setup error. Return an unresolved browser to the
@@ -209,8 +276,17 @@ export async function launchOwnedBrowser(
         }),
       ]);
     } catch (cleanupError) {
-      error.partialBrowser = { browser, context: { close: async () => {} } };
-      error.browserCleanupError = String(cleanupError);
+      const ownership = {
+        partialBrowser: { browser, context: { close: async () => {} } },
+        browserCleanupError: String(cleanupError),
+      };
+      // Abort reasons may be primitives or immutable errors.
+      if (error instanceof Error && Object.isExtensible(error)) Object.assign(error, ownership);
+      else
+        throw Object.assign(
+          new Error(String(error?.message ?? error), { cause: error }),
+          ownership,
+        );
     } finally {
       clearTimeout(timer);
     }
@@ -354,28 +430,33 @@ export class ObserverPage {
     this.onStray = () => {};
   }
 
-  async install(timing, parentId) {
+  async install(timing, parentId, signal) {
     await timeBrowserAsync(timing, "browser.observer.binding.notify", parentId, () =>
       this.context.exposeBinding("__dboNotify", (_source, payload) =>
         this.onNotify(payload, this.clock()),
       ),
     );
+    signal?.throwIfAborted();
     await timeBrowserAsync(timing, "browser.observer.binding.ping", parentId, () =>
       this.context.exposeBinding("__dboPing", (_source, payload) =>
         this.onPing(payload, this.clock()),
       ),
     );
+    signal?.throwIfAborted();
     await timeBrowserAsync(timing, "browser.observer.binding.doc-init", parentId, () =>
       this.context.exposeBinding("__dboDocInit", (_source, payload) =>
         this.onDocInit(payload, this.clock()),
       ),
     );
+    signal?.throwIfAborted();
     await timeBrowserAsync(timing, "browser.observer.init-script", parentId, () =>
       this.context.addInitScript({ content: this.observerSource }),
     );
+    signal?.throwIfAborted();
     this.page = await timeBrowserAsync(timing, "browser.observer.page.create", parentId, () =>
       this.context.newPage(),
     );
+    signal?.throwIfAborted();
     timeBrowserSync(timing, "browser.observer.listeners", parentId, {}, () => {
       this.page.on("framenavigated", (frame) => {
         if (frame === this.page.mainFrame())

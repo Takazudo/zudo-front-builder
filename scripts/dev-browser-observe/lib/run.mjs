@@ -3,7 +3,7 @@ import { admissionPath, reserveSession } from "./admission.mjs";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { OBSERVER_PATH, closeOwnedBrowser, launchOwnedBrowser } from "./browser.mjs";
-import { BrowserTiming, timeBrowserSync } from "./browser-timing.mjs";
+import { BrowserTiming, timeBrowserAsync, timeBrowserSync } from "./browser-timing.mjs";
 import { runCalibration, CALIBRATION_CELLS } from "./calibrate.mjs";
 import { kindFor } from "./fixture-kinds.mjs";
 import { resolveLazyDevRender, traceEnabledIn } from "./provenance.mjs";
@@ -793,7 +793,11 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           }),
         ),
       );
-    loaded.signal?.throwIfAborted();
+    const browserSignal = rendererMemory?.signal ?? loaded.signal;
+    browserSignal?.throwIfAborted();
+    const launchTimeoutMs = rendererMemory
+      ? () => rendererMemory.clamp("browser startup", 30_000)
+      : undefined;
     const browserOptions = {
       ...profile.browser,
       ...(memoryProfile || tiny
@@ -801,19 +805,38 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
             diagnosticExecutable: {
               path: memoryDiagnostic.browserExecutable,
               sha256: memoryDiagnostic.browserExecutableSha256,
-              timeoutMs: rendererMemory.clamp("browser startup", 30_000),
+              // Check admission before any browser setup. Recompute at launch.
+              timeoutMs: launchTimeoutMs(),
             },
           }
         : {}),
     };
     const launchBrowser = hooks.launchOwnedBrowser ?? launchOwnedBrowser;
-    browserHandle = browserTiming
-      ? await browserTiming.asyncSpan("browser.initialize", null, (parentId) =>
-          launchBrowser(browserOptions, { timing: browserTiming, parentId }),
-        )
-      : await launchBrowser(browserOptions);
+    browserHandle = await timeBrowserAsync(browserTiming, "browser.initialize", null, (parentId) =>
+      launchBrowser(browserOptions, {
+        timing: browserTiming,
+        parentId,
+        signal: browserSignal,
+        ...(intent && {
+          onReadState(details, state) {
+            // The independent supervisor copies this intent even if a pending
+            // read never settles and the controller cannot reach its finalizer.
+            const read = { ...details, state };
+            try {
+              timeBrowserSync(browserTiming, "browser.file.ownership", parentId, read, () =>
+                intent.update({ browserExecutableRead: read }),
+              );
+            } catch (error) {
+              if (state === "pending" || state === "fulfilled") throw error;
+              stderr(`cannot record failed browser read in admission hold: ${error.message}`);
+            }
+          },
+        }),
+        launchTimeoutMs,
+      }),
+    );
     browserTiming?.mark("browser-initialization-return-observed");
-    loaded.signal?.throwIfAborted();
+    browserSignal?.throwIfAborted();
     const observer = browserHandle.observer;
     observer.baseUrl = ready.baseUrl;
     // Fixed distributions declare their own HMR sockets; zfb livereload needs none.
@@ -946,10 +969,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     }
     return exitCode;
   } catch (error) {
-    browserHandle ??= error.partialBrowser;
+    browserHandle ??= error?.partialBrowser;
     rec.append({
       type: "controller-error",
-      browserCleanupError: error.browserCleanupError,
+      browserCleanupError: error?.browserCleanupError,
       outcome: "controller-error",
       error: String(error?.stack ?? error),
     });
