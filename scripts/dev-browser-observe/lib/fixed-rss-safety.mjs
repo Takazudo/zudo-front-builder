@@ -79,6 +79,7 @@ export function startFixedRssSafety({
       return;
     }
     failure = issue;
+    readyCheck?.resolve();
     abort(new Error(failure.error));
     try {
       append({ type: "fixed-rss-failure", failure });

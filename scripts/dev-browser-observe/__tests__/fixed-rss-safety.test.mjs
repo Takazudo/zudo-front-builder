@@ -252,3 +252,30 @@ test("a late partial helper failure survives an earlier cadence refusal", async 
     vi.useRealTimers();
   }
 });
+
+test("readiness rejects the first refused cycle before an independent abort listener begins cleanup", async () => {
+  vi.useFakeTimers();
+  const failures = [];
+  let cycles = 0;
+  const monitor = startFixedRssSafety({
+    server: { handle: { native: { pid: 5 } } },
+    fixedExecutables: { root: { path: "/node" } },
+    limits: { rssCeilingKiB: 100, sampleEveryMs: 1000 },
+    append() {},
+    abort: (e) => failures.push(e.message),
+    sample: async () => {
+      if (++cycles === 1) return { processes: [{ pid: 5, disposition: "live" }], summedRssKiB: 20 };
+      throw new Error("readiness cycle refused");
+    },
+  });
+  try {
+    await vi.advanceTimersByTimeAsync(990);
+    const rejection = assert.rejects(monitor.verifyReady(), /readiness cycle refused/);
+    await vi.advanceTimersByTimeAsync(10);
+    await rejection;
+    assert.deepEqual(failures, ["readiness cycle refused"]);
+  } finally {
+    await monitor.stop();
+    vi.useRealTimers();
+  }
+});
