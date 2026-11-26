@@ -3426,29 +3426,34 @@ fn intake_lines(window: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Proves the stylesheet edit reached the rejected tick itself: within
-/// `window` (from just before the writes to the end of the rejection line),
-/// the last intake batch naming the stylesheet must also name
-/// `content_needle`. An in-place write may surface its truncate as an earlier
-/// stylesheet-only batch; the caller's served-CSS check before the repair
-/// proves no such batch published the new marker.
-fn assert_stylesheet_shares_rejected_intake(
-    window: &str,
-    content_needle: &str,
-    phase: &str,
-    session: &DevSession,
-) {
-    let intake = intake_lines(window);
-    let last_stylesheet_batch = intake
-        .iter()
-        .rev()
-        .find(|line| line.contains("styles/global.css:"));
-    assert!(
-        last_stylesheet_batch.is_some_and(|line| line.contains(content_needle)),
-        "[{phase}] the stylesheet edit and {content_needle:?} must share the rejected intake \
-         tick; intake lines before the rejection: {intake:#?}\n{}",
-        session.logs()
-    );
+/// Inspect the intake immediately preceding the discovery error. An earlier
+/// CSS/create batch cannot establish which changes the rejected tick received.
+fn discovery_rejection_matches_intake(window: &str) -> bool {
+    let Some((_, last_tick)) = window.rsplit_once("[zfb-timing] intake paths: ") else {
+        return false;
+    };
+    let Some((paths, processing)) = last_tick.split_once('\n') else {
+        return false;
+    };
+    paths.contains("styles/global.css:")
+        && paths.contains("content/articles/c.md:Created")
+        && processing
+            .lines()
+            .any(|line| line.contains("[zfb-timing] discovery: created=") && line.contains("c.md"))
+}
+
+#[test]
+fn discovery_rejection_requires_the_joint_intake_on_the_rejected_tick() {
+    let joint =
+        "[zfb-timing] intake paths: styles/global.css:Modified, content/articles/c.md:Created\n";
+    let create_only = "[zfb-timing] intake paths: content/articles/c.md:Created\n";
+    let discovery = "[zfb-timing] discovery: created=[\"content/articles/c.md\"]\n[zfb-timing] discovery: err\n";
+    assert!(discovery_rejection_matches_intake(&format!(
+        "{joint}{discovery}"
+    )));
+    assert!(!discovery_rejection_matches_intake(&format!(
+        "{joint}{create_only}{discovery}"
+    )));
 }
 
 /// After the content repair publishes the stylesheet, prove the CSS came from
@@ -3959,28 +3964,17 @@ async fn run_css_edit_in_rejected_discovery_tick(mode: DevMode, boot_lazy: Optio
         )
         .await;
         let tick_log = read_log(&session.stderr_path)[offset..rejected_end].to_string();
-        assert_stylesheet_shares_rejected_intake(
-            &tick_log,
-            "c.md:Created",
-            "rejected discovery tick",
-            &session,
-        );
         assert!(
-            tick_log
-                .lines()
-                .any(|line| line.contains("[zfb-timing] discovery: created=")
-                    && line.contains("c.md")),
-            "the rejected discovery must be the one that saw c.md:\n{tick_log}\n{}",
+            discovery_rejection_matches_intake(&tick_log),
+            "the final intake must carry the stylesheet and c.md creation into discovery:\n{tick_log}\n{}",
             session.logs()
         );
-        assert_css_lacks(
-            &client,
-            &css_url,
-            "css-v2",
-            "after the rejected discovery",
-            &session,
-        )
-        .await;
+        let (status, _, css) = get_status_and_body(&client, &css_url).await;
+        assert!(
+            status == 200 && css.contains("css-v1") && !css.contains("css-v2"),
+            "the rejected discovery must keep serving css-v1 (HTTP {status}, body {css:?})\n{}",
+            session.logs()
+        );
 
         write_in_place(
             &created,
