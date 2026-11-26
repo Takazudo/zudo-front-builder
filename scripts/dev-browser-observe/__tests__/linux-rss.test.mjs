@@ -2,9 +2,15 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { appendFileSync, existsSync, readlinkSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { test } from "vitest";
+import { BrowserTiming } from "../lib/browser-timing.mjs";
+import { OBSERVER_PATH, launchOwnedBrowser } from "../lib/browser.mjs";
+import { ControllerTiming } from "../lib/controller-timing.mjs";
+import { createRendererMemoryStudy } from "../lib/renderer-memory-study.mjs";
+import { sha256File } from "../lib/util.mjs";
 import { linuxBirth } from "../lib/linux-birth.mjs";
 import { sampleRendererMemory } from "../lib/linux-rss-sample.mjs";
 import { ownedProcesses } from "../lib/process-owner.mjs";
@@ -157,6 +163,118 @@ linux(
           return sum + p.rssKiB;
         }, 0),
       );
+    }),
+);
+
+linux(
+  "periodic dispatch accepts and closes a real RSS helper during each pending browser executable read",
+  () =>
+    withServer(async (server) => {
+      const timing = new BrowserTiming();
+      const controller = new ControllerTiming();
+      const executable = readlinkSync(`/proc/${server.handle.native.pid}/exe`);
+      const started = Number(process.hrtime.bigint() / 1_000_000n);
+      let releaseRead;
+      const study = createRendererMemoryStudy({
+        timing: controller,
+        tinyProbe: "B",
+        supervisorStartedMs: started,
+        workDeadline: started + 8_000,
+        sample: (owned) => sampleRendererMemory(owned, executable),
+        inspect: () => ({ failure: null }),
+        append(record) {
+          if (record.type === "renderer-memory-sample" && releaseRead) {
+            // Release on the next turn, after take() records dispatch completion.
+            setImmediate(releaseRead, record.result);
+          }
+        },
+      });
+      const observed = [];
+      const readExecutable = async (path, options) => {
+        const gate = Promise.withResolvers();
+        releaseRead = gate.resolve;
+        const timeout = setTimeout(
+          () => gate.reject(new Error("periodic sample barrier timed out")),
+          3000,
+        );
+        try {
+          const sample = await gate.promise;
+          observed.push({ sample, pendingRead: timing.snapshot().asyncSpans.at(-1) });
+        } finally {
+          clearTimeout(timeout);
+          releaseRead = null;
+        }
+        return readFile(path, options);
+      };
+      try {
+        await study.startSampling(server);
+        const browser = {
+          newContext: async () => ({}),
+          version: () => "controlled",
+          close: async () => {},
+        };
+        await timing.asyncSpan("browser.initialize", null, (parentId) =>
+          launchOwnedBrowser(
+            { diagnosticExecutable: { path: OBSERVER_PATH, sha256: sha256File(OBSERVER_PATH) } },
+            {
+              chromiumImpl: { executablePath: () => fixture, launch: async () => browser },
+              observerFactory: () => ({ install() {} }),
+              timing,
+              parentId,
+              readExecutable,
+              signal: study.signal,
+            },
+          ),
+        );
+        const reads = timing
+          .snapshot()
+          .asyncSpans.filter((row) => row.name === "browser.file.read");
+        assert.deepEqual(
+          reads.map((row) => row.role),
+          ["selected-launched", "library-default"],
+        );
+        assert.equal(observed.length, 2);
+        for (const [i, { sample, pendingRead }] of observed.entries()) {
+          const read = reads[i];
+          assert.equal(pendingRead.id, read.id);
+          assert.equal(pendingRead.outcome, "pending");
+          assert.equal(pendingRead.settledObservedNs, null);
+          assert.equal(read.parentId, 0);
+          const dispatch = controller.report.dispatches.find(
+            (row) => row.helperPid === sample.helper.pid,
+          );
+          assert.equal(dispatch.source, "interval");
+          assert.equal(dispatch.sampleAccepted, true);
+          assert.equal(dispatch.outcome, "started");
+          assert.equal(sample.helper.closed, true);
+          assert.equal(sample.helper.pipesClosed, true);
+          assert.equal(existsSync(`/proc/${sample.helper.pid}`), false);
+          const ordered = [
+            read.returnNs,
+            dispatch.callbackEntryNs,
+            dispatch.samplerEntryNs,
+            dispatch.helperSpawnCallNs,
+            dispatch.helperCloseNs,
+            dispatch.sampleReturnedNs,
+            dispatch.endNs,
+            read.settledObservedNs,
+          ];
+          for (const [index, stamp] of ordered.entries()) {
+            assert.equal(typeof stamp, "string");
+            if (index) assert.ok(BigInt(ordered[index - 1]) <= BigInt(stamp));
+          }
+          const checkTrace = controller.report.stages.find(
+            (row) =>
+              row.name === "checkTrace" &&
+              BigInt(row.startNs) >= BigInt(dispatch.sampleReturnedNs) &&
+              BigInt(row.endNs) <= BigInt(dispatch.endNs),
+          );
+          assert.equal(checkTrace.parentId, null);
+        }
+      } finally {
+        await study.beginShutdown();
+        study.finishSampling();
+      }
     }),
 );
 

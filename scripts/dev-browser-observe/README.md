@@ -938,10 +938,13 @@ excluded from timing and reclamation aggregation.
 Probe B also writes `browser-startup-timing.json`. It records readiness and
 record-persistence boundaries, browser operation spans, and a startup-scoped
 Node event-loop observation. The browser spans distinguish synchronous work
-from the time between a Promise return and observed settlement. That latter
-interval can include unrelated controller work. The selected executable and
-Playwright's library-default executable have separate identity records, with
-file reads and digests timed separately.
+from asynchronous calls through observed Promise settlement. Asynchronous
+spans can include unrelated controller work. The selected executable is
+read and hashed before Chromium launches. Playwright's library-default
+executable is read and hashed after context creation. Each read buffers one
+whole file asynchronously, then computes a separately timed synchronous
+SHA-256 digest. Startup waits for an aborted read to settle before advancing
+cleanup. The independent supervisor still owns the terminal deadline.
 
 The event-loop delay histogram is cumulative for the observation window and
 includes the 20 ms sampling resolution. Its counts and maximum depend on what
