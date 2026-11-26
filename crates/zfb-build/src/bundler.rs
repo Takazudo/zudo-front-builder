@@ -4517,8 +4517,8 @@ fn collect_zudo_react_linked_package(
 }
 
 /// An opt-in process-test barrier at the native dev bundle, after the SSR
-/// content snapshot and before the tick's CSS pass. The test creates the file
-/// to arm the barrier and removes it after the watcher has queued later edits.
+/// content snapshot and before the tick's CSS pass. The matching watcher intake
+/// arms the barrier and the test releases it after queuing later edits.
 fn wait_for_native_bundle_test_gate() -> Result<()> {
     let Some(path) = std::env::var_os("ZFB_DEV_TEST_NATIVE_BUNDLE_GATE") else {
         return Ok(());
