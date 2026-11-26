@@ -1,16 +1,62 @@
 ---
 title: Installation
-description: Install zfb with npm / pnpm or as a standalone binary without Node.
+description: Set up zfb with an AI coding agent or follow the manual installation guide.
 sidebar_position: 2
 ---
 
-`@takazudo/zfb` ships as an npm package that pulls a prebuilt platform binary via npm optional-deps — no Rust toolchain required.
+## Set Up with Your AI Agent
 
-Choose one of two installation paths: use npm / pnpm for a Node-based project, or [install the standalone binary](#standalone-installation) without Node.
+For your first zfb setup, we recommend using your AI coding agent. Describe what you want to build in your own words. Your agent can inspect your workspace, recommend an installation method and project structure, and verify the site locally.
 
-The following prerequisites apply to the npm / pnpm path.
+Paste the prompt below into an agent that can read documentation, work with your project files, and run terminal commands. You can tell it what you already know and say “not sure” about the rest.
 
-The standalone and npm distributions provide the same CLI and commands; choose how to install it, not a different engine.
+```text
+Help me set up a project with zfb (zudo-front-builder).
+
+Read https://zfb.takazudomodular.com/llms.txt and follow the relevant
+installation, getting-started, CLI, and configuration links. Inspect my
+workspace, its instructions, OS, architecture, and available tools.
+
+Use my preferred conversation language. Ask if it is unclear. Infer what
+you can from my files and answers. Ask only what matters now: what I want
+to build, whether to start fresh or use an existing project, its name and
+location, and any needs that affect the tooling. Offer a few plain-language
+options with a recommendation and a short reason when there is a choice.
+Accept answers in my own words, including "not sure." Keep ordinary defaults
+unless my project needs something else.
+
+Reuse a suitable installation or project-local dependency if available.
+Otherwise choose the standalone binary or the npm package (@takazudo/zfb).
+Both provide the same core CLI. Check whether full TypeScript checking,
+plugins, npm dependencies, or deployment tooling such as the Cloudflare
+adapter need Node.js for this project. Use Node.js only when needed.
+
+For a new project, choose a published template that fits, such as basic-blog
+for a package-based blog or node-free for a site with no package installation.
+For an existing project, work with its files and conventions. Check the
+published CLI or initializer version and --help before relying on commands
+or flags. Once the essentials are clear, summarize the choices and proceed.
+
+Preserve existing files and read any generated project instructions.
+Create or configure the site, add a useful first page if appropriate, and
+install only the dependencies the project needs. Ask before destructive
+changes or system-wide dependency installation. Keep setup local unless I
+ask to publish.
+
+Run the appropriate checks and a production build. Check that its output
+directory is safe to regenerate first. Verify that the local dev or preview
+server responds and serves the expected first-page content.
+Stop temporary servers when finished. Fix setup errors and tell me how to
+open the site and continue development.
+
+Report the CLI version, what passed, and what was skipped. A check that
+skips tsc does not verify TypeScript types. If you cannot run commands,
+give me the exact commands and guide me through the results.
+```
+
+To set up zfb yourself, follow the manual instructions below. Both distributions provide the same CLI and core engine.
+
+`@takazudo/zfb` ships as an npm package that pulls a prebuilt platform binary via npm optional-deps. No Rust toolchain is required. You can also [install the standalone binary](#standalone-installation) without Node.js. The prerequisites below apply to the npm / pnpm path.
 
 ## Prerequisites
 

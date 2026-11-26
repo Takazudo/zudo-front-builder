@@ -9,6 +9,10 @@
 
 Almost all everyday frontend development in one CLI: create, develop, check, build and preview. Write TSX, MDX, Markdown or HTML pages; compose content APIs, zudo-react interactivity and zudo-wind CSS. The standalone binary and npm distribution provide the same CLI. Full TypeScript checking and Cloudflare tooling still require Node.js.
 
+## Set up with your AI agent
+
+For your first zfb project, copy the prompt from the **[Installation guide](https://zfb.takazudomodular.com/docs/getting-started/installation/)** into your AI coding agent. Describe what you want to build so your agent can choose a setup and verify the site locally.
+
 ## Install without Node
 
 No Node.js required. zfb ships as a self-contained binary: Rolldown bundles pages, islands, client scripts, plugins and `zfb.config.ts` in process, and CSS generation uses the Rust-native zudo-wind engine. For the full install guide including Homebrew, Windows, and which features still need Node as an escape hatch, see the **[Install without Node](https://zfb.takazudomodular.com/docs/getting-started/installation/#standalone-installation)** docs page.
