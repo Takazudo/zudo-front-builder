@@ -173,7 +173,11 @@ class Sample:
         self.mark("root-check", self.root)
         got = self.stat(row["pid"], directory, self.boot())
         self.observed = got
-        if not birth_matches(self.root, got) or terminal(fd) or got["state"] == "Z":
+        if not birth_matches(self.root, got):
+            raise Invalid("root-lost-or-unverified", got)
+        ended = terminal(fd)
+        self.proof = dict(ended, birth=row) if ended else None
+        if ended or got["state"] == "Z":
             raise Invalid("root-lost-or-unverified", got)
         return got
 
@@ -364,6 +368,7 @@ class Sample:
                             claimed.add(pid)
                         self.handoff(row)
                         if pid in self.proofs and not terminal(fd):
+                            self.proof = self.proofs[pid]
                             raise Invalid("contradictory-terminal-proof", row)
                     except (OSError, ValueError, Invalid) as exc:
                         if isinstance(exc, GONE) and self.stage == "binding":
