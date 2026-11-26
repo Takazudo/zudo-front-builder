@@ -36,7 +36,7 @@ export default defineConfig(
 
 Small, composable APIs remain the foundation. The standalone binary and npm package deliver the same CLI; full TypeScript checking and Cloudflare tooling still need Node.js.
 
-Start with [your first site](/docs/getting-started/your-first-site/), [Build with zfb](/docs/build-with-zfb/), or [Deploy & Embed](/docs/deploy-embed/)`,
+For your first project, start with [AI-assisted setup](/docs/getting-started/installation/). See [Build with zfb](/docs/build-with-zfb/) and [Deploy & Embed](/docs/deploy-embed/) for what comes next.`,
       sitemapHeading: "",
     },
 
@@ -51,7 +51,7 @@ Start with [your first site](/docs/getting-started/your-first-site/), [Build wit
 
 基盤は小さく組み合わせやすい API です。スタンドアロンと npm は同じ CLI の配布方法です。完全な TypeScript チェックと Cloudflare のツールには Node.js が必要です。
 
-[最初のサイト](/ja/docs/getting-started/your-first-site/)、[zfb で作る](/ja/docs/build-with-zfb/)、[デプロイと組み込み](/ja/docs/deploy-embed/)から始めてください。`,
+最初のプロジェクトは [AI エージェントを使ったセットアップ](/ja/docs/getting-started/installation/)から始めましょう。セットアップ後は [zfb で作る](/ja/docs/build-with-zfb/)や[デプロイと組み込み](/ja/docs/deploy-embed/)を参照してください。`,
       },
     },
     cjkFriendly: true,
