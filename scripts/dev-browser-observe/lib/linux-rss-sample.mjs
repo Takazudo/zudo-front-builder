@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { LINUX_BIRTH, sameLinuxBirth } from "./linux-birth.mjs";
+import { LINUX_RSS_SAMPLER_VERSION as samplerVersion } from "./renderer-memory-protocol.mjs";
 
-const samplerVersion = "linux-pidfd-rss.v1";
 const script = fileURLToPath(new URL("./linux-rss-sample.py", import.meta.url));
 const maxOwned = 64;
 const maxLine = 128 * 1024;
