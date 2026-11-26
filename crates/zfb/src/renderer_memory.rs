@@ -15,6 +15,7 @@ use zfb_build::provenance_trace::{self as prov, NonblockingTraceSink, TraceWrite
 use zfb_render::HeapObservation;
 
 mod reclamation;
+mod repeated_apply;
 
 const CAPACITY: usize = 128;
 const ATTEMPT_LIMIT: u64 = 4096;
@@ -67,6 +68,9 @@ pub(crate) enum Phase {
     ReclamationActionComplete,
     ReclamationComplete,
     ReclamationDisarmed,
+    RepeatedApplyStart,
+    RepeatedApplyComplete,
+    RepeatedApplyDisarmed,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -203,6 +207,8 @@ struct Details {
     apply: Option<ApplyRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reclamation: Option<reclamation::Record>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repeated_apply: Option<repeated_apply::Receipt>,
     #[serde(rename = "apply_id", skip_serializing_if = "is_zero")]
     reclamation_apply_id: u64,
 }
@@ -232,6 +238,7 @@ struct Buffer {
     closed: AtomicBool,
     output_failed: AtomicBool,
     reclamation: Option<reclamation::Observation>,
+    repeated_apply: Option<repeated_apply::Observation>,
 }
 
 impl Buffer {
@@ -258,6 +265,7 @@ impl Buffer {
             allocator_calls: AtomicU64::new(0),
             closed: AtomicBool::new(false),
             output_failed: AtomicBool::new(false),
+            repeated_apply: None,
             reclamation: arm.map(reclamation::Observation::new),
         }
     }
@@ -374,19 +382,22 @@ impl Capture {
         let pipe = NonblockingTraceSink::open().ok()?;
         let allocator_mode = std::env::var_os(ALLOCATOR_ENV_VAR);
         let arm = reclamation::Arm::from_mode(allocator_mode.as_deref());
-        let post_apply_enabled =
-            arm.is_some() || allocator_mode.as_deref().is_some_and(|mode| mode == "2");
+        let repeated = repeated_apply::Observation::from_mode(allocator_mode.as_deref());
+        let post_apply_enabled = repeated.is_some()
+            || arm.is_some()
+            || allocator_mode.as_deref().is_some_and(|mode| mode == "2");
         let allocator_enabled =
             post_apply_enabled || allocator_mode.as_deref().is_some_and(|mode| mode == "1");
         let mut startup = clock_anchor(allocator_enabled, post_apply_enabled)?;
         if let Some(arm) = arm {
             reclamation::add_startup(&mut startup, arm);
         }
-        let buffer = Arc::new(Buffer::with_reclamation(
-            allocator_enabled,
-            post_apply_enabled,
-            arm,
-        ));
+        if let Some(repeated) = &repeated {
+            repeated.add_startup(&mut startup);
+        }
+        let mut buffer = Buffer::with_reclamation(allocator_enabled, post_apply_enabled, arm);
+        buffer.repeated_apply = repeated;
+        let buffer = Arc::new(buffer);
         let drain = Arc::new(Mutex::new(Drain {
             pipe,
             startup: Some(startup),
@@ -701,6 +712,9 @@ impl<'a> ApplyScope<'a> {
         } else {
             None
         };
+        if let Some(repeated) = &buffer.repeated_apply {
+            repeated.returned(buffer, context, apply, completion);
+        }
         if let Some(reclamation) = &buffer.reclamation {
             reclamation.returned(buffer, context, apply, completion);
         }
@@ -711,6 +725,17 @@ impl Drop for ApplyScope<'_> {
     fn drop(&mut self) {
         APPLY.set(self.previous.take());
         if !self.returned {
+            if let Some(repeated) = &self.buffer.repeated_apply {
+                repeated.disarm(
+                    self.buffer,
+                    Context {
+                        tick: self.tick,
+                        ..Context::default()
+                    },
+                    self.id,
+                    "unwind",
+                );
+            }
             if let Some(reclamation) = &self.buffer.reclamation {
                 reclamation.disarm(
                     self.buffer,
@@ -1378,5 +1403,14 @@ pub(crate) mod tests {
             buffer.overflow.load(Relaxed),
             ATTEMPT_LIMIT + 1 - CAPACITY as u64
         );
+    }
+}
+
+pub(crate) fn stop_repeated_apply() {
+    if let Some(repeated) = TRACE
+        .get()
+        .and_then(|buffer| buffer.repeated_apply.as_ref())
+    {
+        repeated.stop();
     }
 }

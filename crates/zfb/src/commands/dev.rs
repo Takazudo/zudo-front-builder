@@ -3884,6 +3884,8 @@ async fn run_dev(args: &DevArgs) -> Result<()> {
     // call belt-and-braces keeps the surface symmetrical (start ↔ shutdown).
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        renderer_memory::stop_repeated_apply();
     };
     // Poll readiness alongside HTTP, never before starting the server: early
     // public/SSE requests and graceful shutdown must not wait for cold boot.
@@ -3914,6 +3916,8 @@ async fn run_dev(args: &DevArgs) -> Result<()> {
     };
     let result = tokio::select! {
         res = serve_with_readiness => {
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            renderer_memory::stop_repeated_apply();
             boot_handle.abort();
             // Issue #2103 — abort the `_redirects` watch task alongside
             // `boot_handle` on the graceful-shutdown path, for symmetry;
@@ -3963,6 +3967,8 @@ async fn run_dev(args: &DevArgs) -> Result<()> {
         // render). Aborting it here — not just joining it — matches the
         // serve arm's own teardown discipline.
         res = &mut boot_handle => {
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            renderer_memory::stop_repeated_apply();
             redirects_watch_join.abort();
             liveness_probe_handle.abort();
             let _ = liveness_probe_handle.await;
@@ -3985,6 +3991,8 @@ async fn run_dev(args: &DevArgs) -> Result<()> {
         // shutdown, plugin host shutdown, the final graph save), racing
         // whatever tick it is mid-processing against that teardown.
         res = &mut redirects_watch_join => {
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            renderer_memory::stop_repeated_apply();
             boot_handle.abort();
             liveness_probe_handle.abort();
             let _ = liveness_probe_handle.await;
