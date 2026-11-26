@@ -24,14 +24,15 @@ export async function superviseSession({
   const started = monotonicMs();
   const { profile, resolved } = loadProfile(profilePath);
   const startup = Boolean(profile.startupAcceptance);
-  const diagnostic = Boolean(profile.rendererMemoryStudy || startup);
-  if ((command === "startup-acceptance") !== startup) {
-    stderr("startup-acceptance requires its own profile and command");
+  const tiny = Boolean(profile.tinyAcceptance);
+  const diagnostic = Boolean(profile.rendererMemoryStudy || startup || tiny);
+  if ((command === "startup-acceptance") !== startup || (command === "tiny-acceptance") !== tiny) {
+    stderr("acceptance requires its own profile and command");
     return EXIT.usage;
   }
   if (
     diagnostic &&
-    (command !== (startup ? "startup-acceptance" : "run") ||
+    (command !== (tiny ? "tiny-acceptance" : startup ? "startup-acceptance" : "run") ||
       scenarios !== null ||
       process.platform !== "linux")
   ) {

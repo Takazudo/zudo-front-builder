@@ -738,9 +738,12 @@ export function inspectRendererLifecycle(
     mutations = [],
     requireCompletePostApply = false,
     requireAttributedPostApply = false,
+    onInput,
+    countReclamation = false,
   } = {},
 ) {
   const { lines, droppedBeforeMark } = server.provSince(0);
+  onInput?.(lines);
   const parsed = parseProvLines(lines);
   const events = parsed.events.filter((e) => e.ev === LIFECYCLE);
   const starts = parsed.events.filter((e) => e.ev === START);
@@ -753,6 +756,14 @@ export function inspectRendererLifecycle(
     start: start ?? null,
     complete: false,
     eventCount: events.length,
+    ...(countReclamation && {
+      reclamationActionStarts: events.filter((e) => e.phase === "reclamation_action_start").length,
+      reclamationActionCompletions: events.filter((e) => e.phase === "reclamation_action_complete")
+        .length,
+      performedActionCompletions: events.filter(
+        (e) => e.phase === "reclamation_action_complete" && e.reclamation?.performed === true,
+      ).length,
+    }),
     adoptions: events.filter((e) => e.phase === "adopted").length,
     terminal: last ?? null,
     nativeFailures: [],

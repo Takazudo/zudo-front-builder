@@ -20,7 +20,7 @@
       "type": "string"
     },
     "command": {
-      "enum": ["run", "calibrate", "startup-acceptance"]
+      "enum": ["run", "calibrate", "startup-acceptance", "tiny-acceptance"]
     },
     "createdAt": {
       "type": "string"
@@ -63,6 +63,7 @@
       }
     },
     "diagnostic": { "type": "boolean" },
+    "tinyAcceptance": { "type": "object", "required": ["protocol", "probe", "complete"] },
     "startupAcceptance": { "type": "object", "required": ["protocol", "complete"] },
     "rendererMemoryStudy": { "type": ["object", "null"] },
     "profile": {
