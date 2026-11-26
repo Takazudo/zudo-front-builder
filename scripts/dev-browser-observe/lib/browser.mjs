@@ -1,7 +1,8 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { HARNESS_DIR, hrtimeNs, isoNow, nsToMs, sha256File } from "./util.mjs";
+import { timeBrowserAsync, timeBrowserSync } from "./browser-timing.mjs";
+import { HARNESS_DIR, hrtimeNs, isoNow, nsToMs, sha256, sha256File } from "./util.mjs";
 
 export const OBSERVER_PATH = join(HARNESS_DIR, "observer-init.js");
 
@@ -22,6 +23,36 @@ function playwrightVersion() {
   } catch {
     return "unavailable";
   }
+}
+
+const TIMING_PATH_LIMIT = 4096;
+
+function timingPath(path, name = "path") {
+  if (typeof path !== "string") return { [name]: null };
+  return {
+    [name]: path.slice(0, TIMING_PATH_LIMIT),
+    ...(path.length > TIMING_PATH_LIMIT && { [`${name}Truncated`]: true }),
+  };
+}
+
+function browserFileDigest(path, role, timing, parentId) {
+  if (!timing) return sha256File(path);
+  const details = { role, ...timingPath(path) };
+  const bytes = timing.syncSpan("browser.file.read", parentId, details, (row) => {
+    const value = readFileSync(path);
+    if (row) row.bytes = value.length;
+    return value;
+  });
+  return timing.syncSpan(
+    "browser.file.digest",
+    parentId,
+    { ...details, bytes: bytes.length },
+    (row) => {
+      const digest = sha256(bytes);
+      if (row) row.digest = digest;
+      return digest;
+    },
+  );
 }
 
 // A failed read must not hold the next check behind a pending Playwright navigation.
@@ -63,47 +94,108 @@ export function prepareInterruption(error, path) {
  */
 export async function launchOwnedBrowser(
   opts = {},
-  { chromiumImpl = null, observerFactory = null } = {},
+  { chromiumImpl = null, observerFactory = null, timing = null, parentId = null } = {},
 ) {
   const cfg = { ...DEFAULT_BROWSER, ...opts };
-  const chromium = chromiumImpl ?? (await import("@playwright/test")).chromium;
-  const executablePath = chromium.executablePath();
+  // Keep Playwright import, identity reads and actual launch in their original order.
+  const chromium =
+    chromiumImpl ??
+    (
+      await timeBrowserAsync(
+        timing,
+        "browser.playwright.import",
+        parentId,
+        () => import("@playwright/test"),
+      )
+    ).chromium;
+  const executablePath = timeBrowserSync(
+    timing,
+    "browser.executable.default-path",
+    parentId,
+    { role: "library-default" },
+    (row) => {
+      const path = chromium.executablePath();
+      if (row) Object.assign(row, timingPath(path));
+      return path;
+    },
+  );
   const diagnosticExecutable = cfg.diagnosticExecutable;
-  const actualPath = diagnosticExecutable ? realpathSync(diagnosticExecutable.path) : null;
-  const actualHash = actualPath ? sha256File(actualPath) : null;
+  const actualPath = diagnosticExecutable
+    ? timeBrowserSync(
+        timing,
+        "browser.executable.resolve",
+        parentId,
+        { role: "selected-launched" },
+        (row) => {
+          if (row) Object.assign(row, timingPath(diagnosticExecutable.path));
+          const path = realpathSync(diagnosticExecutable.path);
+          if (row) Object.assign(row, timingPath(path, "resolvedPath"));
+          return path;
+        },
+      )
+    : null;
+  const actualHash = actualPath
+    ? browserFileDigest(actualPath, "selected-launched", timing, parentId)
+    : null;
   if (diagnosticExecutable && actualHash !== diagnosticExecutable.sha256)
     throw new Error(`diagnostic browser executable digest differs: ${actualPath}`);
-  const browser = await chromium.launch({
-    headless: cfg.headless,
-    args: cfg.args,
-    ...(actualPath ? { executablePath: actualPath, timeout: diagnosticExecutable.timeoutMs } : {}),
-  });
+  const browser = await timeBrowserAsync(timing, "browser.chromium.launch", parentId, () =>
+    chromium.launch({
+      headless: cfg.headless,
+      args: cfg.args,
+      ...(actualPath
+        ? { executablePath: actualPath, timeout: diagnosticExecutable.timeoutMs }
+        : {}),
+    }),
+  );
   try {
-    const context = await browser.newContext({
-      viewport: cfg.viewport,
-      deviceScaleFactor: cfg.deviceScaleFactor,
-      serviceWorkers: "block",
-    });
+    const context = await timeBrowserAsync(timing, "browser.context.create", parentId, () =>
+      browser.newContext({
+        viewport: cfg.viewport,
+        deviceScaleFactor: cfg.deviceScaleFactor,
+        serviceWorkers: "block",
+      }),
+    );
     const identity = {
       engine: "chromium",
       executablePath,
-      executableSha256: sha256File(executablePath),
+      executableSha256: browserFileDigest(executablePath, "library-default", timing, parentId),
       ...(actualPath
         ? { launchedExecutablePath: actualPath, launchedExecutableSha256: actualHash }
         : {}),
-      version: browser.version(),
+      version: timeBrowserSync(timing, "browser.version", parentId, {}, () => browser.version()),
       headless: cfg.headless,
       args: cfg.args,
       viewport: cfg.viewport,
       deviceScaleFactor: cfg.deviceScaleFactor,
       profile: "playwright-temporary",
-      playwrightVersion: playwrightVersion(),
-      observerSha256: sha256File(OBSERVER_PATH),
+      playwrightVersion: timeBrowserSync(
+        timing,
+        "browser.playwright.version",
+        parentId,
+        {},
+        playwrightVersion,
+      ),
+      observerSha256: browserFileDigest(OBSERVER_PATH, "observer-source", timing, parentId),
     };
-    const observer = observerFactory
-      ? observerFactory(context)
-      : new ObserverPage(context, readFileSync(OBSERVER_PATH, "utf8"));
-    await observer.install();
+    const observer = timeBrowserSync(timing, "browser.observer.create", parentId, {}, (create) => {
+      if (observerFactory) return observerFactory(context);
+      const source = timeBrowserSync(
+        timing,
+        "browser.observer.source-read",
+        create?.id ?? null,
+        { role: "observer-source", ...timingPath(OBSERVER_PATH) },
+        (row) => {
+          const value = readFileSync(OBSERVER_PATH, "utf8");
+          if (row) row.decodedUtf8Bytes = Buffer.byteLength(value, "utf8");
+          return value;
+        },
+      );
+      return new ObserverPage(context, source);
+    });
+    await timeBrowserAsync(timing, "browser.observer.install", parentId, (id) =>
+      observerFactory || !timing ? observer.install() : observer.install(timing, id),
+    );
     return { browser, context, observer, identity };
   } catch (error) {
     // Preserve the original setup error. Return an unresolved browser to the
@@ -111,7 +203,7 @@ export async function launchOwnedBrowser(
     let timer;
     try {
       await Promise.race([
-        browser.close(),
+        timeBrowserAsync(timing, "browser.cleanup.close", parentId, () => browser.close()),
         new Promise((_, reject) => {
           timer = setTimeout(() => reject(new Error("browser close timed out")), 2000);
         }),
@@ -262,35 +354,47 @@ export class ObserverPage {
     this.onStray = () => {};
   }
 
-  async install() {
-    await this.context.exposeBinding("__dboNotify", (_source, payload) =>
-      this.onNotify(payload, this.clock()),
+  async install(timing, parentId) {
+    await timeBrowserAsync(timing, "browser.observer.binding.notify", parentId, () =>
+      this.context.exposeBinding("__dboNotify", (_source, payload) =>
+        this.onNotify(payload, this.clock()),
+      ),
     );
-    await this.context.exposeBinding("__dboPing", (_source, payload) =>
-      this.onPing(payload, this.clock()),
+    await timeBrowserAsync(timing, "browser.observer.binding.ping", parentId, () =>
+      this.context.exposeBinding("__dboPing", (_source, payload) =>
+        this.onPing(payload, this.clock()),
+      ),
     );
-    await this.context.exposeBinding("__dboDocInit", (_source, payload) =>
-      this.onDocInit(payload, this.clock()),
+    await timeBrowserAsync(timing, "browser.observer.binding.doc-init", parentId, () =>
+      this.context.exposeBinding("__dboDocInit", (_source, payload) =>
+        this.onDocInit(payload, this.clock()),
+      ),
     );
-    await this.context.addInitScript({ content: this.observerSource });
-    this.page = await this.context.newPage();
-    this.page.on("framenavigated", (frame) => {
-      if (frame === this.page.mainFrame())
-        this.navigations.push({ at: isoNow(), ns: String(this.clock()), url: frame.url() });
-    });
-    this.page.on("request", (req) => {
-      this.requests.push({
-        at: isoNow(),
-        ns: String(this.clock()),
-        url: req.url(),
-        resourceType: req.resourceType(),
-        navigation: req.isNavigationRequest(),
+    await timeBrowserAsync(timing, "browser.observer.init-script", parentId, () =>
+      this.context.addInitScript({ content: this.observerSource }),
+    );
+    this.page = await timeBrowserAsync(timing, "browser.observer.page.create", parentId, () =>
+      this.context.newPage(),
+    );
+    timeBrowserSync(timing, "browser.observer.listeners", parentId, {}, () => {
+      this.page.on("framenavigated", (frame) => {
+        if (frame === this.page.mainFrame())
+          this.navigations.push({ at: isoNow(), ns: String(this.clock()), url: frame.url() });
       });
-    });
-    this.page.on("websocket", (ws) => {
-      const url = ws.url();
-      if (!isLivereloadSocket(url) && !declaredSocketFor(url, this.updateSockets)) return;
-      ws.on("framereceived", ({ payload }) => this.recordSocketFrame(url, payload));
+      this.page.on("request", (req) => {
+        this.requests.push({
+          at: isoNow(),
+          ns: String(this.clock()),
+          url: req.url(),
+          resourceType: req.resourceType(),
+          navigation: req.isNavigationRequest(),
+        });
+      });
+      this.page.on("websocket", (ws) => {
+        const url = ws.url();
+        if (!isLivereloadSocket(url) && !declaredSocketFor(url, this.updateSockets)) return;
+        ws.on("framereceived", ({ payload }) => this.recordSocketFrame(url, payload));
+      });
     });
   }
 
