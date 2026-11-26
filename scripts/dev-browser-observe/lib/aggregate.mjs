@@ -401,6 +401,9 @@ export function readSession({
   // Do not read or pool observer timings from a renderer-memory run, even if its
   // declared profile and build are inconsistent or the session itself failed.
   if (
+    receipt?.profile?.startupAcceptance ||
+    receipt?.startupAcceptance ||
+    receipt?.command === "startup-acceptance" ||
     receipt?.profile?.rendererMemoryStudy ||
     receipt?.rendererMemoryStudy ||
     receipt?.buildReceipt?.diagnostic === true ||
@@ -425,7 +428,12 @@ export function readSession({
   let problems;
   try {
     records = readJsonl(join(dir, "records.jsonl"));
-    if (records.find((r) => r.type === "run-start")?.rendererMemoryStudy)
+    const start = records.find((r) => r.type === "run-start");
+    if (
+      start?.rendererMemoryStudy ||
+      start?.startupAcceptance ||
+      start?.command === "startup-acceptance"
+    )
       return { ...s, status: "incomplete", facets: null, blocks: [], timingExcluded: true };
     problems = terminalEvidence(dir, receipt, summary, records, seriesStatus, seriesExitCode);
   } catch (error) {

@@ -442,6 +442,34 @@ describe("v2 mapping boundaries", () => {
   });
 });
 
+describe("sampling and terminal ownership", () => {
+  it("waits for a read started before shutdown and retains its failure and ownership evidence", async () => {
+    const pending = Promise.withResolvers();
+    const records = [];
+    const study = createRendererMemoryStudy({
+      append: (r) => records.push(r),
+      workDeadline: 240000,
+      sample: () => pending.promise,
+      inspect: () => ({ start: {}, complete: true }),
+      clock: () => 0n,
+    });
+    const first = study.startSampling(fakeServer());
+    let drained = false;
+    const drain = study.beginShutdown().then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    const details = { helper: { closed: true, pipesClosed: true }, discoveries: [{ pid: 32 }] };
+    pending.reject(Object.assign(new Error("unbound child"), { details }));
+    await Promise.all([first, drain]);
+    expect(drained).toBe(true);
+    expect(study.samplerFailure).toMatchObject({ details, phase: "startup" });
+    expect(records.filter((r) => r.type === "renderer-memory-failure")).toHaveLength(1);
+    study.finishSampling();
+  });
+});
+
 describe("post-apply workload admission", () => {
   it("matches each edit and the verified restoration before the existing live checks", async () => {
     const { records, sleep, report } = await simulate({ studyProtocol: postApplyProtocol });
