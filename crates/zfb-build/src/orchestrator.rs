@@ -702,12 +702,15 @@ fn pre_tick_refresh_applies(policy: &GranularityPolicy, changes: &[(PathBuf, Cha
 /// pins that the drain loop actually calls this BEFORE the tick dispatch —
 /// a helper nobody awaits at the right seam would read as coverage while
 /// guarding nothing (the #1058/#1581 dead-guard lesson).
-async fn maybe_pre_tick_refresh(config: &OrchestratorConfig, changes: &[(PathBuf, ChangeKind)]) {
+async fn maybe_pre_tick_refresh(
+    config: &OrchestratorConfig,
+    changes: &[(PathBuf, ChangeKind)],
+) -> bool {
     let Some(hook) = config.pre_tick_refresh.as_ref() else {
-        return;
+        return true;
     };
     if !pre_tick_refresh_applies(&config.policy, changes) {
-        return;
+        return true;
     }
     let paths: Vec<PathBuf> = changes.iter().map(|(path, _)| path.clone()).collect();
     let refresh_result = hook(paths).await;
@@ -722,7 +725,9 @@ async fn maybe_pre_tick_refresh(config: &OrchestratorConfig, changes: &[(PathBuf
             error = %err,
             "pre-tick plugin refresh failed; ticking on last-good sources"
         );
+        return false;
     }
+    true
 }
 
 /// Opt-in watch-intake suppression predicate (issue #2345).
@@ -1746,7 +1751,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         ctx: &BuildContext,
         discover: Option<&DiscoveryHook>,
     ) -> Result<Option<BuildOutcome>> {
-        self.tick_with_kinds_traced(changes, ctx, discover, prov::enabled(), None)
+        let result = self.tick_with_kinds_traced(changes, ctx, discover, prov::enabled(), None);
+        #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+        if result.is_err() {
+            self.pipeline.rejected_tick(prov::renderer_tick());
+        }
+        result
     }
 
     /// [`Self::tick_with_kinds`] with the provenance `select` verdicts
@@ -2722,7 +2732,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // tick proceeds on the store's last-good memo — a refresh
             // failure must never kill the dev loop. See
             // [`PreTickRefreshHook`] / [`maybe_pre_tick_refresh`].
-            maybe_pre_tick_refresh(&this.config, &changes).await;
+            let _refresh_ok = maybe_pre_tick_refresh(&this.config, &changes).await;
+            #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+            if !_refresh_ok {
+                this.pipeline.rejected_tick(prov_tick);
+            }
 
             let tick = tokio::task::spawn_blocking(move || {
                 // Fault injection (issue #2100): fires INSIDE this

@@ -30,6 +30,69 @@ pub(super) struct Observation {
     previous: Mutex<Option<(u64, Context)>>,
 }
 
+// Compare the live process lookup with symbols in the already-loaded GNU
+// libc. RTLD_NOLOAD prohibits bringing a different provider into the process.
+#[cfg(target_env = "gnu")]
+fn supported_provider() -> bool {
+    use std::ffi::{CStr, OsStr};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    // The admitted target is the original x86-64 WSL distribution. Require
+    // its actual system libc device/inode; a matching SONAME alone is weak.
+    if ["LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH"].iter().any(|key| std::env::var_os(key).is_some())
+        || ["/etc/ld.so.preload", "/etc/ld.so.audit"].iter().any(|path| !matches!(std::fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)) {
+        return false;
+    }
+    let Ok(system) = std::fs::metadata("/usr/lib/x86_64-linux-gnu/libc.so.6") else {
+        return false;
+    };
+    // SAFETY: each lookup uses a NUL-terminated static symbol name. A
+    // successful dladdr supplies its live object's NUL-terminated name for
+    // the lifetime of this retained handle. Never call through a lookup.
+    unsafe {
+        let handle = libc::dlopen(c"libc.so.6".as_ptr(), libc::RTLD_NOLOAD | libc::RTLD_NOW);
+        if handle.is_null() {
+            return false;
+        }
+        let ok = [
+            c"malloc",
+            c"calloc",
+            c"realloc",
+            c"free",
+            c"aligned_alloc",
+            c"posix_memalign",
+            c"mallinfo2",
+            c"malloc_trim",
+        ]
+        .into_iter()
+        .all(|symbol| {
+            let address = libc::dlsym(libc::RTLD_DEFAULT, symbol.as_ptr());
+            let native = libc::dlsym(handle, symbol.as_ptr());
+            if address.is_null() || address != native {
+                return false;
+            }
+            let mut info = std::mem::MaybeUninit::<libc::Dl_info>::uninit();
+            if libc::dladdr(address, info.as_mut_ptr()) == 0 {
+                return false;
+            }
+            let file = info.assume_init().dli_fname;
+            if file.is_null() {
+                return false;
+            }
+            let path = OsStr::from_bytes(CStr::from_ptr(file).to_bytes());
+            std::fs::metadata(path)
+                .is_ok_and(|file| file.dev() == system.dev() && file.ino() == system.ino())
+        });
+        libc::dlclose(handle);
+        ok
+    }
+}
+
+#[cfg(not(target_env = "gnu"))]
+fn supported_provider() -> bool {
+    false
+}
+
 impl Observation {
     pub(super) fn from_mode(mode: Option<&OsStr>) -> Option<Self> {
         let arm = match mode?.to_str()? {
@@ -42,6 +105,9 @@ impl Observation {
             "13" => 13,
             _ => return None,
         };
+        if REPEATED_SHUTDOWN.load(SeqCst) || !supported_provider() {
+            return None;
+        }
         Some(Self::new(arm, cap))
     }
 
@@ -179,7 +245,14 @@ impl Observation {
                 && buffer.contention.load(Relaxed) == 0
                 && buffer.overflow.load(Relaxed) == 0
         };
-        if !healthy() || buffer.attempted.load(Relaxed) > ATTEMPT_LIMIT - 2 {
+        // Two action rows plus one potential disarm must fit. Other producers
+        // can still race after this check, so loss after admission remains a
+        // failed observation and permanently stops future actions.
+        let room = buffer
+            .queue
+            .try_lock()
+            .is_ok_and(|queue| queue.len() <= CAPACITY - 3);
+        if !healthy() || !room || buffer.attempted.load(Relaxed) > ATTEMPT_LIMIT - 3 {
             self.disarm(buffer, context, id, "evidence");
             return;
         }
@@ -200,7 +273,7 @@ impl Observation {
         }
         // This atomic read is the acceptance boundary with concurrent shutdown.
         // An already accepted action may complete after stop().
-        if self.gate.load(SeqCst) != BUSY {
+        if self.gate.load(SeqCst) != BUSY || REPEATED_SHUTDOWN.load(SeqCst) {
             return;
         }
         if self.arm == reclamation::Arm::Trim {

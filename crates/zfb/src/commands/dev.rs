@@ -4566,6 +4566,10 @@ impl DevPipeline {
 
 #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
 impl zfb_build::AssetPipeline for DevPipeline {
+    fn rejected_tick(&self, tick: Option<u64>) {
+        renderer_memory::reject_repeated_tick(tick);
+    }
+
     fn apply(&self, plan: &zfb_build::RebuildPlan, ctx: &BuildContext) -> Result<BuildOutcome> {
         let scope = renderer_memory::ApplyScope::begin(|| {
             let has_pages = match &plan.pages {

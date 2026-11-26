@@ -760,6 +760,10 @@ pub trait AssetPipeline: Send + Sync {
     /// expected behaviour.
     fn apply(&self, plan: &RebuildPlan, ctx: &BuildContext) -> Result<BuildOutcome>;
 
+    /// Reject a diagnostic sequence even when the tick failed before apply.
+    #[cfg(all(feature = "renderer-memory-observe", target_os = "linux"))]
+    fn rejected_tick(&self, _tick: Option<u64>) {}
+
     /// Keep the CSS work of a tick that failed before reaching [`Self::apply`]
     /// for the next applied tick. Pipelines without a CSS pass ignore it.
     fn defer_css(&self, _rerun_css: bool, _changes: crate::CssChangeSet) {}

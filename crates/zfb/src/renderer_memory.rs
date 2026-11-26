@@ -25,6 +25,8 @@ const ALLOCATOR_METRIC_DOMAIN: &str = "gnu_mallinfo2.v1";
 const DRAIN_POLL: Duration = Duration::from_millis(25);
 const TERMINAL_BUDGET: Duration = Duration::from_millis(250);
 
+static REPEATED_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
 static TRACE: OnceLock<Arc<Buffer>> = OnceLock::new();
 
 fn is_zero(value: &u64) -> bool {
@@ -1407,10 +1409,27 @@ pub(crate) mod tests {
 }
 
 pub(crate) fn stop_repeated_apply() {
+    REPEATED_SHUTDOWN.store(true, std::sync::atomic::Ordering::SeqCst);
     if let Some(repeated) = TRACE
         .get()
         .and_then(|buffer| buffer.repeated_apply.as_ref())
     {
         repeated.stop();
+    }
+}
+
+pub(crate) fn reject_repeated_tick(tick: Option<u64>) {
+    if let Some(buffer) = TRACE.get() {
+        if let Some(repeated) = &buffer.repeated_apply {
+            repeated.disarm(
+                buffer,
+                Context {
+                    tick,
+                    ..Context::default()
+                },
+                0,
+                "tick_error",
+            );
+        }
     }
 }
