@@ -9,11 +9,12 @@ import {
 } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
+import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { OBSERVER_PATH } from "../lib/browser.mjs";
+import { launchOwnedBrowser, OBSERVER_PATH } from "../lib/browser.mjs";
 import {
   fixtureTreeHash,
   currentPins,
@@ -1054,36 +1055,40 @@ describe("execute (identity gate)", () => {
     },
   );
 
+  function writeTinyProfile(s, probe) {
+    const profile = acceptanceProfile(s);
+    profile.tinyAcceptance = { protocol: TINY_ACCEPTANCE, probe };
+    if (probe === "B") {
+      Object.assign(profile.tinyAcceptance, {
+        browserExecutable: OBSERVER_PATH,
+        browserExecutableSha256: sha256File(OBSERVER_PATH),
+      });
+      profile.scenarios = [
+        {
+          id: "article-a-body",
+          set: "workload",
+          warmOrder: "none",
+          ops: [
+            {
+              id: "body-a",
+              op: "edit-body",
+              article: "a",
+              writeMethod: "in-place",
+              repeat: { warmups: 0, measured: 12 },
+            },
+          ],
+        },
+      ];
+    }
+    writeFileSync(s.profilePath, JSON.stringify(profile));
+  }
+
   it.runIf(process.platform === "linux").each(["A", "B", "stale"])(
     "executes tiny probe through normal controller with a controlled observer (%s)",
     async (mode) => {
       const probe = mode === "A" ? "A" : "B";
       const s = setup();
-      const profile = acceptanceProfile(s);
-      profile.tinyAcceptance = { protocol: TINY_ACCEPTANCE, probe };
-      if (probe === "B") {
-        Object.assign(profile.tinyAcceptance, {
-          browserExecutable: "/fixture/chromium",
-          browserExecutableSha256: "a".repeat(64),
-        });
-        profile.scenarios = [
-          {
-            id: "article-a-body",
-            set: "workload",
-            warmOrder: "none",
-            ops: [
-              {
-                id: "body-a",
-                op: "edit-body",
-                article: "a",
-                writeMethod: "in-place",
-                repeat: { warmups: 0, measured: 12 },
-              },
-            ],
-          },
-        ];
-      }
-      writeFileSync(s.profilePath, JSON.stringify(profile));
+      writeTinyProfile(s, probe);
       const original = "Body marker body-a-v0 for article a.";
       const birth = { pid: 258, pgid: 258, bootId: "boot", startTicks: "99" };
       let timeOffset = 0n;
@@ -1212,6 +1217,126 @@ describe("execute (identity gate)", () => {
         if (mode === "stale") expect(receipt.idleMs).toBeNull();
       }
       expect(existsSync(join(s.root, "active-session.json"))).toBe(false);
+    },
+  );
+
+  it.runIf(process.platform === "linux").each(["capped", "reduced", "expired", "sampler-abort"])(
+    "honors the current browser launch allowance and session ownership (%s)",
+    async (mode) => {
+      const s = setup();
+      writeTinyProfile(s, "B");
+      const admission = join(s.root, "active-session.json");
+      const started = Number(process.hrtime.bigint() / 1_000_000n);
+      let elapsedMs = 0;
+      const clock = () => BigInt(started + elapsedMs) * 1_000_000n;
+      const birth = { pid: 258, pgid: 258, bootId: "boot", startTicks: "99" };
+      const calls = [];
+      const library = join(HARNESS_DIR, "cli.mjs");
+      let held = false;
+      const browser = {
+        newContext: async () => ({}),
+        async close() {
+          calls.push("close");
+          throw new Error("first close failed");
+        },
+      };
+      const code = await execute({
+        profilePath: s.profilePath,
+        label: "startup",
+        command: "tiny-acceptance",
+        supervisorId: "fixture",
+        supervisorStartedMs: started,
+        workDeadline: started + 120_000,
+        supervisorDeadlineMs: started + 180_000,
+        signal: new AbortController().signal,
+        onFinalizing: () => calls.push("finalizing"),
+        stderr: () => {},
+        hooks: {
+          rendererMemoryClock: clock,
+          startDevServer: () => ({
+            ready: Promise.resolve({ baseUrl: "http://127.0.0.1:18765", readyNs: clock() }),
+            startedNs: clock(),
+            handle: { native: birth, exit: null },
+            isAlive: () => ({ alive: true }),
+            closeLog: () => ({ pipes: "closed", errors: [] }),
+          }),
+          rendererMemoryEvidence: {
+            sampleRendererMemory() {
+              if (held) throw new Error("controlled sampler abort");
+              return {
+                hrtimeNs: String(clock()),
+                helper: {
+                  pid: 42,
+                  spawnHrtimeNs: String(clock()),
+                  closed: true,
+                  pipesClosed: true,
+                },
+                processes: [{ ...birth, rssKiB: 44, disposition: "live" }],
+                samplerVersion: "linux-pidfd-rss.v1",
+                summedRssKiB: 44,
+              };
+            },
+            inspectRendererLifecycle: () => ({ start: true, failure: null, complete: false }),
+          },
+          launchOwnedBrowser: (opts, runtime) =>
+            launchOwnedBrowser(opts, {
+              ...runtime,
+              chromiumImpl: {
+                executablePath: () => library,
+                async launch({ timeout }) {
+                  calls.push(["launch", timeout]);
+                  if (mode !== "sampler-abort") throw new Error("controlled launch stop");
+                  return browser;
+                },
+              },
+              async readExecutable(path, { signal }) {
+                expect(readJson(admission).browserExecutableRead).toMatchObject({
+                  path,
+                  state: "pending",
+                });
+                if (path === OBSERVER_PATH) {
+                  elapsedMs = mode === "reduced" ? 117_000 : mode === "expired" ? 120_001 : 0;
+                } else {
+                  held = true;
+                  // The sampler owns this cancellation. Hold through the abort,
+                  // then make a successful late settlement visible to startup.
+                  await once(signal, "abort", { signal: AbortSignal.timeout(3000) });
+                  await new Promise((resolve) => setImmediate(resolve));
+                  expect(readJson(admission).browserExecutableRead).toMatchObject({
+                    role: "library-default",
+                    state: "pending",
+                  });
+                  expect(calls).toEqual([["launch", 30_000]]);
+                  return readFile(path);
+                }
+                return readFile(path, { signal });
+              },
+            }),
+          stopOwned: () => ({ absent: true }),
+          closeOwnedBrowser(handle) {
+            expect(handle.browser).toBe(browser);
+            calls.push("retry-close");
+            return [];
+          },
+        },
+      });
+      const records = readJsonl(join(s.outDir, "startup", "records.jsonl"));
+      expect(code).toBe(EXIT.controllerError);
+      expect(records.some((row) => row.type === "browser-ready")).toBe(false);
+      expect(existsSync(admission)).toBe(false);
+      if (mode === "sampler-abort") {
+        expect(calls).toEqual([["launch", 30_000], "close", "finalizing", "retry-close"]);
+        expect(records.find((row) => row.type === "controller-error").error).toMatch(
+          /renderer-memory-sample-invalid/,
+        );
+      } else if (mode === "expired") {
+        expect(calls).toEqual(["finalizing"]);
+        expect(records.find((row) => row.type === "controller-error").error).toMatch(
+          /no time remains/,
+        );
+      } else {
+        expect(calls).toEqual([["launch", mode === "reduced" ? 3000 : 30_000], "finalizing"]);
+      }
     },
   );
 

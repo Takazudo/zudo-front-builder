@@ -57,8 +57,9 @@ export class BrowserTiming {
     }
   }
 
-  asyncSpan(name, parentId, operation) {
+  asyncSpan(name, parentId, operation, details = {}) {
     const row = this.record(this.asyncSpans, {
+      ...details,
       name,
       parentId,
       enterNs: String(this.clock()),
@@ -71,7 +72,7 @@ export class BrowserTiming {
     if (!row) return operation(null);
     let result;
     try {
-      result = operation(row.id);
+      result = operation(row.id, row);
     } catch (error) {
       row.outcome = "threw";
       row.throwObservedNs = String(this.clock());
@@ -119,7 +120,7 @@ export class BrowserTiming {
     const unobserved = this.asyncSpans.filter(
       (row) => row.outcome === "settlement-unobserved",
     ).length;
-    const truncated = this.syncSpans.filter(
+    const truncated = [...this.syncSpans, ...this.asyncSpans].filter(
       (row) => row.pathTruncated || row.resolvedPathTruncated,
     ).length;
     return {
@@ -143,6 +144,6 @@ export function timeBrowserSync(timing, name, parentId, details, operation) {
   return timing ? timing.syncSpan(name, parentId, details, operation) : operation(null);
 }
 
-export function timeBrowserAsync(timing, name, parentId, operation) {
-  return timing ? timing.asyncSpan(name, parentId, operation) : operation(null);
+export function timeBrowserAsync(timing, name, parentId, operation, details) {
+  return timing ? timing.asyncSpan(name, parentId, operation, details) : operation(null);
 }
