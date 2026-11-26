@@ -313,7 +313,10 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
 async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
   const { profile, resolved } = loaded;
   const fixedAbort = profile.fixedRssSafety ? new AbortController() : null;
-  if (fixedAbort) loaded.signal = AbortSignal.any([loaded.signal, fixedAbort.signal]);
+  if (fixedAbort)
+    loaded.signal = loaded.signal
+      ? AbortSignal.any([loaded.signal, fixedAbort.signal])
+      : fixedAbort.signal;
   let fixedSafety = null;
   let stoppingServer;
   const stopCancellation = new AbortController();
@@ -360,6 +363,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     scenarioSelection: loaded.scenarioSelection ?? null,
     schedule,
     resourceStudy: command === "run" ? (profile.resourceStudy ?? null) : null,
+    ...(fixedAbort && { fixedRssSafety: profile.fixedRssSafety }),
     ...(memoryProfile ? { diagnostic: true, rendererMemoryStudy: memoryProfile } : {}),
     ...(acceptance && { diagnostic: true, [acceptanceKey]: acceptance }),
   });
@@ -385,6 +389,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     productSha: profile.productSha ?? null,
     productDirtyIdentity: profile.productDirtyIdentity ?? null,
     diagnostic: profile.diagnostic === true,
+    ...(fixedAbort && { fixedRssSafety: profile.fixedRssSafety }),
     ...(timing && { controllerTiming: "controller-timing.json" }),
     ...(acceptance && {
       [acceptanceKey]: {

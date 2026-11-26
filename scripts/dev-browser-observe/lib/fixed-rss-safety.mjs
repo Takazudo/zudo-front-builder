@@ -54,7 +54,8 @@ export function startFixedRssSafety({
   let failure = null;
   let nativeBirth = null;
   let unresolvedHelper = null;
-  let nativeRequired = false;
+  let readyCheck = null;
+  let stopped = false;
   let measuredCycles = 0;
   let peakKiB = null;
   const fail = (error) => {
@@ -64,6 +65,7 @@ export function startFixedRssSafety({
     if (Number.isSafeInteger(partial) && partial >= 0) peakKiB = Math.max(peakKiB ?? 0, partial);
     if (failure) return;
     failure = { error: String(error?.message ?? error), details: error?.details ?? null };
+    readyCheck?.resolve();
     abort(new Error(failure.error));
     try {
       append({ type: "fixed-rss-failure", failure });
@@ -72,11 +74,14 @@ export function startFixedRssSafety({
     }
   };
   const take = () => {
-    if (failure) return;
+    if (failure || stopped) return;
     if (pending) {
       fail(new Error("fixed safety sampler still occupied at next periodic dispatch"));
       return;
     }
+    // A startup sample already in flight when the readiness line arrives can
+    // legitimately predate the native child. Qualify a new periodic sample.
+    const readyAtEntry = readyCheck;
     const startedNs = String(process.hrtime.bigint());
     pending = sample(server, fixedExecutables.root.path, { fixedExecutables })
       .then((result) => {
@@ -87,7 +92,7 @@ export function startFixedRssSafety({
         const children = result.processes.filter(
           (row) => row.disposition === "live" && row.pid !== server.handle.native.pid,
         );
-        if (children.length > 1 || ((nativeRequired || nativeBirth) && children.length !== 1))
+        if (children.length > 1 || ((readyAtEntry || nativeBirth) && children.length !== 1))
           throw new Error("fixed safety native child absent or ambiguous");
         if (children.length) {
           const child = children[0];
@@ -101,7 +106,11 @@ export function startFixedRssSafety({
           result.summedRssKiB <= 0 ||
           result.summedRssKiB > limits.rssCeilingKiB
         )
-          throw new Error(`fixed safety RSS invalid or over ceiling: ${result.summedRssKiB}`);
+          throw Object.assign(
+            new Error(`fixed safety RSS invalid or over ceiling: ${result.summedRssKiB}`),
+            { details: result },
+          );
+        readyAtEntry?.resolve();
       })
       .catch(fail)
       .finally(() => {
@@ -125,13 +134,16 @@ export function startFixedRssSafety({
       return unresolvedHelper;
     },
     async verifyReady() {
-      if (pending) await pending;
       if (failure) throw new Error(failure.error);
-      nativeRequired = true;
-      await take();
+      if (stopped) throw new Error("fixed safety sampling stopped before readiness");
+      readyCheck ??= Promise.withResolvers();
+      await readyCheck.promise;
       if (failure) throw new Error(failure.error);
+      if (stopped) throw new Error("fixed safety sampling stopped before readiness");
     },
     async stop() {
+      stopped = true;
+      readyCheck?.resolve();
       clearInterval(timer);
       await pending;
       return failure;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { linuxBirth } from "../lib/linux-birth.mjs";
 import { sampleRendererMemory } from "../lib/linux-rss-sample.mjs";
 import { startFixedRssSafety } from "../lib/fixed-rss-safety.mjs";
@@ -158,4 +158,59 @@ test("failed fixed sample preserves conservative partial RSS and unresolved help
   assert.equal((await safety.stop()).details, partial);
   assert.equal(safety.unresolvedHelper, partial.helper);
   assert.equal(records[0].failure.details.summedRssKiB, 4718592);
+});
+
+test("a readiness observation coalesces with the periodic clock rather than colliding at its boundary", async () => {
+  vi.useFakeTimers();
+  const root = { pid: 5 },
+    child = { pid: 6, startTicks: "6", bootId: "boot", disposition: "live" };
+  const starts = [],
+    failures = [];
+  let ready = false;
+  const monitor = startFixedRssSafety({
+    server: { handle: { native: root } },
+    fixedExecutables: { root: { path: "/node" } },
+    limits: { rssCeilingKiB: 100, sampleEveryMs: 1000 },
+    append() {},
+    abort: (e) => failures.push(e),
+    sample: async () => {
+      starts.push(Date.now());
+      const nativeVisible = ready;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return {
+        processes: [{ pid: 5, disposition: "live" }, ...(nativeVisible ? [child] : [])],
+        summedRssKiB: 10,
+      };
+    },
+  });
+  try {
+    await vi.advanceTimersByTimeAsync(990);
+    ready = true;
+    const verified = monitor.verifyReady();
+    await vi.advanceTimersByTimeAsync(60);
+    await verified;
+    assert.equal(starts.length, 2);
+    assert.equal(starts[1] - starts[0], 1000);
+    assert.deepEqual(failures, []);
+  } finally {
+    await monitor.stop();
+    vi.useRealTimers();
+  }
+});
+
+test("an evidence write failure aborts even when its own failure record cannot be written", async () => {
+  const failures = [];
+  const monitor = startFixedRssSafety({
+    server: {},
+    fixedExecutables: { root: { path: "/node" } },
+    limits: { rssCeilingKiB: 100, sampleEveryMs: 1000 },
+    append() {
+      throw new Error("disk write refused");
+    },
+    abort: (e) => failures.push(e.message),
+    sample: async () => ({ summedRssKiB: 24, processes: [] }),
+  });
+  await assert.rejects(monitor.verifyReady(), /disk write refused/);
+  assert.match((await monitor.stop()).receiptError, /disk write refused/);
+  assert.deepEqual(failures, ["disk write refused"]);
 });

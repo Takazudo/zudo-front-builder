@@ -158,6 +158,8 @@ export function loadSeriesPlan(planPath) {
   const proto = PROTOCOLS[plan.protocol];
   for (const [v, x] of Object.entries(out.variants)) {
     const prof = x.selected;
+    if (prof.fixedRssSafety)
+      errors.push(`$.variants.${v}: fixed RSS correctness requires a standalone run`);
     if (
       prof.rendererMemoryStudy ||
       prof.tinyAcceptance ||
