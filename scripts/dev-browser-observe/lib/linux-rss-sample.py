@@ -107,7 +107,10 @@ class Sample:
         self.known = {p["pid"]: p for p in request["known"]}
         self.proofs = {p["birth"]["pid"]: p for p in request["terminalProofs"]}
         self.exe = request["executable"]
+        self.fixed_native = None
         self.fixed_child = request.get("fixedChildExecutable")
+        self.fixed_dev_args = request.get("fixedDevArgs")
+        self.fixed_workers = self.fixed_dev_args is not None
         self.emit = emit
         self.timing = timing
         self.bytes = self.reads = 0
@@ -188,10 +191,14 @@ class Sample:
             raise Invalid("root-lost-or-unverified", got)
         return got
 
+    @staticmethod
+    def argv_bytes(argv):
+        return b"".join(os.fsencode(arg) + b"\0" for arg in argv)
+
     def exe_identity(self, directory, row=None):
         expected = self.exe
         if self.fixed_child and row["pid"] != self.root["pid"]:
-            if row["ppid"] != self.root["pid"]:
+            if not self.fixed_workers and row["ppid"] != self.root["pid"]:
                 raise Invalid("unexpected-fixed-process-role", row)
             expected = self.fixed_child
         path = os.readlink("exe", dir_fd=directory)
@@ -201,6 +208,24 @@ class Sample:
         exe = dict(path=path, device=str(info.st_dev), inode=str(info.st_ino))
         if exe != expected:
             raise Invalid("unexpected-executable", exe)
+        if self.fixed_workers and row["pid"] != self.root["pid"]:
+            if row["ppid"] == self.root["pid"]:
+                if row["pgid"] != self.root["pgid"]:
+                    raise Invalid("unexpected-fixed-native-group", row)
+                if self.fixed_native and not birth_matches(self.fixed_native, row):
+                    raise Invalid("ambiguous-fixed-native-child", row)
+                expected_argv = [path, *self.fixed_dev_args]
+                if self.read("cmdline", MAX_STAT, directory) != self.argv_bytes(expected_argv):
+                    raise Invalid("unexpected-fixed-dev-argv", row)
+                self.fixed_native = row
+            else:
+                if (self.fixed_native is None or row["ppid"] != self.fixed_native["pid"]
+                        or row["pgid"] != row["pid"]):
+                    raise Invalid("unexpected-fixed-process-role", row)
+                argv = self.read("cmdline", MAX_STAT, directory)
+                if argv != self.argv_bytes((path, "__zfb-compiler-worker")):
+                    raise Invalid("unexpected-fixed-compiler-argv", row)
+                exe["workerArg"] = "__zfb-compiler-worker"
         return exe
 
     def threads(self, directory, boot):
@@ -264,6 +289,8 @@ class Sample:
         try:
             final = self.stat(pid, directory, self.boot())
             self.observed = final
+            if self.fixed_workers and row["pid"] != self.root["pid"] and final["ppid"] != row["ppid"]:
+                raise Invalid("fixed-parent-changed", final)
             if not birth_matches(row, final):
                 raise Invalid("birth-or-group-mismatch", final)
         except GONE:
@@ -276,6 +303,8 @@ class Sample:
             if pid == self.root["pid"]:
                 raise Invalid("root-terminated", row)
             result.update(disposition="proved-departure", terminalProof=proof)
+            if self.fixed_workers and not result["executable"]:
+                result["fixedRole"] = "unknown"
         elif (result["statusKiB"]["VmRSS"] is None or not result["threads"]["listed"]
               or final["state"] == "Z"):
             raise Invalid("live-metadata-unavailable", self.observed)
@@ -344,6 +373,43 @@ class Sample:
             boot = self.boot()
             self.mark("discovery", self.root)
             table = {}
+            bindings = {self.root["pid"]: root}
+            claimed = {self.root["pid"]}
+            first_failure = None
+            attempted = set()
+
+            def bind_candidate(candidate):
+                nonlocal first_failure
+                attempted.add(candidate["pid"])
+                try:
+                    binding = self.bind(stack, candidate)
+                    row, fd, _ = binding
+                    pid = row["pid"]
+                    if (pid not in self.known and row["pgid"] != self.root["pgid"]
+                            and row["ppid"] != candidate["ppid"]):
+                        raise Invalid("handoff-ancestry-changed", row)
+                    reachable = row["pgid"] == self.root["pgid"] or row["ppid"] in claimed
+                    if not reachable and pid not in self.known:
+                        raise Invalid("unbound-ancestry", row)
+                    if reachable:
+                        self.verify_chain(row, bindings)
+                    else:
+                        self.check_root(root)
+                    self.mark("handoff", row, row)
+                    bindings[pid] = binding
+                    if reachable:
+                        claimed.add(pid)
+                    self.handoff(row)
+                    if pid in self.proofs and not terminal(fd):
+                        self.proof = self.proofs[pid]
+                        raise Invalid("contradictory-terminal-proof", row)
+                except (OSError, ValueError, Invalid) as exc:
+                    if isinstance(exc, GONE) and self.stage == "binding":
+                        error = Invalid("unbound-candidate-departure", {"errno": exc.errno})
+                        error.errno = exc.errno
+                        exc = error
+                    first_failure = first_failure or self.problem(exc)
+
             for pid in self.rows("/proc", MAX_TABLE):
                 try:
                     row = stat_row(self.read(f"/proc/{pid}/stat", MAX_STAT), pid)
@@ -351,8 +417,16 @@ class Sample:
                     # A directory name alone is not a selection or verified birth.
                     continue
                 table[pid] = dict(row, bootId=boot, birthVersion="linux-proc-v1")
+                # A fixed startup worker can exit while unrelated /proc rows are
+                # scanned. Bind only after a parent or the owned group is known.
+                candidate = table[pid]
+                if (self.fixed_workers and pid != self.root["pid"]
+                        and (candidate["pgid"] == self.root["pgid"] or candidate["ppid"] in claimed)):
+                    if len(attempted | self.known.keys() | {pid, self.root["pid"]}) > MAX_OWNED:
+                        raise Invalid("owned-process-cap")
+                    bind_candidate(candidate)
+                    self.mark("discovery", self.root)
             candidates = owned(table.values(), self.root)
-            first_failure = None
             for pid, previous in self.known.items():
                 if pid in table:
                     # A known birth is mandatory even after a change of ancestry.
@@ -368,11 +442,9 @@ class Sample:
                     first_failure = first_failure or self.problem(Invalid("unbound-known-departure"))
             if len(candidates.keys() | self.known.keys()) > MAX_OWNED:
                 raise Invalid("owned-process-cap")
-            bindings = {self.root["pid"]: root}
-            claimed = {self.root["pid"]}
             # Walk parent-before-child. Independent branches can still hand off
             # their verified births if a different branch fails before binding.
-            pending = [row for pid, row in candidates.items() if pid not in claimed]
+            pending = [row for pid, row in candidates.items() if pid not in claimed and pid not in attempted]
             while pending:
                 deferred = []
                 for candidate in pending:
@@ -380,34 +452,7 @@ class Sample:
                             and candidate["pid"] not in self.known):
                         deferred.append(candidate)
                         continue
-                    try:
-                        binding = self.bind(stack, candidate)
-                        row, fd, _ = binding
-                        pid = row["pid"]
-                        if (pid not in self.known and row["pgid"] != self.root["pgid"]
-                                and row["ppid"] != candidate["ppid"]):
-                            raise Invalid("handoff-ancestry-changed", row)
-                        reachable = row["pgid"] == self.root["pgid"] or row["ppid"] in claimed
-                        if not reachable and pid not in self.known:
-                            raise Invalid("unbound-ancestry", row)
-                        if reachable:
-                            self.verify_chain(row, bindings)
-                        else:
-                            self.check_root(root)
-                        self.mark("handoff", row, row)
-                        bindings[pid] = binding
-                        if reachable:
-                            claimed.add(pid)
-                        self.handoff(row)
-                        if pid in self.proofs and not terminal(fd):
-                            self.proof = self.proofs[pid]
-                            raise Invalid("contradictory-terminal-proof", row)
-                    except (OSError, ValueError, Invalid) as exc:
-                        if isinstance(exc, GONE) and self.stage == "binding":
-                            error = Invalid("unbound-candidate-departure", {"errno": exc.errno})
-                            error.errno = exc.errno
-                            exc = error
-                        first_failure = first_failure or self.problem(exc)
+                    bind_candidate(candidate)
                 if len(deferred) == len(pending):
                     self.mark("ancestry", deferred[0])
                     first_failure = first_failure or self.problem(Invalid("unbound-ancestry"))
@@ -416,8 +461,15 @@ class Sample:
             if first_failure:
                 self.emit(first_failure)
                 return False
-            for bound in bindings.values():
+            # Role checks need the live direct native parent's identity first.
+            ordered = bindings.values()
+            if self.fixed_workers:
+                ordered = sorted(ordered, key=lambda item: item[0]["ppid"] != self.root["pid"])
+            for bound in ordered:
                 try:
+                    if (self.fixed_workers and bound != root and bound[0]["ppid"] != self.root["pid"]
+                            and not terminal(bound[1])):
+                        self.verify_chain(bound[0], bindings)
                     self.observe(bound)
                 except (OSError, ValueError, Invalid) as exc:
                     # Include any available terminal evidence alongside the

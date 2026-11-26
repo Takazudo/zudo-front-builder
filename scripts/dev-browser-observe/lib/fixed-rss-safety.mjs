@@ -21,11 +21,12 @@ function pin(path, digest) {
   }
 }
 
-export function fixedZfbExecutables(appDir, facts) {
+export function fixedZfbExecutables(appDir, facts, protocol = "linux-fixed-zfb.v1") {
   const child = facts.install.executables.find((exe) => exe.role === "zfb-native" && exe.ok);
   if (!child || facts.installReceipt.node.realpath !== realpathSync(process.execPath))
     throw new Error("fixed safety requires the verified Node launcher and packaged native binary");
   return {
+    protocol,
     root: pin(process.execPath, facts.installReceipt.node.sha256),
     child: pin(join(appDir, child.path), child.sha256),
   };
@@ -109,7 +110,7 @@ export function startFixedRssSafety({
           ...(failure && { afterStopDecision: true }),
         });
         const children = result.processes.filter(
-          (row) => row.disposition === "live" && row.pid !== server.handle.native.pid,
+          (row) => row.disposition === "live" && row.ppid === server.handle.native.pid,
         );
         if (children.length > 1 || ((readyAtEntry || nativeBirth) && children.length !== 1))
           throw new Error("fixed safety native child absent or ambiguous");
@@ -142,7 +143,7 @@ export function startFixedRssSafety({
   return {
     report() {
       return {
-        protocol: "linux-fixed-zfb.v1",
+        protocol: fixedExecutables.protocol ?? "linux-fixed-zfb.v1",
         measuredCycles,
         peakSummedOwnedRssKiB: peakKiB,
         failure,

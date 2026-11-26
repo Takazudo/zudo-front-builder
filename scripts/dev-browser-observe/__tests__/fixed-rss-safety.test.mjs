@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test, vi } from "vitest";
 import { linuxBirth } from "../lib/linux-birth.mjs";
 import { sampleRendererMemory } from "../lib/linux-rss-sample.mjs";
@@ -41,7 +51,7 @@ linux(
     try {
       const [output] = await once(root.stdout, "data");
       child = Number(output.toString());
-      const native = linuxBirth(root.pid);
+      const native = { ...linuxBirth(root.pid), argv: ["test-shim", "30"] };
       const server = {
         handle: { native, known: new Map([[native.pid, native]]), onNewOwned() {} },
         isAlive: () => ({ alive: root.exitCode === null }),
@@ -79,6 +89,74 @@ linux(
   },
 );
 
+linux(
+  "a live third process requires the pinned worker image, private argv and native parent",
+  async () => {
+    const directory = mkdtempSync(join(tmpdir(), "fixed-worker-"));
+    const nativeImage = realpathSync("/usr/bin/python3");
+    writeFileSync(join(directory, "__zfb-compiler-worker"), "import time; time.sleep(30)\n");
+    const nativeArgs = [
+      "-u",
+      "-c",
+      [
+        "import os,subprocess,sys",
+        "p=subprocess.Popen([os.path.realpath(sys.executable),'__zfb-compiler-worker'],process_group=0)",
+        "try:",
+        " print(p.pid,flush=True)",
+        " sys.stdin.readline()",
+        "finally:",
+        " p.terminate();p.wait()",
+      ].join("\n"),
+    ];
+    const driver =
+      "require('node:child_process').spawn(process.argv[1],process.argv.slice(2),{stdio:'inherit'})";
+    const root = spawn(process.execPath, ["-e", driver, nativeImage, ...nativeArgs], {
+      cwd: directory,
+      detached: true,
+      stdio: ["pipe", "pipe", "inherit"],
+    });
+    const closed = once(root, "close");
+    try {
+      const [output] = await once(root.stdout, "data");
+      const workerPid = Number(output.toString());
+      const native = { ...linuxBirth(root.pid), argv: ["test-shim", ...nativeArgs] };
+      const server = {
+        handle: { native, known: new Map([[native.pid, native]]), onNewOwned() {} },
+        isAlive: () => ({ alive: root.exitCode === null }),
+      };
+      const fixedExecutables = {
+        protocol: "linux-fixed-zfb.v2",
+        root: executable(process.execPath),
+        child: executable(nativeImage),
+      };
+      await assert.rejects(
+        sampleRendererMemory(server, fixedExecutables.root.path, {
+          fixedExecutables: { ...fixedExecutables, protocol: "linux-fixed-zfb.v1" },
+        }),
+        /unexpected-fixed-process-role/,
+      );
+      const observed = await sampleRendererMemory(server, fixedExecutables.root.path, {
+        fixedExecutables,
+      });
+      const worker = observed.processes.find((p) => p.pid === workerPid);
+      assert.deepEqual(worker.executable, {
+        ...fixedExecutables.child,
+        workerArg: "__zfb-compiler-worker",
+      });
+      assert.equal(worker.pgid, worker.pid);
+      assert.equal(observed.processes.find((p) => p.pid === worker.ppid).ppid, native.pid);
+      assert.equal(
+        observed.summedRssKiB,
+        observed.processes.reduce((n, p) => n + p.rssKiB, 0),
+      );
+    } finally {
+      root.stdin.end();
+      await closed;
+      rmSync(directory, { recursive: true });
+    }
+  },
+);
+
 test("periodic fixed safety failure during hidden observation aborts before navigation", async () => {
   const controller = new AbortController(),
     records = [];
@@ -88,7 +166,7 @@ test("periodic fixed safety failure during hidden observation aborts before navi
     navigations = 0;
   const safety = startFixedRssSafety({
     server,
-    fixedExecutables: { root: { path: "/node" } },
+    fixedExecutables: { protocol: "linux-fixed-zfb.v2", root: { path: "/node" } },
     limits: { sampleEveryMs: 10, rssCeilingKiB: 100 },
     append: (row) => records.push(row),
     abort: (reason) => controller.abort(reason),
@@ -96,7 +174,8 @@ test("periodic fixed safety failure during hidden observation aborts before navi
       summedRssKiB: ++cycles === 3 ? 101 : 10,
       processes: [
         { pid: 100, disposition: "live" },
-        { pid: 101, disposition: "live", bootId: "boot", startTicks: "12" },
+        { pid: 101, ppid: 100, disposition: "live", bootId: "boot", startTicks: "12" },
+        { pid: 102, ppid: 101, disposition: "live" },
       ],
     }),
   });
@@ -163,7 +242,7 @@ test("failed fixed sample preserves conservative partial RSS and unresolved help
 test("a readiness observation coalesces with the periodic clock rather than colliding at its boundary", async () => {
   vi.useFakeTimers();
   const root = { pid: 5 },
-    child = { pid: 6, startTicks: "6", bootId: "boot", disposition: "live" };
+    child = { pid: 6, ppid: 5, startTicks: "6", bootId: "boot", disposition: "live" };
   const starts = [],
     failures = [];
   let ready = false;

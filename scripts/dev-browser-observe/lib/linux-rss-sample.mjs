@@ -23,6 +23,27 @@ function matchesExecutable(observed, expected) {
   );
 }
 
+function matchesFixedChild(process, root, native, observations) {
+  if (!matchesExecutable(process.executable, native)) return false;
+  if (process.ppid === root.pid)
+    return (
+      process.pgid === root.pgid &&
+      process.executable.workerArg === undefined &&
+      !observations.some((p) => p.disposition === "live" && p.ppid === root.pid)
+    );
+  return (
+    process.pgid === process.pid &&
+    process.executable.workerArg === "__zfb-compiler-worker" &&
+    observations.some(
+      (p) =>
+        p.pid === process.ppid &&
+        p.ppid === root.pid &&
+        p.disposition === "live" &&
+        matchesExecutable(p.executable, native),
+    )
+  );
+}
+
 function requireValue(ok, msg) {
   if (!ok) throw new Error(msg);
 }
@@ -326,7 +347,12 @@ export function sampleRendererMemory(
         known: [...handle.known.values()].map(compactBirth),
         terminalProofs: [...proofs.values()],
         executablePath: expectedExecutablePath,
-        ...(fixedExecutables && { fixedChildExecutable: fixedExecutables.child }),
+        ...(fixedExecutables && {
+          fixedChildExecutable: fixedExecutables.child,
+          ...(fixedExecutables.protocol === "linux-fixed-zfb.v2" && {
+            fixedDevArgs: root.argv.slice(1),
+          }),
+        }),
       };
       spawnHrtimeNs = parent.spawnCallNs = now();
       child = launch();
@@ -589,7 +615,9 @@ export function sampleRendererMemory(
                 uint(p.smapsRollupKiB?.Rss) &&
                 p.smapsRollupKiB.Rss === rssSources.get(p.pid)?.["rollup.Rss"] &&
                 (fixedExecutables && p.pid !== root.pid
-                  ? p.ppid === root.pid && matchesExecutable(p.executable, fixedExecutables.child)
+                  ? fixedExecutables.protocol === "linux-fixed-zfb.v2"
+                    ? matchesFixedChild(p, root, fixedExecutables.child, processes)
+                    : p.ppid === root.pid && matchesExecutable(p.executable, fixedExecutables.child)
                   : matchesExecutable(p.executable, executable)) &&
                 uint(p.threads?.listed) &&
                 Array.isArray(p.threads?.rendererHosts),

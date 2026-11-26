@@ -603,7 +603,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       return exitCode;
     }
 
-    const fixedExecutables = fixedAbort ? fixedZfbExecutables(m.appDir, verdict.facts) : null;
+    const fixedExecutables = fixedAbort
+      ? fixedZfbExecutables(m.appDir, verdict.facts, profile.fixedRssSafety)
+      : null;
     let launch = null;
     if (fixed) {
       const port =

@@ -129,6 +129,74 @@ class Sampling(unittest.TestCase):
         self.assertTrue(all(p["rssKiB"] > 0 and p["disposition"] == "live" for p in obs))
         self.assertEqual(obs[-1]["pgid"], self.pid)
 
+    def test_fixed_early_bind_precedes_reaping_after_discovery(self):
+        self.spawn()
+        self.command("release")
+        self.sample.fixed_child = self.request["executable"]
+        self.sample.fixed_workers = True
+        rows = self.sample.rows
+        def reap_after_row(directory, cap):
+            for pid in rows(directory, cap):
+                yield pid
+                if directory == "/proc" and pid == self.pid:
+                    self.command("reap")
+        with patch.object(self.sample, "rows", reap_after_row):
+            self.assertEqual(self.outcome()["type"], "complete")
+        child = next(e["process"] for e in self.events
+                     if e["type"] == "observation" and e["process"]["pid"] == self.pid)
+        self.assertEqual(child["disposition"], "proved-departure")
+        self.assertIsNone(child["rssKiB"])
+        self.assertEqual(child["fixedRole"], "unknown")
+
+    def test_captured_wrong_live_role_remains_invalid_after_exit(self):
+        self.spawn()
+        self.sample.fixed_child = self.request["executable"]
+        self.sample.fixed_workers = True
+        real_identity = self.sample.exe_identity
+        def exit_with_error(directory, row):
+            try:
+                return real_identity(directory, row)
+            except rss.Invalid:
+                self.command("release")
+                raise
+        with patch.object(self.sample, "exe_identity", exit_with_error):
+            outcome = self.outcome()
+        self.assertEqual(outcome["error"], "unexpected-fixed-native-group")
+        self.assertIsNotNone(outcome["terminalProof"])
+        self.assertFalse(any(e.get("process", {}).get("pid") == self.pid for e in self.events))
+
+    def test_fixed_live_compiler_identity_and_private_argv(self):
+        self.spawn()
+        exe = self.request["executable"]
+        self.sample.fixed_child = exe
+        self.sample.fixed_workers = True
+        native = dict(identity(self.pid), pgid=self.child.pid)
+        worker = dict(pid=600, pgid=600, ppid=self.pid)
+        directory = os.open(f"/proc/{self.pid}", rss.DIR)
+        self.addCleanup(os.close, directory)
+        self.sample.fixed_dev_args = ["dev", "--port", "12345"]
+        dev = b"\0".join(os.fsencode(arg) for arg in [exe["path"], *self.sample.fixed_dev_args]) + b"\0"
+        with patch.object(self.sample, "read", return_value=dev):
+            self.assertEqual(self.sample.exe_identity(directory, native), exe)
+        with patch.object(self.sample, "read", return_value=dev+b"extra\0"):
+            with self.assertRaisesRegex(rss.Invalid, "unexpected-fixed-dev-argv"):
+                self.sample.exe_identity(directory, native)
+        argc = os.fsencode(exe["path"]) + b"\0__zfb-compiler-worker\0"
+        with patch.object(self.sample, "read", return_value=argc):
+            actual = self.sample.exe_identity(directory, worker)
+            self.assertEqual(actual["workerArg"], "__zfb-compiler-worker")
+            with self.assertRaisesRegex(rss.Invalid, "unexpected-fixed-process-role"):
+                self.sample.exe_identity(directory, dict(worker, ppid=601))
+            with self.assertRaisesRegex(rss.Invalid, "unexpected-fixed-process-role"):
+                self.sample.exe_identity(directory, dict(worker, pgid=601))
+        for bad in (argc[:-1], argc+b"extra\0", b"other\0__zfb-compiler-worker\0"):
+            with patch.object(self.sample, "read", return_value=bad):
+                with self.assertRaisesRegex(rss.Invalid, "unexpected-fixed-compiler-argv"):
+                    self.sample.exe_identity(directory, worker)
+        with patch.object(os, "readlink", return_value="/different"):
+            with self.assertRaisesRegex(rss.Invalid, "unexpected-executable"):
+                self.sample.exe_identity(directory, worker)
+
     def test_final_root_and_cleanup_are_independently_bracketed(self):
         self.spawn()
         now = 1_000_000
