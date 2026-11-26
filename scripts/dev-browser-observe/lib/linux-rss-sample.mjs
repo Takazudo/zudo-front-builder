@@ -621,6 +621,18 @@ export function sampleRendererMemory(
           "inconsistent process observation",
         );
         if (p.disposition === "retained-terminal-proof") {
+          if (fixedExecutables?.protocol === "linux-fixed-zfb.v2")
+            requireValue(
+              p.ppid === handle.known.get(p.pid)?.ppid &&
+                p.terminalProof?.birth?.ppid === prior?.birth?.ppid &&
+                p.executable === null &&
+                p.rssKiB === null &&
+                p.statusKiB === null &&
+                p.smapsRollupKiB === null &&
+                p.threads === null &&
+                p.fixedRole === undefined,
+              "invalid retained fixed departure",
+            );
           checkProof(p.terminalProof, p);
           requireValue(
             prior &&
