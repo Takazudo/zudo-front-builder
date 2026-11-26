@@ -1,6 +1,3 @@
-import { readFile, readdir, readlink, stat } from "node:fs/promises";
-import { linuxBirth, parseLinuxStat, sameLinuxBirth } from "./linux-birth.mjs";
-import { snapshotOwned } from "./process-owner.mjs";
 import { parseProvLines, PROV_PREFIX } from "./provenance.mjs";
 import { inspectReclamation, reclamationDisposition } from "./renderer-memory-reclamation.mjs";
 import {
@@ -10,9 +7,7 @@ import {
   RENDERER_MEMORY_RECLAMATION_LIMITS as RECLAMATION_LIMITS,
 } from "./renderer-memory-protocol.mjs";
 
-const STATUS_FIELDS = ["VmRSS", "RssAnon", "RssFile", "RssShmem", "VmSwap"];
-const PRIVATE_FIELDS = ["Rss", "Pss", "Private_Clean", "Private_Dirty", "Private_Hugetlb", "Swap"];
-const TASK_LIMIT = 256;
+export { sampleRendererMemory } from "./linux-rss-sample.mjs";
 
 export function parseMemoryKiB(text, fields) {
   const values = Object.fromEntries(fields.map((field) => [field, null]));
@@ -23,102 +18,6 @@ export function parseMemoryKiB(text, fields) {
     }
   }
   return values;
-}
-
-const vanished = (error) => ["ENOENT", "ESRCH"].includes(error.code);
-const inode = (info) => ({ device: String(info.dev), inode: String(info.ino) });
-const sameInode = (a, b) => a.device === b.device && a.inode === b.inode;
-
-async function observeThreads(root, bootId) {
-  const path = `${root}/task`;
-  const tids = (await readdir(path)).filter((entry) => /^[1-9]\d*$/.test(entry));
-  if (tids.length > TASK_LIMIT) throw new Error(`native task sample exceeds ${TASK_LIMIT} TIDs`);
-  const observations = await Promise.all(
-    tids.map(async (entry) => {
-      const tid = Number(entry);
-      let text;
-      try {
-        text = await readFile(`${path}/${entry}/stat`, "utf8");
-      } catch (error) {
-        if (vanished(error)) return null;
-        throw error;
-      }
-      const { startTicks, comm } = parseLinuxStat(text, tid);
-      return { tid, startTicks, bootId, comm };
-    }),
-  );
-  return {
-    listed: tids.length,
-    vanished: observations.filter((entry) => entry === null).length,
-    rendererHosts: observations
-      .filter((entry) => entry?.comm === "zfb-v8-host")
-      .sort((a, b) => a.tid - b.tid),
-  };
-}
-
-async function observeProcess(expected, executable) {
-  const root = `/proc/${expected.pid}`;
-  const before = linuxBirth(expected.pid);
-  const verified = (found) =>
-    sameLinuxBirth(expected, found) && expected.pgid === found.pgid && found.state !== "Z";
-  if (!verified(before))
-    throw new Error(`process birth changed before sample for PID ${expected.pid}`);
-  const [exePath, exeInode, status, rollup, threads] = await Promise.all([
-    readlink(`${root}/exe`),
-    stat(`${root}/exe`, { bigint: true }).then(inode),
-    readFile(`${root}/status`, "utf8").then((text) => parseMemoryKiB(text, STATUS_FIELDS)),
-    readFile(`${root}/smaps_rollup`, "utf8").then(
-      (text) => ({ values: parseMemoryKiB(text, PRIVATE_FIELDS), unavailable: null }),
-      (error) => ({ values: null, unavailable: error.code ?? String(error.message) }),
-    ),
-    observeThreads(root, before.bootId),
-  ]);
-  if (!sameInode(executable, exeInode)) {
-    throw new Error(`unexpected owned executable for PID ${expected.pid}: ${exePath}`);
-  }
-  const [afterPath, afterInode] = await Promise.all([
-    readlink(`${root}/exe`),
-    stat(`${root}/exe`, { bigint: true }).then(inode),
-  ]);
-  if (
-    !verified(linuxBirth(expected.pid)) ||
-    afterPath !== exePath ||
-    !sameInode(exeInode, afterInode)
-  ) {
-    throw new Error(`process identity changed during sample for PID ${expected.pid}`);
-  }
-  if (status.VmRSS === null) throw new Error(`VmRSS unavailable for PID ${expected.pid}`);
-  return {
-    pid: before.pid,
-    pgid: before.pgid,
-    bootId: before.bootId,
-    startTicks: before.startTicks,
-    executable: { path: exePath, ...exeInode },
-    rssKiB: status.VmRSS,
-    statusKiB: status,
-    smapsRollupKiB: rollup.values,
-    smapsRollupUnavailable: rollup.unavailable,
-    threads,
-  };
-}
-
-/** The ownership snapshot discovers new descendants; birth and exe checks bracket every /proc sample. */
-export async function sampleRendererMemory(server, expectedExecutablePath) {
-  const at = new Date().toISOString();
-  const hrtimeNs = process.hrtime.bigint().toString();
-  const owned = server.isAlive().alive ? snapshotOwned(server.handle) : [];
-  if (owned.length === 0 && server.isAlive().alive) {
-    throw new Error("no birth-verified server process while the handle reports alive");
-  }
-  const expected = await stat(expectedExecutablePath, { bigint: true }).then(inode);
-  const processes = await Promise.all(owned.map((entry) => observeProcess(entry, expected)));
-  return {
-    at,
-    hrtimeNs,
-    endHrtimeNs: process.hrtime.bigint().toString(),
-    processes,
-    summedRssKiB: processes.reduce((sum, p) => sum + p.rssKiB, 0),
-  };
 }
 
 const LIFECYCLE = "renderer_lifecycle";
