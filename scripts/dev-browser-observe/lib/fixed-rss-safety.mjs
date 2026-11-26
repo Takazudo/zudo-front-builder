@@ -25,8 +25,15 @@ export function fixedZfbExecutables(appDir, facts, protocol = "linux-fixed-zfb.v
   const child = facts.install.executables.find((exe) => exe.role === "zfb-native" && exe.ok);
   if (!child || facts.installReceipt.node.realpath !== realpathSync(process.execPath))
     throw new Error("fixed safety requires the verified Node launcher and packaged native binary");
+  let launch;
+  if (protocol === "linux-fixed-zfb.v2") {
+    const shim = facts.install.executables.find((exe) => exe.role === "zfb-shim" && exe.ok);
+    if (!shim) throw new Error("fixed v2 requires the verified distribution shim");
+    launch = { cwd: realpathSync(appDir), shim: pin(join(appDir, shim.path), shim.sha256) };
+  }
   return {
     protocol,
+    ...(launch && { launch }),
     root: pin(process.execPath, facts.installReceipt.node.sha256),
     child: pin(join(appDir, child.path), child.sha256),
   };

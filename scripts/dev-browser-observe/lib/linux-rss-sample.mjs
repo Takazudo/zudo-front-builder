@@ -381,6 +381,7 @@ export function sampleRendererMemory(
           fixedChildExecutable: fixedExecutables.child,
           ...(fixedExecutables.protocol === "linux-fixed-zfb.v2" && {
             fixedDevArgs: root.argv.slice(1),
+            fixedLaunch: fixedExecutables.launch,
           }),
         }),
       };

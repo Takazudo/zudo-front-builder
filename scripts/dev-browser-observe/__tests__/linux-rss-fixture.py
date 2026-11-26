@@ -72,9 +72,11 @@ def identity(pid):
 
 
 class Sampling(unittest.TestCase):
-    def spawn(self, mode="ordinary"):
+    def spawn(self, mode="ordinary", fixed=False):
         self.start_ns = time.monotonic_ns()
-        child = subprocess.Popen([sys.executable, "-B", __file__, "fixture", mode],
+        argv = ([os.path.realpath(sys.executable), str(here)] if fixed else
+                [sys.executable, "-B", __file__])
+        child = subprocess.Popen([*argv, "fixture", mode],
                                  start_new_session=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                  text=True)
         self.addCleanup(self.close, child)
@@ -85,6 +87,11 @@ class Sampling(unittest.TestCase):
         self.request = dict(root=root, known=[root], terminalProofs=[],
                             executable=dict(path=os.path.realpath(sys.executable),
                                             device=str(stat.st_dev), inode=str(stat.st_ino)))
+        if fixed:
+            info = here.stat()
+            self.request.update(fixedDevArgs=["fixture", mode], fixedChildExecutable=self.request["executable"],
+                                fixedLaunch=dict(cwd=os.getcwd(), shim=dict(path=str(here),
+                                device=str(info.st_dev), inode=str(info.st_ino))))
         self.events = []
         self.sample = rss.Sample(self.request, self.events.append)
 
@@ -130,7 +137,7 @@ class Sampling(unittest.TestCase):
         self.assertEqual(obs[-1]["pgid"], self.pid)
 
     def test_fixed_early_bind_precedes_reaping_after_discovery(self):
-        self.spawn()
+        self.spawn(fixed=True)
         self.command("release")
         self.sample.fixed_child = self.request["executable"]
         self.sample.fixed_workers = True
@@ -149,7 +156,7 @@ class Sampling(unittest.TestCase):
         self.assertEqual(child["fixedRole"], "unknown")
 
     def test_captured_wrong_live_role_remains_invalid_after_exit(self):
-        self.spawn()
+        self.spawn(fixed=True)
         self.sample.fixed_child = self.request["executable"]
         self.sample.fixed_workers = True
         real_identity = self.sample.exe_identity

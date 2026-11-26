@@ -108,9 +108,12 @@ linux(
         " p.terminate();p.wait()",
       ].join("\n"),
     ];
-    const driver =
-      "require('node:child_process').spawn(process.argv[1],process.argv.slice(2),{stdio:'inherit'})";
-    const root = spawn(process.execPath, ["-e", driver, nativeImage, ...nativeArgs], {
+    const driver = join(directory, "test-shim.cjs");
+    writeFileSync(
+      driver,
+      `require("node:child_process").spawn(${JSON.stringify(nativeImage)},process.argv.slice(2),{stdio:"inherit"})`,
+    );
+    const root = spawn(process.execPath, [driver, ...nativeArgs], {
       cwd: directory,
       detached: true,
       stdio: ["pipe", "pipe", "inherit"],
@@ -119,7 +122,7 @@ linux(
     try {
       const [output] = await once(root.stdout, "data");
       const workerPid = Number(output.toString());
-      const native = { ...linuxBirth(root.pid), argv: ["test-shim", ...nativeArgs] };
+      const native = { ...linuxBirth(root.pid), argv: [driver, ...nativeArgs] };
       const server = {
         handle: { native, known: new Map([[native.pid, native]]), onNewOwned() {} },
         isAlive: () => ({ alive: root.exitCode === null }),
@@ -128,6 +131,7 @@ linux(
         protocol: "linux-fixed-zfb.v2",
         root: executable(process.execPath),
         child: executable(nativeImage),
+        launch: { cwd: directory, shim: executable(driver) },
       };
       await assert.rejects(
         sampleRendererMemory(server, fixedExecutables.root.path, {
@@ -135,6 +139,21 @@ linux(
         }),
         /unexpected-fixed-process-role/,
       );
+      for (const [launch, reason] of [
+        [{ cwd: "/", shim: executable(driver) }, /unexpected-fixed-root-cwd/],
+        [{ cwd: directory, shim: executable(nativeImage) }, /unexpected-fixed-root-argv/],
+        [
+          { cwd: directory, shim: { ...executable(driver), inode: "0" } },
+          /unexpected-fixed-shim-identity/,
+        ],
+      ]) {
+        await assert.rejects(
+          sampleRendererMemory(server, fixedExecutables.root.path, {
+            fixedExecutables: { ...fixedExecutables, launch },
+          }),
+          reason,
+        );
+      }
       const observed = await sampleRendererMemory(server, fixedExecutables.root.path, {
         fixedExecutables,
       });

@@ -111,6 +111,7 @@ class Sample:
         self.fixed_child = request.get("fixedChildExecutable")
         self.fixed_dev_args = request.get("fixedDevArgs")
         self.fixed_workers = self.fixed_dev_args is not None
+        self.fixed_launch = request.get("fixedLaunch")
         self.emit = emit
         self.timing = timing
         self.bytes = self.reads = 0
@@ -208,6 +209,17 @@ class Sample:
         exe = dict(path=path, device=str(info.st_dev), inode=str(info.st_ino))
         if exe != expected:
             raise Invalid("unexpected-executable", exe)
+        if self.fixed_workers and row["pid"] == self.root["pid"]:
+            launch = self.fixed_launch
+            if not launch or os.readlink("cwd", dir_fd=directory) != launch["cwd"]:
+                raise Invalid("unexpected-fixed-root-cwd", row)
+            shim = launch["shim"]
+            info = os.stat(shim["path"])
+            if (str(info.st_dev), str(info.st_ino)) != (shim["device"], shim["inode"]):
+                raise Invalid("unexpected-fixed-shim-identity", row)
+            argv = self.read("cmdline", MAX_STAT, directory)
+            if argv != self.argv_bytes([path, shim["path"], *self.fixed_dev_args]):
+                raise Invalid("unexpected-fixed-root-argv", row)
         if self.fixed_workers and row["pid"] != self.root["pid"]:
             if row["ppid"] == self.root["pid"]:
                 if row["pgid"] != self.root["pgid"]:
