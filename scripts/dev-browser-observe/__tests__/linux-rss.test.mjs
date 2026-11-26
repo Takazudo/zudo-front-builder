@@ -5,7 +5,7 @@ import { appendFileSync, existsSync, readlinkSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { BrowserTiming } from "../lib/browser-timing.mjs";
 import { OBSERVER_PATH, launchOwnedBrowser } from "../lib/browser.mjs";
 import { ControllerTiming } from "../lib/controller-timing.mjs";
@@ -422,6 +422,71 @@ ${kind === "timeout" ? "time.sleep(8)" : "sys.exit(1)"}
           },
         );
       }),
+  );
+}
+
+// Node timers run on a millisecond clock. Deliver one early callback at the
+// observed offset, then deliver the real helper's close on either side of the
+// nanosecond cutoff. No sleeping or timing assertion depends on machine load.
+for (const [label, closeOffset] of [
+  ["just before", 749_999_999n],
+  ["just after", 750_000_001n],
+]) {
+  linux(`an early timer preserves a complete helper closing ${label} the core deadline`, () =>
+    withServer(async (server) => {
+      const realClock = process.hrtime.bigint;
+      const start = realClock();
+      let clock = null;
+      let child;
+      let notifyDeadline;
+      const clockSpy = vi
+        .spyOn(process.hrtime, "bigint")
+        .mockImplementation(() => clock ?? realClock());
+      clockSpy.mockImplementationOnce(() => start);
+      const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementationOnce((callback) => {
+        notifyDeadline = callback;
+        // The test manually delivers this scheduled callback at 749.053019 ms.
+        return undefined;
+      });
+      try {
+        const sample = sampleRendererMemory(
+          server,
+          readlinkSync(`/proc/${server.handle.native.pid}/exe`),
+          {
+            launch() {
+              child = spawn("python3", ["-IB", fixture, "instrumented", "ordinary"], {
+                stdio: ["pipe", "pipe", "pipe"],
+              });
+              return child;
+            },
+          },
+        );
+        timerSpy.mockRestore();
+        child.prependOnceListener("close", () => {
+          clock = start + 749_053_019n;
+          notifyDeadline();
+          clock = start + closeOffset;
+        });
+        if (closeOffset < 750_000_000n) {
+          const result = await sample;
+          assert.equal(result.helper.closed, true);
+          assert.equal(result.helper.pipesClosed, true);
+          assert.ok(result.summedRssKiB > 0);
+          assert.equal(BigInt(result.timing.parent.resultNs) - start, closeOffset);
+          assert.equal(result.timing.parent.deadlineDispatchNs, null);
+        } else {
+          await assert.rejects(sample, (error) => {
+            assert.equal(error.details.stage, "deadline");
+            assert.equal(error.details.helper.closed, true);
+            assert.equal(error.details.timing.parent.deadlineDispatchNs, null);
+            return true;
+          });
+        }
+      } finally {
+        timerSpy.mockRestore();
+        clockSpy.mockRestore();
+      }
+    }),
   );
 }
 
