@@ -214,3 +214,41 @@ test("an evidence write failure aborts even when its own failure record cannot b
   assert.match((await monitor.stop()).receiptError, /disk write refused/);
   assert.deepEqual(failures, ["disk write refused"]);
 });
+
+test("a late partial helper failure survives an earlier cadence refusal", async () => {
+  vi.useFakeTimers();
+  const pending = Promise.withResolvers();
+  const messages = [],
+    records = [];
+  const monitor = startFixedRssSafety({
+    server: {},
+    fixedExecutables: { root: { path: "/node" } },
+    limits: { rssCeilingKiB: 4194304, sampleEveryMs: 1000 },
+    append: (r) => records.push(r),
+    abort: (e) => messages.push(e.message),
+    sample: () => pending.promise,
+  });
+  try {
+    await vi.advanceTimersByTimeAsync(1000);
+    assert.match(messages[0], /still occupied/);
+    const details = {
+      stage: "metadata",
+      summedRssKiB: 5000000,
+      helper: { pid: 81, closed: false, pipesClosed: false },
+    };
+    pending.reject(Object.assign(new Error("unverified metadata"), { details }));
+    const first = await monitor.stop();
+    assert.match(first.error, /still occupied/);
+    assert.equal(messages.length, 1);
+    assert.equal(monitor.report().peakSummedOwnedRssKiB, 5000000);
+    assert.equal(monitor.report().secondaryHelperFailure.details, details);
+    assert.deepEqual(
+      records.map((r) => r.type),
+      ["fixed-rss-failure", "fixed-rss-secondary-helper-failure"],
+    );
+    assert.deepEqual(monitor.unresolvedHelper, details.helper);
+  } finally {
+    await monitor.stop();
+    vi.useRealTimers();
+  }
+});

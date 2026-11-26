@@ -52,6 +52,7 @@ export function startFixedRssSafety({
 }) {
   let pending = null;
   let failure = null;
+  let secondaryHelperFailure = null;
   let nativeBirth = null;
   let unresolvedHelper = null;
   let readyCheck = null;
@@ -63,9 +64,21 @@ export function startFixedRssSafety({
       unresolvedHelper = error.details.helper;
     const partial = error?.details?.summedRssKiB;
     if (Number.isSafeInteger(partial) && partial >= 0) peakKiB = Math.max(peakKiB ?? 0, partial);
-    if (failure) return;
-    failure = { error: String(error?.message ?? error), details: error?.details ?? null };
-    readyCheck?.resolve();
+    const issue = { error: String(error?.message ?? error), details: error?.details ?? null };
+    // At most one helper can still be in flight after the periodic dispatcher
+    // refuses an overlap. Preserve its later settlement independently.
+    if (failure) {
+      if (!secondaryHelperFailure) {
+        secondaryHelperFailure = issue;
+        try {
+          append({ type: "fixed-rss-secondary-helper-failure", failure: issue });
+        } catch (writeError) {
+          issue.receiptError = String(writeError);
+        }
+      }
+      return;
+    }
+    failure = issue;
     abort(new Error(failure.error));
     try {
       append({ type: "fixed-rss-failure", failure });
@@ -88,7 +101,12 @@ export function startFixedRssSafety({
         measuredCycles++;
         if (Number.isSafeInteger(result.summedRssKiB))
           peakKiB = Math.max(peakKiB ?? 0, result.summedRssKiB);
-        append({ type: "fixed-rss-sample", startedNs, result });
+        append({
+          type: "fixed-rss-sample",
+          startedNs,
+          result,
+          ...(failure && { afterStopDecision: true }),
+        });
         const children = result.processes.filter(
           (row) => row.disposition === "live" && row.pid !== server.handle.native.pid,
         );
@@ -127,6 +145,7 @@ export function startFixedRssSafety({
         measuredCycles,
         peakSummedOwnedRssKiB: peakKiB,
         failure,
+        secondaryHelperFailure,
         fixedExecutables,
       };
     },
