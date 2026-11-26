@@ -1,5 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { expect, it } from "vitest";
+import { BrowserTiming } from "../lib/browser-timing.mjs";
 import { StartupEventLoop } from "../lib/startup-event-loop.mjs";
 
 const block = new Int32Array(new SharedArrayBuffer(4));
@@ -14,6 +15,7 @@ async function advanceHistogram(monitor, predicate) {
 }
 
 it("qualifies a post-stall observation after the monitor is initialized and gets another turn", async () => {
+  const timing = new BrowserTiming();
   const monitor = new StartupEventLoop();
   monitor.start();
   try {
@@ -21,9 +23,15 @@ it("qualifies a post-stall observation after the monitor is initialized and gets
     const dispatch = delay(5).then(() => process.hrtime.bigint());
     const countBeforeBlock = monitor.report.countAtBrowserReady;
     const blockedMs = 80;
-    Atomics.wait(block, 0, 0, blockedMs);
-    const blockEnded = process.hrtime.bigint();
-    expect(await dispatch).toBeGreaterThanOrEqual(blockEnded);
+    const blockStarted = process.hrtime.bigint();
+    timing.syncSpan("controlled-block", null, {}, () => Atomics.wait(block, 0, 0, blockedMs));
+    const blockReturned = process.hrtime.bigint();
+    const [span] = timing.snapshot().syncSpans;
+    expect(span).toMatchObject({ name: "controlled-block", outcome: "returned" });
+    expect(BigInt(span.startNs)).toBeGreaterThanOrEqual(blockStarted);
+    expect(BigInt(span.endNs) - BigInt(span.startNs)).toBeGreaterThanOrEqual(75_000_000n);
+    expect(BigInt(span.endNs)).toBeLessThanOrEqual(blockReturned);
+    expect(await dispatch).toBeGreaterThanOrEqual(blockReturned);
     await advanceHistogram(monitor, (count) => count > countBeforeBlock);
     // Mark a browser-ready boundary before the final async observation.
     await delay(65);
@@ -36,7 +44,7 @@ it("qualifies a post-stall observation after the monitor is initialized and gets
       exceeds: 0,
     });
     expect(monitor.report.maxNs).toBeGreaterThanOrEqual(75_000_000);
-    expect(BigInt(monitor.report.disableCallNs)).toBeGreaterThan(blockEnded);
+    expect(BigInt(monitor.report.disableCallNs)).toBeGreaterThan(blockReturned);
     expect(monitor.report.utilizationDelta.active).toBeGreaterThanOrEqual(75);
     expect(monitor.report.utilizationDelta.idle).toBeGreaterThan(0);
   } finally {
