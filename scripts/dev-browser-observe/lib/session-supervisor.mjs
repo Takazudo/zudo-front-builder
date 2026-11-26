@@ -26,17 +26,18 @@ export async function superviseSession({
   const startup = Boolean(profile.startupAcceptance);
   const tiny = Boolean(profile.tinyAcceptance);
   const diagnostic = Boolean(profile.rendererMemoryStudy || startup || tiny);
+  const bounded = diagnostic || Boolean(profile.fixedRssSafety);
   if ((command === "startup-acceptance") !== startup || (command === "tiny-acceptance") !== tiny) {
     stderr("acceptance requires its own profile and command");
     return EXIT.usage;
   }
   if (
-    diagnostic &&
+    bounded &&
     (command !== (tiny ? "tiny-acceptance" : startup ? "startup-acceptance" : "run") ||
       scenarios !== null ||
       process.platform !== "linux")
   ) {
-    stderr("renderer-memory diagnostics require a standalone Linux run without --scenario");
+    stderr("Linux safety observations require a standalone Linux run without --scenario");
     return EXIT.usage;
   }
   const deadline = started + profile.limits.wallCeilingMs;
@@ -82,26 +83,27 @@ export async function superviseSession({
       command,
       scenarios,
       supervisorId,
-      ...(diagnostic ? { supervisorStartedMs: started, supervisorDeadlineMs: deadline } : {}),
+      ...(bounded ? { supervisorStartedMs: started, supervisorDeadlineMs: deadline } : {}),
     },
     deadline,
-    diagnostic,
+    diagnostic: bounded,
     onVerifiedExit: (result) => {
       controllerExit = result;
     },
     stderr,
     recordFailure,
   });
-  if (code === EXIT.ok || (diagnostic && controllerExit && existsSync(labelDir))) {
+  if (code === EXIT.ok || (bounded && controllerExit && existsSync(labelDir))) {
     // Only the supervisor can attest that the controller actually exited.
     writeJsonSync(join(labelDir, "supervisor-completion.json"), {
       schema: "dev-browser-observe.supervisor-completion.v1",
       supervisorId,
       exitCode: code,
       at: new Date().toISOString(),
-      ...(diagnostic
+      ...(bounded
         ? {
-            diagnostic: true,
+            diagnostic,
+            ...(profile.fixedRssSafety && { fixedRssSafety: profile.fixedRssSafety }),
             startedMonotonicMs: started,
             deadlineMonotonicMs: deadline,
             ...controllerExit,

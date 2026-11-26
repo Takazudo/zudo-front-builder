@@ -45,6 +45,11 @@ import {
   resolveNpmCli,
 } from "./distribution.mjs";
 import { FN_SEL } from "./fieldnotes.mjs";
+import {
+  fixedContextSample,
+  fixedZfbExecutables,
+  startFixedRssSafety,
+} from "./fixed-rss-safety.mjs";
 import { fixedIdentityVerdict, freePort } from "./fixed.mjs";
 import { snapshotOwnedWithArgs } from "./process-owner.mjs";
 import { batchExitOk, newAccounting, runBatch } from "./state-machine.mjs";
@@ -205,7 +210,7 @@ export async function execute({
     return EXIT.usage;
   }
   if (
-    (profile.rendererMemoryStudy || startup || tiny) &&
+    (profile.rendererMemoryStudy || startup || tiny || profile.fixedRssSafety) &&
     (command !== (tiny ? "tiny-acceptance" : startup ? "startup-acceptance" : "run") ||
       scenarios !== null ||
       process.platform !== "linux" ||
@@ -307,6 +312,20 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
 
 async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
   const { profile, resolved } = loaded;
+  const fixedAbort = profile.fixedRssSafety ? new AbortController() : null;
+  if (fixedAbort) loaded.signal = AbortSignal.any([loaded.signal, fixedAbort.signal]);
+  let fixedSafety = null;
+  let stoppingServer;
+  const stopCancellation = new AbortController();
+  const stopServer = (handle) => {
+    stoppingServer ??= (hooks.stopOwned ?? stopOwned)(handle, {
+      signal: stopCancellation.signal,
+      intWaitMs: profile.timeouts.stopTermMs ?? 5000,
+      termWaitMs: profile.timeouts.stopKillMs ?? 3000,
+      killWaitMs: 3000,
+    });
+    return stoppingServer;
+  };
   const tiny = profile.tinyAcceptance;
   const timing =
     tiny || profile.rendererMemoryStudy || profile.startupAcceptance
@@ -579,6 +598,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       return exitCode;
     }
 
+    const fixedExecutables = fixedAbort ? fixedZfbExecutables(m.appDir, verdict.facts) : null;
     let launch = null;
     if (fixed) {
       const port =
@@ -626,6 +646,24 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       if (shouldRegisterOwned(server.handle.native, p))
         appendJsonlSync(resolved.registryPath, { type: "owned", label, at: isoNow(), ...p });
     };
+    if (fixedExecutables) {
+      fixedSafety = startFixedRssSafety({
+        server,
+        fixedExecutables,
+        limits: profile.limits,
+        append: (r) => rec.append(r),
+        abort(error) {
+          fixedAbort.abort(error);
+          // Some browser/library operations must retain ownership through settlement.
+          // Stop the verified server independently while the controller unwinds;
+          // the finalizer consumes the same stop promise and its original outcome.
+          void fixedSafety
+            .stop()
+            .then(() => stopServer(server.handle))
+            .catch(() => {});
+        },
+      });
+    }
     const firstSample = rendererMemory?.startSampling(server);
     intent?.update({
       phase: "server-running",
@@ -663,6 +701,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     let ready;
     try {
       ready = await interruptible(server.ready, rendererMemory?.signal ?? loaded.signal);
+      if (fixedSafety) await fixedSafety.verifyReady();
       browserTiming?.mark("server-readiness-observed");
     } catch (error) {
       browserTiming?.mark("server-readiness-failed");
@@ -852,7 +891,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
 
     const sampleServer = () =>
       timed(timing, "run.sampleServer", {}, () => {
-        const s = server.sampleResources(timing);
+        const raw = server.sampleResources(timing);
+        const s = fixedSafety ? fixedContextSample(raw) : raw;
         samples.push(s);
         return s;
       });
@@ -887,6 +927,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           recorder,
           signal: rendererMemory?.signal ?? loaded.signal,
           rendererMemory,
+          safetySignal: fixedAbort?.signal,
           afterScenario: study?.afterScenario,
           beforeCleanup: rendererMemory
             ? () => rendererMemory.enter("restoration")
@@ -897,7 +938,14 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
                   rendererMemory?.failure ?? study?.haltReason() ?? checkLateProcesses?.() ?? null
               : undefined,
           clock: { now: hrtimeNs },
-          server: { ...server, sampleResources: sampleServer },
+          server: {
+            ...server,
+            sampleResources: sampleServer,
+            ...(fixedSafety && {
+              sampleResourcesAsync: async (...args) =>
+                fixedContextSample(await server.sampleResourcesAsync(...args)),
+            }),
+          },
           page: observer,
           fs: fixtureOps,
           verifyBodyRevision:
@@ -1022,6 +1070,20 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       }
     };
     const unresolved = [];
+    if (fixedSafety) {
+      try {
+        const failure = await bounded("fixed-rss-stop", 1000, () => fixedSafety.stop());
+        if (failure) {
+          receipt.fixedRssFailure = failure;
+          evidenceFailed = true;
+          exitCode = EXIT.controllerError;
+        }
+        if (fixedSafety.unresolvedHelper)
+          unresolved.push({ resource: "fixed-rss-helper", helper: fixedSafety.unresolvedHelper });
+      } catch (error) {
+        unresolved.push({ resource: "fixed-rss-sampler", error: String(error) });
+      }
+    }
     if (rendererMemory)
       try {
         // Stop launching samples, finish the bounded helper and retain its discoveries
@@ -1050,18 +1112,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       reason: spawning ? "spawn-interrupted" : "no-server-started",
     };
     if (server) {
-      const cancellation = new AbortController();
       try {
-        stopReport = await bounded("server-stop", 25000, () =>
-          (hooks.stopOwned ?? stopOwned)(server.handle, {
-            signal: cancellation.signal,
-            intWaitMs: profile.timeouts.stopTermMs ?? 5000,
-            termWaitMs: profile.timeouts.stopKillMs ?? 3000,
-            killWaitMs: 3000,
-          }),
-        );
+        stopReport = await bounded("server-stop", 25000, () => stopServer(server.handle));
       } catch (error) {
-        cancellation.abort();
+        stopCancellation.abort();
         stopReport = {
           absent: false,
           error: String(error?.message ?? error),
@@ -1292,7 +1346,14 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
               },
             }
           : {}),
-        resourceSamples: { count: samples.length, peak: sampledPeak(samples) },
+        resourceSamples: {
+          count: samples.length,
+          peak:
+            fixedSafety && !samples.some((s) => typeof s.summedRssKiB === "number")
+              ? null
+              : sampledPeak(samples),
+        },
+        ...(fixedSafety && { fixedRssSafety: fixedSafety.report() }),
         resourceStudy:
           command === "run" && profile.resourceStudy
             ? {
@@ -1318,7 +1379,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       // Returning from finally deliberately overrides the try block's exit code.
       return exitCode; // eslint-disable-line no-unsafe-finally
     }
-    if (memoryDiagnostic) return exitCode; // eslint-disable-line no-unsafe-finally
+    if (memoryDiagnostic || fixedAbort) return exitCode; // eslint-disable-line no-unsafe-finally
   }
 }
 
