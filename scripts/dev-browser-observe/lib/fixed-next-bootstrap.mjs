@@ -94,6 +94,7 @@ export function buildNextBootstrapContract({
   const port = socket.port;
   assert(Number.isInteger(port) && port > 0 && port <= 65535);
   assert.equal(socket.pid, server.pid);
+  assert(typeof socket.fd === "string" && /^\d+$/.test(socket.fd), "invalid listener descriptor");
   assert(/^[1-9]\d*$/.test(socket.inode));
   assert(
     (socket.family === "tcp" && socket.addr === "0100007F") ||
@@ -119,7 +120,12 @@ export function buildNextBootstrapContract({
     assert.deepEqual(row.image, image);
     const key = birth(row);
     for (const bound of [row.before, row.after, row.finalBirth]) assert.deepEqual(live(bound), key);
-    return Object.freeze({ ...key, role: row.role });
+    return Object.freeze({
+      ...key,
+      role: row.role,
+      argv: Object.freeze([...row.argv]),
+      retitled: row.retitled === true,
+    });
   });
   const script = pinBootstrap(appDir, bootstrapSha256);
   return Object.freeze({
@@ -130,6 +136,7 @@ export function buildNextBootstrapContract({
     script: Object.freeze(script),
     ancestors: Object.freeze(ancestors),
     port,
+    socket: Object.freeze({ ...socket }),
     expectedJestId: null,
   });
 }
@@ -168,8 +175,8 @@ export function verifyNextBootstrapPair(contract, observations) {
       "ambiguous peer sweep",
     );
     const { view, parentView } = row;
-    const { role, ...parentBirth } = parent;
-    assert.equal(role, "next-server");
+    const parentBirth = birth(parent);
+    assert.equal(parent.role, "next-server");
     assert.deepEqual(verifyView(parentView, contract), parentBirth, "serving birth changed");
     assert(
       typeof parentView.argvHex === "string" && /^(?:[0-9a-f]{2})+$/.test(parentView.argvHex),
