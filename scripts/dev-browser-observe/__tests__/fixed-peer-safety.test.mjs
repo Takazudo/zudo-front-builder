@@ -363,3 +363,55 @@ test.each(["module", "rsc", "activity"])(
     }
   },
 );
+
+test.each([false, true])(
+  "a same-document frame during body evaluation invalidates the cached peer predicate (first match %s)",
+  async (first) => {
+    vi.useFakeTimers();
+    try {
+      const clock = () => BigInt(Date.now()) * 1000000n,
+        p = new ObserverPage(null, "", clock);
+      p.baseUrl = "http://127.0.0.1:4321";
+      const path = "/articles/a/",
+        url = p.url(path);
+      p.docInits.push({ ns: String(clock()), docUUID: "same", url });
+      const mark = p.mark(),
+        startNs = clock();
+      let reads = 0;
+      p.wsFrames.push({ ns: String(startNs), event: "module" });
+      p.page = {
+        evaluate: async () => {
+          const matched = ++reads === 1 ? first : !first;
+          if (reads === 1) {
+            await Promise.resolve();
+            // Preserve multiplicity even if monotonic stamps happen to coincide.
+            p.wsFrames.push({ ns: String(startNs), event: "module" });
+            p.otherFrames.push({ ns: String(clock()), event: "unmapped" });
+          }
+          return { url, docUUID: "same", loading: false, matched };
+        },
+      };
+      const pending = p.settle({
+        mark,
+        startNs,
+        quietMs: 3,
+        boundMs: 15,
+        stepMs: 1,
+        requireNativeUpdate: true,
+        bodyRevision: {
+          allowSameDocument: true,
+          path,
+          predicate: { kind: "text", equals: "original" },
+        },
+      });
+      await vi.advanceTimersByTimeAsync(15);
+      const result = await pending;
+      assert.equal(reads, 2);
+      assert.equal(result.settled, !first);
+      assert.equal(result.nativeUpdateObserved, true);
+      assert(result.waitedMs >= 6);
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);

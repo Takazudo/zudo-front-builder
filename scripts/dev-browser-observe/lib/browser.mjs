@@ -706,12 +706,18 @@ export class ObserverPage {
   }) {
     const begun = this.clock();
     let revision = null;
+    let evaluatedEvents;
     for (;;) {
       const ev = this.since(mark, startNs);
-      const lastNs = [
+      const events = [...ev.wsFrames, ...ev.navigations, ...ev.docInits];
+      // A fixed peer may change its DOM without creating a new document. Even
+      // an unmapped declared socket frame interrupts quiet, but only a mapped
+      // update or document initialization can prove native restoration.
+      if (bodyRevision?.allowSameDocument) events.push(...(ev.otherFrames ?? []));
+      const lastNs = events.reduce(
+        (last, row) => (BigInt(row.ns) > last ? BigInt(row.ns) : last),
         startNs,
-        ...[...ev.wsFrames, ...ev.navigations, ...ev.docInits].map((x) => BigInt(x.ns)),
-      ].reduce((a, b) => (b > a ? b : a));
+      );
       const now = this.clock();
       const quietFor = nsToMs(now - lastNs);
       const waitedMs = nsToMs(now - begun);
@@ -724,8 +730,11 @@ export class ObserverPage {
         doc &&
         quietFor >= quietMs &&
         waitedMs < boundMs &&
-        (revision?.docUUID !== doc.docUUID || revision?.loading)
+        (revision?.docUUID !== doc.docUUID ||
+          revision?.loading ||
+          (bodyRevision.allowSameDocument && evaluatedEvents !== events.length))
       ) {
+        evaluatedEvents = events.length;
         const view = await boundedObservation(
           this.page.evaluate(
             (predicate) => ({
