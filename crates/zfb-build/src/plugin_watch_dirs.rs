@@ -85,11 +85,6 @@ fn validate_pattern(pattern: &str) -> Result<(), String> {
     if pattern.is_empty() {
         return Err("glob patterns must be non-empty strings".to_string());
     }
-    if pattern.starts_with('/') || Path::new(pattern).is_absolute() {
-        return Err(format!(
-            "glob {pattern:?} is absolute; patterns are relative to the directory root"
-        ));
-    }
     let bytes = pattern.as_bytes();
     if bytes.len() >= 2
         && bytes[0].is_ascii_alphabetic()
@@ -98,6 +93,14 @@ fn validate_pattern(pattern: &str) -> Result<(), String> {
     {
         return Err(format!(
             "glob {pattern:?} starts with a drive letter; patterns are relative to the directory root"
+        ));
+    }
+    // Only a leading `/` is absolute: patterns are always `/`-separated, so the
+    // host's own path rules (a Windows leading `\` or `C:/`) never apply here,
+    // matching the JS host.
+    if pattern.starts_with('/') {
+        return Err(format!(
+            "glob {pattern:?} is absolute; patterns are relative to the directory root"
         ));
     }
     let mut chars = pattern.chars();

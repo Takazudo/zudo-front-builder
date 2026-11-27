@@ -937,9 +937,10 @@ mod tests {
         let plugin_src = format!(
             r#"
             import {{ readdirSync, existsSync }} from "node:fs";
-            import {{ join }} from "node:path";
+            import {{ join, sep }} from "node:path";
             const root = {root:?};
-            const list = () => readdirSync(root, {{ recursive: true }}).map(String).sort();
+            const list = () =>
+              readdirSync(root, {{ recursive: true }}).map((p) => String(p).split(sep).join("/")).sort();
             export default {{
               name: "dirs",
               setup({{ addVirtualModule }}) {{

@@ -5865,7 +5865,10 @@ mod tests {
     #[test]
     fn plugin_watch_directory_match_gates_refresh_and_invalidation() {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap().join("posts");
+        // Canonical on both sides: on Windows `canonicalize` adds the `\\?\`
+        // prefix, and a path outside the configured project root plans All.
+        let project = tmp.path().canonicalize().unwrap();
+        let root = project.join("posts");
         std::fs::create_dir_all(&root).unwrap();
         let policy = policy_with_plugin_watch_directory(&root, Some(&["**/*.md"]), None);
         let notes = root.join("notes.txt");
@@ -5891,7 +5894,7 @@ mod tests {
         ));
 
         let orch = BuildOrchestrator::new(
-            OrchestratorConfig::new(tmp.path(), Vec::<PathBuf>::new()).with_policy(policy),
+            OrchestratorConfig::new(&project, Vec::<PathBuf>::new()).with_policy(policy),
             make_graph(),
             CountingPipeline::default(),
         );
