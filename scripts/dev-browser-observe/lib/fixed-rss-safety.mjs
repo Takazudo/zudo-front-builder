@@ -18,9 +18,10 @@ import { interruptible } from "./session-deadline.mjs";
 // plus the 200 ms closure, and then decides on that fresh sample.
 const ORDINARY_SETTLE_BOUND_NS = 950_000_000n;
 // A decision after the cadence cutoff with nothing in flight joins the imminent
-// ordinary dispatch. The #4862 slot-01 receipt recorded a tick 231.6 ms late
-// (sample gap 1231.6 ms); 300 ms covers it with margin, and a later tick refuses.
-const DISPATCH_SKEW_ALLOWANCE_NS = 300_000_000n;
+// ordinary dispatch, an extension the owner approved on #4870 with a 400 ms
+// allowance. Observed late ticks on this host: 231.6 ms (#4862 slot 01), 270.8 ms
+// (A/A s1-A epoch 6) and 81 ms (#4870 R3). A later tick refuses (fail closed).
+const DISPATCH_SKEW_ALLOWANCE_NS = 400_000_000n;
 
 function pin(path, digest) {
   const real = realpathSync(path);

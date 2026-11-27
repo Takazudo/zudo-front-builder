@@ -102,6 +102,7 @@ function harness() {
   });
   return {
     monitor,
+    owner,
     sample,
     plans,
     lateTicks,
@@ -258,7 +259,7 @@ test.each([0, 1, 30, 66, 96, 97, 150, 500, 900, 994, 995, 999])(
         assert.equal(BigInt(s.waitedNs), BigInt(1000 - phaseMs + R3_HELPER_MS) * MS);
         assert.equal(s.settledEpoch, s.pendingEpoch);
         assert.equal(value.outerCadence.epoch, s.pendingEpoch);
-        assert.equal(BigInt(s.dispatchBoundNs), BigInt(s.scheduledDispatchNs) + 300n * MS);
+        assert.equal(BigInt(s.dispatchBoundNs), BigInt(s.scheduledDispatchNs) + 400n * MS);
       }
       assert(BigInt(value.outerDecision.decisionNs) < BigInt(value.outerCadence.cadenceDeadlineNs));
     } finally {
@@ -269,8 +270,9 @@ test.each([0, 1, 30, 66, 96, 97, 150, 500, 900, 994, 995, 999])(
 
 test.each([
   [250, "joined"],
-  [299, "joined"],
-  [350, "refused"],
+  [350, "joined"],
+  [399, "joined"],
+  [450, "refused"],
 ])("a decision after the cutoff with the next tick %i ms late is %s", async (lateMs, verdict) => {
   const h = harness();
   try {
@@ -280,7 +282,7 @@ test.each([
     const gate = receivedGate();
     await vi.advanceTimersByTimeAsync(1000 + 997);
     h.lateTicks.set(h.ticks + 1, lateMs);
-    const { value, error } = await settled(decide(h, gate), 1);
+    const { value, error } = await settled(decide(h, gate), 1, 1000);
     if (verdict === "joined") {
       assert.equal(error, undefined, String(error));
       assert.equal(value.preDecisionSettle.outcome, "joined-next-dispatch");
@@ -503,3 +505,82 @@ test.each(["decided-after-settle", "refused-receipt-expired"])(
     }
   },
 );
+
+// Review 1 finding 3: executeLocked's outerDecision feeds verifyPeerProcesses and the
+// terminal-proof reconciliation, so a receipt consumed before a later refusal must
+// still reach onDecision.
+test("the hooks mirror a consumed receipt to onDecision when the decision then expires", async () => {
+  const h = harness();
+  try {
+    await ready(h);
+    const gate = receivedGate();
+    await vi.advanceTimersByTimeAsync(400);
+    const seen = [];
+    const hooks = nextOuterBatchHooks({
+      safety: h.monitor,
+      gate: () => gate,
+      readProductGraph: () => h.ancestors,
+      verifyWiring: () => ({ census: "exact" }),
+      operation: "decision-only",
+      workDeadlineNs: process.hrtime.bigint() + 7_000_000n * MS,
+      signal: new AbortController().signal,
+      append: () => assert.fail("no decision row after a refusal"),
+      onDecision: (decision, cadence) => seen.push({ decision, cadence }),
+    });
+    const { error } = await settled(
+      hooks.beforePeerDecision({ attemptStart: process.hrtime.bigint(), attemptMs: 0 }),
+      1,
+    );
+    assert.match(String(error?.message), /outer decision expired/);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].decision, error.outerDecision);
+    assert.equal(seen[0].decision.packet.worker.pid, 301);
+    assert.throws(() => gate.consume(() => true), /outer receipt unavailable/);
+  } finally {
+    await h.done();
+  }
+});
+
+// Review 1 note 4: an overlapping pre-write identity decision never starts a wait,
+// and stop wakes a decision that is waiting for the next dispatch.
+test("settle does not wait while a pre-write identity decision is pending", async () => {
+  const h = harness();
+  try {
+    await ready(h);
+    await vi.advanceTimersByTimeAsync(997);
+    const poll = Promise.withResolvers();
+    Object.assign(h.owner, { pollBeforeMutation: () => poll.promise });
+    const identity = h.monitor.verifyPrewriteTerminal({
+      getOwned: () => h.ancestors,
+      workDeadlineNs: process.hrtime.bigint() + 7_000_000n * MS,
+    });
+    const s = await h.monitor.settleOrdinaryBeforeDecision({
+      deadlineNs: process.hrtime.bigint() + 60_000n * MS,
+    });
+    assert.deepEqual([s.outcome, s.waitedNs, s.pendingAtDecision], ["not-pending", "0", false]);
+    poll.resolve();
+    await identity;
+  } finally {
+    await h.done();
+  }
+});
+
+test("stopping the monitor wakes a decision waiting for the next dispatch", async () => {
+  const h = harness();
+  try {
+    await ready(h);
+    await vi.advanceTimersByTimeAsync(997);
+    let s;
+    const waiting = h.monitor
+      .settleOrdinaryBeforeDecision({ deadlineNs: process.hrtime.bigint() + 60_000n * MS })
+      .then((r) => (s = r));
+    await vi.advanceTimersByTimeAsync(1);
+    assert.equal(s, undefined, "waiting for the next dispatch");
+    await h.monitor.stop();
+    await waiting;
+    assert.equal(s.outcome, "dispatch-unavailable");
+    assert(BigInt(s.waitedNs) <= 2n * MS, s.waitedNs);
+  } finally {
+    await h.done();
+  }
+});
