@@ -236,6 +236,7 @@ fn spawn_dev_with_env(
         .env_remove("ZFB_DEV_BOOT_LAZY")
         .env_remove("ZFB_DEV_DEFER_BUNDLE")
         .env_remove("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS")
+        .env_remove("ZFB_DEV_TEST_FIRST_DRAIN_GATE")
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     if matches!(mode, DevMode::Eager) {
@@ -3392,32 +3393,6 @@ async fn eager_edits_during_rejected_generation_survive_recovery() {
     run_edits_during_rejected_generation(DevMode::Eager, None).await;
 }
 
-/// Boot handshake shared by the eager and cold-lazy variants of the
-/// rejected-tick CSS scenarios below. Eager renders nothing for a data probe,
-/// so no SSE event would prove the watcher live; the boot hook runs after it
-/// is armed. Skips only through [`wait_for_ready_port`]'s known-unavailable
-/// dependency check, like every other scenario in this file.
-async fn boot_handshake_for_mode(
-    session: &mut DevSession,
-    mode: DevMode,
-    data_probe_path: &Path,
-) -> Option<(String, reqwest::Client)> {
-    match mode {
-        DevMode::Eager => {
-            let port = wait_for_ready_port(session).await?;
-            wait_for_stderr_line(
-                session,
-                0,
-                &["[zfb-timing] boot: render complete"],
-                "eager boot hook finished",
-            )
-            .await;
-            Some((format!("http://localhost:{port}"), build_reqwest_client()))
-        }
-        DevMode::Lazy => boot_and_handshake_banner_only(session, data_probe_path).await,
-    }
-}
-
 /// The `[zfb-timing] intake paths:` lines of `window`.
 fn intake_lines(window: &str) -> Vec<&str> {
     window
@@ -3426,29 +3401,42 @@ fn intake_lines(window: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Proves the stylesheet edit reached the rejected tick itself: within
-/// `window` (from just before the writes to the end of the rejection line),
-/// the last intake batch naming the stylesheet must also name
-/// `content_needle`. An in-place write may surface its truncate as an earlier
-/// stylesheet-only batch; the caller's served-CSS check before the repair
-/// proves no such batch published the new marker.
-fn assert_stylesheet_shares_rejected_intake(
-    window: &str,
-    content_needle: &str,
-    phase: &str,
-    session: &DevSession,
-) {
-    let intake = intake_lines(window);
-    let last_stylesheet_batch = intake
-        .iter()
-        .rev()
-        .find(|line| line.contains("styles/global.css:"));
-    assert!(
-        last_stylesheet_batch.is_some_and(|line| line.contains(content_needle)),
-        "[{phase}] the stylesheet edit and {content_needle:?} must share the rejected intake \
-         tick; intake lines before the rejection: {intake:#?}\n{}",
-        session.logs()
-    );
+/// Inspect the intake immediately preceding the discovery error. An earlier
+/// CSS/create batch cannot establish which changes the rejected tick received.
+fn discovery_rejection_matches_intake(window: &str, stylesheet: &Path, created: &Path) -> bool {
+    let Some((_, last_tick)) = window.rsplit_once("[zfb-timing] intake paths: ") else {
+        return false;
+    };
+    let Some((paths, processing)) = last_tick.split_once('\n') else {
+        return false;
+    };
+    let changes = || {
+        paths
+            .split(", ")
+            .filter_map(|change| change.rsplit_once(':'))
+    };
+    changes().any(|(path, _)| Path::new(path) == stylesheet)
+        && changes().any(|(path, kind)| Path::new(path) == created && kind == "Created")
+        && processing
+            .lines()
+            .any(|line| line.contains("[zfb-timing] discovery: created=") && line.contains("c.md"))
+}
+
+#[test]
+fn discovery_rejection_requires_the_joint_intake_on_the_rejected_tick() {
+    let joint =
+        "[zfb-timing] intake paths: styles/global.css:Modified, content/articles/c.md:Created\n";
+    let create_only = "[zfb-timing] intake paths: content/articles/c.md:Created\n";
+    let discovery = "[zfb-timing] discovery: created=[\"content/articles/c.md\"]\n[zfb-timing] discovery: err\n";
+    let matches = |log: &str| {
+        discovery_rejection_matches_intake(
+            log,
+            Path::new("styles/global.css"),
+            Path::new("content/articles/c.md"),
+        )
+    };
+    assert!(matches(&format!("{joint}{discovery}")));
+    assert!(!matches(&format!("{joint}{create_only}{discovery}")));
 }
 
 /// After the content repair publishes the stylesheet, prove the CSS came from
@@ -3544,13 +3532,17 @@ async fn hold_css_test_bundle(
     held
 }
 
-async fn queue_edit_behind_held_bundle(
+async fn queue_edit_and_wait_for_delivery(
     session: &DevSession,
     offset: usize,
     file: &Path,
     bytes: &[u8],
 ) -> usize {
     overwrite_same_length(file, bytes);
+    wait_for_queued_edit(session, offset, file).await
+}
+
+async fn wait_for_queued_edit(session: &DevSession, offset: usize, file: &Path) -> usize {
     let path = file.to_str().expect("test fixture path is UTF-8");
     wait_for_stderr_line_where(
         session,
@@ -3561,7 +3553,7 @@ async fn queue_edit_behind_held_bundle(
                 .is_some_and(|paths| paths.split(", ").any(|sent| sent == path))
         },
         &format!("confirming watcher delivery of {path}"),
-        "queue edit while the previous native bundle is held",
+        "awaiting watcher queue delivery",
     )
     .await
     .1
@@ -3575,8 +3567,8 @@ async fn queue_css_and_content(
     article: &Path,
     malformed: &[u8],
 ) {
-    let css_queued = queue_edit_behind_held_bundle(session, held, stylesheet, css).await;
-    queue_edit_behind_held_bundle(session, css_queued, article, malformed).await;
+    let css_queued = queue_edit_and_wait_for_delivery(session, held, stylesheet, css).await;
+    queue_edit_and_wait_for_delivery(session, css_queued, article, malformed).await;
 }
 
 async fn wait_for_coalesced_css_rejection(session: &DevSession, offset: usize) -> usize {
@@ -3900,32 +3892,73 @@ async fn run_css_edit_in_rejected_discovery_tick(mode: DevMode, boot_lazy: Optio
     let _serial = SERIAL.lock().await;
 
     let temp = tempfile::tempdir().expect("create slug-agreement fixture");
-    let (root, data_probe_path) = slug_session_root(&temp);
+    let (root, _) = slug_session_root(&temp);
     let stylesheet = root.join("styles/global.css");
     fs::create_dir_all(root.join("styles")).expect("create styles/");
     fs::write(&stylesheet, ":root { --slug-css-marker: css-v1; }\n").expect("write global.css");
-    let mut session = spawn_dev_with_timing(root, mode, boot_lazy, true);
+    let gate_dir = tempfile::tempdir().expect("gate outside watched project");
+    let gate = gate_dir.path().join("first-drain.sock");
+    let listener = tokio::net::UnixListener::bind(&gate).expect("bind first-drain gate");
+    let mut session = spawn_dev_with_env(
+        root,
+        mode,
+        boot_lazy,
+        true,
+        &[(
+            "ZFB_DEV_TEST_FIRST_DRAIN_GATE",
+            gate.to_str().expect("test gate path is UTF-8"),
+        )],
+    );
     let pgid = session.guard.pgid;
     let body = async {
-        let Some((base, client)) =
-            boot_handshake_for_mode(&mut session, mode, &data_probe_path).await
-        else {
+        let Some(port) = wait_for_ready_port(&mut session).await else {
             return ScenarioOutcome::Skipped;
         };
+        let base = format!("http://localhost:{port}");
+        let client = build_reqwest_client();
+        let (mut release, _) = tokio::time::timeout(SCENARIO_DEADLINE, listener.accept())
+            .await
+            .expect("orchestrator did not reach its first drain")
+            .expect("accept post-boot gate connection");
+        match mode {
+            DevMode::Eager => {
+                wait_for_stderr_line(
+                    &session,
+                    0,
+                    &["[zfb-timing] boot: render complete"],
+                    "eager boot hook finished",
+                )
+                .await;
+            }
+            DevMode::Lazy => {
+                // Keep the cold path free of page requests. The two watcher
+                // delivery receipts below provide its live watch witness.
+                assert_eq!(zfb_test_utils::open_sse(&base).await.status().as_u16(), 200);
+            }
+        }
         let css_url = format!("{base}/assets/styles.css");
         poll_until_response_contains(&client, &css_url, "css-v1", "baseline css", &session).await;
-        // A tick still bundling when c.md lands can read it and turn its
-        // Created event into a Modified one, which skips discovery.
-        drain_ticks_until_quiescent(&base).await;
-
-        let created = session.root.join("content/articles/c.md");
         let offset = read_log(&session.stderr_path).len();
-        overwrite_same_length(&stylesheet, b":root { --slug-css-marker: css-v2; }\n");
+        let created = session.root.join("content/articles/c.md");
+        let css_queued = queue_edit_and_wait_for_delivery(
+            &session,
+            offset,
+            &stylesheet,
+            b":root { --slug-css-marker: css-v2; }\n",
+        )
+        .await;
         fs::write(
             &created,
             "---\ntitle: Gamma Slug\nslug: not-c\n---\n\nGamma body.\n",
         )
         .expect("create c.md with a disagreeing slug");
+        wait_for_queued_edit(&session, css_queued, &created).await;
+        use tokio::io::AsyncWriteExt;
+        release
+            .write_u8(b'G')
+            .await
+            .expect("release the first drain");
+        drop(release);
         let (_, rejected_end) = wait_for_stderr_line(
             &session,
             offset,
@@ -3934,28 +3967,17 @@ async fn run_css_edit_in_rejected_discovery_tick(mode: DevMode, boot_lazy: Optio
         )
         .await;
         let tick_log = read_log(&session.stderr_path)[offset..rejected_end].to_string();
-        assert_stylesheet_shares_rejected_intake(
-            &tick_log,
-            "c.md:Created",
-            "rejected discovery tick",
-            &session,
-        );
         assert!(
-            tick_log
-                .lines()
-                .any(|line| line.contains("[zfb-timing] discovery: created=")
-                    && line.contains("c.md")),
-            "the rejected discovery must be the one that saw c.md:\n{tick_log}\n{}",
+            discovery_rejection_matches_intake(&tick_log, &stylesheet, &created),
+            "the final intake must carry the stylesheet and c.md creation into discovery:\n{tick_log}\n{}",
             session.logs()
         );
-        assert_css_lacks(
-            &client,
-            &css_url,
-            "css-v2",
-            "after the rejected discovery",
-            &session,
-        )
-        .await;
+        let (status, _, css) = get_status_and_body(&client, &css_url).await;
+        assert!(
+            status == 200 && css.contains("css-v1") && !css.contains("css-v2"),
+            "the rejected discovery must keep serving css-v1 (HTTP {status}, body {css:?})\n{}",
+            session.logs()
+        );
 
         write_in_place(
             &created,
