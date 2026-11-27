@@ -1865,6 +1865,37 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         wallMs: nsToMs(hrtimeNs() - startedNs),
       };
       writeJsonSync(summaryPath, summary);
+      if (outerProtocol) {
+        const refusal = rec.records.findLast(
+          (r) => r.phase === "before-mutation" && r.writePerformed === false,
+        );
+        const disk = rec.records.findLast((r) => r.type === "fixed-peer-refused-disk-audit");
+        const noWrite = rec.records.findLast((r) => r.type === "next-outer-no-write");
+        const closed = Boolean(stopReport.absent && !stopFailure && !unresolved.length);
+        const proofComplete =
+          !evidenceFailed && receipt.nextPeerPopulation?.ok && !fixedSafety?.report().failure;
+        let status = "incomplete";
+        if (closed && disk?.unchanged && refusal?.observerDisarmed) {
+          if (refusal.outcome === "outer-decision-only" && noWrite && proofComplete)
+            status = "decision-only";
+          else if (refusal.outcome === "identity-rejected" && !noWrite) status = "prewrite-refused";
+        } else if (
+          closed &&
+          proofComplete &&
+          exitCode === EXIT.ok &&
+          accounting.success === 1 &&
+          outerDecision
+        )
+          status = "body";
+        writeJsonSync(join(labelDir, "next-outer-outcome.json"), {
+          label,
+          nonce: loaded.nextOuter.nonce,
+          providerPid: loaded.nextOuter.outer.pid,
+          controllerPid: process.pid,
+          closureVerified: closed,
+          status,
+        });
+      }
     } catch (error) {
       evidenceFailed = true;
       stderr(`summary write failed: ${error?.message ?? error}`);

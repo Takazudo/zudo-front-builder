@@ -28,8 +28,7 @@ def file_json(path, cap):
 
 
 def proc_birth(pid):
-    raw=Path(f"/proc/{pid}/stat").read_bytes()
-    need(len(raw)<=4096,"proc stat cap")
+    raw=life.bounded_bytes(Path(f"/proc/{pid}/stat"),4096)
     row=raw.rsplit(b") ",1)[1].split()
     return dict(pid=pid,ppid=int(row[1]),pgid=int(row[2]),startTicks=row[19].decode(),
                 birthVersion="linux-proc-v1",bootId=boot)
@@ -58,11 +57,9 @@ def browser_inventory():
         pid=pending.pop()
         try:
             task=Path(f"/proc/{pid}/task")
-            workers=list(task.iterdir())
-            need(len(workers)<=256,"browser inventory task cap")
-            for t in workers:
-                row=(t/"children").read_bytes()
-                need(len(row)<=4096,"browser inventory children input cap")
+            for i,t in enumerate(task.iterdir()):
+                need(i<256,"browser inventory task cap")
+                row=life.bounded_bytes(t/"children",4096)
                 for value in row.split():
                     child=int(value)
                     if child not in members:
@@ -112,10 +109,13 @@ if __name__=="__main__":
                holderScript=str(lib/"next-peer-custody.py"),label=label,profilePath=str(profile_path))
     sub=importlib.util.spec_from_file_location("outer_observer",lib/"next-outer-observer.py")
     reader=importlib.util.module_from_spec(sub);sub.loader.exec_module(reader)
-    boot=Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    sub=importlib.util.spec_from_file_location("outer_lifecycle",lib/"next-outer-lifecycle.py")
+    life=importlib.util.module_from_spec(sub);sub.loader.exec_module(life)
+    boot=life.bounded_bytes("/proc/sys/kernel/random/boot_id",64).decode().strip()
     self_birth=proc_birth(os.getpid())
     need(profile["limits"]["wallCeilingMs"]==7200000,"outer wall contract")
     end=started+7200_000_000_000
+    work_end=end-life.FINALIZATION_NS
     nonce=secrets.token_hex(16)
     directory=Path(profile["outDir"])/label
     browser_file=root/(label+"-owned-browser.json")
@@ -137,7 +137,8 @@ if __name__=="__main__":
                      sockets=[os.readlink(f"/proc/self/fd/{fd}") for fd in fds])
     env={**os.environ,"ZFB_NEXT_OUTER_CHANNEL":json.dumps(declaration,separators=(",",":"))}
     sel=selectors.DefaultSelector()
-    cli=obs=pidfd=None
+    cli=obs=pidfd=controller_handle=None
+    sent=False;disposition=None;uncertain=None;supervisor=None;verified_closure=False
     result=None;failure=None;captured=False
     try:
         cli=subprocess.Popen(argv,pass_fds=fds,env=env)
@@ -151,12 +152,12 @@ if __name__=="__main__":
         record(dict(stage="started",outer=self_birth,supervisor=supervisor,descriptors=declaration["sockets"]))
         while result is None:
             stamp=now()
-            need(stamp<end,"outer supervisor wall cutoff")
+            need(stamp<work_end,"outer supervisor work cutoff")
             if obs and obs.state!="retired": obs.check_budget()
             if stamp>=nxt:
                 if not captured:captured=browser_inventory()
                 nxt=now()+250_000_000
-            wake=min(nxt,end)
+            wake=min(nxt,work_end)
             if obs and obs.state!="retired":wake=min(wake,obs.deadline)
             if obs and obs.state=="observing":
                 next_view=obs.views[0]+30_000_000 if obs.views else stamp
@@ -174,8 +175,16 @@ if __name__=="__main__":
                     # identifies the real sender of this header independently.
                     if obs is not None:raise ValueError("duplicate or closed reverse header")
                     data=reader.receive_authority(pairs[1][0],self_birth,supervisor,nonce,paths)
+                    afd=os.pidfd_open(data["controller"]["pid"])
+                    try:
+                        check=proc_birth(data["controller"]["pid"])
+                        need(all(check[k]==data["controller"][k] for k in ("pid","ppid","pgid","bootId","startTicks")),"controller changed")
+                        controller_handle=(afd,check)
+                    except BaseException:
+                        os.close(afd)
+                        raise
                     obs=reader.OuterObservation(data["contract"],data["holder"],data["worker"],
-                        nonce,data["token"],data["descriptors"],min(end,now()+3_000_000_000),record)
+                        nonce,data["token"],data["descriptors"],min(work_end,now()+3_000_000_000),record)
                     record(dict(stage="authenticated-header",controller=data["controller"],
                                 holder=data["holder"],worker=data["worker"],descriptors=data["descriptors"]))
                     sel.register(pairs[0][0],selectors.EVENT_READ,"pair")
@@ -189,12 +198,22 @@ if __name__=="__main__":
                     body=json.dumps(packet,separators=(",",":")).encode()
                     need(len(body)<=4096 and pairs[1][0].send(body)==len(body),"outer terminal send")
                     need(pairs[2][0].send(b"G")==1,"outer wake send")
+                    sent=True
                     record(dict(stage="sent",packet=packet))
                     # Only one authority is accepted. Closing our write end
                     # provides normal EOF to the controller after its notification.
                     sel.unregister(pairs[1][0])
                     pairs[2][0].shutdown(socket.SHUT_WR)
-        need(captured,"independent browser inventory absent")
+        summary=file_json(directory/"next-outer-outcome.json",16384)
+        need(summary["label"]==label and summary["nonce"]==nonce and
+             summary["providerPid"]==os.getpid(),"unbound normal outer outcome")
+        completion=file_json(directory/"supervisor-completion.json",16384)
+        need(summary["controllerPid"]==completion["controllerPid"] and
+             completion["exitCode"]==result,"normal supervisor completion mismatch")
+        verified_closure=summary.get("closureVerified") is True
+        need(verified_closure,"normal controller cleanup unverified")
+        need(now()<end,"outer finalization exceeded total")
+        disposition=life.disposition(result,captured,sent,summary["status"])
     except BaseException as exc:
         failure=repr(exc)
         record(dict(stage="failure",error=failure))
@@ -202,15 +221,26 @@ if __name__=="__main__":
         if obs:obs.close()
         sel.close()
         for owner,child in pairs:owner.close();child.close()
-        if cli and cli.poll() is None:
-            # Direct, unreaped child identity and pidfd remain ours. The normal
-            # CLI's SIGTERM handler owns its controller and reserve for teardown.
-            if pidfd is not None:signal.pidfd_send_signal(pidfd,signal.SIGTERM)
-            try:result=cli.wait(timeout=60)
-            except subprocess.TimeoutExpired:failure=failure or "independent supervisor failed to finalize"
-        if pidfd is not None:os.close(pidfd)
+        try:
+            if cli:
+                result,uncertain=life.finish_cli(cli,end,pidfd,controller_handle,record)
+            if controller_handle:
+                import select
+                poll=select.poll();poll.register(controller_handle[0],select.POLLIN)
+                if not poll.poll(0):
+                    uncertain=uncertain or dict(reason="controller exit not proved",birth=controller_handle[1])
+            if uncertain or (failure and cli and not verified_closure):
+                why=uncertain or {"reason":failure}
+                state=dict(version=1,labelDir=str(directory),controllerPid=controller_handle[1]["pid"] if controller_handle else None,
+                           outer=self_birth,supervisor=supervisor,unresolved=[why])
+                hold_paths=[root/(label+"-outer-hold.json"),Path.home()/".local/state/zfb/dev-browser-observe/active.json"]
+                record(dict(stage="hold",holds=life.preserve_hold(hold_paths,state),unresolved=why))
+                failure=failure or why["reason"]
+        finally:
+            if controller_handle:os.close(controller_handle[0])
+            if pidfd is not None:os.close(pidfd)
         usage=resource.getrusage(resource.RUSAGE_SELF)
-        record(dict(stage="closed",rc=result,failure=failure,browserInventory=captured,
+        record(dict(stage="closed",rc=result,failure=failure,disposition=disposition,browserInventory=captured,
                     observerMaxRssKiB=usage.ru_maxrss,observerUserSeconds=usage.ru_utime,
                     observerSystemSeconds=usage.ru_stime))
         log.close()
