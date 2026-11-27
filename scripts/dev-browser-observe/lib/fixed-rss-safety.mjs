@@ -327,6 +327,35 @@ export function startFixedRssSafety({
     get qualifiedPeer() {
       return qualifiedPeer;
     },
+    verifyOuterGraph(getOwned) {
+      const stamp = process.hrtime.bigint();
+      assert(
+        !failure &&
+          !stopped &&
+          !pending &&
+          !decision &&
+          postCycles === 2 &&
+          stamp < nextDispatchNs - 5000000n,
+        "outer decision outside current RSS coverage",
+      );
+      const custody = nextOwner();
+      const worker = custody?.qualified;
+      assert(worker, "outer decision requires a qualified candidate");
+      const owned = getOwned();
+      assert(!owned.some((p) => custody.isWorker(p)), "outer decision requires a missing worker");
+      const known = [...server.handle.known.values()];
+      assert(
+        known.some((p) => custody.isWorker(p)),
+        "ordinary sampler has not recorded qualified birth",
+      );
+      peerProcessIdentity(
+        owned,
+        known.filter((p) => !custody.isWorker(p)),
+        qualifiedPeer,
+        peer,
+      );
+      return { epoch: measuredCycles, cadenceDeadlineNs: String(nextDispatchNs - 5000000n) };
+    },
     async verifyPrewriteTerminal({ getOwned, workDeadlineNs, signal }) {
       const custody = nextOwner();
       assert(custody?.pollBeforeMutation && !failure && !stopped, "pre-write safety unavailable");
@@ -362,7 +391,7 @@ export function startFixedRssSafety({
         decisionAbort = null;
       }
     },
-    verifyPeerProcesses(owned, known) {
+    verifyPeerProcesses(owned, known, outerDecisionBirth) {
       if (failure || stopped) throw new Error(failure?.error ?? "fixed peer stopped");
       const custody = nextOwner();
       if (!custody) return peerProcessIdentity(owned, known, qualifiedPeer, peer);
@@ -370,7 +399,11 @@ export function startFixedRssSafety({
       // Scout qualification can precede the next sampler's known-map commit.
       if (custody.qualified && !owned.some(isWorker))
         assert(
-          custody.terminalVerified || custody.decisionProof,
+          custody.terminalVerified ||
+            custody.decisionProof ||
+            (fixedExecutables.protocol === "linux-fixed-peer.v4" &&
+              outerDecisionBirth &&
+              custody.isWorker(outerDecisionBirth)),
           "known Next worker missing before official terminal decision",
         );
       const results = peerProcessIdentity(

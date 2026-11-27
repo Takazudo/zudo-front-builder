@@ -949,6 +949,9 @@ export async function runBatch({ scenarios, deps }) {
         let tLast = null;
         let writeSteps = null;
         const recordPrewriteRefusal = async (error) => {
+          const decisionOnly =
+            error?.code === "NEXT_OUTER_DECISION_ONLY" && deps.outerPeerWriteTime;
+          const outcome = decisionOnly ? "outer-decision-only" : "identity-rejected";
           let observerDisarmed = false,
             disarmError = null;
           if (!signal?.aborted) {
@@ -961,7 +964,8 @@ export async function runBatch({ scenarios, deps }) {
           }
           append({
             ...recBase,
-            outcome: "identity-rejected",
+            outcome,
+            ...(decisionOnly && { prewriteDecision: error.proof }),
             phase: "before-mutation",
             error: String(error.message ?? error),
             writePerformed: false,
@@ -969,8 +973,8 @@ export async function runBatch({ scenarios, deps }) {
             disarmError,
           });
           acc.lastArmedUnknownOperation = null;
-          count(acc, "identity-rejected");
-          stop("identity-rejected", where);
+          count(acc, outcome);
+          stop(outcome, where);
           if (zeroWriteTarget) {
             let after, auditError;
             try {
@@ -998,7 +1002,7 @@ export async function runBatch({ scenarios, deps }) {
                 type: "cleanup",
                 label: "cleanup",
                 measured: false,
-                reason: "after-stop:identity-rejected",
+                reason: "after-stop:" + outcome,
                 ok: false,
                 restored: false,
                 live: [],
@@ -1032,6 +1036,16 @@ export async function runBatch({ scenarios, deps }) {
             writeSteps = r.steps;
           } else
             t0 = fs.performWrite(attempt.write, () => {
+              if (deps.outerPeerWriteTime) {
+                try {
+                  const proof = deps.outerPeerWriteTime(() => clock.now());
+                  recBase.prewriteDecision = proof;
+                  return BigInt(proof.t0Ns);
+                } catch (error) {
+                  preSyscallRefusal = error;
+                  throw error;
+                }
+              }
               const stamp = clock.now();
               if (deps.checkPeerWriteTime) {
                 try {

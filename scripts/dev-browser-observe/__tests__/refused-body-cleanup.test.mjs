@@ -10,6 +10,8 @@ import { deps, fakeFs, fakePage } from "./fakes.mjs";
 test.each([
   "unchanged",
   "late-before-open",
+  "outer-decision-only",
+  "outer-fails-at-t0",
   "changed-hash",
   "changed-inode",
   "prior-write",
@@ -59,12 +61,22 @@ test.each([
     };
     const d = {
       ...deps({ page, fs }),
+      ...(mode.startsWith("outer-") && {
+        beforePeerDecision: () => {},
+        outerPeerWriteTime: (now) => {
+          if (mode === "outer-fails-at-t0") throw new Error("actual outer cutoff");
+          throw Object.assign(new Error("declared diagnostic"), {
+            code: "NEXT_OUTER_DECISION_ONLY",
+            proof: { t0Ns: String(now()) },
+          });
+        },
+      }),
       checkPeerWriteTime: () => {
         if (mode === "late-before-open") throw Error("late after graph verification");
       },
       beforePeerMutation: () => {
         gate++;
-        if (mode === "late-before-open") return;
+        if (mode === "late-before-open" || mode.startsWith("outer-")) return;
         if ((mode === "prior-write" && gate === 1) || mode === "failed-write") return;
         if (mode === "changed-hash") writeFileSync(path, "XX");
         if (mode === "changed-inode") {
@@ -82,13 +94,21 @@ test.each([
       ],
     });
     assert(stopped);
-    const untouched = ["unchanged", "late-before-open"].includes(mode);
+    const untouched = [
+      "unchanged",
+      "late-before-open",
+      "outer-decision-only",
+      "outer-fails-at-t0",
+    ].includes(mode);
     assert.equal(diskCalls, ["prior-write", "failed-write"].includes(mode) ? 1 : 0);
     assert.equal(restorations, untouched ? 0 : 1);
     assert.equal(visits, untouched ? 0 : 1);
     assert.equal(settles, untouched ? 0 : 1);
     if (untouched) {
-      assert.equal(accounting.stopReason, "identity-rejected");
+      assert.equal(
+        accounting.stopReason,
+        mode === "outer-decision-only" ? "outer-decision-only" : "identity-rejected",
+      );
       const audit = d.recorder.records.find((x) => x.type === "fixed-peer-refused-disk-audit");
       assert(audit.unchanged && audit.before.sha256 === audit.after.sha256);
       assert.deepEqual(audit.before, audit.after);

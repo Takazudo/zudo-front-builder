@@ -1,5 +1,5 @@
 import { fork } from "node:child_process";
-import { takeNextOuterChannel } from "./next-outer-channel.mjs";
+import { readNextOuterDeclaration, takeNextOuterChannel } from "./next-outer-channel.mjs";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -75,15 +75,27 @@ export async function superviseSession({
     });
     stderr("session supervisor failure record: " + report);
   };
+  const outer = profile.fixedNextOuterObserver
+    ? readNextOuterDeclaration(profile.fixedNextOuterObserver)
+    : null;
   let controllerExit = null;
   const code = await superviseController({
     worker: workerFile,
+    ...(outer && { nextOuterChannel: outer }),
     args: {
       profilePath,
       label,
       command,
       scenarios,
       supervisorId,
+      ...(outer && {
+        nextOuter: {
+          outer: outer.outer,
+          peer: outer.peer,
+          nonce: outer.nonce,
+          sockets: outer.sockets,
+        },
+      }),
       ...(bounded ? { supervisorStartedMs: started, supervisorDeadlineMs: deadline } : {}),
     },
     deadline,
@@ -130,11 +142,14 @@ export function superviseController({
     const started = monotonicMs();
     const workDeadline = deadline - terminalMs;
     const channel = nextOuterChannel && takeNextOuterChannel(nextOuterChannel);
+    const childEnv = channel ? { ...process.env } : undefined;
+    if (childEnv) delete childEnv.ZFB_NEXT_OUTER_CHANNEL;
     let child;
     let closeFailure;
     try {
       child = fork(worker, [JSON.stringify({ ...args, workDeadline })], {
         execArgv: [],
+        ...(childEnv && { env: childEnv }),
         stdio: ["ignore", "inherit", "inherit", "ipc", ...(channel?.descriptors ?? [])],
       });
     } finally {

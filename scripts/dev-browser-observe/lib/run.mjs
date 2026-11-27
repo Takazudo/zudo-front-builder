@@ -1,3 +1,14 @@
+import assert from "node:assert/strict";
+import { closeSync, readlinkSync } from "node:fs";
+import { linuxBirth } from "./linux-birth.mjs";
+import {
+  nextOuterChildren,
+  readNextOuterProductGraph,
+  verifyNextOuterWiring,
+  verifyNextOuterProvider,
+} from "./next-outer-provider.mjs";
+import { observeNextOuterReceipt } from "./next-outer-channel.mjs";
+import { outerTerminalGate } from "./next-outer-terminal.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
 import {
   markNextRegistry,
@@ -208,6 +219,7 @@ export async function execute({
   signal,
   onFinalizing,
   supervisorId,
+  nextOuter,
   supervisorStartedMs,
   workDeadline,
   supervisorDeadlineMs,
@@ -215,6 +227,7 @@ export async function execute({
 }) {
   const loaded = loadProfile(profilePath);
   loaded.signal = signal;
+  loaded.nextOuter = nextOuter;
   loaded.onFinalizing = onFinalizing;
   loaded.supervisorId = supervisorId;
   loaded.supervisorStartedMs = supervisorStartedMs;
@@ -338,6 +351,7 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
       }
       throw error;
     }
+    if (loaded.nextOuter) loaded.outerLock = linuxBirth(lock.helperPid);
     return await executeLocked({ loaded, label, labelDir, command, stderr, hooks, intentPath });
   } finally {
     await lock.release();
@@ -348,10 +362,14 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   const { profile, resolved } = loaded;
   const fixedAstro = isFixedAstroProtocol(profile.fixedRssSafety);
   const decisionProtocol = profile.fixedRssSafety === "linux-fixed-peer.v3";
-  const nextProtocol = decisionProtocol || profile.fixedRssSafety === NEXT_BOOTSTRAP_PROTOCOL;
+  const outerProtocol = profile.fixedRssSafety === "linux-fixed-peer.v4";
+  const nextProtocol =
+    outerProtocol || decisionProtocol || profile.fixedRssSafety === NEXT_BOOTSTRAP_PROTOCOL;
   const bodyPeer = nextProtocol || profile.fixedRssSafety === FIXED_PEER_PROTOCOL;
   const fixedPeer = fixedAstro || bodyPeer;
   let nextCustody = null;
+  let outerReceiver, outerGate, outerDecision, outerCadence, outerWiring;
+  let holderSocketOwned = false;
   let nextRegistryMark;
   const fixedAbort = profile.fixedRssSafety ? new AbortController() : null;
   if (fixedAbort)
@@ -550,6 +568,44 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   let summaryExtra = {};
   const accountingRef = { current: null };
   try {
+    if (outerProtocol) {
+      const decl = loaded.nextOuter;
+      assert(
+        decl && Array.isArray(decl.sockets) && decl.sockets.length === 3,
+        "missing supervised outer channel",
+      );
+      assert.deepEqual(
+        [4, 5, 6].map((fd) => readlinkSync("/proc/self/fd/" + fd)),
+        decl.sockets,
+      );
+      holderSocketOwned = true;
+      const deadlineNs = BigInt(loaded.workDeadline) * 1000000n;
+      try {
+        receipt.outerProvider = await verifyNextOuterProvider({
+          profile: profile.fixedNextOuterObserver,
+          decl,
+          profilePath: loaded.path,
+          label,
+          deadlineNs,
+          signal: loaded.signal,
+        });
+      } catch (error) {
+        try {
+          closeSync(5);
+        } finally {
+          closeSync(6);
+        }
+        throw error;
+      }
+      outerReceiver = await observeNextOuterReceipt({
+        peer: decl.peer,
+        deadlineNs,
+        signal: loaded.signal,
+        gateAtDelivery: () => outerGate,
+        onFailure: (error) => fixedAbort.abort(error),
+        record: (r) => rec.append({ type: "next-outer-delivered", ...r }),
+      });
+    }
     if (memoryDiagnostic) {
       const { sampleRendererMemory, inspectRendererLifecycle } =
         hooks.rendererMemoryEvidence ?? (await import("./renderer-memory-evidence.mjs"));
@@ -867,7 +923,11 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       }
       const checkPeer = (processes) => {
         try {
-          return fixedSafety.verifyPeerProcesses(processes, [...server.handle.known.values()]);
+          return fixedSafety.verifyPeerProcesses(
+            processes,
+            [...server.handle.known.values()],
+            outerDecision?.packet.worker,
+          );
         } catch (error) {
           return [
             {
@@ -1077,8 +1137,25 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         socket,
         bootstrapSha256: "463a33ccdf45500486481c697ca9b7445fae5998410b82d3d5485c0b85b770eb",
       });
+      // The holder constructor now owns fd4 through spawn or failure.
+      if (outerProtocol) holderSocketOwned = false;
       nextCustody = startNextPeerCustody({
-        prewriteDecision: decisionProtocol,
+        prewriteDecision: decisionProtocol || outerProtocol,
+        ...(outerProtocol && {
+          outerOffer: { fd: 4, nonce: loaded.nextOuter.nonce },
+          onOuterAuthority: (header) => {
+            const authority = {
+              ...header,
+              outer: loaded.nextOuter.outer,
+              credentials: loaded.nextOuter.peer,
+              startNs: String(BigInt(loaded.supervisorStartedMs) * 1000000n),
+              deadlineNs: String(BigInt(loaded.workDeadline) * 1000000n),
+            };
+            outerGate = outerTerminalGate({ authority });
+            outerReceiver.sendAuthority(header);
+            rec.append({ type: "next-outer-authority", authority });
+          },
+        }),
         contract,
         intent,
         append: (r) => rec.append(r),
@@ -1088,6 +1165,26 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         },
       });
       await interruptible(nextCustody.ready, loaded.signal);
+      if (outerProtocol) {
+        const direct = nextOuterChildren(process.pid).map((pid) => linuxBirth(pid));
+        const matches = direct.filter(
+          (p) =>
+            p.ppid === process.pid &&
+            readlinkSync("/proc/" + p.pid + "/exe") ===
+              browserHandle.identity.launchedExecutablePath,
+        );
+        assert.equal(matches.length, 1, "unique launched browser child required");
+        outerWiring = {
+          outer: loaded.nextOuter.outer,
+          supervisor: linuxBirth(process.ppid),
+          controller: linuxBirth(process.pid),
+          lock: loaded.outerLock,
+          server: server.handle.native,
+          browser: matches[0],
+          holder: nextCustody.identity.birth,
+          browserPath: browserHandle.identity.launchedExecutablePath,
+        };
+      }
       const prepare = observer.prepare.bind(observer);
       let first = true;
       observer.prepare = async (route, ...args) => {
@@ -1174,6 +1271,62 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
             workDeadlineNs: BigInt(loaded.workDeadline) * 1_000_000n,
           }),
           ...(nextProtocol && {
+            ...(outerProtocol && {
+              beforePeerDecision: ({ attemptStart, attemptMs }) => {
+                loaded.signal.throwIfAborted();
+                assert(outerGate, "independent outer receipt unavailable");
+                let graph;
+                outerDecision = outerGate.consume(() => {
+                  graph = verifyNextOuterWiring(outerWiring);
+                  outerCadence = fixedSafety.verifyOuterGraph(() =>
+                    readNextOuterProductGraph(server.handle.native),
+                  );
+                  return true;
+                });
+                outerDecision.attemptDeadlineNs = String(
+                  attemptStart + BigInt(attemptMs) * 1000000n,
+                );
+                const stamp = BigInt(outerDecision.decisionNs);
+                assert(
+                  stamp < BigInt(outerDecision.attemptDeadlineNs) &&
+                    stamp < BigInt(outerCadence.cadenceDeadlineNs),
+                  "outer decision expired",
+                );
+                rec.append({ type: "next-outer-decision", outerDecision, outerCadence, graph });
+              },
+              outerPeerWriteTime: (now) => {
+                loaded.signal.throwIfAborted();
+                let graph;
+                const proof = outerGate.checkWriteTime(now, () => {
+                  graph = verifyNextOuterWiring(outerWiring);
+                  const current = fixedSafety.verifyOuterGraph(() =>
+                    readNextOuterProductGraph(server.handle.native),
+                  );
+                  assert.deepEqual(current, outerCadence, "outer decision RSS epoch changed");
+                  return true;
+                });
+                proof.graph = graph;
+                const stamp = BigInt(proof.t0Ns);
+                assert(
+                  stamp < BigInt(outerDecision.attemptDeadlineNs) &&
+                    stamp < BigInt(outerCadence.cadenceDeadlineNs),
+                  "outer T0 expired",
+                );
+                if (profile.fixedNextOuterObserver.operation === "decision-only") {
+                  rec.append({
+                    type: "next-outer-no-write",
+                    proof,
+                    outerCadence,
+                    writePerformed: false,
+                  });
+                  throw Object.assign(
+                    new Error("declared diagnostic outer decision completed before write"),
+                    { code: "NEXT_OUTER_DECISION_ONLY", proof },
+                  );
+                }
+                return proof;
+              },
+            }),
             ...(decisionProtocol && {
               checkPeerWriteTime: (stamp) => nextCustody.checkWriteTime(stamp),
               beforePeerDecision: async ({ attemptStart, attemptMs }) => {
@@ -1379,6 +1532,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         exitCode = EXIT.controllerError;
       }
     }
+    if (outerProtocol) {
+      outerGate?.retire();
+      try {
+        if (holderSocketOwned) closeSync(4);
+        if (outerReceiver) await bounded("next-outer-stop", 500, () => outerReceiver.stop());
+      } catch (error) {
+        unresolved.push({ resource: "next-outer-channel", error: String(error) });
+        evidenceFailed = true;
+      }
+    }
     if (nextCustody) {
       try {
         await bounded("next-custody-stop", 500, () => nextCustody.stop());
@@ -1467,7 +1630,15 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         receipt.nextPeerPopulation = reconcileNextPopulation({
           chain: fixedSafety?.qualifiedPeer?.chain,
           worker: nextCustody?.qualified,
-          terminalProof: nextCustody?.terminalProof,
+          terminalProof:
+            nextCustody?.terminalProof ??
+            (outerDecision && {
+              birth: outerDecision.packet.worker,
+              pidfdFlags: outerDecision.packet.pidfdFlags,
+              pollMask: outerDecision.packet.pollMask,
+              observedNs: outerDecision.packet.terminalNs,
+              source: "independent-outer",
+            }),
           stop: stopReport,
           registry: readNextRegistry(resolved.registryPath, nextRegistryMark, label),
         });

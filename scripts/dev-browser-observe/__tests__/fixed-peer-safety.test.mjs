@@ -220,6 +220,22 @@ test("the fixed peer mode admits only one archived 100-article body classificati
     ];
     const errors = (q) => [...validateAs(profileSchemaFor(q), q), ...semanticErrors(q)];
     assert.deepEqual(errors(p), []);
+    const v4 = structuredClone(p);
+    v4.fixedRssSafety = "linux-fixed-peer.v4";
+    assert(errors(v4).length, "missing independent provider");
+    v4.fixedNextOuterObserver = {
+      provider: "linux-next-outer-receipt.v1",
+      pythonPath: "/fixed/python",
+      pythonSha256: "a".repeat(64),
+      scriptPath: "/fixed/wrapper.py",
+      scriptSha256: "b".repeat(64),
+      cwd: "/study",
+      operation: "decision-only",
+    };
+    if (framework === "next") assert.deepEqual(errors(v4), []);
+    else assert(errors(v4).length);
+    v4.fixedRssSafety = "linux-fixed-peer.v3";
+    assert(errors(v4).length, "legacy profile must not accept the v4 provider");
     for (const change of [
       (q) => (q.scenarios[0].ops[0].repeat = { warmups: 0, measured: 2 }),
       (q) => (q.scenarios[0].ops[0].article = "article-00004"),
@@ -615,3 +631,68 @@ test.each([false, true])(
     }
   },
 );
+
+test("outer gate uses the current ordinary epoch without dispatching or joining a helper", async () => {
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "hrtime"],
+  });
+  const worker = { pid: 13 },
+    ancestors = [{ pid: 10 }, { pid: 11 }, { pid: 12 }];
+  const known = new Map([...ancestors, worker].map((p) => [p.pid, p]));
+  const owner = { qualified: worker, isWorker: (p) => p.pid === 13 };
+  const verify = vi.spyOn(peerRoles, "peerProcessIdentity").mockReturnValue([]);
+  let hold = false;
+  const deferred = Promise.withResolvers();
+  const sample = vi.fn(async () => {
+    if (hold) await deferred.promise;
+    const ns = process.hrtime.bigint();
+    return {
+      summedRssKiB: 4,
+      processes: [
+        { disposition: "live", pid: 10, statusKiB: { VmRSS: 4 }, smapsRollupKiB: { Rss: 4 } },
+      ],
+      helper: { spawnHrtimeNs: String(ns), closed: true, pipesClosed: true },
+      timing: {
+        clock: { qualified: true },
+        parent: { entryNs: String(ns), resultNs: String(ns), deadlineNs: String(ns + 750000000n) },
+      },
+    };
+  });
+  const monitor = startFixedRssSafety({
+    server: { handle: { known } },
+    fixedExecutables: { protocol: "linux-fixed-peer.v4", root: { path: "/node" } },
+    nextOwner: () => owner,
+    peer: {},
+    limits: { rssCeilingKiB: 4194304, sampleEveryMs: 1000 },
+    sample,
+    append() {},
+    abort() {},
+    checkRoles: () => ({
+      chain: [{ pid: 10, role: "root", pgid: 10, ppid: 100, bootId: "boot", startTicks: "1" }],
+    }),
+  });
+  try {
+    const ready = monitor.verifyReady(process.hrtime.bigint());
+    await vi.advanceTimersByTimeAsync(2000);
+    await ready;
+    const cycle = monitor.verifyOuterGraph(() => ancestors);
+    assert.equal(cycle.epoch, 3);
+    assert.equal(sample.mock.calls.length, 3);
+    assert.throws(
+      () => monitor.verifyOuterGraph(() => [...ancestors, worker]),
+      /requires a missing worker/,
+    );
+    await vi.advanceTimersByTimeAsync(995);
+    assert.throws(() => monitor.verifyOuterGraph(() => ancestors), /RSS coverage/);
+    hold = true;
+    await vi.advanceTimersByTimeAsync(5);
+    assert.throws(() => monitor.verifyOuterGraph(() => ancestors), /RSS coverage/);
+    assert.equal(sample.mock.calls.length, 4);
+    assert.equal(verify.mock.calls.length, 1);
+  } finally {
+    deferred.resolve();
+    await monitor.stop();
+    verify.mockRestore();
+    vi.useRealTimers();
+  }
+});

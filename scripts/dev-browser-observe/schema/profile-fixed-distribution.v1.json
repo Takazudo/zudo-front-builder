@@ -34,9 +34,32 @@
         "linux-fixed-astro-category.v1",
         "linux-fixed-peer.v1",
         "linux-fixed-peer.v2",
-        "linux-fixed-peer.v3"
+        "linux-fixed-peer.v3",
+        "linux-fixed-peer.v4"
       ],
       "description": "Use birth-bound Linux RSS observations for a direct Node shim and its pinned zfb native child. Version 2 additionally verifies private compiler workers and binds owned candidates during discovery. Version 3 retains original verified compiler descriptors between cycles. Version 4 additionally retains a positively verified startup compiler and requires a fresh periodic terminal decision and its later release before workload readiness. Astro footer, title and category each verify the single pinned Node role for their own correctness cell. Peer protocols qualify the pinned Astro or Next process tree for a body edit."
+    },
+    "fixedNextOuterObserver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "scriptPath",
+        "scriptSha256",
+        "pythonPath",
+        "pythonSha256",
+        "cwd",
+        "operation"
+      ],
+      "properties": {
+        "provider": { "const": "linux-next-outer-receipt.v1" },
+        "scriptPath": { "type": "string", "pattern": "^/" },
+        "scriptSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "pythonPath": { "type": "string", "pattern": "^/" },
+        "pythonSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "cwd": { "type": "string", "pattern": "^/" },
+        "operation": { "enum": ["decision-only", "body"] }
+      }
     },
     "fixedPeerBrowser": {
       "type": "object",

@@ -34,6 +34,7 @@ export function startNextPeerCustody({
   intent,
   prewriteDecision = false,
   outerOffer,
+  onOuterAuthority,
 }) {
   const session = randomBytes(16).toString("hex"),
     python = interpreter();
@@ -41,13 +42,20 @@ export function startNextPeerCustody({
     assert.equal(outerOffer.fd, 4);
     assert(/^[0-9a-f]{32}$/.test(outerOffer.nonce));
   }
-  let child;
+  let child, outerCloseError;
   try {
     child = spawn(python, ["-I", "-B", path, String(process.pid)], {
       stdio: ["pipe", "pipe", "pipe", "pipe", ...(outerOffer ? [outerOffer.fd] : [])],
     });
   } finally {
-    if (outerOffer) closeSync(outerOffer.fd);
+    if (outerOffer) {
+      try {
+        closeSync(outerOffer.fd);
+      } catch (error) {
+        if (!child) throw error;
+        outerCloseError = error;
+      }
+    }
   }
   const birth = child.pid && linuxBirth(child.pid),
     ready = Promise.withResolvers(),
@@ -178,6 +186,16 @@ export function startNextPeerCustody({
       const role = verifyNextBootstrapPair(contract, m.views);
       assert(same(role.birth, m.birth));
       accepted = m;
+      if (outerOffer)
+        onOuterAuthority?.({
+          nonce: outerOffer.nonce,
+          token: m.token,
+          worker: m.birth,
+          descriptors: m.descriptors,
+          holder: birth,
+          controller: linuxBirth(process.pid),
+          contract,
+        });
     } else if (m.type === "sweep") {
       assert(
         window &&
@@ -263,6 +281,7 @@ export function startNextPeerCustody({
     () => clearTimeout(timer),
   );
   try {
+    if (outerCloseError) throw outerCloseError;
     intent?.update({
       phase: "next-custody-spawn",
       nextCustody: { session, birth, pid: child.pid },

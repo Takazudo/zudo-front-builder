@@ -64,7 +64,12 @@ export async function openNextOuterReceiver({ signal, deadlineNs } = {}) {
       send: { arguments: ["int32", "buffer", "uint64", "int32"], return: "int64" },
     });
   } finally {
-    await file.close();
+    try {
+      await file.close();
+    } catch (error) {
+      handle?.lib.close();
+      throw error;
+    }
   }
   try {
     check();

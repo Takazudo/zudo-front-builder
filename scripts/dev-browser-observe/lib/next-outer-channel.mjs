@@ -7,6 +7,22 @@ import { linuxBirth, sameLinuxBirth } from "./linux-birth.mjs";
 
 export const NEXT_OUTER_PROVIDER = "linux-next-outer-receipt.v1";
 
+export function readNextOuterDeclaration(profile) {
+  const raw = process.env.ZFB_NEXT_OUTER_CHANNEL;
+  assert(typeof raw === "string" && raw.length <= 2048, "missing outer observer channel");
+  const decl = JSON.parse(raw);
+  assert.equal(profile.provider, NEXT_OUTER_PROVIDER);
+  assert.equal(decl.provider, profile.provider);
+  assert(/^[0-9a-f]{32}$/.test(decl.nonce));
+  const outer = linuxBirth(process.ppid);
+  assert(
+    sameLinuxBirth(outer, decl.outer) &&
+      outer.ppid === decl.outer.ppid &&
+      outer.pgid === decl.outer.pgid,
+  );
+  return { ...decl, outer, peer: { pid: outer.pid, uid: process.getuid(), gid: process.getgid() } };
+}
+
 export function takeNextOuterChannel({ provider, outer, fds, sockets }) {
   assert.equal(provider, NEXT_OUTER_PROVIDER);
   assert.equal(process.platform, "linux");
@@ -71,14 +87,15 @@ export async function observeNextOuterReceipt({
     throw error;
   }
   let wake;
-  const wakeIdentity = readlinkSync("/proc/self/fd/6");
+  let wakeIdentity;
   try {
+    wakeIdentity = readlinkSync("/proc/self/fd/6");
     wake = new Socket({ fd: 6, readable: true, writable: false });
   } catch (error) {
     try {
       // libuv may already have disposed of the given fd. Never close an
       // unrelated descriptor that reused its number.
-      if (readlinkSync("/proc/self/fd/6") === wakeIdentity) closeSync(6);
+      if (wakeIdentity && readlinkSync("/proc/self/fd/6") === wakeIdentity) closeSync(6);
     } catch (checkError) {
       if (checkError.code !== "ENOENT") throw new AggregateError([error, checkError]);
     } finally {

@@ -12,6 +12,7 @@ test.each([
   ["linux-fixed-peer.v1", false, false, "next"],
   ["linux-fixed-peer.v2", false, false, "next"],
   ["linux-fixed-peer.v3", false, false, "next"],
+  ["linux-fixed-peer.v4", false, false, "next"],
   ["linux-fixed-astro-footer.v1", true, false],
   ["linux-fixed-astro-title.v1", true, false],
   ["linux-fixed-astro-category.v1", true, false],
@@ -22,7 +23,11 @@ test.each([
     const server = { handle: { native: { pid: 91 } } };
     const fixedExecutables = { protocol, root: { path: "/pinned/node" } };
     const custody = needsCustody ? { channel: "fixture" } : null;
-    const nextCustody = ["linux-fixed-peer.v2", "linux-fixed-peer.v3"].includes(protocol)
+    const nextCustody = [
+      "linux-fixed-peer.v2",
+      "linux-fixed-peer.v3",
+      "linux-fixed-peer.v4",
+    ].includes(protocol)
       ? { channel: "next-fixture" }
       : null;
     let actual;

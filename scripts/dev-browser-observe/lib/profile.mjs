@@ -178,14 +178,24 @@ function fixedPeerErrors(p) {
 /** fixed-distribution rules: the framework's declared helper, no zfb-only diagnostic/recovery families. */
 function fixedErrors(profile) {
   const errors = [];
-  const peerSafety = [FIXED_PEER_PROTOCOL, "linux-fixed-peer.v2", "linux-fixed-peer.v3"].includes(
-    profile.fixedRssSafety,
-  );
+  const peerSafety = [
+    FIXED_PEER_PROTOCOL,
+    "linux-fixed-peer.v2",
+    "linux-fixed-peer.v3",
+    "linux-fixed-peer.v4",
+  ].includes(profile.fixedRssSafety);
   if (
-    ["linux-fixed-peer.v2", "linux-fixed-peer.v3"].includes(profile.fixedRssSafety) &&
+    ["linux-fixed-peer.v2", "linux-fixed-peer.v3", "linux-fixed-peer.v4"].includes(
+      profile.fixedRssSafety,
+    ) &&
     profile.framework !== "next"
   )
     errors.push("$.fixedRssSafety v2 requires the pinned Next distribution");
+  if (
+    (profile.fixedRssSafety === "linux-fixed-peer.v4") !==
+    Boolean(profile.fixedNextOuterObserver)
+  )
+    errors.push("Next v4 requires its separately pinned independent outer observer");
   if (peerSafety) errors.push(...fixedPeerErrors(profile));
   else if (isFixedAstroProtocol(profile.fixedRssSafety)) errors.push(...fixedAstroErrors(profile));
   else if (profile.fixedPeerBrowser)
