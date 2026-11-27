@@ -198,7 +198,16 @@ test("only the exact designated Next server title can contain NUL padding", () =
   assert.throws(() => peerArgv("node", false));
 });
 
-test.each(["success", "no-socket", "timeout", "stale", "late-notify", "same-detail"])(
+test.each([
+  "success",
+  "no-socket",
+  "timeout",
+  "stale",
+  "late-notify",
+  "late-document",
+  "late-frame",
+  "same-detail",
+])(
   "peer body gate records %s without admitting a missing socket, late edit or reused document",
   async (outcome) => {
     const connected = outcome !== "no-socket";
@@ -209,8 +218,17 @@ test.each(["success", "no-socket", "timeout", "stale", "late-notify", "same-deta
       page = fakePage({
         onWait: (token, _late, p) => {
           ns = deadline;
-          if (outcome === "timeout" || outcome === "stale") {
-            p.evidence.newDocuments = outcome === "stale" ? 1 : 0;
+          p.evidence.docInits = [];
+          p.evidence.wsFrames = [];
+          p.evidence.navigations = [];
+          if (outcome === "late-frame") {
+            p.evidence.wsFrames.push({ event: "rsc", ns: String(ns + 1n) });
+            p.evidence.livereloadEvents = ["rsc"];
+          }
+          if (["timeout", "stale", "late-document"].includes(outcome)) {
+            if (outcome !== "timeout")
+              p.evidence.docInits.push({ ns: String(outcome === "stale" ? ns : ns + 1n) });
+            p.evidence.newDocuments = p.evidence.docInits.length;
             return Promise.resolve({ kind: "timeout" });
           }
           if (outcome === "late-notify") ns += 1n;
@@ -265,10 +283,16 @@ test.each(["success", "no-socket", "timeout", "stale", "late-notify", "same-deta
       ],
     });
     assert.equal(fs.writes.length, connected ? 1 : 0);
-    assert.equal(accounting.success, ["success", "same-detail"].includes(outcome) ? 1 : 0);
+    assert.equal(
+      accounting.success,
+      ["success", "late-frame", "same-detail"].includes(outcome) ? 1 : 0,
+    );
     if (connected) assert.equal(accounting.restorationFailures, outcome === "same-detail" ? 1 : 0);
-    if (["timeout", "late-notify"].includes(outcome)) assert.equal(accounting.timeout, 1);
+    if (["timeout", "late-document", "late-notify"].includes(outcome))
+      assert.equal(accounting.timeout, 1);
     if (outcome === "stale") assert.equal(accounting.stale, 1);
+    if (outcome === "late-frame")
+      assert.equal(d.recorder.records.find((r) => r.mechanism).mechanism, "in-document-update");
   },
 );
 

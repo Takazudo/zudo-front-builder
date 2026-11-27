@@ -930,6 +930,22 @@ export async function runBatch({ scenarios, deps }) {
           clearInterval(sampler);
         }
         const evidence = page.collectAttempt(t0);
+        let classification = evidence;
+        if (peerDecision) {
+          const cutoff = waited.kind === "notify" ? waited.t1 : BigInt(peerDecision.deadlineNs);
+          const during = (rows) =>
+            rows.filter((row) => BigInt(row.ns) >= t0 && BigInt(row.ns) <= cutoff);
+          classification = {
+            mainFrameNavigations: during(evidence.navigations).length,
+            newDocuments: during(evidence.docInits).length,
+            livereloadEvents: during(evidence.wsFrames).map((f) => f.event),
+          };
+          peerDecision.window = {
+            fromNs: String(t0),
+            throughNs: String(cutoff),
+            ...classification,
+          };
+        }
         const serverPidAfter = server.pid();
         const serverLog = logMark === null ? null : server.logSince(logMark, t0);
 
@@ -1003,10 +1019,10 @@ export async function runBatch({ scenarios, deps }) {
           rec.mechanism = classifyMechanism({
             preDocUUID,
             notifyDocUUID: waited.payload.docUUID,
-            mainFrameNavigations: evidence.mainFrameNavigations,
+            mainFrameNavigations: classification.mainFrameNavigations,
             serverPidBefore,
             serverPidAfter,
-            livereloadEvents: evidence.livereloadEvents ?? [],
+            livereloadEvents: classification.livereloadEvents ?? [],
           });
           acc.lastArmedUnknownOperation = null;
         } else {
@@ -1022,7 +1038,7 @@ export async function runBatch({ scenarios, deps }) {
               limits,
             };
           } else {
-            outcome = evidence.newDocuments > 0 ? "stale" : "timeout";
+            outcome = classification.newDocuments > 0 ? "stale" : "timeout";
             rec.timeoutMs = timeouts.attemptMs;
           }
           const disarmed = await wait(page.disarm());
