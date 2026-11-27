@@ -830,6 +830,8 @@ export async function runBatch({ scenarios, deps }) {
         let writeSteps = null;
         if (deps.beforePeerMutation) {
           try {
+            if (deps.beforePeerDecision)
+              await deps.beforePeerDecision({ attemptStart, attemptMs: timeouts.attemptMs });
             deps.beforePeerMutation();
             signal?.throwIfAborted();
             deps.stageBudget?.(timeouts.attemptMs, attemptStart);

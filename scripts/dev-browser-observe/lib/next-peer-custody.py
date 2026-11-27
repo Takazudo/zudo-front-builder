@@ -285,9 +285,12 @@ def confirm_script(pin):
 
 
 class Scout:
-    def __init__(self, contract, session, parent):
+    def __init__(self, contract, session, parent, decision_enabled=False):
         global cfg
         self.session = session
+        self.decision_enabled = decision_enabled
+        self.decision_used = False
+        self.second_refusal = None
         self.parent = parent
         self.seq = 0
         self.input_bytes = 0
@@ -543,7 +546,9 @@ class Scout:
             require(is_jest(view(self.known), cfg), "live worker role changed after qualification")
         if request.get("token") is not None:
             require(secrets.compare_digest(request["token"], self.token), "custody token mismatch")
-        self.counts["gets"] += 1
+        decision = request["op"] == "prewrite-terminal"
+        if not decision:
+            self.counts["gets"] += 1
         send(
             peer,
             dict(
@@ -556,6 +561,7 @@ class Scout:
                 birth=self.known[2],
                 descriptors=[identity(x) for x in self.known[:2]],
                 acknowledgedNs=str(now()),
+                **({"purpose": "prewrite-terminal"} if decision else {}),
             ),
             self.known[:2],
         )
@@ -599,6 +605,23 @@ class Scout:
             peer.setblocking(False)
             req, fds, _ = receive(peer, [0, 2])
             try:
+                if req.get("op") == "prewrite-terminal":
+                    require(
+                        self.decision_enabled
+                        and not self.decision_used
+                        and not fds
+                        and req["cycle"] == 0
+                        and req["session"] == self.session
+                        and self.token
+                        and req["token"] == self.token
+                        and self.window is None
+                        and isinstance(req["nonce"], str)
+                        and len(req["nonce"]) == 24,
+                        "unavailable pre-write decision",
+                    )
+                    self.decision_used = True
+                    self.answer(peer, req, peer_pid)
+                    return
                 require(
                     req["session"] == self.session
                     and req["cycle"] > 0
@@ -625,6 +648,23 @@ class Scout:
                     "replayed or excessive helper transaction",
                 )
                 self.outstanding_nonces.add(req["nonce"])
+                if self.decision_enabled and self.known and key(self.known[2]) != key(req["birth"]):
+                    require(self.second_refusal is None, "repeated refused request")
+                    self.second_refusal = dict(
+                        error="unqualified second Next birth",
+                        birth=req["birth"],
+                        helperPid=peer_pid,
+                        nonce=req["nonce"],
+                        cycle=cycle,
+                    )
+                    send(
+                        peer,
+                        dict(
+                            refused=self.second_refusal, session=self.session, holderPid=os.getpid()
+                        ),
+                    )
+                    self.message("policy-refusal", refusal=self.second_refusal)
+                    return
                 if req["op"] == "offer":
                     self.candidate(req["birth"], fds)
                 require(self.known and key(self.known[2]) == key(req["birth"]), "missing custody")
@@ -668,7 +708,20 @@ class Scout:
                 elif cmd["op"] == "close":
                     self.close(cmd["name"])
                 elif cmd["op"] == "snapshot":
-                    self.candidate(cmd["birth"])
+                    if (
+                        self.decision_enabled
+                        and self.known
+                        and key(self.known[2]) != key(cmd["birth"])
+                    ):
+                        require(self.second_refusal is None, "repeated refused snapshot")
+                        self.second_refusal = dict(
+                            error="unqualified second Next birth",
+                            birth=cmd["birth"],
+                            source="snapshot",
+                        )
+                        self.message("policy-refusal", refusal=self.second_refusal)
+                    else:
+                        self.candidate(cmd["birth"])
                 else:
                     raise ValueError("unknown custody operation")
             if shared in readable:
@@ -701,6 +754,11 @@ class Scout:
             releasedWorkerDescriptors=released,
             windows=self.windows,
             helperTransfers=self.counts["gets"],
+            **(
+                {"prewriteTransfers": int(self.decision_used), "secondRefusal": self.second_refusal}
+                if self.decision_enabled
+                else {}
+            ),
             maxRSSKiB=usage.ru_maxrss,
             userSeconds=usage.ru_utime,
             systemSeconds=usage.ru_stime,
@@ -729,7 +787,11 @@ def request_pair(config, worker, pair=None):
             cycle=config["cycle"],
             nonce=nonce,
             birth=worker,
-            op="offer" if pair else "get",
+            op="prewrite-terminal"
+            if config.get("purpose") == "prewrite-terminal"
+            else "offer"
+            if pair
+            else "get",
             token=config["tokens"].get(str(worker["pid"])),
         )
         send(local, data, pair or ())
@@ -742,7 +804,19 @@ def request_pair(config, worker, pair=None):
                 == 1,
                 "helper request refused",
             )
-        ack, fds, _ = receive(local, [2])
+        ack, fds, _ = receive(local, [0, 2] if config.get("decisionEnabled") else [2])
+        if not fds:
+            refusal = ack.get("refused", {})
+            require(
+                ack.get("session") == config["session"]
+                and ack.get("holderPid") == config["holderPid"]
+                and refusal.get("helperPid") == os.getpid()
+                and refusal.get("nonce") == nonce
+                and refusal.get("cycle") == config["cycle"]
+                and key(refusal["birth"]) == key(worker),
+                "unverified Next refusal",
+            )
+            raise ValueError("unqualified second Next birth")
         try:
             require(
                 ack["session"] == config["session"]
@@ -756,6 +830,8 @@ def request_pair(config, worker, pair=None):
                 and stat.S_ISDIR(os.fstat(fds[1]).st_mode),
                 "unverified returned descriptor pair",
             )
+            if config.get("purpose") == "prewrite-terminal":
+                require(ack.get("purpose") == "prewrite-terminal", "wrong identity-only purpose")
             if data["token"]:
                 require(data["token"] == ack["token"], "wrong prior token")
             return ack, fds
@@ -766,6 +842,36 @@ def request_pair(config, worker, pair=None):
     finally:
         local.close()
         remote.close()
+
+
+def decision_only(config):
+    require(
+        config["purpose"] == "prewrite-terminal" and config["cycle"] == 0,
+        "wrong decision operation",
+    )
+    worker = config["birth"]
+    ack, fds = request_pair(config, worker)
+    try:
+        # A single nonblocking poll of the original paired group pidfd. The
+        # fresh helper never opens a product metric or waits for it to exit.
+        terminal = poll_terminal(fds[0])
+        stamp = str(now())
+        print(
+            json.dumps(
+                dict(
+                    purpose="prewrite-terminal",
+                    helper=birth_of_self(),
+                    ack=ack,
+                    pollMask=terminal,
+                    observedNs=stamp,
+                    pidfdFlags=0,
+                )
+            ),
+            flush=True,
+        )
+    finally:
+        for fd in fds:
+            os.close(fd)
 
 
 if __name__ == "__main__":
@@ -784,7 +890,13 @@ if __name__ == "__main__":
         raise TimeoutError("scout sweep deadline")
 
     signal.signal(signal.SIGALRM, timeout_handler)
+    if sys.argv[2:] == ["--prewrite-terminal"]:
+        signal.setitimer(signal.ITIMER_REAL, 0.150)
+        decision_only(first)
+        sys.exit(0)
     with socket.socket(fileno=3) as shared:
         shared.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
-        scout = Scout(first["contract"], first["session"], parent)
+        scout = Scout(
+            first["contract"], first["session"], parent, first.get("prewriteDecision") is True
+        )
         scout.loop(shared)

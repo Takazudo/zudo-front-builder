@@ -1,3 +1,4 @@
+import { pollPrewriteTerminal } from "./next-prewrite-terminal.mjs";
 // Linux fd3 is a preconnected Unix socket. The controller passes its endpoint
 // only to fresh sampling helpers. Each helper sends a private reply socket.
 import { accessSync, constants, readlinkSync, realpathSync } from "node:fs";
@@ -26,7 +27,13 @@ import assert from "node:assert/strict";
 import { verifyNextBootstrapPair, verifyNextBootstrapCurrent } from "./fixed-next-bootstrap.mjs";
 const key = (p) => [p.bootId, p.pid, p.ppid, p.pgid, p.startTicks].join("/");
 const same = (a, b) => Boolean(a && b && key(a) === key(b));
-export function startNextPeerCustody({ contract, append, abort, intent }) {
+export function startNextPeerCustody({
+  contract,
+  append,
+  abort,
+  intent,
+  prewriteDecision = false,
+}) {
   const session = randomBytes(16).toString("hex"),
     python = interpreter();
   const child = spawn(python, ["-I", "-B", path, String(process.pid)], {
@@ -52,6 +59,10 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
   let watchdog;
   let terminalVerified = false;
   let terminalProof = null;
+  let policyFailure = null;
+  let decisionProof = null,
+    decisionReceipt = null,
+    decisionAttempted = false;
   const acknowledged = new Set();
   let windowEnd = null;
   const secondaryErrors = [];
@@ -168,6 +179,21 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
         "invalid scout sweep",
       );
       resetWatchdog();
+    } else if (m.type === "policy-refusal") {
+      assert(
+        prewriteDecision &&
+          accepted &&
+          !policyFailure &&
+          m.refusal.error === "unqualified second Next birth" &&
+          !same(m.refusal.birth, accepted.birth) &&
+          m.refusal.birth.ppid === accepted.birth.ppid &&
+          m.refusal.birth.pgid === accepted.birth.pgid,
+        "unverified or repeated custody refusal",
+      );
+      policyFailure = m.refusal;
+      notify("policy-refusal", { evidence: m });
+      abort(Error(policyFailure.error));
+      return;
     } else if (m.type === "stopped") {
       assert(
         stopPromise &&
@@ -175,7 +201,9 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
           m.token === (accepted?.token ?? null) &&
           m.closedPairs === 3 + Number(Boolean(seen)) &&
           m.helperTransfers === acknowledged.size &&
-          (!accepted || terminalVerified),
+          (!accepted || terminalVerified || decisionProof || prewriteDecision) &&
+          (!prewriteDecision ||
+            m.prewriteTransfers === Number(Boolean(decisionReceipt?.authenticatedAck))),
         "unreconciled scout stop",
       );
       assert.deepEqual(
@@ -183,6 +211,8 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
         seen?.descriptors ?? null,
         "worker descriptor release mismatch",
       );
+      if (prewriteDecision)
+        assert.deepEqual(m.secondRefusal, policyFailure, "unreconciled second birth refusal");
       stopReceipt = m;
     } else throw Error("unexpected scout frame");
     notify(m.type, { evidence: m });
@@ -227,7 +257,7 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
       nextCustody: { session, birth, pid: child.pid },
     });
     notify("spawn", { birth });
-    write({ contract, session });
+    write({ contract, session, ...(prewriteDecision && { prewriteDecision: true }) });
   } catch (e) {
     refuse(e);
   }
@@ -247,11 +277,13 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
     snapshot(b) {
       // A cleanup census must still be able to signal its verified group if
       // the observer rejects an unfamiliar birth or the journal is unavailable.
-      if (firstFailure || stopPromise) return;
+      if (firstFailure || policyFailure || stopPromise) return;
       try {
         if (b.ppid !== contract.ancestors[2].pid) return;
         if (seen) {
-          assert(same(seen.birth, b), "snapshot contradicts bound candidate");
+          if (prewriteDecision && !same(seen.birth, b))
+            write({ session, op: "snapshot", birth: b });
+          else assert(same(seen.birth, b), "snapshot contradicts bound candidate");
           return;
         }
         assert(window, "unbound worker outside scout window");
@@ -261,7 +293,7 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
       }
     },
     begin(handle) {
-      if (firstFailure) throw firstFailure;
+      if (firstFailure || policyFailure) throw firstFailure ?? Error(policyFailure.error);
       if (seen) {
         const b = seen.birth,
           old = handle.known.get(b.pid);
@@ -276,6 +308,7 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
       return {
         session,
         cycle: ++cycles,
+        ...(prewriteDecision && { decisionEnabled: true }),
         holderPid: birth.pid,
         contract,
         tokens: accepted ? { [accepted.birth.pid]: accepted.token } : {},
@@ -315,8 +348,44 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
       terminalProof = b.terminalProof;
       terminalVerified = true;
     },
+    async pollBeforeMutation({ deadlineNs, signal }) {
+      assert(
+        prewriteDecision &&
+          !decisionAttempted &&
+          !decisionProof &&
+          !terminalVerified &&
+          !firstFailure &&
+          !stopPromise &&
+          accepted &&
+          !window,
+        "pre-write custody decision unavailable",
+      );
+      decisionAttempted = true;
+      try {
+        decisionReceipt = await pollPrewriteTerminal({
+          python,
+          script: path,
+          channel: child.stdio[3],
+          session,
+          holderPid: birth.pid,
+          qualified: accepted.birth,
+          token: accepted.token,
+          descriptors: accepted.descriptors,
+          deadlineNs,
+          signal,
+          append: (r) => notify("decision-helper", { receipt: r }),
+        });
+        decisionProof = decisionReceipt.proof;
+      } catch (error) {
+        decisionReceipt = error.decisionReceipt ?? null;
+        throw error;
+      }
+    },
+    get decisionProof() {
+      return decisionProof;
+    },
     get terminalProof() {
-      return terminalProof;
+      return terminalProof ?? decisionProof;
     },
     get terminalVerified() {
       return terminalVerified;
@@ -345,7 +414,13 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
             !firstFailure && !buf && stopReceipt && result.code === 0 && !result.signal,
             "unverified scout cleanup: " + stderr,
           );
-          const row = { result, birth, evidence: stopReceipt, terminalVerified };
+          const row = {
+            result,
+            birth,
+            evidence: stopReceipt,
+            terminalVerified,
+            ...(prewriteDecision && { decisionReceipt, policyFailure }),
+          };
           notify("cleanup", row);
           return row;
         } catch (error) {

@@ -65,6 +65,10 @@ export function startFixedRssSafety({
   nextOwner = () => null,
 }) {
   let pending = null;
+  let decision = null,
+    decisionAbort;
+  const intervalNs = BigInt(limits.sampleEveryMs) * 1000000n;
+  let nextDispatchNs = process.hrtime.bigint() + intervalNs;
   let failure = null;
   let secondaryHelperFailure = null;
   let nativeBirth = null;
@@ -109,6 +113,13 @@ export function startFixedRssSafety({
   };
   const take = () => {
     if (failure || stopped) return;
+    nextDispatchNs = process.hrtime.bigint() + intervalNs;
+    if (decision) {
+      const error = new Error("periodic RSS dispatch overlapped pre-write identity check");
+      decisionAbort.abort(error);
+      fail(error);
+      return;
+    }
     if (pending) {
       fail(new Error("fixed safety sampler still occupied at next periodic dispatch"));
       return;
@@ -261,6 +272,39 @@ export function startFixedRssSafety({
     get qualifiedPeer() {
       return qualifiedPeer;
     },
+    async verifyPrewriteTerminal({ getOwned, workDeadlineNs, signal }) {
+      const custody = nextOwner();
+      assert(custody?.pollBeforeMutation && !failure && !stopped, "pre-write safety unavailable");
+      const worker = custody.qualified;
+      if (!worker || custody.terminalVerified || custody.decisionProof) return;
+      const owned = getOwned();
+      if (owned.some((p) => custody.isWorker(p))) return;
+      // Check all other observed and remembered births first. The new helper is
+      // eligible only for this single, otherwise-valid missing-worker decision.
+      peerProcessIdentity(
+        owned,
+        [...server.handle.known.values()].filter((p) => !custody.isWorker(p)),
+        qualifiedPeer,
+        peer,
+      );
+      assert(!pending && !decision, "ordinary RSS helper is busy");
+      decisionAbort = new AbortController();
+      // The final caller takes another complete census. Aligning with the next
+      // periodic timer would change the workload, so insufficient slack refuses.
+      const deadlineNs =
+        workDeadlineNs < nextDispatchNs - 5000000n ? workDeadlineNs : nextDispatchNs - 5000000n;
+      decision = custody.pollBeforeMutation({
+        deadlineNs,
+        signal: signal ? AbortSignal.any([signal, decisionAbort.signal]) : decisionAbort.signal,
+      });
+      try {
+        await decision;
+        if (failure) throw new Error(failure.error);
+      } finally {
+        decision = null;
+        decisionAbort = null;
+      }
+    },
     verifyPeerProcesses(owned, known) {
       if (failure || stopped) throw new Error(failure?.error ?? "fixed peer stopped");
       const custody = nextOwner();
@@ -269,7 +313,7 @@ export function startFixedRssSafety({
       // Scout qualification can precede the next sampler's known-map commit.
       if (custody.qualified && !owned.some(isWorker))
         assert(
-          custody.terminalVerified,
+          custody.terminalVerified || custody.decisionProof,
           "known Next worker missing before official terminal decision",
         );
       const results = peerProcessIdentity(
@@ -318,7 +362,9 @@ export function startFixedRssSafety({
       readyCheck?.resolve();
       clearInterval(timer);
       clearTimeout(expiry);
-      await pending;
+      decisionAbort?.abort(new Error("fixed safety is stopping"));
+      if (decision) await Promise.allSettled([decision, pending]);
+      else await pending;
       return failure;
     },
   };

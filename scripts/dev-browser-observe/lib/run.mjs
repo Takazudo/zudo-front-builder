@@ -321,7 +321,8 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
 
 async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
   const { profile, resolved } = loaded;
-  const nextProtocol = profile.fixedRssSafety === NEXT_BOOTSTRAP_PROTOCOL;
+  const decisionProtocol = profile.fixedRssSafety === "linux-fixed-peer.v3";
+  const nextProtocol = decisionProtocol || profile.fixedRssSafety === NEXT_BOOTSTRAP_PROTOCOL;
   const fixedPeer = nextProtocol || profile.fixedRssSafety === FIXED_PEER_PROTOCOL;
   let nextCustody = null;
   let nextRegistryMark;
@@ -1020,6 +1021,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         bootstrapSha256: "463a33ccdf45500486481c697ca9b7445fae5998410b82d3d5485c0b85b770eb",
       });
       nextCustody = startNextPeerCustody({
+        prewriteDecision: decisionProtocol,
         contract,
         intent,
         append: (r) => rec.append(r),
@@ -1114,6 +1116,18 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
             workDeadlineNs: BigInt(loaded.workDeadline) * 1_000_000n,
           }),
           ...(nextProtocol && {
+            ...(decisionProtocol && {
+              beforePeerDecision: async ({ attemptStart, attemptMs }) => {
+                const workDeadlineNs = BigInt(loaded.workDeadline) * 1000000n;
+                const attemptDeadlineNs = attemptStart + BigInt(attemptMs) * 1000000n;
+                await fixedSafety.verifyPrewriteTerminal({
+                  getOwned: () => snapshotOwned(server.handle),
+                  signal: loaded.signal,
+                  workDeadlineNs:
+                    attemptDeadlineNs < workDeadlineNs ? attemptDeadlineNs : workDeadlineNs,
+                });
+              },
+            }),
             beforePeerMutation: () => {
               const reason = checkLateProcesses();
               rec.append({
