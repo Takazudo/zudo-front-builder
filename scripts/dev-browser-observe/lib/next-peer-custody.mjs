@@ -232,6 +232,7 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
   }
   return {
     ready: ready.promise,
+    refuse,
     channel: child.stdio[3],
     identity: { session, birth, secondaryErrors },
     openWindow(name, remainingMs) {

@@ -693,8 +693,14 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     spawning = false;
     server.handle.onNewOwned = (p) => {
       if (nextCustody && p.source === "snapshot") nextCustody.snapshot(p);
-      if (shouldRegisterOwned(server.handle.native, p))
-        appendJsonlSync(resolved.registryPath, { type: "owned", label, at: isoNow(), ...p });
+      if (shouldRegisterOwned(server.handle.native, p)) {
+        try {
+          appendJsonlSync(resolved.registryPath, { type: "owned", label, at: isoNow(), ...p });
+        } catch (error) {
+          if (!nextCustody) throw error;
+          nextCustody.refuse(error);
+        }
+      }
     };
     if (fixedExecutables) {
       fixedSafety = startFixedRssSafety({
