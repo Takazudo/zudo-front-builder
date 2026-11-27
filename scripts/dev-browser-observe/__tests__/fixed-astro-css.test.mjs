@@ -1,7 +1,7 @@
 import { identifyPeerRoles, verifyAstroPopulation } from "../lib/fixed-peer-roles.mjs";
 import assert from "node:assert/strict";
 import { sha256 } from "../lib/util.mjs";
-import { updateSignalFrame } from "../lib/browser.mjs";
+import { ObserverPage, updateSignalFrame } from "../lib/browser.mjs";
 import { deps, fakeFs, fakePage } from "./fakes.mjs";
 import { runBatch } from "../lib/state-machine.mjs";
 import { readFileSync } from "node:fs";
@@ -128,6 +128,8 @@ test.each([
   "late-document",
   "late-frame",
   "sheet-unloaded",
+  "arm-crossed-document",
+  "early-notify",
   "wrong-token",
   "same-detail",
 ])(
@@ -140,7 +142,7 @@ test.each([
     const fs = fakeFs(),
       page = fakePage({
         onWait: (token, _late, p) => {
-          ns = deadline;
+          ns = outcome === "early-notify" ? 1000000000n : deadline;
           p.evidence.docInits = [];
           p.evidence.wsFrames = [];
           p.evidence.navigations = [];
@@ -174,6 +176,10 @@ test.each([
         }),
       });
     page.url = () => "http://localhost/";
+    page.prepare = async () => ({
+      docUUID: outcome === "arm-crossed-document" ? "old" : "doc-1",
+      url: "http://localhost/",
+    });
     const prep = fs.prepareAttempt;
     fs.prepareAttempt = (op) => ({ ...prep(op), targetPath: "/" });
     fs.liveChecks = () =>
@@ -189,6 +195,7 @@ test.each([
     const oldArm = page.arm;
     page.arm = async (...args) => ({
       ...(await oldArm(...args)),
+      observedUrl: "http://localhost/",
       actual: [1, "", outcome === "sheet-unloaded" ? "" : "#f5f2e9"],
     });
     const write = fs.performWrite;
@@ -232,12 +239,18 @@ test.each([
         },
       ],
     });
-    assert.equal(fs.writes.length, connected && outcome !== "sheet-unloaded" ? 1 : 0);
+    assert.equal(
+      fs.writes.length,
+      connected && !["sheet-unloaded", "arm-crossed-document"].includes(outcome) ? 1 : 0,
+    );
     assert.equal(
       accounting.success,
       ["success", "late-frame", "same-detail"].includes(outcome) ? 1 : 0,
     );
-    if (connected && !["sheet-unloaded", "wrong-token"].includes(outcome))
+    if (
+      connected &&
+      !["sheet-unloaded", "wrong-token", "arm-crossed-document", "early-notify"].includes(outcome)
+    )
       assert.equal(accounting.restorationFailures, outcome === "same-detail" ? 1 : 0);
     if (["timeout", "late-document", "late-notify"].includes(outcome))
       assert.equal(accounting.timeout, 1);
@@ -307,4 +320,43 @@ test("Astro accepts only its exact root argument vector and original singleton t
     { remaining: [root] },
   ])
     assert(!verifyAstroPopulation(root, { ...stop, ...delta }));
+});
+
+test.each(["same", "arm-changed", "notify-changed", "wrong-url"])(
+  "fresh route binds CSS to its actual read document: %s",
+  async (variant) => {
+    const p = new ObserverPage(null, "", () => 1000000000n);
+    p.baseUrl = "http://127.0.0.1:1234";
+    p.peerSocketTracking = new Map();
+    const url = p.url("/");
+    p.prepare = async () => ({ docUUID: "fresh", url, httpStatus: 200 });
+    p.arm = async () => ({
+      armed: true,
+      docUUID: variant === "arm-changed" ? "other" : "fresh",
+      observedUrl: variant === "wrong-url" ? url + "else" : url,
+      actual: [1, "", "#f5f2e9"],
+    });
+    p.waitNotify = async (token) => ({
+      kind: "notify",
+      t1: 1000000001n,
+      payload: {
+        token,
+        docUUID: variant === "notify-changed" ? "other" : "fresh",
+        armedDocUUID: "fresh",
+        url,
+      },
+    });
+    p.failureSnapshot = async () => ({ notInCache: false });
+    p.disarm = async () => {};
+    const r = await p.navigateAndAwait("/", {}, 100, "fresh");
+    assert.equal(r.ok, variant === "same");
+  },
+);
+test("pre-write module frames invalidate only the strict Astro preparation", () => {
+  const p = new ObserverPage(null, "", () => 10n);
+  p.markPre();
+  p.wsFrames.push({ event: "module", ns: "10" });
+  assert.equal(p.preWriteInstability(), null);
+  p.peerSocketTracking = new Map();
+  assert.equal(p.preWriteInstability().wsFrames[0].event, "module");
 });

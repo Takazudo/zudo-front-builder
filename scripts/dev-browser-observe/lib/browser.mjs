@@ -820,8 +820,11 @@ export class ObserverPage {
   async arm(token, predicate, watch = null) {
     this.armedToken = token;
     const res = await this.page.evaluate(
-      ([t, p, w]) => window.__dbo.arm(t, p, w),
-      [token, predicate, watch],
+      ([t, p, w, captureUrl]) => {
+        const result = window.__dbo.arm(t, p, w);
+        return captureUrl ? { ...result, observedUrl: location.href } : result;
+      },
+      [token, predicate, watch, Boolean(this.peerSocketTracking)],
     );
     if (!res.armed) this.armedToken = null;
     return res;
@@ -875,7 +878,11 @@ export class ObserverPage {
   preWriteInstability() {
     if (!this.preMark) return null;
     const ev = this.since(this.preMark);
-    const frames = ev.wsFrames.filter((f) => f.event === "page" || f.event === "css");
+    const frames = ev.wsFrames.filter((f) =>
+      this.peerSocketTracking
+        ? UPDATE_EVENTS.has(f.event)
+        : f.event === "page" || f.event === "css",
+    );
     if (ev.mainFrameNavigations === 0 && ev.newDocuments === 0 && frames.length === 0) return null;
     return { ...ev, wsFrames: frames };
   }
@@ -1020,6 +1027,20 @@ export class ObserverPage {
       firstReadActual: armed.actual ?? null,
       recovery,
     };
+    if (this.peerSocketTracking) {
+      base.armedDocUUID = armed.docUUID;
+      base.observedUrl = armed.observedUrl;
+      if (
+        !state.docUUID ||
+        state.docUUID !== armed.docUUID ||
+        state.url !== this.url(path) ||
+        armed.observedUrl !== state.url ||
+        this.clock() > deadline
+      ) {
+        if (armed.armed) await this.disarm();
+        return { ...base, ok: false, stage: "fresh-document-mismatch" };
+      }
+    }
     if (!armed.armed && armed.precondition) {
       this.armedToken = null;
       const sinceNavigationMs = nsToMs(this.clock() - navStart);
@@ -1060,7 +1081,15 @@ export class ObserverPage {
     // zfb dev's "404 — page not in cache … rebuild may still be in flight" is a transient state, never a pass.
     const transient = page?.notInCache === true || failure?.notInCache === true;
     return {
-      ok: waited.kind === "notify" && !transient,
+      ok:
+        waited.kind === "notify" &&
+        !transient &&
+        (!this.peerSocketTracking ||
+          (waited.payload.token === token &&
+            waited.payload.docUUID === armed.docUUID &&
+            waited.payload.armedDocUUID === armed.docUUID &&
+            waited.payload.url === state.url &&
+            waited.t1 <= deadline)),
       stage:
         waited.kind === "notify"
           ? transient

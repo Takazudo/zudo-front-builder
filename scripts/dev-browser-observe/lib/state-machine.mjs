@@ -807,11 +807,20 @@ export async function runBatch({ scenarios, deps }) {
             append({
               type: "fixed-peer-prewrite",
               docUUID: armed.docUUID,
+              preparedDocUUID: preparedState?.docUUID,
+              preparedUrl: preparedState?.url,
+              observedUrl: armed.observedUrl,
               originalCss: armed.actual,
               armObservedNs: String(clock.now()),
               sockets,
             });
-            if (!armed.docUUID || !sockets.length)
+            if (
+              !armed.docUUID ||
+              armed.docUUID !== preparedState?.docUUID ||
+              armed.observedUrl !== page.url(attempt.targetPath) ||
+              preparedState.url !== armed.observedUrl ||
+              !sockets.length
+            )
               throw new Error("peer update socket or original document unverified");
           }
           bodyRevision = {
