@@ -10,6 +10,7 @@ test.each([
   ["linux-fixed-zfb.v4", false, true],
   ["linux-fixed-astro-footer.v1", true, false],
   ["linux-fixed-astro-title.v1", true, false],
+  ["linux-fixed-astro-category.v1", true, false],
 ])(
   "initial safety sample preserves the exact call contract for %s",
   async (protocol, astro, needsCustody) => {

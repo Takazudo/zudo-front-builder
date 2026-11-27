@@ -1,6 +1,8 @@
+import { CATEGORY_DETAIL, matchesAstroPredicate } from "./astro-category.mjs";
+import { isDeepStrictEqual } from "node:util";
 import { ASTRO_TITLE, TITLE_DETAIL, TITLE_SELECTOR, validateTitlePlan } from "./astro-title.mjs";
 import { ASTRO_FOOTER, ASTRO_FOOTER_SELECTOR, astroFooterPredicate } from "./astro-footer.mjs";
-import { astroTextPredicate, matchesAstroText, astroProducerMatches } from "./astro-text.mjs";
+import { astroTextPredicate, astroProducerMatches } from "./astro-text.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { runSpecialMode } from "./special-modes.mjs";
 import { RENAME_NOOP } from "./fixture.mjs";
@@ -218,14 +220,25 @@ export async function runBatch({ scenarios, deps }) {
   const startedNs = deps.startedNs ?? clock.now();
   let activeSnapshot = null;
   let bodyRevision = null;
-  const fixedAstro = deps.fixedAstroFooter || deps.fixedAstroTitle;
+  const category = deps.fixedAstroCategory ? fs.categoryContract : null;
+  if (deps.fixedAstroCategory && !category)
+    throw new Error("missing fixed category corpus contract");
+  const articleOperation = Boolean(category || deps.fixedAstroTitle);
+  const fixedAstro = deps.fixedAstroFooter || articleOperation;
   const originalText = deps.fixedAstroTitle ? ASTRO_TITLE : ASTRO_FOOTER;
-  const primaryOriginal = astroTextPredicate(
-    originalText,
-    deps.fixedAstroTitle ? TITLE_SELECTOR : ASTRO_FOOTER_SELECTOR,
-  );
-  const freshPath = deps.fixedAstroTitle ? TITLE_DETAIL : "/archive/1/";
-  const finalAffected = deps.fixedAstroTitle ? "/articles/article-00095/" : "/archive/1/";
+  const primaryOriginal =
+    category?.original ??
+    astroTextPredicate(originalText, deps.fixedAstroTitle ? TITLE_SELECTOR : ASTRO_FOOTER_SELECTOR);
+  const freshPath = category
+    ? CATEGORY_DETAIL
+    : deps.fixedAstroTitle
+      ? TITLE_DETAIL
+      : "/archive/1/";
+  const finalAffected = category
+    ? category.finalPath
+    : deps.fixedAstroTitle
+      ? "/articles/article-00095/"
+      : "/archive/1/";
   const seenSupplementalDocs = new Set();
 
   let peerWrite = null;
@@ -417,19 +430,28 @@ export async function runBatch({ scenarios, deps }) {
       "/archive/2/",
       "/category/architecture/",
     ];
-    if (deps.fixedAstroTitle) expectedRoutes.splice(2, 0, TITLE_DETAIL);
+    if (articleOperation) expectedRoutes.splice(2, 0, freshPath);
     const freshWitness = live.find((row) => row.path === freshPath);
     const astroRoutes =
       !fixedAstro ||
       (live.length === expectedRoutes.length &&
-        live.every((row, i) => row.path === expectedRoutes[i] && row.docUUID && row.ok) &&
+        live.every(
+          (row, i) =>
+            row.path === expectedRoutes[i] &&
+            row.docUUID &&
+            row.ok &&
+            (!category || row.httpStatus === 200),
+        ) &&
         new Set(live.map((row) => row.docUUID)).size === live.length &&
         bodyRevision?.path === finalAffected &&
         bodyRevision.affectedDocUUID &&
         freshWitness.docUUID !== bodyRevision.affectedDocUUID &&
-        (!deps.fixedAstroTitle || live.every((row) => !seenSupplementalDocs.has(row.docUUID))) &&
-        matchesAstroText((freshWitness.notify?.actual ?? freshWitness.actual)?.[1], originalText) &&
-        matchesAstroText(settle?.bodyRevision?.actual, originalText));
+        (!articleOperation || live.every((row) => !seenSupplementalDocs.has(row.docUUID))) &&
+        matchesAstroPredicate(
+          (freshWitness.notify?.actual ?? freshWitness.actual)?.[1],
+          primaryOriginal,
+        ) &&
+        matchesAstroPredicate(settle?.bodyRevision?.actual, bodyRevision.predicate));
     let ok =
       astroRoutes &&
       !signal?.aborted &&
@@ -625,6 +647,13 @@ export async function runBatch({ scenarios, deps }) {
           attempt = fs.prepareAttempt(op);
           if (deps.fixedAstroTitle) validateTitlePlan(attempt);
           if (
+            category &&
+            (attempt.targetPath !== CATEGORY_DETAIL ||
+              !isDeepStrictEqual(attempt.predicate, category.edited) ||
+              !isDeepStrictEqual(attempt.supplemental, category.supplemental))
+          )
+            throw new Error("invalid complete fixed Astro category operation");
+          if (
             deps.fixedAstroFooter &&
             (attempt.supplemental.length !== 1 ||
               attempt.supplemental[0].path !== "/archive/1/" ||
@@ -818,7 +847,7 @@ export async function runBatch({ scenarios, deps }) {
         // edits so a previous tokenized revision cannot become the cleanup baseline.
         if ((verifyBodyRevision || fixedAstro) && !bodyRevision) {
           if (fixedAstro) {
-            if (!matchesAstroText(armed.actual, originalText))
+            if (!matchesAstroPredicate(armed.actual, primaryOriginal))
               throw new Error("unverified original Astro text");
           } else if (
             typeof armed.actual !== "string" ||
@@ -835,15 +864,19 @@ export async function runBatch({ scenarios, deps }) {
               docUUID: armed.docUUID,
               preparedDocUUID: preparedState?.docUUID,
               preparedUrl: preparedState?.url,
+              ...(category && { httpStatus: preparedState?.httpStatus }),
               observedUrl: armed.observedUrl,
-              ...(deps.fixedAstroTitle
-                ? { originalTitle: armed.actual }
-                : { originalFooter: armed.actual }),
+              ...(category
+                ? { originalCategory: armed.actual }
+                : deps.fixedAstroTitle
+                  ? { originalTitle: armed.actual }
+                  : { originalFooter: armed.actual }),
               armObservedNs: String(clock.now()),
               sockets,
             });
             if (
               !armed.docUUID ||
+              (category && preparedState?.httpStatus !== 200) ||
               armed.docUUID !== preparedState?.docUUID ||
               armed.observedUrl !== page.url(attempt.targetPath) ||
               preparedState.url !== armed.observedUrl ||
@@ -1021,10 +1054,9 @@ export async function runBatch({ scenarios, deps }) {
             newDocuments: during(evidence.docInits).length,
             livereloadEvents: during(evidence.wsFrames).map((f) =>
               f.event === "css" ||
-              (f.event === "module" && (deps.fixedAstroTitle || !f.layoutModule)) ||
+              (f.event === "module" && (articleOperation || !f.layoutModule)) ||
               (f.event === "page" &&
-                (!f.pageSignal ||
-                  (deps.fixedAstroTitle && f.hasUpdatePath && f.updatePath !== "*")))
+                (!f.pageSignal || (articleOperation && f.hasUpdatePath && f.updatePath !== "*")))
                 ? "unattributed"
                 : f.event,
             ),
@@ -1110,11 +1142,11 @@ export async function runBatch({ scenarios, deps }) {
               payload.token !== attempt.token ||
               payload.armedDocUUID !== preDocUUID ||
               payload.url !== page.url(attempt.targetPath) ||
-              !matchesAstroText(payload.actual, originalText + " " + attempt.token)
+              !matchesAstroPredicate(payload.actual, attempt.predicate)
             )
               throw new Error("Astro update did not confirm the exact armed text and target");
           }
-          if (deps.fixedAstroTitle) {
+          if (articleOperation) {
             seenSupplementalDocs.add(preDocUUID);
             seenSupplementalDocs.add(waited.payload.docUUID);
           }
@@ -1206,7 +1238,7 @@ export async function runBatch({ scenarios, deps }) {
         }
 
         const supplementalStart = diagnostic || deps.stageBudget ? clock.now() : null;
-        for (const check of attempt.supplemental) {
+        for (const [supplementIndex, check] of attempt.supplemental.entries()) {
           let res;
           try {
             res = await stage("supplemental", timeouts.supplementalMs, supplementalStart, (ms) =>
@@ -1219,16 +1251,15 @@ export async function runBatch({ scenarios, deps }) {
             res.ok = Boolean(
               res.docUUID &&
               res.docUUID !== rec.notify.docUUID &&
+              (!category || res.httpStatus === 200) &&
               !seenSupplementalDocs.has(res.docUUID) &&
-              matchesAstroText(
-                res.notify?.actual ?? res.actual,
-                originalText + " " + attempt.token,
-              ),
+              matchesAstroPredicate(res.notify?.actual ?? res.actual, check.predicate),
             );
             if (res.ok) {
               seenSupplementalDocs.add(res.docUUID);
               bodyRevision.path = check.path;
-              if (deps.fixedAstroTitle)
+              if (category) bodyRevision.predicate = category.restore[supplementIndex];
+              else if (deps.fixedAstroTitle)
                 bodyRevision.predicate = astroTextPredicate(
                   originalText,
                   check.predicate.of[1].selector,

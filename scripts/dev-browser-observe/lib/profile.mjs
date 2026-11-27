@@ -12,7 +12,11 @@ import {
   fnWarmPaths,
 } from "./fieldnotes.mjs";
 import { OP_WRITE_METHODS } from "./fixture.mjs";
-import { FIXED_ASTRO_TITLE_PROTOCOL, isFixedAstroProtocol } from "./fixed-peer-roles.mjs";
+import {
+  FIXED_ASTRO_CATEGORY_PROTOCOL,
+  FIXED_ASTRO_TITLE_PROTOCOL,
+  isFixedAstroProtocol,
+} from "./fixed-peer-roles.mjs";
 import { rendererMemoryProfileErrors } from "./renderer-memory-protocol.mjs";
 import { startupProfileErrors } from "./startup-acceptance.mjs";
 import { scheduleErrors } from "./schedule.mjs";
@@ -50,6 +54,7 @@ export const FIXED_ADAPTERS = {
 
 // This contract qualifies the exact archived fn-shared-component correctness cell.
 function fixedAstroErrors(p) {
+  const category = p.fixedRssSafety === FIXED_ASTRO_CATEGORY_PROTOCOL;
   const title = p.fixedRssSafety === FIXED_ASTRO_TITLE_PROTOCOL;
   const [scenario] = p.scenarios ?? [];
   const [op] = scenario?.ops ?? [];
@@ -72,15 +77,16 @@ function fixedAstroErrors(p) {
     );
   if (
     p.scenarios?.length !== 1 ||
-    scenario?.id !== (title ? "fn-title-detail" : "fn-shared-component") ||
+    scenario?.id !==
+      (category ? "fn-category" : title ? "fn-title-detail" : "fn-shared-component") ||
     scenario.set !== "workload" ||
     Object.keys(scenario).some((k) => !["id", "set", "warmOrder", "ops"].includes(k)) ||
     scenario.warmOrder !== "none" ||
     scenario.ops?.length !== 1 ||
-    (title
-      ? op?.id !== "title-05-detail" ||
-        op.op !== "edit-title" ||
-        op.article !== "article-00005" ||
+    (title || category
+      ? op?.id !== (category ? "category-15" : "title-05-detail") ||
+        op.op !== (category ? "edit-category" : "edit-title") ||
+        op.article !== (category ? "article-00015" : "article-00005") ||
         op.expect !== "classify" ||
         Object.keys(op).some((k) => !["id", "op", "article", "writeMethod", "expect"].includes(k))
       : op?.id !== "footer" ||
