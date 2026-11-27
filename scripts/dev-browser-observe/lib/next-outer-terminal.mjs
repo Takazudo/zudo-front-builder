@@ -109,6 +109,93 @@ export async function outerPrewriteDecision({
   }
 }
 
+/**
+ * The runBatch hooks for the outer observer protocol, built exactly once per
+ * run by executeLocked. onDecision mirrors the consumed receipt and cadence to
+ * the caller, including a receipt consumed before a later refusal.
+ */
+export function nextOuterBatchHooks({
+  safety,
+  gate,
+  readProductGraph,
+  verifyWiring,
+  operation,
+  workDeadlineNs,
+  signal,
+  append,
+  onDecision = () => {},
+}) {
+  let outerDecision, outerCadence;
+  return {
+    outerDecisionOnly: operation === "decision-only",
+    beforePeerDecision: async ({ attemptStart, attemptMs }) => {
+      let decided;
+      try {
+        decided = await outerPrewriteDecision({
+          safety,
+          gate: gate(),
+          readProductGraph,
+          verifyWiring,
+          attemptDeadlineNs: attemptStart + BigInt(attemptMs) * 1000000n,
+          workDeadlineNs,
+          signal,
+        });
+      } catch (error) {
+        if (error.outerDecision) {
+          outerDecision = error.outerDecision;
+          onDecision(outerDecision, outerCadence);
+        }
+        throw error;
+      }
+      ({ outerDecision, outerCadence } = decided);
+      onDecision(outerDecision, outerCadence);
+      append({
+        type: "next-outer-decision",
+        outerDecision,
+        outerCadence,
+        graph: decided.graph,
+        preDecisionSettle: decided.preDecisionSettle,
+      });
+    },
+    outerPeerWriteTime: (now) =>
+      outerCheckpoint("pre-truncate", () => {
+        signal.throwIfAborted();
+        let graph;
+        const proof = gate().checkWriteTime(now, () => {
+          const current = safety.verifyOuterGraph(
+            readProductGraph,
+            () => {
+              graph = verifyWiring();
+            },
+            "pre-truncate",
+          );
+          assert.deepEqual(current, outerCadence, "outer decision RSS epoch changed");
+          return true;
+        });
+        proof.graph = graph;
+        const stamp = BigInt(proof.t0Ns);
+        assert(
+          stamp < BigInt(outerDecision.attemptDeadlineNs) &&
+            stamp < BigInt(outerCadence.cadenceDeadlineNs),
+          "outer T0 expired",
+        );
+        if (operation === "decision-only") {
+          append({
+            type: "next-outer-no-write",
+            proof,
+            outerCadence,
+            writePerformed: false,
+          });
+          throw Object.assign(
+            new Error("declared diagnostic outer decision completed before write"),
+            { code: "NEXT_OUTER_DECISION_ONLY", proof },
+          );
+        }
+        return proof;
+      }),
+  };
+}
+
 export function outerTerminalGate({ authority, now = process.hrtime.bigint }) {
   const expected = structuredClone(authority);
   assert(sameOwner(expected.outer, expected.outer) && sameOwner(expected.worker, expected.worker));

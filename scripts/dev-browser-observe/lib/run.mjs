@@ -8,11 +8,7 @@ import {
   verifyNextOuterProvider,
 } from "./next-outer-provider.mjs";
 import { nextOuterNonceDigest, observeNextOuterReceipt } from "./next-outer-channel.mjs";
-import {
-  outerCheckpoint,
-  outerPrewriteDecision,
-  outerTerminalGate,
-} from "./next-outer-terminal.mjs";
+import { nextOuterBatchHooks, outerTerminalGate } from "./next-outer-terminal.mjs";
 import { samplerClosureAudit } from "./linux-rss-sample.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
 import {
@@ -1304,68 +1300,20 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           }),
           ...(nextProtocol && {
             ...(outerProtocol && {
-              outerDecisionOnly: profile.fixedNextOuterObserver.operation === "decision-only",
-              beforePeerDecision: async ({ attemptStart, attemptMs }) => {
-                let decided;
-                try {
-                  decided = await outerPrewriteDecision({
-                    safety: fixedSafety,
-                    gate: outerGate,
-                    readProductGraph: () => readNextOuterProductGraph(server.handle.native),
-                    verifyWiring: () => verifyNextOuterWiring(outerWiring),
-                    attemptDeadlineNs: attemptStart + BigInt(attemptMs) * 1000000n,
-                    workDeadlineNs: BigInt(loaded.workDeadline) * 1000000n,
-                    signal: loaded.signal,
-                  });
-                } catch (error) {
-                  if (error.outerDecision) outerDecision = error.outerDecision;
-                  throw error;
-                }
-                ({ outerDecision, outerCadence } = decided);
-                rec.append({
-                  type: "next-outer-decision",
-                  outerDecision,
-                  outerCadence,
-                  graph: decided.graph,
-                  preDecisionSettle: decided.preDecisionSettle,
-                });
-              },
-              outerPeerWriteTime: (now) =>
-                outerCheckpoint("pre-truncate", () => {
-                  loaded.signal.throwIfAborted();
-                  let graph;
-                  const proof = outerGate.checkWriteTime(now, () => {
-                    const current = fixedSafety.verifyOuterGraph(
-                      () => readNextOuterProductGraph(server.handle.native),
-                      () => {
-                        graph = verifyNextOuterWiring(outerWiring);
-                      },
-                      "pre-truncate",
-                    );
-                    assert.deepEqual(current, outerCadence, "outer decision RSS epoch changed");
-                    return true;
-                  });
-                  proof.graph = graph;
-                  const stamp = BigInt(proof.t0Ns);
-                  assert(
-                    stamp < BigInt(outerDecision.attemptDeadlineNs) &&
-                      stamp < BigInt(outerCadence.cadenceDeadlineNs),
-                    "outer T0 expired",
-                  );
-                  if (profile.fixedNextOuterObserver.operation === "decision-only") {
-                    rec.append({
-                      type: "next-outer-no-write",
-                      proof,
-                      outerCadence,
-                      writePerformed: false,
-                    });
-                    throw Object.assign(
-                      new Error("declared diagnostic outer decision completed before write"),
-                      { code: "NEXT_OUTER_DECISION_ONLY", proof },
-                    );
-                  }
-                  return proof;
-                }),
+              ...nextOuterBatchHooks({
+                safety: fixedSafety,
+                gate: () => outerGate,
+                readProductGraph: () => readNextOuterProductGraph(server.handle.native),
+                verifyWiring: () => verifyNextOuterWiring(outerWiring),
+                operation: profile.fixedNextOuterObserver.operation,
+                workDeadlineNs: BigInt(loaded.workDeadline) * 1000000n,
+                signal: loaded.signal,
+                append: (r) => rec.append(r),
+                onDecision: (decision, cadence) => {
+                  outerDecision = decision;
+                  outerCadence = cadence;
+                },
+              }),
             }),
             ...(decisionProtocol && {
               checkPeerWriteTime: (stamp) => nextCustody.checkWriteTime(stamp),

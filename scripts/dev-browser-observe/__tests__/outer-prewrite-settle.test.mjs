@@ -2,7 +2,17 @@ import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
 import * as peerRoles from "../lib/fixed-peer-roles.mjs";
 import { startFixedRssSafety } from "../lib/fixed-rss-safety.mjs";
-import { outerPrewriteDecision, outerTerminalGate } from "../lib/next-outer-terminal.mjs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readPeerTarget, snapshotPaths } from "../lib/fixture.mjs";
+import {
+  nextOuterBatchHooks,
+  outerPrewriteDecision,
+  outerTerminalGate,
+} from "../lib/next-outer-terminal.mjs";
+import { runBatch } from "../lib/state-machine.mjs";
+import { deps, fakeFs, fakePage } from "./fakes.mjs";
 
 const MS = 1_000_000n;
 // #4870 R3 (sealed; independent-terminal/arm-overlap.json): the arm fell 70.881 ms
@@ -395,3 +405,101 @@ test("a receipt consumed before a later expiry refusal stays attributable", asyn
     await h.done();
   }
 });
+
+// Run level: the hooks executeLocked installs, driven by the real runBatch on a
+// decision-only edit-body cell. Proves the pre-write decision is awaited, the
+// settle record lands on the next-outer-decision row, and a refusal carries it.
+test.each(["decided-after-settle", "refused-receipt-expired"])(
+  "runBatch awaits the outer pre-write decision: %s",
+  async (mode) => {
+    const dir = mkdtempSync(join(tmpdir(), "outer-settle-"));
+    const h = harness();
+    try {
+      const path = join(dir, "article-00005.md");
+      writeFileSync(path, "v0");
+      await ready(h);
+      h.plans.set(h.sample.mock.calls.length + 1, { ms: R3_HELPER_MS });
+      await vi.advanceTimersByTimeAsync(1000 + R3_ARM_AFTER_DISPATCH_MS);
+      const gate = receivedGate(mode === "refused-receipt-expired" ? 10 : 10_000);
+      const fs = fakeFs();
+      fs.snapshot = () => snapshotPaths({ files: [path] });
+      fs.readPeerTarget = readPeerTarget;
+      let writes = 0;
+      // The outer T0 check runs inside the write's clock read, before any syscall.
+      fs.performWrite = (_w, now) => {
+        now();
+        writes++;
+        throw Error("no write may happen in a decision-only cell");
+      };
+      fs.prepareAttempt = (op) => ({
+        token: op.id,
+        targetPath: "/articles/article-00005/",
+        predicate: { kind: "text", selector: ".body", includes: op.id },
+        write: { method: "in-place", path, bytes: Buffer.from(op.id) },
+        supplemental: [],
+      });
+      const page = fakePage();
+      const d = deps({ page, fs, clock: { now: () => process.hrtime.bigint() } });
+      const order = [];
+      Object.assign(
+        d,
+        nextOuterBatchHooks({
+          safety: h.monitor,
+          gate: () => gate,
+          readProductGraph: () => h.ancestors,
+          verifyWiring: () => ({ census: "exact" }),
+          operation: "decision-only",
+          workDeadlineNs: process.hrtime.bigint() + 7_000_000n * MS,
+          signal: new AbortController().signal,
+          append: (r) => d.recorder.append(r),
+          onDecision: () => order.push("decision"),
+        }),
+        {
+          beforePeerMutation: () => order.push("mutation-gate"),
+          // executeLocked installs a stage budget for every fixed peer; the
+          // outer decision derives its attempt deadline from that attemptStart.
+          stageBudget: (ms) => ms,
+        },
+      );
+      const op = { id: "edit-05", op: "edit-body", article: "article-00005", expect: "classify" };
+      const { value, error } = await settled(
+        runBatch({ deps: d, scenarios: [{ id: "fn-edit-body", ops: [op] }] }),
+        1,
+      );
+      assert.equal(error, undefined, String(error));
+      assert(value.stopped);
+      assert.equal(writes, 0);
+      assert.equal(readFileSync(path, "utf8"), "v0");
+      const attempt = d.recorder.records.find((r) => r.type === "attempt");
+      if (mode === "decided-after-settle") {
+        assert.deepEqual(order, ["decision", "mutation-gate"], "decision awaited before the gate");
+        const row = d.recorder.records.find((r) => r.type === "next-outer-decision");
+        assert.equal(row.preDecisionSettle.outcome, "settled");
+        assert.equal(row.preDecisionSettle.pendingAtDecision, true);
+        assert(BigInt(row.preDecisionSettle.waitedNs) >= 30n * MS);
+        assert.equal(row.outerCadence.epoch, row.preDecisionSettle.settledEpoch);
+        assert(d.recorder.records.some((r) => r.type === "next-outer-no-write"));
+        assert.equal(attempt.outcome, "outer-decision-only");
+        assert.equal(value.accounting.stopReason, "outer-decision-only");
+      } else {
+        assert.deepEqual(order, [], "no decision and no mutation gate after a refused receipt");
+        assert(!d.recorder.records.some((r) => r.type === "next-outer-decision"));
+        assert.equal(attempt.outcome, "identity-rejected");
+        assert.match(attempt.error, /receipt unavailable before decision/);
+        assert.equal(attempt.outerRefusal.preDecisionSettle.outcome, "settled");
+        // The gate's own clock check refuses after the graph callback returned, so
+        // the checkpoint reports the graph as unknown (unchanged behaviour).
+        assert.equal(attempt.outerRefusal.stage, "prewrite-decision");
+        assert.equal(attempt.outerRefusal.coverage, "unknown");
+        assert.equal(value.accounting.stopReason, "identity-rejected");
+      }
+      assert.equal(
+        d.recorder.records.find((r) => r.type === "cleanup").liveSkipped,
+        "before-mutation-no-write",
+      );
+    } finally {
+      await h.done();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
