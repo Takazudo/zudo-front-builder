@@ -251,6 +251,13 @@ export async function runBatch({ scenarios, deps }) {
   const cleanup = async (snapshot, reason, blocked = [], { retry = false } = {}) => {
     // A refused safety observation leaves this disposable work copy intact.
     // Restoring it while its server is live would trigger another rebuild.
+    if (deps.sourceTimingSafety && !deps.safetySignal.aborted) {
+      try {
+        deps.sourceTimingSafety.current();
+      } catch (error) {
+        if (!deps.safetySignal.aborted) throw error;
+      }
+    }
     if (deps.safetySignal?.aborted) {
       append({
         type: "cleanup",
@@ -283,6 +290,7 @@ export async function runBatch({ scenarios, deps }) {
       });
     const restoreNs = clock.now();
     const mark = page.mark?.() ?? null;
+    deps.sourceTimingSafety?.current();
     const restore = fs.restore(snapshot);
     let peerRestoration;
     if (peerWrite) {
@@ -600,7 +608,7 @@ export async function runBatch({ scenarios, deps }) {
           stop("server-exit", where);
           break outer;
         }
-        const sample = server.sampleResources();
+        const sample = deps.sourceTimingSafety?.current() ?? server.sampleResources();
         const wallMs = nsToMs(clock.now() - startedNs);
         const tripped = overLimits(limits, sample, wallMs);
         if (tripped) {
@@ -902,10 +910,38 @@ export async function runBatch({ scenarios, deps }) {
             t0 = r.t0;
             tLast = r.tLast;
             writeSteps = r.steps;
-          } else t0 = fs.performWrite(attempt.write, () => clock.now());
+          } else
+            t0 = fs.performWrite(attempt.write, () => {
+              if (deps.sourceTimingSafety) {
+                try {
+                  const stamp = clock.now();
+                  const accepted = deps.sourceTimingSafety.current(stamp);
+                  recBase.sourceTimingWriteEpoch = accepted.epoch;
+                  recBase.sourceTimingAcceptedNs = accepted.acceptedNs;
+                  return stamp;
+                } catch (error) {
+                  error.beforeSourceTimingWrite = true;
+                  throw error;
+                }
+              }
+              return clock.now();
+            });
           current.writeDone = true;
           attempt.applied?.();
         } catch (error) {
+          if (error?.beforeSourceTimingWrite && deps.sourceTimingSafety) {
+            append({
+              ...recBase,
+              outcome: "resource-limit",
+              phase: "before-mutation",
+              writePerformed: false,
+              error: error.message,
+            });
+            current.armedToken = null;
+            count(acc, "resource-limit");
+            stop("resource-limit", where);
+            break outer;
+          }
           if (error?.steps?.length) {
             current.writeDone = true;
             recBase.writeSteps = error.steps;
@@ -953,25 +989,26 @@ export async function runBatch({ scenarios, deps }) {
           everyMs: limits.sampleEveryMs ?? 1000,
         };
         let sampler = null;
-        const resourceTrip = diagnostic
-          ? null
-          : new Promise((resolve) => {
-              sampler = setInterval(async () => {
-                const s = server.sampleResourcesAsync
-                  ? await server.sampleResourcesAsync()
-                  : server.sampleResources();
-                waitSamples.count += 1;
-                if (typeof s?.summedRssKiB === "number")
-                  waitSamples.peakSummedRssKiB = Math.max(
-                    waitSamples.peakSummedRssKiB,
-                    s.summedRssKiB,
-                  );
-                const wall = nsToMs(clock.now() - startedNs);
-                const trip = overLimits(limits, s, wall);
-                if (trip)
-                  resolve({ kind: "resource-limit", sample: s, tripped: trip, wallMs: wall });
-              }, waitSamples.everyMs);
-            });
+        const resourceTrip =
+          diagnostic || deps.sourceTimingSafety
+            ? null
+            : new Promise((resolve) => {
+                sampler = setInterval(async () => {
+                  const s = server.sampleResourcesAsync
+                    ? await server.sampleResourcesAsync()
+                    : server.sampleResources();
+                  waitSamples.count += 1;
+                  if (typeof s?.summedRssKiB === "number")
+                    waitSamples.peakSummedRssKiB = Math.max(
+                      waitSamples.peakSummedRssKiB,
+                      s.summedRssKiB,
+                    );
+                  const wall = nsToMs(clock.now() - startedNs);
+                  const trip = overLimits(limits, s, wall);
+                  if (trip)
+                    resolve({ kind: "resource-limit", sample: s, tripped: trip, wallMs: wall });
+                }, waitSamples.everyMs);
+              });
         let waited, peerDecision;
         try {
           const timeoutMs = diagnostic
