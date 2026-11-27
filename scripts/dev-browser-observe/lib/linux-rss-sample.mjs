@@ -270,6 +270,7 @@ export function sampleRendererMemory(
       clearTimeout(closeTimer);
       qualify(timing, envelopeOk);
       parent.resultNs = now();
+      if (BigInt(parent.resultNs) > deadline) fail("deadline", "sampling helper deadline reached");
       const record = details();
       if (fault)
         reject(
@@ -779,17 +780,21 @@ export function sampleRendererMemory(
       helper = { ...helper, closed: true, pipesClosed: true, code, signal };
       if (partial.length || !summary || stamps.preExitNs === null || code !== 0 || signal)
         fail("helper-close", "sampling helper failed or returned incomplete output");
-      if (process.hrtime.bigint() > deadline) fail("deadline", "sampling helper deadline reached");
       finish();
     });
-    timer = setTimeout(
-      () => {
-        parent.deadlineDispatchNs = now();
-        fail("deadline", "sampling helper deadline reached");
-        kill();
-      },
-      Math.max(0, Number(deadline - process.hrtime.bigint()) / 1e6),
-    );
+    // A millisecond timer may wake before the monotonic nanosecond cutoff.
+    // An early wake must not start the separate cancellation reserve.
+    const checkDeadline = () => {
+      const remaining = deadline - process.hrtime.bigint();
+      if (remaining > 0n) {
+        timer = setTimeout(checkDeadline, Math.ceil(Number(remaining) / 1e6));
+        return;
+      }
+      parent.deadlineDispatchNs = now();
+      fail("deadline", "sampling helper deadline reached");
+      kill();
+    };
+    checkDeadline();
     parent.requestStartNs = now();
     const encodedRequest = JSON.stringify(request);
     parent.requestBytes = Buffer.byteLength(encodedRequest);
