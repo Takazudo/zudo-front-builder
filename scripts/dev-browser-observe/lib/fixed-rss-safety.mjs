@@ -4,7 +4,12 @@ import { closeSync, fstatSync, openSync, readSync, realpathSync } from "node:fs"
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { samplePeerRoles, FIXED_ASTRO_FOOTER_PROTOCOL } from "./fixed-peer-roles.mjs";
+import {
+  samplePeerRoles,
+  peerProcessIdentity,
+  FIXED_ASTRO_FOOTER_PROTOCOL,
+  FIXED_PEER_PROTOCOL,
+} from "./fixed-peer-roles.mjs";
 import { sampleRendererMemory } from "./linux-rss-sample.mjs";
 
 function pin(path, digest) {
@@ -24,6 +29,10 @@ function pin(path, digest) {
 }
 
 export function fixedAstroExecutables(facts, protocol = FIXED_ASTRO_FOOTER_PROTOCOL) {
+  return fixedPeerExecutables(facts, protocol);
+}
+
+export function fixedPeerExecutables(facts, protocol = FIXED_PEER_PROTOCOL) {
   if (facts.installReceipt.node.realpath !== realpathSync(process.execPath))
     throw new Error("fixed peer Node executable does not match install receipt");
   return {
@@ -71,8 +80,13 @@ export function startFixedRssSafety({
   custody = null,
   peer,
   checkRoles = samplePeerRoles,
+  nextOwner = () => null,
 }) {
   let pending = null;
+  let decision = null,
+    decisionAbort;
+  const intervalNs = BigInt(limits.sampleEveryMs) * 1000000n;
+  let nextDispatchNs = process.hrtime.bigint() + intervalNs;
   let failure = null;
   let secondaryHelperFailure = null;
   let nativeBirth = null;
@@ -82,6 +96,7 @@ export function startFixedRssSafety({
   let measuredCycles = 0;
   let peakKiB = null;
   const stable = new Map();
+  let qualifiedPeer;
   let readyNs,
     firstSpawn,
     postCycles = 0,
@@ -120,6 +135,13 @@ export function startFixedRssSafety({
   };
   const take = () => {
     if (failure || stopped) return;
+    nextDispatchNs = process.hrtime.bigint() + intervalNs;
+    if (decision) {
+      const error = new Error("periodic RSS dispatch overlapped pre-write identity check");
+      decisionAbort.abort(error);
+      fail(error);
+      return;
+    }
     if (pending) {
       fail(new Error("fixed safety sampler still occupied at next periodic dispatch"));
       return;
@@ -128,11 +150,13 @@ export function startFixedRssSafety({
     // legitimately predate the native child. Qualify a new periodic sample.
     const readyAtEntry = readyCheck;
     const startedNs = String(process.hrtime.bigint());
-    pending = (
-      peer
-        ? sample(server, fixedExecutables.root.path)
-        : sample(server, fixedExecutables.root.path, { fixedExecutables, custody })
-    )
+    const custodyAtEntry = nextOwner();
+    const args = peer
+      ? custodyAtEntry
+        ? [server, fixedExecutables.root.path, { nextCustody: custodyAtEntry }]
+        : [server, fixedExecutables.root.path]
+      : [server, fixedExecutables.root.path, { fixedExecutables, custody }];
+    pending = sample(...args)
       .then((result) => {
         measuredCycles++;
         if (Number.isSafeInteger(result.summedRssKiB))
@@ -157,10 +181,34 @@ export function startFixedRssSafety({
               BigInt(t.deadlineNs) === BigInt(t.entryNs) + 750_000_000n,
             "invalid peer sampler bracket",
           );
-          const sum = result.processes.reduce(
-            (n, p) => n + Math.max(p.statusKiB.VmRSS, p.smapsRollupKiB.Rss),
-            0,
-          );
+          const custody = custodyAtEntry;
+          const worker = custody?.qualified;
+          const isWorker = (p) => worker && custody.isWorker(p);
+          const sum = result.processes.reduce((n, p) => {
+            // V1 performs metric aggregation here and validates live disposition
+            // through its unchanged peer classifier. Preserve that callback contract.
+            if (!custody) return n + Math.max(p.statusKiB.VmRSS, p.smapsRollupKiB.Rss);
+            if (isWorker(p) && p.disposition !== "live") {
+              assert(
+                ["proved-departure", "custodied-departure", "retained-terminal-proof"].includes(
+                  p.disposition,
+                ) &&
+                  p.terminalProof?.pidfdFlags === 0 &&
+                  [1, 16, 17].includes(p.terminalProof.pollMask),
+                "unverified Next exit",
+              );
+              if (p.rssKiB === null) return n;
+              assert(Number.isSafeInteger(p.rssKiB) && p.rssKiB >= 0);
+              return n + p.rssKiB;
+            }
+            assert(
+              p.disposition === "live" &&
+                Number.isSafeInteger(p.statusKiB?.VmRSS) &&
+                Number.isSafeInteger(p.smapsRollupKiB?.Rss),
+              "missing live peer metrics",
+            );
+            return n + Math.max(p.statusKiB.VmRSS, p.smapsRollupKiB.Rss);
+          }, 0);
           assert(
             Number.isSafeInteger(sum) &&
               sum > 0 &&
@@ -168,7 +216,13 @@ export function startFixedRssSafety({
               sum <= limits.rssCeilingKiB,
             "invalid peer owned RSS",
           );
-          const roles = checkRoles(result, peer, Boolean(readyAtEntry));
+          const roles = checkRoles(
+            custody
+              ? { ...result, processes: result.processes.filter((p) => !isWorker(p)) }
+              : result,
+            peer,
+            Boolean(readyAtEntry),
+          );
           for (const row of roles.chain) {
             const key = [row.pid, row.ppid, row.pgid, row.bootId, row.startTicks].join("/");
             assert(!stable.has(row.role) || stable.get(row.role) === key, "peer role replaced");
@@ -182,6 +236,7 @@ export function startFixedRssSafety({
             readyAtEntry: Boolean(readyAtEntry),
             ...roles,
           });
+          if (readyAtEntry) qualifiedPeer = roles;
           if (readyAtEntry && postCycles < 2) {
             const decision = process.hrtime.bigint();
             assert(
@@ -269,6 +324,64 @@ export function startFixedRssSafety({
         true,
       );
     },
+    get qualifiedPeer() {
+      return qualifiedPeer;
+    },
+    async verifyPrewriteTerminal({ getOwned, workDeadlineNs, signal }) {
+      const custody = nextOwner();
+      assert(custody?.pollBeforeMutation && !failure && !stopped, "pre-write safety unavailable");
+      const worker = custody.qualified;
+      if (!worker || custody.terminalVerified || custody.decisionProof) return;
+      const enteredNs = process.hrtime.bigint();
+      const owned = getOwned();
+      if (owned.some((p) => custody.isWorker(p))) return;
+      // Check all other observed and remembered births first. The new helper is
+      // eligible only for this single, otherwise-valid missing-worker decision.
+      peerProcessIdentity(
+        owned,
+        [...server.handle.known.values()].filter((p) => !custody.isWorker(p)),
+        qualifiedPeer,
+        peer,
+      );
+      assert(!pending && !decision, "ordinary RSS helper is busy");
+      decisionAbort = new AbortController();
+      // The final caller takes another complete census. Aligning with the next
+      // periodic timer would change the workload, so insufficient slack refuses.
+      const deadlineNs =
+        workDeadlineNs < nextDispatchNs - 5000000n ? workDeadlineNs : nextDispatchNs - 5000000n;
+      decision = custody.pollBeforeMutation({
+        deadlineNs,
+        enteredNs,
+        signal: signal ? AbortSignal.any([signal, decisionAbort.signal]) : decisionAbort.signal,
+      });
+      try {
+        await decision;
+        if (failure) throw new Error(failure.error);
+      } finally {
+        decision = null;
+        decisionAbort = null;
+      }
+    },
+    verifyPeerProcesses(owned, known) {
+      if (failure || stopped) throw new Error(failure?.error ?? "fixed peer stopped");
+      const custody = nextOwner();
+      if (!custody) return peerProcessIdentity(owned, known, qualifiedPeer, peer);
+      const isWorker = (p) => custody.isWorker(p);
+      // Scout qualification can precede the next sampler's known-map commit.
+      if (custody.qualified && !owned.some(isWorker))
+        assert(
+          custody.terminalVerified || custody.decisionProof,
+          "known Next worker missing before official terminal decision",
+        );
+      const results = peerProcessIdentity(
+        owned.filter((p) => !isWorker(p)),
+        known.filter((p) => !isWorker(p)),
+        qualifiedPeer,
+        peer,
+      );
+      for (const p of owned.filter(isWorker)) results.push(custody.verifyCurrent(p));
+      return results;
+    },
     report() {
       return {
         protocol: fixedExecutables.protocol ?? "linux-fixed-zfb.v1",
@@ -298,7 +411,9 @@ export function startFixedRssSafety({
       readyCheck?.resolve();
       clearInterval(timer);
       clearTimeout(expiry);
-      await pending;
+      decisionAbort?.abort(new Error("fixed safety is stopping"));
+      if (decision) await Promise.allSettled([decision, pending]);
+      else await pending;
       return failure;
     },
   };

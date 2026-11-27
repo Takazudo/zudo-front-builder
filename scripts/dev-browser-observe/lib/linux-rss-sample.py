@@ -114,6 +114,16 @@ class Sample:
         self.fixed_dev_args = request.get("fixedDevArgs")
         self.fixed_workers = self.fixed_dev_args is not None
         self.fixed_launch = request.get("fixedLaunch")
+        self.next_custody = request.get("nextCustody")
+        self.next_module = None
+        if self.next_custody:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                "next_custody", os.path.join(os.path.dirname(__file__), "next-peer-custody.py")
+            )
+            self.next_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(self.next_module)
         self.emit = emit
         self.timing = timing
         self.bytes = self.reads = 0
@@ -240,7 +250,48 @@ class Sample:
                 if argv != self.argv_bytes((path, "__zfb-compiler-worker")):
                     raise Invalid("unexpected-fixed-compiler-argv", row)
                 exe["workerArg"] = "__zfb-compiler-worker"
+        if self.next_worker(row):
+            self.check_next_live(row,directory)
         return exe
+
+    def next_worker(self, row):
+        if not self.next_custody:
+            return False
+        chain = self.next_custody["contract"]["ancestors"]
+        return row["ppid"] == chain[-1]["pid"] and row["pgid"] == chain[0]["pgid"]
+
+    def check_next_live(self, row, directory):
+        contract = self.next_custody["contract"]
+        data = self.read("cmdline", 16384, directory)
+        expected = (
+            b"\0".join(
+                os.fsencode(p) for p in [contract["image"]["path"], contract["script"]["path"]]
+            )
+            + b"\0"
+        )
+        flags = self.read("environ", 131072, directory).split(b"\0")
+        if (
+            data != expected
+            or os.readlink("cwd", dir_fd=directory) != contract["app"]
+            or any(v.startswith(b"JEST_WORKER_ID=") for v in flags)
+            or any(
+                [v for v in flags if v.startswith(prefix + b"=")] != [prefix + b"=1"]
+                for prefix in (b"NEXT_PRIVATE_WORKER", b"__NEXT_DEV_SERVER")
+            )
+        ):
+            raise Invalid("unverified-next-bootstrap-live-role", row)
+
+    def next_pair(self, row, offered=None):
+        ack, fds = self.next_module.request_pair(self.next_custody, row, offered)
+        try:
+            if offered and [self.next_module.identity(x) for x in offered] != [
+                self.next_module.identity(x) for x in fds
+            ]:
+                raise Invalid("next-custody-descriptors-changed", row)
+            return ack, terminal(fds[0])
+        finally:
+            for fd in fds:
+                os.close(fd)
 
     def threads(self, directory, boot):
         taskfd = os.open("task", DIR, dir_fd=directory)
@@ -269,6 +320,14 @@ class Sample:
                       smapsRollupUnavailable=None, rssKiB=None, threads=None,
                       startedNs=str(CLOCK()))
         ended = terminal(fd)
+        if self.next_worker(row):
+            ack, original_ended = self.next_pair(row, (fd, directory))
+            result["nextCustodyReceipt"] = ack
+            result["nextCustodyReceipts"] = [ack]
+            if original_ended and not terminal(fd):
+                raise Invalid("next-custody-local-terminal-contradiction",row)
+            if ended and not original_ended:
+                raise Invalid("next-custody-terminal-contradiction", row)
         if not ended:
             try:
                 result["executable"] = self.exe_identity(directory, row)
@@ -305,12 +364,24 @@ class Sample:
             self.observed = final
             if self.fixed_workers and row["pid"] != self.root["pid"] and final["ppid"] != row["ppid"]:
                 raise Invalid("fixed-parent-changed", final)
+            if self.next_worker(row) and row["ppid"] != final["ppid"]:
+                raise Invalid("next-bootstrap-parent-changed",final)
             if not birth_matches(row, final):
                 raise Invalid("birth-or-group-mismatch", final)
         except GONE:
             if not terminal(fd):
                 raise
         ended = terminal(fd) or ended
+        if ended and self.next_worker(row):
+            # Only a poll of the retained original pair authorizes first terminal
+            # admission. A later local pidfd or disappearance cannot do so.
+            if not original_ended:
+                ack, original_ended = self.next_pair(row)
+                result["nextCustodyReceipt"] = ack
+                result["nextCustodyReceipts"].append(ack)
+            if not original_ended:
+                raise Invalid("next-custody-terminal-contradiction", row)
+            ended = original_ended
         if ended:
             if self.addition and pid == self.addition["birth"]["pid"]:
                 raise Invalid("added-live-worker-ended-during-observation", row)
@@ -524,9 +595,35 @@ class Sample:
                                   rssKiB=None, statusKiB=None,
                                   smapsRollupKiB=None, threads=None, executable=None,
                                   startedNs=self.started,endNs=str(CLOCK()))})
+                elif self.next_worker(previous) and str(pid) in self.next_custody["tokens"]:
+                    self.mark("next-custody-known", previous)
+                    ack, ended = self.next_pair(previous)
+                    if not ended:
+                        raise Invalid("known-next-worker-missing-without-terminal", previous)
+                    self.emit(
+                        {
+                            "type": "observation",
+                            "process": dict(
+                                previous,
+                                disposition="custodied-departure",
+                                terminalProof=dict(ended, birth=previous),
+                                nextCustodyReceipt=ack,
+                                nextCustodyReceipts=[ack],
+                                rssKiB=None,
+                                statusKiB=None,
+                                smapsRollupKiB=None,
+                                threads=None,
+                                executable=None,
+                                startedNs=self.started,
+                                endNs=str(CLOCK()),
+                            ),
+                        }
+                    )
                 else:
                     self.mark("discovery-known", previous)
-                    first_failure = first_failure or self.problem(Invalid("unbound-known-departure"))
+                    first_failure = first_failure or self.problem(
+                        Invalid("unbound-known-departure")
+                    )
             if len(candidates.keys() | expected_pids) > MAX_OWNED:
                 raise Invalid("owned-process-cap")
             # Walk parent-before-child. Independent branches can still hand off

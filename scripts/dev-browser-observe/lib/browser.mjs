@@ -448,6 +448,7 @@ export class ObserverPage {
     this.otherFrames = [];
     this.updateSockets = [];
     this.peerSocketTracking = null;
+    this.fixedAstroObservation = false;
     this.requests = [];
     this.resolved = new Set();
     this.duplicates = [];
@@ -535,7 +536,7 @@ export class ObserverPage {
       this.clock(),
       url,
       socket,
-      Boolean(this.peerSocketTracking),
+      Boolean(this.fixedAstroObservation),
     );
     const kept = UPDATE_EVENTS.has(frame.event) || ACTIVITY_EVENTS.has(frame.event);
     (kept ? this.wsFrames : this.otherFrames).push(frame);
@@ -543,7 +544,7 @@ export class ObserverPage {
 
   /** Returns true so the observer persists `delivered` only after this ack. */
   onNotify(payload, t1, source) {
-    if (this.peerSocketTracking) {
+    if (this.fixedAstroObservation) {
       const last = this.docInits.at(-1);
       const designatedMain = Boolean(
         this.page && source?.page === this.page && source.frame === this.page.mainFrame(),
@@ -590,7 +591,7 @@ export class ObserverPage {
   }
 
   onDocInit(payload, t, source) {
-    if (this.peerSocketTracking) {
+    if (this.fixedAstroObservation) {
       if (!this.page || source?.page !== this.page || source.frame !== this.page.mainFrame())
         return;
       payload = { ...payload, designatedMain: true };
@@ -855,7 +856,7 @@ export class ObserverPage {
         const result = window.__dbo.arm(t, p, w);
         return captureUrl ? { ...result, observedUrl: location.href } : result;
       },
-      [token, predicate, watch, Boolean(this.peerSocketTracking)],
+      [token, predicate, watch, Boolean(this.fixedAstroObservation)],
     );
     if (!res.armed) this.armedToken = null;
     return res;
@@ -910,7 +911,7 @@ export class ObserverPage {
     if (!this.preMark) return null;
     const ev = this.since(this.preMark);
     const frames = ev.wsFrames.filter((f) =>
-      this.peerSocketTracking
+      this.fixedAstroObservation
         ? UPDATE_EVENTS.has(f.event)
         : f.event === "page" || f.event === "css",
     );
@@ -1058,7 +1059,7 @@ export class ObserverPage {
       firstReadActual: armed.actual ?? null,
       recovery,
     };
-    if (this.peerSocketTracking) {
+    if (this.fixedAstroObservation) {
       base.armedDocUUID = armed.docUUID;
       base.observedUrl = armed.observedUrl;
       if (
@@ -1115,7 +1116,7 @@ export class ObserverPage {
       ok:
         waited.kind === "notify" &&
         !transient &&
-        (!this.peerSocketTracking ||
+        (!this.fixedAstroObservation ||
           (waited.payload.producer?.designatedMain === true &&
             waited.payload.producer.frameUrl === state.url &&
             waited.payload.producer.latestDocUUID === armed.docUUID &&

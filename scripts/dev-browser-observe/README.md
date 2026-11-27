@@ -1404,3 +1404,5 @@ ports and open handles against live kernel observations. Keep the reservation
 when any resource cannot be accounted for. After verifying absence, archive the
 reservation and the reconciliation evidence and remove that specific reservation
 before the next invocation. Never signal a process using a recorded PID alone.
+
+The optional `linux-fixed-peer.v1` fixed RSS safety mode supports the direct 100-article Astro and Next distributions for the archived `fn-edit-body` correctness operation. Specify the selected headless Chromium executable path and SHA-256 and the library-default executable SHA-256 in `fixedPeerBrowser`. Each sample checks the pinned Node image and the framework's process roles. Before browser setup, two fresh samples must prove the serving role owns the printed loopback listener within three seconds of actual readiness. Role, RSS and listener checks continue during the edit and restoration. Timeout and stale classifications remain in the receipts and fail the correctness run. Shared timing aggregation excludes these runs.

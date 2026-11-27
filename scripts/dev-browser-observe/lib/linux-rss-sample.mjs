@@ -358,9 +358,15 @@ export function sampleRendererMemory(
   {
     fixedExecutables = null,
     custody = null,
+    nextCustody = null,
     launch = () =>
       spawn("python3", ["-I", "-B", script, String(process.pid)], {
-        stdio: ["pipe", "pipe", "pipe", ...(custody ? [custody.channel] : [])],
+        stdio: [
+          "pipe",
+          "pipe",
+          "pipe",
+          ...(custody || nextCustody ? [(custody || nextCustody).channel] : []),
+        ],
       }),
   } = {},
 ) {
@@ -463,6 +469,18 @@ export function sampleRendererMemory(
           fail("deadline", "sampling helper deadline reached");
       }
       const record = details();
+      if (!fault && nextCustody) {
+        try {
+          for (const p of processes)
+            if (
+              p.nextCustodyReceipt &&
+              ["proved-departure", "custodied-departure"].includes(p.disposition)
+            )
+              nextCustody.terminal(p);
+        } catch (error) {
+          fail("next-custody-terminal", String(error));
+        }
+      }
       if (fault)
         reject(
           Object.assign(new Error(fault.error), {
@@ -520,7 +538,10 @@ export function sampleRendererMemory(
           Boolean(custody),
         "missing or unexpected fixed custody",
       );
+      requireValue(!(custody && nextCustody), "conflicting sampler custody");
+      const nextRequest = nextCustody?.begin(handle);
       request = {
+        ...(nextRequest && { nextCustody: nextRequest }),
         ...(custody && { fixedCustody: { ...custody.begin(handle), root: compactBirth(root) } }),
         root: compactBirth(root),
         known: [...handle.known.values()].map(compactBirth),
@@ -848,7 +869,67 @@ export function sampleRendererMemory(
             p.rssKiB === (rss.get(p.pid) ?? null),
           "inconsistent process observation",
         );
-        if (p.disposition === "custodied-departure") {
+        if (
+          request.nextCustody &&
+          p.ppid === request.nextCustody.contract.ancestors[2].pid &&
+          p.disposition !== "retained-terminal-proof"
+        )
+          requireValue(
+            p.nextCustodyReceipt && p.pgid === root.pgid,
+            "missing verified Next worker handoff",
+          );
+        if (request.nextCustody && bound.has(p.pid))
+          requireValue(bound.get(p.pid).ppid === p.ppid, "Next sample parent mismatch");
+        if (p.nextCustodyReceipt || (nextCustody && p.disposition === "custodied-departure")) {
+          requireValue(
+            nextCustody && (p.executable === null || matchesExecutable(p.executable, executable)),
+            "unexpected Next custody observation",
+          );
+          const tx = p.nextCustodyReceipts;
+          requireValue(
+            Array.isArray(tx) &&
+              tx.length >= 1 &&
+              tx.length <= 2 &&
+              tx.at(-1)?.nonce === p.nextCustodyReceipt.nonce,
+            "missing original Next transfer receipt",
+          );
+          for (const receipt of tx) {
+            nextCustody.validate(p, receipt, request.nextCustody.cycle, helper);
+            requireValue(
+              ticks(receipt.acknowledgedNs) &&
+                BigInt(p.startedNs) <= BigInt(receipt.acknowledgedNs) &&
+                BigInt(receipt.acknowledgedNs) <= BigInt(p.endNs),
+              "unverified Next transfer time",
+            );
+          }
+          const ack = p.nextCustodyReceipt;
+          requireValue(
+            ticks(ack.acknowledgedNs) &&
+              BigInt(p.startedNs) <= BigInt(ack.acknowledgedNs) &&
+              BigInt(ack.acknowledgedNs) <= BigInt(p.endNs),
+            "Next custody outside observation",
+          );
+        }
+        if (nextCustody && p.disposition === "custodied-departure") {
+          requireValue(
+            !prior &&
+              !bound.has(p.pid) &&
+              p.rssKiB === null &&
+              p.statusKiB === null &&
+              p.smapsRollupKiB === null &&
+              p.threads === null &&
+              p.executable === null &&
+              p.terminalProof?.birth?.ppid === p.ppid,
+            "invalid Next departure",
+          );
+          checkProof(p.terminalProof, p);
+          requireValue(
+            BigInt(p.terminalProof.observedNs) >= BigInt(p.nextCustodyReceipt.acknowledgedNs) &&
+              BigInt(p.terminalProof.observedNs) <= BigInt(p.endNs),
+            "invalid Next terminal bracket",
+          );
+          proofs.set(p.pid, p.terminalProof);
+        } else if (p.disposition === "custodied-departure") {
           requireValue(
             custody &&
               !bound.has(p.pid) &&
@@ -933,6 +1014,19 @@ export function sampleRendererMemory(
         ) {
           checkCustodyTransfer(p, request.fixedCustody, helper);
           custody.record(p, p.custodyToken);
+        }
+        if (
+          nextCustody &&
+          p.nextCustodyReceipt &&
+          ["proved-departure", "custodied-departure"].includes(p.disposition)
+        ) {
+          requireValue(
+            p.terminalProof?.birth?.ppid === p.ppid &&
+              ticks(p.terminalProof?.observedNs) &&
+              BigInt(p.nextCustodyReceipt.acknowledgedNs) <= BigInt(p.terminalProof.observedNs) &&
+              BigInt(p.terminalProof.observedNs) <= BigInt(p.endNs),
+            "invalid original Next terminal poll",
+          );
         }
         observed.add(p.pid);
         processes.push(p);

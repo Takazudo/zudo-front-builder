@@ -1,4 +1,9 @@
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
+import {
+  markNextRegistry,
+  readNextRegistry,
+  reconcileNextPopulation,
+} from "./next-peer-population.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { admissionPath, reserveSession } from "./admission.mjs";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
@@ -49,18 +54,22 @@ import {
   FIXED_ASTRO_FOOTER_PROTOCOL,
   FIXED_ASTRO_TITLE_PROTOCOL,
   FIXED_ASTRO_CATEGORY_PROTOCOL,
+  FIXED_PEER_PROTOCOL,
+  readPeerRoles,
   isFixedAstroProtocol,
   verifyAstroPopulation,
 } from "./fixed-peer-roles.mjs";
+import { buildNextBootstrapContract, NEXT_BOOTSTRAP_PROTOCOL } from "./fixed-next-bootstrap.mjs";
+import { startNextPeerCustody } from "./next-peer-custody.mjs";
 import { FN_SEL } from "./fieldnotes.mjs";
 import {
   fixedContextSample,
-  fixedAstroExecutables,
+  fixedPeerExecutables,
   fixedZfbExecutables,
   startFixedRssSafety,
 } from "./fixed-rss-safety.mjs";
 import { fixedIdentityVerdict, freePort } from "./fixed.mjs";
-import { snapshotOwnedWithArgs } from "./process-owner.mjs";
+import { snapshotOwned, snapshotOwnedWithArgs } from "./process-owner.mjs";
 import { batchExitOk, newAccounting, runBatch } from "./state-machine.mjs";
 import { summarize } from "./stats.mjs";
 import {
@@ -338,6 +347,12 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
 async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
   const { profile, resolved } = loaded;
   const fixedAstro = isFixedAstroProtocol(profile.fixedRssSafety);
+  const decisionProtocol = profile.fixedRssSafety === "linux-fixed-peer.v3";
+  const nextProtocol = decisionProtocol || profile.fixedRssSafety === NEXT_BOOTSTRAP_PROTOCOL;
+  const bodyPeer = nextProtocol || profile.fixedRssSafety === FIXED_PEER_PROTOCOL;
+  const fixedPeer = fixedAstro || bodyPeer;
+  let nextCustody = null;
+  let nextRegistryMark;
   const fixedAbort = profile.fixedRssSafety ? new AbortController() : null;
   if (fixedAbort)
     loaded.signal = loaded.signal
@@ -631,7 +646,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       return exitCode;
     }
 
-    if (fixedAstro) {
+    if (fixedPeer) {
       for (const name of [
         "NODE_OPTIONS",
         "NODE_PATH",
@@ -641,10 +656,20 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         "ASTRO_DEV_BACKGROUND",
       ])
         if (process.env[name] || profile.server.env?.[name])
-          throw new Error("fixed Astro launch environment contains " + name);
+          throw new Error("fixed peer launch environment contains " + name);
     }
-    const fixedExecutables = fixedAstro
-      ? fixedAstroExecutables(verdict.facts, profile.fixedRssSafety)
+    const readinessSpec =
+      fixedPeer && profile.framework === "next"
+        ? {
+            ...m.entry.readiness,
+            require: [
+              ...m.entry.readiness.require,
+              String.raw`\[field-notes-dev\] external content watcher ready \(100 files; 20 ms debounce\)`,
+            ],
+          }
+        : m.entry?.readiness;
+    const fixedExecutables = fixedPeer
+      ? fixedPeerExecutables(verdict.facts, profile.fixedRssSafety)
       : fixedAbort
         ? fixedZfbExecutables(m.appDir, verdict.facts, profile.fixedRssSafety)
         : null;
@@ -672,14 +697,15 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         loaded.workDeadline - Number(now / 1_000_000n),
         maximum - Math.ceil(Number(now - startedNs) / 1e6),
       );
-      if (remaining <= 0) throw new Error("fixed Astro work budget exhausted");
+      if (remaining <= 0) throw new Error("fixed peer work budget exhausted");
       return Math.min(maximum, remaining);
     };
     const readyTimeoutMs = rendererMemory
       ? rendererMemory.clamp("server readiness", profile.server.readyTimeoutMs)
-      : fixedAstro
+      : fixedPeer
         ? peerBudget(profile.server.readyTimeoutMs)
         : profile.server.readyTimeoutMs;
+    if (nextProtocol) nextRegistryMark = markNextRegistry(resolved.registryPath);
     if (intentPath)
       intent = reserveSession(intentPath, { labelDir, registryPath: resolved.registryPath });
     if (["linux-fixed-zfb.v3", "linux-fixed-zfb.v4"].includes(profile.fixedRssSafety)) {
@@ -699,7 +725,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         ? {
             command: launch.command,
             args: launch.args,
-            readiness: createReadiness(m.entry.readiness, { port: launch.port }),
+            readiness: createReadiness(readinessSpec, { port: launch.port }),
           }
         : { exe: buildReceipt.exe.path, extraArgs: profile.server.extraArgs ?? [] }),
       appDir: m.appDir,
@@ -713,17 +739,25 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     });
     spawning = false;
     server.handle.onNewOwned = (p) => {
-      if (shouldRegisterOwned(server.handle.native, p))
-        appendJsonlSync(resolved.registryPath, { type: "owned", label, at: isoNow(), ...p });
+      if (nextCustody && p.source === "snapshot") nextCustody.snapshot(p);
+      if (shouldRegisterOwned(server.handle.native, p)) {
+        try {
+          appendJsonlSync(resolved.registryPath, { type: "owned", label, at: isoNow(), ...p });
+        } catch (error) {
+          if (!nextCustody) throw error;
+          nextCustody.refuse(error);
+        }
+      }
     };
     if (profile.fixedRssSafety === "linux-fixed-zfb.v4")
       fixedCustody.attachStartup(server.handle, fixedExecutables);
     if (fixedExecutables) {
       fixedSafety = startFixedRssSafety({
+        nextOwner: () => nextCustody,
         server,
         fixedExecutables,
         custody: fixedCustody,
-        ...(fixedAstro && {
+        ...(fixedPeer && {
           peer: {
             framework: profile.framework,
             rootPid: server.handle.native.pid,
@@ -731,6 +765,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
             node: process.execPath,
             port: launch.port,
             image: fixedExecutables.root,
+            verifyElf: fixedAstro,
           },
         }),
         limits: profile.limits,
@@ -776,7 +811,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
               args: launch.args,
               port: launch.port,
             },
-            readiness: m.entry.readiness,
+            readiness: readinessSpec,
           }
         : {}),
     };
@@ -784,9 +819,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     let ready;
     try {
       ready = await interruptible(server.ready, rendererMemory?.signal ?? loaded.signal);
-      if (fixedAstro && ready.baseUrl !== "http://127.0.0.1:" + launch.port)
-        throw new Error("fixed Astro readiness URL mismatch");
-      if (fixedAstro) await interruptible(fixedSafety.verifyReady(ready.readyNs), loaded.signal);
+      if (fixedPeer && ready.baseUrl !== "http://127.0.0.1:" + launch.port)
+        throw new Error("fixed peer readiness URL mismatch");
+      if (fixedPeer) await interruptible(fixedSafety.verifyReady(ready.readyNs), loaded.signal);
       else if (fixedSafety) await fixedSafety.verifyReady();
       browserTiming?.mark("server-readiness-observed");
     } catch (error) {
@@ -806,11 +841,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     let roles = null;
     if (fixed) {
       // Launcher tree at readiness (npm / sidecar / shim and the framework's server processes).
-      const owned = (hooks.snapshotOwned ?? snapshotOwnedWithArgs)(server.handle);
-      roles = classifyRoles(m.entry, owned);
-      receipt.server.roles = roles;
-      receipt.server.rootRole =
-        roles.find((r) => r.pid === server.handle.native?.pid)?.role ?? null;
+      const getOwned = hooks.snapshotOwned ?? (bodyPeer ? snapshotOwned : snapshotOwnedWithArgs);
+      const owned = getOwned(server.handle);
+      roles = bodyPeer ? [] : classifyRoles(m.entry, owned);
       const identityInputs = {
         nodeRealpath: verdict.facts?.installReceipt?.node?.realpath ?? null,
         nodeSha256: verdict.facts?.installReceipt?.node?.sha256 ?? null,
@@ -832,27 +865,59 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         };
         verifyAstroCurrent("ready");
       }
-      const processChecks = processIdentityChecks({ processes: owned, roles, ...identityInputs });
+      const checkPeer = (processes) => {
+        try {
+          return fixedSafety.verifyPeerProcesses(processes, [...server.handle.known.values()]);
+        } catch (error) {
+          return [
+            {
+              name: "fixed-peer-process-identity",
+              ok: false,
+              method: "linux-proc-birth-role-executable",
+              actual: String(error.message),
+              ...(error.details && { details: error.details }),
+            },
+          ];
+        }
+      };
+      const processChecks = bodyPeer
+        ? checkPeer(owned)
+        : processIdentityChecks({ processes: owned, roles, ...identityInputs });
+      if (bodyPeer) {
+        roles = processChecks
+          .filter((c) => c.ok)
+          .map((c) => ({
+            pid: c.pid,
+            ppid: c.evidence.ppid,
+            comm: c.evidence.finalBirth.comm,
+            role: c.role,
+          }));
+      }
+      receipt.server.roles = roles;
+      receipt.server.rootRole =
+        roles.find((r) => r.pid === server.handle.native?.pid)?.role ?? null;
       const checkedKey = (p) => JSON.stringify([p.pid, p.bootId, p.startTicks ?? p.lstart]);
       const checked = new Set(owned.map(checkedKey));
       // Processes born after readiness: every one seen in the tree (or remembered by sampling)
       // is checked before the next workload edit; the first failure stops the batch there.
       checkLateProcesses = () => {
         if (lateFailure) return lateFailure;
-        const now = (hooks.snapshotOwned ?? snapshotOwnedWithArgs)(server.handle);
+        const now = getOwned(server.handle);
         const remembered = [...(server.handle.known?.values() ?? [])];
         const fresh = [
           ...now,
           ...remembered.filter((k) => !now.some((p) => p.pid === k.pid)),
         ].filter((p) => !checked.has(checkedKey(p)));
-        if (fresh.length === 0) return null;
+        if (!bodyPeer && fresh.length === 0) return null;
         for (const p of fresh) checked.add(checkedKey(p));
         const lateRoles = classifyRoles(m.entry, fresh);
-        const lateChecks = processIdentityChecks({
-          processes: fresh,
-          roles: lateRoles,
-          ...identityInputs,
-        });
+        const lateChecks = bodyPeer
+          ? checkPeer(now)
+          : processIdentityChecks({
+              processes: fresh,
+              roles: lateRoles,
+              ...identityInputs,
+            });
         receipt.server.processIdentityLate = [
           ...(receipt.server.processIdentityLate ?? []),
           ...lateChecks,
@@ -935,12 +1000,12 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     browserSignal?.throwIfAborted();
     const launchTimeoutMs = rendererMemory
       ? () => rendererMemory.clamp("browser startup", 30_000)
-      : fixedAstro
+      : fixedPeer
         ? () => peerBudget(30000)
         : undefined;
     const browserOptions = {
       ...profile.browser,
-      ...(fixedAstro
+      ...(fixedPeer
         ? {
             diagnosticExecutable: {
               path: profile.fixedPeerBrowser.executablePath,
@@ -987,15 +1052,73 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     browserTiming?.mark("browser-initialization-return-observed");
     browserSignal?.throwIfAborted();
     if (
-      fixedAstro &&
+      fixedPeer &&
       browserHandle.identity.executableSha256 !== profile.fixedPeerBrowser.defaultExecutableSha256
     ) {
       receipt.browser = browserHandle.identity;
-      throw new Error("fixed Astro library-default browser digest mismatch");
+      throw new Error("fixed peer library-default browser digest mismatch");
     }
     const observer = browserHandle.observer;
     observer.baseUrl = ready.baseUrl;
-    if (fixedAstro) observer.peerSocketTracking = new Map();
+    if (nextProtocol) {
+      const cfg = {
+        framework: profile.framework,
+        rootPid: server.handle.native.pid,
+        appDir: m.appDir,
+        node: process.execPath,
+        port: launch.port,
+        image: fixedExecutables.root,
+      };
+      const { chain, socket } = readPeerRoles(fixedSafety.qualifiedPeer.chain, cfg, true, true);
+      const contract = buildNextBootstrapContract({
+        ...cfg,
+        protocol: NEXT_BOOTSTRAP_PROTOCOL,
+        chain,
+        socket,
+        bootstrapSha256: "463a33ccdf45500486481c697ca9b7445fae5998410b82d3d5485c0b85b770eb",
+      });
+      nextCustody = startNextPeerCustody({
+        prewriteDecision: decisionProtocol,
+        contract,
+        intent,
+        append: (r) => rec.append(r),
+        abort: (e) => {
+          fixedAbort.abort(e);
+          void stopServer(server.handle).catch(() => {});
+        },
+      });
+      await interruptible(nextCustody.ready, loaded.signal);
+      const prepare = observer.prepare.bind(observer);
+      let first = true;
+      observer.prepare = async (route, ...args) => {
+        if (!first) return prepare(route, ...args);
+        first = false;
+        await nextCustody.openWindow("first-route", peerBudget(30000));
+        let value;
+        try {
+          value = await prepare(route, ...args);
+        } catch (firstFailure) {
+          try {
+            await nextCustody.closeWindow("first-route");
+          } catch (error) {
+            try {
+              rec.append({
+                type: "next-custody-secondary-close-failure",
+                error: String(error),
+                firstFailure: String(firstFailure),
+              });
+            } catch (e) {
+              stderr(`Next custody closure evidence write failed: ${e.message}`);
+            }
+          }
+          throw firstFailure;
+        }
+        await nextCustody.closeWindow("first-route");
+        return value;
+      };
+    }
+    if (fixedPeer) observer.peerSocketTracking = new Map();
+    if (fixedAstro) observer.fixedAstroObservation = true;
     // Fixed distributions declare their own HMR sockets; zfb livereload needs none.
     if (fixed) observer.updateSockets = m.entry.updateSignal?.sockets ?? [];
     observer.onStray = (payload) =>
@@ -1046,9 +1169,39 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           signal: rendererMemory?.signal ?? loaded.signal,
           rendererMemory,
           safetySignal: fixedAbort?.signal,
-          ...(fixedAstro && {
+          ...(fixedPeer && {
             stageBudget: peerBudget,
             workDeadlineNs: BigInt(loaded.workDeadline) * 1_000_000n,
+          }),
+          ...(nextProtocol && {
+            ...(decisionProtocol && {
+              checkPeerWriteTime: (stamp) => nextCustody.checkWriteTime(stamp),
+              beforePeerDecision: async ({ attemptStart, attemptMs }) => {
+                const workDeadlineNs = BigInt(loaded.workDeadline) * 1000000n;
+                const attemptDeadlineNs = attemptStart + BigInt(attemptMs) * 1000000n;
+                await fixedSafety.verifyPrewriteTerminal({
+                  getOwned: () => snapshotOwned(server.handle),
+                  signal: loaded.signal,
+                  workDeadlineNs:
+                    attemptDeadlineNs < workDeadlineNs ? attemptDeadlineNs : workDeadlineNs,
+                });
+              },
+            }),
+            beforePeerMutation: () => {
+              const reason = checkLateProcesses();
+              rec.append({
+                type: "next-custody-pre-mutation",
+                ...(decisionProtocol && {
+                  decisionProof: nextCustody.decisionProof,
+                  graphMatches: !reason,
+                  status: "provisional-census",
+                }),
+                reason,
+                checkedNs: String(process.hrtime.bigint()),
+              });
+              if (reason)
+                throw new Error("Next pre-mutation identity refused: " + JSON.stringify(reason));
+            },
           }),
           afterScenario: study?.afterScenario,
           beforeCleanup: rendererMemory
@@ -1074,8 +1227,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           fixedAstroCategory: profile.fixedRssSafety === FIXED_ASTRO_CATEGORY_PROTOCOL,
           fixedAstroTitle: profile.fixedRssSafety === FIXED_ASTRO_TITLE_PROTOCOL,
           beforeAstroWrite: verifyAstroCurrent,
+          fixedPeer: bodyPeer,
           verifyBodyRevision:
-            tiny?.probe === "B" || (!fixed && profile.fixture.kind === "field-notes"),
+            bodyPeer || tiny?.probe === "B" || (!fixed && profile.fixture.kind === "field-notes"),
           requiredBodyBaseline: tiny?.probe === "B" ? "Body marker body-a-v0 for article a." : null,
           limits: profile.limits,
           timeouts: profile.timeouts,
@@ -1112,7 +1266,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         ? EXIT.identityRejected
         : studyFailure || rendererMemory?.failure
           ? EXIT.controllerError
-          : batchExitOk(accounting, stopped) && (!fixedAstro || accounting.success === 1)
+          : batchExitOk(accounting, stopped) && (!fixedPeer || accounting.success === 1)
             ? EXIT.ok
             : EXIT.stopped;
       if (lateFailure) {
@@ -1171,7 +1325,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       terminalNow +
       Math.min(
         60000,
-        rendererMemory || fixedAstro
+        rendererMemory || fixedPeer
           ? loaded.supervisorDeadlineMs - Number(hrtimeNs() / 1_000_000n)
           : 60000,
       );
@@ -1223,6 +1377,14 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         });
         evidenceFailed = true;
         exitCode = EXIT.controllerError;
+      }
+    }
+    if (nextCustody) {
+      try {
+        await bounded("next-custody-stop", 500, () => nextCustody.stop());
+      } catch (e) {
+        unresolved.push({ resource: "next-custody", ...nextCustody.identity, error: String(e) });
+        evidenceFailed = true;
       }
     }
     if (rendererMemory)
@@ -1299,6 +1461,25 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         evidenceFailed = true;
         stderr(`registry write failed: ${error?.message ?? error}`);
       }
+    }
+    if (nextProtocol && server) {
+      try {
+        receipt.nextPeerPopulation = reconcileNextPopulation({
+          chain: fixedSafety?.qualifiedPeer?.chain,
+          worker: nextCustody?.qualified,
+          terminalProof: nextCustody?.terminalProof,
+          stop: stopReport,
+          registry: readNextRegistry(resolved.registryPath, nextRegistryMark, label),
+        });
+      } catch (error) {
+        receipt.nextPeerPopulation = {
+          ok: false,
+          resourceAbsent: stopReport.absent,
+          error: String(error),
+        };
+      }
+      safeAppend({ type: "next-peer-population", ...receipt.nextPeerPopulation });
+      if (!receipt.nextPeerPopulation.ok) evidenceFailed = true;
     }
     if (browserHandle) {
       try {

@@ -421,7 +421,8 @@ export async function runBatch({ scenarios, deps }) {
           (check) =>
             check.path === (fixedAstro ? freshPath : bodyRevision.path) &&
             check.ok &&
-            (!fixedAstro || (check.docUUID && check.docUUID !== settle?.bodyRevision?.docUUID)),
+            (!(fixedAstro || deps.fixedPeer) ||
+              (check.docUUID && check.docUUID !== settle?.bodyRevision?.docUUID)),
         ));
     const expectedRoutes = [
       "/",
@@ -698,6 +699,20 @@ export async function runBatch({ scenarios, deps }) {
 
         acc.attempted += 1;
         acc.notAttempted -= 1;
+        // Only the v2 singleton in-place body edit can prove that this gate
+        // precedes every possible mutation in the cell.
+        const targetPath = attempt.write.path;
+        const original = activeSnapshot.files?.[targetPath];
+        const zeroWriteTarget =
+          deps.beforePeerMutation &&
+          planned === 1 &&
+          !op.inject &&
+          op.op === "edit-body" &&
+          attempt.write.method === "in-place" &&
+          (attempt.writes?.length ?? 1) === 1 &&
+          original
+            ? fs.readPeerTarget(targetPath, original)
+            : null;
         const recBase = {
           ...base,
           token: attempt.token,
@@ -716,9 +731,8 @@ export async function runBatch({ scenarios, deps }) {
                 injectedFrom: attempt.injectedFrom ?? null,
               }
             : null,
-          targetSha256Before: fs.hashOf
-            ? fs.hashOf(attempt.injectedFrom ?? attempt.write.path)
-            : null,
+          targetSha256Before:
+            zeroWriteTarget?.sha256 ?? fs.hashOf?.(attempt.injectedFrom ?? targetPath) ?? null,
           writeMethods: attempt.writes
             ? attempt.writes.map((w) => w.method)
             : [attempt.write.method],
@@ -855,37 +869,42 @@ export async function runBatch({ scenarios, deps }) {
             (deps.requiredBodyBaseline && armed.actual !== deps.requiredBodyBaseline)
           )
             throw new Error("missing pre-edit rendered body baseline");
-          if (fixedAstro) {
+          if (fixedAstro || deps.fixedPeer) {
             const sockets = [...page.peerSocketTracking.values()].filter(
               (row) => row.firstFrameNs !== null,
             );
             append({
               type: "fixed-peer-prewrite",
               docUUID: armed.docUUID,
-              preparedDocUUID: preparedState?.docUUID,
-              preparedUrl: preparedState?.url,
-              ...(category && { httpStatus: preparedState?.httpStatus }),
-              observedUrl: armed.observedUrl,
-              ...(category
-                ? { originalCategory: armed.actual }
-                : deps.fixedAstroTitle
-                  ? { originalTitle: armed.actual }
-                  : { originalFooter: armed.actual }),
+              ...(fixedAstro && {
+                preparedDocUUID: preparedState?.docUUID,
+                preparedUrl: preparedState?.url,
+                observedUrl: armed.observedUrl,
+                ...(category && { httpStatus: preparedState?.httpStatus }),
+              }),
+              ...(!fixedAstro
+                ? { originalBody: armed.actual }
+                : category
+                  ? { originalCategory: armed.actual }
+                  : deps.fixedAstroTitle
+                    ? { originalTitle: armed.actual }
+                    : { originalFooter: armed.actual }),
               armObservedNs: String(clock.now()),
               sockets,
             });
             if (
               !armed.docUUID ||
               (category && preparedState?.httpStatus !== 200) ||
-              armed.docUUID !== preparedState?.docUUID ||
-              armed.observedUrl !== page.url(attempt.targetPath) ||
-              preparedState.url !== armed.observedUrl ||
+              (fixedAstro &&
+                (armed.docUUID !== preparedState?.docUUID ||
+                  armed.observedUrl !== page.url(attempt.targetPath) ||
+                  preparedState.url !== armed.observedUrl)) ||
               !sockets.length
             )
               throw new Error("peer update socket or original document unverified");
           }
           bodyRevision = {
-            ...(fixedAstro && { allowSameDocument: true }),
+            ...((fixedAstro || deps.fixedPeer) && { allowSameDocument: true }),
             path: attempt.targetPath,
             predicate: fixedAstro
               ? primaryOriginal
@@ -929,16 +948,111 @@ export async function runBatch({ scenarios, deps }) {
         let t0;
         let tLast = null;
         let writeSteps = null;
+        const recordPrewriteRefusal = async (error) => {
+          let observerDisarmed = false,
+            disarmError = null;
+          if (!signal?.aborted) {
+            try {
+              await wait(page.disarm());
+              observerDisarmed = true;
+            } catch (e) {
+              disarmError = String(e.message ?? e);
+            }
+          }
+          append({
+            ...recBase,
+            outcome: "identity-rejected",
+            phase: "before-mutation",
+            error: String(error.message ?? error),
+            writePerformed: false,
+            observerDisarmed,
+            disarmError,
+          });
+          acc.lastArmedUnknownOperation = null;
+          count(acc, "identity-rejected");
+          stop("identity-rejected", where);
+          if (zeroWriteTarget) {
+            let after, auditError;
+            try {
+              after = fs.readPeerTarget(targetPath, original);
+            } catch (e) {
+              auditError = String(e.message ?? e);
+            }
+            const unchanged =
+              after &&
+              original.sha256 === zeroWriteTarget.sha256 &&
+              after.sha256 === original.sha256 &&
+              after.device === zeroWriteTarget.device &&
+              after.inode === zeroWriteTarget.inode;
+            append({
+              type: "fixed-peer-refused-disk-audit",
+              path: targetPath,
+              expectedSha256: original.sha256,
+              before: zeroWriteTarget,
+              after: after ?? null,
+              error: auditError ?? null,
+              unchanged: Boolean(unchanged),
+            });
+            if (unchanged) {
+              append({
+                type: "cleanup",
+                label: "cleanup",
+                measured: false,
+                reason: "after-stop:identity-rejected",
+                ok: false,
+                restored: false,
+                live: [],
+                liveSkipped: "before-mutation-no-write",
+                writePerformed: false,
+                actions: [],
+                mismatches: [],
+              });
+              activeSnapshot = null;
+            }
+          }
+        };
+        if (deps.beforePeerMutation) {
+          try {
+            if (deps.beforePeerDecision)
+              await deps.beforePeerDecision({ attemptStart, attemptMs: timeouts.attemptMs });
+            deps.beforePeerMutation();
+            signal?.throwIfAborted();
+            deps.stageBudget?.(timeouts.attemptMs, attemptStart);
+          } catch (error) {
+            await recordPrewriteRefusal(error);
+            break outer;
+          }
+        }
+        let preSyscallRefusal;
         try {
           if (attempt.writes && attempt.writes.length > 1 && fs.performWrites) {
             const r = await fs.performWrites(attempt.writes, () => clock.now(), signal);
             t0 = r.t0;
             tLast = r.tLast;
             writeSteps = r.steps;
-          } else t0 = fs.performWrite(attempt.write, () => clock.now());
+          } else
+            t0 = fs.performWrite(attempt.write, () => {
+              const stamp = clock.now();
+              if (deps.checkPeerWriteTime) {
+                try {
+                  const evidence = deps.checkPeerWriteTime(stamp);
+                  if (evidence) recBase.prewriteDecision = evidence;
+                } catch (error) {
+                  preSyscallRefusal = error;
+                  throw error;
+                }
+              }
+              return stamp;
+            });
           current.writeDone = true;
           attempt.applied?.();
         } catch (error) {
+          // The v3 singleton uses in-place write: onT0 precedes O_TRUNC. An
+          // actual filesystem error must continue down the ambiguous-write path.
+          if (preSyscallRefusal && error === preSyscallRefusal) {
+            await recordPrewriteRefusal(error);
+            break outer;
+          }
           if (error?.steps?.length) {
             current.writeDone = true;
             recBase.writeSteps = error.steps;
@@ -1026,7 +1140,7 @@ export async function runBatch({ scenarios, deps }) {
               ...(resourceTrip ? [resourceTrip] : []),
             ]),
           );
-          if (fixedAstro) {
+          if (fixedAstro || deps.fixedPeer) {
             signal?.throwIfAborted();
             const attemptEnd = attemptStart + BigInt(timeouts.attemptMs) * 1_000_000n;
             const end = deps.workDeadlineNs < attemptEnd ? deps.workDeadlineNs : attemptEnd;
@@ -1053,10 +1167,11 @@ export async function runBatch({ scenarios, deps }) {
             mainFrameNavigations: during(evidence.navigations).length,
             newDocuments: during(evidence.docInits).length,
             livereloadEvents: during(evidence.wsFrames).map((f) =>
-              f.event === "css" ||
-              (f.event === "module" && (articleOperation || !f.layoutModule)) ||
-              (f.event === "page" &&
-                (!f.pageSignal || (articleOperation && f.hasUpdatePath && f.updatePath !== "*")))
+              fixedAstro &&
+              (f.event === "css" ||
+                (f.event === "module" && (articleOperation || !f.layoutModule)) ||
+                (f.event === "page" &&
+                  (!f.pageSignal || (articleOperation && f.hasUpdatePath && f.updatePath !== "*"))))
                 ? "unattributed"
                 : f.event,
             ),
@@ -1088,7 +1203,7 @@ export async function runBatch({ scenarios, deps }) {
           },
           injectKill,
         };
-        if (fixedAstro) {
+        if (fixedAstro || deps.fixedPeer) {
           const write = attempt.write;
           const expected = sha256(write.bytes);
           const actual = fs.hashOf(write.path);

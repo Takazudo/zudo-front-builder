@@ -276,6 +276,7 @@ test("Playwright binding independently identifies its actual main page/frame at 
   const page = { mainFrame: () => main };
   observer.page = page;
   observer.peerSocketTracking = new Map();
+  observer.fixedAstroObservation = true;
   const genuine = { page, frame: main },
     wrongFrame = { page, frame: iframe },
     wrongPage = { page: {}, frame: main };
@@ -311,4 +312,12 @@ test("an absent global reload path and a malformed null reload path remain disti
     assert.equal(row.hasUpdatePath, Object.hasOwn(msg, "path"));
     assert.equal(row.pageSignal, !row.hasUpdatePath);
   }
+});
+
+test("body peer socket tracking preserves the ordinary document registration", () => {
+  const observer = new ObserverPage(null, "");
+  observer.peerSocketTracking = new Map();
+  observer.onDocInit({ docUUID: "body" }, 1n);
+  assert.equal(observer.docInits[0].docUUID, "body");
+  assert.equal(observer.docInits[0].designatedMain, undefined);
 });
