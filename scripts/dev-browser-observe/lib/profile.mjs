@@ -12,6 +12,7 @@ import {
   fnWarmPaths,
 } from "./fieldnotes.mjs";
 import { OP_WRITE_METHODS } from "./fixture.mjs";
+import { FIXED_ASTRO_TITLE_PROTOCOL, isFixedAstroProtocol } from "./fixed-peer-roles.mjs";
 import { rendererMemoryProfileErrors } from "./renderer-memory-protocol.mjs";
 import { startupProfileErrors } from "./startup-acceptance.mjs";
 import { scheduleErrors } from "./schedule.mjs";
@@ -47,11 +48,79 @@ export const FIXED_ADAPTERS = {
   next: ["archive"],
 };
 
+// This contract qualifies the exact archived fn-shared-component correctness cell.
+function fixedAstroErrors(p) {
+  const title = p.fixedRssSafety === FIXED_ASTRO_TITLE_PROTOCOL;
+  const [scenario] = p.scenarios ?? [];
+  const [op] = scenario?.ops ?? [];
+  const errors = [];
+  if (
+    p.framework !== "astro" ||
+    p.distribution?.launch !== "direct" ||
+    p.fixture?.scale !== 100 ||
+    p.fixture?.placement !== "external" ||
+    !p.fixture.importedCss ||
+    p.resourceStudy ||
+    p.calibration ||
+    !p.browser?.headless ||
+    !p.fixedPeerBrowser ||
+    p.server?.host !== "127.0.0.1" ||
+    p.server?.port?.mode !== "ephemeral"
+  )
+    errors.push(
+      "$.fixedRssSafety requires a direct fixed 100-article Astro profile with pinned headless browser identities",
+    );
+  if (
+    p.scenarios?.length !== 1 ||
+    scenario?.id !== (title ? "fn-title-detail" : "fn-shared-component") ||
+    scenario.set !== "workload" ||
+    Object.keys(scenario).some((k) => !["id", "set", "warmOrder", "ops"].includes(k)) ||
+    scenario.warmOrder !== "none" ||
+    scenario.ops?.length !== 1 ||
+    (title
+      ? op?.id !== "title-05-detail" ||
+        op.op !== "edit-title" ||
+        op.article !== "article-00005" ||
+        op.expect !== "classify" ||
+        Object.keys(op).some((k) => !["id", "op", "article", "writeMethod", "expect"].includes(k))
+      : op?.id !== "footer" ||
+        op.op !== "edit-shared-component" ||
+        op.targetPath !== "/" ||
+        (op.expect ?? "success") !== "success" ||
+        Object.keys(op).some(
+          (k) => !["id", "op", "targetPath", "writeMethod", "expect"].includes(k),
+        )) ||
+    op.writeMethod !== "in-place" ||
+    p.restoration?.writeMethod !== "in-place"
+  )
+    errors.push(
+      "$.fixedRssSafety requires the original single in-place Astro operation and restoration",
+    );
+  if (
+    p.server?.readyTimeoutMs !== 300000 ||
+    p.limits?.wallCeilingMs !== 7200000 ||
+    p.limits?.rssCeilingKiB !== 4194304 ||
+    p.limits?.sampleEveryMs !== 1000 ||
+    p.timeouts?.attemptMs !== 60000 ||
+    p.timeouts?.supplementalMs !== 60000 ||
+    p.timeouts?.restoreMs !== 120000 ||
+    p.timeouts?.quietMs !== 3000 ||
+    p.timeouts?.stopTermMs !== 5000 ||
+    p.timeouts?.stopKillMs !== 3000
+  )
+    errors.push("$.fixedRssSafety requires the 100-article WSL time and RSS limits");
+  return errors;
+}
+
 /** fixed-distribution rules: the framework's declared helper, no zfb-only diagnostic/recovery families. */
 function fixedErrors(profile) {
   const errors = [];
+  if (isFixedAstroProtocol(profile.fixedRssSafety)) errors.push(...fixedAstroErrors(profile));
+  else if (profile.fixedPeerBrowser)
+    errors.push("$.fixedPeerBrowser requires a fixed Astro observation protocol");
   if (
     profile.fixedRssSafety &&
+    !isFixedAstroProtocol(profile.fixedRssSafety) &&
     (profile.framework !== "zfb" ||
       (profile.distribution?.launch ?? "direct") !== "direct" ||
       profile.fixture?.scale !== 100 ||

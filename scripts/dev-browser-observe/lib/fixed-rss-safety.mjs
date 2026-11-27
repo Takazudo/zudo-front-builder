@@ -3,6 +3,8 @@
 import { closeSync, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import assert from "node:assert/strict";
+import { samplePeerRoles, FIXED_ASTRO_FOOTER_PROTOCOL } from "./fixed-peer-roles.mjs";
 import { sampleRendererMemory } from "./linux-rss-sample.mjs";
 
 function pin(path, digest) {
@@ -19,6 +21,15 @@ function pin(path, digest) {
   } finally {
     closeSync(fd);
   }
+}
+
+export function fixedAstroExecutables(facts, protocol = FIXED_ASTRO_FOOTER_PROTOCOL) {
+  if (facts.installReceipt.node.realpath !== realpathSync(process.execPath))
+    throw new Error("fixed peer Node executable does not match install receipt");
+  return {
+    protocol,
+    root: pin(process.execPath, facts.installReceipt.node.sha256),
+  };
 }
 
 export function fixedZfbExecutables(appDir, facts, protocol = "linux-fixed-zfb.v1") {
@@ -58,6 +69,8 @@ export function startFixedRssSafety({
   abort,
   sample = sampleRendererMemory,
   custody = null,
+  peer,
+  checkRoles = samplePeerRoles,
 }) {
   let pending = null;
   let failure = null;
@@ -68,6 +81,11 @@ export function startFixedRssSafety({
   let stopped = false;
   let measuredCycles = 0;
   let peakKiB = null;
+  const stable = new Map();
+  let readyNs,
+    firstSpawn,
+    postCycles = 0,
+    expiry;
   const fail = (error) => {
     if (error?.details?.helper?.closed === false || error?.details?.helper?.pipesClosed === false)
       unresolvedHelper = error.details.helper;
@@ -110,7 +128,11 @@ export function startFixedRssSafety({
     // legitimately predate the native child. Qualify a new periodic sample.
     const readyAtEntry = readyCheck;
     const startedNs = String(process.hrtime.bigint());
-    pending = sample(server, fixedExecutables.root.path, { fixedExecutables, custody })
+    pending = (
+      peer
+        ? sample(server, fixedExecutables.root.path)
+        : sample(server, fixedExecutables.root.path, { fixedExecutables, custody })
+    )
       .then((result) => {
         measuredCycles++;
         if (Number.isSafeInteger(result.summedRssKiB))
@@ -121,6 +143,67 @@ export function startFixedRssSafety({
           result,
           ...(failure && { afterStopDecision: true }),
         });
+        if (peer) {
+          if (failure) return;
+          const t = result.timing.parent;
+          firstSpawn ??= BigInt(result.helper.spawnHrtimeNs);
+          assert(
+            result.helper.closed && result.helper.pipesClosed && result.timing.clock.qualified,
+            "incomplete peer sampler",
+          );
+          assert(
+            BigInt(t.entryNs) <= BigInt(t.resultNs) &&
+              BigInt(t.resultNs) <= BigInt(t.deadlineNs) &&
+              BigInt(t.deadlineNs) === BigInt(t.entryNs) + 750_000_000n,
+            "invalid peer sampler bracket",
+          );
+          const sum = result.processes.reduce(
+            (n, p) => n + Math.max(p.statusKiB.VmRSS, p.smapsRollupKiB.Rss),
+            0,
+          );
+          assert(
+            Number.isSafeInteger(sum) &&
+              sum > 0 &&
+              sum === result.summedRssKiB &&
+              sum <= limits.rssCeilingKiB,
+            "invalid peer owned RSS",
+          );
+          const roles = checkRoles(result, peer, Boolean(readyAtEntry));
+          for (const row of roles.chain) {
+            const key = [row.pid, row.ppid, row.pgid, row.bootId, row.startTicks].join("/");
+            assert(!stable.has(row.role) || stable.get(row.role) === key, "peer role replaced");
+            stable.set(row.role, key);
+          }
+          assert.equal(roles.chain.length, stable.size, "previous peer role disappeared");
+          append({
+            type: "fixed-peer-roles",
+            decisionNs: String(process.hrtime.bigint()),
+            startedNs,
+            readyAtEntry: Boolean(readyAtEntry),
+            ...roles,
+          });
+          if (readyAtEntry && postCycles < 2) {
+            const decision = process.hrtime.bigint();
+            assert(
+              firstSpawn <= readyNs &&
+                readyNs <= BigInt(startedNs) &&
+                BigInt(startedNs) <= decision &&
+                decision <= readyNs + 3_000_000_000n,
+              "peer readiness sampling window missed",
+            );
+            append({
+              type: "fixed-peer-post-accepted",
+              startedNs,
+              readyNs: String(readyNs),
+              decisionNs: String(decision),
+            });
+            if (++postCycles === 2) {
+              clearTimeout(expiry);
+              readyAtEntry.resolve();
+            }
+          }
+          return;
+        }
         const children = result.processes.filter(
           (row) => row.disposition === "live" && row.ppid === server.handle.native.pid,
         );
@@ -152,15 +235,40 @@ export function startFixedRssSafety({
   };
   take();
   const timer = setInterval(take, limits.sampleEveryMs);
-  async function observeReady() {
+  async function observeReady(actualReadyNs) {
     if (failure) throw new Error(failure.error);
     if (stopped) throw new Error("fixed safety sampling stopped before readiness");
     readyCheck ??= Promise.withResolvers();
+    if (peer) {
+      readyNs = actualReadyNs;
+      const expire = () => {
+        const left = readyNs + 3_000_000_000n - process.hrtime.bigint();
+        if (left < 0n) fail(new Error("peer readiness sampling window expired"));
+        else expiry = setTimeout(expire, Math.max(1, Math.ceil(Number(left) / 1e6)));
+      };
+      expire();
+    }
     await readyCheck.promise;
+    if (peer && process.hrtime.bigint() > readyNs + 3_000_000_000n)
+      throw new Error("peer readiness sampling window expired");
     if (failure) throw new Error(failure.error);
     if (stopped) throw new Error("fixed safety sampling stopped before readiness");
   }
   return {
+    verifyAstroCurrent(owned, known) {
+      const describe = (p) => [p.pid, p.ppid, p.pgid, p.bootId, p.startTicks].join("/");
+      const root = stable.get("astro-cli");
+      assert(peer && root && !failure && !stopped && postCycles === 2);
+      assert(
+        [owned, known].every((rows) => rows.length === 1 && describe(rows[0]) === root),
+        "unexpected current or previously observed Astro process",
+      );
+      return samplePeerRoles(
+        { processes: owned.map((p) => ({ ...p, disposition: "live", executable: peer.image })) },
+        peer,
+        true,
+      );
+    },
     report() {
       return {
         protocol: fixedExecutables.protocol ?? "linux-fixed-zfb.v1",
@@ -181,14 +289,15 @@ export function startFixedRssSafety({
         throw new Error("observation-only readiness requires startup custody v4");
       await observeReady();
     },
-    async verifyReady() {
-      await observeReady();
+    async verifyReady(actualReadyNs) {
+      await observeReady(actualReadyNs);
       custody?.verifyStartup?.();
     },
     async stop() {
       stopped = true;
       readyCheck?.resolve();
       clearInterval(timer);
+      clearTimeout(expiry);
       await pending;
       return failure;
     },

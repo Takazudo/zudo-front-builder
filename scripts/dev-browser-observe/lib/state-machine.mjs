@@ -1,8 +1,11 @@
+import { ASTRO_TITLE, TITLE_DETAIL, TITLE_SELECTOR, validateTitlePlan } from "./astro-title.mjs";
+import { ASTRO_FOOTER, ASTRO_FOOTER_SELECTOR, astroFooterPredicate } from "./astro-footer.mjs";
+import { astroTextPredicate, matchesAstroText, astroProducerMatches } from "./astro-text.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { runSpecialMode } from "./special-modes.mjs";
 import { RENAME_NOOP } from "./fixture.mjs";
 import { attemptProvenance } from "./provenance.mjs";
-import { NO_WRITE_STEPS, noWriteStepsError, nsToMs } from "./util.mjs";
+import { NO_WRITE_STEPS, noWriteStepsError, nsToMs, sha256 } from "./util.mjs";
 
 export const OUTCOMES = [
   "success",
@@ -188,9 +191,26 @@ export async function runBatch({ scenarios, deps }) {
   const { recorder, clock, server, page, fs, limits = {}, timeouts, signal } = deps;
   const wait = (work) => interruptible(work, signal);
   const diagnostic = deps.rendererMemory;
-  const stage = (name, maximum, started, action) => {
+  const stage = async (name, maximum, started, action) => {
     deps.safetySignal?.throwIfAborted();
-    return diagnostic ? diagnostic.runStage(name, maximum, started, action) : wait(action(maximum));
+    if (diagnostic) return diagnostic.runStage(name, maximum, started, action);
+    if (!deps.stageBudget) return wait(action(maximum));
+    const ms = deps.stageBudget(maximum, started);
+    let timer;
+    try {
+      const result = await wait(
+        Promise.race([
+          action(ms),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(name + " exceeded its budget")), ms);
+          }),
+        ]),
+      );
+      deps.stageBudget(maximum, started);
+      return result;
+    } finally {
+      clearTimeout(timer);
+    }
   };
   const planned = scenarios.reduce((n, s) => n + s.ops.length, 0);
   const acc = newAccounting(planned);
@@ -198,6 +218,17 @@ export async function runBatch({ scenarios, deps }) {
   const startedNs = deps.startedNs ?? clock.now();
   let activeSnapshot = null;
   let bodyRevision = null;
+  const fixedAstro = deps.fixedAstroFooter || deps.fixedAstroTitle;
+  const originalText = deps.fixedAstroTitle ? ASTRO_TITLE : ASTRO_FOOTER;
+  const primaryOriginal = astroTextPredicate(
+    originalText,
+    deps.fixedAstroTitle ? TITLE_SELECTOR : ASTRO_FOOTER_SELECTOR,
+  );
+  const freshPath = deps.fixedAstroTitle ? TITLE_DETAIL : "/archive/1/";
+  const finalAffected = deps.fixedAstroTitle ? "/articles/article-00095/" : "/archive/1/";
+  const seenSupplementalDocs = new Set();
+
+  let peerWrite = null;
   let stopped = false;
 
   const append = (rec) => recorder.append(rec);
@@ -253,6 +284,23 @@ export async function runBatch({ scenarios, deps }) {
     const restoreNs = clock.now();
     const mark = page.mark?.() ?? null;
     const restore = fs.restore(snapshot);
+    let peerRestoration;
+    if (peerWrite) {
+      const action = restore.actions?.find((a) => a.path === peerWrite.path);
+      const restored = fs.hashOf(peerWrite.path);
+      peerRestoration = {
+        path: peerWrite.path,
+        originalSha256: peerWrite.originalSha256,
+        restoredSha256: restored,
+        ok:
+          restore.actions?.length === 1 &&
+          action?.method === "in-place" &&
+          restored === peerWrite.originalSha256 &&
+          Number.isSafeInteger(peerWrite.inode) &&
+          action.evidence?.inodeBefore === peerWrite.inode &&
+          action.evidence?.inodeAfter === peerWrite.inode,
+      };
+    }
     const alive = server.isAlive();
     const live = [];
     let liveSkipped = null;
@@ -315,10 +363,16 @@ export async function runBatch({ scenarios, deps }) {
       for (const originalCheck of liveSkipped ? [] : fs.liveChecks(snapshot)) {
         // Recheck the exact body during its existing detail visit, preserving the navigation order.
         const check =
-          bodyRevision && originalCheck.path === bodyRevision.path
+          bodyRevision && originalCheck.path === (fixedAstro ? freshPath : bodyRevision.path)
             ? {
                 ...originalCheck,
-                predicate: { kind: "all", of: [originalCheck.predicate, bodyRevision.predicate] },
+                predicate: {
+                  kind: "all",
+                  of: [
+                    originalCheck.predicate,
+                    fixedAstro ? primaryOriginal : bodyRevision.predicate,
+                  ],
+                },
               }
             : originalCheck;
         if (!diagnostic) signal?.throwIfAborted();
@@ -350,11 +404,38 @@ export async function runBatch({ scenarios, deps }) {
       !bodyRevision ||
       (liveSkipped === null &&
         (!rule.requireNativeUpdate || (settle?.settled && settle.bodyRevision?.matched === true)) &&
-        live.some((check) => check.path === bodyRevision.path && check.ok));
+        live.some(
+          (check) =>
+            check.path === (fixedAstro ? freshPath : bodyRevision.path) &&
+            check.ok &&
+            (!fixedAstro || (check.docUUID && check.docUUID !== settle?.bodyRevision?.docUUID)),
+        ));
+    const expectedRoutes = [
+      "/",
+      "/articles/article-00001/",
+      "/archive/1/",
+      "/archive/2/",
+      "/category/architecture/",
+    ];
+    if (deps.fixedAstroTitle) expectedRoutes.splice(2, 0, TITLE_DETAIL);
+    const freshWitness = live.find((row) => row.path === freshPath);
+    const astroRoutes =
+      !fixedAstro ||
+      (live.length === expectedRoutes.length &&
+        live.every((row, i) => row.path === expectedRoutes[i] && row.docUUID && row.ok) &&
+        new Set(live.map((row) => row.docUUID)).size === live.length &&
+        bodyRevision?.path === finalAffected &&
+        bodyRevision.affectedDocUUID &&
+        freshWitness.docUUID !== bodyRevision.affectedDocUUID &&
+        (!deps.fixedAstroTitle || live.every((row) => !seenSupplementalDocs.has(row.docUUID))) &&
+        matchesAstroText((freshWitness.notify?.actual ?? freshWitness.actual)?.[1], originalText) &&
+        matchesAstroText(settle?.bodyRevision?.actual, originalText));
     let ok =
+      astroRoutes &&
       !signal?.aborted &&
       restore.mismatches.length === 0 &&
       (diskOnlyControl || (liveSkipped === null && settled)) &&
+      (!peerRestoration || peerRestoration.ok) &&
       bodyVerified &&
       live.every((l) => l.ok);
     let quiet = null;
@@ -369,6 +450,15 @@ export async function runBatch({ scenarios, deps }) {
         ok = false;
       }
     const cleanupRec = {
+      ...(peerRestoration && { peerRestoration }),
+      ...(fixedAstro &&
+        bodyRevision && {
+          restorationWitness: {
+            path: bodyRevision.path,
+            affectedDocUUID: bodyRevision.affectedDocUUID ?? null,
+            predicate: bodyRevision.predicate,
+          },
+        }),
       type: "cleanup",
       label: "cleanup",
       measured: false,
@@ -528,11 +618,23 @@ export async function runBatch({ scenarios, deps }) {
           break outer;
         }
 
-        const attemptStart = diagnostic ? clock.now() : null;
+        const attemptStart = diagnostic || deps.stageBudget ? clock.now() : null;
         let attempt;
         let preparedState = null;
         try {
           attempt = fs.prepareAttempt(op);
+          if (deps.fixedAstroTitle) validateTitlePlan(attempt);
+          if (
+            deps.fixedAstroFooter &&
+            (attempt.supplemental.length !== 1 ||
+              attempt.supplemental[0].path !== "/archive/1/" ||
+              attempt.targetPath !== "/" ||
+              JSON.stringify(attempt.predicate) !==
+                JSON.stringify(astroFooterPredicate(ASTRO_FOOTER + " " + attempt.token)) ||
+              JSON.stringify(attempt.supplemental[0].predicate) !==
+                JSON.stringify(attempt.predicate))
+          )
+            throw new Error("missing or unexpected original Astro text plan");
           if (
             (Array.isArray(attempt.writes) && attempt.writes.length === 0) ||
             (!attempt.writes && !attempt.write)
@@ -544,11 +646,12 @@ export async function runBatch({ scenarios, deps }) {
             attempt.write = { ...attempt.write, path: fs.missingSibling(attempt.write.path) };
             if (attempt.writes) attempt.writes = [attempt.write, ...attempt.writes.slice(1)];
           }
-          preparedState = diagnostic
-            ? await stage("attempt prepare", timeouts.attemptMs, attemptStart, (ms) =>
-                page.prepare(attempt.targetPath, Math.min(ms, 30000)),
-              )
-            : await wait(page.prepare(attempt.targetPath));
+          preparedState =
+            diagnostic || deps.stageBudget
+              ? await stage("attempt prepare", timeouts.attemptMs, attemptStart, (ms) =>
+                  page.prepare(attempt.targetPath, Math.min(ms, 30000)),
+                )
+              : await wait(page.prepare(attempt.targetPath));
           page.markPre?.();
         } catch (error) {
           append({
@@ -713,16 +816,47 @@ export async function runBatch({ scenarios, deps }) {
         }
         // arm already read this value before the first edit. Reuse it across consecutive
         // edits so a previous tokenized revision cannot become the cleanup baseline.
-        if (verifyBodyRevision && !bodyRevision) {
-          if (
+        if ((verifyBodyRevision || fixedAstro) && !bodyRevision) {
+          if (fixedAstro) {
+            if (!matchesAstroText(armed.actual, originalText))
+              throw new Error("unverified original Astro text");
+          } else if (
             typeof armed.actual !== "string" ||
             !armed.actual.trim() ||
             (deps.requiredBodyBaseline && armed.actual !== deps.requiredBodyBaseline)
           )
             throw new Error("missing pre-edit rendered body baseline");
+          if (fixedAstro) {
+            const sockets = [...page.peerSocketTracking.values()].filter(
+              (row) => row.firstFrameNs !== null,
+            );
+            append({
+              type: "fixed-peer-prewrite",
+              docUUID: armed.docUUID,
+              preparedDocUUID: preparedState?.docUUID,
+              preparedUrl: preparedState?.url,
+              observedUrl: armed.observedUrl,
+              ...(deps.fixedAstroTitle
+                ? { originalTitle: armed.actual }
+                : { originalFooter: armed.actual }),
+              armObservedNs: String(clock.now()),
+              sockets,
+            });
+            if (
+              !armed.docUUID ||
+              armed.docUUID !== preparedState?.docUUID ||
+              armed.observedUrl !== page.url(attempt.targetPath) ||
+              preparedState.url !== armed.observedUrl ||
+              !sockets.length
+            )
+              throw new Error("peer update socket or original document unverified");
+          }
           bodyRevision = {
+            ...(fixedAstro && { allowSameDocument: true }),
             path: attempt.targetPath,
-            predicate: { kind: "text", selector: attempt.predicate.selector, equals: armed.actual },
+            predicate: fixedAstro
+              ? primaryOriginal
+              : { kind: "text", selector: attempt.predicate.selector, equals: armed.actual },
           };
         }
         const preDocUUID = armed.docUUID;
@@ -751,6 +885,12 @@ export async function runBatch({ scenarios, deps }) {
         }
 
         signal?.throwIfAborted();
+        deps.stageBudget?.(timeouts.attemptMs, attemptStart);
+        if (fixedAstro) {
+          deps.beforeAstroWrite("before-write");
+          signal?.throwIfAborted();
+          deps.stageBudget(timeouts.attemptMs, attemptStart);
+        }
         diagnostic?.beforeMutation?.();
         diagnostic?.clamp("attempt write", timeouts.attemptMs, attemptStart);
         let t0;
@@ -832,11 +972,11 @@ export async function runBatch({ scenarios, deps }) {
                   resolve({ kind: "resource-limit", sample: s, tripped: trip, wallMs: wall });
               }, waitSamples.everyMs);
             });
-        let waited;
+        let waited, peerDecision;
         try {
           const timeoutMs = diagnostic
             ? diagnostic.clamp("attempt observation", timeouts.attemptMs, attemptStart)
-            : timeouts.attemptMs;
+            : (deps.stageBudget?.(timeouts.attemptMs, attemptStart) ?? timeouts.attemptMs);
           waited = await wait(
             Promise.race([
               page.waitNotify(attempt.token, timeoutMs, (payload) => {
@@ -853,10 +993,48 @@ export async function runBatch({ scenarios, deps }) {
               ...(resourceTrip ? [resourceTrip] : []),
             ]),
           );
+          if (fixedAstro) {
+            signal?.throwIfAborted();
+            const attemptEnd = attemptStart + BigInt(timeouts.attemptMs) * 1_000_000n;
+            const end = deps.workDeadlineNs < attemptEnd ? deps.workDeadlineNs : attemptEnd;
+            peerDecision = {
+              deadlineNs: String(end),
+              dispatchNs: String(clock.now()),
+              kind: waited.kind,
+            };
+            if (waited.kind === "notify" && waited.t1 > end) {
+              peerDecision.lateNotify = { receivedNs: String(waited.t1), payload: waited.payload };
+              waited = { kind: "timeout" };
+            }
+          }
         } finally {
           clearInterval(sampler);
         }
         const evidence = page.collectAttempt(t0);
+        let classification = evidence;
+        if (peerDecision) {
+          const cutoff = waited.kind === "notify" ? waited.t1 : BigInt(peerDecision.deadlineNs);
+          const during = (rows) =>
+            rows.filter((row) => BigInt(row.ns) >= t0 && BigInt(row.ns) <= cutoff);
+          classification = {
+            mainFrameNavigations: during(evidence.navigations).length,
+            newDocuments: during(evidence.docInits).length,
+            livereloadEvents: during(evidence.wsFrames).map((f) =>
+              f.event === "css" ||
+              (f.event === "module" && (deps.fixedAstroTitle || !f.layoutModule)) ||
+              (f.event === "page" &&
+                (!f.pageSignal ||
+                  (deps.fixedAstroTitle && f.hasUpdatePath && f.updatePath !== "*")))
+                ? "unattributed"
+                : f.event,
+            ),
+          };
+          peerDecision.window = {
+            fromNs: String(t0),
+            throughNs: String(cutoff),
+            ...classification,
+          };
+        }
         const serverPidAfter = server.pid();
         const serverLog = logMark === null ? null : server.logSince(logMark, t0);
 
@@ -864,6 +1042,7 @@ export async function runBatch({ scenarios, deps }) {
         const rec = {
           ...recBase,
           preDocUUID,
+          ...(peerDecision && { peerDecision }),
           t0Ns: String(t0),
           serverPidBefore,
           serverPidAfter,
@@ -877,6 +1056,30 @@ export async function runBatch({ scenarios, deps }) {
           },
           injectKill,
         };
+        if (fixedAstro) {
+          const write = attempt.write;
+          const expected = sha256(write.bytes);
+          const actual = fs.hashOf(write.path);
+          peerWrite = {
+            path: write.path,
+            originalSha256: rec.targetSha256Before,
+            inode: write.evidence?.inodeBefore,
+          };
+          rec.peerDisk = {
+            bytes: Buffer.byteLength(write.bytes),
+            expectedSha256: expected,
+            observedSha256: actual,
+            ok:
+              /^[a-f0-9]{64}$/.test(peerWrite.originalSha256) &&
+              expected === actual &&
+              expected !== peerWrite.originalSha256 &&
+              Number.isSafeInteger(peerWrite.inode) &&
+              peerWrite.inode === write.evidence?.inodeAfter,
+          };
+          append({ type: "fixed-peer-edit-disk", ...peerWrite, ...rec.peerDisk });
+          if (!rec.peerDisk.ok)
+            throw new Error("fixed peer edited bytes or in-place inode mismatch");
+        }
         if (writeSteps) {
           rec.writeSteps = writeSteps;
           rec.tLastWriteNs = String(tLast);
@@ -892,6 +1095,29 @@ export async function runBatch({ scenarios, deps }) {
           rec.observerDisarmed = true;
           acc.lastArmedUnknownOperation = { ...where, token: attempt.token, writeCompleted: true };
         } else if (waited.kind === "notify") {
+          if (fixedAstro) {
+            const payload = waited.payload;
+            if (
+              !astroProducerMatches(
+                payload,
+                preDocUUID,
+                page.url(attempt.targetPath),
+                t0,
+                waited.t1,
+                evidence,
+              ) ||
+              !payload.docUUID ||
+              payload.token !== attempt.token ||
+              payload.armedDocUUID !== preDocUUID ||
+              payload.url !== page.url(attempt.targetPath) ||
+              !matchesAstroText(payload.actual, originalText + " " + attempt.token)
+            )
+              throw new Error("Astro update did not confirm the exact armed text and target");
+          }
+          if (deps.fixedAstroTitle) {
+            seenSupplementalDocs.add(preDocUUID);
+            seenSupplementalDocs.add(waited.payload.docUUID);
+          }
           outcome = "success";
           rec.t1Ns = String(waited.t1);
           rec.latencyMs = nsToMs(waited.t1 - t0);
@@ -905,10 +1131,10 @@ export async function runBatch({ scenarios, deps }) {
           rec.mechanism = classifyMechanism({
             preDocUUID,
             notifyDocUUID: waited.payload.docUUID,
-            mainFrameNavigations: evidence.mainFrameNavigations,
+            mainFrameNavigations: classification.mainFrameNavigations,
             serverPidBefore,
             serverPidAfter,
-            livereloadEvents: evidence.livereloadEvents ?? [],
+            livereloadEvents: classification.livereloadEvents ?? [],
           });
           acc.lastArmedUnknownOperation = null;
         } else {
@@ -924,7 +1150,7 @@ export async function runBatch({ scenarios, deps }) {
               limits,
             };
           } else {
-            outcome = evidence.newDocuments > 0 ? "stale" : "timeout";
+            outcome = classification.newDocuments > 0 ? "stale" : "timeout";
             rec.timeoutMs = timeouts.attemptMs;
           }
           const disarmed = await wait(page.disarm());
@@ -979,7 +1205,7 @@ export async function runBatch({ scenarios, deps }) {
           break outer;
         }
 
-        const supplementalStart = diagnostic ? clock.now() : null;
+        const supplementalStart = diagnostic || deps.stageBudget ? clock.now() : null;
         for (const check of attempt.supplemental) {
           let res;
           try {
@@ -988,6 +1214,27 @@ export async function runBatch({ scenarios, deps }) {
             );
           } catch (error) {
             res = { ok: false, error: String(error?.message ?? error) };
+          }
+          if (fixedAstro && res.ok) {
+            res.ok = Boolean(
+              res.docUUID &&
+              res.docUUID !== rec.notify.docUUID &&
+              !seenSupplementalDocs.has(res.docUUID) &&
+              matchesAstroText(
+                res.notify?.actual ?? res.actual,
+                originalText + " " + attempt.token,
+              ),
+            );
+            if (res.ok) {
+              seenSupplementalDocs.add(res.docUUID);
+              bodyRevision.path = check.path;
+              if (deps.fixedAstroTitle)
+                bodyRevision.predicate = astroTextPredicate(
+                  originalText,
+                  check.predicate.of[1].selector,
+                );
+              bodyRevision.affectedDocUUID = res.docUUID;
+            }
           }
           append({
             type: "supplemental",

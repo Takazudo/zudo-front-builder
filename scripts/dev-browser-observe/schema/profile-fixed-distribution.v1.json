@@ -28,9 +28,21 @@
         "linux-fixed-zfb.v1",
         "linux-fixed-zfb.v2",
         "linux-fixed-zfb.v3",
-        "linux-fixed-zfb.v4"
+        "linux-fixed-zfb.v4",
+        "linux-fixed-astro-footer.v1",
+        "linux-fixed-astro-title.v1"
       ],
-      "description": "Use birth-bound Linux RSS observations for a direct Node shim and its pinned zfb native child. Version 2 additionally verifies private compiler workers and binds owned candidates during discovery. Version 3 retains original verified compiler descriptors between cycles. Version 4 additionally retains a positively verified startup compiler and requires a fresh periodic terminal decision before workload readiness."
+      "description": "Use birth-bound Linux RSS observations for a direct Node shim and its pinned zfb native child. Version 2 additionally verifies private compiler workers and binds owned candidates during discovery. Version 3 retains original verified compiler descriptors between cycles. Version 4 additionally retains a positively verified startup compiler and requires a fresh periodic terminal decision and its later release before workload readiness. Astro footer and title verify the single pinned Node role for their exact respective cell."
+    },
+    "fixedPeerBrowser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executablePath", "executableSha256", "defaultExecutableSha256"],
+      "properties": {
+        "executablePath": { "type": "string", "pattern": "^/" },
+        "executableSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "defaultExecutableSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
     },
     "description": {
       "type": "string"
