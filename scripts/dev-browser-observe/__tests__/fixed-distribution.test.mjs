@@ -1798,7 +1798,15 @@ it.each([
       worker = birth(102, 101, 102);
     const known = new Map([root, dev, worker].map((b) => [b.pid, b])),
       events = [];
-    const proof = { root, dev, worker, sample: { live: [root, dev] } };
+    const proof = {
+      root,
+      dev,
+      worker,
+      sample: {
+        live: [root, dev],
+        cadenceDeadlineNs: String(process.hrtime.bigint() + 1000000000n),
+      },
+    };
     let context,
       pages = [];
     const native = join(installs.zfb.out, "apps/zfb/node_modules/@takazudo/zfb-linux-x64-gnu/zfb");

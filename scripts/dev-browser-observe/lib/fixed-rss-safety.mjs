@@ -244,6 +244,9 @@ export function startFixedRssSafety({
             resultNs: result.timing?.parent?.resultNs,
             epoch: measuredCycles,
             ...(joinOwnedFamily && {
+              cadenceDeadlineNs: String(
+                BigInt(startedNs) + BigInt(limits.sampleEveryMs) * 1000000n,
+              ),
               helperPid: result.helper?.pid,
               helperSpawnNs: result.helper?.spawnHrtimeNs,
               entryNs: result.timing?.parent?.entryNs,

@@ -209,6 +209,8 @@ export function runOriginalFamilyBatch(
     const audit = browserAudit.inspect();
     requireBlank(audit);
     const stamp = process.hrtime.bigint();
+    if (setup)
+      assert(stamp < BigInt(proof.sample.cadenceDeadlineNs), "cadence due at family decision");
     assert(stamp < deadlineNs, "family work deadline expired");
     if (setup) setup.totalAdmissionNs = String(stamp - BigInt(setup.initialNs));
     admission = {
@@ -292,10 +294,11 @@ export function runOriginalFamilyBatch(
     if (setup) {
       assert(process.hrtime.bigint() < deadlineNs, "family work deadline expired");
       setup.initialBlank = initial;
+      browserAudit.watchSettlementPage();
+      setup.pageWatchStartedNs = String(process.hrtime.bigint());
       const captured = safety.captureFamilyCycle(setup);
       if (captured.settlement) {
         setup.priorCustody = captured.before;
-        browserAudit.watchSettlementPage();
         checkPopulation(captured.before);
         return join(captured);
       }
