@@ -241,6 +241,21 @@ def retainable_startup_state(pidfd, worker):
             transient.get("role") == "__zfb-compiler-worker")
 
 
+def settle_startup_worker(scout, pair, worker, dev):
+    """A live-verified worker that ended before retention is re-read by the scout:
+    a clean zombie becomes a completed transient role, a reaped one raises the
+    scout's WorkerGone and the next sweep decides."""
+    poll = select.poll()
+    poll.register(pair[0], select.POLLIN)
+    if worker.get("completedTransient") is None and poll.poll(0):
+        return scout.settle_published(pair, worker, dev)
+    return worker
+
+
+def admit_startup_completion(first_retained, held):
+    require(first_retained is None and not held, "startup completion after retention")
+
+
 def duplicate_startup_pair(pair):
     first = os.dup(pair[0])
     try:
@@ -272,7 +287,7 @@ def serve(shared, parent, session, startup_mode=False):
         # retained; the controller confirms the record against readiness later.
         nonlocal startup_key, first_retained
         with ownership_lock:
-            require(first_retained is None and not held, "startup completion after retention")
+            admit_startup_completion(first_retained, held)
             first_retained = ("product-completion",)
             print(json.dumps(dict(startupCompletion=record, session=session,
                                   publishedNs=str(time.monotonic_ns()))), flush=True)
@@ -289,6 +304,7 @@ def serve(shared, parent, session, startup_mode=False):
             require(not held or key in held, "ambiguous startup retention")
             # A concurrent ordinary epoch may have held the lock since the
             # scout's last live check. Take a new nonblocking group poll here.
+            worker = settle_startup_worker(scout, pair, worker, dev)
             require(retainable_startup_state(pair[0], worker), "startup worker exited before retention")
             live_ns = time.monotonic_ns()
             require(live_ns < scout.end_ns and not scout.stop.is_set(), "startup handoff expired")

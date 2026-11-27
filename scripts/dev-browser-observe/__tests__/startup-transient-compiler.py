@@ -7,6 +7,7 @@ the case ends, a reaped worker is waited for before the scout is released, and
 sweeps are held between steps where a bracket must be observed.
 Usage: startup-transient-compiler.py [scout.py]   (CASES=r4-replay for one case)
 """
+import contextlib
 import ctypes
 import importlib.util
 import json
@@ -69,6 +70,10 @@ if mode == "exit1":
     sys.exit(1)
 if mode == "signal":
     os.kill(os.getpid(), signal.SIGKILL)
+if mode == "exit-on-file":
+    while not os.path.exists("exit"):
+        time.sleep(0.002)
+    sys.exit(0)
 if mode == "leader-exit":
     threading.Thread(target=time.sleep, args=(30,), daemon=False).start()
     ctypes.CDLL(None).pthread_exit(None)
@@ -140,16 +145,21 @@ class Cell:
         seed = dict(pid=self.root.pid, argv=[self.shim, "dev.py"], startTicks=start_ticks(self.root.pid),
                     bootId=Path("/proc/sys/kernel/random/boot_id").read_text().strip())
         self.published, self.completions = [], []
+        self.before_retention = lambda pair, worker_birth: None
 
         def publish(pair, worker_birth, dev_birth, launch):
+            # The holder's own order (linux-rss-custody.py publish): settle, then poll.
             if pair is not None:
+                self.before_retention(pair, worker_birth)
+                worker_birth = custody.settle_startup_worker(self.s, pair, worker_birth, dev_birth)
                 self.published.append(dict(worker=worker_birth, dev=dev_birth,
                                            retainable=custody.retainable_startup_state(pair[0], worker_birth)))
 
         import inspect
         extra = ([self.completions.append]
                  if "complete" in inspect.signature(scout.Startup).parameters else [])  # f8ab37bfb lacks it
-        return scout.Startup(config, os.getpid(), seed, publish, *extra, **kwargs)
+        self.s = scout.Startup(config, os.getpid(), seed, publish, *extra, **kwargs)
+        return self.s
 
     def close(self):
         kill_cell(self.cwd)
@@ -421,6 +431,151 @@ try:
            (s.status, s.failure))
 finally:
     cell.close()
+
+
+# 9b. review-2 finding 3: a live-listed worker that exits during verification is
+# routed by its pidfd and stat: a clean zombie is zombie custody, a reaped worker
+# defers and zfb's own reap concludes product completion.
+def fd_pid(fd):
+    return int(os.readlink(f"/proc/self/fd/{fd}").rsplit("/", 1)[1])
+
+
+def end_worker(cell, pid, reaped):
+    Path(cell.cwd, "exit").write_text("")
+    if reaped:
+        wait_for(lambda: not Path(f"/proc/{pid}").exists())
+    else:
+        wait_for(lambda: stat_fields(pid)[0] == b"Z")
+
+
+for point in ("cmdline", "cwd", "exe", "reverify", "retention"):
+    for reaped in (False, True):
+        cell = Cell(worker="exit-on-file", reap="now" if reaped else "no")
+        try:
+            wait_for(lambda: cell.native() is not None and children_of(cell.native()))
+            worker_pid = next(iter(children_of(cell.native())))
+            s = cell.scout()
+            fired = []
+
+            def trigger(pid):
+                if pid == worker_pid and not fired:
+                    fired.append(point)
+                    end_worker(cell, worker_pid, reaped)
+
+            patches = []
+            if point == "cmdline":
+                real_read = s.read
+
+                def read(path, directory=None, _real=real_read):
+                    if path == "cmdline" and directory is not None:
+                        trigger(fd_pid(directory))
+                    return _real(path, directory)
+                s.read = read
+            elif point in ("cwd", "exe"):
+                name = point
+                real = os.readlink if name == "cwd" else os.open
+
+                def hooked(path, *args, _real=real, _name=name, **kwargs):
+                    if path == _name and kwargs.get("dir_fd") is not None:
+                        trigger(fd_pid(kwargs["dir_fd"]))
+                    return _real(path, *args, **kwargs)
+                patches.append(mock.patch.object(os, "readlink" if name == "cwd" else "open", hooked))
+            elif point == "reverify":
+                real_verify = s.verify
+                calls = []
+
+                def verify(*args, _real=real_verify):
+                    if args[1] == worker_pid:
+                        calls.append(1)
+                        if len(calls) == 2:
+                            trigger(worker_pid)
+                    return _real(*args)
+                s.verify = verify
+            else:
+                cell.before_retention = lambda pair, birth: trigger(birth["pid"])
+            with contextlib.ExitStack() as stack:
+                for p in patches:
+                    stack.enter_context(p)
+                s.run()
+            label = f"mid-verify-exit-{point}-{'reaped' if reaped else 'zombie'}"
+            if reaped:
+                expect(label, fired and s.status == "worker-not-observed" and not cell.published
+                       and len(cell.completions) == 1 and s.reaped_mid_bind
+                       # A re-verify starts with stat, which already maps ESRCH.
+                       and s.reaped_mid_bind[-1]["reason"] in (
+                           ("exited-reaped-mid-verify", "stat-esrch") if point == "reverify"
+                           else ("exited-reaped-mid-verify",)),
+                       (s.status, s.failure, s.reaped_mid_bind, fired))
+            else:
+                w = cell.published[0]["worker"] if cell.published else {}
+                expect(label, fired and s.status == "retained" and len(cell.published) == 1
+                       and w.get("completedTransient", {}).get("exitCode") == 0
+                       and cell.published[0]["retainable"] is True and not cell.completions,
+                       (s.status, s.failure, fired, w))
+        finally:
+            cell.close()
+
+# 9c. conclude() re-checks zfb after the decision sweep (review-2 J8, J8b), and a
+# native fdinfo -1 is never a deferral (J15).
+for label, fault in (("conclude-child-appears", "children"), ("conclude-cminflt-drops", "cminflt")):
+    cell = Cell(worker="exit0", reap="now")
+    try:
+        wait_for(lambda: cell.native() and int(stat_fields(cell.native())[scout.STAT_CMINFLT]) > 0
+                 and not children_of(cell.native()))
+        s = cell.scout()
+        state = dict(inside=False)
+        real_conclude, real_children, real_verify = s.conclude, s.children, s.verify
+
+        def conclude(*args):
+            state["inside"] = True
+            return real_conclude(*args)
+
+        def children(directory):
+            found = real_children(directory)
+            return found | {999999} if state["inside"] and fault == "children" else found
+
+        def verify(*args):
+            out = real_verify(*args)
+            if state["inside"] and fault == "cminflt" and args[1] == cell.native():
+                out = dict(out, cminflt=0)
+            return out
+        s.conclude, s.children, s.verify = conclude, children, verify
+        s.run()
+        expect(label, s.status == "failed" and s.failure == "startup role changed during verification"
+               and not cell.completions, (s.status, s.failure))
+    finally:
+        cell.close()
+
+cell = Cell(worker="live")
+try:
+    wait_for(lambda: cell.native() is not None and children_of(cell.native()))
+    s = cell.scout()
+    real_read = s.read
+
+    def native_fdinfo(path, directory=None):
+        data = real_read(path, directory)
+        if path.startswith("/proc/self/fdinfo/"):
+            line = [x for x in data.splitlines() if x.startswith(b"Pid:\t")][0]
+            if is_native(int(line.split(b"\t")[1])):
+                return data.replace(line, b"Pid:\t-1")
+        return data
+    s.read = native_fdinfo
+    s.run()
+    expect("native-fdinfo-minus-one", s.status == "failed" and s.failure == "startup unpaired pidfd"
+           and not s.reaped_mid_bind, (s.status, s.failure))
+finally:
+    cell.close()
+
+# The holder publishes one completion, never after a retention (review-2 J14).
+custody.admit_startup_completion(None, {})
+for label, args in (("completion-after-retention", (("k",), {})),
+                    ("completion-beside-held-pair", (None, {("k",): 1}))):
+    try:
+        custody.admit_startup_completion(*args)
+    except ValueError as error:
+        expect(label, "startup completion after retention" in str(error), error)
+    else:
+        raise SystemExit(f"FAIL {label} accepted")
 
 # 10. The holder never retains a live pair as a completed transient role.
 live = subprocess.Popen(["sleep", "30"])

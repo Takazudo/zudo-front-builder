@@ -93,30 +93,37 @@ class Startup:
             if transient_parent is None:
                 raise ValueError("startup role first seen terminal")
             return self.completed(pair, raw, head, fields, pid, ppid, pgid, pin, transient_parent)
-        self.paired(process, pid, transient_parent is not None)
-        if (
-            self.read("cmdline", directory)
-            != b"\0".join(map(os.fsencode, argv)) + b"\0"
-        ):
-            raise ValueError("startup process argv mismatch")
-        if os.readlink("cwd", dir_fd=directory) != self.config["launch"]["cwd"]:
-            raise ValueError("startup process cwd mismatch")
-        exe = os.open("exe", os.O_RDONLY, dir_fd=directory)
         try:
-            info = os.fstat(exe)
+            self.paired(process, pid, transient_parent is not None)
             if (
-                os.readlink("exe", dir_fd=directory),
-                str(info.st_dev),
-                str(info.st_ino),
-                os.read(exe, 4),
-            ) != (pin["path"], pin["device"], pin["inode"], b"\x7fELF"):
-                raise ValueError("startup process image mismatch")
-        finally:
-            os.close(exe)
-        poller = select.poll()
-        poller.register(process, select.POLLIN)
-        if poller.poll(0):
-            raise ValueError("startup role exited during binding")
+                self.read("cmdline", directory)
+                != b"\0".join(map(os.fsencode, argv)) + b"\0"
+            ):
+                raise ValueError("startup process argv mismatch")
+            if os.readlink("cwd", dir_fd=directory) != self.config["launch"]["cwd"]:
+                raise ValueError("startup process cwd mismatch")
+            exe = os.open("exe", os.O_RDONLY, dir_fd=directory)
+            try:
+                info = os.fstat(exe)
+                if (
+                    os.readlink("exe", dir_fd=directory),
+                    str(info.st_dev),
+                    str(info.st_ino),
+                    os.read(exe, 4),
+                ) != (pin["path"], pin["device"], pin["inode"], b"\x7fELF"):
+                    raise ValueError("startup process image mismatch")
+            finally:
+                os.close(exe)
+            poller = select.poll()
+            poller.register(process, select.POLLIN)
+            if poller.poll(0):
+                raise ValueError("startup role exited during binding")
+        except (ValueError, OSError) as error:
+            # A zombie's cmdline reads empty and its cwd/exe raise ENOENT; a reaped
+            # process answers ESRCH. Only the worker slot may have ended here.
+            if transient_parent is None:
+                raise
+            return self.exited(pair, pid, ppid, pgid, pin, transient_parent, error)
         return dict(
             pid=pid,
             ppid=ppid,
@@ -136,6 +143,36 @@ class Startup:
         if worker and b"Pid:\t-1" in fdinfo:
             raise WorkerGone("fdinfo-pid-minus-one")
         raise ValueError("startup unpaired pidfd")
+
+    def exited(self, pair, pid, ppid, pgid, pin, parent, error):
+        """The worker ended after being listed live: route it by its pidfd and stat.
+
+        A terminal pidfd with a status-0 zombie is a completed transient role; a
+        stat read that answers ESRCH means zfb already reaped it. A live pidfd
+        keeps the original refusal.
+        """
+        poller = select.poll()
+        poller.register(pair[0], select.POLLIN)
+        if not poller.poll(0):
+            raise error
+        try:
+            raw = self.read("stat", pair[1])
+        except ProcessLookupError:
+            raise WorkerGone("exited-reaped-mid-verify") from error
+        head, tail = raw.rsplit(b")", 1)
+        fields = tail.split()
+        if (
+            int(head.split(b"(", 1)[0]) != pid
+            or int(fields[1]) != ppid
+            or int(fields[2]) != pgid
+        ):
+            raise ValueError("startup process ancestry mismatch")
+        return self.completed(pair, raw, head, fields, pid, ppid, pgid, pin, parent)
+
+    def settle_published(self, pair, worker, dev):
+        """The holder found a live-verified worker ended before retention."""
+        return self.exited(pair, worker["pid"], worker["ppid"], worker["pgid"], self.config["child"],
+                           dev, ValueError("startup worker exited before retention"))
 
     def completed(self, pair, raw, head, fields, pid, ppid, pgid, pin, parent):
         """A compiler worker already exited at first sight: identity from stat only.
@@ -270,7 +307,7 @@ class Startup:
                 # sweep decides on the native evidence; keep the partial attribution.
                 self.reaped_mid_bind.append(dict(sweep=self.sweeps, pid=pid, reason=str(gone)))
                 return
-            roles = ((rb, ri), (vb, vi))
+            roles = [(rb, ri, None), (vb, vi, None)]
             if "completedTransient" in wb:
                 # The pidfd is bound to that exact exited process; zfb may reap it
                 # at any moment, so its procdir is not read again.
@@ -279,17 +316,23 @@ class Startup:
                 if not poller.poll(0):
                     raise ValueError("startup role changed during verification")
             else:
-                roles += ((wb, wi),)
-            for prior, inputs in roles:
-                after = self.verify(*inputs)
-                if any(
-                    prior[k] != after[k]
-                    for k in ("pid", "ppid", "pgid", "bootId", "startTicks")
-                ):
-                    raise ValueError("startup role changed during verification")
-            if time.monotonic_ns() >= self.end_ns or self.stop.is_set():
-                raise ValueError("startup live handoff expired")
-            self.publish(w, wb, vb, rb)
+                roles.append((wb, wi, vb))
+            try:
+                for prior, inputs, parent in roles:
+                    after = self.verify(*inputs, parent)
+                    if any(
+                        prior[k] != after[k]
+                        for k in ("pid", "ppid", "pgid", "bootId", "startTicks")
+                    ):
+                        raise ValueError("startup role changed during verification")
+                    if parent is not None and "completedTransient" in after:
+                        wb = after  # exited after binding: zombie custody
+                if time.monotonic_ns() >= self.end_ns or self.stop.is_set():
+                    raise ValueError("startup live handoff expired")
+                self.publish(w, wb, vb, rb)
+            except WorkerGone as gone:
+                self.reaped_mid_bind.append(dict(sweep=self.sweeps, pid=pid, reason=str(gone)))
+                return
             self.status = "retained"
 
     def conclude(self, rb, ri, vb, vi):
