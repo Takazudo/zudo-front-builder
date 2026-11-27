@@ -381,6 +381,7 @@ export function sampleRendererMemory(
     observedRssKiB: Object.fromEntries(rssSources),
     rssBasis: "per-birth maximum of VmRSS and smaps_rollup.Rss observed in this cycle",
     ...summary,
+    ...(startupCoverage && !startupCoverage.complete && { summedRssKiB: null }),
   });
 
   const fail = (stage, message) => {
@@ -492,7 +493,8 @@ export function sampleRendererMemory(
           }),
         }),
       };
-      const startupPoll = request.fixedCustody?.startupPollPid;
+      const startupPoll =
+        fixedExecutables?.protocol === "linux-fixed-zfb.v4" && request.fixedCustody?.startupPollPid;
       if (startupPoll)
         request.terminalProofs = request.terminalProofs.filter((p) => p.birth.pid !== startupPoll);
       if (custody)
@@ -763,7 +765,8 @@ export function sampleRendererMemory(
             custody &&
               !bound.has(p.pid) &&
               (!prior ||
-                (request.fixedCustody.startupPollPid === p.pid &&
+                (fixedExecutables?.protocol === "linux-fixed-zfb.v4" &&
+                  request.fixedCustody.startupPollPid === p.pid &&
                   same(prior.birth, p) &&
                   prior.birth.ppid === p.ppid)) &&
               p.pid !== root.pid &&

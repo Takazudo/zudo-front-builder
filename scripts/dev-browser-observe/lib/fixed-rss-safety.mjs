@@ -71,7 +71,11 @@ export function startFixedRssSafety({
   const fail = (error) => {
     if (error?.details?.helper?.closed === false || error?.details?.helper?.pipesClosed === false)
       unresolvedHelper = error.details.helper;
-    const partial = error?.details?.summedRssKiB;
+    const partial =
+      fixedExecutables.protocol === "linux-fixed-zfb.v4" &&
+      error?.details?.rssCoverage === "partial"
+        ? error.details.observedSubtotalKiB
+        : error?.details?.summedRssKiB;
     if (Number.isSafeInteger(partial) && partial >= 0) peakKiB = Math.max(peakKiB ?? 0, partial);
     const issue = { error: String(error?.message ?? error), details: error?.details ?? null };
     // At most one helper can still be in flight after the periodic dispatcher
