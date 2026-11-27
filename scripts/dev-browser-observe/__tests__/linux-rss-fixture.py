@@ -71,6 +71,43 @@ def identity(pid):
                 birthVersion="linux-proc-v1")
 
 
+class CustodyMessages(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("fixed_custody", here.parents[1] / "lib/linux-rss-custody.py")
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
+    def test_truncated_wrong_count_and_invalid_json_close_every_received_fd(self):
+        import array
+        left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        self.addCleanup(left.close)
+        self.addCleanup(right.close)
+        with open("/dev/null", "rb") as source:
+            before = set(os.listdir("/proc/self/fd"))
+            for data, count in [(b"{}", 1), (b"{}", 24), (b"x", 2), (b"x"*4096, 2)]:
+                left.sendmsg([data], [(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array("i",[source.fileno()]*count))])
+                with self.assertRaises(ValueError):
+                    self.module.receive(right, [2])
+                self.assertEqual(set(os.listdir("/proc/self/fd")), before)
+
+    def test_ack_requires_original_session_epoch_holder_and_helper(self):
+        marker = self.module.Client.__new__(self.module.Client)
+        marker.session,marker.epoch,marker.holder_pid = "original", 4, 151
+        marker.peer, other = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        self.addCleanup(marker.peer.close)
+        self.addCleanup(other.close)
+        valid = dict(ok=True,session="original",epoch=4,holderPid=151,helperPid=os.getpid(),verifiedNs="1")
+        for wrong in (dict(session="prior"),dict(epoch=3),dict(holderPid=150),dict(helperPid=1),dict(ok=False)):
+            self.module.send(other,dict(valid, **wrong))
+            with self.assertRaisesRegex(ValueError,"unverified custody ACK"):
+                marker.exchange(dict(op="test"))
+            self.module.receive(other,[0])
+        other.close()
+        with self.assertRaises(OSError):
+            marker.exchange(dict(op="test"))
+
+
 class Sampling(unittest.TestCase):
     def spawn(self, mode="ordinary", fixed=False):
         self.start_ns = time.monotonic_ns()

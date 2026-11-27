@@ -73,6 +73,8 @@ export function startFixedCustody({ append: record, abort, intent }) {
         const msg = JSON.parse(pending.slice(0, end));
         pending = pending.slice(end + 1);
         if (!handshake && msg.ready === true && msg.pid === birth?.pid && msg.session === session) {
+          if (msg.timeNamespace !== readlinkSync("/proc/self/ns/time"))
+            throw issue("holder time namespace mismatch");
           const live = linuxBirth(child.pid);
           if (
             !sameLinuxBirth(live, birth) ||
@@ -92,7 +94,18 @@ export function startFixedCustody({ append: record, abort, intent }) {
           msg.epochs === epoch &&
           Number.isSafeInteger(msg.pairsClosed) &&
           msg.pairsClosed >= 0 &&
-          msg.pairsClosed <= 64
+          msg.pairsClosed <= 1 &&
+          Number.isSafeInteger(msg.maxPairs) &&
+          msg.maxPairs >= msg.pairsClosed &&
+          msg.maxPairs <= 1 &&
+          Number.isSafeInteger(msg.transfers) &&
+          msg.transfers >= msg.maxPairs &&
+          Number.isSafeInteger(msg.maxRssKiB) &&
+          msg.maxRssKiB > 0 &&
+          Number.isFinite(msg.userSeconds) &&
+          msg.userSeconds >= 0 &&
+          Number.isFinite(msg.systemSeconds) &&
+          msg.systemSeconds >= 0
         ) {
           const lines = [...retained.values()]
             .map(({ birth: b, token }) =>
@@ -139,6 +152,7 @@ export function startFixedCustody({ append: record, abort, intent }) {
       if (!handshake || stopping || fault) throw fault ?? issue("holder unavailable");
       return {
         session,
+        holderPid: birth.pid,
         epoch: ++epoch,
         tokens: Object.fromEntries([...retained].map(([pid, item]) => [pid, item.token])),
       };
@@ -153,12 +167,22 @@ export function startFixedCustody({ append: record, abort, intent }) {
         prev.birth.pgid === b.pgid,
       );
     },
+    sameDescriptors(b) {
+      const prior = retained.get(b.pid)?.descriptors;
+      return Boolean(
+        prior &&
+        b.custodyReceipt?.descriptors?.every((pair, i) =>
+          pair.every((value, j) => value === prior[i]?.[j]),
+        ),
+      );
+    },
     record(b, token) {
       if (typeof token !== "string" || !/^[a-f0-9]{32}$/.test(token)) throw issue("invalid token");
       if (retained.has(b.pid)) {
-        if (!this.matches(b, token)) throw issue("changed birth or token");
+        if (!this.matches(b, token) || !this.sameDescriptors(b))
+          throw issue("changed birth, token or descriptors");
       } else {
-        if (retained.size >= 64) throw issue("ownership cap");
+        if (retained.size >= 1) throw issue("ownership cap");
         retained.set(b.pid, {
           birth: {
             pid: b.pid,
@@ -169,6 +193,7 @@ export function startFixedCustody({ append: record, abort, intent }) {
             birthVersion: b.birthVersion,
           },
           token,
+          descriptors: b.custodyReceipt.descriptors,
         });
       }
     },

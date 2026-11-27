@@ -12,10 +12,12 @@ import socket
 import stat
 import struct
 import sys
+import time
 
 MAX_OWNED = 64
 MAX_PACKET = 2048
 MAX_FDS = 2
+MAX_PAIRS = 1
 U32 = struct.Struct("3i")
 CLOEXEC = socket.MSG_CMSG_CLOEXEC
 
@@ -63,7 +65,7 @@ def birth_key(birth):
 
 def identity(fd):
     info = os.fstat(fd)
-    return [info.st_dev, info.st_ino]
+    return [str(info.st_dev), str(info.st_ino)]
 
 
 def read_small(path, directory=None):
@@ -97,7 +99,7 @@ def verify_pair(fds, msg, expected_root):
             os.readlink(f"/proc/self/fd/{fd}") == "anon_inode:[pidfd]" and
             stat.S_ISDIR(os.fstat(directory).st_mode), "invalid custody descriptor pair")
     proc = os.stat(f'/proc/{birth["pid"]}')
-    require(identity(directory) == [proc.st_dev, proc.st_ino], "custody wrong process directory")
+    require(identity(directory) == [str(proc.st_dev), str(proc.st_ino)], "custody wrong process directory")
     confirm_birth(read_small("stat", directory), birth)
     for ancestor in (parent, expected_root):
         confirm_birth(read_small(f'/proc/{ancestor["pid"]}/stat'), ancestor)
@@ -109,6 +111,8 @@ class Client:
     def __init__(self, config):
         self.session, self.epoch = config["session"], config["epoch"]
         self.tokens = config["tokens"]
+        self.holder_pid = config["holderPid"]
+        self.last_receipt = None
         self.peer, transfer = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         try:
             with socket.socket(fileno=3) as shared, transfer:
@@ -127,7 +131,12 @@ class Client:
         send(self.peer, data, fds)
         msg, received, _ = receive(self.peer, [expect])
         try:
-            require(msg.get("ok") is True and msg["epoch"] == self.epoch, "unverified custody ACK")
+            require(msg.get("ok") is True and msg["epoch"] == self.epoch and
+                    msg["holderPid"] == self.holder_pid and msg["helperPid"] == os.getpid() and
+                    msg["session"] == self.session, "unverified custody ACK")
+            self.last_receipt = {k: msg[k] for k in ("session","epoch","helperPid","holderPid","verifiedNs")}
+            if "descriptors" in msg:
+                self.last_receipt["descriptors"] = msg["descriptors"]
             return msg, received
         except BaseException:
             for fd in received:
@@ -137,6 +146,16 @@ class Client:
     def retain(self, birth, binding, parent):
         token = self.tokens.get(str(birth["pid"]))
         if token:
+            # A previous token alone does not prove that this holder still owns
+            # both original descriptors for the current verified live birth.
+            dup = self.retrieve(birth)
+            try:
+                require(identity(dup[1]) == identity(binding[2]), "changed custody process directory")
+                paired = re.findall(rb"(?m)^Pid:\s*(-?\d+)$", read_small(f"/proc/self/fdinfo/{dup[0]}"))
+                require(paired == [str(birth["pid"]).encode()], "live custody pidfd contradiction")
+            finally:
+                for fd in dup:
+                    os.close(fd)
             return token
         _, fd, directory = binding
         msg, _ = self.exchange(dict(op="retain", birth=birth, parent=parent, descriptors=[identity(fd),identity(directory)]),
@@ -163,9 +182,12 @@ def serve(shared, parent, session):
     # require kernel credentials on each helper's one-byte rendezvous instead.
     shared.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
     held = {}
+    high_water = 0
+    transfers = 0
     epoch = 0
     root = None
-    print(json.dumps(dict(ready=True, pid=os.getpid(), session=session)), flush=True)
+    print(json.dumps(dict(ready=True, pid=os.getpid(), session=session,
+                          timeNamespace=os.readlink("/proc/self/ns/time"))), flush=True)
     while True:
         readable, _, _ = select.select([shared, sys.stdin], [], [])
         if sys.stdin in readable:
@@ -196,7 +218,12 @@ def serve(shared, parent, session):
                 confirm_birth(read_small(f'/proc/{candidate["pid"]}/stat'), candidate)
                 root = candidate
             require(birth_key(candidate) == birth_key(root), "custody root changed")
-            send(peer, dict(ok=True,epoch=epoch))
+            def ack(extra=None, fds=()):
+                result=dict(ok=True,epoch=epoch,helperPid=peer_pid,holderPid=os.getpid(),
+                            session=session,verifiedNs=str(time.monotonic_ns()))
+                result.update(extra or {})
+                send(peer,result,fds)
+            ack()
             for _ in range(2*MAX_OWNED+1):
                 # Peek EOF without consuming any rights from a new request.
                 if not peer.recv(1, socket.MSG_PEEK):
@@ -205,22 +232,24 @@ def serve(shared, parent, session):
                 key = birth_key(msg["birth"])
                 action = msg["op"]
                 if action == "retain":
-                    require(len(held)<MAX_OWNED and len(fds)==2 and key not in held, "duplicate or excessive custody")
+                    require(len(held)<MAX_PAIRS and len(fds)==2 and key not in held, "duplicate or excessive custody")
                     verify_pair(fds, msg, root)
                     token = secrets.token_hex(16)
                     held[key] = (token, fds)
-                    send(peer, dict(ok=True, epoch=epoch, token=token))
+                    transfers += 1
+                    high_water=max(high_water,len(held))
+                    ack(dict(token=token,descriptors=list(map(identity,fds))))
                 else:
                     token, existing = held[key]
                     require(not fds and secrets.compare_digest(token, msg["token"]), "unverified custody token")
                     if action == "get":
-                        send(peer,dict(ok=True,epoch=epoch),existing)
+                        ack(dict(descriptors=list(map(identity,existing))),existing)
                     else:
                         require(action == "release", "unsupported custody operation")
                         for fd in existing:
                             os.close(fd)
                         del held[key]
-                        send(peer,dict(ok=True,epoch=epoch))
+                        ack()
             else:
                 raise ValueError("custody operation cap")
     lines = sorted("|".join(map(str, (*key, record[0]))) for key,record in held.items())
@@ -228,7 +257,10 @@ def serve(shared, parent, session):
     for _, fds in held.values():
         for fd in fds:
             os.close(fd)
-    print(json.dumps(dict(stopped=True,pairsClosed=len(held),retainedDigest=digest,epochs=epoch)),flush=True)
+    usage=resource.getrusage(resource.RUSAGE_SELF)
+    print(json.dumps(dict(stopped=True,pairsClosed=len(held),retainedDigest=digest,epochs=epoch,
+                          maxPairs=high_water,transfers=transfers,maxRssKiB=usage.ru_maxrss,
+                          userSeconds=usage.ru_utime,systemSeconds=usage.ru_stime)),flush=True)
 
 
 if __name__ == "__main__":

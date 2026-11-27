@@ -107,6 +107,26 @@ function checkBirth(row, bootId) {
   );
 }
 
+export function checkCustodyTransfer(p, cycle, helper) {
+  const r = p.custodyReceipt;
+  requireValue(
+    r &&
+      r.session === cycle.session &&
+      r.epoch === cycle.epoch &&
+      r.holderPid === cycle.holderPid &&
+      r.helperPid === helper.pid &&
+      Array.isArray(r.descriptors) &&
+      r.descriptors.length === 2 &&
+      r.descriptors.every(
+        (pair) => Array.isArray(pair) && pair.length === 2 && pair.every(ticks),
+      ) &&
+      ticks(r.verifiedNs) &&
+      BigInt(p.startedNs) <= BigInt(r.verifiedNs) &&
+      BigInt(r.verifiedNs) <= BigInt(p.endNs),
+    "unverified custody transfer",
+  );
+}
+
 export function checkCustodyProofTime(row, helperEntryNs) {
   const at = row.terminalProof?.observedNs;
   requireValue(
@@ -674,6 +694,8 @@ export function sampleRendererMemory(
             "unverified inter-cycle departure",
           );
           checkProof(p.terminalProof, p);
+          checkCustodyTransfer(p, request.fixedCustody, helper);
+          requireValue(custody.sameDescriptors(p), "custodied departure descriptor mismatch");
           checkCustodyProofTime(p, stamps.entryNs);
           proofs.set(p.pid, p.terminalProof);
         } else if (p.disposition === "retained-terminal-proof") {
@@ -728,8 +750,10 @@ export function sampleRendererMemory(
           custody &&
           p.disposition === "live" &&
           p.executable?.workerArg === "__zfb-compiler-worker"
-        )
+        ) {
+          checkCustodyTransfer(p, request.fixedCustody, helper);
           custody.record(p, p.custodyToken);
+        }
         observed.add(p.pid);
         processes.push(p);
         pendingObservation = {

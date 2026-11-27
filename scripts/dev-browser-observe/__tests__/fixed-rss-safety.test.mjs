@@ -19,6 +19,7 @@ import { linuxBirth } from "../lib/linux-birth.mjs";
 import { startFixedCustody } from "../lib/fixed-rss-custody.mjs";
 import {
   checkCustodyProofTime,
+  checkCustodyTransfer,
   checkFixedV2Observation,
   sampleRendererMemory,
 } from "../lib/linux-rss-sample.mjs";
@@ -362,6 +363,40 @@ linux(
     assert.equal(existsSync(`/proc/${birth.pid}`), false);
   },
 );
+
+test("a descriptor transfer joins the session, helper epoch, both kernel descriptor IDs and observation time", () => {
+  const cycle = { session: "fixture", epoch: 3, holderPid: 11 };
+  const helper = { pid: 12 };
+  const claim = {
+    ...cycle,
+    helperPid: 12,
+    verifiedNs: "11",
+    descriptors: [
+      ["61", "303"],
+      ["42", "159"],
+    ],
+  };
+  const verify = (r) =>
+    checkCustodyTransfer({ custodyReceipt: r, startedNs: "10", endNs: "12" }, cycle, helper);
+  verify(claim);
+  for (const change of [
+    { session: "other" },
+    { epoch: 2 },
+    { helperPid: 3 },
+    { holderPid: 3 },
+    { verifiedNs: "9" },
+    { verifiedNs: "14" },
+    { descriptors: [["61", "303"]] },
+    {
+      descriptors: [
+        ["61", "303"],
+        ["?", 2],
+      ],
+    },
+  ]) {
+    assert.throws(() => verify({ ...claim, ...change }));
+  }
+});
 
 test("an inter-cycle terminal poll must belong to this helper's observation interval", () => {
   const row = { startedNs: "20", endNs: "30", terminalProof: { observedNs: "25" } };

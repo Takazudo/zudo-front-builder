@@ -326,6 +326,7 @@ class Sample:
             if self.custody and result["executable"].get("workerArg") == "__zfb-compiler-worker":
                 self.stage = "compiler-custody"
                 result["custodyToken"] = self.custody.retain(row, binding, self.fixed_native)
+                result["custodyReceipt"] = self.custody.last_receipt
         result["endNs"] = str(CLOCK())
         self.emit({"type": "observation", "process": result})
 
@@ -465,7 +466,8 @@ class Sample:
                             raise Invalid("custodied-known-missing-without-terminal")
                         self.emit({"type":"observation","process":dict(previous,
                                   disposition="custodied-departure", terminalProof=dict(ended,birth=previous),
-                                  custodyToken=self.custody.tokens[str(pid)], rssKiB=None, statusKiB=None,
+                                  custodyToken=self.custody.tokens[str(pid)], custodyReceipt=self.custody.last_receipt,
+                                  rssKiB=None, statusKiB=None,
                                   smapsRollupKiB=None, threads=None, executable=None,
                                   startedNs=self.started,endNs=str(CLOCK()))})
                 else:
