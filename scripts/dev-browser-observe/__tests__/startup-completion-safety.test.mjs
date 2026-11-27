@@ -25,6 +25,9 @@ function monitor({
     confirmStartupCompletion(args) {
       calls.push(args);
       if (!confirmed) throw new Error("startup product completion unconfirmed at readiness");
+      // The real check (fixed-rss-custody.mjs) requires an empty departure list.
+      if (!Array.isArray(args.sample.departures) || args.sample.departures.length)
+        throw new Error("startup product completion unconfirmed at readiness");
       completion = { confirmed: { epoch: args.sample.epoch } };
     },
     familyProof: () => ({ root, dev, worker: null, terminal: null, release: null, completion }),
@@ -52,11 +55,11 @@ function monitor({
       return active.promise;
     },
   });
-  const finish = () =>
+  const finish = (extra = []) =>
     active.resolve({
       summedRssKiB: 50,
       helperResult: "complete",
-      processes: [root, dev],
+      processes: [root, dev, ...extra],
       startupEpochCoverage: { complete: true },
       helper: { ...helper, closed: true, pipesClosed: true },
       timing: {
@@ -123,6 +126,30 @@ test("a product completion without a controller census refuses family readiness"
     m.finish();
     await assert.rejects(ready, /no controller census/);
     assert.equal(m.calls.length, 0);
+  } finally {
+    m.finish();
+    await m.safety.stop();
+  }
+});
+
+// review-3 finding 3: the sampler's own non-live rows reach the confirmation.
+test("a readiness sample with a departed row carries it to the confirmation, which refuses", async () => {
+  const m = monitor();
+  try {
+    m.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    const ready = m.safety.verifyFamilyBrowserReady();
+    await vi.advanceTimersByTimeAsync(1000);
+    m.finish([
+      { pid: 503, ppid: 11, startTicks: "4", bootId: "boot", disposition: "proved-departure" },
+    ]);
+    await assert.rejects(ready, /product completion unconfirmed/);
+    assert.equal(m.calls.length, 1);
+    assert.deepEqual(m.calls[0].sample.departures, [{ pid: 503, disposition: "proved-departure" }]);
+    assert.deepEqual(
+      m.calls[0].sample.live.map((p) => p.pid),
+      [10, 11],
+    );
   } finally {
     m.finish();
     await m.safety.stop();
