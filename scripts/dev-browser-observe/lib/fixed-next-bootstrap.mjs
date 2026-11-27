@@ -12,7 +12,8 @@ import {
   realpathSync,
 } from "node:fs";
 import { join } from "node:path";
-import { identifyPeerRoles, peerArgv } from "./fixed-peer-roles.mjs";
+import { linuxBirth, parseLinuxStat } from "./linux-birth.mjs";
+import { identifyPeerRoles, peerArgv, readPeerExecutable } from "./fixed-peer-roles.mjs";
 
 export const NEXT_BOOTSTRAP_PROTOCOL = "linux-fixed-peer.v2";
 const SCRIPT_SHA256 = "463a33ccdf45500486481c697ca9b7445fae5998410b82d3d5485c0b85b770eb";
@@ -175,35 +176,7 @@ export function verifyNextBootstrapPair(contract, observations) {
       "ambiguous peer sweep",
     );
     const { view, parentView } = row;
-    const parentBirth = birth(parent);
-    assert.equal(parent.role, "next-server");
-    assert.deepEqual(verifyView(parentView, contract), parentBirth, "serving birth changed");
-    assert(
-      typeof parentView.argvHex === "string" && /^(?:[0-9a-f]{2})+$/.test(parentView.argvHex),
-      "invalid serving argv bytes",
-    );
-    const argv = peerArgv(Buffer.from(parentView.argvHex, "hex").toString("utf8"), true);
-    assert(
-      (argv.length === 1 && argv[0] === "next-server (v16.4.6)") ||
-        (argv.length === 2 &&
-          argv[0] === contract.image.path &&
-          argv[1] === join(contract.app, "node_modules/next/dist/server/lib/start-server.js")),
-      "unexpected serving argv",
-    );
-    assert(BigInt(parentView.endNs) <= BigInt(view.startNs), "parent observed after child");
-    const child = verifyView(view, contract);
-    assert.equal(child.ppid, parent.pid);
-    assert.equal(child.pgid, parent.pgid);
-    assert.equal(child.bootId, parent.bootId);
-    assert(
-      !contract.ancestors.some((a) => a.pid === child.pid),
-      "ancestor cannot be the bootstrap",
-    );
-    assert.equal(
-      view.argvHex,
-      Buffer.from(contract.image.path + "\0" + contract.script.path + "\0").toString("hex"),
-      "unexpected bootstrap argv",
-    );
+    const child = verifyRoleView(contract, parent, parentView, view);
     if (previous) {
       assert.equal(row.index, previous.index + 1, "nonconsecutive sweeps");
       assert(BigInt(parentView.startNs) > BigInt(previous.view.endNs), "overlapping observations");
@@ -212,4 +185,133 @@ export function verifyNextBootstrapPair(contract, observations) {
     previous = row;
   }
   return { role: "next-jest-bootstrap", birth: birth(previous.view.birth) };
+}
+
+function verifyRoleView(contract, parent, parentView, view) {
+  const parentBirth = birth(parent);
+  assert.equal(parent.role, "next-server");
+  assert.deepEqual(verifyView(parentView, contract), parentBirth, "serving birth changed");
+  assert(
+    typeof parentView.argvHex === "string" && /^(?:[0-9a-f]{2})+$/.test(parentView.argvHex),
+    "invalid serving argv bytes",
+  );
+  const argv = peerArgv(Buffer.from(parentView.argvHex, "hex").toString("utf8"), true);
+  assert(
+    (argv.length === 1 && argv[0] === "next-server (v16.4.6)") ||
+      (argv.length === 2 &&
+        argv[0] === contract.image.path &&
+        argv[1] === join(contract.app, "node_modules/next/dist/server/lib/start-server.js")),
+    "unexpected serving argv",
+  );
+  assert(BigInt(parentView.endNs) <= BigInt(view.startNs), "parent observed after child");
+  const child = verifyView(view, contract);
+  assert.equal(child.ppid, parent.pid);
+  assert.equal(child.pgid, parent.pgid);
+  assert.equal(child.bootId, parent.bootId);
+  assert(!contract.ancestors.some((a) => a.pid === child.pid), "ancestor cannot be the bootstrap");
+  assert.equal(
+    view.argvHex,
+    Buffer.from(contract.image.path + "\0" + contract.script.path + "\0").toString("hex"),
+    "unexpected bootstrap argv",
+  );
+  return child;
+}
+
+function procBytes(path, cap) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const buf = Buffer.alloc(cap + 1);
+    let length = 0;
+    for (let i = 0; i < 40; i++) {
+      const n = readSync(fd, buf, length, buf.length - length, null);
+      if (!n) return buf.subarray(0, length);
+      length += n;
+      assert(length <= cap, "Next current identity input cap");
+    }
+    throw Error("Next current identity read cap");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function currentView(contract, expected) {
+  const startNs = String(process.hrtime.bigint()),
+    pid = expected.pid;
+  const dir = openSync("/proc/" + pid, constants.O_RDONLY | constants.O_DIRECTORY);
+  try {
+    const base = "/proc/self/fd/" + dir + "/";
+    const before = linuxBirth(pid);
+    assert.deepEqual(live(before), birth(expected), "changed live peer birth");
+    // The open directory cannot be redirected to a later process with the same PID.
+    const pinned = procBytes(base + "stat", 4096).toString();
+    assert.deepEqual(
+      live({ ...parseLinuxStat(pinned, pid), bootId: before.bootId }),
+      birth(expected),
+    );
+    const cwd = readlinkSync(base + "cwd"),
+      exe = readPeerExecutable(base + "exe");
+    const image = {
+      path: exe.imagePath,
+      device: String(exe.info.dev),
+      inode: String(exe.info.ino),
+    };
+    assert.deepEqual(image, contract.image);
+    const argvHex = procBytes(base + "cmdline", 16384).toString("hex");
+    const env = procBytes(base + "environ", 131072)
+      .toString("latin1")
+      .split("\0");
+    const onlyFlag = (name) => env.filter((value) => value.startsWith(name + "="));
+    assert.deepEqual(onlyFlag("JEST_WORKER_ID"), []);
+    assert.deepEqual(onlyFlag("NEXT_PRIVATE_WORKER"), ["NEXT_PRIVATE_WORKER=1"]);
+    assert.deepEqual(onlyFlag("__NEXT_DEV_SERVER"), ["__NEXT_DEV_SERVER=1"]);
+    const after = linuxBirth(pid);
+    assert.deepEqual(live(after), birth(expected), "peer changed during live check");
+    const finalImage = readPeerExecutable(base + "exe");
+    assert.equal(finalImage.imagePath, image.path);
+    assert.equal(finalImage.info.ino, exe.info.ino);
+    assert.equal(finalImage.info.dev, exe.info.dev);
+    return {
+      birth: after,
+      cwd,
+      image,
+      elf: exe.elfHeader,
+      argvHex,
+      private: true,
+      dev: true,
+      jestId: null,
+      startNs,
+      endNs: String(process.hrtime.bigint()),
+    };
+  } finally {
+    closeSync(dir);
+  }
+}
+
+// Revalidation of an already qualified worker. This is never initial discovery.
+export function verifyNextBootstrapCurrent(contract, processBirth) {
+  assert.equal(contract.protocol, NEXT_BOOTSTRAP_PROTOCOL);
+  const parent = contract.ancestors[2],
+    child = birth(processBirth);
+  assert.equal(child.ppid, parent.pid);
+  assert.equal(child.pgid, parent.pgid);
+  assert.equal(child.bootId, parent.bootId);
+  const parentView = currentView(contract, parent);
+  const view = currentView(contract, child);
+  verifyRoleView(contract, parent, parentView, view);
+  assert.deepEqual(
+    pinBootstrap(contract.app, contract.script.sha256),
+    contract.script,
+    "bootstrap backing file changed",
+  );
+  const finalBirth = linuxBirth(child.pid);
+  assert.deepEqual(live(finalBirth), child);
+  assert.deepEqual(live(linuxBirth(parent.pid)), birth(parent));
+  return {
+    pid: child.pid,
+    role: "next-jest-bootstrap",
+    ok: true,
+    method: "linux-proc-current-next-bootstrap",
+    actual: view.image,
+    evidence: { ...child, finalBirth, parentView, view, script: contract.script },
+  };
 }
