@@ -466,7 +466,11 @@ class Scout:
         )
         if self.previous is not None:
             require(self.previous["index"] + 1 == self.sweeps, "nonconsecutive worker views")
-            require(now() - start <= 50_000_000, "qualification sweep exceeded 50ms")
+            finished = now()
+            require(
+                finished - start <= 50_000_000 and finished <= self.end,
+                "qualification exceeded sweep/window deadline",
+            )
             self.token = secrets.token_hex(16)
             self.message(
                 "qualified",

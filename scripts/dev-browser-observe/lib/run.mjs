@@ -1022,10 +1022,27 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         if (!first) return prepare(route, ...args);
         first = false;
         await nextCustody.openWindow("first-route", peerBudget(30000));
+        let firstFailure;
         try {
           return await prepare(route, ...args);
+        } catch (error) {
+          firstFailure = error;
+          throw error;
         } finally {
-          await nextCustody.closeWindow("first-route");
+          try {
+            await nextCustody.closeWindow("first-route");
+          } catch (error) {
+            if (!firstFailure) throw error;
+            try {
+              rec.append({
+                type: "next-custody-secondary-close-failure",
+                error: String(error),
+                firstFailure: String(firstFailure),
+              });
+            } catch (e) {
+              stderr(`Next custody closure evidence write failed: ${e.message}`);
+            }
+          }
         }
       };
     }

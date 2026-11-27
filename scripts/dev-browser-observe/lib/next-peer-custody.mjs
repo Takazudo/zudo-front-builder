@@ -51,6 +51,8 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
     armed = false;
   let watchdog;
   let terminalVerified = false;
+  let windowEnd = null;
+  const secondaryErrors = [];
   const resetWatchdog = () => {
     clearTimeout(watchdog);
     watchdog = setTimeout(() => refuse(Error("identity scout stalled")), 200);
@@ -64,16 +66,28 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
     command?.reject(e);
     try {
       notify("failure", { error: e.message });
-    } finally {
+    } catch (error) {
+      secondaryErrors.push(String(error));
+    }
+    try {
       abort(e);
-      if (!exit) child.kill("SIGKILL");
+    } catch (error) {
+      secondaryErrors.push(String(error));
+    } finally {
+      if (!exit) {
+        try {
+          child.kill("SIGKILL");
+        } catch (error) {
+          secondaryErrors.push(String(error));
+        }
+      }
     }
   };
   const write = (data) => child.stdin.write(JSON.stringify(data) + "\n");
   const req = (op, name, deadline) => {
     assert(!firstFailure && !command && !stopPromise, "scout unavailable");
     const wait = Promise.withResolvers();
-    command = { ...wait, op, name };
+    command = { ...wait, op, name, deadline };
     const timer = setTimeout(
       () => refuse(Error("scout window ACK timeout")),
       Math.max(1, Math.min(750, Number((BigInt(deadline) - process.hrtime.bigint()) / 1000000n))),
@@ -111,6 +125,7 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
         "scout window mismatch",
       );
       window = m.type === "window-open" ? m.name : null;
+      windowEnd = window ? BigInt(command.deadline) : null;
       if (window) resetWatchdog();
       else clearTimeout(watchdog);
       command.resolve();
@@ -133,6 +148,10 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
         "unbound or duplicate qualification",
       );
       assert.deepEqual(m.descriptors, seen.descriptors);
+      assert(
+        BigInt(m.ns) <= windowEnd && BigInt(m.views.at(-1).view.endNs) <= windowEnd,
+        "qualification after window deadline",
+      );
       const role = verifyNextBootstrapPair(contract, m.views);
       assert(same(role.birth, m.birth));
       accepted = m;
@@ -206,7 +225,7 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
   return {
     ready: ready.promise,
     channel: child.stdio[3],
-    identity: { session, birth },
+    identity: { session, birth, secondaryErrors },
     openWindow(name, remainingMs) {
       const dt = Math.min(30000, remainingMs);
       assert(Number.isFinite(dt) && dt > 0);
@@ -216,13 +235,20 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
       return req("close", name, String(process.hrtime.bigint() + 750000000n));
     },
     snapshot(b) {
-      if (b.ppid !== contract.ancestors[2].pid) return;
-      if (seen) {
-        assert(same(seen.birth, b), "snapshot contradicts bound candidate");
-        return;
+      // A cleanup census must still be able to signal its verified group if
+      // the observer rejects an unfamiliar birth or the journal is unavailable.
+      if (firstFailure || stopPromise) return;
+      try {
+        if (b.ppid !== contract.ancestors[2].pid) return;
+        if (seen) {
+          assert(same(seen.birth, b), "snapshot contradicts bound candidate");
+          return;
+        }
+        assert(window, "unbound worker outside scout window");
+        write({ session, op: "snapshot", birth: b });
+      } catch (error) {
+        refuse(error);
       }
-      assert(window, "unbound worker outside scout window");
-      write({ session, op: "snapshot", birth: b });
     },
     begin(handle) {
       if (firstFailure) throw firstFailure;
