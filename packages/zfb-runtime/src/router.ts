@@ -46,6 +46,8 @@ import { renderToString } from "@takazudo/zfb/zudo-react/server";
 import type { ContentSnapshot } from "./snapshot.js";
 import { isStablePaths } from "./stable-paths.js";
 import { isPathsEntry, type PathsEntry } from "./paths-entry.js";
+import { createHtmlAssetFinalizer, type PageAssetManifest } from "./page-assets.js";
+import { htmlPageResponse, isHtmlPage, mediaType } from "./html-page.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -71,7 +73,9 @@ export interface PageHeading {
  *   to the owned server renderer's `renderToString`. A dynamic route with no
  *   `paths()` export is called with `{ params: urlParams }` instead of
  *   `{}` — see `createPageRouter`'s JSDoc for the full componentInput
- *   derivation table.
+ *   derivation table. It may also return a raw `Response` (passed through
+ *   untouched), a string (sent verbatim), or an `htmlPage(...)` result from
+ *   `@takazudo/zfb-runtime/server` (HTML with its own status and headers).
  * - `prerender`: literal `false` opts a route OUT of build-time SSG (T5
  *   contract). The page router still serves it under the embedded V8 host
  *   so dev mode behaves identically; SSG callers filter the route list before
@@ -159,6 +163,16 @@ export interface CreatePageRouterOptions<Paths extends readonly unknown[] = unkn
    * default strict path matching.
    */
   readonly devTrailingSlashDispatch?: boolean;
+  /**
+   * Finalized production asset record (#4887). `zfb build` passes it to the
+   * SSR-only runtime bundle; dev and SSG bundles never do. It is copied and
+   * frozen once here. When it is non-empty, managed HTML (a JSX result whose
+   * content type is `text/html`, or an `htmlPage(...)` result) gets its stable
+   * asset URLs replaced with final URLs and the CSS and islands tags added
+   * before `</head>` when missing. Strings, non-HTML pages and raw `Response`
+   * results are never touched. Omitted or empty leaves responses unchanged.
+   */
+  readonly assets?: PageAssetManifest;
 }
 
 /**
@@ -198,8 +212,7 @@ const DEFAULT_CONTENT_TYPE = "text/html; charset=utf-8";
  * is the right call rather than introducing a new cross-language boundary.
  */
 function ensureHtml5Doctype(body: string, contentType: string): string {
-  const mediaType = contentType.split(";")[0]?.trim().toLowerCase();
-  if (mediaType !== "text/html") return body;
+  if (mediaType(contentType) !== "text/html") return body;
   // Strip optional BOM and leading whitespace to inspect the root element.
   const stripped = body.replace(/^﻿/, "").trimStart();
   if (!stripped.toLowerCase().startsWith("<!doctype")) {
@@ -274,6 +287,10 @@ async function getOrEvalPaths(
  */
 export function createPageRouter(opts: CreatePageRouterOptions<readonly unknown[]>): PageRouter {
   setContentSnapshot(opts.contentSnapshot);
+  // Snapshotted once per router: no per-request or global asset state.
+  const finalizeAssets = createHtmlAssetFinalizer(opts.assets);
+  const finalizeManagedHtml = (html: string): string =>
+    finalizeAssets === undefined ? html : finalizeAssets(html);
 
   const app = opts.devTrailingSlashDispatch
     ? new Hono({ getPath: (request) => devTrailingSlashLookupPath(honoDefaultGetPath(request)) })
@@ -556,9 +573,12 @@ export function createPageRouter(opts: CreatePageRouterOptions<readonly unknown[
       // or by renderToString surfaces as a descriptive 500 rather than
       // escaping to Hono's generic error handler (which discards the real
       // message). Mirrors the getStaticProps catch above.
+      // Debug replay for `locateRenderFailure`: it must reach the same render
+      // call as the request did, including an `htmlPage(...)` body.
       const renderPage = async (): Promise<Response | string> => {
         const result = await mod.default(componentInput);
         if (result instanceof Response || typeof result === "string") return result;
+        if (isHtmlPage(result)) return renderHtmlBody(result.body);
         return renderToString(result as never);
       };
       try {
@@ -573,15 +593,29 @@ export function createPageRouter(opts: CreatePageRouterOptions<readonly unknown[
         if (result instanceof Response) {
           return result;
         }
+        // `htmlPage(...)`: managed HTML with the page's own status and
+        // headers. Hono's HEAD handling strips the body afterwards.
+        if (isHtmlPage(result)) {
+          const html = ensureHtml5Doctype(renderHtmlBody(result.body), DEFAULT_CONTENT_TYPE);
+          return htmlPageResponse(result, finalizeManagedHtml(html));
+        }
         // Non-HTML routes (e.g. `sitemap.xml.tsx`, `feed.xml.tsx`) commonly
         // return their body as a pre-serialised `string` instead of a
         // VNode. Routing those through `renderToString` would
         // HTML-escape the angle brackets and ampersands, producing
         // garbage XML. Pass strings through verbatim; only wrap actual
         // VNodes.
-        const html = typeof result === "string" ? result : renderToString(result as never);
         const contentType = mod.contentType ?? DEFAULT_CONTENT_TYPE;
-        return c.body(ensureHtml5Doctype(html, contentType), 200, { "Content-Type": contentType });
+        if (typeof result === "string") {
+          return c.body(ensureHtml5Doctype(result, contentType), 200, {
+            "Content-Type": contentType,
+          });
+        }
+        let html = ensureHtml5Doctype(renderToString(result as never), contentType);
+        // Only JSX rendered as HTML is managed; plain strings and non-HTML
+        // pages keep their exact bytes.
+        if (mediaType(contentType) === "text/html") html = finalizeManagedHtml(html);
+        return c.body(html, 200, { "Content-Type": contentType });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         // __zfb.ssrDebug is set only by the embedded V8 build/dev host
@@ -609,6 +643,11 @@ export function createPageRouter(opts: CreatePageRouterOptions<readonly unknown[
   // synchronous throw inside `app.fetch` is converted to a rejected
   // promise instead of escaping the caller's `await`.
   return async (request) => await app.fetch(request);
+}
+
+/** Render an `htmlPage(...)` body: a string as-is, anything else as JSX. */
+function renderHtmlBody(body: unknown): string {
+  return typeof body === "string" ? body : renderToString(body as never);
 }
 
 // zfb-build's renderer reads this line back out of the 500 body (renderer.rs).

@@ -47,6 +47,11 @@ describe("root barrel (src/index.ts) — client-safe (issue #1298)", () => {
     expect(indexSource).not.toMatch(runtimeExportOfFactory);
   });
 
+  it("keeps the server-only htmlPage and asset finalizer off the root barrel (#4887)", () => {
+    expect(indexSource).not.toMatch(/\bhtmlPage\b/);
+    expect(indexSource).not.toMatch(/["']\.\/(?:html-page|page-assets)(?:\.js)?["']/);
+  });
+
   it("still type-re-exports the page-router types from ./router.js", () => {
     // The types carry no runtime, so keeping them on the root barrel is the
     // whole point — consumers still `import type { PageRouter } from
