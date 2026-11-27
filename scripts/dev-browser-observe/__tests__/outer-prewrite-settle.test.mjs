@@ -1,17 +1,21 @@
 import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
 import * as peerRoles from "../lib/fixed-peer-roles.mjs";
-import { startFixedRssSafety } from "../lib/fixed-rss-safety.mjs";
+import { PREWRITE_FRESH_MARGIN_NS, startFixedRssSafety } from "../lib/fixed-rss-safety.mjs";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readPeerTarget, snapshotPaths } from "../lib/fixture.mjs";
 import {
+  NEXT_OUTER_OPERATIONS,
   nextOuterBatchHooks,
+  nextOuterOutcomeStatus,
   outerPrewriteDecision,
   outerTerminalGate,
 } from "../lib/next-outer-terminal.mjs";
-import { runBatch } from "../lib/state-machine.mjs";
+import { EXIT } from "../lib/run.mjs";
+import { batchExitOk, runBatch } from "../lib/state-machine.mjs";
+import { sha256 } from "../lib/util.mjs";
 import { deps, fakeFs, fakePage } from "./fakes.mjs";
 
 const MS = 1_000_000n;
@@ -227,11 +231,15 @@ test("R3 replay: the old composition refuses; settle-then-decide decides on the 
   }
 });
 
+const MARGIN_MS = Number(PREWRITE_FRESH_MARGIN_NS / MS);
+// Last phase still inside coverage: the cutoff (dispatch + 995 ms) less the margin.
+const FRESH_UNTIL_MS = 995 - MARGIN_MS;
+
 // Decision phase relative to an ordinary dispatch, with the R3 helper duration.
-// Phases inside the helper wait for it; after the cadence cutoff (dispatch +995 ms)
-// and before the next dispatch there is no sample in flight, so the existing
-// cadence-due refusal still applies there.
-test.each([0, 1, 30, 66, 96, 97, 150, 500, 900, 994, 995, 999])(
+// Phases inside the helper wait for it. From the fresh margin before the cadence
+// cutoff (dispatch + 995 ms) to the next dispatch nothing is in flight, so the
+// decision joins the ordinary timer's next dispatch and settles it.
+test.each([0, 1, 30, 66, 96, 97, 150, 500, FRESH_UNTIL_MS - 1, FRESH_UNTIL_MS, 900, 994, 995, 999])(
   "decision at dispatch + %i ms",
   async (phaseMs) => {
     const h = harness();
@@ -246,9 +254,7 @@ test.each([0, 1, 30, 66, 96, 97, 150, 500, 900, 994, 995, 999])(
       const { value, error } = await settled(decide(h, gate), 1);
       assert.equal(error, undefined, String(error));
       const s = value.preDecisionSettle;
-      // After the cadence cutoff (dispatch + 995 ms) nothing is in flight; the
-      // decision joins the ordinary timer's next dispatch and settles it.
-      const joined = phaseMs >= 995;
+      const joined = phaseMs >= FRESH_UNTIL_MS;
       assert.equal(s.pendingAtDecision, phaseMs < R3_HELPER_MS);
       assert.equal(
         s.outcome,
@@ -256,6 +262,7 @@ test.each([0, 1, 30, 66, 96, 97, 150, 500, 900, 994, 995, 999])(
       );
       if (!joined && phaseMs >= R3_HELPER_MS) assert.equal(s.waitedNs, "0");
       if (joined) {
+        assert.equal(s.withinFreshMargin, phaseMs < 995);
         assert.equal(BigInt(s.waitedNs), BigInt(1000 - phaseMs + R3_HELPER_MS) * MS);
         assert.equal(s.settledEpoch, s.pendingEpoch);
         assert.equal(value.outerCadence.epoch, s.pendingEpoch);
@@ -580,6 +587,314 @@ test("stopping the monitor wakes a decision waiting for the next dispatch", asyn
     await waiting;
     assert.equal(s.outcome, "dispatch-unavailable");
     assert(BigInt(s.waitedNs) <= 2n * MS, s.waitedNs);
+  } finally {
+    await h.done();
+  }
+});
+
+// F6 (#4870 body cell): the normal "body" operation through the real hooks, the
+// real gate and runBatch. One in-place write happens at the outer T0, the edit
+// is classified, restoration and live checks run, and the terminal status is
+// "body" for success and "body-classified" for a declared stale/timeout.
+async function bodyCell(outcome, { operation = "body", phaseMs = 300, cost = null } = {}) {
+  const h = harness();
+  try {
+    await ready(h);
+    const base = h.sample.mock.calls.length;
+    for (let n = base + 1; n <= base + 3; n++) h.plans.set(n, { ms: R3_HELPER_MS });
+    // The receipt arrives before the arm; the decision then falls at `phaseMs`
+    // after the ordinary dispatch.
+    const gate = receivedGate();
+    await vi.advanceTimersByTimeAsync(phaseMs);
+    // Synchronous census work blocks the loop: the clock advances by its cost
+    // while no timer can run, exactly as on the real host.
+    let skew = 0n;
+    const charge = (ms) => {
+      if (cost) skew += BigInt(Math.ceil(ms * 1e6));
+    };
+    if (cost) {
+      const fake = process.hrtime.bigint;
+      vi.spyOn(process.hrtime, "bigint").mockImplementation(() => fake.call(process.hrtime) + skew);
+    }
+    const fs = fakeFs();
+    let proofs = 0;
+    const write = fs.performWrite;
+    fs.performWrite = (w, now) => {
+      w.evidence = { inodeBefore: 13, inodeAfter: 13 };
+      return write(w, now);
+    };
+    fs.hashOf = (path) => sha256(fs.files[path]);
+    const restore = fs.restore;
+    // The real fixture reports `restored` as the paths of its actions (fixture.mjs).
+    fs.restore = (snapshot) => {
+      const actions = fs.writes.length
+        ? [{ path: "a.md", method: "in-place", evidence: { inodeBefore: 13, inodeAfter: 13 } }]
+        : [];
+      return { ...restore(snapshot), actions, restored: actions.map((a) => a.path) };
+    };
+    const page = fakePage({
+      onWait: (token, _late, p) => {
+        vi.advanceTimersByTime(5);
+        const now = process.hrtime.bigint();
+        p.evidence.docInits = outcome === "stale" ? [{ ns: String(now) }] : [];
+        p.evidence.newDocuments = p.evidence.docInits.length;
+        p.evidence.wsFrames = [];
+        p.evidence.navigations = [];
+        if (outcome === "success")
+          return Promise.resolve({ kind: "notify", t1: now, payload: { token, docUUID: "doc-1" } });
+        return Promise.resolve({ kind: "timeout" });
+      },
+      liveCheck: () => ({ ok: true, docUUID: "fresh-detail" }),
+    });
+    page.peerSocketTracking = new Map([[1, { firstFrameNs: "10" }]]);
+    const arm = page.arm;
+    page.arm = async (...args) => ({ ...(await arm(...args)), actual: "v0" });
+    page.settle = async () => ({
+      settled: true,
+      nativeUpdateObserved: true,
+      bodyRevision: { matched: true, docUUID: "doc-1" },
+    });
+    const d = {
+      ...deps({ page, fs, clock: { now: () => process.hrtime.bigint() } }),
+      workDeadlineNs: process.hrtime.bigint() + 7_000_000n * MS,
+      verifyBodyRevision: true,
+      fixedPeer: true,
+      stageBudget: (ms) => ms,
+      beforePeerMutation: () => charge(cost?.late ?? 0),
+    };
+    // The original Next attempt budget, so only the cadence cutoff can expire.
+    d.timeouts = { ...d.timeouts, attemptMs: 60000 };
+    const hooks = nextOuterBatchHooks({
+      safety: h.monitor,
+      gate: () => gate,
+      readProductGraph: () => (charge(cost?.product ?? 0), h.ancestors),
+      verifyWiring: () => (charge(cost?.wiring ?? 0), { census: "exact" }),
+      operation,
+      workDeadlineNs: d.workDeadlineNs,
+      signal: new AbortController().signal,
+      append: (r) => (charge(cost?.append ?? 0), d.recorder.append(r)),
+    });
+    const outerPeerWriteTime = hooks.outerPeerWriteTime;
+    hooks.outerPeerWriteTime = (now) => (proofs++, outerPeerWriteTime(now));
+    Object.assign(d, hooks);
+    const op = { id: "body-05", op: "edit-body", article: "a", expect: "classify" };
+    const { value, error } = await settled(
+      runBatch({ deps: d, scenarios: [{ id: "fn-edit-body", ops: [op] }] }),
+      1,
+    );
+    assert.equal(error, undefined, String(error));
+    const { accounting, stopped } = value;
+    const exitCode =
+      batchExitOk(accounting, stopped) && accounting.success === 1 ? EXIT.ok : EXIT.stopped;
+    const decision = d.recorder.records.find((r) => r.type === "next-outer-decision");
+    const terminal = (overrides = {}) =>
+      nextOuterOutcomeStatus({
+        operation,
+        records: d.recorder.records,
+        closed: true,
+        proofComplete: true,
+        exitCode,
+        exit: EXIT,
+        accounting,
+        outerDecision: decision?.outerDecision,
+        ...overrides,
+      });
+    return { d, fs, accounting, exitCode, proofs, decision, terminal };
+  } finally {
+    await h.done();
+  }
+}
+
+test.each([
+  ["success", "body", null, EXIT.ok],
+  ["stale", "body-classified", "stale", EXIT.stopped],
+  ["timeout", "body-classified", "timeout", EXIT.stopped],
+])("the body operation writes once at the outer T0: %s -> %s", async (outcome, status, cls, rc) => {
+  const { d, fs, accounting, exitCode, proofs, decision, terminal } = await bodyCell(outcome);
+  assert.equal(proofs, 1);
+  assert.deepEqual(fs.writes, ["a.md"]);
+  assert.equal(fs.files["a.md"], "v0", "restored");
+  assert(!d.recorder.records.some((r) => r.type === "next-outer-no-write"));
+  const attempt = d.recorder.records.find((r) => r.type === "attempt");
+  assert.equal(attempt.outcome, outcome);
+  // T0 is the outer proof's stamp, drawn after the pre-truncate census.
+  assert.equal(attempt.prewriteDecision.t0Ns, String(attempt.t0Ns ?? fs.lastT0));
+  assert.equal(String(fs.lastT0), attempt.prewriteDecision.t0Ns);
+  assert(BigInt(attempt.prewriteDecision.t0Ns) < BigInt(decision.outerCadence.cadenceDeadlineNs));
+  assert.equal(decision.preDecisionSettle.outcome, "not-pending");
+  const disk = d.recorder.records.find((r) => r.type === "fixed-peer-edit-disk");
+  assert(disk.ok);
+  const cleanup = d.recorder.records.find((r) => r.type === "cleanup");
+  assert(cleanup.ok && cleanup.liveSkipped === null && cleanup.live.every((l) => l.ok));
+  assert.equal(accounting.attempted, 1);
+  assert.equal(exitCode, rc);
+  assert.deepEqual(terminal(), cls ? { status, classification: cls } : { status });
+  // Each gate of the terminal status is load-bearing.
+  for (const overrides of [
+    { closed: false },
+    { proofComplete: false },
+    { outerDecision: undefined },
+    { operation: "decision-only" },
+    { exitCode: rc === EXIT.ok ? EXIT.stopped : EXIT.ok },
+    { exitCode: EXIT.controllerError },
+    { accounting: { ...accounting, restorationFailures: 1 } },
+    { accounting: { ...accounting, error: 1 } },
+    { records: d.recorder.records.filter((r) => r.type !== "cleanup") },
+    {
+      records: d.recorder.records.map((r) =>
+        r.type === "cleanup" ? { ...r, live: [{ ok: false }] } : r,
+      ),
+    },
+    {
+      records: d.recorder.records.map((r) =>
+        r.type === "cleanup" ? { ...r, liveSkipped: "fail-stop-cleanup" } : r,
+      ),
+    },
+    {
+      records: d.recorder.records.map((r) =>
+        r.type === "cleanup"
+          ? { ...r, actions: [{ ...r.actions[0], method: "atomic-rename" }] }
+          : r,
+      ),
+    },
+    { records: [...d.recorder.records, { type: "next-outer-no-write" }] },
+  ])
+    assert.deepEqual(
+      terminal(overrides),
+      { status: "incomplete" },
+      JSON.stringify(Object.keys(overrides)),
+    );
+});
+
+test("a stale/timeout without the declared classify expectation is not a classified body", async () => {
+  const { d, terminal } = await bodyCell("timeout");
+  const records = d.recorder.records.map((r) =>
+    r.type === "attempt" ? { ...r, expect: "success" } : r,
+  );
+  assert.deepEqual(terminal({ records }), { status: "incomplete" });
+});
+
+test("only the two declared outer operations build hooks", () => {
+  assert.deepEqual([...NEXT_OUTER_OPERATIONS], ["decision-only", "body"]);
+  for (const operation of ["write", "", undefined])
+    assert.throws(
+      () =>
+        nextOuterBatchHooks({
+          safety: {},
+          gate: () => null,
+          readProductGraph: () => [],
+          verifyWiring: () => ({}),
+          operation,
+          workDeadlineNs: 0n,
+          signal: new AbortController().signal,
+          append() {},
+        }),
+      /undeclared Next outer operation/,
+    );
+});
+
+// F1: the real decision -> T0 path charges its measured census cost. Measured
+// workload-free on this WSL host (campaign 4870-next-body-r1/bench, loaded.json):
+// the components of the slowest loaded iteration (232.0 ms total), rounded up.
+// Pre-truncate charges product + wiring again (36.5 ms vs 28.0 measured), so the
+// charged path is 242 ms. With the fresh margin, every phase across the cutoff
+// writes exactly once with T0 inside the decided epoch's coverage.
+const LOADED_MAX_MS = { product: 26, wiring: 11, append: 12, late: 156 };
+const sweep = [];
+for (let p = FRESH_UNTIL_MS - 12; p <= 999; p += p < 1000 - 20 ? 3 : 1) sweep.push(p);
+test.each(sweep)(
+  "a decision at dispatch + %i ms with the loaded census cost still writes",
+  async (phaseMs) => {
+    const { fs, proofs, decision, d } = await bodyCell("success", { phaseMs, cost: LOADED_MAX_MS });
+    const attempt = d.recorder.records.find((r) => r.type === "attempt");
+    assert.equal(attempt.outcome, "success", attempt.error);
+    assert.equal(proofs, 1);
+    assert.deepEqual(fs.writes, ["a.md"]);
+    assert.equal(
+      decision.preDecisionSettle.outcome,
+      phaseMs >= FRESH_UNTIL_MS ? "joined-next-dispatch" : "not-pending",
+    );
+    assert(BigInt(attempt.prewriteDecision.t0Ns) < BigInt(decision.outerCadence.cadenceDeadlineNs));
+  },
+);
+
+// Control: the sweep is not vacuous. A path costing more than the margin, entered
+// just inside it, crosses the cutoff before T0 and refuses without writing.
+test("a census path longer than the margin refuses before the write (fail closed)", async () => {
+  const over = { product: MARGIN_MS, wiring: 1, append: 0, late: 1 };
+  const { fs, proofs, d } = await bodyCell("success", { phaseMs: FRESH_UNTIL_MS - 1, cost: over });
+  const attempt = d.recorder.records.find((r) => r.type === "attempt");
+  assert.equal(attempt.outcome, "identity-rejected");
+  assert.match(attempt.error, /outside current RSS coverage: cadence-due|outer T0 expired/);
+  assert.equal(proofs, 1);
+  assert.deepEqual(fs.writes, []);
+});
+
+// F2: a millisecond timer can fire before the monotonic bound (#4878 A/A r3 woke
+// 0.19 ms short). The dispatch wait must re-check the clock and keep the whole
+// 400 ms allowance instead of reporting dispatch-late early.
+test("the next-dispatch allowance is held on the monotonic clock when its timer fires early", async () => {
+  const h = harness();
+  try {
+    await ready(h);
+    const base = h.sample.mock.calls.length;
+    for (let n = base + 1; n <= base + 3; n++) h.plans.set(n, { ms: R3_HELPER_MS });
+    const gate = receivedGate();
+    await vi.advanceTimersByTimeAsync(1000 + 997);
+    h.lateTicks.set(h.ticks + 1, 600);
+    let lag = 0n;
+    const fake = process.hrtime.bigint;
+    vi.spyOn(process.hrtime, "bigint").mockImplementation(() => fake.call(process.hrtime) - lag);
+    const timeout = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation((cb, ms, ...rest) =>
+      timeout(
+        ms >= 380 && ms <= 420
+          ? () => {
+              // The bound timer fires while the monotonic clock is 1 ms short.
+              lag = MS;
+              cb();
+            }
+          : cb,
+        ms,
+        ...rest,
+      ),
+    );
+    const { error } = await settled(decide(h, gate), 1, 2000);
+    const s = error?.outerRefusal?.preDecisionSettle;
+    assert.equal(s?.outcome, "dispatch-late", String(error));
+    assert.equal(lag, MS, "the early timer fired");
+    assert(
+      BigInt(s.waitedNs) >= BigInt(s.dispatchBoundNs) - BigInt(s.enteredNs),
+      `waited ${s.waitedNs} ns, short of the ${BigInt(s.dispatchBoundNs) - BigInt(s.enteredNs)} ns allowance`,
+    );
+  } finally {
+    vi.restoreAllMocks();
+    await h.done();
+  }
+});
+
+// Defensive half of the margin: verifyOuterGraph itself refuses a decision that
+// enters with less than the margin left, even if a caller skipped the settle
+// (a settled sample always leaves more: core <= 750 ms of the 995 ms coverage).
+// Pre-truncate keeps the plain cutoff, so a decided epoch can still reach T0.
+test.each([
+  ["prewrite-decision", FRESH_UNTIL_MS - 1, null],
+  ["prewrite-decision", FRESH_UNTIL_MS, "cadence-margin"],
+  ["prewrite-decision", 994, "cadence-margin"],
+  ["pre-truncate", 994, null],
+  ["pre-truncate", 995, "cadence-due"],
+])("verifyOuterGraph at %s, dispatch + %i ms: %s", async (stage, phaseMs, refusal) => {
+  const h = harness();
+  try {
+    await ready(h);
+    await vi.advanceTimersByTimeAsync(phaseMs);
+    const run = () => h.monitor.verifyOuterGraph(() => h.ancestors, null, stage);
+    if (!refusal) assert(run().cadenceDeadlineNs);
+    else
+      assert.throws(run, (error) => {
+        assert.equal(error.outerRefusal.coverage, refusal);
+        return true;
+      });
   } finally {
     await h.done();
   }

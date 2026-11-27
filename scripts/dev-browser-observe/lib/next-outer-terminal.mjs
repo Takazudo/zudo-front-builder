@@ -3,6 +3,11 @@
 import assert from "node:assert/strict";
 import { sameLinuxBirth } from "./linux-birth.mjs";
 
+// The two declared outer operations (schema profile-fixed-distribution.v1.json,
+// added in e675992bf): "decision-only" stops at the pre-O_TRUNC callback, "body"
+// is the normal #4849 fn-edit-body write. Any other value is refused.
+export const NEXT_OUTER_OPERATIONS = Object.freeze(["decision-only", "body"]);
+
 const stamp = (s) => {
   assert(typeof s === "string" && /^\d{1,20}$/.test(s), "invalid outer clock");
   return BigInt(s);
@@ -125,6 +130,7 @@ export function nextOuterBatchHooks({
   append,
   onDecision = () => {},
 }) {
+  assert(NEXT_OUTER_OPERATIONS.includes(operation), "undeclared Next outer operation");
   let outerDecision, outerCadence;
   return {
     outerDecisionOnly: operation === "decision-only",
@@ -292,4 +298,93 @@ export function outerTerminalGate({ authority, now = process.hrtime.bigint }) {
       state = "refused";
     },
   };
+}
+
+// Terminal status of one v4 outer cell, read by next-outer-lifecycle.py:
+// - "decision-only" / "prewrite-refused": verified no-write outcomes;
+// - "body": the declared single fn-edit-body succeeded, controller exit ok;
+// - "body-classified": a predeclared `expect: classify` edit ended stale or
+//   timeout (owner rule for fixed historical implementations: a valid
+//   observation outcome, not an update latency), with exact restoration and all
+//   live checks, controller exit `stopped` from the declared classify stop.
+// Anything else stays "incomplete".
+export function nextOuterOutcomeStatus({
+  operation,
+  records,
+  closed,
+  proofComplete,
+  exitCode,
+  exit,
+  accounting,
+  outerDecision,
+}) {
+  const refusal = records.findLast(
+    (r) => r.phase === "before-mutation" && r.writePerformed === false,
+  );
+  const disk = records.findLast((r) => r.type === "fixed-peer-refused-disk-audit");
+  const noWrite = records.findLast((r) => r.type === "next-outer-no-write");
+  if (closed && disk?.unchanged && refusal?.observerDisarmed) {
+    if (
+      operation === "decision-only" &&
+      refusal.outcome === "outer-decision-only" &&
+      noWrite &&
+      proofComplete
+    )
+      return { status: "decision-only" };
+    if (refusal.outcome === "identity-rejected" && !noWrite) return { status: "prewrite-refused" };
+    return { status: "incomplete" };
+  }
+  if (!closed || !proofComplete || !outerDecision || operation !== "body" || noWrite || refusal)
+    return { status: "incomplete" };
+  const attempts = records.filter((r) => r.type === "attempt");
+  const cleanups = records.filter((r) => r.type === "cleanup");
+  const edits = records.filter((r) => r.type === "fixed-peer-edit-disk");
+  const [attempt] = attempts,
+    [cleanup] = cleanups,
+    [edit] = edits;
+  const restored =
+    cleanups.length === 1 &&
+    cleanup.ok === true &&
+    Array.isArray(cleanup.restored) &&
+    cleanup.restored.length === 1 &&
+    cleanup.actions?.length === 1 &&
+    cleanup.actions[0].method === "in-place" &&
+    cleanup.actions[0].path === edit?.path &&
+    cleanup.liveSkipped === null &&
+    Array.isArray(cleanup.mismatches) &&
+    cleanup.mismatches.length === 0 &&
+    cleanup.live.length > 0 &&
+    cleanup.live.every((l) => l.ok === true) &&
+    cleanup.settle?.settled === true;
+  const single =
+    attempts.length === 1 &&
+    edits.length === 1 &&
+    edit.ok === true &&
+    accounting.planned === 1 &&
+    accounting.attempted === 1 &&
+    accounting.error === 0 &&
+    accounting.notAttempted === 0 &&
+    accounting.restorationFailures === 0 &&
+    accounting.supplementalFailures === 0;
+  if (!restored || !single) return { status: "incomplete" };
+  if (
+    exitCode === exit.ok &&
+    attempt.outcome === "success" &&
+    accounting.success === 1 &&
+    accounting.stale + accounting.timeout === 0
+  )
+    return { status: "body" };
+  if (
+    exitCode === exit.stopped &&
+    attempt.expect === "classify" &&
+    ["stale", "timeout"].includes(attempt.outcome) &&
+    accounting.success === 0 &&
+    accounting.stale + accounting.timeout === 1 &&
+    accounting[attempt.outcome] === 1 &&
+    accounting.expectedTimeouts === 1 &&
+    accounting.stoppedByClassifyTimeout === true &&
+    accounting.stopReason === attempt.outcome
+  )
+    return { status: "body-classified", classification: attempt.outcome };
+  return { status: "incomplete" };
 }

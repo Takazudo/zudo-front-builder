@@ -152,4 +152,8 @@ def disposition(rc, captured, sent, terminal):
         return "verified-no-write"
     if sent and terminal=="body" and rc==0:
         return "verified-body"
+    # A predeclared stale/timeout classification with exact restoration: the
+    # controller's declared classify stop exits 1 (EXIT.stopped).
+    if sent and terminal=="body-classified" and rc==1:
+        return "verified-body-classified"
     raise ValueError("missing or conflicting normal controller/outer outcome")

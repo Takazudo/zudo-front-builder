@@ -44,6 +44,33 @@ export function selectRunningBrowser({ before, after, browsersRoot, readLink = r
   return found[0];
 }
 
+// The fixed peer pin names the headless shell it launches and the separate
+// library-default `chrome` it never runs. Admit only when /proc/<pid>/exe of the
+// one launched child is the pinned shell, by path and digest; a missing or
+// unreadable running receipt refuses.
+export function fixedPeerBrowserImageErrors(identity, pin, realpath = realpathSync) {
+  const errors = [];
+  let pinned = null;
+  try {
+    pinned = realpath(pin.executablePath);
+  } catch (error) {
+    errors.push("pinned browser path unresolved: " + (error?.code ?? error));
+  }
+  if (identity?.executableSha256 !== pin.defaultExecutableSha256)
+    errors.push("library-default browser digest mismatch");
+  if (identity?.launchedExecutableSha256 !== pin.executableSha256)
+    errors.push("launched browser digest mismatch");
+  if (pinned && identity?.launchedExecutablePath !== pinned)
+    errors.push("launched browser path mismatch");
+  if (identity?.runningExecutableError)
+    errors.push("running browser image unreadable: " + identity.runningExecutableError);
+  if (identity?.runningExecutableSha256 !== pin.executableSha256)
+    errors.push("running browser digest mismatch");
+  if (pinned && identity?.runningExecutablePath !== pinned)
+    errors.push("running browser path mismatch");
+  return errors;
+}
+
 export const DEFAULT_BROWSER = {
   headless: true,
   args: [

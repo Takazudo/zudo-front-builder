@@ -85,4 +85,16 @@ with tempfile.TemporaryDirectory() as stage:
     else:raise AssertionError("foreign marker removed")
     finally:marker.close()
     assert (root/"owner").read_text()=="foreign"
-print("persistent-EIO cleanup, prior durable ownership, independent holds and original-inode preservation passed")
+disposition=life["disposition"]
+for args,want in [((0,True,True,"body"),"verified-body"),
+                  ((1,True,True,"body-classified"),"verified-body-classified"),
+                  ((1,True,True,"decision-only"),"verified-no-write"),
+                  ((3,True,False,"prewrite-refused"),"normal-refusal")]:
+    assert disposition(*args)==want,(args,want)
+for args in [(1,True,True,"body"),(0,True,True,"body-classified"),(8,True,True,"body-classified"),
+             (1,True,False,"body-classified"),(1,False,True,"body-classified"),
+             (0,True,True,"incomplete"),(1,True,True,"body-stale")]:
+    try:disposition(*args)
+    except ValueError:pass
+    else:raise AssertionError(args)
+print("persistent-EIO cleanup, prior durable ownership, independent holds, original-inode preservation and terminal dispositions passed")

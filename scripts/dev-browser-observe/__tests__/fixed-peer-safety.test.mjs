@@ -234,6 +234,20 @@ test("the fixed peer mode admits only one archived 100-article body classificati
     };
     if (framework === "next") assert.deepEqual(errors(v4), []);
     else assert(errors(v4).length);
+    if (framework === "next") {
+      v4.fixedNextOuterObserver.operation = "body";
+      assert.deepEqual(errors(v4), []);
+      for (const operation of ["write", "", "Body", null, undefined]) {
+        const q = structuredClone(v4);
+        q.fixedNextOuterObserver.operation = operation;
+        assert.match(
+          semanticErrors(q).join("\n"),
+          /fixedNextOuterObserver\.operation must be one of decision-only, body/,
+          String(operation),
+        );
+      }
+      v4.fixedNextOuterObserver.operation = "decision-only";
+    }
     v4.fixedRssSafety = "linux-fixed-peer.v3";
     assert(errors(v4).length, "legacy profile must not accept the v4 provider");
     for (const change of [

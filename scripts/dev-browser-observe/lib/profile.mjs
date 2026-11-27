@@ -18,6 +18,7 @@ import {
   FIXED_PEER_PROTOCOL,
   isFixedAstroProtocol,
 } from "./fixed-peer-roles.mjs";
+import { NEXT_OUTER_OPERATIONS } from "./next-outer-terminal.mjs";
 import { rendererMemoryProfileErrors } from "./renderer-memory-protocol.mjs";
 import { startupProfileErrors } from "./startup-acceptance.mjs";
 import { sourceTimingProfileValid } from "./source-timing-safety.mjs";
@@ -197,6 +198,13 @@ function fixedErrors(profile) {
     Boolean(profile.fixedNextOuterObserver)
   )
     errors.push("Next v4 requires its separately pinned independent outer observer");
+  if (
+    profile.fixedNextOuterObserver &&
+    !NEXT_OUTER_OPERATIONS.includes(profile.fixedNextOuterObserver.operation)
+  )
+    errors.push(
+      "$.fixedNextOuterObserver.operation must be one of " + NEXT_OUTER_OPERATIONS.join(", "),
+    );
   if (peerSafety) errors.push(...fixedPeerErrors(profile));
   else if (isFixedAstroProtocol(profile.fixedRssSafety)) errors.push(...fixedAstroErrors(profile));
   else if (profile.fixedPeerBrowser)

@@ -8,7 +8,11 @@ import {
   verifyNextOuterProvider,
 } from "./next-outer-provider.mjs";
 import { nextOuterNonceDigest, observeNextOuterReceipt } from "./next-outer-channel.mjs";
-import { nextOuterBatchHooks, outerTerminalGate } from "./next-outer-terminal.mjs";
+import {
+  nextOuterBatchHooks,
+  nextOuterOutcomeStatus,
+  outerTerminalGate,
+} from "./next-outer-terminal.mjs";
 import { startSourceTimingSafety, CSEC_EXE_SHA256 } from "./source-timing-safety.mjs";
 import { samplerClosureAudit } from "./linux-rss-sample.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
@@ -23,7 +27,12 @@ import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
-import { OBSERVER_PATH, closeOwnedBrowser, launchOwnedBrowser } from "./browser.mjs";
+import {
+  OBSERVER_PATH,
+  closeOwnedBrowser,
+  fixedPeerBrowserImageErrors,
+  launchOwnedBrowser,
+} from "./browser.mjs";
 import { BrowserTiming, timeBrowserAsync, timeBrowserSync } from "./browser-timing.mjs";
 import { runCalibration, CALIBRATION_CELLS } from "./calibrate.mjs";
 import { kindFor } from "./fixture-kinds.mjs";
@@ -1220,12 +1229,15 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     );
     browserTiming?.mark("browser-initialization-return-observed");
     browserSignal?.throwIfAborted();
-    if (
-      fixedPeer &&
-      browserHandle.identity.executableSha256 !== profile.fixedPeerBrowser.defaultExecutableSha256
-    ) {
-      receipt.browser = browserHandle.identity;
-      throw new Error("fixed peer library-default browser digest mismatch");
+    if (fixedPeer) {
+      const imageErrors = fixedPeerBrowserImageErrors(
+        browserHandle.identity,
+        profile.fixedPeerBrowser,
+      );
+      if (imageErrors.length) {
+        receipt.browser = browserHandle.identity;
+        throw new Error("fixed peer browser image refused: " + imageErrors.join("; "));
+      }
     }
     const observer = browserHandle.observer;
     observer.baseUrl = ready.baseUrl;
@@ -1975,27 +1987,19 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       };
       writeJsonSync(summaryPath, summary);
       if (outerProtocol) {
-        const refusal = rec.records.findLast(
-          (r) => r.phase === "before-mutation" && r.writePerformed === false,
-        );
-        const disk = rec.records.findLast((r) => r.type === "fixed-peer-refused-disk-audit");
-        const noWrite = rec.records.findLast((r) => r.type === "next-outer-no-write");
         const closed = Boolean(stopReport.absent && !stopFailure && !unresolved.length);
         const proofComplete =
           !evidenceFailed && receipt.nextPeerPopulation?.ok && !fixedSafety?.report().failure;
-        let status = "incomplete";
-        if (closed && disk?.unchanged && refusal?.observerDisarmed) {
-          if (refusal.outcome === "outer-decision-only" && noWrite && proofComplete)
-            status = "decision-only";
-          else if (refusal.outcome === "identity-rejected" && !noWrite) status = "prewrite-refused";
-        } else if (
-          closed &&
-          proofComplete &&
-          exitCode === EXIT.ok &&
-          accounting.success === 1 &&
-          outerDecision
-        )
-          status = "body";
+        const { status, classification = null } = nextOuterOutcomeStatus({
+          operation: profile.fixedNextOuterObserver.operation,
+          records: rec.records,
+          closed,
+          proofComplete: Boolean(proofComplete),
+          exitCode,
+          exit: EXIT,
+          accounting,
+          outerDecision,
+        });
         writeJsonSync(join(labelDir, "next-outer-outcome.json"), {
           label,
           nonce: loaded.nextOuter.nonce,
@@ -2003,6 +2007,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           controllerPid: process.pid,
           closureVerified: closed,
           status,
+          classification,
         });
       }
     } catch (error) {

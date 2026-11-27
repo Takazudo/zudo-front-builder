@@ -22,6 +22,17 @@ const ORDINARY_SETTLE_BOUND_NS = 950_000_000n;
 // allowance. Observed late ticks on this host: 231.6 ms (#4862 slot 01), 270.8 ms
 // (A/A s1-A epoch 6) and 81 ms (#4870 R3). A later tick refuses (fail closed).
 const DISPATCH_SKEW_ALLOWANCE_NS = 400_000_000n;
+// The decision-to-T0 path runs three synchronous censuses (product graph +
+// roles, outer wiring, the ps-backed late-process check) and fsynced records
+// before T0, which must still precede the same cutoff. A decision counts as
+// inside coverage only with this much left; with less it takes the approved
+// next-dispatch path, so its worst case stays dispatch + 400 ms + 950 ms.
+// Measured workload-free on WSL (3000 iterations, fake Next-shaped tree, Node
+// v26.13.1, 24 busy loops on 12 cores): p99.9 192.5 ms, max 232.0 ms, mostly the
+// ps-backed late census (max 156 ms). 250 ms clears that maximum. A settled
+// sample ending later than 745 ms into its epoch then refuses (fail closed);
+// observed helpers run about 40-97 ms.
+export const PREWRITE_FRESH_MARGIN_NS = 250_000_000n;
 
 function pin(path, digest) {
   const real = realpathSync(path);
@@ -406,6 +417,11 @@ export function startFixedRssSafety({
         else if (decision) reason = "identity-decision-pending";
         else if (postCycles !== 2 || !acceptedOuterCycle) reason = "ready-coverage-incomplete";
         else if (entered >= BigInt(acceptedOuterCycle.cadenceDeadlineNs)) reason = "cadence-due";
+        else if (
+          stage !== "pre-truncate" &&
+          entered + PREWRITE_FRESH_MARGIN_NS >= BigInt(acceptedOuterCycle.cadenceDeadlineNs)
+        )
+          reason = "cadence-margin";
         if (reason) {
           coverage = reason;
           throw new Error("outer decision outside current RSS coverage: " + reason);
@@ -479,17 +495,27 @@ export function startFixedRssSafety({
         settledEpoch: null,
         boundNs: null,
         outcome: pending ? "waiting" : "not-pending",
+        freshMarginNs: String(PREWRITE_FRESH_MARGIN_NS),
       };
       const capped = (ns) => (ns < deadlineNs ? ns : deadlineNs);
       let timer;
       const until = (boundNs, work) => {
         const now = process.hrtime.bigint();
         if (now >= boundNs) return Promise.resolve("bound-expired");
+        // A millisecond timer can fire before the monotonic bound; re-arm until
+        // the clock confirms it so the declared 400 ms / 950 ms bounds stay whole.
         const expired = new Promise((resolve) => {
-          timer = setTimeout(
-            () => resolve("bound-expired"),
-            Math.ceil(Number(boundNs - now) / 1e6),
-          );
+          const arm = (left) => {
+            timer = setTimeout(
+              () => {
+                const remaining = boundNs - process.hrtime.bigint();
+                if (remaining > 0n) arm(remaining);
+                else resolve("bound-expired");
+              },
+              Math.max(1, Math.ceil(Number(left) / 1e6)),
+            );
+          };
+          arm(boundNs - now);
         });
         return interruptible(Promise.race([work, expired]), signal).finally(() =>
           clearTimeout(timer),
@@ -502,11 +528,12 @@ export function startFixedRssSafety({
           !pending &&
           acceptedOuterCycle &&
           postCycles === 2 &&
-          enteredNs >= BigInt(acceptedOuterCycle.cadenceDeadlineNs)
+          enteredNs + PREWRITE_FRESH_MARGIN_NS >= BigInt(acceptedOuterCycle.cadenceDeadlineNs)
         ) {
           // Nothing in flight after the cutoff: wait for the ordinary timer's own
           // next dispatch. This never dispatches a sample.
           const dispatchBoundNs = capped(nextDispatchNs + DISPATCH_SKEW_ALLOWANCE_NS);
+          record.withinFreshMargin = enteredNs < BigInt(acceptedOuterCycle.cadenceDeadlineNs);
           record.scheduledDispatchNs = String(nextDispatchNs);
           record.dispatchBoundNs = String(dispatchBoundNs);
           record.outcome = "waiting-next-dispatch";
