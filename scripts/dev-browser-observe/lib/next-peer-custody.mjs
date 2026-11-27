@@ -51,6 +51,7 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
     armed = false;
   let watchdog;
   let terminalVerified = false;
+  const acknowledged = new Set();
   let windowEnd = null;
   const secondaryErrors = [];
   const resetWatchdog = () => {
@@ -171,8 +172,15 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
         stopPromise &&
           !window &&
           m.token === (accepted?.token ?? null) &&
-          m.closedPairs === 3 + Number(Boolean(seen)),
+          m.closedPairs === 3 + Number(Boolean(seen)) &&
+          m.helperTransfers === acknowledged.size &&
+          (!accepted || terminalVerified),
         "unreconciled scout stop",
+      );
+      assert.deepEqual(
+        m.releasedWorkerDescriptors,
+        seen?.descriptors ?? null,
+        "worker descriptor release mismatch",
       );
       stopReceipt = m;
     } else throw Error("unexpected scout frame");
@@ -291,6 +299,14 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
         "unverified scout handoff",
       );
       assert.deepEqual(ack.descriptors, accepted.descriptors);
+      assert(
+        typeof ack.nonce === "string" &&
+          /^[a-f0-9]{24}$/.test(ack.nonce) &&
+          !acknowledged.has(ack.nonce) &&
+          acknowledged.size < 480,
+        "duplicate or excessive Next transfer",
+      );
+      acknowledged.add(ack.nonce);
     },
     terminal(b) {
       assert(same(b, accepted?.birth));
@@ -323,9 +339,25 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
             !firstFailure && !buf && stopReceipt && result.code === 0 && !result.signal,
             "unverified scout cleanup: " + stderr,
           );
-          const row = { result, birth, evidence: stopReceipt };
+          const row = { result, birth, evidence: stopReceipt, terminalVerified };
           notify("cleanup", row);
           return row;
+        } catch (error) {
+          try {
+            notify("cleanup-unresolved", {
+              birth,
+              exit,
+              stopReceipt,
+              terminalVerified,
+              acknowledged: acknowledged.size,
+              firstFailure: firstFailure?.message ?? null,
+              reason: error.message,
+              stderr,
+            });
+          } catch (e) {
+            secondaryErrors.push(String(e));
+          }
+          throw error;
         } finally {
           clearTimeout(timer);
           clearTimeout(limit);

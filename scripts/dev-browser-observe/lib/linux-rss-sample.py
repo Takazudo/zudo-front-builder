@@ -284,6 +284,7 @@ class Sample:
         if self.next_worker(row):
             ack, original_ended = self.next_pair(row, (fd, directory))
             result["nextCustodyReceipt"] = ack
+            result["nextCustodyReceipts"] = [ack]
             if original_ended and not terminal(fd):
                 raise Invalid("next-custody-local-terminal-contradiction",row)
             if ended and not original_ended:
@@ -336,6 +337,7 @@ class Sample:
             if not original_ended:
                 ack, original_ended = self.next_pair(row)
                 result["nextCustodyReceipt"] = ack
+                result["nextCustodyReceipts"].append(ack)
             if not original_ended:
                 raise Invalid("next-custody-terminal-contradiction", row)
             ended = original_ended
@@ -445,6 +447,7 @@ class Sample:
                                 disposition="custodied-departure",
                                 terminalProof=dict(ended, birth=previous),
                                 nextCustodyReceipt=ack,
+                                nextCustodyReceipts=[ack],
                                 rssKiB=None,
                                 statusKiB=None,
                                 smapsRollupKiB=None,

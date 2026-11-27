@@ -688,6 +688,7 @@ class Scout:
                     self.answer(peer, req, hpid)
                 self.pending = None
         require(not self.pending and self.window is None, "unclosed custody window/transfer")
+        released = [identity(fd) for fd in self.known[:2]] if self.known else None
         if self.known:
             close_pair(self.known)
         for handle in self.anchors:
@@ -697,6 +698,7 @@ class Scout:
             "stopped",
             token=self.token,
             closedPairs=len(self.anchors) + int(bool(self.known)),
+            releasedWorkerDescriptors=released,
             windows=self.windows,
             helperTransfers=self.counts["gets"],
             maxRSSKiB=usage.ru_maxrss,

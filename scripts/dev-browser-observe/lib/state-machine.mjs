@@ -816,6 +816,11 @@ export async function runBatch({ scenarios, deps }) {
         let tLast = null;
         let writeSteps = null;
         try {
+          if (deps.beforePeerMutation) {
+            deps.beforePeerMutation();
+            signal?.throwIfAborted();
+            deps.stageBudget?.(timeouts.attemptMs, attemptStart);
+          }
           if (attempt.writes && attempt.writes.length > 1 && fs.performWrites) {
             const r = await fs.performWrites(attempt.writes, () => clock.now(), signal);
             t0 = r.t0;

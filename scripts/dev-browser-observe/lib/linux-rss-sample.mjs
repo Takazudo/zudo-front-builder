@@ -274,12 +274,16 @@ export function sampleRendererMemory(
       if (BigInt(parent.resultNs) > deadline) fail("deadline", "sampling helper deadline reached");
       const record = details();
       if (!fault && nextCustody) {
-        for (const p of processes)
-          if (
-            p.nextCustodyReceipt &&
-            ["proved-departure", "custodied-departure"].includes(p.disposition)
-          )
-            nextCustody.terminal(p);
+        try {
+          for (const p of processes)
+            if (
+              p.nextCustodyReceipt &&
+              ["proved-departure", "custodied-departure"].includes(p.disposition)
+            )
+              nextCustody.terminal(p);
+        } catch (error) {
+          fail("next-custody-terminal", String(error));
+        }
       }
       if (fault)
         reject(
@@ -591,7 +595,23 @@ export function sampleRendererMemory(
             nextCustody && (p.executable === null || matchesExecutable(p.executable, executable)),
             "unexpected Next custody observation",
           );
-          nextCustody.validate(p, p.nextCustodyReceipt, request.nextCustody.cycle, helper);
+          const tx = p.nextCustodyReceipts;
+          requireValue(
+            Array.isArray(tx) &&
+              tx.length >= 1 &&
+              tx.length <= 2 &&
+              tx.at(-1)?.nonce === p.nextCustodyReceipt.nonce,
+            "missing original Next transfer receipt",
+          );
+          for (const receipt of tx) {
+            nextCustody.validate(p, receipt, request.nextCustody.cycle, helper);
+            requireValue(
+              ticks(receipt.acknowledgedNs) &&
+                BigInt(p.startedNs) <= BigInt(receipt.acknowledgedNs) &&
+                BigInt(receipt.acknowledgedNs) <= BigInt(p.endNs),
+              "unverified Next transfer time",
+            );
+          }
           const ack = p.nextCustodyReceipt;
           requireValue(
             ticks(ack.acknowledgedNs) &&

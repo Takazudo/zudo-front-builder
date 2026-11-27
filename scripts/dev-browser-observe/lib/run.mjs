@@ -1101,6 +1101,18 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
             stageBudget: peerBudget,
             workDeadlineNs: BigInt(loaded.workDeadline) * 1_000_000n,
           }),
+          ...(nextProtocol && {
+            beforePeerMutation: () => {
+              const reason = checkLateProcesses();
+              rec.append({
+                type: "next-custody-pre-mutation",
+                reason,
+                checkedNs: String(process.hrtime.bigint()),
+              });
+              if (reason)
+                throw new Error("Next pre-mutation identity refused: " + JSON.stringify(reason));
+            },
+          }),
           afterScenario: study?.afterScenario,
           beforeCleanup: rendererMemory
             ? () => rendererMemory.enter("restoration")
