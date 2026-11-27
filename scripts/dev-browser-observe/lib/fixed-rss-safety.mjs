@@ -32,11 +32,19 @@ export function fixedAstroExecutables(facts, protocol = FIXED_ASTRO_FOOTER_PROTO
   };
 }
 
-export function fixedZfbExecutables(appDir, facts) {
+export function fixedZfbExecutables(appDir, facts, protocol = "linux-fixed-zfb.v1") {
   const child = facts.install.executables.find((exe) => exe.role === "zfb-native" && exe.ok);
   if (!child || facts.installReceipt.node.realpath !== realpathSync(process.execPath))
     throw new Error("fixed safety requires the verified Node launcher and packaged native binary");
+  let launch;
+  if (["linux-fixed-zfb.v2", "linux-fixed-zfb.v3", "linux-fixed-zfb.v4"].includes(protocol)) {
+    const shim = facts.install.executables.find((exe) => exe.role === "zfb-shim" && exe.ok);
+    if (!shim) throw new Error("fixed v2 requires the verified distribution shim");
+    launch = { cwd: realpathSync(appDir), shim: pin(join(appDir, shim.path), shim.sha256) };
+  }
   return {
+    protocol,
+    ...(launch && { launch }),
     root: pin(process.execPath, facts.installReceipt.node.sha256),
     child: pin(join(appDir, child.path), child.sha256),
   };
@@ -60,6 +68,7 @@ export function startFixedRssSafety({
   append,
   abort,
   sample = sampleRendererMemory,
+  custody = null,
   peer,
   checkRoles = samplePeerRoles,
 }) {
@@ -80,7 +89,11 @@ export function startFixedRssSafety({
   const fail = (error) => {
     if (error?.details?.helper?.closed === false || error?.details?.helper?.pipesClosed === false)
       unresolvedHelper = error.details.helper;
-    const partial = error?.details?.summedRssKiB;
+    const partial =
+      fixedExecutables.protocol === "linux-fixed-zfb.v4" &&
+      error?.details?.rssCoverage === "partial"
+        ? error.details.observedSubtotalKiB
+        : error?.details?.summedRssKiB;
     if (Number.isSafeInteger(partial) && partial >= 0) peakKiB = Math.max(peakKiB ?? 0, partial);
     const issue = { error: String(error?.message ?? error), details: error?.details ?? null };
     // At most one helper can still be in flight after the periodic dispatcher
@@ -118,7 +131,7 @@ export function startFixedRssSafety({
     pending = (
       peer
         ? sample(server, fixedExecutables.root.path)
-        : sample(server, fixedExecutables.root.path, { fixedExecutables })
+        : sample(server, fixedExecutables.root.path, { fixedExecutables, custody })
     )
       .then((result) => {
         measuredCycles++;
@@ -192,7 +205,7 @@ export function startFixedRssSafety({
           return;
         }
         const children = result.processes.filter(
-          (row) => row.disposition === "live" && row.pid !== server.handle.native.pid,
+          (row) => row.disposition === "live" && row.ppid === server.handle.native.pid,
         );
         if (children.length > 1 || ((readyAtEntry || nativeBirth) && children.length !== 1))
           throw new Error("fixed safety native child absent or ambiguous");
@@ -222,6 +235,25 @@ export function startFixedRssSafety({
   };
   take();
   const timer = setInterval(take, limits.sampleEveryMs);
+  async function observeReady(actualReadyNs) {
+    if (failure) throw new Error(failure.error);
+    if (stopped) throw new Error("fixed safety sampling stopped before readiness");
+    readyCheck ??= Promise.withResolvers();
+    if (peer) {
+      readyNs = actualReadyNs;
+      const expire = () => {
+        const left = readyNs + 3_000_000_000n - process.hrtime.bigint();
+        if (left < 0n) fail(new Error("peer readiness sampling window expired"));
+        else expiry = setTimeout(expire, Math.max(1, Math.ceil(Number(left) / 1e6)));
+      };
+      expire();
+    }
+    await readyCheck.promise;
+    if (peer && process.hrtime.bigint() > readyNs + 3_000_000_000n)
+      throw new Error("peer readiness sampling window expired");
+    if (failure) throw new Error(failure.error);
+    if (stopped) throw new Error("fixed safety sampling stopped before readiness");
+  }
   return {
     verifyAstroCurrent(owned, known) {
       const describe = (p) => [p.pid, p.ppid, p.pgid, p.bootId, p.startTicks].join("/");
@@ -250,24 +282,16 @@ export function startFixedRssSafety({
     get unresolvedHelper() {
       return unresolvedHelper;
     },
+    // Only the zero-edit stock adapter uses this read-only milestone. All
+    // normal workload entry points still require full readiness below.
+    async verifyZeroEditObservationReady() {
+      if (fixedExecutables.protocol !== "linux-fixed-zfb.v4")
+        throw new Error("observation-only readiness requires startup custody v4");
+      await observeReady();
+    },
     async verifyReady(actualReadyNs) {
-      if (failure) throw new Error(failure.error);
-      if (stopped) throw new Error("fixed safety sampling stopped before readiness");
-      readyCheck ??= Promise.withResolvers();
-      if (peer) {
-        readyNs = actualReadyNs;
-        const expire = () => {
-          const left = readyNs + 3_000_000_000n - process.hrtime.bigint();
-          if (left < 0n) fail(new Error("peer readiness sampling window expired"));
-          else expiry = setTimeout(expire, Math.max(1, Math.ceil(Number(left) / 1e6)));
-        };
-        expire();
-      }
-      await readyCheck.promise;
-      if (peer && process.hrtime.bigint() > readyNs + 3_000_000_000n)
-        throw new Error("peer readiness sampling window expired");
-      if (failure) throw new Error(failure.error);
-      if (stopped) throw new Error("fixed safety sampling stopped before readiness");
+      await observeReady(actualReadyNs);
+      custody?.verifyStartup?.();
     },
     async stop() {
       stopped = true;

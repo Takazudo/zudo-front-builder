@@ -23,8 +23,86 @@ function matchesExecutable(observed, expected) {
   );
 }
 
+function matchesFixedChild(process, root, native, observations) {
+  if (!matchesExecutable(process.executable, native)) return false;
+  if (process.ppid === root.pid)
+    return (
+      process.pgid === root.pgid &&
+      process.executable.workerArg === undefined &&
+      !observations.some((p) => p.disposition === "live" && p.ppid === root.pid)
+    );
+  return (
+    process.pgid === process.pid &&
+    process.executable.workerArg === "__zfb-compiler-worker" &&
+    observations.some(
+      (p) =>
+        p.pid === process.ppid &&
+        p.ppid === root.pid &&
+        p.disposition === "live" &&
+        matchesExecutable(p.executable, native),
+    )
+  );
+}
+
+// Validate the identity fields against the binding before interpreting a v2
+// observation. A never-observed role is possible only after proved departure.
+export function checkFixedV2Observation(process, binding, root, fixed, observations) {
+  requireValue(binding?.ppid === process.ppid, "fixed observation parent contradicts binding");
+  if (process.disposition === "proved-departure")
+    requireValue(
+      process.terminalProof?.birth?.ppid === process.ppid,
+      "fixed terminal proof parent mismatch",
+    );
+  if (process.executable === null) {
+    requireValue(
+      process.disposition === "proved-departure" &&
+        process.fixedRole === "unknown" &&
+        process.rssKiB === null &&
+        process.statusKiB === null &&
+        process.smapsRollupKiB === null &&
+        process.threads === null,
+      "invalid unknown fixed role",
+    );
+  } else {
+    requireValue(
+      process.fixedRole === undefined &&
+        (process.pid === root.pid
+          ? matchesExecutable(process.executable, fixed.root)
+          : matchesFixedChild(process, root, fixed.child, observations)),
+      "invalid observed fixed role",
+    );
+  }
+}
+
 function requireValue(ok, msg) {
   if (!ok) throw new Error(msg);
+}
+
+export function timeStartupSelection(select, clock, deadline) {
+  let selection = null;
+  let error = null;
+  try {
+    selection = select();
+  } catch (cause) {
+    error = String(cause?.message ?? cause);
+  }
+  const resultNs = clock();
+  if (BigInt(resultNs) > deadline) error ??= "sampling helper deadline reached";
+  return { resultNs, error, selection: error ? null : selection };
+}
+
+// The immutable request doesn't account for a birth that the concurrent
+// scout verified during this cycle. Without a matching observation, the
+// existing per-process readings are only a lower bound for the owned sum.
+export function startupEpochCoverage(known, requested, bound, observed) {
+  const expected = new Set([...known.keys(), ...requested.map((row) => row.pid), ...bound.keys()]);
+  const missing = [...expected]
+    .filter((pid) => !observed.has(pid))
+    .map((pid) => {
+      const row = known.get(pid) ?? bound.get(pid) ?? requested.find((p) => p.pid === pid);
+      return { birth: compactBirth(row), source: row.source ?? null, rssKiB: null };
+    });
+  return { complete: missing.length === 0 && expected.size === observed.size, missing };
 }
 
 function compactBirth(p) {
@@ -53,6 +131,37 @@ function checkBirth(row, bootId) {
       Buffer.byteLength(row.comm) <= 64 &&
       /^[RSDZTtXxKWPI]$/.test(row.state),
     "malformed sample birth",
+  );
+}
+
+export function checkCustodyTransfer(p, cycle, helper) {
+  const r = p.custodyReceipt;
+  requireValue(
+    r &&
+      r.session === cycle.session &&
+      r.epoch === cycle.epoch &&
+      r.holderPid === cycle.holderPid &&
+      r.helperPid === helper.pid &&
+      Array.isArray(r.descriptors) &&
+      r.descriptors.length === 2 &&
+      r.descriptors.every(
+        (pair) => Array.isArray(pair) && pair.length === 2 && pair.every(ticks),
+      ) &&
+      ticks(r.verifiedNs) &&
+      BigInt(p.startedNs) <= BigInt(r.verifiedNs) &&
+      BigInt(r.verifiedNs) <= BigInt(p.endNs),
+    "unverified custody transfer",
+  );
+}
+
+export function checkCustodyProofTime(row, helperEntryNs) {
+  const at = row.terminalProof?.observedNs;
+  requireValue(
+    [helperEntryNs, row.startedNs, at, row.endNs].every(ticks) &&
+      BigInt(helperEntryNs) <= BigInt(row.startedNs) &&
+      BigInt(row.startedNs) <= BigInt(at) &&
+      BigInt(at) <= BigInt(row.endNs),
+    "custody terminal proof outside its helper observation",
   );
 }
 
@@ -209,9 +318,10 @@ export function sampleRendererMemory(
   expectedExecutablePath,
   {
     fixedExecutables = null,
+    custody = null,
     launch = () =>
       spawn("python3", ["-I", "-B", script, String(process.pid)], {
-        stdio: ["pipe", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe", ...(custody ? [custody.channel] : [])],
       }),
   } = {},
 ) {
@@ -226,6 +336,9 @@ export function sampleRendererMemory(
   const root = handle.native;
   const proofs = terminalProofs.get(handle) ?? new Map();
   terminalProofs.set(handle, proofs);
+  const verifiedRoles = ["linux-fixed-zfb.v2", "linux-fixed-zfb.v3", "linux-fixed-zfb.v4"].includes(
+    fixedExecutables?.protocol,
+  );
   const processes = [];
   const discoveries = [];
   const journalFailures = [];
@@ -234,10 +347,14 @@ export function sampleRendererMemory(
   const rss = new Map();
   let summedRssKiB = null;
   const observed = new Set();
+  const releaseRequired = new Set();
+  const custodyReleases = [];
   const rssSources = new Map();
   let helper = null;
   let executable = null;
   let summary = null;
+  let startupSelection = null;
+  let startupCoverage = null;
   let fault = null;
   let stderr = "";
   let finished = false;
@@ -250,12 +367,21 @@ export function sampleRendererMemory(
     timing,
     helper,
     verifiedDiscoveries: discoveries,
+    ...(custody && { custodyReleases }),
+    ...(startupSelection && { startupSelection }),
+    ...(startupCoverage && {
+      startupEpochCoverage: startupCoverage,
+      ...(startupCoverage.complete
+        ? {}
+        : { rssCoverage: "partial", observedSubtotalKiB: summedRssKiB }),
+    }),
     journalFailures,
     processes,
     summedRssKiB,
     observedRssKiB: Object.fromEntries(rssSources),
     rssBasis: "per-birth maximum of VmRSS and smaps_rollup.Rss observed in this cycle",
     ...summary,
+    ...(startupCoverage && !startupCoverage.complete && { summedRssKiB: null }),
   });
 
   const fail = (stage, message) => {
@@ -263,14 +389,38 @@ export function sampleRendererMemory(
   };
   return new Promise((resolve, reject) => {
     let child, timer, closeTimer;
+    const coverageComplete = () => {
+      if (fixedExecutables?.protocol !== "linux-fixed-zfb.v4")
+        return observed.size === handle.known.size;
+      startupCoverage = startupEpochCoverage(handle.known, request.known, bound, observed);
+      return startupCoverage.complete;
+    };
     const finish = () => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
       clearTimeout(closeTimer);
       qualify(timing, envelopeOk);
-      parent.resultNs = now();
-      if (BigInt(parent.resultNs) > deadline) fail("deadline", "sampling helper deadline reached");
+      // A startup receipt can arrive after the helper's complete frame while
+      // the controller is still waiting for its exit/pipe closure.
+      if (request && fixedExecutables?.protocol === "linux-fixed-zfb.v4" && !coverageComplete())
+        fail("startup-population", "missing official observation for an owned birth");
+      // Selection, including release-to-terminal reconciliation, belongs to
+      // the same core decision as the normal sample.
+      if (!fault && fixedExecutables?.protocol === "linux-fixed-zfb.v4") {
+        const decision = timeStartupSelection(
+          () => custody.selectStartupCycle(processes, custodyReleases, request?.fixedCustody),
+          now,
+          deadline,
+        );
+        startupSelection = decision.selection;
+        parent.resultNs = decision.resultNs;
+        if (decision.error) fail("startup-custody", decision.error);
+      } else {
+        parent.resultNs = now();
+        if (BigInt(parent.resultNs) > deadline)
+          fail("deadline", "sampling helper deadline reached");
+      }
       const record = details();
       if (fault)
         reject(
@@ -286,7 +436,10 @@ export function sampleRendererMemory(
             },
           }),
         );
-      else resolve(record);
+      else {
+        if (startupSelection) custody.commitStartupCycle(startupSelection);
+        resolve(record);
+      }
     };
 
     const kill = () => {
@@ -321,13 +474,32 @@ export function sampleRendererMemory(
           Buffer.byteLength(expectedExecutablePath) <= 4096,
         "invalid expected executable path",
       );
+      requireValue(
+        ["linux-fixed-zfb.v3", "linux-fixed-zfb.v4"].includes(fixedExecutables?.protocol) ===
+          Boolean(custody),
+        "missing or unexpected fixed custody",
+      );
       request = {
+        ...(custody && { fixedCustody: { ...custody.begin(handle), root: compactBirth(root) } }),
         root: compactBirth(root),
         known: [...handle.known.values()].map(compactBirth),
         terminalProofs: [...proofs.values()],
         executablePath: expectedExecutablePath,
-        ...(fixedExecutables && { fixedChildExecutable: fixedExecutables.child }),
+        ...(fixedExecutables && {
+          fixedChildExecutable: fixedExecutables.child,
+          ...(verifiedRoles && {
+            fixedDevArgs: root.argv.slice(1),
+            fixedLaunch: fixedExecutables.launch,
+          }),
+        }),
       };
+      const startupPoll =
+        fixedExecutables?.protocol === "linux-fixed-zfb.v4" && request.fixedCustody?.startupPollPid;
+      if (startupPoll)
+        request.terminalProofs = request.terminalProofs.filter((p) => p.birth.pid !== startupPoll);
+      if (custody)
+        for (const pid of proofs.keys())
+          if (pid !== startupPoll && request.fixedCustody.tokens[pid]) releaseRequired.add(pid);
       spawnHrtimeNs = parent.spawnCallNs = now();
       child = launch();
       parent.spawnReturnNs = now();
@@ -409,7 +581,7 @@ export function sampleRendererMemory(
         pendingObservation = null;
       } else if (stage === "finalRootBegin") {
         requireValue(
-          !summary && stamps.cleanupBeginNs === null && observed.size === handle.known.size,
+          !summary && stamps.cleanupBeginNs === null && coverageComplete(),
           "unexpected final root timing",
         );
       } else if (stage === "finalRoot") {
@@ -552,6 +724,30 @@ export function sampleRendererMemory(
         requireValue(Number.isSafeInteger(total), "summed RSS exceeds safe integer range");
         rss.set(p.pid, after);
         summedRssKiB = total;
+      } else if (row.type === "custody-release") {
+        const prior = proofs.get(row.birth?.pid);
+        requireValue(
+          custody &&
+            prior &&
+            same(prior.birth, row.birth) &&
+            prior.birth.ppid === row.birth.ppid &&
+            custody.matches(row.birth, row.token),
+          "unverified custody release",
+        );
+        requireValue(releaseRequired.delete(row.birth.pid), "unexpected custody release");
+        const r = row.receipt;
+        requireValue(
+          r?.session === request.fixedCustody.session &&
+            r.epoch === request.fixedCustody.epoch &&
+            r.helperPid === helper.pid &&
+            r.holderPid === request.fixedCustody.holderPid &&
+            ticks(r.verifiedNs) &&
+            BigInt(stamps.entryNs) <= BigInt(r.verifiedNs) &&
+            BigInt(r.verifiedNs) <= BigInt(callbackNs),
+          "unverified custody release acknowledgment",
+        );
+        custodyReleases.push({ birth: compactBirth(row.birth), token: row.token, receipt: r });
+        custody.forget(row.birth);
       } else if (row.type === "observation") {
         const p = row.process;
         const prior = proofs.get(p?.pid);
@@ -564,7 +760,48 @@ export function sampleRendererMemory(
             p.rssKiB === (rss.get(p.pid) ?? null),
           "inconsistent process observation",
         );
-        if (p.disposition === "retained-terminal-proof") {
+        if (p.disposition === "custodied-departure") {
+          requireValue(
+            custody &&
+              !bound.has(p.pid) &&
+              (!prior ||
+                (fixedExecutables?.protocol === "linux-fixed-zfb.v4" &&
+                  request.fixedCustody.startupPollPid === p.pid &&
+                  same(prior.birth, p) &&
+                  prior.birth.ppid === p.ppid)) &&
+              p.pid !== root.pid &&
+              custody.matches(p, p.custodyToken) &&
+              p.terminalProof?.birth?.ppid === p.ppid &&
+              p.rssKiB === null &&
+              p.statusKiB === null &&
+              p.smapsRollupKiB === null &&
+              p.threads === null &&
+              p.executable === null &&
+              p.fixedRole === undefined,
+            "unverified inter-cycle departure",
+          );
+          checkProof(p.terminalProof, p);
+          checkCustodyTransfer(p, request.fixedCustody, helper);
+          requireValue(custody.sameDescriptors(p), "custodied departure descriptor mismatch");
+          checkCustodyProofTime(p, stamps.entryNs);
+          requireValue(
+            BigInt(p.custodyReceipt.verifiedNs) <= BigInt(p.terminalProof.observedNs),
+            "custody poll predates descriptor receipt",
+          );
+          proofs.set(p.pid, p.terminalProof);
+        } else if (p.disposition === "retained-terminal-proof") {
+          if (verifiedRoles)
+            requireValue(
+              p.ppid === handle.known.get(p.pid)?.ppid &&
+                p.terminalProof?.birth?.ppid === prior?.birth?.ppid &&
+                p.executable === null &&
+                p.rssKiB === null &&
+                p.statusKiB === null &&
+                p.smapsRollupKiB === null &&
+                p.threads === null &&
+                p.fixedRole === undefined,
+              "invalid retained fixed departure",
+            );
           checkProof(p.terminalProof, p);
           requireValue(
             prior &&
@@ -575,6 +812,8 @@ export function sampleRendererMemory(
           );
         } else {
           requireValue(same(bound.get(p.pid), p), "observation without a matching binding");
+          if (verifiedRoles)
+            checkFixedV2Observation(p, bound.get(p.pid), root, fixedExecutables, processes);
           if (p.disposition === "proved-departure") {
             requireValue(p.pid !== root.pid, "sampling root terminated");
             checkProof(p.terminalProof, p);
@@ -589,13 +828,22 @@ export function sampleRendererMemory(
                 uint(p.smapsRollupKiB?.Rss) &&
                 p.smapsRollupKiB.Rss === rssSources.get(p.pid)?.["rollup.Rss"] &&
                 (fixedExecutables && p.pid !== root.pid
-                  ? p.ppid === root.pid && matchesExecutable(p.executable, fixedExecutables.child)
+                  ? verifiedRoles ||
+                    (p.ppid === root.pid && matchesExecutable(p.executable, fixedExecutables.child))
                   : matchesExecutable(p.executable, executable)) &&
                 uint(p.threads?.listed) &&
                 Array.isArray(p.threads?.rendererHosts),
               "invalid live process observation",
             );
           }
+        }
+        if (
+          custody &&
+          p.disposition === "live" &&
+          p.executable?.workerArg === "__zfb-compiler-worker"
+        ) {
+          checkCustodyTransfer(p, request.fixedCustody, helper);
+          custody.record(p, p.custodyToken);
         }
         observed.add(p.pid);
         processes.push(p);
@@ -663,12 +911,13 @@ export function sampleRendererMemory(
       } else {
         requireValue(
           row.type === "complete" &&
+            releaseRequired.size === 0 &&
             stamps.finalRootEndNs !== null &&
             stamps.cleanupEndNs !== null &&
             uint(row.helperMaxRssKiB) &&
             uint(row.readCalls) &&
             uint(row.procInputBytes) &&
-            observed.size === handle.known.size &&
+            coverageComplete() &&
             processes.some((p) => p.pid === root.pid && p.disposition === "live"),
           "invalid or incomplete sampler completion",
         );

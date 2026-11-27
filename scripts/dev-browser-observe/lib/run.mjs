@@ -1,3 +1,4 @@
+import { startFixedCustody } from "./fixed-rss-custody.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { admissionPath, reserveSession } from "./admission.mjs";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
@@ -342,6 +343,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       ? AbortSignal.any([loaded.signal, fixedAbort.signal])
       : fixedAbort.signal;
   let fixedSafety = null;
+  let fixedCustody = null;
   let stoppingServer;
   const stopCancellation = new AbortController();
   const stopServer = (handle) => {
@@ -643,7 +645,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     const fixedExecutables = fixedAstro
       ? fixedAstroExecutables(verdict.facts, profile.fixedRssSafety)
       : fixedAbort
-        ? fixedZfbExecutables(m.appDir, verdict.facts)
+        ? fixedZfbExecutables(m.appDir, verdict.facts, profile.fixedRssSafety)
         : null;
     let launch = null;
     if (fixed) {
@@ -679,6 +681,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         : profile.server.readyTimeoutMs;
     if (intentPath)
       intent = reserveSession(intentPath, { labelDir, registryPath: resolved.registryPath });
+    if (["linux-fixed-zfb.v3", "linux-fixed-zfb.v4"].includes(profile.fixedRssSafety)) {
+      fixedCustody = startFixedCustody({
+        startup: profile.fixedRssSafety === "linux-fixed-zfb.v4",
+        intent,
+        append: (row) => rec.append(row),
+        abort: (error) => fixedAbort.abort(error),
+      });
+      await fixedCustody.ready;
+      loaded.signal?.throwIfAborted();
+    }
     spawning = true;
     startupLoop?.start(rendererMemory.signal);
     server = (hooks.startDevServer ?? startDevServer)({
@@ -703,10 +715,13 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       if (shouldRegisterOwned(server.handle.native, p))
         appendJsonlSync(resolved.registryPath, { type: "owned", label, at: isoNow(), ...p });
     };
+    if (profile.fixedRssSafety === "linux-fixed-zfb.v4")
+      fixedCustody.attachStartup(server.handle, fixedExecutables);
     if (fixedExecutables) {
       fixedSafety = startFixedRssSafety({
         server,
         fixedExecutables,
+        custody: fixedCustody,
         ...(fixedAstro && {
           peer: {
             framework: profile.framework,
@@ -1193,6 +1208,19 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           unresolved.push({ resource: "fixed-rss-helper", helper: fixedSafety.unresolvedHelper });
       } catch (error) {
         unresolved.push({ resource: "fixed-rss-sampler", error: String(error) });
+      }
+    }
+    if (fixedCustody) {
+      try {
+        await bounded("fixed-custody-stop", 500, () => fixedCustody.stop());
+      } catch (error) {
+        unresolved.push({
+          resource: "fixed-descriptor-custody",
+          ...fixedCustody.identity,
+          error: String(error),
+        });
+        evidenceFailed = true;
+        exitCode = EXIT.controllerError;
       }
     }
     if (rendererMemory)

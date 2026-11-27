@@ -71,10 +71,65 @@ def identity(pid):
                 birthVersion="linux-proc-v1")
 
 
+class CustodyMessages(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("fixed_custody", here.parents[1] / "lib/linux-rss-custody.py")
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
+    def test_truncated_wrong_count_and_invalid_json_close_every_received_fd(self):
+        import array
+        left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        self.addCleanup(left.close)
+        self.addCleanup(right.close)
+        with open("/dev/null", "rb") as source:
+            before = set(os.listdir("/proc/self/fd"))
+            for data, count in [(b"{}", 1), (b"{}", 24), (b"x", 2), (b"x"*4096, 2)]:
+                left.sendmsg([data], [(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array("i",[source.fileno()]*count))])
+                with self.assertRaises(ValueError):
+                    self.module.receive(right, [2])
+                self.assertEqual(set(os.listdir("/proc/self/fd")), before)
+
+    def test_retrieval_rechecks_both_received_descriptor_identities_and_types(self):
+        marker = self.module.Client.__new__(self.module.Client)
+        marker.tokens = {"12": "token"}
+        with open("/dev/null", "rb") as source:
+            for identities in ([["0","0"],["0","0"]], [self.module.identity(source.fileno())]*2):
+                fds=[os.dup(source.fileno()),os.dup(source.fileno())]
+                with patch.object(marker, "exchange", return_value=({"descriptors":identities},fds)):
+                    with self.assertRaisesRegex(ValueError, "retrieved descriptor mismatch"):
+                        marker.retrieve({"pid":12})
+                for fd in fds:
+                    with self.assertRaises(OSError):
+                        os.fstat(fd)
+
+    def test_ack_requires_original_session_epoch_holder_and_helper(self):
+        marker = self.module.Client.__new__(self.module.Client)
+        marker.session,marker.epoch,marker.holder_pid = "original", 4, 151
+        marker.peer, other = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        self.addCleanup(marker.peer.close)
+        self.addCleanup(other.close)
+        valid = dict(ok=True,session="original",epoch=4,holderPid=151,helperPid=os.getpid(),verifiedNs="1")
+        for wrong in (dict(session="prior"),dict(epoch=3),dict(holderPid=150),dict(helperPid=1),dict(ok=False)):
+            self.module.send(other,dict(valid, **wrong))
+            with self.assertRaisesRegex(ValueError,"unverified custody ACK"):
+                marker.exchange(dict(op="test"))
+            self.module.receive(other,[0])
+        other.close()
+        with self.assertRaises(OSError):
+            marker.exchange(dict(op="test"))
+
+
 class Sampling(unittest.TestCase):
-    def spawn(self, mode="ordinary"):
+    def spawn(self, mode="ordinary", fixed=False):
         self.start_ns = time.monotonic_ns()
-        child = subprocess.Popen([sys.executable, "-B", __file__, "fixture", mode],
+        argv = ([os.path.realpath(sys.executable), str(here)] if fixed else
+                [sys.executable, "-B", __file__])
+        # Fixed role verification needs Python and the script as argv[0:2].
+        # Preserve that shape while keeping the fixture import out of the source tree.
+        child = subprocess.Popen([*argv, "fixture", mode],
+                                 env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"} if fixed else None,
                                  start_new_session=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                  text=True)
         self.addCleanup(self.close, child)
@@ -85,6 +140,11 @@ class Sampling(unittest.TestCase):
         self.request = dict(root=root, known=[root], terminalProofs=[],
                             executable=dict(path=os.path.realpath(sys.executable),
                                             device=str(stat.st_dev), inode=str(stat.st_ino)))
+        if fixed:
+            info = here.stat()
+            self.request.update(fixedDevArgs=["fixture", mode], fixedChildExecutable=self.request["executable"],
+                                fixedLaunch=dict(cwd=os.getcwd(), shim=dict(path=str(here),
+                                device=str(info.st_dev), inode=str(info.st_ino))))
         self.events = []
         self.sample = rss.Sample(self.request, self.events.append)
 
@@ -128,6 +188,74 @@ class Sampling(unittest.TestCase):
         self.assertEqual({p["pid"] for p in obs}, {self.pid, self.child.pid})
         self.assertTrue(all(p["rssKiB"] > 0 and p["disposition"] == "live" for p in obs))
         self.assertEqual(obs[-1]["pgid"], self.pid)
+
+    def test_fixed_early_bind_precedes_reaping_after_discovery(self):
+        self.spawn(fixed=True)
+        self.command("release")
+        self.sample.fixed_child = self.request["executable"]
+        self.sample.fixed_workers = True
+        rows = self.sample.rows
+        def reap_after_row(directory, cap):
+            for pid in rows(directory, cap):
+                yield pid
+                if directory == "/proc" and pid == self.pid:
+                    self.command("reap")
+        with patch.object(self.sample, "rows", reap_after_row):
+            self.assertEqual(self.outcome()["type"], "complete")
+        child = next(e["process"] for e in self.events
+                     if e["type"] == "observation" and e["process"]["pid"] == self.pid)
+        self.assertEqual(child["disposition"], "proved-departure")
+        self.assertIsNone(child["rssKiB"])
+        self.assertEqual(child["fixedRole"], "unknown")
+
+    def test_captured_wrong_live_role_remains_invalid_after_exit(self):
+        self.spawn(fixed=True)
+        self.sample.fixed_child = self.request["executable"]
+        self.sample.fixed_workers = True
+        real_identity = self.sample.exe_identity
+        def exit_with_error(directory, row):
+            try:
+                return real_identity(directory, row)
+            except rss.Invalid:
+                self.command("release")
+                raise
+        with patch.object(self.sample, "exe_identity", exit_with_error):
+            outcome = self.outcome()
+        self.assertEqual(outcome["error"], "unexpected-fixed-native-group")
+        self.assertIsNotNone(outcome["terminalProof"])
+        self.assertFalse(any(e.get("process", {}).get("pid") == self.pid for e in self.events))
+
+    def test_fixed_live_compiler_identity_and_private_argv(self):
+        self.spawn()
+        exe = self.request["executable"]
+        self.sample.fixed_child = exe
+        self.sample.fixed_workers = True
+        native = dict(identity(self.pid), pgid=self.child.pid)
+        worker = dict(pid=600, pgid=600, ppid=self.pid)
+        directory = os.open(f"/proc/{self.pid}", rss.DIR)
+        self.addCleanup(os.close, directory)
+        self.sample.fixed_dev_args = ["dev", "--port", "12345"]
+        dev = b"\0".join(os.fsencode(arg) for arg in [exe["path"], *self.sample.fixed_dev_args]) + b"\0"
+        with patch.object(self.sample, "read", return_value=dev):
+            self.assertEqual(self.sample.exe_identity(directory, native), exe)
+        with patch.object(self.sample, "read", return_value=dev+b"extra\0"):
+            with self.assertRaisesRegex(rss.Invalid, "unexpected-fixed-dev-argv"):
+                self.sample.exe_identity(directory, native)
+        argc = os.fsencode(exe["path"]) + b"\0__zfb-compiler-worker\0"
+        with patch.object(self.sample, "read", return_value=argc):
+            actual = self.sample.exe_identity(directory, worker)
+            self.assertEqual(actual["workerArg"], "__zfb-compiler-worker")
+            with self.assertRaisesRegex(rss.Invalid, "unexpected-fixed-process-role"):
+                self.sample.exe_identity(directory, dict(worker, ppid=601))
+            with self.assertRaisesRegex(rss.Invalid, "unexpected-fixed-process-role"):
+                self.sample.exe_identity(directory, dict(worker, pgid=601))
+        for bad in (argc[:-1], argc+b"extra\0", b"other\0__zfb-compiler-worker\0"):
+            with patch.object(self.sample, "read", return_value=bad):
+                with self.assertRaisesRegex(rss.Invalid, "unexpected-fixed-compiler-argv"):
+                    self.sample.exe_identity(directory, worker)
+        with patch.object(os, "readlink", return_value="/different"):
+            with self.assertRaisesRegex(rss.Invalid, "unexpected-executable"):
+                self.sample.exe_identity(directory, worker)
 
     def test_final_root_and_cleanup_are_independently_bracketed(self):
         self.spawn()
