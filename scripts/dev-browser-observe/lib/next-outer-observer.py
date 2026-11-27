@@ -127,11 +127,17 @@ class OuterObservation:
 
     def close(self):
         self.state = "retired"
+        handles=list(self.anchors)
+        self.anchors.clear()
         if self.pair is not None:
-            self.io.close_pair(self.pair)
-            self.pair = None
-        while self.anchors:
-            self.io.close_pair(self.anchors.pop())
+            handles.append(self.pair)
+            self.pair=None
+        errors=[]
+        for handle in handles:
+            for fd in handle[:2]:
+                try:os.close(fd)
+                except OSError as error:errors.append(error)
+        if errors:raise errors[0]
 
     def accept_original(self, sock):
         self.io.require(self.state == "waiting", "repeated original pair")

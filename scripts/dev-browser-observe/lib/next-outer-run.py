@@ -137,14 +137,26 @@ if __name__=="__main__":
                      sockets=[os.readlink(f"/proc/self/fd/{fd}") for fd in fds])
     env={**os.environ,"ZFB_NEXT_OUTER_CHANNEL":json.dumps(declaration,separators=(",",":"))}
     sel=selectors.DefaultSelector()
-    cli=obs=pidfd=controller_handle=None
+    cli=obs=pidfd=controller_handle=marker=None
+    cleanup_errors=[]
+    def protect(stage, operation):
+        try:
+            return operation()
+        except BaseException as error:
+            cleanup_errors.append(dict(stage=stage,error=repr(error)))
+            return None
+    machine_state=Path.home()/".local/state/zfb/dev-browser-observe"
     sent=False;disposition=None;uncertain=None;supervisor=None;verified_closure=False
     result=None;failure=None;captured=False
     try:
+        marker=life.OwnershipMarker(machine_state/"next-outer-active.json",
+            dict(stage="pre-launch",labelDir=str(directory),nonce=nonce,outer=self_birth,
+                 argv=argv,workDeadlineNs=str(work_end),endNs=str(end)))
         cli=subprocess.Popen(argv,pass_fds=fds,env=env)
         pidfd=os.pidfd_open(cli.pid)
         supervisor=proc_birth(cli.pid)
         need(supervisor["ppid"]==os.getpid(),"foreign CLI")
+        marker.append(dict(stage="supervisor",birth=supervisor))
         for _,child in pairs:child.close()
         sel.register(pidfd,selectors.EVENT_READ,"exit")
         sel.register(pairs[1][0],selectors.EVENT_READ,"header")
@@ -183,6 +195,7 @@ if __name__=="__main__":
                     except BaseException:
                         os.close(afd)
                         raise
+                    marker.append(dict(stage="controller",birth=controller_handle[1]))
                     obs=reader.OuterObservation(data["contract"],data["holder"],data["worker"],
                         nonce,data["token"],data["descriptors"],min(work_end,now()+3_000_000_000),record)
                     record(dict(stage="authenticated-header",controller=data["controller"],
@@ -216,32 +229,50 @@ if __name__=="__main__":
         disposition=life.disposition(result,captured,sent,summary["status"])
     except BaseException as exc:
         failure=repr(exc)
-        record(dict(stage="failure",error=failure))
+        protect("failure journal",lambda:record(dict(stage="failure",error=failure)))
     finally:
-        if obs:obs.close()
-        sel.close()
-        for owner,child in pairs:owner.close();child.close()
-        try:
-            if cli:
-                result,uncertain=life.finish_cli(cli,end,pidfd,controller_handle,record)
-            if controller_handle:
+        if obs:protect("observer close",obs.close)
+        protect("selector close",sel.close)
+        for owner,child in pairs:
+            protect("outer socket close",owner.close)
+            protect("child socket close",child.close)
+        if cli:
+            completion=protect("owned supervisor teardown",
+                lambda:life.finish_cli(cli,end,pidfd,controller_handle,record))
+            if completion is None:
+                uncertain=dict(reason="supervisor teardown exception")
+            else:
+                result,uncertain=completion
+        if controller_handle:
+            def exited():
                 import select
-                poll=select.poll();poll.register(controller_handle[0],select.POLLIN)
-                if not poll.poll(0):
-                    uncertain=uncertain or dict(reason="controller exit not proved",birth=controller_handle[1])
-            if uncertain or (failure and cli and not verified_closure):
-                why=uncertain or {"reason":failure}
+                poll=select.poll()
+                poll.register(controller_handle[0],select.POLLIN)
+                return any(events in (1,16,17) for _,events in poll.poll(0))
+            if not protect("controller exit proof",exited):
+                uncertain=uncertain or dict(reason="controller exit not proved",birth=controller_handle[1])
+        if controller_handle:protect("controller pidfd close",lambda:os.close(controller_handle[0]))
+        if pidfd is not None:protect("supervisor pidfd close",lambda:os.close(pidfd))
+        usage=protect("observer usage",lambda:resource.getrusage(resource.RUSAGE_SELF))
+        if usage:
+            protect("terminal journal",lambda:record(dict(stage="closed",rc=result,failure=failure,
+                    disposition=disposition,browserInventory=captured,observerMaxRssKiB=usage.ru_maxrss,
+                    observerUserSeconds=usage.ru_utime,observerSystemSeconds=usage.ru_stime)))
+        protect("journal close",log.close)
+        unresolved=uncertain or ({"reason":"outer cleanup or evidence unavailable"} if cleanup_errors else None)
+        if failure and cli and not verified_closure:
+            unresolved=unresolved or {"reason":failure}
+        if marker:
+            if unresolved:
+                failure=failure or unresolved["reason"]
                 state=dict(version=1,labelDir=str(directory),controllerPid=controller_handle[1]["pid"] if controller_handle else None,
-                           outer=self_birth,supervisor=supervisor,unresolved=[why])
-                hold_paths=[root/(label+"-outer-hold.json"),Path.home()/".local/state/zfb/dev-browser-observe/active.json"]
-                record(dict(stage="hold",holds=life.preserve_hold(hold_paths,state),unresolved=why))
-                failure=failure or why["reason"]
-        finally:
-            if controller_handle:os.close(controller_handle[0])
-            if pidfd is not None:os.close(pidfd)
-        usage=resource.getrusage(resource.RUSAGE_SELF)
-        record(dict(stage="closed",rc=result,failure=failure,disposition=disposition,browserInventory=captured,
-                    observerMaxRssKiB=usage.ru_maxrss,observerUserSeconds=usage.ru_utime,
-                    observerSystemSeconds=usage.ru_stime))
-        log.close()
+                           outer=self_birth,supervisor=supervisor,unresolved=[unresolved],cleanupErrors=cleanup_errors[:16])
+                protect("ownership marker update",lambda:marker.append(dict(stage="unresolved",**state)))
+                hold_paths=[root/(label+"-outer-hold.json"),machine_state/"active.json"]
+                holds=protect("independent holds",lambda:life.preserve_hold(hold_paths,state))
+                protect("stderr hold report",lambda:print(json.dumps(dict(holds=holds,state=state)),file=sys.stderr))
+            else:
+                protect("release owned outer marker",marker.release)
+            protect("ownership marker close",marker.close)
+        if cleanup_errors and not failure:failure="outer finalization incomplete"
     sys.exit(1 if failure or result is None else result if result>=0 else 128-result)
