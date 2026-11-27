@@ -333,9 +333,11 @@ test("refuses when stopped during the wait", async () => {
 });
 
 test("a stale decision waits only for a tick inside the declared skew allowance", async () => {
+  assert.equal(DECISION_SETTLE.tickSkewMs, 400, "owner-approved allowance (#4878)");
   for (const [late, expect] of [
+    [350, null],
     [DECISION_SETTLE.tickSkewMs - 1, null],
-    [DECISION_SETTLE.tickSkewMs + 50, /tick-late/],
+    [450, /tick-late/],
   ]) {
     const w = world();
     await w.settle();

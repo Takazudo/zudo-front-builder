@@ -10,9 +10,10 @@ export const CSEC_EXE_SHA256 = "a7b39da35a93ea4f325e63bbd3d33163d583ac851d1a9c5e
 // that finds a sample in flight, or a stale sample with the next tick due,
 // waits for that ordinary sample to settle and decides on it. It never
 // dispatches a sample and never applies a result to an earlier instant.
-// coreMs/closureMs are the helper budgets in linux-rss-sample.mjs. tickSkewMs
-// covers the late ticks recorded on WSL (270.8 ms at aa100 s1-A epoch 6,
-// 231.6 ms in #4862) with margin, and stays below the sampler's own 1 s
+// coreMs/closureMs are the helper budgets in linux-rss-sample.mjs.
+// tickSkewMs is exactly 400 ms by owner decision on #4878. It covers the late
+// ticks recorded on WSL: 270.8 ms (aa100 s1-A epoch 6), 231.6 ms (#4862
+// rapid-recovery) and 81 ms (#4870 R3). It stays below the sampler's own 1 s
 // missed-dispatch limit.
 export const DECISION_SETTLE = { coreMs: 750, closureMs: 200, tickSkewMs: 400 };
 
