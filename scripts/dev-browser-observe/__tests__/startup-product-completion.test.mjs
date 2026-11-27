@@ -218,6 +218,7 @@ const sample = (live = [root, native], over = {}) => ({
   strict: true,
   epoch: 4,
   startedNs: "30",
+  resultNs: "31",
   live,
   ...over,
 });
@@ -237,6 +238,8 @@ test("a product completion is confirmed at readiness and carried into the family
   const proof = f.h.familyProof();
   assert.deepEqual([proof.worker, proof.terminal, proof.release], [null, null, null]);
   assert.deepEqual(proof.completion.confirmed, { epoch: 4, startedNs: "30" });
+  const row = f.records.find((r) => r.type === "fixed-startup-completion-confirmation");
+  assert.deepEqual([row.ok, row.sampleStartedNs, row.sampleResultNs], [true, "30", "31"]);
   assert.deepEqual(f.h.startupOutcome(), {
     outcome: "product-completion",
     scoutStatus: "worker-not-observed",

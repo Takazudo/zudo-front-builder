@@ -599,6 +599,7 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
         session,
         epoch: sample?.epoch ?? null,
         sampleStartedNs: sample?.startedNs ?? null,
+        sampleResultNs: sample?.resultNs ?? null,
         live,
         controllerChildren,
         expectedChildren,
