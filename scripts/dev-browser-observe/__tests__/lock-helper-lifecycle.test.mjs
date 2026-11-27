@@ -219,3 +219,29 @@ it("rejects the exact supplied LOCKED frame when the child exit is already known
   expect(error.message).toBe("lock helper exited before acquisition decision");
   expectClosed(error);
 });
+
+it("never spawns when parent file preparation exhausted the original acquisition budget", async () => {
+  const original = process.hrtime.bigint();
+  const clock = vi
+    .spyOn(process.hrtime, "bigint")
+    .mockReturnValue(original + 3000000000n)
+    .mockReturnValueOnce(original);
+  const spawnHelper = vi.fn();
+  try {
+    const error = await refusal(acquireLock(path, { spawnHelper }));
+    expect(spawnHelper).not.toHaveBeenCalled();
+    expect(error.message).toBe("lock helper acquisition timed out");
+    expect(error.lockHelper).toMatchObject({
+      pid: null,
+      birth: null,
+      exit: null,
+      close: null,
+      signalRequest: null,
+      cleanupVerified: true,
+      decisionNs: String(original + 3000000000n),
+    });
+    expect(error.lockHelper.parentOpenedFile.inode).toMatch(/^\d+$/);
+  } finally {
+    clock.mockRestore();
+  }
+});

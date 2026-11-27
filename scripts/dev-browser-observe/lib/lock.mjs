@@ -74,8 +74,11 @@ export async function acquireLock(path, { perl = "perl", signal, spawnHelper = s
     } finally {
       closeSync(fd);
     }
+    signal?.throwIfAborted();
+    if (process.hrtime.bigint() >= deadline) throw new Error("lock helper acquisition timed out");
     child = spawnHelper(perl, ["-e", PERL_HELPER, path], { stdio: ["pipe", "pipe", "pipe"] });
   } catch (error) {
+    evidence.decisionNs = evidence.finishedNs = String(process.hrtime.bigint());
     evidence.cleanupVerified = true; // No ChildProcess was returned.
     throw Object.assign(error instanceof Error ? error : new Error(String(error)), {
       lockHelper: structuredClone(evidence),
@@ -129,12 +132,14 @@ export async function acquireLock(path, { perl = "perl", signal, spawnHelper = s
   child.on("error", refuse);
   const exited = new Promise((resolve) =>
     child.once("exit", (code, signal) => {
+      evidence.exitNs = String(process.hrtime.bigint());
       evidence.exit = { code, signal };
       resolve(evidence.exit);
     }),
   );
   const closed = new Promise((resolve) =>
     child.once("close", (code, signal) => {
+      evidence.closeNs = String(process.hrtime.bigint());
       evidence.close = { code, signal };
       if (!evidence.response)
         refuse(new Error("lock helper closed before reporting: " + JSON.stringify(response)));
