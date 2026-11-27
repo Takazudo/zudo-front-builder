@@ -109,13 +109,13 @@ pub use orchestrator::{
     OrchestratorConfig, PreTickRefreshFuture, PreTickRefreshHook,
 };
 pub use pipeline::{
-    apply_prod_asset_pipeline, synthesize_page_id_from_output, validate_companion_file_set,
-    AssetEmitter, AssetEmitterPayload, AssetKind, AssetPipeline, BuildContext, BuildMode,
-    BuildOutcome, ClientScriptsRunner, CssPassRequest, CssRunner, DevAssetPipeline,
-    DevBuildContext, DynamicInjectedProbe, EmittedAsset, IslandsBundleInfo, IslandsRunner,
-    PageRenderer, ProdAssetEmitterInputs, ProdBuildContext, ProdRenderedFile,
-    ProductionAssetPipeline, ProductionEmitters, RefreshOutcome, RelDistPath, RenderedPage,
-    RendererReloader, SsrPublishProbe, StaleProbe,
+    apply_prod_asset_pipeline, normalize_finalized_assets, synthesize_page_id_from_output,
+    validate_companion_file_set, AssetEmitter, AssetEmitterPayload, AssetKind, AssetPipeline,
+    BuildContext, BuildMode, BuildOutcome, ClientScriptsRunner, CssPassRequest, CssRunner,
+    DevAssetPipeline, DevBuildContext, DynamicInjectedProbe, EmittedAsset, FinalizedAsset,
+    IslandsBundleInfo, IslandsRunner, PageRenderer, ProdAssetEmitterInputs, ProdBuildContext,
+    ProdRenderedFile, ProductionAssetPipeline, ProductionEmitters, RefreshOutcome, RelDistPath,
+    RenderedPage, RendererReloader, SsrPublishProbe, StaleProbe,
 };
 pub use plan::{ContentNarrowing, CssChangeSet, PageSelection, RebuildPlan};
 pub use plugin_bundler::{

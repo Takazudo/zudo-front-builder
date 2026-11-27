@@ -21,3 +21,4 @@ export type {
   PageModule,
   PageRouter,
 } from "./router.js";
+export type { PageAsset, PageAssetKind, PageAssetManifest } from "./page-assets.js";

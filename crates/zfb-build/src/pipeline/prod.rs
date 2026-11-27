@@ -73,7 +73,7 @@ use crate::plan::{PageSelection, RebuildPlan};
 /// Used as the key in [`BuildOutcome::hashed_asset_urls`]. Adding a new
 /// variant is the right way to wire a new asset (e.g. a manifest.json
 /// or a sitemap-derived RSS feed) into the production pipeline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AssetKind {
     /// The global stylesheet emitted by the CSS pipeline (zudo-wind
     /// utilities plus CSS Modules). Mirrors `zfb_css::CssPipelineOutput`.
@@ -85,6 +85,82 @@ pub enum AssetKind {
     /// pipeline. Each `*.client.{ts,tsx,js,jsx}` entry produces one
     /// `ClientScript` asset shipped to `dist/assets/client/<name>-<hash>.js`.
     ClientScript,
+}
+
+impl AssetKind {
+    /// Wire name used in the SSR asset record embedded in the runtime bundle
+    /// (#4887). Also the deterministic sort rank via [`Self::rank`].
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            AssetKind::Css => "css",
+            AssetKind::Islands => "islands",
+            AssetKind::ClientScript => "client-script",
+        }
+    }
+
+    /// Sort rank for the finalized asset record: CSS, islands, client scripts.
+    pub fn rank(self) -> u8 {
+        match self {
+            AssetKind::Css => 0,
+            AssetKind::Islands => 1,
+            AssetKind::ClientScript => 2,
+        }
+    }
+}
+
+/// One asset the production pipeline actually shipped, as a stable public URL
+/// paired with its final (content-hashed) public URL (#4887).
+///
+/// Both strings are the exact public URLs the pipeline uses: `stable_url` is
+/// the emitter's stable URL after the base prefix was applied, and `url` is
+/// the URL [`ProductionAssetPipeline`] minted for the written file. They are
+/// raw strings (never HTML-escaped, never percent-encoded or decoded).
+///
+/// The SSR runtime bundle receives the record so request-time HTML can use
+/// the same final URLs as SSG pages. CSS and islands entries are added to a
+/// managed page's head; client-script entries only resolve explicit
+/// references.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FinalizedAsset {
+    /// Asset category.
+    pub kind: AssetKind,
+    /// Stable public URL (base-prefixed) a page references.
+    pub stable_url: String,
+    /// Final public URL of the shipped file.
+    pub url: String,
+}
+
+/// Sort and de-duplicate a finalized asset record (#4887).
+///
+/// Order: kind rank (CSS, islands, client scripts), then `stable_url` by
+/// byte order. Identical entries collapse to one. Two entries with the same
+/// `stable_url` but a different kind or final URL are a build error.
+pub fn normalize_finalized_assets(assets: &[FinalizedAsset]) -> Result<Vec<FinalizedAsset>> {
+    let mut sorted: Vec<FinalizedAsset> = assets.to_vec();
+    sorted.sort_by(|a, b| {
+        (a.kind.rank(), a.stable_url.as_str(), a.url.as_str()).cmp(&(
+            b.kind.rank(),
+            b.stable_url.as_str(),
+            b.url.as_str(),
+        ))
+    });
+    sorted.dedup();
+    let mut by_stable: std::collections::BTreeMap<&str, &FinalizedAsset> =
+        std::collections::BTreeMap::new();
+    for asset in &sorted {
+        if let Some(previous) = by_stable.insert(asset.stable_url.as_str(), asset) {
+            anyhow::bail!(
+                "production: stable asset URL {:?} maps to two different shipped assets \
+                 ({} -> {:?} and {} -> {:?})",
+                asset.stable_url,
+                previous.kind.wire_name(),
+                previous.url,
+                asset.kind.wire_name(),
+                asset.url,
+            );
+        }
+    }
+    Ok(sorted)
 }
 
 /// One verbatim companion file shipped alongside an [`EmittedAsset`] entry.
