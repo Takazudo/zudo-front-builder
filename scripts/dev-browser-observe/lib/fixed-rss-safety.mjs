@@ -23,11 +23,11 @@ function pin(path, digest) {
   }
 }
 
-export function fixedAstroExecutables(facts) {
+export function fixedAstroExecutables(facts, protocol = FIXED_ASTRO_FOOTER_PROTOCOL) {
   if (facts.installReceipt.node.realpath !== realpathSync(process.execPath))
     throw new Error("fixed peer Node executable does not match install receipt");
   return {
-    protocol: FIXED_ASTRO_FOOTER_PROTOCOL,
+    protocol,
     root: pin(process.execPath, facts.installReceipt.node.sha256),
   };
 }

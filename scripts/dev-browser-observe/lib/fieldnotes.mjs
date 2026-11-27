@@ -1,3 +1,5 @@
+import { astroTextPredicate } from "./astro-text.mjs";
+import { ASTRO_TITLE } from "./astro-title.mjs";
 import { ASTRO_FOOTER, astroFooterPredicate } from "./astro-footer.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -583,7 +585,7 @@ export function planFieldNotesOp(
   m,
   model,
   op,
-  { token = newToken(), tokens = null, strictAstroFooter = false } = {},
+  { token = newToken(), tokens = null, strictAstroFooter = false, strictAstroTitle = false } = {},
 ) {
   const methods = FN_OP_WRITE_METHODS[op.op];
   if (!methods) throw new Error(`unknown field-notes op ${op.op}`);
@@ -698,14 +700,26 @@ export function planFieldNotesOp(
       sup.push(archiveCard(next, slug, (s) => text(s, "includes", token)));
       for (const r of referrersOf(next, slug))
         sup.push({ path: href(r), predicate: text(FN_SEL.relatedLinkTo(slug), "includes", token) });
+      const source = readArticle(m, slug);
+      if (
+        strictAstroTitle &&
+        (slug !== "article-00005" ||
+          old.title !== ASTRO_TITLE ||
+          getFrontmatter(source, "title") !== old.title ||
+          source.split("\n").filter((line) => line.startsWith("title:")).length !== 1 ||
+          source.includes(token))
+      )
+        throw new Error("unexpected fixed Astro title source");
+      const primary = titleTargetPredicate(next, slug, target, token);
+      const strict = (p) => astroTextPredicate(title, p.selector);
       return {
         ...base,
         targetPath: target,
-        predicate: titleTargetPredicate(next, slug, target, token),
-        supplemental: sup,
-        writes: [
-          inPlace(articlePath(m, slug), setFrontmatter(readArticle(m, slug), "title", title)),
-        ],
+        predicate: strictAstroTitle ? strict(primary) : primary,
+        supplemental: strictAstroTitle
+          ? sup.map((c) => ({ ...c, predicate: strict(c.predicate) }))
+          : sup,
+        writes: [inPlace(articlePath(m, slug), setFrontmatter(source, "title", title))],
         nextModel: next,
       };
     }
@@ -1379,7 +1393,7 @@ export function fnWarmPaths(scenario) {
  */
 export function fieldNotesOps(
   m,
-  { restorationWriteMethod = "in-place", strictAstroFooter = false } = {},
+  { restorationWriteMethod = "in-place", strictAstroFooter = false, strictAstroTitle = false } = {},
 ) {
   const original = m.model;
   const state = { model: original, touched: new Set(), titles: new Map() };
@@ -1390,7 +1404,7 @@ export function fieldNotesOps(
   return {
     state,
     prepareAttempt: (op) => {
-      const a = planFieldNotesOp(m, state.model, op, { strictAstroFooter });
+      const a = planFieldNotesOp(m, state.model, op, { strictAstroFooter, strictAstroTitle });
       for (const s of a.touched ?? []) state.touched.add(s);
       a.applied = () => {
         state.model = a.nextModel;
