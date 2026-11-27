@@ -107,6 +107,93 @@ entirely — `export default async function Products()` — is enough. See
 [A `prerender = false` route always returns 405](./troubleshooting.mdx#a-prerender-false-route-always-returns-405)
 if you're debugging this symptom in an existing route.
 
+## Shared CSS, islands and client scripts in SSR pages
+
+A `prerender = false` page can use the same Layout as your prerendered
+pages. `zfb build` hands the URLs of the assets it actually shipped to the
+SSR bundle, and the router finishes each managed HTML response with them,
+the same way the build finishes the prerendered HTML:
+
+- The stylesheet and the islands entry are added before `</head>` when
+  they are missing, with the same hashed URLs the prerendered pages use.
+- A client script is only loaded where you reference it with
+  `clientScript("name")`. That reference is resolved to the hashed URL;
+  other client scripts are never added.
+- References to URLs the build did not ship are left as they are.
+
+You don't manage asset URLs by hand. A page that returns ordinary JSX with
+the default `text/html` content type gets this automatically:
+
+```tsx
+// pages/account.tsx
+import { clientScript } from "@takazudo/zfb";
+import { Layout } from "../components/layout";
+
+export const prerender = false;
+
+export default function Account() {
+  return (
+    <Layout title="Account">
+      <script type="module" src={clientScript("account-menu")} />
+    </Layout>
+  );
+}
+```
+
+### HTML with a status or headers: `htmlPage()`
+
+To send managed HTML with a status code or headers, return `htmlPage()`
+from `@takazudo/zfb-runtime/server` instead of a `Response`:
+
+```tsx
+// pages/[...slug].tsx
+import { htmlPage } from "@takazudo/zfb-runtime/server";
+import { Layout } from "../components/layout";
+
+export const prerender = false;
+
+export default function Fallback() {
+  return htmlPage(
+    <Layout title="Not found">
+      <p>Nothing here.</p>
+    </Layout>,
+    { status: 404, headers: { "Cache-Control": "no-store" } },
+  );
+}
+```
+
+`htmlPage(body, { status, statusText, headers })` takes JSX or an HTML
+string. The router renders it, adds the doctype, finishes the asset URLs
+and then builds the `Response`:
+
+- `status` defaults to 200. Statuses without a body (204, 205, 304) are
+  rejected; return a raw `Response` for those.
+- `Content-Type` defaults to `text/html; charset=utf-8`; any other media
+  type is rejected.
+- A `Content-Encoding` other than `identity` is rejected, because the body
+  is changed after you return it. For the same reason `Content-Length`,
+  `ETag`, `Digest`, `Content-Digest`, `Repr-Digest` and `Content-MD5` are
+  dropped.
+- Every other header is kept, including `Cache-Control`, `Vary` and
+  multiple `Set-Cookie` values. HEAD requests get no body.
+
+### What is never changed
+
+- A returned `Response` (HTML, JSON, XML, binary, redirects, streams) is
+  passed through untouched. Its body is not read, so a stream's first
+  chunk reaches the client without waiting for the rest.
+- A page that returns a plain string, or that sets a non-HTML
+  `contentType`, is sent as-is. Wrap a string in `htmlPage()` if you want
+  the asset handling.
+- `.html` pages are still copied verbatim.
+
+### Development server
+
+`zfb dev` serves the stable, unhashed asset URLs and keeps its own HTML
+handling (for example live reload), so the hashed-URL step above happens
+only in the production build. The dev server also reads the whole response
+before sending HTML, so it is not a byte-for-byte or streaming passthrough.
+
 ## dev-prod parity for `prerender = false`
 
 `zfb dev` runs `prerender = false` routes through the **same render

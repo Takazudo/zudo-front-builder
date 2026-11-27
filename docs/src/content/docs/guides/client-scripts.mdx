@@ -77,6 +77,12 @@ production build pipeline rewrites this to the hashed URL
    (`/assets/client/<name>.js`, possibly with a `base` prefix) in the
    rendered HTML is replaced with the hashed URL.
 
+Request-time (`prerender = false`) pages get the same result: the build
+passes the hashed URLs to the SSR bundle, and the router resolves each
+`clientScript()` reference in the HTML it renders. Only referenced scripts
+load; see
+[Shared CSS, islands and client scripts in SSR pages](./ssr-and-cloudflare-bindings.mdx#shared-css-islands-and-client-scripts-in-ssr-pages).
+
 During `zfb dev`, client scripts are bundled but **not** hashed. The stable
 URL is served directly. This means the URL returned by `clientScript()` is
 live-reloadable in dev without a full page cycle.
@@ -174,17 +180,16 @@ clientScript("search-widget")
 The production pipeline uses the same base-prefixed URL as the rewrite key, so
 the hash swap still fires. You do not need to manage the prefix manually.
 
-## SSR-only note (v1)
+## Server-side helper
 
-`clientScript()` is designed for **SSR-context use**: rendering a `<script>`
-tag during server-side render. Calling it in browser-executed code also works,
-but the base prefix (`globalThis.__zfb.base`) is not shipped to the browser in
-v1 — so a browser-side call returns the unprefixed stable URL rather than the
-base-prefixed one.
+`clientScript()` is meant for rendering a `<script>` tag on the server, in
+prerendered and request-time pages alike. The `base` prefix is set before
+page modules are evaluated, so a call at module top level (for example a
+constant in a shared Layout) already includes it.
 
-For the typical use-case of generating a `<script src="…">` tag at render
-time, this is not a problem: the tag is written once by the SSR renderer and
-the URL is correct.
+Calling it in browser-executed code also works, but the base prefix
+(`globalThis.__zfb.base`) is not shipped to the browser, so a browser-side
+call returns the unprefixed stable URL, which is not hashed either.
 
 ## `import.meta.glob` is not supported
 

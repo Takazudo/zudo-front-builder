@@ -321,6 +321,37 @@ export default { fetch: router };
    for every entry in `pages`. The handler imports the page module, awaits
    the page function, renders its result with the owned renderer, and
    returns the string in a `Response`.
+3. When `options.assets` (the build's finalized asset record, passed only
+   by `zfb build` to the SSR-only runtime bundle) is non-empty, a page that
+   returns JSX with a `text/html` content type, or an `htmlPage(...)`
+   result, has its stable asset URLs replaced with the hashed URLs and the
+   stylesheet and islands entry added before `</head>` when missing. Raw
+   `Response` results, plain strings and non-HTML pages are not changed.
+
+### `htmlPage(body, init?)`
+
+Server-only (`@takazudo/zfb-runtime/server`). Returns a frozen page result
+for HTML that needs a status or headers but should still be rendered and
+finished by the router:
+
+```tsx
+import { htmlPage } from "@takazudo/zfb-runtime/server";
+
+export default function NotFound() {
+  return htmlPage(<Layout title="Not found" />, {
+    status: 404,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
+```
+
+`body` is JSX or an HTML string. `status` defaults to 200 and must have a
+body (204, 205 and 304 throw). `Content-Type` defaults to
+`text/html; charset=utf-8` and must stay `text/html`. `Content-Encoding`
+other than `identity` throws. `Content-Length`, `ETag`, `Digest`,
+`Content-Digest`, `Repr-Digest` and `Content-MD5` are dropped because the
+router rewrites the body. All other headers are kept, including multiple
+`Set-Cookie` values.
 
 ### `PageDefinition`
 
