@@ -478,6 +478,15 @@ mod tests {
         };
         let outcome = apply_prod_asset_pipeline(dist, Vec::new(), inputs).unwrap();
         assert_eq!(outcome.hashed_asset_urls.len(), 1);
+        // #4887: an SSR-only build has no pages but still needs the record.
+        assert_eq!(
+            outcome.finalized_assets,
+            vec![crate::pipeline::FinalizedAsset {
+                kind: crate::pipeline::AssetKind::Css,
+                stable_url: "/assets/styles.css".to_string(),
+                url: outcome.hashed_asset_urls[0].1.clone(),
+            }]
+        );
         let entries: Vec<String> = fs::read_dir(dist.join("assets"))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())

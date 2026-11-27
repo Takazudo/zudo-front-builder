@@ -2743,6 +2743,7 @@ export default function PostPage({ title, params }: Props) {
             bundle_exclude: Vec::new(),
             base_prefix: None,
             dev_trailing_slash_dispatch: false,
+            ssr_assets: None,
         };
 
         let out = zfb_build::bundle(input).expect("bundle should succeed for fixture");

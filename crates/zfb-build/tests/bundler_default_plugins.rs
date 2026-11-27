@@ -357,6 +357,7 @@ fn make_input(root: &std::path::Path, outdir_name: &str) -> BundlerInput {
         bundle_exclude: Vec::new(),
         base_prefix: None,
         dev_trailing_slash_dispatch: false,
+        ssr_assets: None,
     }
 }
 

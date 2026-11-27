@@ -80,6 +80,70 @@ export default async function Products() {
 
 受信した `Request` がそもそも不要なら、仮引数を単に外す（`export default async function Products()`）だけで十分です。既存のルートでこの症状を追っているところなら、[`prerender = false` のルートが常に 405 を返す](./troubleshooting.mdx#prerender-false-のルートが常に-405-を返す) も参照してください。
 
+## SSR ページで共通の CSS・islands・クライアントスクリプトを使う
+
+`prerender = false` のページでも、プリレンダリングされるページと同じ Layout を使えます。`zfb build` は実際に出力したアセットの URL を SSR バンドルに渡し、ルーターは管理対象の HTML レスポンスをその URL で仕上げます。プリレンダリング済み HTML の仕上げと同じ扱いです。
+
+- スタイルシートと islands のエントリーは、`</head>` の前に無ければ追加されます。URL はプリレンダリング済みページと同じハッシュ付き URL です。
+- クライアントスクリプトは、`clientScript("name")` で参照したページだけで読み込まれます。その参照はハッシュ付き URL に解決され、他のクライアントスクリプトが追加されることはありません。
+- ビルドが出力していない URL への参照はそのまま残ります。
+
+アセット URL を手で管理する必要はありません。既定の `text/html` で通常の JSX を返すページには自動で適用されます。
+
+```tsx
+// pages/account.tsx
+import { clientScript } from "@takazudo/zfb";
+import { Layout } from "../components/layout";
+
+export const prerender = false;
+
+export default function Account() {
+  return (
+    <Layout title="Account">
+      <script type="module" src={clientScript("account-menu")} />
+    </Layout>
+  );
+}
+```
+
+### ステータスやヘッダーを指定する HTML: `htmlPage()`
+
+管理対象の HTML をステータスコードやヘッダー付きで返すには、`Response` の代わりに `@takazudo/zfb-runtime/server` の `htmlPage()` を返します。
+
+```tsx
+// pages/[...slug].tsx
+import { htmlPage } from "@takazudo/zfb-runtime/server";
+import { Layout } from "../components/layout";
+
+export const prerender = false;
+
+export default function Fallback() {
+  return htmlPage(
+    <Layout title="Not found">
+      <p>Nothing here.</p>
+    </Layout>,
+    { status: 404, headers: { "Cache-Control": "no-store" } },
+  );
+}
+```
+
+`htmlPage(body, { status, statusText, headers })` は JSX または HTML 文字列を受け取ります。ルーターがそれを描画し、doctype を付け、アセット URL を仕上げてから `Response` を作ります。
+
+- `status` の既定値は 200 です。本文を持てないステータス (204、205、304) は拒否されます。その場合は通常の `Response` を返してください。
+- `Content-Type` の既定値は `text/html; charset=utf-8` で、他のメディアタイプは拒否されます。
+- 返した後に本文が変更されるため、`identity` 以外の `Content-Encoding` は拒否されます。同じ理由で `Content-Length`、`ETag`、`Digest`、`Content-Digest`、`Repr-Digest`、`Content-MD5` は除外されます。
+- それ以外のヘッダーは保持されます。`Cache-Control`、`Vary`、複数の `Set-Cookie` も含みます。HEAD リクエストには本文が付きません。
+
+### 変更されないもの
+
+- 返された `Response` (HTML、JSON、XML、バイナリ、リダイレクト、ストリーム) はそのまま渡されます。本文は読まれないため、ストリームの最初のチャンクは残りを待たずにクライアントへ届きます。
+- 文字列を返すページや、HTML 以外の `contentType` を指定したページにはアセット処理を行いません。変わるのは従来からある 1 点だけで、`<html` で始まる HTML 文字列には `<!doctype html>` が付きます。アセット処理を受けたい文字列は `htmlPage()` で包んでください。
+- `.html` ページは従来どおりそのままコピーされます。
+
+### 開発サーバー
+
+`zfb dev` はハッシュなしの安定した URL を配信し、独自の HTML 処理 (ライブリロードなど) を維持します。そのため上記のハッシュ付き URL への処理は本番ビルドだけで行われます。また開発サーバーは HTML を送る前にレスポンス全体を読み込むため、バイト単位の素通しやストリーミングにはなりません。
+
 ## `prerender = false` の dev と本番の同等性
 
 `zfb dev` は `prerender = false` のルートを、Cloudflare が本番で実行するのと**同じレンダリングコード**（あなたのページモジュールとそれらが import するコード）を通して動かします。ただし実行するのは workerd ではなく zfb の組み込み V8 ホストです。開発サーバーは埋め込みの V8 アイソレート（ビルド時 SSG を駆動するのと同じもの）をホストし、開発ルーターは `prerender = false` の URL をリクエスト時にそのアイソレートへディスパッチします。ビルド時でも静的スナップショットからでもありません。
