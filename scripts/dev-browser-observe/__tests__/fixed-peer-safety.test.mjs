@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { processExecutable, processIdentityChecks } from "../lib/distribution.mjs";
+import { peerProcessIdentity, readPeerExecutable } from "../lib/fixed-peer-roles.mjs";
+import { realpathSync, statSync } from "node:fs";
 import { ObserverPage } from "../lib/browser.mjs";
 import { sha256 } from "../lib/util.mjs";
 import { peerArgv } from "../lib/fixed-peer-roles.mjs";
@@ -413,5 +416,65 @@ test.each([false, true])(
     } finally {
       vi.useRealTimers();
     }
+  },
+);
+
+test.skipIf(process.platform !== "linux")(
+  "a retitled Next server with unavailable lsof still needs a fresh birth-bound ELF check",
+  () => {
+    const image = { path: "/pinned/node", device: "2096", inode: "638090" };
+    const processRow = {
+      pid: 2062827,
+      ppid: 2062815,
+      pgid: 2062801,
+      startTicks: "43738295",
+      bootId: "1edafe52-089e-4f16-a478-1143d29052bd",
+      birthVersion: "linux-proc-v1",
+      comm: "next-server (v1",
+      role: "next-server",
+      image,
+      elfHeader: "7f454c46",
+    };
+    const lookup = processExecutable(processRow.pid, (cmd) => {
+      if (cmd === "lsof") throw Error("no txt path");
+      return processRow.comm;
+    });
+    assert.deepEqual(lookup, { path: null, method: "unavailable" });
+    const legacy = processIdentityChecks({
+      processes: [processRow],
+      roles: [processRow],
+      nodeRealpath: image.path,
+      appDir: "/app",
+      exeOf: () => lookup,
+      alive: () => true,
+    });
+    assert.equal(legacy[0].ok, false);
+    const qualified = { chain: [processRow] },
+      socket = { pid: processRow.pid, port: 41923, inode: "4860700" };
+    const probe = vi.fn((_births, _cfg, ready, file) => {
+      assert(ready && file);
+      return { chain: [processRow], socket };
+    });
+    const run = (known = [processRow], read = probe) =>
+      peerProcessIdentity([processRow], known, qualified, { image }, read);
+    assert.equal(run()[0].actual.inode, image.inode);
+    assert.equal(probe.mock.calls.length, 1);
+    for (const fields of [
+      { pid: 999 },
+      { ppid: 0 },
+      { startTicks: "9" },
+      { role: "server" },
+      { image: { ...image, inode: "42" } },
+      { elfHeader: null },
+    ]) {
+      assert.throws(() =>
+        run([processRow], () => ({ chain: [{ ...processRow, ...fields }], socket })),
+      );
+    }
+    assert.throws(() => run([]));
+    const actual = readPeerExecutable("/proc/self/exe");
+    assert.equal(actual.imagePath, realpathSync(process.execPath));
+    assert.equal(actual.elfHeader, "7f454c46");
+    assert.equal(actual.info.ino, statSync(process.execPath, { bigint: true }).ino);
   },
 );

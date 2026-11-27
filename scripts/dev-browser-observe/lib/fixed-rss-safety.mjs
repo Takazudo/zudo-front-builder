@@ -4,7 +4,7 @@ import { closeSync, fstatSync, openSync, readSync, realpathSync } from "node:fs"
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { samplePeerRoles, FIXED_PEER_PROTOCOL } from "./fixed-peer-roles.mjs";
+import { samplePeerRoles, peerProcessIdentity, FIXED_PEER_PROTOCOL } from "./fixed-peer-roles.mjs";
 import { sampleRendererMemory } from "./linux-rss-sample.mjs";
 
 function pin(path, digest) {
@@ -73,6 +73,7 @@ export function startFixedRssSafety({
   let measuredCycles = 0;
   let peakKiB = null;
   const stable = new Map();
+  let qualifiedPeer;
   let readyNs,
     firstSpawn,
     postCycles = 0,
@@ -169,6 +170,7 @@ export function startFixedRssSafety({
             readyAtEntry: Boolean(readyAtEntry),
             ...roles,
           });
+          if (readyAtEntry) qualifiedPeer = roles;
           if (readyAtEntry && postCycles < 2) {
             const decision = process.hrtime.bigint();
             assert(
@@ -223,6 +225,10 @@ export function startFixedRssSafety({
   take();
   const timer = setInterval(take, limits.sampleEveryMs);
   return {
+    verifyPeerProcesses(owned, known) {
+      if (failure || stopped) throw new Error(failure?.error ?? "fixed peer stopped");
+      return peerProcessIdentity(owned, known, qualifiedPeer, peer);
+    },
     report() {
       return {
         protocol: fixedExecutables.protocol ?? "linux-fixed-zfb.v1",

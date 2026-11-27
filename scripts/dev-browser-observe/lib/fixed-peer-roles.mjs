@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { openSync, closeSync, readSync, readlinkSync, statSync, opendirSync } from "node:fs";
+import {
+  openSync,
+  closeSync,
+  fstatSync,
+  readSync,
+  readlinkSync,
+  statSync,
+  opendirSync,
+} from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { linuxBirth, sameLinuxBirth } from "./linux-birth.mjs";
@@ -126,15 +134,35 @@ function ownsListener(pid, port) {
   throw Error("expected serving role does not own printed port");
 }
 export function samplePeerRoles(sample, cfg, ready) {
+  for (const p of sample.processes) {
+    assert.equal(p.disposition, "live", "departed or unresolved role before closure");
+    assert.deepEqual(p.executable, cfg.image);
+  }
+  return readPeerRoles(sample.processes, cfg, ready);
+}
+
+// Fresh proc reads for both periodic and independently requested identity checks.
+export function readPeerExecutable(path) {
+  const fd = openSync(path, "r");
+  try {
+    const bytes = Buffer.alloc(4),
+      info = fstatSync(fd, { bigint: true });
+    assert.equal(readSync(fd, bytes, 0, 4, 0), 4, "unreadable peer ELF header");
+    const header = bytes.toString("hex");
+    assert(info.isFile() && header === "7f454c46", "invalid peer executable");
+    return { info, imagePath: readlinkSync("/proc/self/fd/" + fd), elfHeader: header };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function readPeerRoles(births, cfg, ready, verifyFile = false) {
   const sameBirth = (a, b) =>
     sameLinuxBirth(a, b) &&
     !["Z", "X", "x"].includes(b.state) &&
     a.ppid === b.ppid &&
     a.pgid === b.pgid;
-  const live = sample.processes;
-  const rows = live.map((p) => {
-    assert.equal(p.disposition, "live", "departed or unresolved role before closure");
-    assert.deepEqual(p.executable, cfg.image);
+  const rows = births.map((p) => {
     const before = linuxBirth(p.pid);
     assert(sameBirth(p, before));
     const base = "/proc/" + p.pid + "/",
@@ -144,8 +172,14 @@ export function samplePeerRoles(sample, cfg, ready) {
       );
     const cwd = readlinkSync(base + "cwd");
     assert.equal(cwd, cfg.appDir);
-    const exe = statSync(base + "exe", { bigint: true });
-    assert.equal(readlinkSync(base + "exe"), cfg.image.path);
+    const {
+      info: exe,
+      imagePath,
+      elfHeader,
+    } = verifyFile
+      ? readPeerExecutable(base + "exe")
+      : { info: statSync(base + "exe", { bigint: true }), imagePath: readlinkSync(base + "exe") };
+    assert.equal(imagePath, cfg.image.path);
     assert.equal(String(exe.dev), cfg.image.device);
     assert.equal(String(exe.ino), cfg.image.inode);
     let privateWorker = false,
@@ -159,7 +193,8 @@ export function samplePeerRoles(sample, cfg, ready) {
     assert(sameBirth(p, after));
     return {
       cwd,
-      image: { path: cfg.image.path, device: String(exe.dev), inode: String(exe.ino) },
+      image: { path: imagePath, device: String(exe.dev), inode: String(exe.ino) },
+      ...(elfHeader && { elfHeader }),
       before,
       after,
       birthVersion: p.birthVersion,
@@ -184,4 +219,51 @@ export function samplePeerRoles(sample, cfg, ready) {
     assert(sameBirth(row, row.finalBirth), "peer role changed during ownership checks");
   }
   return { chain, socket };
+}
+
+export function peerProcessIdentity(owned, known, qualified, cfg, read = readPeerRoles) {
+  assert(qualified?.chain.length, "no qualified peer identity");
+  const startNs = String(process.hrtime.bigint());
+  const actual = read(owned, cfg, true, true);
+  assert.equal(
+    new Set(actual.chain.map((row) => row.pid)).size,
+    actual.chain.length,
+    "duplicate peer process",
+  );
+  for (const row of actual.chain) {
+    assert.equal(row.elfHeader, "7f454c46", "fresh peer ELF evidence missing");
+    assert.deepEqual(row.image, cfg.image, "fresh peer image mismatch");
+  }
+  for (const collection of [known, owned, qualified.chain]) {
+    assert.equal(
+      new Set(collection.map((row) => row.pid)).size,
+      collection.length,
+      "duplicate peer process",
+    );
+    assert.equal(collection.length, actual.chain.length, "peer process set changed");
+    for (const prior of collection) {
+      const row = actual.chain.find((p) => p.pid === prior.pid);
+      assert(
+        row &&
+          sameLinuxBirth(prior, row) &&
+          prior.ppid === row.ppid &&
+          prior.pgid === row.pgid &&
+          (!prior.role || prior.role === row.role),
+        "peer role or birth changed",
+      );
+    }
+  }
+  return actual.chain.map((row) => ({
+    name: "process-executable:" + row.pid + ":" + row.role,
+    pid: row.pid,
+    role: row.role,
+    method: "linux-proc-birth-role-executable",
+    ok: true,
+    expected: cfg.image,
+    actual: row.image,
+    evidence: row,
+    socket: row.pid === actual.socket.pid ? actual.socket : null,
+    startNs,
+    endNs: String(process.hrtime.bigint()),
+  }));
 }

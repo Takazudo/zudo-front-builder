@@ -53,7 +53,7 @@ import {
   startFixedRssSafety,
 } from "./fixed-rss-safety.mjs";
 import { fixedIdentityVerdict, freePort } from "./fixed.mjs";
-import { snapshotOwnedWithArgs } from "./process-owner.mjs";
+import { snapshotOwned, snapshotOwnedWithArgs } from "./process-owner.mjs";
 import { batchExitOk, newAccounting, runBatch } from "./state-machine.mjs";
 import { summarize } from "./stats.mjs";
 import {
@@ -777,11 +777,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     let roles = null;
     if (fixed) {
       // Launcher tree at readiness (npm / sidecar / shim and the framework's server processes).
-      const owned = (hooks.snapshotOwned ?? snapshotOwnedWithArgs)(server.handle);
-      roles = classifyRoles(m.entry, owned);
-      receipt.server.roles = roles;
-      receipt.server.rootRole =
-        roles.find((r) => r.pid === server.handle.native?.pid)?.role ?? null;
+      const getOwned = hooks.snapshotOwned ?? (fixedPeer ? snapshotOwned : snapshotOwnedWithArgs);
+      const owned = getOwned(server.handle);
+      roles = fixedPeer ? [] : classifyRoles(m.entry, owned);
       const identityInputs = {
         nodeRealpath: verdict.facts?.installReceipt?.node?.realpath ?? null,
         nodeSha256: verdict.facts?.installReceipt?.node?.sha256 ?? null,
@@ -790,27 +788,58 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         ...(hooks.processExecutable ? { exeOf: hooks.processExecutable } : {}),
         ...(hooks.processAlive ? { alive: hooks.processAlive } : {}),
       };
-      const processChecks = processIdentityChecks({ processes: owned, roles, ...identityInputs });
+      const checkPeer = (processes) => {
+        try {
+          return fixedSafety.verifyPeerProcesses(processes, [...server.handle.known.values()]);
+        } catch (error) {
+          return [
+            {
+              name: "fixed-peer-process-identity",
+              ok: false,
+              method: "linux-proc-birth-role-executable",
+              actual: String(error.message),
+            },
+          ];
+        }
+      };
+      const processChecks = fixedPeer
+        ? checkPeer(owned)
+        : processIdentityChecks({ processes: owned, roles, ...identityInputs });
+      if (fixedPeer) {
+        roles = processChecks
+          .filter((c) => c.ok)
+          .map((c) => ({
+            pid: c.pid,
+            ppid: c.evidence.ppid,
+            comm: c.evidence.finalBirth.comm,
+            role: c.role,
+          }));
+      }
+      receipt.server.roles = roles;
+      receipt.server.rootRole =
+        roles.find((r) => r.pid === server.handle.native?.pid)?.role ?? null;
       const checkedKey = (p) => JSON.stringify([p.pid, p.bootId, p.startTicks ?? p.lstart]);
       const checked = new Set(owned.map(checkedKey));
       // Processes born after readiness: every one seen in the tree (or remembered by sampling)
       // is checked before the next workload edit; the first failure stops the batch there.
       checkLateProcesses = () => {
         if (lateFailure) return lateFailure;
-        const now = (hooks.snapshotOwned ?? snapshotOwnedWithArgs)(server.handle);
+        const now = getOwned(server.handle);
         const remembered = [...(server.handle.known?.values() ?? [])];
         const fresh = [
           ...now,
           ...remembered.filter((k) => !now.some((p) => p.pid === k.pid)),
         ].filter((p) => !checked.has(checkedKey(p)));
-        if (fresh.length === 0) return null;
+        if (!fixedPeer && fresh.length === 0) return null;
         for (const p of fresh) checked.add(checkedKey(p));
         const lateRoles = classifyRoles(m.entry, fresh);
-        const lateChecks = processIdentityChecks({
-          processes: fresh,
-          roles: lateRoles,
-          ...identityInputs,
-        });
+        const lateChecks = fixedPeer
+          ? checkPeer(now)
+          : processIdentityChecks({
+              processes: fresh,
+              roles: lateRoles,
+              ...identityInputs,
+            });
         receipt.server.processIdentityLate = [
           ...(receipt.server.processIdentityLate ?? []),
           ...lateChecks,
