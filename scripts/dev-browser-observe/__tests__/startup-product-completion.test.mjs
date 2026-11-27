@@ -220,6 +220,7 @@ const sample = (live = [root, native], over = {}) => ({
   startedNs: "30",
   resultNs: "31",
   live,
+  departures: [],
   ...over,
 });
 
@@ -253,12 +254,19 @@ test.each([
   ["a zfb child at readiness", { live: [root, native, birth(503, 501, 503, 1004)] }],
   ["a replaced zfb", { live: [root, { ...native, startTicks: "1009" }] }],
   ["an incomplete census", { strict: false }],
+  // review-2 finding 5: a zfb child that already departed in the confirming sample.
+  ["a departed zfb child", { departures: [{ pid: 503, disposition: "proved-departure" }] }],
+  ["a sample without its departure list", { departures: undefined }],
 ])("the readiness confirmation refuses %s", async (_label, c) => {
   const f = await readyWithCompletion();
+  const over = {
+    ...(c.strict === false && { strict: false }),
+    ...("departures" in c && { departures: c.departures }),
+  };
   assert.throws(
     () =>
       f.h.confirmStartupCompletion({
-        sample: sample(c.live, c.strict === false ? { strict: false } : {}),
+        sample: sample(c.live, over),
         controllerChildren: c.children ?? [500, fake.pid],
         expectedChildren: [500, fake.pid],
       }),
@@ -327,4 +335,41 @@ test.each([
     assert.equal(f.records.at(-1).type, type);
     assert.equal(f.h.startupOutcome().outcome, outcome);
   } else assert.match(String(f.aborts[0]?.message), /invalid startup compiler role/);
+});
+
+test.each([
+  ["worker-not-observed without a completion record", "worker-not-observed", false],
+  ["retained without a startup birth", "retained", false],
+  ["worker-not-observed beside a completion record", "worker-not-observed", true],
+])("the scout report is refused for %s", async (_label, status, withRecord) => {
+  const f = holder();
+  f.send({
+    ready: true,
+    pid: fake.pid,
+    session: f.h.identity.session,
+    timeNamespace: process.getBuiltinModule("node:fs").readlinkSync("/proc/self/ns/time"),
+  });
+  await f.h.ready;
+  f.h.attachStartup({ native: root, known: new Map() }, {});
+  if (withRecord)
+    f.send({ startupCompletion: completion(), session: f.h.identity.session, publishedNs: "22" });
+  f.send({
+    startupReport: {
+      status,
+      error: null,
+      sweeps: 3,
+      reads: 30,
+      procBytes: 900,
+      startNs: "1",
+      deadlineNs: "3000000001",
+      finishedNs: "23",
+    },
+    session: f.h.identity.session,
+  });
+  if (withRecord) assert.deepEqual(f.aborts, []);
+  else
+    assert.match(
+      String(f.aborts[0]?.message),
+      /startup scan did not complete a bounded live binding/,
+    );
 });

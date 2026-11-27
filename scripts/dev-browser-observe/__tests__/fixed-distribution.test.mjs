@@ -1824,7 +1824,8 @@ it.each([
       dev = birth(101, 100, 100),
       worker = birth(102, 101, 102);
     const known = new Map([root, dev, worker].map((b) => [b.pid, b])),
-      events = [];
+      events = [],
+      subreaperClears = [];
     const proof = {
       root,
       dev,
@@ -1963,6 +1964,10 @@ it.each([
         hooks: {
           freePort: async () => 4555,
           enableChildSubreaper: async () => ({ enabled: true, pid: process.pid }),
+          clearChildSubreaper: async () => {
+            subreaperClears.push(events.length);
+            return { enabled: false, pid: process.pid };
+          },
           startDevServer: () => ({
             handle,
             zfbEnv: {},
@@ -2026,6 +2031,17 @@ it.each([
           "holder-closed",
           "lock-closed",
         ]),
+      );
+      // Cleared once, after the RSS readiness and before blank setup.
+      expect(subreaperClears).toEqual([events.indexOf("blank")]);
+      // #4862: the subreaper is set before custody and cleared after the readiness census.
+      const subreaper = records.filter((r) => r.type === "fixed-controller-subreaper");
+      expect(subreaper.map((r) => [r.enabled, r.phase ?? null])).toEqual([
+        [true, null],
+        [false, "cleared-after-readiness-census"],
+      ]);
+      expect(records.indexOf(subreaper[1])).toBeLessThan(
+        records.findIndex((r) => r.type === "original-family-admission"),
       );
       expect(safetyModule.startFixedRssSafety.mock.calls[0][0].joinOwnedFamily).toBe(v2);
       if (footer) {

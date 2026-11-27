@@ -48,6 +48,7 @@ function harness(mode, { sampleEveryMs = 1000, completion = null } = {}) {
   );
   const block = (ns) => (blockedNs += ns);
   let terminal = { epoch: 1 };
+  let proofWorker = worker;
   let dispatches = 0;
   const failures = [];
   const hanging = [];
@@ -63,7 +64,7 @@ function harness(mode, { sampleEveryMs = 1000, completion = null } = {}) {
       familyProof: () =>
         completion
           ? { root, dev, worker: null, terminal: null, release: null, completion }
-          : { root, dev, worker, terminal, release: { receipt: { epoch: 1 } } },
+          : { root, dev, worker: proofWorker, terminal, release: { receipt: { epoch: 1 } } },
     },
     sample(_server, _path, { onHelperSpawn }) {
       dispatches++;
@@ -117,6 +118,7 @@ function harness(mode, { sampleEveryMs = 1000, completion = null } = {}) {
       return dispatches;
     },
     setTerminal: (value) => (terminal = value),
+    setWorker: (value) => (proofWorker = value),
     mode,
   };
 }
@@ -131,6 +133,7 @@ function batch(
     known = [root, dev, worker],
     imagesCostNs = 0n,
     strategy = "blank-join-owned.v2",
+    onProofJournal = () => {},
   } = {},
 ) {
   const audit = blankBrowserAudit(),
@@ -165,7 +168,10 @@ function batch(
       signal: new AbortController().signal,
       append: (r) => {
         rows.push(structuredClone(r));
-        if (r.status === "pre-batch-proof") h.block(cost);
+        if (r.status === "pre-batch-proof") {
+          h.block(cost);
+          onProofJournal();
+        }
       },
     });
   return { run, rows, input, page, page0, calls };
@@ -533,6 +539,22 @@ test.each([
       assert.deepEqual(start.familyAdmission.setup.priorCustody.completion, completion);
       assert.equal(start.familyAdmission.setup.priorCustody.worker, null);
     }
+  } finally {
+    await stopMonitor(h);
+  }
+});
+
+// review-2 J10: a live-custody worker birth that changes between the journaled
+// proof and the enter() re-read refuses; it is not covered by the completion rule.
+test("a changed live worker birth at the family decision refuses", async () => {
+  const h = harness("worker-changed");
+  try {
+    await atProofPhase(h, SETUP_PHASE_NS);
+    const b = batch(h, {
+      onProofJournal: () => h.setWorker({ ...worker, startTicks: "6" }),
+    });
+    const { error } = await settleAll(Promise.resolve().then(b.run));
+    assert.match(String(error?.message), /family startup ownership changed/);
   } finally {
     await stopMonitor(h);
   }

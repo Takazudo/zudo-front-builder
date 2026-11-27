@@ -7,31 +7,43 @@ import { readFileSync, readdirSync } from "node:fs";
 const PR_SET_CHILD_SUBREAPER = 36;
 const PR_GET_CHILD_SUBREAPER = 37;
 
-export async function enableChildSubreaper() {
-  let ffi;
+async function loadFfi() {
   try {
-    ffi = await import("node:ffi");
+    return await import("node:ffi");
   } catch (error) {
     throw new Error("controller subreaper requires node:ffi (pinned Node 26): " + error.message);
   }
+}
+
+/** Set PR_SET_CHILD_SUBREAPER to `value` and prove it with PR_GET_CHILD_SUBREAPER. */
+export async function setChildSubreaper(value, { ffi } = {}) {
+  ffi ??= await loadFfi();
   const set = ffi.dlopen("libc.so.6", {
     prctl: { arguments: ["int32", "uint64", "uint64", "uint64", "uint64"], return: "int32" },
   });
-  const get = ffi.dlopen("libc.so.6", {
-    prctl: { arguments: ["int32", "buffer", "uint64", "uint64", "uint64"], return: "int32" },
-  });
   try {
-    const rc = set.functions.prctl(PR_SET_CHILD_SUBREAPER, 1n, 0n, 0n, 0n);
-    const value = Buffer.alloc(4);
-    const read = get.functions.prctl(PR_GET_CHILD_SUBREAPER, value, 0n, 0n, 0n);
-    const enabled = rc === 0 && read === 0 && value.readInt32LE(0) === 1;
-    if (!enabled) throw new Error("controller subreaper not enabled");
-    return { enabled, pid: process.pid };
+    const get = ffi.dlopen("libc.so.6", {
+      prctl: { arguments: ["int32", "buffer", "uint64", "uint64", "uint64"], return: "int32" },
+    });
+    try {
+      const rc = set.functions.prctl(PR_SET_CHILD_SUBREAPER, BigInt(value), 0n, 0n, 0n);
+      const read = Buffer.alloc(4);
+      const got = get.functions.prctl(PR_GET_CHILD_SUBREAPER, read, 0n, 0n, 0n);
+      if (rc !== 0 || got !== 0 || read.readInt32LE(0) !== value)
+        throw new Error(`controller subreaper not ${value ? "enabled" : "cleared"}`);
+      return { enabled: value === 1, pid: process.pid };
+    } finally {
+      get.lib.close();
+    }
   } finally {
     set.lib.close();
-    get.lib.close();
   }
 }
+
+export const enableChildSubreaper = (options) => setChildSubreaper(1, options);
+// Cleared right after the startup readiness census: later orphans (browser
+// helpers, a stop that outlives the shim) go to init again, as before #4862.
+export const clearChildSubreaper = (options) => setChildSubreaper(0, options);
 
 /** Direct children of `pid`, from every task's children list. */
 export function controllerChildren(pid = process.pid) {

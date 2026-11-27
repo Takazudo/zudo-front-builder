@@ -6,7 +6,11 @@ import {
 } from "./fixed-family-admission.mjs";
 import { samplerClosureAudit } from "./linux-rss-sample.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
-import { controllerChildren, enableChildSubreaper } from "./linux-subreaper.mjs";
+import {
+  clearChildSubreaper,
+  controllerChildren,
+  enableChildSubreaper,
+} from "./linux-subreaper.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { admissionPath, reserveSession } from "./admission.mjs";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
@@ -853,6 +857,13 @@ async function executeLocked({
       else if (familyAudit)
         await interruptible(fixedSafety.verifyFamilyBrowserReady(), loaded.signal);
       else if (fixedSafety) await fixedSafety.verifyReady();
+      // The readiness census was the subreaper's only consumer (#4862 review-2).
+      if (profile.fixedRssSafety === "linux-fixed-zfb.v4")
+        rec.append({
+          type: "fixed-controller-subreaper",
+          phase: "cleared-after-readiness-census",
+          ...(await (hooks.clearChildSubreaper ?? clearChildSubreaper)()),
+        });
       browserTiming?.mark("server-readiness-observed");
     } catch (error) {
       browserTiming?.mark("server-readiness-failed");

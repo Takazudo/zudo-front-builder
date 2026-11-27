@@ -363,6 +363,7 @@ export async function stopOwned(
     birthImpl = birthIdentity,
     platform = process.platform,
     signal: abortSignal,
+    controllerPid = process.pid,
   } = {},
 ) {
   const report = {
@@ -390,6 +391,7 @@ export async function stopOwned(
       killImpl,
       psImpl,
       abortSignal,
+      controllerPid,
       birthImpl: birthImpl === birthIdentity ? linuxBirth : birthImpl,
     });
   report.pgidScans = [];
@@ -520,7 +522,7 @@ export function signalLinuxOwned(expected, signal, group = false) {
 async function stopLinux(
   handle,
   report,
-  { intWaitMs, termWaitMs, killWaitMs, killImpl, psImpl, birthImpl, abortSignal },
+  { intWaitMs, termWaitMs, killWaitMs, killImpl, psImpl, birthImpl, abortSignal, controllerPid },
 ) {
   const root = handle.native;
   const endings = new Map();
@@ -559,7 +561,16 @@ async function stopLinux(
         if (!endings.has(expected.pid))
           endings.set(expected.pid, { pid: expected.pid, endedAfter: lastSignal });
       } else if (!sameLinuxBirth(expected, now) || expected.pgid !== now.pgid) fail(expected, now);
-      else left.push(now);
+      else if (now.state === "Z" && now.ppid === controllerPid && expected.ppid !== controllerPid) {
+        // Reparented to the subreaper controller (#4862) and dead: libuv reaps only
+        // the children it spawned, so this zombie stays until the controller exits.
+        if (!endings.has(expected.pid))
+          endings.set(expected.pid, {
+            pid: expected.pid,
+            endedAfter: lastSignal,
+            adoptedZombie: true,
+          });
+      } else left.push(now);
     }
     return left;
   }
