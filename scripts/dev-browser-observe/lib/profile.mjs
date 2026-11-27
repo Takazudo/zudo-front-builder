@@ -185,6 +185,13 @@ function originalStartupLimits(p) {
 }
 export const ZFB_FOOTER_JOIN_OWNED = "original-shared-layout-join-owned.v2";
 
+/** The family admission strategy a profile runs; the join-owned footer uses blank-join-owned.v2. */
+export function familyAdmissionStrategy(profile) {
+  return profile.fixedZfbFooter === ZFB_FOOTER_JOIN_OWNED
+    ? "blank-join-owned.v2"
+    : profile.fixedFamilyAdmission;
+}
+
 function fixedErrors(profile) {
   const errors = [];
   const footer = ["original-shared-layout.v1", ZFB_FOOTER_JOIN_OWNED].includes(

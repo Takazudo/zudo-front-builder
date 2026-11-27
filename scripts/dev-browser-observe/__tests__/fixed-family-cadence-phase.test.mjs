@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { afterEach, test, vi } from "vitest";
 import { blankBrowserAudit, runOriginalFamilyBatch } from "../lib/fixed-family-admission.mjs";
 import { startFixedRssSafety } from "../lib/fixed-rss-safety.mjs";
+import { familyAdmissionStrategy } from "../lib/profile.mjs";
 import { deps, fakeFs, fakePage } from "./fakes.mjs";
 
 // Timing of the #4862 rapid slot-01 refusal (cclogs 4862-rapid-recovery-slot01-failure):
@@ -125,6 +126,7 @@ function batch(
     cost = ADMISSION_COST_NS,
     snapshotCostNs = 0n,
     imagesCostNs = 0n,
+    strategy = "blank-join-owned.v2",
   } = {},
 ) {
   const audit = blankBrowserAudit(),
@@ -142,7 +144,7 @@ function batch(
   const calls = { snapshot: 0, verifyImages: 0 };
   const run = () =>
     runOriginalFamilyBatch(input, {
-      strategy: "blank-join-owned.v2",
+      strategy,
       safety: h.monitor,
       browserAudit: audit,
       snapshot: () => {
@@ -311,6 +313,33 @@ test("the same cost still refuses at the pending branch, which checks population
       ],
     );
     assert.equal(refusal.setup.stages.at(-1).threw, true);
+  } finally {
+    await stopMonitor(h);
+  }
+});
+
+test("the join-owned ZFB footer runs the same deferred join at the recorded phase", async () => {
+  const strategy = familyAdmissionStrategy({
+    fixedZfbFooter: "original-shared-layout-join-owned.v2",
+  });
+  assert.equal(strategy, "blank-join-owned.v2");
+  assert.equal(familyAdmissionStrategy({ fixedZfbFooter: "original-shared-layout.v1" }), undefined);
+  const h = harness("footer");
+  try {
+    await atProofPhase(h, SETUP_PHASE_NS);
+    const b = batch(h, { strategy });
+    const result = b.run();
+    assert(
+      !b.rows.some((r) => r.status === "pre-batch-proof"),
+      "the footer must defer, not admit idle",
+    );
+    const { error } = await settleAll(result);
+    assert.equal(error, undefined, String(error));
+    const setup = b.input.deps.recorder.records.find((r) => r.type === "scenario-start")
+      .familyAdmission.setup;
+    assert.equal(setup.strategy, "blank-join-owned.v2");
+    assert.equal(setup.idleDeferral.outcome, "joined");
+    assert.equal(setup.cycle.epoch, 6);
   } finally {
     await stopMonitor(h);
   }

@@ -26,7 +26,7 @@ import {
 import { LockBusyError, acquireLock } from "./lock.mjs";
 import { hostIdentity, probeMac, sampledPeak } from "./mac-process-adapter.mjs";
 import { liveOwnedFromRegistry, shouldRegisterOwned, stopOwned } from "./process-owner.mjs";
-import { LABEL_RE, loadProfile, ZFB_FOOTER_JOIN_OWNED } from "./profile.mjs";
+import { LABEL_RE, loadProfile, familyAdmissionStrategy } from "./profile.mjs";
 import { ControllerTiming, timed } from "./controller-timing.mjs";
 import { Recorder } from "./recorder.mjs";
 import { createRendererMemoryStudy } from "./renderer-memory-study.mjs";
@@ -370,10 +370,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   const fixedAstro = isFixedAstroProtocol(profile.fixedRssSafety);
   const fixedZfbFooter = Boolean(profile.fixedZfbFooter);
   const strictBrowser = fixedAstro || fixedZfbFooter;
-  const blankAdmission =
-    profile.fixedZfbFooter === ZFB_FOOTER_JOIN_OWNED
-      ? "blank-join-owned.v2"
-      : profile.fixedFamilyAdmission;
+  const blankAdmission = familyAdmissionStrategy(profile);
   const familyAudit = blankAdmission || fixedZfbFooter ? blankBrowserAudit() : null;
   const fixedAbort = profile.fixedRssSafety ? new AbortController() : null;
   if (fixedAbort)
