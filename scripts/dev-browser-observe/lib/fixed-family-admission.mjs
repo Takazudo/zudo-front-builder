@@ -4,6 +4,24 @@ import { linuxBirth, sameLinuxBirth } from "./linux-birth.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { runBatch } from "./state-machine.mjs";
 
+// An idle capture admits on the already-accepted sample only while one full
+// cadence period (limits.sampleEveryMs) is still ahead, which no real sample
+// (43-53 ms to settle) leaves. Every other idle capture joins the next original
+// cadence sample, so the decision sits at a fixed point after that dispatch
+// instead of wherever browser readiness landed (#4862 slot 01 refused 527.1 ms
+// after an idle capture at T+877.3 ms).
+//
+// Admission-cost bound, with S = sample settle time after dispatch, P = one
+// population check (snapshot + verifyImages), J = the journal append, c = the
+// capture offset inside an in-flight sample, the decision precedes the joined
+// sample's cadence deadline (dispatch + 1000 ms) when
+//   deferred: S + J + P < 1000 ms
+//   pending:  max(S, c + P) + J + P < 1000 ms, and c + P < 750 ms (helper core)
+// Both branches admit for every c < S when 2P + J < 1000 ms - S (about 947 ms
+// at S = 53 ms) and P < 750 ms - S. At P = 490 ms, J = 400 ms the deferred
+// branch admits (943 ms) and the pending branch refuses (1400 ms at c = 20 ms).
+const FAMILY_HELPER_CORE_NS = 750_000_000n;
+
 const same = (a, b) => sameLinuxBirth(a, b) && a.ppid === b.ppid && a.pgid === b.pgid;
 function population(rows, expected) {
   return (
@@ -200,10 +218,26 @@ export function runOriginalFamilyBatch(
           workDeadlineNs: String(deadlineNs),
           settlementOutcome: "not-started",
           addedSettlementNs: "0",
+          stages: [],
         }
       : null;
-  const checkPopulation = (provisional) => {
-    const owned = snapshot();
+  // Monotonic setup-stage stamps, so an admission refusal is attributable from
+  // the receipt. They are setup evidence, never workload timing.
+  const stage = (name, phase, work) => {
+    if (!setup) return work();
+    const row = { stage: name, phase, startNs: String(process.hrtime.bigint()) };
+    setup.stages.push(row);
+    try {
+      return work();
+    } catch (error) {
+      row.threw = true;
+      throw error;
+    } finally {
+      row.endNs = String(process.hrtime.bigint());
+    }
+  };
+  const checkPopulation = (provisional, phase) => {
+    const owned = stage("snapshot", phase, snapshot);
     assert(
       population(provisional.sample.live, [provisional.root, provisional.dev]) &&
         population(owned, [provisional.root, provisional.dev]) &&
@@ -214,21 +248,23 @@ export function runOriginalFamilyBatch(
       owned.every((p) => !["X", "x", "Z"].includes(p.state)),
       "family root/native unavailable",
     );
-    verifyImages(provisional);
+    stage("verify-images", phase, () => verifyImages(provisional));
     return owned;
   };
   const enter = (initial, provisional) => {
-    append({
-      ...row,
-      ...initial,
-      status: "pre-batch-proof",
-      proof: provisional,
-      ...(setup && { setup: { ...setup } }),
-    });
+    stage("journal-append", "enter", () =>
+      append({
+        ...row,
+        ...initial,
+        status: "pre-batch-proof",
+        proof: provisional,
+        ...(setup && { setup: { ...setup, stages: structuredClone(setup.stages) } }),
+      }),
+    );
     journaled = true;
     signal.throwIfAborted();
-    const owned = checkPopulation(provisional);
-    const proof = safety.verifyFamilyAdmission();
+    const owned = checkPopulation(provisional, "enter");
+    const proof = stage("verify-family-admission", "enter", () => safety.verifyFamilyAdmission());
     if (setup) {
       assert.equal(proof.sample, provisional.sample, "family accepted sample changed");
       assert.deepEqual(proof.terminal, provisional.terminal, "family terminal changed");
@@ -322,6 +358,74 @@ export function runOriginalFamilyBatch(
     }
     return run();
   };
+  const joinPending = (captured) => {
+    setup.priorCustody = captured.before;
+    checkPopulation(captured.before, "pre-settlement");
+    return join(captured);
+  };
+  const deferToNextCycle = async (first) => {
+    const cadenceDeadlineNs = BigInt(first.before.sample.cadenceDeadlineNs);
+    const boundNs =
+      cadenceDeadlineNs + FAMILY_HELPER_CORE_NS < deadlineNs
+        ? cadenceDeadlineNs + FAMILY_HELPER_CORE_NS
+        : deadlineNs;
+    const deferral = {
+      reserveNs: String(first.deferred.reserveNs),
+      remainingCadenceNs: String(first.deferred.remainingCadenceNs),
+      firstCapture: structuredClone(
+        Object.fromEntries(
+          ["capturedNs", "pending", "failed", "stopped", "strict", "previousEpoch", "cycle"].map(
+            (key) => [key, setup[key]],
+          ),
+        ),
+      ),
+      cadenceDeadlineNs: String(cadenceDeadlineNs),
+      waitBoundNs: String(boundNs),
+      outcome: "waiting",
+    };
+    setup.idleDeferral = deferral;
+    setup.settlementOutcome = "deferred-next-cycle";
+    let timer;
+    try {
+      const begin = process.hrtime.bigint();
+      deferral.waitStartedNs = String(begin);
+      assert(begin < boundNs, "family next cadence dispatch expired");
+      const bounded = new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(Error("family next cadence dispatch expired")),
+          Math.ceil(Number(boundNs - begin) / 1e6),
+        );
+      });
+      try {
+        await interruptible(Promise.race([safety.nextFamilyHelper(), bounded]), signal);
+      } finally {
+        clearTimeout(timer);
+        const observed = process.hrtime.bigint();
+        deferral.helperObservedNs = String(observed);
+        deferral.addedWaitNs = String(observed - begin);
+      }
+      signal.throwIfAborted();
+      assert(BigInt(deferral.helperObservedNs) < boundNs, "family next cadence dispatch expired");
+      requireBlank(browserAudit.inspect());
+      const captured = safety.captureFamilyCycle(setup);
+      assert(captured.settlement, "family next cadence cycle not joinable");
+      for (const name of ["root", "dev", "worker", "terminal", "release"])
+        assert.deepEqual(
+          captured.before[name],
+          first.before[name],
+          "family custody changed during deferral",
+        );
+      deferral.outcome = "joined";
+      // enter() checks population against the joined sample; a check here
+      // would only add synchronous cost before the settlement wait.
+      setup.priorCustody = captured.before;
+      return join(captured);
+    } catch (error) {
+      deferral.outcome = "refused";
+      setup.settlementOutcome = "refused";
+      return refuse(error);
+    }
+  };
   try {
     signal.throwIfAborted();
     const initial = browserAudit.inspect();
@@ -331,12 +435,9 @@ export function runOriginalFamilyBatch(
       setup.initialBlank = initial;
       browserAudit.watchSettlementPage();
       setup.pageWatchStartedNs = String(process.hrtime.bigint());
-      const captured = safety.captureFamilyCycle(setup);
-      if (captured.settlement) {
-        setup.priorCustody = captured.before;
-        checkPopulation(captured.before);
-        return join(captured);
-      }
+      const captured = safety.captureFamilyCycle(setup, { idleNeedsFullPeriod: true });
+      if (captured.settlement) return joinPending(captured);
+      if (captured.deferred) return deferToNextCycle(captured);
       setup.settlementOutcome = "no-pending";
       enter(initial, captured.before);
     } else enter(initial, safety.verifyFamilyAdmission());
