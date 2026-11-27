@@ -273,8 +273,24 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
   }
   let lock;
   try {
-    lock = await acquireLock(resolved.lockPath);
+    lock = await acquireLock(resolved.lockPath, { signal: loaded.signal });
   } catch (error) {
+    const record = {
+      type: "lock-acquisition-failure",
+      at: isoNow(),
+      label,
+      supervisorId: loaded.supervisorId ?? null,
+      error: String(error.message),
+      lockHelper: error.lockHelper ?? null,
+    };
+    const journal = join(resolved.outDir, ".dev-browser-observe-lock-failures.jsonl");
+    try {
+      appendJsonlSync(journal, record);
+      stderr("lock acquisition failure receipt: " + journal);
+    } catch (writeError) {
+      stderr("lock failure receipt could not be written: " + writeError.message);
+      stderr(JSON.stringify(record));
+    }
     if (error instanceof LockBusyError) {
       stderr(`another dev-browser-observe batch holds ${resolved.lockPath}`);
       return EXIT.lockBusy;
