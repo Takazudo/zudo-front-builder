@@ -132,7 +132,10 @@ impl Project {
             String::from_utf8_lossy(&output.stderr)
         );
         let dist = self.root.join("dist");
-        assert!(dist.join("_worker.js").is_file(), "adapter must emit _worker.js");
+        assert!(
+            dist.join("_worker.js").is_file(),
+            "adapter must emit _worker.js"
+        );
         dist
     }
 }
@@ -212,7 +215,10 @@ fn drive(dist: &Path, base: &str, paths: Option<&[&str]>, http_extras: bool) -> 
             if http_extras { "1" } else { "0" },
         );
     if let Some(paths) = paths {
-        command.env("SSR_SHARED_ASSETS_PATHS", serde_json::to_string(paths).unwrap());
+        command.env(
+            "SSR_SHARED_ASSETS_PATHS",
+            serde_json::to_string(paths).unwrap(),
+        );
     }
     let output = command.output().expect("spawn node driver");
     assert!(
@@ -288,7 +294,10 @@ fn preserve(dist: &Path, name: &str) {
 
 fn hashed_file_bytes(dist: &Path, url: &str, base: &str) -> Vec<u8> {
     let prefix = base.trim_end_matches('/');
-    let rel = url.strip_prefix(prefix).unwrap_or(url).trim_start_matches('/');
+    let rel = url
+        .strip_prefix(prefix)
+        .unwrap_or(url)
+        .trim_start_matches('/');
     fs::read(dist.join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
 }
 
@@ -306,9 +315,23 @@ fn root_build_shares_finalized_assets_between_ssg_and_ssr() {
     let css = css_url(&ssg).expect("SSG page links the hashed stylesheet");
     let islands = islands_url(&ssg).expect("SSG page loads the islands entry");
     let greeting = greeting_url(&ssg).expect("SSG page loads the greeting script");
-    assert!(css.starts_with("/assets/styles-") && css.ends_with(".css"), "{css}");
-    assert!(greeting.starts_with("/assets/client/greeting-"), "{greeting}");
+    assert!(
+        css.starts_with("/assets/styles-") && css.ends_with(".css"),
+        "{css}"
+    );
+    assert!(
+        greeting.starts_with("/assets/client/greeting-"),
+        "{greeting}"
+    );
     let ssg_token = build_token(&ssg).expect("SSG island marker");
+
+    // The record is embedded in the SSR bundle itself; nothing is looked up
+    // at request time.
+    let inner = fs::read_to_string(dist.join("_zfb_inner.mjs")).unwrap();
+    assert!(
+        inner.contains(&css) && inner.contains(&greeting),
+        "record embedded"
+    );
 
     // The asset-first wrapper serves the prerendered page from disk.
     assert_eq!(driven.body("/"), ssg, "GET / is the prerendered file");
@@ -317,10 +340,24 @@ fn root_build_shares_finalized_assets_between_ssg_and_ssr() {
     let live = driven.body("/live");
     assert_eq!(driven.status("/live"), 200);
     assert_eq!(css_url(live).as_deref(), Some(css.as_str()), "{live}");
-    assert_eq!(islands_url(live).as_deref(), Some(islands.as_str()), "{live}");
-    assert_eq!(greeting_url(live).as_deref(), Some(greeting.as_str()), "{live}");
-    assert!(!live.contains(STABLE_GREETING), "stable client URL resolved: {live}");
-    assert!(!live.contains("/assets/client/unused"), "unreferenced script not added: {live}");
+    assert_eq!(
+        islands_url(live).as_deref(),
+        Some(islands.as_str()),
+        "{live}"
+    );
+    assert_eq!(
+        greeting_url(live).as_deref(),
+        Some(greeting.as_str()),
+        "{live}"
+    );
+    assert!(
+        !live.contains(STABLE_GREETING),
+        "stable client URL resolved: {live}"
+    );
+    assert!(
+        !live.contains("/assets/client/unused"),
+        "unreferenced script not added: {live}"
+    );
     assert_eq!(count(live, &format!("href=\"{css}\"")), 1, "{live}");
     assert_eq!(count(live, &format!("src=\"{islands}\"")), 1, "{live}");
     assert_eq!(
@@ -337,14 +374,25 @@ fn root_build_shares_finalized_assets_between_ssg_and_ssr() {
     // Shared CSS and islands without explicit script references.
     let plain = driven.body("/plain");
     assert_eq!(css_url(plain).as_deref(), Some(css.as_str()), "{plain}");
-    assert_eq!(islands_url(plain).as_deref(), Some(islands.as_str()), "{plain}");
-    assert!(greeting_url(plain).is_none(), "no client script on /plain: {plain}");
+    assert_eq!(
+        islands_url(plain).as_deref(),
+        Some(islands.as_str()),
+        "{plain}"
+    );
+    assert!(
+        greeting_url(plain).is_none(),
+        "no client script on /plain: {plain}"
+    );
 
     // Catch-all SSR route without paths().
     let doc = driven.body("/docs/guide/intro");
     assert_eq!(driven.status("/docs/guide/intro"), 200);
     assert_eq!(css_url(doc).as_deref(), Some(css.as_str()), "{doc}");
-    assert_eq!(greeting_url(doc).as_deref(), Some(greeting.as_str()), "{doc}");
+    assert_eq!(
+        greeting_url(doc).as_deref(),
+        Some(greeting.as_str()),
+        "{doc}"
+    );
 
     // htmlPage: status and headers survive, the body is finished.
     let missing = driven.get("/missing");
@@ -356,9 +404,15 @@ fn root_build_shares_finalized_assets_between_ssg_and_ssr() {
         missing["headers"]["set-cookie"],
         serde_json::json!(["first=1; Path=/", "second=2; Path=/"])
     );
-    assert!(header(missing, "content-type").unwrap().starts_with("text/html"));
+    assert!(header(missing, "content-type")
+        .unwrap()
+        .starts_with("text/html"));
     let missing_body = missing["body"].as_str().unwrap();
-    assert_eq!(css_url(missing_body).as_deref(), Some(css.as_str()), "{missing_body}");
+    assert_eq!(
+        css_url(missing_body).as_deref(),
+        Some(css.as_str()),
+        "{missing_body}"
+    );
 
     // Unmanaged results are byte-for-byte untouched.
     assert_eq!(
@@ -390,7 +444,10 @@ fn root_build_shares_finalized_assets_between_ssg_and_ssr() {
 
     // `.html` pages stay verbatim.
     let verbatim = driven.body("/verbatim");
-    assert!(verbatim.contains(&format!("href=\"{STABLE_CSS}\"")), "{verbatim}");
+    assert!(
+        verbatim.contains(&format!("href=\"{STABLE_CSS}\"")),
+        "{verbatim}"
+    );
 
     // Unknown routes fall through to the framework 404.
     assert_eq!(driven.status("/no-such-page"), 404);
@@ -438,13 +495,24 @@ fn subpath_build_resolves_base_prefixed_assets_once() {
     let greeting = greeting_url(ssg).expect("SSG greeting script");
     let islands = islands_url(ssg).expect("SSG islands entry");
     assert!(css.starts_with("/sub/assets/styles-"), "{css}");
-    assert!(greeting.starts_with("/sub/assets/client/greeting-"), "{greeting}");
+    assert!(
+        greeting.starts_with("/sub/assets/client/greeting-"),
+        "{greeting}"
+    );
 
     let live = driven.body("/live");
     assert_eq!(css_url(live).as_deref(), Some(css.as_str()), "{live}");
-    assert_eq!(islands_url(live).as_deref(), Some(islands.as_str()), "{live}");
+    assert_eq!(
+        islands_url(live).as_deref(),
+        Some(islands.as_str()),
+        "{live}"
+    );
     // The Layout calls clientScript() at module top level.
-    assert_eq!(greeting_url(live).as_deref(), Some(greeting.as_str()), "{live}");
+    assert_eq!(
+        greeting_url(live).as_deref(),
+        Some(greeting.as_str()),
+        "{live}"
+    );
     for html in [ssg, live, driven.body("/plain")] {
         assert!(!html.contains("/sub/sub/"), "base applied twice: {html}");
     }
@@ -472,7 +540,10 @@ fn ssr_only_catch_all_build_emits_assets_and_worker() {
         }
     });
     let dist = project.build();
-    assert!(!dist.join("index.html").exists(), "no SSG output in this variant");
+    assert!(
+        !dist.join("index.html").exists(),
+        "no SSG output in this variant"
+    );
     let driven = drive(&dist, "", Some(&["/docs/a", "/docs/a/b"]), false);
     for path in ["/docs/a", "/docs/a/b"] {
         let html = driven.body(path);
@@ -480,9 +551,15 @@ fn ssr_only_catch_all_build_emits_assets_and_worker() {
         let css = css_url(html).expect("stylesheet on SSR-only page");
         assert!(dist.join(css.trim_start_matches('/')).is_file(), "{css}");
         let greeting = greeting_url(html).expect("explicit client script resolved");
-        assert!(dist.join(greeting.trim_start_matches('/')).is_file(), "{greeting}");
+        assert!(
+            dist.join(greeting.trim_start_matches('/')).is_file(),
+            "{greeting}"
+        );
         let islands = islands_url(html).expect("islands entry on SSR-only page");
-        assert!(dist.join(islands.trim_start_matches('/')).is_file(), "{islands}");
+        assert!(
+            dist.join(islands.trim_start_matches('/')).is_file(),
+            "{islands}"
+        );
     }
 }
 
@@ -506,7 +583,11 @@ fn asset_variants_only_add_what_was_shipped() {
     assert!(script_srcs(plain).is_empty(), "{plain}");
     // An unknown stable reference is left alone; nothing is invented.
     let live = driven.body("/live");
-    assert_eq!(greeting_url(live).as_deref(), Some(STABLE_GREETING), "{live}");
+    assert_eq!(
+        greeting_url(live).as_deref(),
+        Some(STABLE_GREETING),
+        "{live}"
+    );
 
     // Client scripts only.
     let project = Project::new(|root| {
@@ -518,7 +599,10 @@ fn asset_variants_only_add_what_was_shipped() {
     let live = driven.body("/live");
     assert!(css_url(live).is_none(), "{live}");
     let greeting = greeting_url(live).expect("greeting resolved");
-    assert!(greeting.starts_with("/assets/client/greeting-"), "{greeting}");
+    assert!(
+        greeting.starts_with("/assets/client/greeting-"),
+        "{greeting}"
+    );
     assert_eq!(script_srcs(live), vec![greeting.clone()], "{live}");
     assert!(script_srcs(driven.body("/plain")).is_empty());
 
@@ -533,19 +617,20 @@ fn asset_variants_only_add_what_was_shipped() {
     assert!(css_url(plain).is_none(), "{plain}");
     assert!(islands_url(plain).is_some(), "{plain}");
 
-    // No assets at all: the SSR bundle carries no asset record and pages are
-    // exactly what the router rendered before this feature.
+    // No assets at all: pages are exactly what the router rendered before
+    // this feature.
     let project = Project::new(|root| {
         without_islands(root);
         without_css(root);
         without_client_scripts(root);
     });
     let dist = project.build();
-    let inner = fs::read_to_string(dist.join("_zfb_inner.mjs")).unwrap();
-    assert!(!inner.contains("stableUrl"), "no asset record embedded");
     let driven = drive(&dist, "", Some(paths), false);
     let plain = driven.body("/plain");
-    assert!(css_url(plain).is_none() && script_srcs(plain).is_empty(), "{plain}");
+    assert!(
+        css_url(plain).is_none() && script_srcs(plain).is_empty(),
+        "{plain}"
+    );
 }
 
 #[test]
@@ -577,9 +662,16 @@ fn rebuild_with_changed_bytes_moves_ssg_and_ssr_to_new_hashes() {
     let css = css_url(ssg).unwrap();
     let greeting = greeting_url(ssg).unwrap();
     assert_ne!(css, before_css, "changed CSS bytes get a new hash");
-    assert_ne!(greeting, before_greeting, "changed script bytes get a new hash");
+    assert_ne!(
+        greeting, before_greeting,
+        "changed script bytes get a new hash"
+    );
     assert_eq!(css_url(live).as_deref(), Some(css.as_str()), "{live}");
-    assert_eq!(greeting_url(live).as_deref(), Some(greeting.as_str()), "{live}");
+    assert_eq!(
+        greeting_url(live).as_deref(),
+        Some(greeting.as_str()),
+        "{live}"
+    );
     assert_ne!(
         hashed_file_bytes(&dist, &css, ""),
         before_css_bytes,

@@ -13,12 +13,19 @@ for (const variant of VARIANTS) {
     const consoleErrors = [];
     const failed = [];
     const assetResponses = [];
+    const errorResponses = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
     page.on("console", (message) => {
-      if (message.type() === "error") consoleErrors.push(message.text());
+      if (message.type() !== "error") return;
+      if (message.location().url.endsWith("/favicon.ico")) return;
+      consoleErrors.push(message.text());
     });
     page.on("requestfailed", (request) => failed.push(request.url()));
     page.on("response", (response) => {
+      // Browsers request /favicon.ico on their own; the fixture has none.
+      if (response.status() >= 400 && !response.url().endsWith("/favicon.ico")) {
+        errorResponses.push(`${response.status()} ${response.url()}`);
+      }
       if (response.url().includes("/assets/")) {
         assetResponses.push({ url: response.url(), status: response.status() });
       }
@@ -51,6 +58,7 @@ for (const variant of VARIANTS) {
       expect(response.url).toMatch(/-[0-9a-z]{8}\.(css|js)$/);
       expect(response.url).toContain(`${variant.base}/assets/`);
     }
+    expect(errorResponses).toEqual([]);
     expect(failed).toEqual([]);
     expect(pageErrors).toEqual([]);
     expect(consoleErrors).toEqual([]);
