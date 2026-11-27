@@ -1741,11 +1741,11 @@ describe("review fixes (fixed distributions)", () => {
 it.each([
   "footer-v1-refuse",
   "footer-v2-joined",
-  "footer-v2-idle",
+  "footer-v2-idle-deferred",
   "v1-accept",
   "v1-refuse",
   "joined",
-  "idle",
+  "idle-deferred",
   "no-release",
   "changed",
   "request",
@@ -1761,7 +1761,9 @@ it.each([
     const cancellation = new AbortController();
     const footer = mode.startsWith("footer-");
     const v2 = !mode.includes("v1");
-    const released = ["v1-accept", "joined", "idle"].includes(mode);
+    const released = ["v1-accept", "joined", "idle-deferred"].includes(mode);
+    // An idle capture never admits on its accepted sample here: it defers and joins the next one.
+    const deferred = mode.endsWith("-deferred");
     const { s, installs } = shared();
     const label = "family-" + mode;
     const { path, profile } = fixedProfile(s, "zfb", installs.zfb.out, {}, label + ".json");
@@ -1871,15 +1873,22 @@ it.each([
       async verifyFamilyBrowserReady() {
         events.push("rss-ready");
       },
-      captureFamilyCycle(receipt) {
+      captureFamilyCycle(receipt, options = {}) {
         events.push("check");
         if (mode === "no-release") throw Error("release unavailable");
         if (footer) {
           events.push("blank-capture");
           expect(page.prepared).toEqual([]);
         }
-        if (mode === "idle" || mode === "footer-v2-idle")
-          return { before: proof, settlement: null };
+        if (deferred && !receipt.idleDeferral) {
+          expect(options).toEqual({ idleNeedsFullPeriod: true });
+          events.push("idle-deferred");
+          return {
+            before: { ...proof, sample: { ...proof.sample, epoch: 3 } },
+            settlement: null,
+            deferred: { reserveNs: 1_000_000_000n, remainingCadenceNs: 100_000_000n },
+          };
+        }
         const now = process.hrtime.bigint();
         const start = String(now);
         const deadline = String(
@@ -1916,6 +1925,10 @@ it.each([
           }),
         );
         return { before, settlement };
+      },
+      nextFamilyHelper() {
+        events.push("next-helper");
+        return new Promise((resolve) => setImmediate(resolve));
       },
       verifyFamilyAdmission() {
         events.push("check");
@@ -2021,14 +2034,13 @@ it.each([
       }
       if (footer && v2) {
         expect(code).not.toBe(EXIT.ok);
-        expect(events.filter((e) => e === "blank-capture")).toHaveLength(1);
+        expect(events.filter((e) => e === "blank-capture")).toHaveLength(deferred ? 2 : 1);
         expect(events, JSON.stringify(records.filter((r) => r.error))).toContain(
           "refused-before-write",
         );
         const gate = records.find((r) => r.type === "scenario-start").familyAdmission;
-        expect(gate.setup.settlementOutcome).toBe(
-          mode === "footer-v2-joined" ? "accepted" : "no-pending",
-        );
+        expect(gate.setup.settlementOutcome).toBe("accepted");
+        if (deferred) expect(gate.setup.idleDeferral.outcome).toBe("joined");
         expect(gate.pageUrl).toBe("about:blank");
         expect(records.some((r) => r.type === "fixed-peer-edit-disk" || r.writePerformed)).toBe(
           false,
@@ -2038,6 +2050,14 @@ it.each([
         expect(code, JSON.stringify({ stderr, errors: records.filter((r) => r.error) })).toBe(
           EXIT.ok,
         );
+        if (deferred) {
+          const gate = records.find((r) => r.type === "scenario-start").familyAdmission;
+          expect(gate.setup.idleDeferral).toMatchObject({
+            outcome: "joined",
+            reserveNs: "1000000000",
+          });
+          expect(events.indexOf("idle-deferred")).toBeLessThan(events.indexOf("next-helper"));
+        }
         expect(records.find((r) => r.type === "attempt")).toMatchObject({
           mode: "final-state",
           writePerformed: true,
