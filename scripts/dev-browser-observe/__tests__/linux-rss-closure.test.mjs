@@ -206,3 +206,35 @@ test("renderer memory retains the unclosed pipe after an independently observed 
     study.finishSampling();
   }
 });
+
+test("delayed core cancellation starts exactly one reserve at the actual cancellation", async () => {
+  const f = fixture();
+  f.at(810000000);
+  f.timer();
+  f.child.stderr.emit("error", Error("secondary pipe fault"));
+  f.at(1009999999);
+  f.events();
+  const { details: d } = await f.result;
+  assert.equal(d.stage, "deadline");
+  assert.equal(d.timing.parent.deadlineNs, "750000000");
+  assert.equal(d.timing.parent.deadlineDispatchNs, "810000000");
+  assert.equal(d.timing.parent.closureDeadlineNs, "1010000000");
+  assert.equal(d.helper.closed, true);
+  assert.equal(d.helper.pipesClosed, true);
+  assert.equal(f.child.kill.mock.calls.length, 1);
+});
+
+test("failed signal delivery cannot substitute for exit or pipe closure", async () => {
+  const f = fixture();
+  f.child.kill.mockReturnValue(false);
+  f.at(750000000);
+  f.timer();
+  f.at(950000000);
+  f.timer();
+  const { details: d } = await f.result;
+  assert.equal(d.stage, "deadline");
+  assert.equal(d.timing.parent.killAccepted, false);
+  assert.equal(d.helper.closed, false);
+  assert.equal(d.helper.pipesClosed, false);
+  assert.equal(sampler.samplerClosureAudit(d.helper).complete, false);
+});
