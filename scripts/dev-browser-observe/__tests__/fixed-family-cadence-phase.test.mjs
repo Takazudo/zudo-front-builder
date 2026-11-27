@@ -49,6 +49,7 @@ function harness(mode, { sampleEveryMs = 1000 } = {}) {
   let terminal = { epoch: 1 };
   let dispatches = 0;
   const failures = [];
+  const hanging = [];
   const hooks = { onDispatch: () => {} };
   const monitor = startFixedRssSafety({
     joinOwnedFamily: true,
@@ -91,10 +92,12 @@ function harness(mode, { sampleEveryMs = 1000 } = {}) {
             },
           });
         };
-        if (plan.settleMs === 0) queueMicrotask(settle);
+        if (plan.settleMs === "sync") settle();
+        else if (plan.settleMs === 0) queueMicrotask(settle);
         else setTimeout(settle, plan.settleMs ?? SETTLE_MS);
       };
-      if (plan.failBeforeSpawn) done.reject(Error("next sample failed before its helper"));
+      if (plan.neverSpawn) hanging.push(done);
+      else if (plan.failBeforeSpawn) done.reject(Error("next sample failed before its helper"));
       else if (plan.spawnDelayMs) setTimeout(spawn, plan.spawnDelayMs);
       else spawn();
       return done.promise;
@@ -102,6 +105,7 @@ function harness(mode, { sampleEveryMs = 1000 } = {}) {
   });
   return {
     monitor,
+    hanging,
     block,
     hooks,
     failures,
@@ -174,6 +178,7 @@ async function atProofPhase(h, phaseNs) {
 }
 
 async function stopMonitor(h) {
+  for (const done of h.hanging) done.reject(Error("test cleanup"));
   const stopped = h.monitor.stop();
   await vi.advanceTimersByTimeAsync(2000);
   await stopped;
@@ -387,6 +392,10 @@ test("one nanosecond short of the reserve defers to the next cadence sample", as
 });
 
 test.each([
+  "next-never-spawns",
+  "next-dispatch-stalled",
+  "next-settled-at-spawn",
+  "next-settled-sync",
   "next-fails-before-helper",
   "next-fails-after-helper",
   "next-dispatch-late",
@@ -404,7 +413,12 @@ test.each([
     h.hooks.onDispatch = () => {
       changed = true;
       if (mode === "custody-changed") h.setTerminal({ epoch: 2 });
+      // An event-loop stall that delivers the tick after the wait bound has passed.
+      if (mode === "next-dispatch-stalled") h.block(800n * MS);
       return {
+        "next-never-spawns": { neverSpawn: true },
+        "next-settled-at-spawn": { settleMs: 0 },
+        "next-settled-sync": { settleMs: "sync" },
         "next-fails-before-helper": { failBeforeSpawn: true },
         "next-fails-after-helper": { fail: true },
         "next-dispatch-late": { spawnDelayMs: 900 },
@@ -439,6 +453,10 @@ test.each([
     assert.match(
       String(error.message),
       {
+        "next-never-spawns": /next cadence dispatch expired/,
+        "next-dispatch-stalled": /next cadence dispatch expired/,
+        "next-settled-at-spawn": /invalid or expired family helper/,
+        "next-settled-sync": /next cadence cycle not joinable/,
         "next-fails-before-helper": /unavailable/,
         "next-fails-after-helper": /observation missing, failed/,
         "next-dispatch-late": /next cadence dispatch expired/,
@@ -452,6 +470,11 @@ test.each([
     );
     assert(!b.input.deps.recorder.records.some((r) => r.type === "scenario-start"));
     assert.equal(b.page.prepared.length, 0);
+    if (mode === "next-never-spawns") {
+      const late = BigInt(refusal.decisionNs) - BigInt(refusal.setup.idleDeferral.waitBoundNs);
+      assert(late >= 0n && late < 10n * MS, "refused at the wait bound, not later: " + late);
+      assert.deepEqual(h.failures, [], "refused before the next tick found the sampler occupied");
+    }
     if (mode === "work-deadline")
       assert.equal(refusal.setup.idleDeferral.waitBoundNs, refusal.setup.workDeadlineNs);
   } finally {
