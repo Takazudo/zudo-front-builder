@@ -1738,14 +1738,31 @@ describe("review fixes (fixed distributions)", () => {
   });
 });
 
-it.each([true, false])(
+it.each([
+  "v1-accept",
+  "v1-refuse",
+  "joined",
+  "idle",
+  "no-release",
+  "changed",
+  "request",
+  "navigated",
+  "transient",
+  "abort-join",
+  "failed",
+  "expired",
+  "hung",
+])(
   "normal ZFB family controller reaches blank setup before full custody (release %s)",
-  async (released) => {
+  async (mode) => {
+    const cancellation = new AbortController();
+    const v2 = !mode.startsWith("v1");
+    const released = ["v1-accept", "joined", "idle"].includes(mode);
     const { s, installs } = shared();
-    const label = released ? "family-released" : "family-refused";
+    const label = "family-" + mode;
     const { path, profile } = fixedProfile(s, "zfb", installs.zfb.out, {}, label + ".json");
     profile.fixedRssSafety = "linux-fixed-zfb.v4";
-    profile.fixedFamilyAdmission = "blank-before-custody.v1";
+    profile.fixedFamilyAdmission = v2 ? "blank-join-owned.v2" : "blank-before-custody.v1";
     profile.scenarios = [
       {
         id: "fn-rapid-add-delete",
@@ -1782,6 +1799,8 @@ it.each([true, false])(
     const known = new Map([root, dev, worker].map((b) => [b.pid, b])),
       events = [];
     const proof = { root, dev, worker, sample: { live: [root, dev] } };
+    let context,
+      pages = [];
     const native = join(installs.zfb.out, "apps/zfb/node_modules/@takazudo/zfb-linux-x64-gnu/zfb");
     const live = [
       { ...root, args: "node /node_modules/@takazudo/zfb/bin/zfb.mjs dev" },
@@ -1803,9 +1822,50 @@ it.each([true, false])(
       async verifyFamilyBrowserReady() {
         events.push("rss-ready");
       },
+      captureFamilyCycle(receipt) {
+        events.push("check");
+        if (mode === "no-release") throw Error("release unavailable");
+        if (mode === "idle") return { before: proof, settlement: null };
+        const now = process.hrtime.bigint();
+        const start = String(now);
+        const deadline = String(
+          now + (mode === "expired" ? -1n : mode === "hung" ? 25_000_000n : 750_000_000n),
+        );
+        receipt.cycle = {
+          epoch: 4,
+          startedNs: start,
+          helper: {
+            pid: 103,
+            spawnHrtimeNs: start,
+            entryNs: start,
+            deadlineNs: deadline,
+          },
+        };
+        const before = { ...proof, sample: { ...proof.sample, epoch: 3 } };
+        const settlement = new Promise((resolve) =>
+          setImmediate(() => {
+            if (mode === "abort-join") cancellation.abort(Error("cancel pending admission"));
+            if (mode === "transient") pages[0].emit("framenavigated");
+            if (mode === "request") context.emit("request", { url: () => "http://localhost/" });
+            if (mode === "navigated") pages = [{ url: () => "http://localhost/" }];
+            if (mode === "hung") return;
+            Object.assign(proof.sample, {
+              epoch: mode === "changed" ? 5 : 4,
+              startedNs: start,
+              helperPid: 103,
+              helperSpawnNs: start,
+              entryNs: start,
+              deadlineNs: deadline,
+              resultNs: String(process.hrtime.bigint()),
+            });
+            resolve();
+          }),
+        );
+        return { before, settlement };
+      },
       verifyFamilyAdmission() {
         events.push("check");
-        if (!released) throw Error("release unavailable");
+        if (mode === "v1-refuse" || mode === "failed") throw Error("release unavailable");
         return proof;
       },
       async stop() {
@@ -1823,6 +1883,7 @@ it.each([true, false])(
         label,
         command: "run",
         supervisorId: "controlled",
+        signal: cancellation.signal,
         supervisorStartedMs: start,
         workDeadline: start + 7140000,
         supervisorDeadlineMs: start + 7200000,
@@ -1856,10 +1917,10 @@ it.each([true, false])(
           launchOwnedBrowser: async (_cfg, { onBlankContext }) => {
             events.push("blank");
             const c = new EventEmitter();
-            let pages = [];
+            context = c;
             c.pages = () => pages;
             onBlankContext(c);
-            pages = [{ url: () => "about:blank" }];
+            pages = [Object.assign(new EventEmitter(), { url: () => "about:blank" })];
             return { observer: page, identity: { engine: "fake" } };
           },
           closeOwnedBrowser: async () => {
@@ -1904,7 +1965,7 @@ it.each([true, false])(
         expect(records.some((r) => r.type === "cleanup" || r.type === "attempt")).toBe(false);
         expect(records.find((r) => r.type === "original-family-admission")).toMatchObject({
           admitted: false,
-          httpRequests: 0,
+          httpRequests: mode === "request" ? 1 : 0,
           workloadWriteCalls: 0,
           snapshots: 0,
         });

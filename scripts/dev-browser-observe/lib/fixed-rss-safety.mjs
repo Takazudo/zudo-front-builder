@@ -68,11 +68,13 @@ export function startFixedRssSafety({
   append,
   abort,
   sample = sampleRendererMemory,
+  joinOwnedFamily = false,
   custody = null,
   peer,
   checkRoles = samplePeerRoles,
 }) {
   let pending = null;
+  let active = null;
   let failure = null;
   let secondaryHelperFailure = null;
   let nativeBirth = null;
@@ -129,10 +131,20 @@ export function startFixedRssSafety({
     // legitimately predate the native child. Qualify a new periodic sample.
     const readyAtEntry = readyCheck;
     const startedNs = String(process.hrtime.bigint());
+    const cycle = joinOwnedFamily ? { epoch: measuredCycles + 1, startedNs, helper: null } : null;
+    active = cycle;
     pending = (
       peer
         ? sample(server, fixedExecutables.root.path)
-        : sample(server, fixedExecutables.root.path, { fixedExecutables, custody })
+        : sample(server, fixedExecutables.root.path, {
+            fixedExecutables,
+            custody,
+            ...(cycle && {
+              onHelperSpawn: (h) => {
+                cycle.helper = h;
+              },
+            }),
+          })
     )
       .then((result) => {
         measuredCycles++;
@@ -231,6 +243,12 @@ export function startFixedRssSafety({
             startedNs,
             resultNs: result.timing?.parent?.resultNs,
             epoch: measuredCycles,
+            ...(joinOwnedFamily && {
+              helperPid: result.helper?.pid,
+              helperSpawnNs: result.helper?.spawnHrtimeNs,
+              entryNs: result.timing?.parent?.entryNs,
+              deadlineNs: result.timing?.parent?.deadlineNs,
+            }),
             strict:
               result.helperResult === "complete" &&
               result.helper?.closed &&
@@ -256,6 +274,7 @@ export function startFixedRssSafety({
       .catch(fail)
       .finally(() => {
         pending = null;
+        active = null;
       });
     return pending;
   };
@@ -321,6 +340,44 @@ export function startFixedRssSafety({
       await observeReady();
       if (!lastAccepted?.strict || lastAccepted.live.length !== 2 || !nativeBirth)
         throw Error("family blank setup requires complete root/native RSS observation");
+    },
+    captureFamilyCycle(receipt) {
+      const proof = lastAccepted;
+      Object.assign(receipt, {
+        capturedNs: String(process.hrtime.bigint()),
+        v4: fixedExecutables.protocol === "linux-fixed-zfb.v4",
+        failed: Boolean(failure),
+        stopped,
+        pending: Boolean(pending),
+        strict: Boolean(proof?.strict && proof.resultNs),
+        previousEpoch: proof?.epoch ?? null,
+        cycle: active ? structuredClone(active) : null,
+      });
+      assert(
+        joinOwnedFamily && receipt.v4 && !failure && !stopped && receipt.strict && nativeBirth,
+        "family observation unavailable before settlement",
+      );
+      const before = { sample: proof, ...structuredClone(custody.familyProof()) };
+      assert(
+        Number.isSafeInteger(before.release?.receipt?.epoch) &&
+          before.release.receipt.epoch <= proof.epoch,
+        "family release lacks a previously accepted epoch",
+      );
+      if (!pending) return { before: this.verifyFamilyAdmission(), settlement: null };
+      const { helper, epoch, startedNs } = active;
+      assert(
+        helper &&
+          Number.isSafeInteger(helper.pid) &&
+          helper.pid > 0 &&
+          epoch === proof.epoch + 1 &&
+          BigInt(startedNs) <= BigInt(helper.entryNs) &&
+          BigInt(helper.entryNs) <= BigInt(helper.spawnHrtimeNs) &&
+          BigInt(helper.spawnHrtimeNs) <= BigInt(receipt.capturedNs) &&
+          BigInt(helper.deadlineNs) === BigInt(helper.entryNs) + 750_000_000n &&
+          BigInt(receipt.capturedNs) < BigInt(helper.deadlineNs),
+        "invalid or expired family helper",
+      );
+      return { before, settlement: pending };
     },
     verifyFamilyAdmission() {
       if (
