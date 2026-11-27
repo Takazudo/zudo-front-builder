@@ -198,13 +198,28 @@ test("only the exact designated Next server title can contain NUL padding", () =
   assert.throws(() => peerArgv("node", false));
 });
 
-test.each([true, false])(
-  "peer body edit checks socket before writing and proves a distinct restored document (socket %s)",
-  async (connected) => {
+test.each(["success", "no-socket", "timeout", "stale", "late-notify", "same-detail"])(
+  "peer body gate records %s without admitting a missing socket, late edit or reused document",
+  async (outcome) => {
+    const connected = outcome !== "no-socket";
+    let ns = 1000000000n,
+      deadline;
+    const clock = { now: () => ns };
     const fs = fakeFs(),
       page = fakePage({
-        behaviors: [{ kind: "notify", t1: 2000000000n }],
-        liveCheck: () => ({ ok: true, docUUID: "fresh-detail" }),
+        onWait: (token, _late, p) => {
+          ns = deadline;
+          if (outcome === "timeout" || outcome === "stale") {
+            p.evidence.newDocuments = outcome === "stale" ? 1 : 0;
+            return Promise.resolve({ kind: "timeout" });
+          }
+          if (outcome === "late-notify") ns += 1n;
+          return Promise.resolve({ kind: "notify", t1: ns, payload: { token, docUUID: "doc-1" } });
+        },
+        liveCheck: () => ({
+          ok: true,
+          docUUID: outcome === "same-detail" ? "doc-1" : "fresh-detail",
+        }),
       });
     page.peerSocketTracking = new Map(connected ? [[1, { firstFrameNs: "10" }]] : []);
     const oldArm = page.arm;
@@ -228,12 +243,16 @@ test.each([true, false])(
       bodyRevision: { matched: true, docUUID: "doc-1" },
     });
     const d = {
-      ...deps({ fs, page }),
+      ...deps({ fs, page, clock }),
+      workDeadlineNs: 100000000000n,
       verifyBodyRevision: true,
       fixedPeer: true,
       stageBudget: (max, start) => {
         assert.equal(typeof start, "bigint");
-        return max;
+        const left = max - Number(ns - start) / 1000000;
+        assert(left > 0, "stage exhausted");
+        deadline = start + BigInt(max) * 1000000n;
+        return left;
       },
     };
     const { accounting } = await runBatch({
@@ -246,8 +265,10 @@ test.each([true, false])(
       ],
     });
     assert.equal(fs.writes.length, connected ? 1 : 0);
-    assert.equal(accounting.success, connected ? 1 : 0);
-    if (connected) assert.equal(accounting.restorationFailures, 0);
+    assert.equal(accounting.success, ["success", "same-detail"].includes(outcome) ? 1 : 0);
+    if (connected) assert.equal(accounting.restorationFailures, outcome === "same-detail" ? 1 : 0);
+    if (["timeout", "late-notify"].includes(outcome)) assert.equal(accounting.timeout, 1);
+    if (outcome === "stale") assert.equal(accounting.stale, 1);
   },
 );
 

@@ -1004,7 +1004,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           signal: rendererMemory?.signal ?? loaded.signal,
           rendererMemory,
           safetySignal: fixedAbort?.signal,
-          ...(fixedPeer && { stageBudget: peerBudget }),
+          ...(fixedPeer && {
+            stageBudget: peerBudget,
+            workDeadlineNs: BigInt(loaded.workDeadline) * 1_000_000n,
+          }),
           afterScenario: study?.afterScenario,
           beforeCleanup: rendererMemory
             ? () => rendererMemory.enter("restoration")

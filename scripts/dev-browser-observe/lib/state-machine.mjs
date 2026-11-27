@@ -891,7 +891,7 @@ export async function runBatch({ scenarios, deps }) {
                   resolve({ kind: "resource-limit", sample: s, tripped: trip, wallMs: wall });
               }, waitSamples.everyMs);
             });
-        let waited;
+        let waited, peerDecision;
         try {
           const timeoutMs = diagnostic
             ? diagnostic.clamp("attempt observation", timeouts.attemptMs, attemptStart)
@@ -912,7 +912,20 @@ export async function runBatch({ scenarios, deps }) {
               ...(resourceTrip ? [resourceTrip] : []),
             ]),
           );
-          deps.stageBudget?.(timeouts.attemptMs, attemptStart);
+          if (deps.fixedPeer) {
+            signal?.throwIfAborted();
+            const attemptEnd = attemptStart + BigInt(timeouts.attemptMs) * 1_000_000n;
+            const end = deps.workDeadlineNs < attemptEnd ? deps.workDeadlineNs : attemptEnd;
+            peerDecision = {
+              deadlineNs: String(end),
+              dispatchNs: String(clock.now()),
+              kind: waited.kind,
+            };
+            if (waited.kind === "notify" && waited.t1 > end) {
+              peerDecision.lateNotify = { receivedNs: String(waited.t1), payload: waited.payload };
+              waited = { kind: "timeout" };
+            }
+          }
         } finally {
           clearInterval(sampler);
         }
@@ -924,6 +937,7 @@ export async function runBatch({ scenarios, deps }) {
         const rec = {
           ...recBase,
           preDocUUID,
+          ...(peerDecision && { peerDecision }),
           t0Ns: String(t0),
           serverPidBefore,
           serverPidAfter,
