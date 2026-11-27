@@ -318,6 +318,35 @@ pub struct Watcher {
     /// `watched_recursive_roots`: boot roots are permanent and unfiltered,
     /// these are reconcilable (replace semantics) and skip-dir-filtered.
     synced_recursive_dirs: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    /// On-disk identity of each `synced_recursive_dirs` key when it was
+    /// last armed. A root deleted and recreated (or swapped in by a rename)
+    /// between two syncs keeps its path but not its inode, and inotify's
+    /// watch died with the old inode, so a changed identity re-arms it.
+    synced_recursive_identities: BTreeMap<PathBuf, Option<DirIdentity>>,
+}
+
+/// What a directory watch is bound to beyond its path: `(dev, inode)` on
+/// unix plus the birth time where the filesystem records one.
+///
+/// The birth time is part of it because a directory removed and recreated
+/// at once routinely gets the same inode number back (observed on ext4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DirIdentity {
+    #[cfg(unix)]
+    inode: (u64, u64),
+    created: Option<std::time::SystemTime>,
+}
+
+fn dir_identity(path: &Path) -> Option<DirIdentity> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(DirIdentity {
+        #[cfg(unix)]
+        inode: {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.dev(), metadata.ino())
+        },
+        created: metadata.created().ok(),
+    })
 }
 
 fn file_watch_aliases(path: &Path) -> BTreeSet<PathBuf> {
@@ -508,6 +537,14 @@ struct RecursiveDirFilterCore {
     /// (plugin `watchDirectories` roots, zfb issue #4894: the CSS infra-dir
     /// skip list must not narrow a plugin's own declaration).
     unfiltered_roots: BTreeSet<PathBuf>,
+    /// Active root spellings whose own create/remove/rename the notify
+    /// callback saw since the last sync: their watch may be bound to a
+    /// directory that no longer exists, so the next sync re-arms them.
+    replaced_roots: BTreeSet<PathBuf>,
+    /// Alias spellings of every desired root of the latest sync that is not
+    /// an `unfiltered_roots` entry, including roots collapsed under an outer
+    /// registration: their skip names still apply below a plugin root.
+    filtered_roots: BTreeSet<PathBuf>,
 }
 
 impl RecursiveDirFilterCore {
@@ -546,14 +583,40 @@ impl RecursiveDirFilterCore {
         if self.active_roots.is_empty() || self.skip_names.is_empty() {
             return false;
         }
-        if self
+        // Below a plugin root the innermost declared root decides: a CSS or
+        // package root nested under a plugin root keeps its own skip names,
+        // and a plugin root nested under a CSS root delivers everything.
+        let innermost_unfiltered = self
             .unfiltered_roots
             .iter()
-            .any(|root| path.starts_with(root))
-        {
-            return false;
+            .filter(|root| path.starts_with(root))
+            .map(|root| root.components().count())
+            .max();
+        let mut innermost_filtered: BTreeSet<PathBuf> = BTreeSet::new();
+        if let Some(plugin_depth) = innermost_unfiltered {
+            let Some(depth) = self
+                .filtered_roots
+                .iter()
+                .filter(|root| path.starts_with(root))
+                .map(|root| root.components().count())
+                .max()
+                .filter(|depth| *depth > plugin_depth)
+            else {
+                return false;
+            };
+            innermost_filtered.extend(
+                self.filtered_roots
+                    .iter()
+                    .filter(|root| path.starts_with(root) && root.components().count() == depth)
+                    .cloned(),
+            );
         }
-        let inside_skip_dir = self.active_roots.iter().any(|root| {
+        let skip_roots = if innermost_unfiltered.is_some() {
+            &innermost_filtered
+        } else {
+            &self.active_roots
+        };
+        let inside_skip_dir = skip_roots.iter().any(|root| {
             path.strip_prefix(root).is_ok_and(|rel| {
                 let mut parent = root.clone();
                 rel.components().any(|component| {
@@ -698,7 +761,21 @@ impl Watcher {
                 Ok(mut evt) => {
                     if !evt.paths.is_empty() {
                         {
-                            let filter = lock_ignoring_poison(&filter_for_events);
+                            let mut filter = lock_ignoring_poison(&filter_for_events);
+                            if matches!(
+                                evt.kind,
+                                EventKind::Create(_)
+                                    | EventKind::Remove(_)
+                                    | EventKind::Modify(notify::event::ModifyKind::Name(_))
+                            ) {
+                                let replaced: Vec<PathBuf> = evt
+                                    .paths
+                                    .iter()
+                                    .filter(|path| filter.active_roots.contains(*path))
+                                    .cloned()
+                                    .collect();
+                                filter.replaced_roots.extend(replaced);
+                            }
                             evt.paths.retain(|path| {
                                 !filter.suppresses(path, &dependency_dirs_for_events)
                             });
@@ -818,6 +895,7 @@ impl Watcher {
             dependency_dir_registrations: BTreeMap::new(),
             recursive_dir_filter,
             synced_recursive_dirs: BTreeMap::new(),
+            synced_recursive_identities: BTreeMap::new(),
         };
         watcher.watch_exact_files(options.exact_files);
         Ok((watcher, out_rx))
@@ -1074,6 +1152,10 @@ impl Watcher {
                 (root, aliases, canonical)
             })
             .collect();
+        let candidate_aliases: Vec<BTreeSet<PathBuf>> = ranked
+            .iter()
+            .map(|(_, aliases, _)| aliases.clone())
+            .collect();
         ranked.sort_by(|a, b| a.2.cmp(&b.2));
 
         // Reduce to the target registration plan: drop roots already covered
@@ -1106,6 +1188,15 @@ impl Watcher {
             let mut filter = lock_ignoring_poison(&self.recursive_dir_filter);
             filter.skip_names = skip_names;
             filter.active_roots.extend(target_aliases.iter().cloned());
+            filter.filtered_roots = candidate_aliases
+                .into_iter()
+                .filter(|aliases| {
+                    !aliases
+                        .iter()
+                        .any(|alias| filter.unfiltered_roots.contains(alias))
+                })
+                .flatten()
+                .collect();
         }
 
         // Watch target roots not already registered. Alias intersection
@@ -1122,12 +1213,52 @@ impl Watcher {
             if let Some(key) = kept_key {
                 let mut merged = self.synced_recursive_dirs[&key].clone();
                 merged.extend(aliases);
+                // A kept root whose directory was replaced since it was armed
+                // (delete + recreate, `mv new root`, a branch checkout) is
+                // still the same path but no longer the watched inode:
+                // re-register it and report it as newly watched so the
+                // caller reconciles edits made in the unwatched window. The
+                // poll backend scans by path and needs no re-arm.
+                let current = dir_identity(&key);
+                let armed = self
+                    .synced_recursive_identities
+                    .get(&key)
+                    .copied()
+                    .flatten();
+                let seen_replaced = {
+                    let mut filter = lock_ignoring_poison(&self.recursive_dir_filter);
+                    let hit = merged
+                        .iter()
+                        .any(|alias| filter.replaced_roots.contains(alias));
+                    filter
+                        .replaced_roots
+                        .retain(|alias| !merged.contains(alias));
+                    hit
+                };
+                if !self._notify.poll_backend
+                    && current.is_some()
+                    && (current != armed || seen_replaced)
+                {
+                    match self._notify.watch(&key, RecursiveMode::Recursive) {
+                        Ok(()) => {
+                            debug!(path = %key.display(), "re-armed replaced recursive dir root");
+                            self.synced_recursive_identities
+                                .insert(key.clone(), current);
+                            newly_watched.push(key.clone());
+                        }
+                        Err(error) => {
+                            warn!(path = %key.display(), %error, "failed to re-arm replaced recursive dir root");
+                        }
+                    }
+                }
                 surviving.insert(key, merged);
                 continue;
             }
             match self._notify.watch(&root, RecursiveMode::Recursive) {
                 Ok(()) => {
                     debug!(path = %root.display(), "watching recursive dir root");
+                    self.synced_recursive_identities
+                        .insert(root.clone(), dir_identity(&root));
                     surviving.insert(root.clone(), aliases);
                     newly_watched.push(root);
                 }
@@ -1152,6 +1283,9 @@ impl Watcher {
         {
             let mut filter = lock_ignoring_poison(&self.recursive_dir_filter);
             filter.active_roots = surviving_aliases.clone();
+            filter
+                .replaced_roots
+                .retain(|alias| surviving_aliases.contains(alias));
         }
 
         // Retire registrations that fell out of the target set — AFTER the
@@ -1324,6 +1458,8 @@ impl Watcher {
                 }
             }
         }
+        self.synced_recursive_identities
+            .retain(|root, _| surviving.contains_key(root));
         self.synced_recursive_dirs = surviving;
 
         newly_watched
@@ -3281,6 +3417,35 @@ mod tests {
             filter.suppresses(Path::new("/proj/lib/other/dist/a.json"), &deps),
             "other synced roots keep their skip names"
         );
+    }
+
+    #[test]
+    fn css_root_nested_under_a_plugin_root_keeps_its_skip_names() {
+        let deps = SharedPathSet::default();
+        let mut filter = filter_with(&["/proj"], &["dist", "node_modules"]);
+        filter.unfiltered_roots = BTreeSet::from([PathBuf::from("/proj")]);
+        filter.filtered_roots = BTreeSet::from([PathBuf::from("/proj/src/styles")]);
+        assert!(
+            filter.suppresses(Path::new("/proj/src/styles/node_modules/a.css"), &deps),
+            "the nested CSS root's skip dir stays suppressed"
+        );
+        assert!(filter.suppresses(Path::new("/proj/src/styles/x/dist/b.css"), &deps));
+        assert!(!filter.suppresses(Path::new("/proj/src/styles/a.css"), &deps));
+        assert!(
+            !filter.suppresses(Path::new("/proj/node_modules/pkg/data.json"), &deps),
+            "paths covered only by the plugin root are delivered"
+        );
+        assert!(!filter.suppresses(Path::new("/proj/src/dist/c.json"), &deps));
+    }
+
+    #[test]
+    fn plugin_root_nested_under_a_css_root_stays_unfiltered_after_sync() {
+        let deps = SharedPathSet::default();
+        let mut filter = filter_with(&["/proj/lib"], &["dist"]);
+        filter.unfiltered_roots = BTreeSet::from([PathBuf::from("/proj/lib/plugin-data")]);
+        filter.filtered_roots = BTreeSet::from([PathBuf::from("/proj/lib")]);
+        assert!(!filter.suppresses(Path::new("/proj/lib/plugin-data/dist/a.json"), &deps));
+        assert!(filter.suppresses(Path::new("/proj/lib/other/dist/a.json"), &deps));
     }
 
     #[test]
