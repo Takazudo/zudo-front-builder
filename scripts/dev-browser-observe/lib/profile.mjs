@@ -12,7 +12,7 @@ import {
   fnWarmPaths,
 } from "./fieldnotes.mjs";
 import { OP_WRITE_METHODS } from "./fixture.mjs";
-import { FIXED_ASTRO_FOOTER_PROTOCOL } from "./fixed-peer-roles.mjs";
+import { FIXED_ASTRO_TITLE_PROTOCOL, isFixedAstroProtocol } from "./fixed-peer-roles.mjs";
 import { rendererMemoryProfileErrors } from "./renderer-memory-protocol.mjs";
 import { startupProfileErrors } from "./startup-acceptance.mjs";
 import { scheduleErrors } from "./schedule.mjs";
@@ -49,7 +49,8 @@ export const FIXED_ADAPTERS = {
 };
 
 // This contract qualifies the exact archived fn-shared-component correctness cell.
-function fixedAstroFooterErrors(p) {
+function fixedAstroErrors(p) {
+  const title = p.fixedRssSafety === FIXED_ASTRO_TITLE_PROTOCOL;
   const [scenario] = p.scenarios ?? [];
   const [op] = scenario?.ops ?? [];
   const errors = [];
@@ -71,21 +72,29 @@ function fixedAstroFooterErrors(p) {
     );
   if (
     p.scenarios?.length !== 1 ||
-    scenario?.id !== "fn-shared-component" ||
+    scenario?.id !== (title ? "fn-title-detail" : "fn-shared-component") ||
     scenario.set !== "workload" ||
     Object.keys(scenario).some((k) => !["id", "set", "warmOrder", "ops"].includes(k)) ||
     scenario.warmOrder !== "none" ||
     scenario.ops?.length !== 1 ||
-    op?.id !== "footer" ||
-    op.op !== "edit-shared-component" ||
-    op.targetPath !== "/" ||
+    (title
+      ? op?.id !== "title-05-detail" ||
+        op.op !== "edit-title" ||
+        op.article !== "article-00005" ||
+        op.expect !== "classify" ||
+        Object.keys(op).some((k) => !["id", "op", "article", "writeMethod", "expect"].includes(k))
+      : op?.id !== "footer" ||
+        op.op !== "edit-shared-component" ||
+        op.targetPath !== "/" ||
+        (op.expect ?? "success") !== "success" ||
+        Object.keys(op).some(
+          (k) => !["id", "op", "targetPath", "writeMethod", "expect"].includes(k),
+        )) ||
     op.writeMethod !== "in-place" ||
-    (op.expect ?? "success") !== "success" ||
-    Object.keys(op).some((k) => !["id", "op", "targetPath", "writeMethod", "expect"].includes(k)) ||
     p.restoration?.writeMethod !== "in-place"
   )
     errors.push(
-      "$.fixedRssSafety requires the original single in-place fn-shared-component classification and restoration",
+      "$.fixedRssSafety requires the original single in-place Astro operation and restoration",
     );
   if (
     p.server?.readyTimeoutMs !== 300000 ||
@@ -106,13 +115,12 @@ function fixedAstroFooterErrors(p) {
 /** fixed-distribution rules: the framework's declared helper, no zfb-only diagnostic/recovery families. */
 function fixedErrors(profile) {
   const errors = [];
-  if (profile.fixedRssSafety === FIXED_ASTRO_FOOTER_PROTOCOL)
-    errors.push(...fixedAstroFooterErrors(profile));
+  if (isFixedAstroProtocol(profile.fixedRssSafety)) errors.push(...fixedAstroErrors(profile));
   else if (profile.fixedPeerBrowser)
-    errors.push("$.fixedPeerBrowser requires linux-fixed-astro-footer.v1");
+    errors.push("$.fixedPeerBrowser requires a fixed Astro observation protocol");
   if (
     profile.fixedRssSafety &&
-    profile.fixedRssSafety !== FIXED_ASTRO_FOOTER_PROTOCOL &&
+    !isFixedAstroProtocol(profile.fixedRssSafety) &&
     (profile.framework !== "zfb" ||
       (profile.distribution?.launch ?? "direct") !== "direct" ||
       profile.fixture?.scale !== 100 ||

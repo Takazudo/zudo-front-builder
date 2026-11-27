@@ -5,6 +5,11 @@ import { linuxBirth, sameLinuxBirth } from "./linux-birth.mjs";
 
 export const FIXED_ASTRO_FOOTER_PROTOCOL = "linux-fixed-astro-footer.v1";
 
+export const FIXED_ASTRO_TITLE_PROTOCOL = "linux-fixed-astro-title.v1";
+export function isFixedAstroProtocol(protocol) {
+  return protocol === FIXED_ASTRO_FOOTER_PROTOCOL || protocol === FIXED_ASTRO_TITLE_PROTOCOL;
+}
+
 // Each live member runs the same pinned Node image. Its actual argv, stable
 // birth and parent, and the serving role's loopback socket distinguish roles.
 

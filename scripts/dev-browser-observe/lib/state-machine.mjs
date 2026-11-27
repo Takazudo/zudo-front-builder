@@ -1,9 +1,6 @@
-import {
-  ASTRO_FOOTER,
-  astroFooterPredicate,
-  matchesAstroFooter,
-  footerProducerMatches,
-} from "./astro-footer.mjs";
+import { ASTRO_TITLE, TITLE_DETAIL, TITLE_SELECTOR, validateTitlePlan } from "./astro-title.mjs";
+import { ASTRO_FOOTER, ASTRO_FOOTER_SELECTOR, astroFooterPredicate } from "./astro-footer.mjs";
+import { astroTextPredicate, matchesAstroText, astroProducerMatches } from "./astro-text.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { runSpecialMode } from "./special-modes.mjs";
 import { RENAME_NOOP } from "./fixture.mjs";
@@ -221,6 +218,16 @@ export async function runBatch({ scenarios, deps }) {
   const startedNs = deps.startedNs ?? clock.now();
   let activeSnapshot = null;
   let bodyRevision = null;
+  const fixedAstro = deps.fixedAstroFooter || deps.fixedAstroTitle;
+  const originalText = deps.fixedAstroTitle ? ASTRO_TITLE : ASTRO_FOOTER;
+  const primaryOriginal = astroTextPredicate(
+    originalText,
+    deps.fixedAstroTitle ? TITLE_SELECTOR : ASTRO_FOOTER_SELECTOR,
+  );
+  const freshPath = deps.fixedAstroTitle ? TITLE_DETAIL : "/archive/1/";
+  const finalAffected = deps.fixedAstroTitle ? "/articles/article-00095/" : "/archive/1/";
+  const seenSupplementalDocs = new Set();
+
   let peerWrite = null;
   let stopped = false;
 
@@ -356,10 +363,16 @@ export async function runBatch({ scenarios, deps }) {
       for (const originalCheck of liveSkipped ? [] : fs.liveChecks(snapshot)) {
         // Recheck the exact body during its existing detail visit, preserving the navigation order.
         const check =
-          bodyRevision && originalCheck.path === bodyRevision.path
+          bodyRevision && originalCheck.path === (fixedAstro ? freshPath : bodyRevision.path)
             ? {
                 ...originalCheck,
-                predicate: { kind: "all", of: [originalCheck.predicate, bodyRevision.predicate] },
+                predicate: {
+                  kind: "all",
+                  of: [
+                    originalCheck.predicate,
+                    fixedAstro ? primaryOriginal : bodyRevision.predicate,
+                  ],
+                },
               }
             : originalCheck;
         if (!diagnostic) signal?.throwIfAborted();
@@ -393,10 +406,9 @@ export async function runBatch({ scenarios, deps }) {
         (!rule.requireNativeUpdate || (settle?.settled && settle.bodyRevision?.matched === true)) &&
         live.some(
           (check) =>
-            check.path === bodyRevision.path &&
+            check.path === (fixedAstro ? freshPath : bodyRevision.path) &&
             check.ok &&
-            (!deps.fixedAstroFooter ||
-              (check.docUUID && check.docUUID !== settle?.bodyRevision?.docUUID)),
+            (!fixedAstro || (check.docUUID && check.docUUID !== settle?.bodyRevision?.docUUID)),
         ));
     const expectedRoutes = [
       "/",
@@ -405,22 +417,21 @@ export async function runBatch({ scenarios, deps }) {
       "/archive/2/",
       "/category/architecture/",
     ];
-    const confirmedArchive = live.find((row) => row.path === "/archive/1/");
-    const footerRoutes =
-      !deps.fixedAstroFooter ||
+    if (deps.fixedAstroTitle) expectedRoutes.splice(2, 0, TITLE_DETAIL);
+    const freshWitness = live.find((row) => row.path === freshPath);
+    const astroRoutes =
+      !fixedAstro ||
       (live.length === expectedRoutes.length &&
         live.every((row, i) => row.path === expectedRoutes[i] && row.docUUID && row.ok) &&
         new Set(live.map((row) => row.docUUID)).size === live.length &&
-        bodyRevision?.path === "/archive/1/" &&
+        bodyRevision?.path === finalAffected &&
         bodyRevision.affectedDocUUID &&
-        confirmedArchive.docUUID !== bodyRevision.affectedDocUUID &&
-        matchesAstroFooter(
-          (confirmedArchive.notify?.actual ?? confirmedArchive.actual)?.[1],
-          ASTRO_FOOTER,
-        ) &&
-        matchesAstroFooter(settle?.bodyRevision?.actual, ASTRO_FOOTER));
+        freshWitness.docUUID !== bodyRevision.affectedDocUUID &&
+        (!deps.fixedAstroTitle || live.every((row) => !seenSupplementalDocs.has(row.docUUID))) &&
+        matchesAstroText((freshWitness.notify?.actual ?? freshWitness.actual)?.[1], originalText) &&
+        matchesAstroText(settle?.bodyRevision?.actual, originalText));
     let ok =
-      footerRoutes &&
+      astroRoutes &&
       !signal?.aborted &&
       restore.mismatches.length === 0 &&
       (diskOnlyControl || (liveSkipped === null && settled)) &&
@@ -440,7 +451,7 @@ export async function runBatch({ scenarios, deps }) {
       }
     const cleanupRec = {
       ...(peerRestoration && { peerRestoration }),
-      ...(deps.fixedAstroFooter &&
+      ...(fixedAstro &&
         bodyRevision && {
           restorationWitness: {
             path: bodyRevision.path,
@@ -612,6 +623,7 @@ export async function runBatch({ scenarios, deps }) {
         let preparedState = null;
         try {
           attempt = fs.prepareAttempt(op);
+          if (deps.fixedAstroTitle) validateTitlePlan(attempt);
           if (
             deps.fixedAstroFooter &&
             (attempt.supplemental.length !== 1 ||
@@ -622,7 +634,7 @@ export async function runBatch({ scenarios, deps }) {
               JSON.stringify(attempt.supplemental[0].predicate) !==
                 JSON.stringify(attempt.predicate))
           )
-            throw new Error("missing or unexpected original Astro footer plan");
+            throw new Error("missing or unexpected original Astro text plan");
           if (
             (Array.isArray(attempt.writes) && attempt.writes.length === 0) ||
             (!attempt.writes && !attempt.write)
@@ -804,17 +816,17 @@ export async function runBatch({ scenarios, deps }) {
         }
         // arm already read this value before the first edit. Reuse it across consecutive
         // edits so a previous tokenized revision cannot become the cleanup baseline.
-        if ((verifyBodyRevision || deps.fixedAstroFooter) && !bodyRevision) {
-          if (deps.fixedAstroFooter) {
-            if (!matchesAstroFooter(armed.actual, ASTRO_FOOTER))
-              throw new Error("unverified original Astro footer");
+        if ((verifyBodyRevision || fixedAstro) && !bodyRevision) {
+          if (fixedAstro) {
+            if (!matchesAstroText(armed.actual, originalText))
+              throw new Error("unverified original Astro text");
           } else if (
             typeof armed.actual !== "string" ||
             !armed.actual.trim() ||
             (deps.requiredBodyBaseline && armed.actual !== deps.requiredBodyBaseline)
           )
             throw new Error("missing pre-edit rendered body baseline");
-          if (deps.fixedAstroFooter) {
+          if (fixedAstro) {
             const sockets = [...page.peerSocketTracking.values()].filter(
               (row) => row.firstFrameNs !== null,
             );
@@ -824,7 +836,9 @@ export async function runBatch({ scenarios, deps }) {
               preparedDocUUID: preparedState?.docUUID,
               preparedUrl: preparedState?.url,
               observedUrl: armed.observedUrl,
-              originalFooter: armed.actual,
+              ...(deps.fixedAstroTitle
+                ? { originalTitle: armed.actual }
+                : { originalFooter: armed.actual }),
               armObservedNs: String(clock.now()),
               sockets,
             });
@@ -838,10 +852,10 @@ export async function runBatch({ scenarios, deps }) {
               throw new Error("peer update socket or original document unverified");
           }
           bodyRevision = {
-            ...(deps.fixedAstroFooter && { allowSameDocument: true }),
+            ...(fixedAstro && { allowSameDocument: true }),
             path: attempt.targetPath,
-            predicate: deps.fixedAstroFooter
-              ? astroFooterPredicate(ASTRO_FOOTER)
+            predicate: fixedAstro
+              ? primaryOriginal
               : { kind: "text", selector: attempt.predicate.selector, equals: armed.actual },
           };
         }
@@ -872,7 +886,7 @@ export async function runBatch({ scenarios, deps }) {
 
         signal?.throwIfAborted();
         deps.stageBudget?.(timeouts.attemptMs, attemptStart);
-        if (deps.fixedAstroFooter) {
+        if (fixedAstro) {
           deps.beforeAstroWrite("before-write");
           signal?.throwIfAborted();
           deps.stageBudget(timeouts.attemptMs, attemptStart);
@@ -979,7 +993,7 @@ export async function runBatch({ scenarios, deps }) {
               ...(resourceTrip ? [resourceTrip] : []),
             ]),
           );
-          if (deps.fixedAstroFooter) {
+          if (fixedAstro) {
             signal?.throwIfAborted();
             const attemptEnd = attemptStart + BigInt(timeouts.attemptMs) * 1_000_000n;
             const end = deps.workDeadlineNs < attemptEnd ? deps.workDeadlineNs : attemptEnd;
@@ -1007,8 +1021,10 @@ export async function runBatch({ scenarios, deps }) {
             newDocuments: during(evidence.docInits).length,
             livereloadEvents: during(evidence.wsFrames).map((f) =>
               f.event === "css" ||
-              (f.event === "module" && !f.layoutModule) ||
-              (f.event === "page" && !f.pageSignal)
+              (f.event === "module" && (deps.fixedAstroTitle || !f.layoutModule)) ||
+              (f.event === "page" &&
+                (!f.pageSignal ||
+                  (deps.fixedAstroTitle && f.hasUpdatePath && f.updatePath !== "*")))
                 ? "unattributed"
                 : f.event,
             ),
@@ -1040,7 +1056,7 @@ export async function runBatch({ scenarios, deps }) {
           },
           injectKill,
         };
-        if (deps.fixedAstroFooter) {
+        if (fixedAstro) {
           const write = attempt.write;
           const expected = sha256(write.bytes);
           const actual = fs.hashOf(write.path);
@@ -1079,10 +1095,10 @@ export async function runBatch({ scenarios, deps }) {
           rec.observerDisarmed = true;
           acc.lastArmedUnknownOperation = { ...where, token: attempt.token, writeCompleted: true };
         } else if (waited.kind === "notify") {
-          if (deps.fixedAstroFooter) {
+          if (fixedAstro) {
             const payload = waited.payload;
             if (
-              !footerProducerMatches(
+              !astroProducerMatches(
                 payload,
                 preDocUUID,
                 page.url(attempt.targetPath),
@@ -1094,11 +1110,13 @@ export async function runBatch({ scenarios, deps }) {
               payload.token !== attempt.token ||
               payload.armedDocUUID !== preDocUUID ||
               payload.url !== page.url(attempt.targetPath) ||
-              !matchesAstroFooter(payload.actual, ASTRO_FOOTER + " " + attempt.token)
+              !matchesAstroText(payload.actual, originalText + " " + attempt.token)
             )
-              throw new Error(
-                "Astro update did not confirm the exact armed footer text and target",
-              );
+              throw new Error("Astro update did not confirm the exact armed text and target");
+          }
+          if (deps.fixedAstroTitle) {
+            seenSupplementalDocs.add(preDocUUID);
+            seenSupplementalDocs.add(waited.payload.docUUID);
           }
           outcome = "success";
           rec.t1Ns = String(waited.t1);
@@ -1197,17 +1215,24 @@ export async function runBatch({ scenarios, deps }) {
           } catch (error) {
             res = { ok: false, error: String(error?.message ?? error) };
           }
-          if (deps.fixedAstroFooter && res.ok) {
+          if (fixedAstro && res.ok) {
             res.ok = Boolean(
               res.docUUID &&
               res.docUUID !== rec.notify.docUUID &&
-              matchesAstroFooter(
+              !seenSupplementalDocs.has(res.docUUID) &&
+              matchesAstroText(
                 res.notify?.actual ?? res.actual,
-                ASTRO_FOOTER + " " + attempt.token,
+                originalText + " " + attempt.token,
               ),
             );
             if (res.ok) {
+              seenSupplementalDocs.add(res.docUUID);
               bodyRevision.path = check.path;
+              if (deps.fixedAstroTitle)
+                bodyRevision.predicate = astroTextPredicate(
+                  originalText,
+                  check.predicate.of[1].selector,
+                );
               bodyRevision.affectedDocUUID = res.docUUID;
             }
           }
