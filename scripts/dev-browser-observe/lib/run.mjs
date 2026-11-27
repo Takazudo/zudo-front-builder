@@ -44,7 +44,9 @@ import {
   processIdentityChecks,
   resolveNpmCli,
 } from "./distribution.mjs";
-import { FIXED_PEER_PROTOCOL } from "./fixed-peer-roles.mjs";
+import { buildNextBootstrapContract, NEXT_BOOTSTRAP_PROTOCOL } from "./fixed-next-bootstrap.mjs";
+import { startNextPeerCustody } from "./next-peer-custody.mjs";
+import { FIXED_PEER_PROTOCOL, readPeerRoles } from "./fixed-peer-roles.mjs";
 import { FN_SEL } from "./fieldnotes.mjs";
 import {
   fixedContextSample,
@@ -314,7 +316,9 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
 
 async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
   const { profile, resolved } = loaded;
-  const fixedPeer = profile.fixedRssSafety === FIXED_PEER_PROTOCOL;
+  const nextProtocol = profile.fixedRssSafety === NEXT_BOOTSTRAP_PROTOCOL;
+  const fixedPeer = nextProtocol || profile.fixedRssSafety === FIXED_PEER_PROTOCOL;
+  let nextCustody = null;
   const fixedAbort = profile.fixedRssSafety ? new AbortController() : null;
   if (fixedAbort)
     loaded.signal = loaded.signal
@@ -629,7 +633,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           }
         : m.entry?.readiness;
     const fixedExecutables = fixedPeer
-      ? fixedPeerExecutables(verdict.facts)
+      ? fixedPeerExecutables(verdict.facts, profile.fixedRssSafety)
       : fixedAbort
         ? fixedZfbExecutables(m.appDir, verdict.facts)
         : null;
@@ -688,11 +692,13 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     });
     spawning = false;
     server.handle.onNewOwned = (p) => {
+      if (nextCustody && p.source === "snapshot") nextCustody.snapshot(p);
       if (shouldRegisterOwned(server.handle.native, p))
         appendJsonlSync(resolved.registryPath, { type: "owned", label, at: isoNow(), ...p });
     };
     if (fixedExecutables) {
       fixedSafety = startFixedRssSafety({
+        nextOwner: () => nextCustody,
         server,
         fixedExecutables,
         ...(fixedPeer && {
@@ -983,6 +989,46 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     }
     const observer = browserHandle.observer;
     observer.baseUrl = ready.baseUrl;
+    if (nextProtocol) {
+      const cfg = {
+        framework: profile.framework,
+        rootPid: server.handle.native.pid,
+        appDir: m.appDir,
+        node: process.execPath,
+        port: launch.port,
+        image: fixedExecutables.root,
+      };
+      const { chain, socket } = readPeerRoles(fixedSafety.qualifiedPeer.chain, cfg, true, true);
+      const contract = buildNextBootstrapContract({
+        ...cfg,
+        protocol: NEXT_BOOTSTRAP_PROTOCOL,
+        chain,
+        socket,
+        bootstrapSha256: "463a33ccdf45500486481c697ca9b7445fae5998410b82d3d5485c0b85b770eb",
+      });
+      nextCustody = startNextPeerCustody({
+        contract,
+        intent,
+        append: (r) => rec.append(r),
+        abort: (e) => {
+          fixedAbort.abort(e);
+          void stopServer(server.handle).catch(() => {});
+        },
+      });
+      await interruptible(nextCustody.ready, loaded.signal);
+      const prepare = observer.prepare.bind(observer);
+      let first = true;
+      observer.prepare = async (route, ...args) => {
+        if (!first) return prepare(route, ...args);
+        first = false;
+        await nextCustody.openWindow("first-route", peerBudget(30000));
+        try {
+          return await prepare(route, ...args);
+        } finally {
+          await nextCustody.closeWindow("first-route");
+        }
+      };
+    }
     if (fixedPeer) observer.peerSocketTracking = new Map();
     // Fixed distributions declare their own HMR sockets; zfb livereload needs none.
     if (fixed) observer.updateSockets = m.entry.updateSignal?.sockets ?? [];
@@ -1195,6 +1241,14 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           unresolved.push({ resource: "fixed-rss-helper", helper: fixedSafety.unresolvedHelper });
       } catch (error) {
         unresolved.push({ resource: "fixed-rss-sampler", error: String(error) });
+      }
+    }
+    if (nextCustody) {
+      try {
+        await bounded("next-custody-stop", 500, () => nextCustody.stop());
+      } catch (e) {
+        unresolved.push({ resource: "next-custody", ...nextCustody.identity, error: String(e) });
+        evidenceFailed = true;
       }
     }
     if (rendererMemory)

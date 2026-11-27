@@ -23,11 +23,11 @@ function pin(path, digest) {
   }
 }
 
-export function fixedPeerExecutables(facts) {
+export function fixedPeerExecutables(facts, protocol = FIXED_PEER_PROTOCOL) {
   if (facts.installReceipt.node.realpath !== realpathSync(process.execPath))
     throw new Error("fixed peer Node executable does not match install receipt");
   return {
-    protocol: FIXED_PEER_PROTOCOL,
+    protocol,
     root: pin(process.execPath, facts.installReceipt.node.sha256),
   };
 }
@@ -62,6 +62,7 @@ export function startFixedRssSafety({
   sample = sampleRendererMemory,
   peer,
   checkRoles = samplePeerRoles,
+  nextOwner = () => null,
 }) {
   let pending = null;
   let failure = null;
@@ -118,7 +119,11 @@ export function startFixedRssSafety({
     const startedNs = String(process.hrtime.bigint());
     pending = (
       peer
-        ? sample(server, fixedExecutables.root.path)
+        ? sample(
+            server,
+            fixedExecutables.root.path,
+            nextOwner() ? { nextCustody: nextOwner() } : undefined,
+          )
         : sample(server, fixedExecutables.root.path, { fixedExecutables })
     )
       .then((result) => {
@@ -145,10 +150,31 @@ export function startFixedRssSafety({
               BigInt(t.deadlineNs) === BigInt(t.entryNs) + 750_000_000n,
             "invalid peer sampler bracket",
           );
-          const sum = result.processes.reduce(
-            (n, p) => n + Math.max(p.statusKiB.VmRSS, p.smapsRollupKiB.Rss),
-            0,
-          );
+          const custody = nextOwner();
+          const worker = custody?.qualified;
+          const isWorker = (p) => worker && custody.isWorker(p);
+          const sum = result.processes.reduce((n, p) => {
+            if (custody && isWorker(p) && p.disposition !== "live") {
+              assert(
+                ["proved-departure", "custodied-departure", "retained-terminal-proof"].includes(
+                  p.disposition,
+                ) &&
+                  p.terminalProof?.pidfdFlags === 0 &&
+                  [1, 16, 17].includes(p.terminalProof.pollMask),
+                "unverified Next exit",
+              );
+              if (p.rssKiB === null) return n;
+              assert(Number.isSafeInteger(p.rssKiB) && p.rssKiB >= 0);
+              return n + p.rssKiB;
+            }
+            assert(
+              p.disposition === "live" &&
+                Number.isSafeInteger(p.statusKiB?.VmRSS) &&
+                Number.isSafeInteger(p.smapsRollupKiB?.Rss),
+              "missing live peer metrics",
+            );
+            return n + Math.max(p.statusKiB.VmRSS, p.smapsRollupKiB.Rss);
+          }, 0);
           assert(
             Number.isSafeInteger(sum) &&
               sum > 0 &&
@@ -156,7 +182,13 @@ export function startFixedRssSafety({
               sum <= limits.rssCeilingKiB,
             "invalid peer owned RSS",
           );
-          const roles = checkRoles(result, peer, Boolean(readyAtEntry));
+          const roles = checkRoles(
+            custody
+              ? { ...result, processes: result.processes.filter((p) => !isWorker(p)) }
+              : result,
+            peer,
+            Boolean(readyAtEntry),
+          );
           for (const row of roles.chain) {
             const key = [row.pid, row.ppid, row.pgid, row.bootId, row.startTicks].join("/");
             assert(!stable.has(row.role) || stable.get(row.role) === key, "peer role replaced");
@@ -225,9 +257,29 @@ export function startFixedRssSafety({
   take();
   const timer = setInterval(take, limits.sampleEveryMs);
   return {
+    get qualifiedPeer() {
+      return qualifiedPeer;
+    },
     verifyPeerProcesses(owned, known) {
       if (failure || stopped) throw new Error(failure?.error ?? "fixed peer stopped");
-      return peerProcessIdentity(owned, known, qualifiedPeer, peer);
+      const custody = nextOwner();
+      if (!custody) return peerProcessIdentity(owned, known, qualifiedPeer, peer);
+      const isWorker = (p) => custody.isWorker(p);
+      for (const p of known.filter(isWorker)) {
+        if (!owned.some((b) => isWorker(b)))
+          assert(
+            custody.terminalVerified,
+            "known Next worker missing before official terminal decision",
+          );
+      }
+      const results = peerProcessIdentity(
+        owned.filter((p) => !isWorker(p)),
+        known.filter((p) => !isWorker(p)),
+        qualifiedPeer,
+        peer,
+      );
+      for (const p of owned.filter(isWorker)) results.push(custody.verifyCurrent(p));
+      return results;
     },
     report() {
       return {

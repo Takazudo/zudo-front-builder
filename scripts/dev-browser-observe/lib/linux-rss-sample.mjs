@@ -209,9 +209,10 @@ export function sampleRendererMemory(
   expectedExecutablePath,
   {
     fixedExecutables = null,
+    nextCustody = null,
     launch = () =>
       spawn("python3", ["-I", "-B", script, String(process.pid)], {
-        stdio: ["pipe", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe", ...(nextCustody ? [nextCustody.channel] : [])],
       }),
   } = {},
 ) {
@@ -272,6 +273,14 @@ export function sampleRendererMemory(
       parent.resultNs = now();
       if (BigInt(parent.resultNs) > deadline) fail("deadline", "sampling helper deadline reached");
       const record = details();
+      if (!fault && nextCustody) {
+        for (const p of processes)
+          if (
+            p.nextCustodyReceipt &&
+            ["proved-departure", "custodied-departure"].includes(p.disposition)
+          )
+            nextCustody.terminal(p);
+      }
       if (fault)
         reject(
           Object.assign(new Error(fault.error), {
@@ -321,7 +330,9 @@ export function sampleRendererMemory(
           Buffer.byteLength(expectedExecutablePath) <= 4096,
         "invalid expected executable path",
       );
+      const nextRequest = nextCustody?.begin(handle);
       request = {
+        ...(nextRequest && { nextCustody: nextRequest }),
         root: compactBirth(root),
         known: [...handle.known.values()].map(compactBirth),
         terminalProofs: [...proofs.values()],
@@ -564,7 +575,51 @@ export function sampleRendererMemory(
             p.rssKiB === (rss.get(p.pid) ?? null),
           "inconsistent process observation",
         );
-        if (p.disposition === "retained-terminal-proof") {
+        if (
+          request.nextCustody &&
+          p.ppid === request.nextCustody.contract.ancestors[2].pid &&
+          p.disposition !== "retained-terminal-proof"
+        )
+          requireValue(
+            p.nextCustodyReceipt && p.pgid === root.pgid,
+            "missing verified Next worker handoff",
+          );
+        if (request.nextCustody && bound.has(p.pid))
+          requireValue(bound.get(p.pid).ppid === p.ppid, "Next sample parent mismatch");
+        if (p.nextCustodyReceipt || p.disposition === "custodied-departure") {
+          requireValue(
+            nextCustody && (p.executable === null || matchesExecutable(p.executable, executable)),
+            "unexpected Next custody observation",
+          );
+          nextCustody.validate(p, p.nextCustodyReceipt, request.nextCustody.cycle, helper);
+          const ack = p.nextCustodyReceipt;
+          requireValue(
+            ticks(ack.acknowledgedNs) &&
+              BigInt(p.startedNs) <= BigInt(ack.acknowledgedNs) &&
+              BigInt(ack.acknowledgedNs) <= BigInt(p.endNs),
+            "Next custody outside observation",
+          );
+        }
+        if (p.disposition === "custodied-departure") {
+          requireValue(
+            !prior &&
+              !bound.has(p.pid) &&
+              p.rssKiB === null &&
+              p.statusKiB === null &&
+              p.smapsRollupKiB === null &&
+              p.threads === null &&
+              p.executable === null &&
+              p.terminalProof?.birth?.ppid === p.ppid,
+            "invalid Next departure",
+          );
+          checkProof(p.terminalProof, p);
+          requireValue(
+            BigInt(p.terminalProof.observedNs) >= BigInt(p.nextCustodyReceipt.acknowledgedNs) &&
+              BigInt(p.terminalProof.observedNs) <= BigInt(p.endNs),
+            "invalid Next terminal bracket",
+          );
+          proofs.set(p.pid, p.terminalProof);
+        } else if (p.disposition === "retained-terminal-proof") {
           checkProof(p.terminalProof, p);
           requireValue(
             prior &&
@@ -596,6 +651,19 @@ export function sampleRendererMemory(
               "invalid live process observation",
             );
           }
+        }
+        if (
+          nextCustody &&
+          p.nextCustodyReceipt &&
+          ["proved-departure", "custodied-departure"].includes(p.disposition)
+        ) {
+          requireValue(
+            p.terminalProof?.birth?.ppid === p.ppid &&
+              ticks(p.terminalProof?.observedNs) &&
+              BigInt(p.nextCustodyReceipt.acknowledgedNs) <= BigInt(p.terminalProof.observedNs) &&
+              BigInt(p.terminalProof.observedNs) <= BigInt(p.endNs),
+            "invalid original Next terminal poll",
+          );
         }
         observed.add(p.pid);
         processes.push(p);

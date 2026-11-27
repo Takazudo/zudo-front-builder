@@ -106,11 +106,14 @@ function fixedPeerErrors(p) {
 /** fixed-distribution rules: the framework's declared helper, no zfb-only diagnostic/recovery families. */
 function fixedErrors(profile) {
   const errors = [];
-  if (profile.fixedRssSafety === FIXED_PEER_PROTOCOL) errors.push(...fixedPeerErrors(profile));
+  const peerSafety = [FIXED_PEER_PROTOCOL, "linux-fixed-peer.v2"].includes(profile.fixedRssSafety);
+  if (profile.fixedRssSafety === "linux-fixed-peer.v2" && profile.framework !== "next")
+    errors.push("$.fixedRssSafety v2 requires the pinned Next distribution");
+  if (peerSafety) errors.push(...fixedPeerErrors(profile));
   else if (profile.fixedPeerBrowser) errors.push("$.fixedPeerBrowser requires linux-fixed-peer.v1");
   if (
     profile.fixedRssSafety &&
-    profile.fixedRssSafety !== FIXED_PEER_PROTOCOL &&
+    !peerSafety &&
     (profile.framework !== "zfb" ||
       (profile.distribution?.launch ?? "direct") !== "direct" ||
       profile.fixture?.scale !== 100 ||
