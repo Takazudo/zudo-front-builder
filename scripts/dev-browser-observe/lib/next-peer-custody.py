@@ -541,12 +541,12 @@ class Scout:
             "unqualified candidate",
         )
         self.check_ancestors()
-        if not poll_terminal(self.known[0]):
+        decision = request["op"] == "prewrite-terminal"
+        if not decision and not poll_terminal(self.known[0]):
             confirm_script(self.script)
             require(is_jest(view(self.known), cfg), "live worker role changed after qualification")
         if request.get("token") is not None:
             require(secrets.compare_digest(request["token"], self.token), "custody token mismatch")
-        decision = request["op"] == "prewrite-terminal"
         if not decision:
             self.counts["gets"] += 1
         send(
@@ -565,6 +565,14 @@ class Scout:
             ),
             self.known[:2],
         )
+
+    def record_refusal(self, refusal):
+        """Keep the first unqualified birth and allow cleanup to report it again."""
+        if self.second_refusal is None:
+            self.second_refusal = refusal
+            self.message("policy-refusal", refusal=refusal)
+        else:
+            require(key(self.second_refusal["birth"]) == key(refusal["birth"]), "another unqualified birth")
 
     def handoff(self, shared):
         size = socket.CMSG_SPACE(8) + socket.CMSG_SPACE(U32.size)
@@ -649,8 +657,7 @@ class Scout:
                 )
                 self.outstanding_nonces.add(req["nonce"])
                 if self.decision_enabled and self.known and key(self.known[2]) != key(req["birth"]):
-                    require(self.second_refusal is None, "repeated refused request")
-                    self.second_refusal = dict(
+                    refusal = dict(
                         error="unqualified second Next birth",
                         birth=req["birth"],
                         helperPid=peer_pid,
@@ -660,10 +667,10 @@ class Scout:
                     send(
                         peer,
                         dict(
-                            refused=self.second_refusal, session=self.session, holderPid=os.getpid()
+                            refused=refusal, session=self.session, holderPid=os.getpid()
                         ),
                     )
-                    self.message("policy-refusal", refusal=self.second_refusal)
+                    self.record_refusal(refusal)
                     return
                 if req["op"] == "offer":
                     self.candidate(req["birth"], fds)
@@ -713,13 +720,12 @@ class Scout:
                         and self.known
                         and key(self.known[2]) != key(cmd["birth"])
                     ):
-                        require(self.second_refusal is None, "repeated refused snapshot")
-                        self.second_refusal = dict(
+                        refusal = dict(
                             error="unqualified second Next birth",
                             birth=cmd["birth"],
                             source="snapshot",
                         )
-                        self.message("policy-refusal", refusal=self.second_refusal)
+                        self.record_refusal(refusal)
                     else:
                         self.candidate(cmd["birth"])
                 else:

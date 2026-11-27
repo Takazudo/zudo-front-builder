@@ -1117,6 +1117,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           }),
           ...(nextProtocol && {
             ...(decisionProtocol && {
+              checkPeerWriteTime: (stamp) => nextCustody.checkWriteTime(stamp),
               beforePeerDecision: async ({ attemptStart, attemptMs }) => {
                 const workDeadlineNs = BigInt(loaded.workDeadline) * 1000000n;
                 const attemptDeadlineNs = attemptStart + BigInt(attemptMs) * 1000000n;
@@ -1134,7 +1135,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
                 type: "next-custody-pre-mutation",
                 ...(decisionProtocol && {
                   decisionProof: nextCustody.decisionProof,
-                  identityAccepted: !reason,
+                  graphMatches: !reason,
+                  status: "provisional-census",
                 }),
                 reason,
                 checkedNs: String(process.hrtime.bigint()),

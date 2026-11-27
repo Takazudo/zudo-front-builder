@@ -382,6 +382,25 @@ export function startNextPeerCustody({
         throw error;
       }
     },
+    checkWriteTime(stamp) {
+      if (!decisionProof) return null;
+      assert(
+        !firstFailure &&
+          !policyFailure &&
+          stamp >= BigInt(decisionReceipt.verifiedNs) &&
+          stamp <= BigInt(decisionReceipt.coreDeadlineNs),
+        "pre-write identity decision expired before mutation",
+      );
+      return {
+        purpose: "prewrite-terminal",
+        session,
+        helperPid: decisionReceipt.pid,
+        pollNs: decisionProof.observedNs,
+        verifiedNs: decisionReceipt.verifiedNs,
+        decisionNs: String(stamp),
+        coreDeadlineNs: decisionReceipt.coreDeadlineNs,
+      };
+    },
     get decisionProof() {
       return decisionProof;
     },

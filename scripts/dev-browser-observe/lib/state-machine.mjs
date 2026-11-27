@@ -828,6 +828,69 @@ export async function runBatch({ scenarios, deps }) {
         let t0;
         let tLast = null;
         let writeSteps = null;
+        const recordPrewriteRefusal = async (error) => {
+          let observerDisarmed = false,
+            disarmError = null;
+          if (!signal?.aborted) {
+            try {
+              await wait(page.disarm());
+              observerDisarmed = true;
+            } catch (e) {
+              disarmError = String(e.message ?? e);
+            }
+          }
+          append({
+            ...recBase,
+            outcome: "identity-rejected",
+            phase: "before-mutation",
+            error: String(error.message ?? error),
+            writePerformed: false,
+            observerDisarmed,
+            disarmError,
+          });
+          acc.lastArmedUnknownOperation = null;
+          count(acc, "identity-rejected");
+          stop("identity-rejected", where);
+          if (zeroWriteTarget) {
+            let after, auditError;
+            try {
+              after = fs.readPeerTarget(targetPath, original);
+            } catch (e) {
+              auditError = String(e.message ?? e);
+            }
+            const unchanged =
+              after &&
+              original.sha256 === zeroWriteTarget.sha256 &&
+              after.sha256 === original.sha256 &&
+              after.device === zeroWriteTarget.device &&
+              after.inode === zeroWriteTarget.inode;
+            append({
+              type: "fixed-peer-refused-disk-audit",
+              path: targetPath,
+              expectedSha256: original.sha256,
+              before: zeroWriteTarget,
+              after: after ?? null,
+              error: auditError ?? null,
+              unchanged: Boolean(unchanged),
+            });
+            if (unchanged) {
+              append({
+                type: "cleanup",
+                label: "cleanup",
+                measured: false,
+                reason: "after-stop:identity-rejected",
+                ok: false,
+                restored: false,
+                live: [],
+                liveSkipped: "before-mutation-no-write",
+                writePerformed: false,
+                actions: [],
+                mismatches: [],
+              });
+              activeSnapshot = null;
+            }
+          }
+        };
         if (deps.beforePeerMutation) {
           try {
             if (deps.beforePeerDecision)
@@ -836,80 +899,40 @@ export async function runBatch({ scenarios, deps }) {
             signal?.throwIfAborted();
             deps.stageBudget?.(timeouts.attemptMs, attemptStart);
           } catch (error) {
-            let observerDisarmed = false,
-              disarmError = null;
-            if (!signal?.aborted) {
-              try {
-                await wait(page.disarm());
-                observerDisarmed = true;
-              } catch (e) {
-                disarmError = String(e.message ?? e);
-              }
-            }
-            append({
-              ...recBase,
-              outcome: "identity-rejected",
-              phase: "before-mutation",
-              error: String(error.message ?? error),
-              writePerformed: false,
-              observerDisarmed,
-              disarmError,
-            });
-            acc.lastArmedUnknownOperation = null;
-            count(acc, "identity-rejected");
-            stop("identity-rejected", where);
-            if (zeroWriteTarget) {
-              let after, auditError;
-              try {
-                after = fs.readPeerTarget(targetPath, original);
-              } catch (e) {
-                auditError = String(e.message ?? e);
-              }
-              const unchanged =
-                after &&
-                original.sha256 === zeroWriteTarget.sha256 &&
-                after.sha256 === original.sha256 &&
-                after.device === zeroWriteTarget.device &&
-                after.inode === zeroWriteTarget.inode;
-              append({
-                type: "fixed-peer-refused-disk-audit",
-                path: targetPath,
-                expectedSha256: original.sha256,
-                before: zeroWriteTarget,
-                after: after ?? null,
-                error: auditError ?? null,
-                unchanged: Boolean(unchanged),
-              });
-              if (unchanged) {
-                append({
-                  type: "cleanup",
-                  label: "cleanup",
-                  measured: false,
-                  reason: "after-stop:identity-rejected",
-                  ok: false,
-                  restored: false,
-                  live: [],
-                  liveSkipped: "before-mutation-no-write",
-                  writePerformed: false,
-                  actions: [],
-                  mismatches: [],
-                });
-                activeSnapshot = null;
-              }
-            }
+            await recordPrewriteRefusal(error);
             break outer;
           }
         }
+        let preSyscallRefusal;
         try {
           if (attempt.writes && attempt.writes.length > 1 && fs.performWrites) {
             const r = await fs.performWrites(attempt.writes, () => clock.now(), signal);
             t0 = r.t0;
             tLast = r.tLast;
             writeSteps = r.steps;
-          } else t0 = fs.performWrite(attempt.write, () => clock.now());
+          } else
+            t0 = fs.performWrite(attempt.write, () => {
+              const stamp = clock.now();
+              if (deps.checkPeerWriteTime) {
+                try {
+                  const evidence = deps.checkPeerWriteTime(stamp);
+                  if (evidence) recBase.prewriteDecision = evidence;
+                } catch (error) {
+                  preSyscallRefusal = error;
+                  throw error;
+                }
+              }
+              return stamp;
+            });
           current.writeDone = true;
           attempt.applied?.();
         } catch (error) {
+          // The v3 singleton uses in-place write: onT0 precedes O_TRUNC. An
+          // actual filesystem error must continue down the ambiguous-write path.
+          if (preSyscallRefusal && error === preSyscallRefusal) {
+            await recordPrewriteRefusal(error);
+            break outer;
+          }
           if (error?.steps?.length) {
             current.writeDone = true;
             recBase.writeSteps = error.steps;
