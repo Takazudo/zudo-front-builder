@@ -1,3 +1,4 @@
+import { samplerClosureAudit } from "./linux-rss-sample.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { admissionPath, reserveSession } from "./admission.mjs";
@@ -1405,6 +1406,13 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       if (exitCode === EXIT.ok) {
         if (!memoryReport?.observationComplete) exitCode = EXIT.controllerError;
         else if (memoryReport.failure) exitCode = EXIT.stopped;
+      }
+    }
+    for (const resource of unresolved) {
+      const closure = resource.helper && samplerClosureAudit(resource.helper);
+      if (closure) {
+        resource.closureAudit = closure;
+        safeAppend({ type: "sampler-closure-audit", ...resource });
       }
     }
     let stopFailure = null;
