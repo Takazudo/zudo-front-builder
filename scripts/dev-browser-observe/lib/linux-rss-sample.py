@@ -106,6 +106,7 @@ class Sample:
         self.root = request["root"]
         self.known = {p["pid"]: p for p in request["known"]}
         self.proofs = {p["birth"]["pid"]: p for p in request["terminalProofs"]}
+        self.custody = None
         self.exe = request["executable"]
         self.fixed_native = None
         self.fixed_child = request.get("fixedChildExecutable")
@@ -322,6 +323,9 @@ class Sample:
             raise Invalid("live-metadata-unavailable", self.observed)
         else:
             result["disposition"] = "live"
+            if self.custody and result["executable"].get("workerArg") == "__zfb-compiler-worker":
+                self.stage = "compiler-custody"
+                result["custodyToken"] = self.custody.retain(row, binding, self.fixed_native)
         result["endNs"] = str(CLOCK())
         self.emit({"type": "observation", "process": result})
 
@@ -449,6 +453,21 @@ class Sample:
                                disposition="retained-terminal-proof", terminalProof=self.proofs[pid],
                                rssKiB=None, statusKiB=None, smapsRollupKiB=None, threads=None,
                                executable=None, startedNs=self.started, endNs=str(CLOCK()))})
+                elif self.custody and str(pid) in self.custody.tokens:
+                    self.mark("custody-known", previous)
+                    with contextlib.ExitStack() as duplicates:
+                        fd, directory = self.custody.retrieve(previous)
+                        duplicates.callback(os.close, fd)
+                        duplicates.callback(os.close, directory)
+                        self.boot()
+                        ended = terminal(fd)
+                        if not ended:
+                            raise Invalid("custodied-known-missing-without-terminal")
+                        self.emit({"type":"observation","process":dict(previous,
+                                  disposition="custodied-departure", terminalProof=dict(ended,birth=previous),
+                                  custodyToken=self.custody.tokens[str(pid)], rssKiB=None, statusKiB=None,
+                                  smapsRollupKiB=None, threads=None, executable=None,
+                                  startedNs=self.started,endNs=str(CLOCK()))})
                 else:
                     self.mark("discovery-known", previous)
                     first_failure = first_failure or self.problem(Invalid("unbound-known-departure"))
@@ -587,7 +606,22 @@ def main():
         stat = os.stat(path)
         sample.exe = dict(path=path, device=str(stat.st_dev), inode=str(stat.st_ino))
         emit(dict(type="executable", pathInput=request["executablePath"], executable=sample.exe))
-        code = 0 if sample.run() else 1
+        with contextlib.ExitStack() as resources:
+            if "fixedCustody" in request:
+                # Isolated Python (-I) does not search the script's directory.
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("fixed_custody",
+                       os.path.join(os.path.dirname(__file__), "linux-rss-custody.py"))
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                sample.custody = module.Client(request["fixedCustody"])
+                resources.callback(sample.custody.close)
+                for pid, proof in sample.proofs.items():
+                    token = sample.custody.tokens.get(str(pid))
+                    if token:
+                        sample.custody.release(proof["birth"], token)
+                        emit(dict(type="custody-release", birth=proof["birth"], token=token))
+            code = 0 if sample.run() else 1
     except (OSError, ValueError, Invalid) as exc:
         emit(sample.problem(exc))
         code = 1

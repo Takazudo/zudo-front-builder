@@ -26,7 +26,7 @@ export function fixedZfbExecutables(appDir, facts, protocol = "linux-fixed-zfb.v
   if (!child || facts.installReceipt.node.realpath !== realpathSync(process.execPath))
     throw new Error("fixed safety requires the verified Node launcher and packaged native binary");
   let launch;
-  if (protocol === "linux-fixed-zfb.v2") {
+  if (["linux-fixed-zfb.v2", "linux-fixed-zfb.v3"].includes(protocol)) {
     const shim = facts.install.executables.find((exe) => exe.role === "zfb-shim" && exe.ok);
     if (!shim) throw new Error("fixed v2 requires the verified distribution shim");
     launch = { cwd: realpathSync(appDir), shim: pin(join(appDir, shim.path), shim.sha256) };
@@ -57,6 +57,7 @@ export function startFixedRssSafety({
   append,
   abort,
   sample = sampleRendererMemory,
+  custody = null,
 }) {
   let pending = null;
   let failure = null;
@@ -105,7 +106,7 @@ export function startFixedRssSafety({
     // legitimately predate the native child. Qualify a new periodic sample.
     const readyAtEntry = readyCheck;
     const startedNs = String(process.hrtime.bigint());
-    pending = sample(server, fixedExecutables.root.path, { fixedExecutables })
+    pending = sample(server, fixedExecutables.root.path, { fixedExecutables, custody })
       .then((result) => {
         measuredCycles++;
         if (Number.isSafeInteger(result.summedRssKiB))

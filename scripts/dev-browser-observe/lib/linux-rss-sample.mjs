@@ -260,9 +260,10 @@ export function sampleRendererMemory(
   expectedExecutablePath,
   {
     fixedExecutables = null,
+    custody = null,
     launch = () =>
       spawn("python3", ["-I", "-B", script, String(process.pid)], {
-        stdio: ["pipe", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe", ...(custody ? [custody.channel] : [])],
       }),
   } = {},
 ) {
@@ -277,6 +278,9 @@ export function sampleRendererMemory(
   const root = handle.native;
   const proofs = terminalProofs.get(handle) ?? new Map();
   terminalProofs.set(handle, proofs);
+  const verifiedRoles = ["linux-fixed-zfb.v2", "linux-fixed-zfb.v3"].includes(
+    fixedExecutables?.protocol,
+  );
   const processes = [];
   const discoveries = [];
   const journalFailures = [];
@@ -372,14 +376,19 @@ export function sampleRendererMemory(
           Buffer.byteLength(expectedExecutablePath) <= 4096,
         "invalid expected executable path",
       );
+      requireValue(
+        (fixedExecutables?.protocol === "linux-fixed-zfb.v3") === Boolean(custody),
+        "missing or unexpected fixed custody",
+      );
       request = {
+        ...(custody && { fixedCustody: { ...custody.begin(), root: compactBirth(root) } }),
         root: compactBirth(root),
         known: [...handle.known.values()].map(compactBirth),
         terminalProofs: [...proofs.values()],
         executablePath: expectedExecutablePath,
         ...(fixedExecutables && {
           fixedChildExecutable: fixedExecutables.child,
-          ...(fixedExecutables.protocol === "linux-fixed-zfb.v2" && {
+          ...(verifiedRoles && {
             fixedDevArgs: root.argv.slice(1),
             fixedLaunch: fixedExecutables.launch,
           }),
@@ -609,6 +618,17 @@ export function sampleRendererMemory(
         requireValue(Number.isSafeInteger(total), "summed RSS exceeds safe integer range");
         rss.set(p.pid, after);
         summedRssKiB = total;
+      } else if (row.type === "custody-release") {
+        const prior = proofs.get(row.birth?.pid);
+        requireValue(
+          custody &&
+            prior &&
+            same(prior.birth, row.birth) &&
+            prior.birth.ppid === row.birth.ppid &&
+            custody.matches(row.birth, row.token),
+          "unverified custody release",
+        );
+        custody.forget(row.birth);
       } else if (row.type === "observation") {
         const p = row.process;
         const prior = proofs.get(p?.pid);
@@ -621,8 +641,26 @@ export function sampleRendererMemory(
             p.rssKiB === (rss.get(p.pid) ?? null),
           "inconsistent process observation",
         );
-        if (p.disposition === "retained-terminal-proof") {
-          if (fixedExecutables?.protocol === "linux-fixed-zfb.v2")
+        if (p.disposition === "custodied-departure") {
+          requireValue(
+            custody &&
+              !bound.has(p.pid) &&
+              !prior &&
+              p.pid !== root.pid &&
+              custody.matches(p, p.custodyToken) &&
+              p.terminalProof?.birth?.ppid === p.ppid &&
+              p.rssKiB === null &&
+              p.statusKiB === null &&
+              p.smapsRollupKiB === null &&
+              p.threads === null &&
+              p.executable === null &&
+              p.fixedRole === undefined,
+            "unverified inter-cycle departure",
+          );
+          checkProof(p.terminalProof, p);
+          proofs.set(p.pid, p.terminalProof);
+        } else if (p.disposition === "retained-terminal-proof") {
+          if (verifiedRoles)
             requireValue(
               p.ppid === handle.known.get(p.pid)?.ppid &&
                 p.terminalProof?.birth?.ppid === prior?.birth?.ppid &&
@@ -644,7 +682,7 @@ export function sampleRendererMemory(
           );
         } else {
           requireValue(same(bound.get(p.pid), p), "observation without a matching binding");
-          if (fixedExecutables?.protocol === "linux-fixed-zfb.v2")
+          if (verifiedRoles)
             checkFixedV2Observation(p, bound.get(p.pid), root, fixedExecutables, processes);
           if (p.disposition === "proved-departure") {
             requireValue(p.pid !== root.pid, "sampling root terminated");
@@ -660,7 +698,7 @@ export function sampleRendererMemory(
                 uint(p.smapsRollupKiB?.Rss) &&
                 p.smapsRollupKiB.Rss === rssSources.get(p.pid)?.["rollup.Rss"] &&
                 (fixedExecutables && p.pid !== root.pid
-                  ? fixedExecutables.protocol === "linux-fixed-zfb.v2" ||
+                  ? verifiedRoles ||
                     (p.ppid === root.pid && matchesExecutable(p.executable, fixedExecutables.child))
                   : matchesExecutable(p.executable, executable)) &&
                 uint(p.threads?.listed) &&
@@ -669,6 +707,12 @@ export function sampleRendererMemory(
             );
           }
         }
+        if (
+          custody &&
+          p.disposition === "live" &&
+          p.executable?.workerArg === "__zfb-compiler-worker"
+        )
+          custody.record(p, p.custodyToken);
         observed.add(p.pid);
         processes.push(p);
         pendingObservation = {

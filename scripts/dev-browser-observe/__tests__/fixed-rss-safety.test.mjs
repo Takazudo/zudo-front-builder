@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import {
+  appendFileSync,
   existsSync,
   mkdtempSync,
   readlinkSync,
@@ -14,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import { linuxBirth } from "../lib/linux-birth.mjs";
+import { startFixedCustody } from "../lib/fixed-rss-custody.mjs";
 import { checkFixedV2Observation, sampleRendererMemory } from "../lib/linux-rss-sample.mjs";
 import { startFixedRssSafety } from "../lib/fixed-rss-safety.mjs";
 import { runSpecialMode } from "../lib/special-modes.mjs";
@@ -173,6 +176,162 @@ linux(
       await closed;
       rmSync(directory, { recursive: true });
     }
+  },
+);
+
+linux(
+  "v3 proves a positively observed worker reaped between independent sampling helpers",
+  async () => {
+    const directory = mkdtempSync(join(tmpdir(), "fixed-custody-"));
+    const nativeImage = realpathSync("/usr/bin/python3");
+    const driver = join(directory, "test-shim.cjs");
+    writeFileSync(
+      driver,
+      `require("node:child_process").spawn(${JSON.stringify(nativeImage)}, process.argv.slice(2), {stdio: "inherit"})`,
+    );
+    writeFileSync(join(directory, "__zfb-compiler-worker"), "import time; time.sleep(8)\n");
+    const nativeArgs = [
+      "-u",
+      "-c",
+      [
+        "import os,signal,subprocess,sys",
+        "signal.alarm(8)",
+        "p=subprocess.Popen([os.path.realpath(sys.executable),'__zfb-compiler-worker'],process_group=0)",
+        "try:",
+        " print(p.pid,flush=True)",
+        " sys.stdin.readline()",
+        " p.terminate(); p.wait(); print('reaped',flush=True)",
+        " sys.stdin.readline()",
+        "finally:",
+        " if p.poll() is None: p.kill(); p.wait()",
+      ].join("\n"),
+    ];
+    const rows = [],
+      failures = [];
+    const receipt = process.env.ZFB_FIXED_CUSTODY_FIXTURE_RECEIPT;
+    if (receipt) writeFileSync(receipt, "", { flag: "wx", mode: 0o600 });
+    const trace = (type, payload) => {
+      if (receipt) appendFileSync(receipt, JSON.stringify({ type, payload }) + "\n", "utf8");
+    };
+    const custody = startFixedCustody({
+      append: (r) => {
+        rows.push(r);
+        trace("holder", r);
+      },
+      abort: (e) => {
+        failures.push(e.message);
+        trace("holder-failure", e.message);
+      },
+    });
+    let root, closed, workerPid, primaryFailure;
+    try {
+      await custody.ready;
+      root = spawn(process.execPath, [driver, ...nativeArgs], {
+        cwd: directory,
+        detached: true,
+        stdio: ["pipe", "pipe", "inherit"],
+      });
+      trace("spawn", { pid: root.pid, birth: linuxBirth(root.pid) });
+      closed = once(root, "close");
+      const [ready] = await once(root.stdout, "data");
+      workerPid = Number(ready.toString());
+      trace("worker-birth", linuxBirth(workerPid));
+      const native = { ...linuxBirth(root.pid), argv: [driver, ...nativeArgs] };
+      const fixedExecutables = {
+        protocol: "linux-fixed-zfb.v3",
+        root: executable(process.execPath),
+        child: executable(nativeImage),
+        launch: { cwd: directory, shim: executable(driver) },
+      };
+      const server = {
+        handle: { native, known: new Map([[native.pid, native]]), onNewOwned() {} },
+        isAlive: () => ({ alive: root.exitCode === null }),
+      };
+      const sample = async () => {
+        const result = await sampleRendererMemory(server, fixedExecutables.root.path, {
+          fixedExecutables,
+          custody,
+        });
+        trace("sample", result);
+        return result;
+      };
+      const live = await sample();
+      const worker = live.processes.find((p) => p.pid === workerPid);
+      assert.equal(worker.disposition, "live");
+      assert.equal(worker.executable.workerArg, "__zfb-compiler-worker");
+      assert.match(worker.custodyToken, /^[0-9a-f]{32}$/);
+      const pairVerifier = fileURLToPath(new URL("../lib/linux-rss-custody.py", import.meta.url));
+      const pairChecks = execFileSync(
+        "python3",
+        [
+          "-I",
+          "-B",
+          "-c",
+          [
+            "import contextlib,json,os,runpy,sys",
+            "lib=runpy.run_path(sys.argv[1])",
+            "root,parent,worker=json.loads(sys.argv[2])",
+            "def check(pid, proc, valid):",
+            " fd=os.pidfd_open(pid,0); directory=os.open('/proc/'+str(proc),os.O_RDONLY|os.O_DIRECTORY)",
+            " try:",
+            "  try: lib['verify_pair']([fd,directory],dict(birth=worker,parent=parent,descriptors=list(map(lib['identity'],[fd,directory]))),root)",
+            "  except ValueError as e:",
+            "   if valid: raise",
+            "   print(str(e))",
+            "  else: assert valid",
+            " finally: os.close(fd); os.close(directory)",
+            "check(worker['pid'],worker['pid'],True)",
+            "check(parent['pid'],worker['pid'],False)",
+            "check(worker['pid'],parent['pid'],False)",
+          ].join("\n"),
+          pairVerifier,
+          JSON.stringify([native, live.processes.find((p) => p.pid === worker.ppid), worker]),
+        ],
+        { timeout: 1000, maxBuffer: 4096, encoding: "utf8" },
+      );
+      trace("fd-negatives", pairChecks);
+      assert.deepEqual(pairChecks.trim().split("\n"), [
+        "custody unpaired pidfd",
+        "custody wrong process directory",
+      ]);
+
+      const reaped = once(root.stdout, "data");
+      root.stdin.write("reap\n");
+      assert.equal((await reaped)[0].toString().trim(), "reaped");
+      assert.equal(existsSync(`/proc/${workerPid}`), false);
+      const next = await sample();
+      const departed = next.processes.find((p) => p.pid === workerPid);
+      assert.notEqual(next.helper.pid, live.helper.pid);
+      assert.equal(departed.disposition, "custodied-departure");
+      assert.equal(departed.rssKiB, null);
+      assert.equal(departed.custodyToken, worker.custodyToken);
+      assert.equal(departed.terminalProof.birth.startTicks, worker.startTicks);
+      assert([1, 16, 17].includes(departed.terminalProof.pollMask));
+      const final = await sample();
+      assert.equal(
+        final.processes.find((p) => p.pid === workerPid).disposition,
+        "retained-terminal-proof",
+      );
+      assert.deepEqual(failures, []);
+    } catch (error) {
+      primaryFailure = error;
+      trace("primary-failure", { message: error.message, details: error.details });
+      throw error;
+    } finally {
+      if (root) root.stdin.end();
+      if (closed) await closed;
+      try {
+        await custody.stop();
+      } catch (error) {
+        trace("cleanup-failure", error.message);
+        if (!primaryFailure) throw error;
+      } finally {
+        rmSync(directory, { recursive: true });
+      }
+    }
+    assert.equal(rows.at(-1).stopReport.pairsClosed, 0);
+    assert.equal(rows.at(-1).stopReport.epochs, 3);
+    assert.equal(existsSync(`/proc/${rows.at(0).birth.pid}`), false);
   },
 );
 

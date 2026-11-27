@@ -1,0 +1,242 @@
+"""SCM_RIGHTS custody of already verified fixed compiler births, session-local."""
+import array
+import ctypes
+import json
+import hashlib
+import os
+import re
+import resource
+import secrets
+import select
+import socket
+import stat
+import struct
+import sys
+
+MAX_OWNED = 64
+MAX_PACKET = 2048
+MAX_FDS = 2
+U32 = struct.Struct("3i")
+CLOEXEC = socket.MSG_CMSG_CLOEXEC
+
+
+def require(test, message):
+    if not test:
+        raise ValueError(message)
+
+
+def send(sock, data, fds=()):
+    payload = json.dumps(data, separators=(",", ":")).encode()
+    require(len(payload) <= MAX_PACKET and len(fds) <= MAX_FDS, "custody message cap")
+    ancillary = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))] if fds else []
+    require(sock.sendmsg([payload], ancillary) == len(payload), "incomplete custody send")
+
+
+def receive(sock, want, credential=False):
+    cap = socket.CMSG_SPACE(MAX_FDS * 4) + socket.CMSG_SPACE(U32.size)
+    payload, ancillary, flags, _ = sock.recvmsg(MAX_PACKET, cap, CLOEXEC)
+    fds = []
+    creds = []
+    valid = True
+    try:
+        for level, kind, value in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                incoming = array.array("i")
+                incoming.frombytes(value)
+                fds.extend(incoming)
+            elif level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS:
+                creds.append(U32.unpack(value))
+            else:
+                valid = False
+        require(payload and not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) and valid and
+                len(fds) in want and len(creds) == int(credential), "invalid custody response")
+        return json.loads(payload), fds, creds[0] if creds else None
+    except BaseException:
+        for fd in fds:
+            os.close(fd)
+        raise
+
+
+def birth_key(birth):
+    return tuple(birth[key] for key in ("bootId", "pid", "ppid", "pgid", "startTicks"))
+
+
+def identity(fd):
+    info = os.fstat(fd)
+    return [info.st_dev, info.st_ino]
+
+
+def read_small(path, directory=None):
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC, dir_fd=directory)
+    try:
+        value = os.read(fd, 4097)
+        require(len(value) <= 4096 and value.endswith(b"\n"), "unverified custody proc record")
+        return value
+    finally:
+        os.close(fd)
+
+
+def confirm_birth(raw, birth):
+    head, sep, tail = raw.rpartition(b")")
+    pid, delim, _ = head.partition(b"(")
+    fields = tail.split()
+    require(sep and delim and pid.strip() == str(birth["pid"]).encode() and len(fields) >= 20 and
+            fields[1] == str(birth["ppid"]).encode() and fields[2] == str(birth["pgid"]).encode() and
+            fields[19] == birth["startTicks"].encode(), "custody birth mismatch")
+
+
+def verify_pair(fds, msg, expected_root):
+    fd, directory = fds
+    birth, parent = msg["birth"], msg["parent"]
+    require(expected_root and parent["pid"] == birth["ppid"] and
+            parent["ppid"] == expected_root["pid"] and parent["pgid"] == expected_root["pgid"] and
+            birth["pgid"] == birth["pid"], "custody worker ancestry")
+    require(read_small("/proc/sys/kernel/random/boot_id").strip().decode() ==
+            birth["bootId"] == parent["bootId"] == expected_root["bootId"], "custody boot mismatch")
+    require(msg["descriptors"] == list(map(identity, fds)) and
+            os.readlink(f"/proc/self/fd/{fd}") == "anon_inode:[pidfd]" and
+            stat.S_ISDIR(os.fstat(directory).st_mode), "invalid custody descriptor pair")
+    proc = os.stat(f'/proc/{birth["pid"]}')
+    require(identity(directory) == [proc.st_dev, proc.st_ino], "custody wrong process directory")
+    confirm_birth(read_small("stat", directory), birth)
+    for ancestor in (parent, expected_root):
+        confirm_birth(read_small(f'/proc/{ancestor["pid"]}/stat'), ancestor)
+    named = re.findall(rb"(?m)^Pid:\s*(-?\d+)$", read_small(f"/proc/self/fdinfo/{fd}"))
+    require(named == [str(birth["pid"]).encode()], "custody unpaired pidfd")
+
+
+class Client:
+    def __init__(self, config):
+        self.session, self.epoch = config["session"], config["epoch"]
+        self.tokens = config["tokens"]
+        self.peer, transfer = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        try:
+            with socket.socket(fileno=3) as shared, transfer:
+                # Exactly one byte travels over Node's inherited stream. All
+                # bidirectional packet traffic uses this helper's unique socket.
+                n = shared.sendmsg([b"H"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+                                            array.array("i", [transfer.fileno()]))])
+                require(n == 1, "custody rendezvous failed")
+            self.peer.settimeout(0.7)
+            self.exchange(dict(op="hello", session=self.session, epoch=self.epoch,root=config["root"]))
+        except BaseException:
+            self.peer.close()
+            raise
+
+    def exchange(self, data, fds=(), expect=0):
+        send(self.peer, data, fds)
+        msg, received, _ = receive(self.peer, [expect])
+        try:
+            require(msg.get("ok") is True and msg["epoch"] == self.epoch, "unverified custody ACK")
+            return msg, received
+        except BaseException:
+            for fd in received:
+                os.close(fd)
+            raise
+
+    def retain(self, birth, binding, parent):
+        token = self.tokens.get(str(birth["pid"]))
+        if token:
+            return token
+        _, fd, directory = binding
+        msg, _ = self.exchange(dict(op="retain", birth=birth, parent=parent, descriptors=[identity(fd),identity(directory)]),
+                               [fd, directory])
+        token = msg["token"]
+        require(re.fullmatch("[0-9a-f]{32}", token), "invalid custody receipt")
+        return token
+
+    def retrieve(self, birth):
+        token = self.tokens[str(birth["pid"])]
+        _, fds = self.exchange(dict(op="get", birth=birth, token=token), expect=2)
+        return fds
+
+    def release(self, birth, token):
+        self.exchange(dict(op="release", birth=birth, token=token))
+
+    def close(self):
+        self.peer.close()
+
+
+def serve(shared, parent, session):
+    # Parent is the only process that creates and distributes the shared endpoint.
+    # SO_PEERCRED on that inherited socket describes its original creator, so
+    # require kernel credentials on each helper's one-byte rendezvous instead.
+    shared.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+    held = {}
+    epoch = 0
+    root = None
+    print(json.dumps(dict(ready=True, pid=os.getpid(), session=session)), flush=True)
+    while True:
+        readable, _, _ = select.select([shared, sys.stdin], [], [])
+        if sys.stdin in readable:
+            require(sys.stdin.buffer.read(1) == b"", "invalid custody stop")
+            break
+        ancillary_cap = socket.CMSG_SPACE(MAX_FDS * 4) + socket.CMSG_SPACE(U32.size)
+        raw, ancillary, flags, _ = shared.recvmsg(1, ancillary_cap, CLOEXEC)
+        # Any malformed transfer exits the holder; the kernel closes every FD.
+        creds = [U32.unpack(v) for l, t, v in ancillary if (l,t) == (socket.SOL_SOCKET,socket.SCM_CREDENTIALS)]
+        rights = [array.array("i", v) for l, t, v in ancillary if (l,t) == (socket.SOL_SOCKET,socket.SCM_RIGHTS)]
+        require(raw == b"H" and not flags & (socket.MSG_CTRUNC|socket.MSG_TRUNC) and len(ancillary)==2 and
+                len(creds)==1 and creds[0][1]==os.getuid() and len(rights)==1 and len(rights[0])==1,
+                "invalid custody rendezvous")
+        peer_pid = creds[0][0]
+        with open(f"/proc/{peer_pid}/stat", "rb") as proc:
+            fields = proc.read(4097).rsplit(b")", 1)[1].split()
+        require(int(fields[1]) == parent, "foreign custody peer")
+        with socket.socket(fileno=rights[0][0]) as peer:
+            require(peer.type == socket.SOCK_SEQPACKET, "non-packet custody socket")
+            peer.settimeout(0.75)
+            hello, _, _ = receive(peer, [0])
+            epoch += 1
+            candidate = hello.pop("root")
+            require(hello == dict(op="hello",session=session,epoch=epoch), "custody session/epoch mismatch")
+            require(candidate["pid"] == candidate["pgid"] and candidate["ppid"] == parent,
+                    "custody foreign root")
+            if root is None:
+                confirm_birth(read_small(f'/proc/{candidate["pid"]}/stat'), candidate)
+                root = candidate
+            require(birth_key(candidate) == birth_key(root), "custody root changed")
+            send(peer, dict(ok=True,epoch=epoch))
+            for _ in range(2*MAX_OWNED+1):
+                # Peek EOF without consuming any rights from a new request.
+                if not peer.recv(1, socket.MSG_PEEK):
+                    break
+                msg, fds, _ = receive(peer, [0,2])
+                key = birth_key(msg["birth"])
+                action = msg["op"]
+                if action == "retain":
+                    require(len(held)<MAX_OWNED and len(fds)==2 and key not in held, "duplicate or excessive custody")
+                    verify_pair(fds, msg, root)
+                    token = secrets.token_hex(16)
+                    held[key] = (token, fds)
+                    send(peer, dict(ok=True, epoch=epoch, token=token))
+                else:
+                    token, existing = held[key]
+                    require(not fds and secrets.compare_digest(token, msg["token"]), "unverified custody token")
+                    if action == "get":
+                        send(peer,dict(ok=True,epoch=epoch),existing)
+                    else:
+                        require(action == "release", "unsupported custody operation")
+                        for fd in existing:
+                            os.close(fd)
+                        del held[key]
+                        send(peer,dict(ok=True,epoch=epoch))
+            else:
+                raise ValueError("custody operation cap")
+    lines = sorted("|".join(map(str, (*key, record[0]))) for key,record in held.items())
+    digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
+    for _, fds in held.values():
+        for fd in fds:
+            os.close(fd)
+    print(json.dumps(dict(stopped=True,pairsClosed=len(held),retainedDigest=digest,epochs=epoch)),flush=True)
+
+
+if __name__ == "__main__":
+    parent = int(sys.argv[1])
+    require(ctypes.CDLL(None).prctl(1,9,0,0,0)==0 and os.getppid()==parent, "custody controller gone")
+    resource.setrlimit(resource.RLIMIT_NOFILE,(160,160))
+    resource.setrlimit(resource.RLIMIT_AS,(96<<20,96<<20))
+    session=sys.stdin.buffer.readline(128).decode().strip()
+    require(re.fullmatch("[0-9a-f]{32}",session),"invalid custody session")
+    with socket.socket(fileno=3) as shared:
+        serve(shared,parent,session)

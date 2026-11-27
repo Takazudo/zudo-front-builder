@@ -24,8 +24,8 @@
       "const": "dev-browser-observe.profile.fixed-distribution.v1"
     },
     "fixedRssSafety": {
-      "enum": ["linux-fixed-zfb.v1", "linux-fixed-zfb.v2"],
-      "description": "Use birth-bound Linux RSS observations for a direct Node shim and its pinned zfb native child. Version 2 additionally verifies private compiler workers and binds owned candidates during discovery."
+      "enum": ["linux-fixed-zfb.v1", "linux-fixed-zfb.v2", "linux-fixed-zfb.v3"],
+      "description": "Use birth-bound Linux RSS observations for a direct Node shim and its pinned zfb native child. Version 2 additionally verifies private compiler workers and binds owned candidates during discovery. Version 3 retains original verified compiler descriptors between cycles."
     },
     "description": {
       "type": "string"

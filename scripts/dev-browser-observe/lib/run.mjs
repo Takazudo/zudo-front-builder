@@ -1,3 +1,4 @@
+import { startFixedCustody } from "./fixed-rss-custody.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { admissionPath, reserveSession } from "./admission.mjs";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
@@ -318,6 +319,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       ? AbortSignal.any([loaded.signal, fixedAbort.signal])
       : fixedAbort.signal;
   let fixedSafety = null;
+  let fixedCustody = null;
   let stoppingServer;
   const stopCancellation = new AbortController();
   const stopServer = (handle) => {
@@ -629,6 +631,25 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       : profile.server.readyTimeoutMs;
     if (intentPath)
       intent = reserveSession(intentPath, { labelDir, registryPath: resolved.registryPath });
+    if (profile.fixedRssSafety === "linux-fixed-zfb.v3") {
+      fixedCustody = startFixedCustody({
+        append: (row) => {
+          if (row.type === "fixed-custody-spawn" || row.type === "fixed-custody-ready")
+            intent?.update({
+              phase: row.type,
+              fixedCustody: {
+                pid: row.pid ?? row.birth?.pid,
+                birth: row.birth,
+                session: row.session,
+              },
+            });
+          rec.append(row);
+        },
+        abort: (error) => fixedAbort.abort(error),
+      });
+      await fixedCustody.ready;
+      loaded.signal?.throwIfAborted();
+    }
     spawning = true;
     startupLoop?.start(rendererMemory.signal);
     server = (hooks.startDevServer ?? startDevServer)({
@@ -657,6 +678,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       fixedSafety = startFixedRssSafety({
         server,
         fixedExecutables,
+        custody: fixedCustody,
         limits: profile.limits,
         append: (r) => rec.append(r),
         abort(error) {
@@ -1089,6 +1111,19 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           unresolved.push({ resource: "fixed-rss-helper", helper: fixedSafety.unresolvedHelper });
       } catch (error) {
         unresolved.push({ resource: "fixed-rss-sampler", error: String(error) });
+      }
+    }
+    if (fixedCustody) {
+      try {
+        await bounded("fixed-custody-stop", 500, () => fixedCustody.stop());
+      } catch (error) {
+        unresolved.push({
+          resource: "fixed-descriptor-custody",
+          ...fixedCustody.identity,
+          error: String(error),
+        });
+        evidenceFailed = true;
+        exitCode = EXIT.controllerError;
       }
     }
     if (rendererMemory)
