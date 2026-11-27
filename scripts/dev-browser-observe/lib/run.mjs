@@ -8,7 +8,7 @@ import {
   verifyNextOuterProvider,
 } from "./next-outer-provider.mjs";
 import { nextOuterNonceDigest, observeNextOuterReceipt } from "./next-outer-channel.mjs";
-import { outerTerminalGate } from "./next-outer-terminal.mjs";
+import { outerCheckpoint, outerTerminalGate } from "./next-outer-terminal.mjs";
 import { samplerClosureAudit } from "./linux-rss-sample.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
 import {
@@ -1301,60 +1301,68 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           ...(nextProtocol && {
             ...(outerProtocol && {
               outerDecisionOnly: profile.fixedNextOuterObserver.operation === "decision-only",
-              beforePeerDecision: ({ attemptStart, attemptMs }) => {
-                loaded.signal.throwIfAborted();
-                assert(outerGate, "independent outer receipt unavailable");
-                let graph;
-                outerDecision = outerGate.consume(() => {
-                  graph = verifyNextOuterWiring(outerWiring);
-                  outerCadence = fixedSafety.verifyOuterGraph(() =>
-                    readNextOuterProductGraph(server.handle.native),
-                  );
-                  return true;
-                });
-                outerDecision.attemptDeadlineNs = String(
-                  attemptStart + BigInt(attemptMs) * 1000000n,
-                );
-                const stamp = BigInt(outerDecision.decisionNs);
-                assert(
-                  stamp < BigInt(outerDecision.attemptDeadlineNs) &&
-                    stamp < BigInt(outerCadence.cadenceDeadlineNs),
-                  "outer decision expired",
-                );
-                rec.append({ type: "next-outer-decision", outerDecision, outerCadence, graph });
-              },
-              outerPeerWriteTime: (now) => {
-                loaded.signal.throwIfAborted();
-                let graph;
-                const proof = outerGate.checkWriteTime(now, () => {
-                  graph = verifyNextOuterWiring(outerWiring);
-                  const current = fixedSafety.verifyOuterGraph(() =>
-                    readNextOuterProductGraph(server.handle.native),
-                  );
-                  assert.deepEqual(current, outerCadence, "outer decision RSS epoch changed");
-                  return true;
-                });
-                proof.graph = graph;
-                const stamp = BigInt(proof.t0Ns);
-                assert(
-                  stamp < BigInt(outerDecision.attemptDeadlineNs) &&
-                    stamp < BigInt(outerCadence.cadenceDeadlineNs),
-                  "outer T0 expired",
-                );
-                if (profile.fixedNextOuterObserver.operation === "decision-only") {
-                  rec.append({
-                    type: "next-outer-no-write",
-                    proof,
-                    outerCadence,
-                    writePerformed: false,
+              beforePeerDecision: ({ attemptStart, attemptMs }) =>
+                outerCheckpoint("prewrite-decision", () => {
+                  loaded.signal.throwIfAborted();
+                  assert(outerGate, "independent outer receipt unavailable");
+                  let graph;
+                  outerDecision = outerGate.consume(() => {
+                    outerCadence = fixedSafety.verifyOuterGraph(
+                      () => readNextOuterProductGraph(server.handle.native),
+                      () => {
+                        graph = verifyNextOuterWiring(outerWiring);
+                      },
+                      "prewrite-decision",
+                    );
+                    return true;
                   });
-                  throw Object.assign(
-                    new Error("declared diagnostic outer decision completed before write"),
-                    { code: "NEXT_OUTER_DECISION_ONLY", proof },
+                  outerDecision.attemptDeadlineNs = String(
+                    attemptStart + BigInt(attemptMs) * 1000000n,
                   );
-                }
-                return proof;
-              },
+                  const stamp = BigInt(outerDecision.decisionNs);
+                  assert(
+                    stamp < BigInt(outerDecision.attemptDeadlineNs) &&
+                      stamp < BigInt(outerCadence.cadenceDeadlineNs),
+                    "outer decision expired",
+                  );
+                  rec.append({ type: "next-outer-decision", outerDecision, outerCadence, graph });
+                }),
+              outerPeerWriteTime: (now) =>
+                outerCheckpoint("pre-truncate", () => {
+                  loaded.signal.throwIfAborted();
+                  let graph;
+                  const proof = outerGate.checkWriteTime(now, () => {
+                    const current = fixedSafety.verifyOuterGraph(
+                      () => readNextOuterProductGraph(server.handle.native),
+                      () => {
+                        graph = verifyNextOuterWiring(outerWiring);
+                      },
+                      "pre-truncate",
+                    );
+                    assert.deepEqual(current, outerCadence, "outer decision RSS epoch changed");
+                    return true;
+                  });
+                  proof.graph = graph;
+                  const stamp = BigInt(proof.t0Ns);
+                  assert(
+                    stamp < BigInt(outerDecision.attemptDeadlineNs) &&
+                      stamp < BigInt(outerCadence.cadenceDeadlineNs),
+                    "outer T0 expired",
+                  );
+                  if (profile.fixedNextOuterObserver.operation === "decision-only") {
+                    rec.append({
+                      type: "next-outer-no-write",
+                      proof,
+                      outerCadence,
+                      writePerformed: false,
+                    });
+                    throw Object.assign(
+                      new Error("declared diagnostic outer decision completed before write"),
+                      { code: "NEXT_OUTER_DECISION_ONLY", proof },
+                    );
+                  }
+                  return proof;
+                }),
             }),
             ...(decisionProtocol && {
               checkPeerWriteTime: (stamp) => nextCustody.checkWriteTime(stamp),

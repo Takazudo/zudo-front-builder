@@ -83,6 +83,8 @@ export function startFixedRssSafety({
   nextOwner = () => null,
 }) {
   let pending = null;
+  let pendingOuterCycle = null,
+    acceptedOuterCycle = null;
   let decision = null,
     decisionAbort;
   const intervalNs = BigInt(limits.sampleEveryMs) * 1000000n;
@@ -151,9 +153,23 @@ export function startFixedRssSafety({
     const readyAtEntry = readyCheck;
     const startedNs = String(process.hrtime.bigint());
     const custodyAtEntry = nextOwner();
+    const outerCycle =
+      fixedExecutables.protocol === "linux-fixed-peer.v4"
+        ? {
+            epoch: measuredCycles + 1,
+            startedNs,
+            cadenceDeadlineNs: String(nextDispatchNs - 5000000n),
+            helperBirth: null,
+          }
+        : null;
+    pendingOuterCycle = outerCycle;
     const args = peer
       ? custodyAtEntry
-        ? [server, fixedExecutables.root.path, { nextCustody: custodyAtEntry }]
+        ? [
+            server,
+            fixedExecutables.root.path,
+            { nextCustody: custodyAtEntry, ...(outerCycle && { outerCycle }) },
+          ]
         : [server, fixedExecutables.root.path]
       : [server, fixedExecutables.root.path, { fixedExecutables, custody }];
     pending = sample(...args)
@@ -257,6 +273,13 @@ export function startFixedRssSafety({
               readyAtEntry.resolve();
             }
           }
+          if (outerCycle)
+            acceptedOuterCycle = {
+              epoch: outerCycle.epoch,
+              startedNs,
+              coreResultNs: result.timing.parent.resultNs,
+              cadenceDeadlineNs: outerCycle.cadenceDeadlineNs,
+            };
           return;
         }
         const children = result.processes.filter(
@@ -285,6 +308,7 @@ export function startFixedRssSafety({
       .catch(fail)
       .finally(() => {
         pending = null;
+        pendingOuterCycle = null;
       });
     return pending;
   };
@@ -327,34 +351,73 @@ export function startFixedRssSafety({
     get qualifiedPeer() {
       return qualifiedPeer;
     },
-    verifyOuterGraph(getOwned) {
-      const stamp = process.hrtime.bigint();
-      assert(
-        !failure &&
-          !stopped &&
-          !pending &&
-          !decision &&
-          postCycles === 2 &&
-          stamp < nextDispatchNs - 5000000n,
-        "outer decision outside current RSS coverage",
-      );
-      const custody = nextOwner();
-      const worker = custody?.qualified;
-      assert(worker, "outer decision requires a qualified candidate");
-      const owned = getOwned();
-      assert(!owned.some((p) => custody.isWorker(p)), "outer decision requires a missing worker");
-      const known = [...server.handle.known.values()];
-      assert(
-        known.some((p) => custody.isWorker(p)),
-        "ordinary sampler has not recorded qualified birth",
-      );
-      peerProcessIdentity(
-        owned,
-        known.filter((p) => !custody.isWorker(p)),
-        qualifiedPeer,
-        peer,
-      );
-      return { epoch: measuredCycles, cadenceDeadlineNs: String(nextDispatchNs - 5000000n) };
+    verifyOuterGraph(getOwned, checkObserver, stage = "outer-decision") {
+      const entered = process.hrtime.bigint();
+      let coverage = "not-checked",
+        productGraph = "not-checked",
+        observerGraph = "not-checked";
+      try {
+        // A live ordinary helper is an expected controller child. It still
+        // prevents admission: refuse on the original cycle before invoking
+        // either census, without waiting or assigning a birth from a PID.
+        let reason = null;
+        if (failure) reason = "sampler-failed";
+        else if (stopped) reason = "sampler-stopped";
+        else if (pending) reason = "ordinary-sample-pending";
+        else if (decision) reason = "identity-decision-pending";
+        else if (postCycles !== 2 || !acceptedOuterCycle) reason = "ready-coverage-incomplete";
+        else if (entered >= BigInt(acceptedOuterCycle.cadenceDeadlineNs)) reason = "cadence-due";
+        if (reason) {
+          coverage = reason;
+          throw new Error("outer decision outside current RSS coverage: " + reason);
+        }
+        coverage = "accepted";
+        productGraph = "checking";
+        const custody = nextOwner();
+        const worker = custody?.qualified;
+        assert(worker, "outer decision requires a qualified candidate");
+        const owned = getOwned();
+        assert(!owned.some((p) => custody.isWorker(p)), "outer decision requires a missing worker");
+        const known = [...server.handle.known.values()];
+        assert(
+          known.some((p) => custody.isWorker(p)),
+          "ordinary sampler has not recorded qualified birth",
+        );
+        peerProcessIdentity(
+          owned,
+          known.filter((p) => !custody.isWorker(p)),
+          qualifiedPeer,
+          peer,
+        );
+        productGraph = "accepted";
+        if (checkObserver) {
+          observerGraph = "checking";
+          checkObserver();
+          observerGraph = "accepted";
+        }
+        return {
+          epoch: acceptedOuterCycle.epoch,
+          cadenceDeadlineNs: acceptedOuterCycle.cadenceDeadlineNs,
+        };
+      } catch (error) {
+        // Snapshot before asynchronous disarm/teardown. Later receipt or
+        // closure from this same cycle cannot rewrite the refusal.
+        error.outerRefusal = {
+          stage,
+          entryNs: String(entered),
+          refusedNs: String(process.hrtime.bigint()),
+          coverage,
+          productGraph: productGraph === "checking" ? "failed" : productGraph,
+          observerGraph: observerGraph === "checking" ? "failed" : observerGraph,
+          lastAccepted: acceptedOuterCycle && { ...acceptedOuterCycle },
+          pending: pendingOuterCycle && {
+            ...pendingOuterCycle,
+            helperBirth: pendingOuterCycle.helperBirth && { ...pendingOuterCycle.helperBirth },
+          },
+          firstSamplerFailure: failure?.error ?? null,
+        };
+        throw error;
+      }
     },
     async verifyPrewriteTerminal({ getOwned, workDeadlineNs, signal }) {
       const custody = nextOwner();

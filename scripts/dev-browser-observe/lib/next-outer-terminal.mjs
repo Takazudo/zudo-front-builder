@@ -9,6 +9,30 @@ const stamp = (s) => {
 };
 const sameOwner = (a, b) => sameLinuxBirth(a, b) && a.ppid === b.ppid && a.pgid === b.pgid;
 
+// A rejection can precede the cover/graph callback (for example, no cached
+// receipt). A timestamp on that rejection cannot certify a graph we did not
+// observe. Preserve the first detailed failure whenever one already exists.
+export function outerCheckpoint(stage, operation, now = process.hrtime.bigint) {
+  const entryNs = String(now());
+  try {
+    return operation();
+  } catch (error) {
+    if (!error.outerRefusal && error.code !== "NEXT_OUTER_DECISION_ONLY") {
+      error.outerRefusal = {
+        stage,
+        entryNs,
+        refusedNs: String(now()),
+        coverage: "unknown",
+        productGraph: "unknown",
+        observerGraph: "unknown",
+        lastAccepted: null,
+        pending: null,
+      };
+    }
+    throw error;
+  }
+}
+
 export function outerTerminalGate({ authority, now = process.hrtime.bigint }) {
   const expected = structuredClone(authority);
   assert(sameOwner(expected.outer, expected.outer) && sameOwner(expected.worker, expected.worker));

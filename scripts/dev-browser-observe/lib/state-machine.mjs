@@ -1001,6 +1001,7 @@ export async function runBatch({ scenarios, deps }) {
             ...recBase,
             outcome,
             ...(decisionOnly && { prewriteDecision: error.proof }),
+            ...(error.outerRefusal && { outerRefusal: error.outerRefusal }),
             phase: "before-mutation",
             error: String(error.message ?? error),
             writePerformed: false,

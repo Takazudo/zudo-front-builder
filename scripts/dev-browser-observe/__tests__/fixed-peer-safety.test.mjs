@@ -675,7 +675,28 @@ test("outer gate uses the current ordinary epoch without dispatching or joining 
     const ready = monitor.verifyReady(process.hrtime.bigint());
     await vi.advanceTimersByTimeAsync(2000);
     await ready;
-    const cycle = monitor.verifyOuterGraph(() => ancestors);
+    let ownerGraphs = 0;
+    const full = () => {
+      ownerGraphs++;
+    };
+    const cycle = monitor.verifyOuterGraph(() => ancestors, full);
+    assert.equal(ownerGraphs, 1);
+    assert.throws(
+      () =>
+        monitor.verifyOuterGraph(
+          () => ancestors,
+          () => {
+            throw Error("unexpected outer graph child");
+          },
+          "pre-truncate",
+        ),
+      (error) => {
+        assert.equal(error.outerRefusal.coverage, "accepted");
+        assert.equal(error.outerRefusal.productGraph, "accepted");
+        assert.equal(error.outerRefusal.observerGraph, "failed");
+        return true;
+      },
+    );
     assert.equal(cycle.epoch, 3);
     assert.equal(sample.mock.calls.length, 3);
     assert.throws(
@@ -686,9 +707,40 @@ test("outer gate uses the current ordinary epoch without dispatching or joining 
     assert.throws(() => monitor.verifyOuterGraph(() => ancestors), /RSS coverage/);
     hold = true;
     await vi.advanceTimersByTimeAsync(5);
-    assert.throws(() => monitor.verifyOuterGraph(() => ancestors), /RSS coverage/);
+    const competingGraph = vi.fn(() => {
+      throw Error("unexpected outer graph child");
+    });
+    const product = vi.fn(() => ancestors);
+    let originalRefusal;
+    const refuse = (stage) =>
+      assert.throws(
+        () => monitor.verifyOuterGraph(product, competingGraph, stage),
+        (error) => {
+          const row = error.outerRefusal;
+          assert.equal(row.stage, stage);
+          assert.equal(row.coverage, "ordinary-sample-pending");
+          assert.equal(row.observerGraph, "not-checked");
+          assert.equal(row.productGraph, "not-checked");
+          assert.equal(row.pending.epoch, 4);
+          assert.equal(row.lastAccepted.epoch, 3);
+          assert.equal(row.lastAccepted.cadenceDeadlineNs, cycle.cadenceDeadlineNs);
+          assert(BigInt(row.refusedNs) >= BigInt(row.entryNs));
+          if (!originalRefusal) {
+            originalRefusal = row;
+            assert.equal(row.pending.helperBirth, null);
+          } else assert.equal(row.pending.helperBirth.pid, 91);
+          return true;
+        },
+      );
+    refuse("prewrite-decision");
+    const active = sample.mock.calls[3][2].outerCycle;
+    active.helperBirth = { pid: 91, ppid: 1, pgid: 90, startTicks: "5", bootId: "controlled" };
+    refuse("pre-truncate");
+    assert.equal(originalRefusal.pending.helperBirth, null);
+    assert.equal(product.mock.calls.length, 0);
+    assert.equal(competingGraph.mock.calls.length, 0);
     assert.equal(sample.mock.calls.length, 4);
-    assert.equal(verify.mock.calls.length, 1);
+    assert.equal(verify.mock.calls.length, 2);
   } finally {
     deferred.resolve();
     await monitor.stop();

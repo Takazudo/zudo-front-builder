@@ -6,7 +6,7 @@ import {
   NEXT_OUTER_PROVIDER,
 } from "../lib/next-outer-channel.mjs";
 import { linuxBirth } from "../lib/linux-birth.mjs";
-import { outerTerminalGate } from "../lib/next-outer-terminal.mjs";
+import { outerCheckpoint, outerTerminalGate } from "../lib/next-outer-terminal.mjs";
 
 const birth = (pid) => ({
   birthVersion: "linux-proc-v1",
@@ -160,3 +160,43 @@ test.skipIf(process.platform !== "linux")(
     }
   },
 );
+
+test("a refusal before a census retains the first error and does not infer graph coverage", () => {
+  const original = Error("no receipt");
+  let n = 15n;
+  assert.throws(
+    () =>
+      outerCheckpoint(
+        "prewrite-decision",
+        () => {
+          throw original;
+        },
+        () => n++,
+      ),
+    (e) => {
+      assert.equal(e, original);
+      assert.deepEqual(e.outerRefusal, {
+        stage: "prewrite-decision",
+        entryNs: "15",
+        refusedNs: "16",
+        coverage: "unknown",
+        productGraph: "unknown",
+        observerGraph: "unknown",
+        lastAccepted: null,
+        pending: null,
+      });
+      return true;
+    },
+  );
+  const first = original.outerRefusal;
+  assert.throws(() =>
+    outerCheckpoint(
+      "pre-truncate",
+      () => {
+        throw original;
+      },
+      () => n++,
+    ),
+  );
+  assert.equal(original.outerRefusal, first);
+});

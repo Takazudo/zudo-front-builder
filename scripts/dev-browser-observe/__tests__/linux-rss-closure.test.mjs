@@ -7,7 +7,7 @@ import * as sampler from "../lib/linux-rss-sample.mjs";
 import { startFixedRssSafety } from "../lib/fixed-rss-safety.mjs";
 
 afterEach(() => vi.restoreAllMocks());
-function fixture(writeError = false, extra = null) {
+function fixture(writeError = false, extra = null, outerCycle = null) {
   let ns = 0n;
   vi.spyOn(process.hrtime, "bigint").mockImplementation(() => ns);
   const tasks = [];
@@ -59,7 +59,7 @@ function fixture(writeError = false, extra = null) {
         ? { nextCustody: { channel: fd3, begin: () => ({ tokens: {} }) } }
         : {};
   const result = sampler
-    .sampleRendererMemory(server, "/unused", { ...custodyOptions, launch: () => child })
+    .sampleRendererMemory(server, "/unused", { ...custodyOptions, outerCycle, launch: () => child })
     .catch((e) => e);
   return {
     result,
@@ -291,5 +291,45 @@ test.each(["fixed-rss-sampler", "renderer-memory-sampler"])(
     assert.equal(holds[0].helper.pipesClosed, false);
     assert.equal(holds[0].closureAudit.complete, true);
     assert.equal(audit.length, 1);
+  },
+);
+
+test.each([true, false])(
+  "pending outer identity only reflects a validated original helper frame: %s",
+  async (valid) => {
+    const cycle = { helperBirth: null },
+      f = fixture(false, null, cycle);
+    assert.equal(cycle.helperBirth, null);
+    const root = f.server.handle.native;
+    const childBirth = {
+      ...root,
+      pid: f.child.pid,
+      ppid: valid ? process.pid : process.pid + 1,
+      pgid: f.child.pid,
+      state: "S",
+      comm: "python3",
+    };
+    const frames = [
+      {
+        type: "timing",
+        version: "linux-rss-timing.v1",
+        stage: "request",
+        seq: 0,
+        ns: ["0", "0", "0", "0"],
+        clock: {
+          implementation: "clock_gettime(CLOCK_MONOTONIC)",
+          bootId: root.bootId,
+          timeNamespace: null,
+        },
+      },
+      { type: "helper", birth: childBirth },
+    ];
+    f.child.stdout.emit("data", Buffer.from(frames.map((r) => JSON.stringify(r) + "\n").join("")));
+    if (valid) {
+      assert.equal(cycle.helperBirth.pid, f.child.pid);
+      assert.equal(cycle.helperBirth.ppid, process.pid);
+    } else assert.equal(cycle.helperBirth, null);
+    f.events();
+    await f.result;
   },
 );

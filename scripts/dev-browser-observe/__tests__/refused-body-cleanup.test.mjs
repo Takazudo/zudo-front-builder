@@ -65,7 +65,15 @@ test.each([
         outerDecisionOnly: true,
         beforePeerDecision: () => {},
         outerPeerWriteTime: (now) => {
-          if (mode === "outer-fails-at-t0") throw new Error("actual outer cutoff");
+          if (mode === "outer-fails-at-t0")
+            throw Object.assign(new Error("actual outer cutoff"), {
+              outerRefusal: {
+                stage: "pre-truncate",
+                refusedNs: "20",
+                coverage: "ordinary-sample-pending",
+                observerGraph: "not-checked",
+              },
+            });
           throw Object.assign(new Error("declared diagnostic"), {
             code: "NEXT_OUTER_DECISION_ONLY",
             proof: { t0Ns: String(now()) },
@@ -117,6 +125,15 @@ test.each([
       assert.equal(cleanup.ok, false);
       assert.equal(cleanup.restored, false);
       assert.equal(cleanup.liveSkipped, "before-mutation-no-write");
+      if (mode === "outer-fails-at-t0") {
+        const first = d.recorder.records.find((r) => r.type === "attempt");
+        assert.deepEqual(first.outerRefusal, {
+          stage: "pre-truncate",
+          refusedNs: "20",
+          coverage: "ordinary-sample-pending",
+          observerGraph: "not-checked",
+        });
+      }
       assert.deepEqual(cleanup.live, []);
     }
   } finally {

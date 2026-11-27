@@ -46,6 +46,13 @@ test.each([
       },
     });
     await monitor.stop();
+    if (protocol === "linux-fixed-peer.v4") {
+      const { outerCycle, ...wire } = actual[2];
+      assert.equal(outerCycle.epoch, 1);
+      assert.equal(outerCycle.helperBirth, null);
+      assert(BigInt(outerCycle.startedNs) < BigInt(outerCycle.cadenceDeadlineNs));
+      actual[2] = wire;
+    }
     assert.deepEqual(
       actual,
       nextCustody

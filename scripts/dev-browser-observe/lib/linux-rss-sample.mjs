@@ -375,6 +375,7 @@ export function sampleRendererMemory(
     fixedExecutables = null,
     custody = null,
     nextCustody = null,
+    outerCycle = null,
     launch = () =>
       spawn("python3", ["-I", "-B", script, String(process.pid)], {
         stdio: [
@@ -759,6 +760,9 @@ export function sampleRendererMemory(
           "incorrect direct sampling helper identity",
         );
         helper.birth = { ...compactBirth(birth), state: birth.state, comm: birth.comm };
+        // Reflect the already-validated original helper frame in the active
+        // controller cycle. A numerical spawn PID alone cannot populate it.
+        if (outerCycle) outerCycle.helperBirth = { ...helper.birth };
         return;
       }
       if (row.type === "executable") {
