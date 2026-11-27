@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { blankBrowserAudit, runOriginalFamilyBatch } from "../lib/fixed-family-admission.mjs";
 import { fieldNotesOps, materializeFieldNotes } from "../lib/fieldnotes.mjs";
 import { HARNESS_DIR } from "../lib/util.mjs";
@@ -48,6 +48,10 @@ test("the normal profile validator admits only exact original family cells", () 
 });
 test.each([
   "released",
+  "final-cadence-crossing",
+  "idle-transient-in-journal",
+  "snapshot-during-settlement",
+  "write-during-settlement",
   "no-release",
   "abort",
   "request",
@@ -74,7 +78,7 @@ test.each([
     let pages = [];
     ctx.pages = () => pages;
     audit.attach(ctx);
-    pages = [{ url: () => "about:blank" }];
+    pages = [Object.assign(new EventEmitter(), { url: () => "about:blank" })];
     if (mode === "request") ctx.emit("request", { url: () => "http://127.0.0.1:1234/" });
     const original = fieldNotesOps(m),
       fs = audit.trackFixture(original),
@@ -95,11 +99,30 @@ test.each([
     const root = identity(3, 2, 3),
       dev = identity(4, 3, 3),
       worker = identity(5, 4, 5);
-    let checks = 0;
+    let checks = 0,
+      settledSample;
     const rows = [];
     const known = new Map([root, dev, worker].map((x) => [x.pid, x]));
+    const settling = mode.endsWith("-during-settlement");
+    const crossing = mode === "final-cadence-crossing";
+    const idleTransient = mode === "idle-transient-in-journal";
+    const due = process.hrtime.bigint() + 1000000000n;
+    const latest = {
+      root,
+      dev,
+      worker,
+      sample: { live: [root, dev], cadenceDeadlineNs: String(due) },
+    };
+    if (crossing) {
+      pages[0].url = () => {
+        if (checks === 1) vi.spyOn(process.hrtime, "bigint").mockReturnValue(due);
+        return "about:blank";
+      };
+    }
     const invoke = () =>
       runOriginalFamilyBatch(input, {
+        strategy:
+          settling || crossing || idleTransient ? "blank-join-owned.v2" : "blank-before-custody.v1",
         browserAudit: audit,
         snapshot: () =>
           mode === "topology-after-journal" && rows.length
@@ -113,17 +136,51 @@ test.each([
         signal: ac.signal,
         append: (r) => {
           rows.push(r);
+          if (idleTransient && r.status === "pre-batch-proof") pages[0].emit("framenavigated");
           if (mode === "navigated-during-journal" && r.status === "pre-batch-proof")
             pages = [{ url: () => "https://example.invalid/" }];
           if (mode === "request-during-journal" && r.status === "pre-batch-proof")
             ctx.emit("request", { url: () => "http://127.0.0.1:1234/" });
         },
         safety: {
+          captureFamilyCycle(receipt) {
+            if (crossing || idleTransient) return { before: latest, settlement: null };
+            const start = String(process.hrtime.bigint());
+            const deadline = String(BigInt(start) + 750000000n);
+            receipt.cycle = {
+              epoch: 3,
+              startedNs: start,
+              helper: { pid: 8, entryNs: start, spawnHrtimeNs: start, deadlineNs: deadline },
+            };
+            return {
+              before: this.verifyFamilyAdmission(),
+              settlement: Promise.resolve().then(() => {
+                settledSample = {
+                  live: [root, dev],
+                  epoch: 3,
+                  startedNs: start,
+                  helperPid: 8,
+                  helperSpawnNs: start,
+                  entryNs: start,
+                  deadlineNs: deadline,
+                  resultNs: String(process.hrtime.bigint()),
+                };
+                assert.throws(
+                  () => (mode.startsWith("snapshot") ? fs.snapshot() : fs.performWrites()),
+                  /fixture operation before family admission/,
+                );
+              }),
+            };
+          },
           verifyFamilyAdmission() {
             checks++;
+            if (crossing || idleTransient) {
+              assert(process.hrtime.bigint() < due);
+              return latest;
+            }
             if (mode === "no-release" || (mode === "fails-after-journal" && checks === 2))
               throw Error("release unavailable");
-            return { root, dev, worker, sample: { live: [root, dev] } };
+            return { root, dev, worker, sample: settledSample ?? { live: [root, dev] } };
           },
         },
       });
@@ -135,7 +192,10 @@ test.each([
       assert(att.writePerformed);
       assert.equal(result.accounting.success, 1);
     } else {
-      assert.throws(invoke);
+      if (crossing) assert.throws(invoke, /cadence due at family decision/);
+      else if (idleTransient) assert.throws(invoke, /left blank setup/);
+      else if (settling) await assert.rejects(invoke, /left blank setup/);
+      else assert.throws(invoke);
       assert.equal(page.prepared.length, 0);
       assert(
         !input.deps.recorder.records.some((r) =>
@@ -147,9 +207,10 @@ test.each([
         assert.equal(rows.at(-1).pageUrl, "https://example.invalid/");
       if (mode === "request-during-journal") assert.equal(rows.at(-1).httpRequests, 1);
     }
-    assert.equal(rows[0].workloadWriteCalls, 0);
-    assert.equal(rows[0].snapshots, 0);
+    assert.equal(rows[0].workloadWriteCalls, mode === "write-during-settlement" ? 1 : 0);
+    assert.equal(rows[0].snapshots, mode === "snapshot-during-settlement" ? 1 : 0);
   } finally {
+    vi.restoreAllMocks();
     rmSync(temp, { recursive: true, force: true });
   }
 });

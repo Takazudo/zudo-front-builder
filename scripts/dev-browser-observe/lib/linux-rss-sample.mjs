@@ -358,6 +358,7 @@ export function sampleRendererMemory(
   {
     fixedExecutables = null,
     custody = null,
+    onHelperSpawn = null,
     launch = () =>
       spawn("python3", ["-I", "-B", script, String(process.pid)], {
         stdio: ["pipe", "pipe", "pipe", ...(custody ? [custody.channel] : [])],
@@ -556,6 +557,13 @@ export function sampleRendererMemory(
       closed: false,
       pipesClosed: false,
     };
+
+    onHelperSpawn?.({
+      pid: helper.pid,
+      spawnHrtimeNs,
+      entryNs: String(start),
+      deadlineNs: String(deadline),
+    });
 
     let partial = Buffer.alloc(0);
     let bytes = 0;

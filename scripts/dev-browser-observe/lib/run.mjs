@@ -729,6 +729,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       fixedCustody.attachStartup(server.handle, fixedExecutables);
     if (fixedExecutables) {
       fixedSafety = startFixedRssSafety({
+        joinOwnedFamily: profile.fixedFamilyAdmission === "blank-join-owned.v2",
         server,
         fixedExecutables,
         custody: fixedCustody,
@@ -1123,6 +1124,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       const { accounting, stopped } = await (familyAudit
         ? runOriginalFamilyBatch(batchInput, {
             safety: fixedSafety,
+            strategy: profile.fixedFamilyAdmission,
             verifyImages: (proof) => verifyFamilyImages(proof, fixedExecutables),
             browserAudit: familyAudit,
             signal: loaded.signal,

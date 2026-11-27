@@ -122,7 +122,11 @@ test.each(["live", "terminal", "missing", "uncorroborated"])(
         return null;
       },
     };
+    let dispatched;
     const result = sampleRendererMemory({ handle, isAlive: () => ({ alive: true }) }, image.path, {
+      onHelperSpawn: (captured) => {
+        dispatched = captured;
+      },
       launch: () => helper,
       fixedExecutables: { protocol: "linux-fixed-zfb.v4", root: image, child: elf, launch: {} },
       custody,
@@ -266,5 +270,11 @@ test.each(["live", "terminal", "missing", "uncorroborated"])(
     assert.deepEqual(record.startupEpochCoverage, { complete: true, missing: [] });
     assert.equal(record.processes.at(-1).rssKiB, mode === "live" ? 25 : null);
     assert.equal(record.helper.closed, true);
+    assert.deepEqual(dispatched, {
+      pid: record.helper.pid,
+      spawnHrtimeNs: record.helper.spawnHrtimeNs,
+      entryNs: record.timing.parent.entryNs,
+      deadlineNs: record.timing.parent.deadlineNs,
+    });
   },
 );

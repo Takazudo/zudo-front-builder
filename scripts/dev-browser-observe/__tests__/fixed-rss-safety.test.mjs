@@ -739,3 +739,96 @@ test("the family dispatch gate never waits for an outstanding or overdue regular
     vi.useRealTimers();
   }
 });
+
+test("v2 snapshots the one spawned operation and keeps its closure owned on refusal", async () => {
+  vi.useFakeTimers();
+  const root = { pid: 10, disposition: "live" };
+  const dev = { pid: 11, ppid: 10, startTicks: "3", bootId: "boot", disposition: "live" };
+  let active,
+    helper,
+    calls = 0,
+    releaseEpoch = 1;
+  const monitor = startFixedRssSafety({
+    joinOwnedFamily: true,
+    server: { handle: { native: root } },
+    fixedExecutables: { protocol: "linux-fixed-zfb.v4", root: { path: "/controlled" } },
+    limits: { rssCeilingKiB: 100, sampleEveryMs: 1000 },
+    append() {},
+    abort() {},
+    custody: { familyProof: () => ({ root, dev, release: { receipt: { epoch: releaseEpoch } } }) },
+    sample(_, __, { onHelperSpawn }) {
+      calls++;
+      active = Promise.withResolvers();
+      const start = process.hrtime.bigint();
+      helper = {
+        pid: 100 + calls,
+        spawnHrtimeNs: String(start),
+        entryNs: String(start),
+        deadlineNs: String(start + 750000000n),
+      };
+      onHelperSpawn(helper);
+      return active.promise;
+    },
+  });
+  const complete = () =>
+    active.resolve({
+      summedRssKiB: 50,
+      helperResult: "complete",
+      processes: [root, dev],
+      startupEpochCoverage: { complete: true },
+      helper: { ...helper, closed: true, pipesClosed: true },
+      timing: {
+        clock: { qualified: true },
+        parent: {
+          entryNs: helper.entryNs,
+          deadlineNs: helper.deadlineNs,
+          resultNs: String(process.hrtime.bigint()),
+        },
+      },
+    });
+  try {
+    assert.throws(() => monitor.captureFamilyCycle({}), /unavailable/);
+    complete();
+    await vi.advanceTimersByTimeAsync(0);
+    assert.equal(monitor.captureFamilyCycle({}).settlement, null);
+    await vi.advanceTimersByTimeAsync(1000);
+    releaseEpoch = 2;
+    assert.throws(() => monitor.captureFamilyCycle({}), /previously accepted/);
+    releaseEpoch = 1;
+    const receipt = {};
+    const captured = monitor.captureFamilyCycle(receipt);
+    assert.equal(receipt.cycle.epoch, 2);
+    assert.deepEqual(receipt.cycle.helper, helper);
+    assert.equal(captured.settlement, monitor.captureFamilyCycle({}).settlement);
+    assert.throws(() => monitor.verifyFamilyAdmission(), /pending/);
+    complete();
+    await captured.settlement;
+    assert.equal(monitor.verifyFamilyAdmission().sample.helperPid, 102);
+    await vi.advanceTimersByTimeAsync(1000);
+    const closing = monitor.captureFamilyCycle({}).settlement;
+    let stopped = false;
+    const stop = monitor.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    assert.equal(stopped, false);
+    const failure = Object.assign(Error("partial RSS and unclosed helper"), {
+      details: {
+        rssCoverage: "partial",
+        observedSubtotalKiB: 80,
+        helper: { closed: false, pipesClosed: false },
+      },
+    });
+    active.reject(failure);
+    await closing;
+    await stop;
+    assert.throws(() => monitor.captureFamilyCycle({}), /unavailable/);
+    assert.equal(monitor.unresolvedHelper, failure.details.helper);
+    assert.equal(monitor.report().peakSummedOwnedRssKiB, 80);
+    assert.equal(calls, 3);
+  } finally {
+    complete();
+    await monitor.stop();
+    vi.useRealTimers();
+  }
+});
