@@ -1,5 +1,6 @@
 """SCM_RIGHTS custody of already verified fixed compiler births, session-local."""
 import array
+import contextlib
 import ctypes
 import json
 import hashlib
@@ -115,6 +116,8 @@ class Client:
         self.tokens = config["tokens"]
         self.holder_pid = config["holderPid"]
         self.last_receipt = None
+        self.startup_addition = None
+        self.startup_pair = []
         self.peer, transfer = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         try:
             with socket.socket(fileno=3) as shared, transfer:
@@ -124,14 +127,41 @@ class Client:
                                             array.array("i", [transfer.fileno()]))])
                 require(n == 1, "custody rendezvous failed")
             self.peer.settimeout(0.7)
-            self.exchange(dict(op="hello", session=self.session, epoch=self.epoch,root=config["root"]))
+            hello = dict(op="hello", session=self.session, epoch=self.epoch, root=config["root"])
+            optional = config.get("allowStartupAddition") is True
+            if optional:
+                hello["allowStartupAddition"] = True
+            response, received = self.exchange(hello, expect=(0, 2) if optional else (0,))
+            try:
+                addition = response.get("startupAddition")
+                require(bool(received) == (addition is not None), "unpaired startup hello")
+                if addition is not None:
+                    require(optional and not self.tokens and len(received) == 2, "unexpected startup addition")
+                    worker, dev, root = addition["birth"], addition["dev"], addition["root"]
+                    require(birth_key(root) == birth_key(config["root"]) and
+                            root["pid"] == dev["ppid"] and root["pgid"] == dev["pgid"] and
+                            worker["ppid"] == dev["pid"] and worker["pid"] == worker["pgid"] and
+                            worker["bootId"] == dev["bootId"] == root["bootId"] and
+                            re.fullmatch("[0-9a-f]{32}", addition["token"]) and
+                            int(addition["acquiredNs"]) <= int(response["verifiedNs"]),
+                            "invalid added worker lineage")
+                    require(addition["descriptors"] == list(map(identity, received)) and
+                            os.readlink(f"/proc/self/fd/{received[0]}") == "anon_inode:[pidfd]" and
+                            stat.S_ISDIR(os.fstat(received[1]).st_mode), "wrong startup hello pair")
+                    self.startup_addition = dict(addition, receipt=dict(self.last_receipt,
+                                                    descriptors=addition["descriptors"]))
+                    self.startup_pair = received
+                    received = []
+            finally:
+                for fd in received:
+                    os.close(fd)
         except BaseException:
             self.peer.close()
             raise
 
     def exchange(self, data, fds=(), expect=0):
         send(self.peer, data, fds)
-        msg, received, _ = receive(self.peer, [expect])
+        msg, received, _ = receive(self.peer, expect if isinstance(expect, tuple) else [expect])
         try:
             require(msg.get("ok") is True and msg["epoch"] == self.epoch and
                     msg["holderPid"] == self.holder_pid and msg["helperPid"] == os.getpid() and
@@ -182,8 +212,20 @@ class Client:
     def release(self, birth, token):
         self.exchange(dict(op="release", birth=birth, token=token))
 
+    def close_startup_pair(self):
+        # Detach the ownership list before closure. Even when one close
+        # reports a failure, ExitStack closes its sibling without retrying a
+        # potentially reused descriptor number.
+        pair, self.startup_pair = self.startup_pair, []
+        with contextlib.ExitStack() as cleanup:
+            for fd in pair:
+                cleanup.callback(os.close, fd)
+
     def close(self):
-        self.peer.close()
+        try:
+            self.close_startup_pair()
+        finally:
+            self.peer.close()
 
 
 def duplicate_startup_pair(pair):
@@ -209,9 +251,11 @@ def serve(shared, parent, session, startup_mode=False):
     ownership_lock = threading.Lock()
     startup_key = None
     first_retained = None
+    startup_binding = None
+    hello_transfers = 0
 
     def publish(pair, worker, dev, launch):
-        nonlocal retains, high_water, startup_key, first_retained
+        nonlocal retains, high_water, startup_key, first_retained, startup_binding
         if pair is None:
             print(json.dumps(dict(startupReport=scout.report(), session=session)), flush=True)
             return
@@ -238,9 +282,12 @@ def serve(shared, parent, session, startup_mode=False):
                 retains += 1
                 high_water = 1
             startup_key = key
+            acquired = str(time.monotonic_ns())
+            startup_binding = dict(birth=worker, dev=dev, root=launch, token=token,
+                                   descriptors=descriptors, acquiredNs=acquired)
             print(json.dumps(dict(startupBirth=worker, dev=dev, root=launch, token=token,
                                   descriptors=descriptors, session=session,
-                                  liveVerifiedNs=str(live_ns), acquiredNs=str(time.monotonic_ns()))), flush=True)
+                                  liveVerifiedNs=str(live_ns), acquiredNs=acquired)), flush=True)
 
     print(json.dumps(dict(ready=True, pid=os.getpid(), session=session,
                           timeNamespace=os.readlink("/proc/self/ns/time"))), flush=True)
@@ -282,6 +329,9 @@ def serve(shared, parent, session, startup_mode=False):
             hello, _, _ = receive(peer, [0])
             epoch += 1
             candidate = hello.pop("root")
+            offer = "allowStartupAddition" in hello
+            if offer:
+                require(startup_mode and hello.pop("allowStartupAddition") is True, "unsupported startup hello")
             require(hello == dict(op="hello",session=session,epoch=epoch), "custody session/epoch mismatch")
             require(candidate["pid"] == candidate["pgid"] and candidate["ppid"] == parent,
                     "custody foreign root")
@@ -289,12 +339,30 @@ def serve(shared, parent, session, startup_mode=False):
                 confirm_birth(read_small(f'/proc/{candidate["pid"]}/stat'), candidate)
                 root = candidate
             require(birth_key(candidate) == birth_key(root), "custody root changed")
-            def ack(extra=None, fds=()):
+            def ack(extra=None, fds=(), stamp=None):
                 result=dict(ok=True,epoch=epoch,helperPid=peer_pid,holderPid=os.getpid(),
-                            session=session,verifiedNs=str(time.monotonic_ns()))
+                            session=session,verifiedNs=stamp or str(time.monotonic_ns()))
                 result.update(extra or {})
                 send(peer,result,fds)
-            ack()
+            # One nonwaiting snapshot. An acquisition after this handshake is
+            # not part of this request. The controller still reconciles the full
+            # population at closure, including later discoveries.
+            sent_addition = False
+            if offer and ownership_lock.acquire(blocking=False):
+                try:
+                    if startup_binding and startup_key in held and hello_transfers == 0:
+                        token, original = held[startup_key]
+                        require(token == startup_binding["token"], "changed startup ownership")
+                        stamp = str(time.monotonic_ns())
+                        print(json.dumps(dict(startupHello=dict(epoch=epoch, helperPid=peer_pid,
+                              holderPid=os.getpid(), verifiedNs=stamp, token=token), session=session)), flush=True)
+                        ack(dict(startupAddition=startup_binding), original, stamp)
+                        hello_transfers += 1
+                        sent_addition = True
+                finally:
+                    ownership_lock.release()
+            if not sent_addition:
+                ack()
             for _ in range(2*MAX_OWNED+1):
                 # Peek EOF without consuming any rights from a new request.
                 if not peer.recv(1, socket.MSG_PEEK):
@@ -349,6 +417,7 @@ def serve(shared, parent, session, startup_mode=False):
     usage=resource.getrusage(resource.RUSAGE_SELF)
     print(json.dumps(dict(stopped=True,pairsClosed=len(held),retainedDigest=digest,epochs=epoch,
                           maxPairs=high_water,retains=retains,gets=gets,releases=releases,maxRssKiB=usage.ru_maxrss,
+                          **({"startupHelloTransfers":hello_transfers} if startup_mode else {}),
                           userSeconds=usage.ru_utime,systemSeconds=usage.ru_stime)),flush=True)
 
 
