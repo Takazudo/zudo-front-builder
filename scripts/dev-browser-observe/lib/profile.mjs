@@ -12,7 +12,7 @@ import {
   fnWarmPaths,
 } from "./fieldnotes.mjs";
 import { OP_WRITE_METHODS } from "./fixture.mjs";
-import { FIXED_PEER_PROTOCOL } from "./fixed-peer-roles.mjs";
+import { FIXED_ASTRO_CSS_PROTOCOL } from "./fixed-peer-roles.mjs";
 import { rendererMemoryProfileErrors } from "./renderer-memory-protocol.mjs";
 import { startupProfileErrors } from "./startup-acceptance.mjs";
 import { scheduleErrors } from "./schedule.mjs";
@@ -49,7 +49,7 @@ export const FIXED_ADAPTERS = {
 };
 
 // This contract qualifies the exact archived fn-managed-css correctness cell.
-function fixedPeerErrors(p) {
+function fixedAstroCssErrors(p) {
   const [scenario] = p.scenarios ?? [];
   const [op] = scenario?.ops ?? [];
   const errors = [];
@@ -106,12 +106,13 @@ function fixedPeerErrors(p) {
 /** fixed-distribution rules: the framework's declared helper, no zfb-only diagnostic/recovery families. */
 function fixedErrors(profile) {
   const errors = [];
-  if (profile.fixedRssSafety === FIXED_PEER_PROTOCOL) errors.push(...fixedPeerErrors(profile));
+  if (profile.fixedRssSafety === FIXED_ASTRO_CSS_PROTOCOL)
+    errors.push(...fixedAstroCssErrors(profile));
   else if (profile.fixedPeerBrowser)
     errors.push("$.fixedPeerBrowser requires linux-fixed-astro-css.v1");
   if (
     profile.fixedRssSafety &&
-    profile.fixedRssSafety !== FIXED_PEER_PROTOCOL &&
+    profile.fixedRssSafety !== FIXED_ASTRO_CSS_PROTOCOL &&
     (profile.framework !== "zfb" ||
       (profile.distribution?.launch ?? "direct") !== "direct" ||
       profile.fixture?.scale !== 100 ||

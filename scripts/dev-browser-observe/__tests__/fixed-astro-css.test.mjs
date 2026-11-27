@@ -213,7 +213,7 @@ test.each([
       ...deps({ fs, page, clock }),
       workDeadlineNs: 100000000000n,
       verifyBodyRevision: true,
-      fixedPeer: true,
+      fixedAstroCss: true,
       beforeAstroWrite: () => {},
       stageBudget: (max, start) => {
         assert.equal(typeof start, "bigint");

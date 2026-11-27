@@ -4,7 +4,7 @@ import { closeSync, fstatSync, openSync, readSync, realpathSync } from "node:fs"
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { samplePeerRoles, FIXED_PEER_PROTOCOL } from "./fixed-peer-roles.mjs";
+import { samplePeerRoles, FIXED_ASTRO_CSS_PROTOCOL } from "./fixed-peer-roles.mjs";
 import { sampleRendererMemory } from "./linux-rss-sample.mjs";
 
 function pin(path, digest) {
@@ -23,11 +23,11 @@ function pin(path, digest) {
   }
 }
 
-export function fixedPeerExecutables(facts) {
+export function fixedAstroExecutables(facts) {
   if (facts.installReceipt.node.realpath !== realpathSync(process.execPath))
     throw new Error("fixed peer Node executable does not match install receipt");
   return {
-    protocol: FIXED_PEER_PROTOCOL,
+    protocol: FIXED_ASTRO_CSS_PROTOCOL,
     root: pin(process.execPath, facts.installReceipt.node.sha256),
   };
 }

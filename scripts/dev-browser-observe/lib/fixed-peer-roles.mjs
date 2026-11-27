@@ -3,7 +3,7 @@ import { openSync, closeSync, readSync, readlinkSync, fstatSync, opendirSync } f
 import { join } from "node:path";
 import { linuxBirth, sameLinuxBirth } from "./linux-birth.mjs";
 
-export const FIXED_PEER_PROTOCOL = "linux-fixed-astro-css.v1";
+export const FIXED_ASTRO_CSS_PROTOCOL = "linux-fixed-astro-css.v1";
 
 // Each live member runs the same pinned Node image. Its actual argv, stable
 // birth and parent, and the serving role's loopback socket distinguish roles.

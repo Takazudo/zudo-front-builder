@@ -44,11 +44,11 @@ import {
   processIdentityChecks,
   resolveNpmCli,
 } from "./distribution.mjs";
-import { FIXED_PEER_PROTOCOL, verifyAstroPopulation } from "./fixed-peer-roles.mjs";
+import { FIXED_ASTRO_CSS_PROTOCOL, verifyAstroPopulation } from "./fixed-peer-roles.mjs";
 import { FN_SEL } from "./fieldnotes.mjs";
 import {
   fixedContextSample,
-  fixedPeerExecutables,
+  fixedAstroExecutables,
   fixedZfbExecutables,
   startFixedRssSafety,
 } from "./fixed-rss-safety.mjs";
@@ -330,7 +330,7 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
 
 async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
   const { profile, resolved } = loaded;
-  const fixedPeer = profile.fixedRssSafety === FIXED_PEER_PROTOCOL;
+  const fixedAstroCss = profile.fixedRssSafety === FIXED_ASTRO_CSS_PROTOCOL;
   const fixedAbort = profile.fixedRssSafety ? new AbortController() : null;
   if (fixedAbort)
     loaded.signal = loaded.signal
@@ -623,7 +623,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       return exitCode;
     }
 
-    if (fixedPeer) {
+    if (fixedAstroCss) {
       for (const name of [
         "NODE_OPTIONS",
         "NODE_PATH",
@@ -633,10 +633,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         "ASTRO_DEV_BACKGROUND",
       ])
         if (process.env[name] || profile.server.env?.[name])
-          throw new Error("fixed peer launch environment contains " + name);
+          throw new Error("fixed Astro launch environment contains " + name);
     }
-    const fixedExecutables = fixedPeer
-      ? fixedPeerExecutables(verdict.facts)
+    const fixedExecutables = fixedAstroCss
+      ? fixedAstroExecutables(verdict.facts)
       : fixedAbort
         ? fixedZfbExecutables(m.appDir, verdict.facts)
         : null;
@@ -664,12 +664,12 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         loaded.workDeadline - Number(now / 1_000_000n),
         maximum - Math.ceil(Number(now - startedNs) / 1e6),
       );
-      if (remaining <= 0) throw new Error("fixed peer work budget exhausted");
+      if (remaining <= 0) throw new Error("fixed Astro work budget exhausted");
       return Math.min(maximum, remaining);
     };
     const readyTimeoutMs = rendererMemory
       ? rendererMemory.clamp("server readiness", profile.server.readyTimeoutMs)
-      : fixedPeer
+      : fixedAstroCss
         ? peerBudget(profile.server.readyTimeoutMs)
         : profile.server.readyTimeoutMs;
     if (intentPath)
@@ -702,7 +702,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       fixedSafety = startFixedRssSafety({
         server,
         fixedExecutables,
-        ...(fixedPeer && {
+        ...(fixedAstroCss && {
           peer: {
             framework: profile.framework,
             rootPid: server.handle.native.pid,
@@ -763,9 +763,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     let ready;
     try {
       ready = await interruptible(server.ready, rendererMemory?.signal ?? loaded.signal);
-      if (fixedPeer && ready.baseUrl !== "http://127.0.0.1:" + launch.port)
-        throw new Error("fixed peer readiness URL mismatch");
-      if (fixedPeer) await interruptible(fixedSafety.verifyReady(ready.readyNs), loaded.signal);
+      if (fixedAstroCss && ready.baseUrl !== "http://127.0.0.1:" + launch.port)
+        throw new Error("fixed Astro readiness URL mismatch");
+      if (fixedAstroCss) await interruptible(fixedSafety.verifyReady(ready.readyNs), loaded.signal);
       else if (fixedSafety) await fixedSafety.verifyReady();
       browserTiming?.mark("server-readiness-observed");
     } catch (error) {
@@ -798,7 +798,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         ...(hooks.processExecutable ? { exeOf: hooks.processExecutable } : {}),
         ...(hooks.processAlive ? { alive: hooks.processAlive } : {}),
       };
-      if (fixedPeer) {
+      if (fixedAstroCss) {
         verifyAstroCurrent = (phase) => {
           const owned = (hooks.snapshotOwned ?? snapshotOwnedWithArgs)(server.handle);
           const roles = fixedSafety.verifyAstroCurrent(owned, [...server.handle.known.values()]);
@@ -914,12 +914,12 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     browserSignal?.throwIfAborted();
     const launchTimeoutMs = rendererMemory
       ? () => rendererMemory.clamp("browser startup", 30_000)
-      : fixedPeer
+      : fixedAstroCss
         ? () => peerBudget(30000)
         : undefined;
     const browserOptions = {
       ...profile.browser,
-      ...(fixedPeer
+      ...(fixedAstroCss
         ? {
             diagnosticExecutable: {
               path: profile.fixedPeerBrowser.executablePath,
@@ -966,15 +966,15 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     browserTiming?.mark("browser-initialization-return-observed");
     browserSignal?.throwIfAborted();
     if (
-      fixedPeer &&
+      fixedAstroCss &&
       browserHandle.identity.executableSha256 !== profile.fixedPeerBrowser.defaultExecutableSha256
     ) {
       receipt.browser = browserHandle.identity;
-      throw new Error("fixed peer library-default browser digest mismatch");
+      throw new Error("fixed Astro library-default browser digest mismatch");
     }
     const observer = browserHandle.observer;
     observer.baseUrl = ready.baseUrl;
-    if (fixedPeer) observer.peerSocketTracking = new Map();
+    if (fixedAstroCss) observer.peerSocketTracking = new Map();
     // Fixed distributions declare their own HMR sockets; zfb livereload needs none.
     if (fixed) observer.updateSockets = m.entry.updateSignal?.sockets ?? [];
     observer.onStray = (payload) =>
@@ -1025,7 +1025,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           signal: rendererMemory?.signal ?? loaded.signal,
           rendererMemory,
           safetySignal: fixedAbort?.signal,
-          ...(fixedPeer && {
+          ...(fixedAstroCss && {
             stageBudget: peerBudget,
             workDeadlineNs: BigInt(loaded.workDeadline) * 1_000_000n,
           }),
@@ -1049,7 +1049,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           },
           page: observer,
           fs: fixtureOps,
-          fixedPeer,
+          fixedAstroCss,
           beforeAstroWrite: verifyAstroCurrent,
           verifyBodyRevision:
             tiny?.probe === "B" || (!fixed && profile.fixture.kind === "field-notes"),
@@ -1089,7 +1089,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         ? EXIT.identityRejected
         : studyFailure || rendererMemory?.failure
           ? EXIT.controllerError
-          : batchExitOk(accounting, stopped) && (!fixedPeer || accounting.success === 1)
+          : batchExitOk(accounting, stopped) && (!fixedAstroCss || accounting.success === 1)
             ? EXIT.ok
             : EXIT.stopped;
       if (lateFailure) {
@@ -1148,7 +1148,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       terminalNow +
       Math.min(
         60000,
-        rendererMemory || fixedPeer
+        rendererMemory || fixedAstroCss
           ? loaded.supervisorDeadlineMs - Number(hrtimeNs() / 1_000_000n)
           : 60000,
       );
@@ -1245,7 +1245,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         stopReport = { ...stopReport, absent: false, unresolved };
       }
       if (logClose?.errors?.length) evidenceFailed = true;
-      if (fixedPeer) {
+      if (fixedAstroCss) {
         const valid = verifyAstroPopulation(server.handle.native, stopReport);
         safeAppend({ type: "astro-terminal-population", valid, resourceAbsent: stopReport.absent });
         if (!valid) evidenceFailed = true;

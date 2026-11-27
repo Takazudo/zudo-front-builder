@@ -405,10 +405,11 @@ export async function runBatch({ scenarios, deps }) {
           (check) =>
             check.path === bodyRevision.path &&
             check.ok &&
-            (!deps.fixedPeer || (check.docUUID && check.docUUID !== settle?.bodyRevision?.docUUID)),
+            (!deps.fixedAstroCss ||
+              (check.docUUID && check.docUUID !== settle?.bodyRevision?.docUUID)),
         ));
     const cssRoutes =
-      !deps.fixedPeer ||
+      !deps.fixedAstroCss ||
       (live.length === 6 &&
         live.every((row) => row.docUUID && row.ok) &&
         new Set(live.map((row) => row.docUUID)).size === 6 &&
@@ -601,7 +602,7 @@ export async function runBatch({ scenarios, deps }) {
         let preparedState = null;
         try {
           attempt = fs.prepareAttempt(op);
-          if (deps.fixedPeer) attempt.predicate = astroCssPredicate(attempt.token);
+          if (deps.fixedAstroCss) attempt.predicate = astroCssPredicate(attempt.token);
           if (
             (Array.isArray(attempt.writes) && attempt.writes.length === 0) ||
             (!attempt.writes && !attempt.write)
@@ -783,8 +784,8 @@ export async function runBatch({ scenarios, deps }) {
         }
         // arm already read this value before the first edit. Reuse it across consecutive
         // edits so a previous tokenized revision cannot become the cleanup baseline.
-        if ((verifyBodyRevision || deps.fixedPeer) && !bodyRevision) {
-          if (deps.fixedPeer) {
+        if ((verifyBodyRevision || deps.fixedAstroCss) && !bodyRevision) {
+          if (deps.fixedAstroCss) {
             if (
               !Array.isArray(armed.actual) ||
               armed.actual.length !== 3 ||
@@ -799,7 +800,7 @@ export async function runBatch({ scenarios, deps }) {
             (deps.requiredBodyBaseline && armed.actual !== deps.requiredBodyBaseline)
           )
             throw new Error("missing pre-edit rendered body baseline");
-          if (deps.fixedPeer) {
+          if (deps.fixedAstroCss) {
             const sockets = [...page.peerSocketTracking.values()].filter(
               (row) => row.firstFrameNs !== null,
             );
@@ -814,9 +815,9 @@ export async function runBatch({ scenarios, deps }) {
               throw new Error("peer update socket or original document unverified");
           }
           bodyRevision = {
-            ...(deps.fixedPeer && { allowSameDocument: true }),
+            ...(deps.fixedAstroCss && { allowSameDocument: true }),
             path: attempt.targetPath,
-            predicate: deps.fixedPeer
+            predicate: deps.fixedAstroCss
               ? astroCssPredicate("")
               : { kind: "text", selector: attempt.predicate.selector, equals: armed.actual },
           };
@@ -848,7 +849,7 @@ export async function runBatch({ scenarios, deps }) {
 
         signal?.throwIfAborted();
         deps.stageBudget?.(timeouts.attemptMs, attemptStart);
-        if (deps.fixedPeer) {
+        if (deps.fixedAstroCss) {
           deps.beforeAstroWrite("before-write");
           signal?.throwIfAborted();
           deps.stageBudget(timeouts.attemptMs, attemptStart);
@@ -955,7 +956,7 @@ export async function runBatch({ scenarios, deps }) {
               ...(resourceTrip ? [resourceTrip] : []),
             ]),
           );
-          if (deps.fixedPeer) {
+          if (deps.fixedAstroCss) {
             signal?.throwIfAborted();
             const attemptEnd = attemptStart + BigInt(timeouts.attemptMs) * 1_000_000n;
             const end = deps.workDeadlineNs < attemptEnd ? deps.workDeadlineNs : attemptEnd;
@@ -1012,7 +1013,7 @@ export async function runBatch({ scenarios, deps }) {
           },
           injectKill,
         };
-        if (deps.fixedPeer) {
+        if (deps.fixedAstroCss) {
           const write = attempt.write;
           const expected = sha256(write.bytes);
           const actual = fs.hashOf(write.path);
@@ -1051,7 +1052,7 @@ export async function runBatch({ scenarios, deps }) {
           rec.observerDisarmed = true;
           acc.lastArmedUnknownOperation = { ...where, token: attempt.token, writeCompleted: true };
         } else if (waited.kind === "notify") {
-          if (deps.fixedPeer) {
+          if (deps.fixedAstroCss) {
             const payload = waited.payload;
             if (
               !payload.docUUID ||
