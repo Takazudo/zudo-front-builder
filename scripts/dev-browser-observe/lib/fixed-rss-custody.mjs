@@ -76,6 +76,25 @@ export function requireStartupRelease(status, terminal, release) {
     throw new Error("startup custody requires accepted terminal and later release cycles");
 }
 
+// Install a positive private-PGID birth for cleanup before any fallible
+// evidence write. A failed registry append still leaves the known map intact.
+export function registerStartupBirth(handle, startupBirth) {
+  const existing = handle.known.get(startupBirth.pid);
+  if (
+    existing &&
+    (!sameLinuxBirth(existing, startupBirth) ||
+      existing.ppid !== startupBirth.ppid ||
+      existing.pgid !== startupBirth.pgid)
+  )
+    throw new Error("startup birth conflicts with known inventory");
+  if (!existing) {
+    if (handle.known.size >= 64) throw new Error("startup inventory cap");
+    const item = { ...startupBirth, source: "fixed-startup-scout" };
+    handle.known.set(item.pid, item);
+    handle.onNewOwned?.(item);
+  }
+}
+
 export function startFixedCustody({ append: record, abort, intent, startup = false }) {
   const append = (row) => {
     if (row.type === "fixed-custody-spawn" || row.type === "fixed-custody-ready")
@@ -105,6 +124,7 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
     stderr = "",
     outputBytes = 0;
   let stopReport, exit, fault, closePromise;
+  let targetHandle;
   let seed, startupBirth, acquiredNs, scoutReport, scoutTimer, confirmedStartup, releasedStartup;
   const fail = (error) => {
     if (fault) return;
@@ -204,6 +224,7 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
             throw issue("invalid startup acquisition time");
           acquiredNs = msg.acquiredNs;
           startupBirth = b;
+          registerStartupBirth(targetHandle, b);
           retained.set(b.pid, { birth: b, token: msg.token, descriptors: msg.descriptors });
           append({ type: "fixed-startup-live-custody", ...msg });
         } else if (
@@ -300,6 +321,7 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
     attachStartup(handle, fixed) {
       if (!startup || !handshake || seed || stopping || fault)
         throw issue("invalid startup attachment");
+      targetHandle = handle;
       seed = handle.native;
       if (
         !sameLinuxBirth(seed, linuxBirth(seed.pid)) ||
@@ -315,22 +337,7 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
     },
     begin(handle) {
       if (!handshake || stopping || fault) throw fault ?? issue("holder unavailable");
-      if (startupBirth) {
-        const existing = handle.known.get(startupBirth.pid);
-        if (
-          existing &&
-          (!sameLinuxBirth(existing, startupBirth) ||
-            existing.ppid !== startupBirth.ppid ||
-            existing.pgid !== startupBirth.pgid)
-        )
-          throw issue("startup birth conflicts with known inventory");
-        if (!existing) {
-          if (handle.known.size >= 64) throw issue("startup inventory cap");
-          const item = { ...startupBirth, source: "fixed-startup-scout" };
-          handle.known.set(item.pid, item);
-          handle.onNewOwned?.(item);
-        }
-      }
+      if (startupBirth) registerStartupBirth(handle, startupBirth);
       return {
         session,
         ...(startupBirth && !confirmedStartup && { startupPollPid: startupBirth.pid }),

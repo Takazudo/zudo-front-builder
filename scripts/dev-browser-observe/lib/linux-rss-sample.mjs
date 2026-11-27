@@ -91,6 +91,24 @@ export function timeStartupSelection(select, clock, deadline) {
   return { resultNs, error, selection: error ? null : selection };
 }
 
+// A fresh helper can answer only for its immutable request plus births it
+// actually bound. A concurrently proven startup birth belongs immediately to
+// teardown and to the next request, but has no metric in an older response.
+export function startupEpochCoverage(known, requested, bound, observed) {
+  const expected = new Set([...requested.map((row) => row.pid), ...bound.keys()]);
+  const deferred = [];
+  for (const row of known.values()) {
+    if (expected.has(row.pid)) continue;
+    if (row.source !== "fixed-startup-scout" || deferred.length)
+      return { complete: false, deferred };
+    deferred.push(compactBirth(row));
+  }
+  return {
+    complete: expected.size === observed.size && [...expected].every((pid) => observed.has(pid)),
+    deferred,
+  };
+}
+
 function compactBirth(p) {
   return {
     pid: p.pid,
@@ -340,6 +358,7 @@ export function sampleRendererMemory(
   let executable = null;
   let summary = null;
   let startupSelection = null;
+  let startupCoverage = null;
   let fault = null;
   let stderr = "";
   let finished = false;
@@ -354,6 +373,7 @@ export function sampleRendererMemory(
     verifiedDiscoveries: discoveries,
     ...(custody && { custodyReleases }),
     ...(startupSelection && { startupSelection }),
+    ...(startupCoverage && { startupEpochCoverage: startupCoverage }),
     journalFailures,
     processes,
     summedRssKiB,
@@ -367,6 +387,12 @@ export function sampleRendererMemory(
   };
   return new Promise((resolve, reject) => {
     let child, timer, closeTimer;
+    const coverageComplete = () => {
+      if (fixedExecutables?.protocol !== "linux-fixed-zfb.v4")
+        return observed.size === handle.known.size;
+      startupCoverage = startupEpochCoverage(handle.known, request.known, bound, observed);
+      return startupCoverage.complete;
+    };
     const finish = () => {
       if (finished) return;
       finished = true;
@@ -548,7 +574,7 @@ export function sampleRendererMemory(
         pendingObservation = null;
       } else if (stage === "finalRootBegin") {
         requireValue(
-          !summary && stamps.cleanupBeginNs === null && observed.size === handle.known.size,
+          !summary && stamps.cleanupBeginNs === null && coverageComplete(),
           "unexpected final root timing",
         );
       } else if (stage === "finalRoot") {
@@ -883,7 +909,7 @@ export function sampleRendererMemory(
             uint(row.helperMaxRssKiB) &&
             uint(row.readCalls) &&
             uint(row.procInputBytes) &&
-            observed.size === handle.known.size &&
+            coverageComplete() &&
             processes.some((p) => p.pid === root.pid && p.disposition === "live"),
           "invalid or incomplete sampler completion",
         );

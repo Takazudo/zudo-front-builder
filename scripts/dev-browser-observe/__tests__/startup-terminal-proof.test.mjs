@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { timeStartupSelection } from "../lib/linux-rss-sample.mjs";
+import { startupEpochCoverage, timeStartupSelection } from "../lib/linux-rss-sample.mjs";
 import {
   requireStartupRelease,
+  registerStartupBirth,
   startupReleaseObservation,
   startupTerminalObservation,
 } from "../lib/fixed-rss-custody.mjs";
@@ -135,4 +136,56 @@ test("startup validation completes within the core even when selecting a receipt
       selection: { terminal: true },
     },
   );
+});
+
+test("a discovered private group remains known for immediate abort before another epoch", () => {
+  const b = {
+    pid: 77,
+    ppid: 75,
+    pgid: 77,
+    startTicks: "140",
+    bootId: "boot",
+    birthVersion: "linux-proc-v1",
+  };
+  const handle = {
+    known: new Map(),
+    onNewOwned: () => {
+      throw Error("journal failure");
+    },
+  };
+  assert.throws(() => registerStartupBirth(handle, b), /journal failure/);
+  assert.equal(handle.known.get(77).pgid, 77);
+  registerStartupBirth(handle, b);
+  assert.throws(() => registerStartupBirth(handle, { ...b, startTicks: "141" }), /conflicts/);
+});
+
+test("a pre-seed epoch cannot claim or lose a concurrent cleanup-only startup birth", () => {
+  const root = { pid: 10, pgid: 10 },
+    worker = {
+      pid: 31,
+      pgid: 31,
+      ppid: 29,
+      source: "fixed-startup-scout",
+      bootId: "boot",
+      startTicks: "40",
+      birthVersion: "linux-proc-v1",
+    };
+  const known = new Map([
+      [10, root],
+      [31, worker],
+    ]),
+    bound = new Map([[10, root]]);
+  const old = startupEpochCoverage(known, [root], bound, new Set([10]));
+  assert.equal(old.complete, true);
+  assert.equal(old.deferred[0].pid, 31);
+  assert.equal(startupEpochCoverage(known, [root, worker], bound, new Set([10])).complete, false);
+  bound.set(31, worker);
+  assert.equal(startupEpochCoverage(known, [root], bound, new Set([10])).complete, false);
+  assert.deepEqual(startupEpochCoverage(known, [root], bound, new Set([10, 31])), {
+    complete: true,
+    deferred: [],
+  });
+  bound.delete(31);
+  known.set(50, { pid: 50, source: "unknown" });
+  assert.equal(startupEpochCoverage(known, [root], bound, new Set([10])).complete, false);
 });
