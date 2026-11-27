@@ -3,7 +3,9 @@ import { samplerClosureAudit } from "./linux-rss-sample.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { admissionPath, reserveSession } from "./admission.mjs";
-import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { open } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { OBSERVER_PATH, closeOwnedBrowser, launchOwnedBrowser } from "./browser.mjs";
 import { BrowserTiming, timeBrowserAsync, timeBrowserSync } from "./browser-timing.mjs";
@@ -767,8 +769,29 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     let sourceImage;
     if (sourceTiming) {
       const path = realpathSync(buildReceipt.exe.path);
-      const file = statSync(path, { bigint: true });
-      sourceImage = { path, device: String(file.dev), inode: String(file.ino) };
+      const fd = await open(path, "r");
+      try {
+        const file = await fd.stat({ bigint: true });
+        const digest = createHash("sha256");
+        for await (const chunk of fd.createReadStream({ autoClose: false })) {
+          loaded.signal?.throwIfAborted();
+          digest.update(chunk);
+        }
+        const after = await fd.stat({ bigint: true });
+        const sha256 = digest.digest("hex");
+        if (
+          file.ctimeNs !== after.ctimeNs ||
+          file.size !== after.size ||
+          sha256 !== (hooks.sourceTimingExpectedDigest ?? CSEC_EXE_SHA256)
+        )
+          throw Error("source timing opened executable digest or inode contents changed");
+        receipt.sourceTimingImageSha256 = sha256;
+        sourceImage = { path, device: String(file.dev), inode: String(file.ino) };
+      } finally {
+        await fd.close();
+      }
+      loaded.signal?.throwIfAborted();
+      peerBudget(profile.server.readyTimeoutMs);
       receipt.sourceTimingImage = sourceImage;
     }
     spawning = true;
@@ -802,10 +825,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       // Let the already-owned helper settle before signalling the server.
       // Finalization consumes the original stop promise even when browser
       // startup or a pending filesystem read outlasts the failed observation.
-      void Promise.resolve()
-        .then(() => fixedSafety.stop())
-        .then(() => stopServer(server.handle))
-        .catch(() => {});
+      const stopping = fixedSafety
+        ? fixedSafety.stop()
+        : Promise.resolve().then(() => fixedSafety.stop());
+      void stopping.then(() => stopServer(server.handle)).catch(() => {});
     };
     if (fixedExecutables) {
       fixedSafety = startFixedRssSafety({
@@ -830,6 +853,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     if (sourceTiming) {
       fixedSafety = startSourceTimingSafety({
         image: sourceImage,
+        workDeadlineNs: BigInt(loaded.workDeadline) * 1000000n,
         server,
         executable: buildReceipt.exe.path,
         limits: profile.limits,
@@ -1311,7 +1335,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           resource: sourceTiming ? "source-timing-sampler" : "fixed-rss-sampler",
           error: String(error),
           ...(sourceTiming &&
-            fixedSafety.unresolvedHelper && { helper: fixedSafety.unresolvedHelper }),
+            fixedSafety.unresolvedHelper && { pendingAtTimeout: fixedSafety.unresolvedHelper }),
         });
       }
     }

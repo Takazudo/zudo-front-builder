@@ -68,6 +68,11 @@ export function sourceTimingProfileValid(p) {
   );
 }
 
+function stamp(v) {
+  assert(typeof v === "string" && /^\d+$/.test(v), "invalid monotonic timestamp");
+  return BigInt(v);
+}
+
 function verifySample(result, handle, image, start) {
   const root = handle.native;
   const live = result.processes?.find((p) => p.pid === root.pid);
@@ -85,10 +90,10 @@ function verifySample(result, handle, image, start) {
       t.stdinCloseNs &&
       t.stdoutCloseNs &&
       t.stderrCloseNs &&
-      BigInt(t.entryNs) >= start &&
-      BigInt(t.resultNs) >= BigInt(t.entryNs) &&
-      BigInt(t.resultNs) <= BigInt(t.deadlineNs) &&
-      BigInt(t.deadlineNs) === BigInt(t.entryNs) + 750000000n &&
+      stamp(t.entryNs) >= start &&
+      stamp(t.resultNs) >= stamp(t.entryNs) &&
+      stamp(t.resultNs) <= stamp(t.deadlineNs) &&
+      stamp(t.deadlineNs) === stamp(t.entryNs) + 750000000n &&
       rows.length === handle.known.size &&
       new Set(rows.map((p) => p.pid)).size === rows.length &&
       rows.every(
@@ -102,10 +107,6 @@ function verifySample(result, handle, image, start) {
       !result.journalFailures?.length,
     "incomplete source timing RSS ownership/closure",
   );
-  const stamp = (v) => {
-    assert(typeof v === "string" && /^\d+$/.test(v), "invalid monotonic timestamp");
-    return BigInt(v);
-  };
   const h = result.helper,
     cl = result.timing.clock;
   assert(
@@ -138,8 +139,16 @@ function verifySample(result, handle, image, start) {
       ),
     "source timing helper exit or stream closure outside accepted interval",
   );
+  assert(Object.keys(result.observedRssKiB).every((k) => rows.some((p) => String(p.pid) === k)));
   let sum = 0;
   for (const p of rows) {
+    const sources = Object.entries(result.observedRssKiB[p.pid] ?? {});
+    assert(
+      sources.every(
+        ([k, v]) => ["VmRSS", "rollup.Rss"].includes(k) && Number.isSafeInteger(v) && v >= 0,
+      ),
+    );
+    assert.equal(p.rssKiB, sources.length ? Math.max(...sources.map(([, v]) => v)) : null);
     if (p.disposition === "live") {
       const vm = p.statusKiB?.VmRSS,
         rss = p.smapsRollupKiB?.Rss;
@@ -156,7 +165,10 @@ function verifySample(result, handle, image, start) {
     } else
       assert(
         ["proved-departure", "retained-terminal-proof"].includes(p.disposition) &&
-          p.terminalProof?.pidfdFlags === 0 &&
+          sameLinuxBirth(p.terminalProof?.birth, p) &&
+          p.terminalProof.birth.ppid === p.ppid &&
+          stamp(p.terminalProof.observedNs) <= end &&
+          p.terminalProof.pidfdFlags === 0 &&
           [1, 16, 17].includes(p.terminalProof.pollMask),
         "unproved source timing departure",
       );
@@ -183,6 +195,7 @@ export function startSourceTimingSafety({
   abort,
   sample = sampleRendererMemory,
   clock = process.hrtime.bigint,
+  workDeadlineNs,
 }) {
   const interval = BigInt(limits.sampleEveryMs) * 1000000n;
   const origin = clock();
@@ -267,8 +280,9 @@ export function startSourceTimingSafety({
             result,
             ...(failure && { afterFailure: true }),
           });
+          const acceptedNs = clock();
           assert(
-            clock() <= BigInt(t.deadlineNs),
+            acceptedNs <= stamp(t.deadlineNs),
             "source timing acceptance exceeded core deadline",
           );
           if (!failure) {
@@ -277,7 +291,7 @@ export function startSourceTimingSafety({
               epoch,
               startNs: String(start),
               deadlineNs: String(scheduled + interval),
-              acceptedNs: String(clock()),
+              acceptedNs: String(acceptedNs),
               summedRssKiB: sum,
             };
           }
@@ -306,15 +320,20 @@ export function startSourceTimingSafety({
     return pending;
   }
   const first = dispatch();
-  function current(stamp = clock()) {
+  function current() {
+    const alive = !failure && !stopped && !pending && server.isAlive().alive;
+    const stamp = clock();
     if (
       !failure &&
-      (stopped || pending || !server.isAlive().alive || !last || stamp >= BigInt(last.deadlineNs))
+      (!alive ||
+        !last ||
+        stamp >= BigInt(last.deadlineNs) ||
+        (workDeadlineNs !== undefined && stamp >= workDeadlineNs))
     ) {
       refuse(Error("source timing observation pending, stale, missing or stopped"));
     }
     if (failure) throw Error(failure.error);
-    return last;
+    return { ...last, decisionNs: String(stamp) };
   }
   return {
     async ready() {
@@ -386,6 +405,7 @@ export function sourceTimingEvidenceValid({ records, receipt, summary, completio
     assert(
       native.ppid === completion.controllerPid &&
         image.path === receipt.buildReceipt.exe.path &&
+        receipt.sourceTimingImageSha256 === CSEC_EXE_SHA256 &&
         receipt.buildReceipt.exe.sha256 === CSEC_EXE_SHA256 &&
         receipt.buildReceipt.source.sha === receipt.profile.productSha,
     );
@@ -397,20 +417,20 @@ export function sourceTimingEvidenceValid({ records, receipt, summary, completio
         samples.length === report.accepted &&
         samples.length === report.dispatched,
     );
-    const origin = BigInt(samples[0].scheduledNs),
+    const origin = stamp(samples[0].scheduledNs),
       interval = 1000000000n;
     let peak = 0,
       previousEnd = 0n;
     for (const [i, r] of samples.entries()) {
       const raw = r.result,
-        scheduled = BigInt(r.scheduledNs),
-        began = BigInt(r.startNs);
+        scheduled = stamp(r.scheduledNs),
+        began = stamp(r.startNs);
       assert(
         r.epoch === i + 1 &&
           !r.afterFailure &&
           scheduled === origin + BigInt(i) * interval &&
           began >= scheduled &&
-          began - scheduled === BigInt(r.latenessNs) &&
+          began - scheduled === stamp(r.latenessNs) &&
           began - scheduled < interval &&
           began >= previousEnd,
       );
@@ -420,7 +440,7 @@ export function sourceTimingEvidenceValid({ records, receipt, summary, completio
       }
       const sum = verifySample(raw, { native, known }, image, began);
       assert(sum <= receipt.profile.limits.rssCeilingKiB);
-      previousEnd = BigInt(raw.timing.parent.resultNs);
+      previousEnd = stamp(raw.timing.parent.resultNs);
       const birth = raw.helper.birth,
         key = birth.bootId + "/" + birth.pid + "/" + birth.startTicks;
       assert(!seen.has(key));
@@ -440,16 +460,16 @@ export function sourceTimingEvidenceValid({ records, receipt, summary, completio
       );
       const epoch = a.sourceTimingWriteEpoch,
         r = samples[epoch - 1],
-        t = BigInt(a.t0Ns),
-        ack = BigInt(a.sourceTimingAcceptedNs);
+        t = stamp(a.t0Ns),
+        ack = stamp(a.sourceTimingAcceptedNs);
       assert(
         r &&
           r.seq < a.seq &&
-          BigInt(r.result.timing.parent.resultNs) <= ack &&
-          ack <= BigInt(r.result.timing.parent.deadlineNs) &&
+          stamp(r.result.timing.parent.resultNs) <= ack &&
+          ack <= stamp(r.result.timing.parent.deadlineNs) &&
           ack <= t &&
-          t < BigInt(r.scheduledNs) + interval &&
-          (!samples[epoch] || t < BigInt(samples[epoch].startNs)),
+          t < stamp(r.scheduledNs) + interval &&
+          (!samples[epoch] || t < stamp(samples[epoch].startNs)),
       );
     }
     return true;

@@ -98,6 +98,9 @@ function setup() {
   });
   return {
     monitor,
+    tick: (elapsed) => {
+      ns += elapsed;
+    },
     operations,
     rows,
     aborts,
@@ -170,5 +173,17 @@ test("source timing refuses elapsed nominal opportunity independently of partial
   await x.advance(2000);
   assert.match(x.aborts[0].message, /missed a dispatch/);
   assert.equal(x.operations.length, 1);
+  await x.monitor.stop();
+});
+
+test("liveness work crossing the cadence refuses the write stamp", async () => {
+  const x = setup();
+  x.resolve();
+  await x.monitor.ready();
+  x.server.isAlive = () => {
+    x.tick(1000000000n);
+    return { alive: true };
+  };
+  assert.throws(() => x.monitor.current(), /stale/);
   await x.monitor.stop();
 });

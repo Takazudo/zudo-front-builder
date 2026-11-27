@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import {
   cpSync,
@@ -226,6 +227,9 @@ test.each(["complete", "partial-startup", "unclosed", "armed-overlap", "prewrite
             admissionPath: join(dir, "active.json"),
             startDevServer: () => server,
             sourceTimingSample: sample,
+            sourceTimingExpectedDigest: createHash("sha256")
+              .update("controlled nonexecutable")
+              .digest("hex"),
             launchOwnedBrowser: async (_, { signal }) => {
               browserStarts++;
               if (pendingCase)
@@ -283,8 +287,16 @@ test.each(["complete", "partial-startup", "unclosed", "armed-overlap", "prewrite
               controllerPid: root.ppid,
             }),
           );
+          // The controlled launcher uses a nonexecutable fixture, so the formal
+          // reducer must reject its real digest. Supply a synthetic qualified
+          // receipt solely for the following workload-free reducer controls.
+          const controlledReceipt = join(at, "receipt.json");
+          const parsedReceipt = JSON.parse(readFileSync(controlledReceipt));
           const observe = () =>
             aggregate({ sessions: [{ label: "controlled", variant: "A", dir: at }] }).report;
+          assert.equal(observe().complete, false);
+          parsedReceipt.sourceTimingImageSha256 = CSEC_EXE_SHA256;
+          writeFileSync(controlledReceipt, JSON.stringify(parsedReceipt));
           assert.equal(observe().complete, true, JSON.stringify(observe().sessions[0]));
           const legacy = join(p.outDir, "legacy");
           cpSync(at, legacy, { recursive: true });

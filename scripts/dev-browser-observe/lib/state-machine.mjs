@@ -288,9 +288,11 @@ export async function runBatch({ scenarios, deps }) {
         step: "apply",
         blocks,
       });
-    const restoreNs = clock.now();
+    const legacyRestoreNs = deps.sourceTimingSafety ? null : clock.now();
     const mark = page.mark?.() ?? null;
-    deps.sourceTimingSafety?.current();
+    const restoreNs = deps.sourceTimingSafety
+      ? BigInt(deps.sourceTimingSafety.current().decisionNs)
+      : legacyRestoreNs;
     const restore = fs.restore(snapshot);
     let peerRestoration;
     if (peerWrite) {
@@ -914,11 +916,10 @@ export async function runBatch({ scenarios, deps }) {
             t0 = fs.performWrite(attempt.write, () => {
               if (deps.sourceTimingSafety) {
                 try {
-                  const stamp = clock.now();
-                  const accepted = deps.sourceTimingSafety.current(stamp);
+                  const accepted = deps.sourceTimingSafety.current();
                   recBase.sourceTimingWriteEpoch = accepted.epoch;
                   recBase.sourceTimingAcceptedNs = accepted.acceptedNs;
-                  return stamp;
+                  return BigInt(accepted.decisionNs);
                 } catch (error) {
                   error.beforeSourceTimingWrite = true;
                   throw error;

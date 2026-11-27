@@ -487,6 +487,8 @@ export function readSession({
     blocks,
     ...(!complete &&
       (receipt?.profile?.sourceTimingSafety ||
+        receipt?.sourceTimingSafety ||
+        summary?.sourceTimingSafety ||
         records.some((r) => r.sourceTimingSafety || r.type === "source-timing-rss-sample")) && {
         timingExcluded: true,
       }),
