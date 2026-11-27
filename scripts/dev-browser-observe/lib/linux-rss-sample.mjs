@@ -1047,12 +1047,6 @@ export function sampleRendererMemory(
         kill();
       } else stderr += chunk.toString("utf8");
     });
-    for (const stream of [child.stdin, child.stdout, child.stderr]) {
-      stream.on("error", (error) => {
-        fail("pipe", String(error.message));
-        kill();
-      });
-    }
     child.once("error", (error) => {
       fail("spawn", String(error.message));
       kill();
@@ -1090,6 +1084,12 @@ export function sampleRendererMemory(
       pipeNames.push(name);
       extraPipes.push(pipe);
       markEvent(pipe, "close", name);
+    }
+    for (const stream of [child.stdin, child.stdout, child.stderr, ...extraPipes]) {
+      stream.on("error", (error) => {
+        fail("pipe", String(error.message));
+        kill();
+      });
     }
     markEvent(child, "spawn", "spawnEventNs");
     markEvent(child.stdin, "finish", "requestFinishedNs");

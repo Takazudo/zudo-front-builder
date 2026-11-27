@@ -238,3 +238,23 @@ test("failed signal delivery cannot substitute for exit or pipe closure", async 
   assert.equal(d.helper.pipesClosed, false);
   assert.equal(sampler.samplerClosureAudit(d.helper).complete, false);
 });
+
+test("an owned auxiliary pipe error cancels once and keeps its closure obligation", async () => {
+  const f = fixture(false, "owned");
+  f.at(1000000);
+  assert.doesNotThrow(() => f.fd3.emit("error", Error("owned fd3 EPIPE")));
+  f.fd3.emit("error", Error("another fd3 error"));
+  f.at(2000000);
+  f.events();
+  f.at(201000000);
+  f.timer();
+  f.timer();
+  const { details: d } = await f.result;
+  assert.equal(d.stage, "pipe");
+  assert.equal(d.error, "owned fd3 EPIPE");
+  assert.equal(f.child.kill.mock.calls.length, 1);
+  assert.equal(d.helper.pipesClosed, false);
+  f.at(202000000);
+  f.fd3.emit("close");
+  assert.equal(sampler.samplerClosureAudit(d.helper).complete, true);
+});
