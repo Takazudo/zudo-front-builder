@@ -106,6 +106,7 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
   };
   const session = randomBytes(16).toString("hex");
   const python = interpreter();
+  const readinessDeadline = process.hrtime.bigint() + 750_000_000n;
   const child = spawn(
     python,
     ["-I", "-B", path, String(process.pid), ...(startup ? ["--startup"] : [])],
@@ -117,6 +118,7 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
   const closed = Promise.withResolvers();
   const retained = new Map();
   const birth = child.pid && linuxBirth(child.pid);
+  let spawnRecorded = false;
   let stopping = false,
     handshake = false,
     epoch = 0,
@@ -138,6 +140,9 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
     }
   };
   const issue = (reason) => new Error(`fixed descriptor custody: ${reason}`);
+  const checkReadinessTime = () => {
+    if (process.hrtime.bigint() >= readinessDeadline) throw issue("readiness timeout");
+  };
   // Install all callbacks before sending the first byte. The readiness promise
   // is consumed by the controller even when spawning fails synchronously.
   child.on("error", fail);
@@ -156,6 +161,9 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
         const msg = JSON.parse(pending.slice(0, end));
         pending = pending.slice(end + 1);
         if (!handshake && msg.ready === true && msg.pid === birth?.pid && msg.session === session) {
+          if (fault) return;
+          if (!spawnRecorded) throw issue("holder replied before spawn ownership was recorded");
+          checkReadinessTime();
           if (msg.timeNamespace !== readlinkSync("/proc/self/ns/time"))
             throw issue("holder time namespace mismatch");
           const live = linuxBirth(child.pid);
@@ -166,8 +174,10 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
             readlinkSync(`/proc/${child.pid}/exe`) !== python
           )
             throw issue("unverified holder birth or image");
-          handshake = true;
+          checkReadinessTime();
           append({ type: "fixed-custody-ready", birth, session });
+          checkReadinessTime();
+          handshake = true;
           ready.resolve();
         } else if (
           startup &&
@@ -303,14 +313,29 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
     closed.resolve({ code, signal });
     if (!stopping) fail(issue("holder closed unexpectedly"));
   });
-  const timer = setTimeout(() => fail(issue("readiness timeout")), 750);
+  let timer;
+  const watchReadiness = () => {
+    const left = readinessDeadline - process.hrtime.bigint();
+    if (left <= 0n) fail(issue("readiness timeout"));
+    else timer = setTimeout(watchReadiness, Math.ceil(Number(left) / 1e6));
+  };
+  watchReadiness();
   ready.promise.then(
     () => clearTimeout(timer),
     () => clearTimeout(timer),
   );
+  // The greeting lets the helper initialize while the controller persists its
+  // birth. No startup seed or descriptor exchange is permitted before ready.
+  try {
+    checkReadinessTime();
+    child.stdin.write(session + "\n");
+  } catch (error) {
+    fail(error);
+  }
   try {
     append({ type: "fixed-custody-spawn", session, birth, pid: child.pid ?? null });
-    child.stdin.write(session + "\n");
+    spawnRecorded = true;
+    checkReadinessTime();
   } catch (error) {
     fail(error);
   }
