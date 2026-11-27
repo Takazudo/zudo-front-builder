@@ -6,6 +6,23 @@ import { sameLinuxBirth } from "./linux-birth.mjs";
 export const SOURCE_TIMING_PROTOCOL = "linux-source-csec-body.v1";
 export const CSEC_EXE_SHA256 = "a7b39da35a93ea4f325e63bbd3d33163d583ac851d1a9c5e9be2ec5608afd9a5";
 
+// Bounded pre-decision alignment (owner decision on #4870/#4878). A decision
+// that finds a sample in flight, or a stale sample with the next tick due,
+// waits for that ordinary sample to settle and decides on it. It never
+// dispatches a sample and never applies a result to an earlier instant.
+// coreMs/closureMs are the helper budgets in linux-rss-sample.mjs.
+// tickSkewMs is exactly 400 ms by owner decision on #4878. It covers the late
+// ticks recorded on WSL: 270.8 ms (aa100 s1-A epoch 6), 231.6 ms (#4862
+// rapid-recovery) and 81 ms (#4870 R3). It stays below the sampler's own 1 s
+// missed-dispatch limit.
+// freshMarginMs: a sample counts as fresh only with this much coverage left, because
+// the write site runs synchronous work between the decision and its T0 stamp
+// (markAttempt, instability check, stageBudget, performWrite's stat). Measured on
+// WSL over 20,000 iterations each: idle p99.9 0.12 ms / max 0.50 ms; with 24 busy
+// loops on 12 cores, p99.9 0.19 ms / max 5.5 ms (preemption). 25 ms is about 4.5x
+// the loaded maximum. With less left, the decision takes the tick path instead.
+export const DECISION_SETTLE = { coreMs: 750, closureMs: 200, tickSkewMs: 400, freshMarginMs: 25 };
+
 export function sourceTimingProfileValid(p) {
   return (
     p.sourceTimingSafety === SOURCE_TIMING_PROTOCOL &&
@@ -206,7 +223,14 @@ export function startSourceTimingSafety({
     failure = null,
     secondary = null,
     unresolvedHelper = null,
-    pendingHelper = null;
+    pendingHelper = null,
+    pendingStartNs = null,
+    pendingEpoch = null;
+  const dispatchWaiters = new Set();
+  const wake = () => {
+    for (const w of dispatchWaiters) w();
+    dispatchWaiters.clear();
+  };
   let dispatched = 0,
     accepted = 0,
     last = null,
@@ -234,6 +258,7 @@ export function startSourceTimingSafety({
     }
     failure = fault;
     clearTimeout(timer);
+    wake();
     abort(error);
     try {
       append({ type: "source-timing-rss-failure", failure: fault });
@@ -304,7 +329,11 @@ export function startSourceTimingSafety({
       .finally(() => {
         pendingHelper = null;
         pending = null;
+        pendingStartNs = null;
+        pendingEpoch = null;
       });
+    pendingStartNs = start;
+    pendingEpoch = epoch;
     try {
       owned.resolve(
         sample(server, executable, {
@@ -317,7 +346,104 @@ export function startSourceTimingSafety({
       owned.reject(error);
     }
     timer = setTimeout(dispatch, Math.max(1, Math.ceil(Number(due - clock()) / 1e6)));
+    wake();
     return pending;
+  }
+  // Resolve at untilNs (injected clock), or earlier on wake or abort.
+  const delay = (untilNs, register, signal) =>
+    new Promise((resolve) => {
+      const left = untilNs - clock();
+      const t = setTimeout(done, Math.max(0, Math.ceil(Number(left) / 1e6)));
+      function done() {
+        clearTimeout(t);
+        if (register) dispatchWaiters.delete(done);
+        signal?.removeEventListener("abort", done);
+        resolve();
+      }
+      if (register) dispatchWaiters.add(done);
+      signal?.addEventListener("abort", done, { once: true });
+    });
+  async function awaitDecision({ site = null, capNs = null, signal = null } = {}) {
+    const enteredNs = clock();
+    const meta = {
+      site,
+      enteredNs: String(enteredNs),
+      pendingAtDecision: Boolean(pending),
+      // A pending sample almost always means the previous one is already stale:
+      // its deadline is the next grid slot.
+      staleAtDecision: !last || enteredNs >= BigInt(last.deadlineNs),
+      fromEpoch: last?.epoch ?? null,
+      settledEpoch: last?.epoch ?? null,
+      waitedNs: "0",
+      outcome: null,
+      boundNs: null,
+    };
+    const caps = [capNs, workDeadlineNs].filter((x) => x !== null && x !== undefined);
+    const cap = caps.length ? caps.reduce((a, b) => (a < b ? a : b)) : null;
+    const limit = (ns) => (cap !== null && cap < ns ? cap : ns);
+    const deny = (reason) => {
+      meta.outcome = reason;
+      meta.waitedNs = String(clock() - enteredNs);
+      refuse(Object.assign(Error("source timing decision refused: " + reason), { decision: meta }));
+      throw Object.assign(Error(failure.error), { decision: meta });
+    };
+    if (failure) throw Object.assign(Error(failure.error), { decision: meta });
+    if (stopped) deny("stopped");
+    const marginNs = BigInt(DECISION_SETTLE.freshMarginMs) * 1000000n;
+    if (!pending && last && enteredNs + marginNs < BigInt(last.deadlineNs)) {
+      meta.outcome = "fresh";
+      return meta;
+    }
+    meta.withinFreshMargin = !pending && Boolean(last) && enteredNs < BigInt(last.deadlineNs);
+    if (!pending) {
+      // Stale with nothing in flight: only the already scheduled tick may serve.
+      const tickBy = limit(due + BigInt(DECISION_SETTLE.tickSkewMs) * 1000000n);
+      meta.boundNs = String(tickBy);
+      while (!pending && !failure && !stopped && clock() < tickBy) {
+        signal?.throwIfAborted();
+        await delay(tickBy, true, signal);
+      }
+      if (failure) throw Object.assign(Error(failure.error), { decision: meta });
+      if (stopped) deny("stopped");
+      if (!pending) deny(cap !== null && tickBy === cap ? "deadline-before-tick" : "tick-late");
+      // A blocked loop runs the late dispatch first; its own start decides.
+      if (pendingStartNs > tickBy)
+        deny(cap !== null && tickBy === cap ? "deadline-before-tick" : "tick-late");
+      meta.tickStartNs = String(pendingStartNs);
+    }
+    const expected = pendingEpoch;
+    const settleBy = limit(
+      pendingStartNs + BigInt(DECISION_SETTLE.coreMs + DECISION_SETTLE.closureMs) * 1000000n,
+    );
+    meta.boundNs = String(settleBy);
+    const inFlight = pending;
+    let settled = false;
+    inFlight.then(() => {
+      settled = true;
+    });
+    while (!settled && !failure && clock() < settleBy) {
+      signal?.throwIfAborted();
+      await Promise.race([inFlight, delay(settleBy, false, signal)]);
+    }
+    if (failure) throw Object.assign(Error(failure.error), { decision: meta });
+    if (!settled)
+      deny(cap !== null && settleBy === cap ? "deadline-before-settle" : "never-settles");
+    if (stopped) deny("stopped");
+    const now = clock();
+    signal?.throwIfAborted();
+    if (!last || last.epoch !== expected || now + marginNs >= BigInt(last.deadlineNs) || pending)
+      deny("stale-after-settle");
+    if (!server.isAlive().alive) deny("server-not-alive");
+    meta.outcome = "settled";
+    meta.settledEpoch = last.epoch;
+    meta.waitedNs = String(now - enteredNs);
+    return meta;
+  }
+  // Wait if needed, then take the synchronous decision on the settled sample.
+  async function decide(options = {}) {
+    const meta = await awaitDecision(options);
+    const accepted = current();
+    return { ...accepted, decision: { ...meta, decisionNs: accepted.decisionNs } };
   }
   const first = dispatch();
   function current() {
@@ -341,6 +467,8 @@ export function startSourceTimingSafety({
       if (failure) throw Error(failure.error);
     },
     current,
+    awaitDecision,
+    decide,
     latest() {
       if (failure) throw Error(failure.error);
       return last;
@@ -353,6 +481,7 @@ export function startSourceTimingSafety({
         refuse(Error("source timing sampler missed a dispatch before stop"));
       stopped = true;
       clearTimeout(timer);
+      wake();
       await pending;
       return failure;
     },

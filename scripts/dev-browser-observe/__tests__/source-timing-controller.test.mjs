@@ -145,8 +145,10 @@ test.each([
           const ns = process.hrtime.bigint(),
             t = String(ns);
           const helper = {
-            pid: 99,
-            birth: { ...root, pid: 99 },
+            // Each real sample spawns its own helper, and the evidence validator
+            // requires distinct helper births; a session can span several ticks.
+            pid: 1000 + calls,
+            birth: { ...root, pid: 1000 + calls, startTicks: String(100 + calls) },
             spawnHrtimeNs: t,
             closed: true,
             pipesClosed: mode !== "unclosed",
@@ -379,6 +381,67 @@ test.each([
             writeRows(at, forged);
             assert.equal(observe().sessions[0].timingExcluded, true);
           }
+          // Two accepted samples must come from distinct helper births (review-2).
+          // Forge one extra accepted sample one interval later; with a fresh birth
+          // the evidence stays valid, with a duplicated birth it must be excluded.
+          const summaryPath = join(at, "summary.json"),
+            summaryBytes = readFileSync(summaryPath);
+          const withExtraSample = (duplicate) => {
+            const forged = structuredClone(rows);
+            const samples = forged.filter((r) => r.type === "source-timing-rss-sample");
+            const last = samples.at(-1);
+            const extra = structuredClone(last);
+            const delta = 1000000000n;
+            const shift = (o, k) => {
+              o[k] = String(BigInt(o[k]) + delta);
+            };
+            extra.epoch = last.epoch + 1;
+            shift(extra, "scheduledNs");
+            shift(extra, "startNs");
+            for (const k of [
+              "entryNs",
+              "spawnCallNs",
+              "spawnReturnNs",
+              "resultNs",
+              "deadlineNs",
+              "exitNs",
+              "closeNs",
+              "stdinCloseNs",
+              "stdoutCloseNs",
+              "stderrCloseNs",
+            ])
+              shift(extra.result.timing.parent, k);
+            shift(extra.result.helper, "spawnHrtimeNs");
+            const birth = duplicate
+              ? { ...samples[0].result.helper.birth }
+              : { ...last.result.helper.birth, pid: 9000, startTicks: "9000" };
+            extra.result.helper.birth = birth;
+            extra.result.helper.pid = birth.pid;
+            forged.splice(forged.indexOf(last) + 1, 0, extra);
+            forged.forEach((r, i) => {
+              r.seq = i;
+            });
+            writeRows(at, forged);
+            const sm = JSON.parse(summaryBytes);
+            sm.sourceTimingSafety.accepted += 1;
+            sm.sourceTimingSafety.dispatched += 1;
+            writeFileSync(summaryPath, JSON.stringify(sm));
+            return observe();
+          };
+          assert.equal(
+            withExtraSample(false).complete,
+            true,
+            "forged distinct second sample stays valid",
+          );
+          const duplicated = withExtraSample(true);
+          assert.equal(duplicated.complete, false);
+          assert.equal(
+            duplicated.sessions[0].timingExcluded,
+            true,
+            "duplicated helper birth must be excluded",
+          );
+          writeFileSync(summaryPath, summaryBytes);
+          writeRows(at, rows);
           const damaged = rows.filter((r) => r.type !== "source-timing-rss-sample");
           writeFileSync(
             join(at, "records.jsonl"),
@@ -387,6 +450,28 @@ test.each([
           assert.equal(observe().sessions[0].timingExcluded, true);
           assert.equal(summary.accounting.success, 12);
           assert.equal(fs.writes.length, 12);
+          // Every gated decision goes through the shared settle-then-decide helper.
+          const decisions = rows.filter((r) => r.type === "source-timing-decision");
+          assert.deepEqual(
+            decisions.map((d) => d.site),
+            ["pre-batch", ...Array(12).fill("precheck"), "cleanup-entry"],
+          );
+          const writes = rows.filter((r) => r.type === "attempt");
+          assert.equal(writes.length, 12);
+          for (const a of writes) {
+            assert.equal(a.sourceTimingDecision.site, "write");
+            assert.equal(a.sourceTimingDecision.decisionNs, a.t0Ns);
+          }
+          const restored = rows.find((r) => r.type === "cleanup").sourceTimingDecision;
+          assert.equal(restored.site, "restore");
+          for (const d of [...decisions, ...writes.map((a) => a.sourceTimingDecision), restored]) {
+            assert(["fresh", "settled"].includes(d.outcome), JSON.stringify(d));
+            assert.equal(typeof d.pendingAtDecision, "boolean");
+            assert.equal(typeof d.staleAtDecision, "boolean");
+            assert(/^\d+$/.test(d.enteredNs) && BigInt(d.enteredNs) <= BigInt(d.decisionNs));
+            assert(Number.isSafeInteger(d.settledEpoch) && d.settledEpoch >= 1);
+            assert(/^\d+$/.test(d.waitedNs) && /^\d+$/.test(d.decisionNs));
+          }
           assert.equal(summary.sourceTimingSafety.accepted, calls);
           assert.equal(summary.sourceTimingSafety.failure, null);
           assert.equal(rows.filter((x) => x.type === "attempt" && x.label === "warmup").length, 2);
@@ -399,7 +484,9 @@ test.each([
           assert.equal(summary.sourceTimingSafety.peakFailedObservedSubtotalKiB, 71);
           assert.match(
             summary.sourceTimingSafety.failure.error,
-            mode === "armed-overlap" ? /overlap/ : /pending/,
+            // The write now waits for the in-flight sample (#4878 owner decision);
+            // one that never settles refuses at its core+closure bound.
+            mode === "armed-overlap" ? /overlap/ : /never-settles/,
           );
           const marker = JSON.parse(readFileSync(join(dir, "active.json")));
           assert(marker.unresolved.some((r) => r.helper?.pid === 123));

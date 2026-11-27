@@ -1149,7 +1149,14 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
             },
           }
         : rec;
-      if (sourceTiming) fixedSafety.current();
+      if (sourceTiming) {
+        const decided = await fixedSafety.decide({
+          site: "pre-batch",
+          capNs: BigInt(loaded.workDeadline) * 1_000_000n,
+          signal: loaded.signal,
+        });
+        rec.append({ type: "source-timing-decision", ...decided.decision });
+      }
       const { accounting, stopped } = await runBatch({
         scenarios: runScenarios,
         deps: {
