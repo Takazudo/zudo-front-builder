@@ -356,6 +356,57 @@ mod tests {
     }
 
     #[test]
+    fn thirteenth_endpoint_caps_or_permanently_rejects_the_remaining_actions() {
+        for reject_thirteenth in [false, true] {
+            let buffer = Buffer::new(true, true);
+            let observation = Observation::new(reclamation::Arm::Trim, 13);
+            let calls = Cell::new(0);
+            for id in 1..=14 {
+                let (mut context, apply) = endpoint(id);
+                if reject_thirteenth && id == 13 {
+                    context.refresh_id = 12;
+                }
+                observation.observe(&buffer, context, apply, true, || {
+                    calls.set(calls.get() + 1);
+                    0
+                });
+            }
+            let count = if reject_thirteenth { 12 } else { 13 };
+            assert_eq!(calls.get(), count);
+            assert_eq!(observation.gate.load(SeqCst), STOPPED);
+            let events: Vec<_> = buffer
+                .queue
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|r| json!(r))
+                .collect();
+            let (disarm, actions) = events.split_last().unwrap();
+            assert_eq!(actions.len(), count * 2);
+            for (i, pair) in actions.chunks_exact(2).enumerate() {
+                assert_eq!(pair[0]["phase"], "repeated_apply_start");
+                assert_eq!(pair[1]["phase"], "repeated_apply_complete");
+                for row in pair {
+                    assert_eq!(row["apply_id"], i + 1);
+                    assert_eq!(row["repeated_apply"]["ordinal"], i + 1);
+                }
+                assert_eq!(pair[1]["repeated_apply"]["trim_return"], 0);
+            }
+            assert_eq!(disarm["phase"], "repeated_apply_disarmed");
+            assert_eq!(disarm["apply_id"], 13);
+            assert_eq!(disarm["repeated_apply"]["ordinal"], count);
+            assert_eq!(
+                disarm["repeated_apply"]["reason"],
+                if reject_thirteenth {
+                    "progression"
+                } else {
+                    "cap"
+                }
+            );
+        }
+    }
+
+    #[test]
     fn rejected_or_ambiguous_apply_permanently_prevents_recovery_actions() {
         for association in [
             ApplyAssociation::Associated,
