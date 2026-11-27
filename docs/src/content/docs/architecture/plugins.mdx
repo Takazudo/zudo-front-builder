@@ -212,7 +212,7 @@ addVirtualModule(
 - **Absolute paths only.** A relative or empty entry throws during `setup` and aborts the boot. Entries reach the dev watcher verbatim and are never resolved against the project root, so a relative entry has no anchor to resolve against — the same rule, for the same reason, as [`extraWatchPaths`](../api/define-config.mdx).
 - **Entries must be files — a directory is rejected.** zfb watches a `watchFiles` entry by registering a non-recursive watch on its **parent** directory and matching on the exact path, so nothing under a directory entry would ever actually be observed. Rather than silently compile into a no-op, an entry that already exists as a directory throws during `setup` and aborts the boot. An entry naming a path that does **not exist yet** is fine — the directory check only runs once the path exists.
 - **A not-yet-created file is still watched — once its parent directory exists.** `watchFiles` may legitimately name a file your loader will create and read back later. zfb registers the watch on the file's parent directory (not the file itself, so a delete/recreate stays observable); if the parent doesn't exist at the moment zfb tries, the registration is skipped and retried automatically on a later tick, so the file starts being watched as soon as its parent directory shows up on disk — no `zfb dev` restart needed.
-- **Declared at registration, not discovered.** The list is fixed once `setup` returns. A file a `watchFiles`-only loader discovers later is outside the watch set. When the loader enumerates a directory, declare the directory with [`watchDirectories`](#watching-directories) instead. There is no `addWatchFile()` a loader can call while it runs.
+- **Declared at registration, not discovered.** The list is fixed once `setup` returns. A file a `watchFiles`-only loader discovers later is outside the watch set. When the loader enumerates a directory, declare the directory with [`watchDirectories`](#setup-—-register-virtual-modules-aliases-injected-routes-and-client-entries-watching-directories) instead. There is no `addWatchFile()` a loader can call while it runs.
 - **Registrations are still frozen.** A refresh replaces a loader's *result*. It cannot add a specifier, remove one, or swap the loader function — the set of virtual modules is whatever `setup` registered.
 - **A failed re-invoke keeps the last good source — and says so on the terminal.** If a re-invoked loader throws — a half-written file, JSON caught mid-save — zfb retains the previously memoised source and prints a warning naming the plugin and the specifier:
 
@@ -225,7 +225,7 @@ addVirtualModule(
 - **Dev-only.** `zfb build` invokes each loader exactly once and never re-invokes it, so `watchFiles` has no effect on shipped output. Declaring it unconditionally is fine.
 - **Distinct from `extraWatchPaths`.** [`extraWatchPaths`](../api/define-config.mdx) makes the dev watcher *notice* an out-of-root file and rebuild — but a rebuild on its own still replays the memoised loader source. `watchFiles` is the part that invalidates the loader, and it gets the path watched too: a file declared here needs no matching `extraWatchPaths` entry.
 
-#### Watching directories
+### Watching directories
 
 A loader that lists a directory (posts, data files, generated fragments) needs to re-run when a file is added or removed, not only when a known file changes. Declare the directory instead of its files:
 
