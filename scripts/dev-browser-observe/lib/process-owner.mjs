@@ -1,6 +1,6 @@
 import { timed } from "./controller-timing.mjs";
 import { execFile, spawn } from "node:child_process";
-import { linuxBirth, LINUX_BIRTH, sameLinuxBirth } from "./linux-birth.mjs";
+import { linuxBirth, LINUX_BIRTH, linuxThreads, sameLinuxBirth } from "./linux-birth.mjs";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { delay, isoNow, run } from "./util.mjs";
@@ -361,6 +361,7 @@ export async function stopOwned(
     killImpl = process.kill,
     psImpl,
     birthImpl = birthIdentity,
+    threadsImpl = linuxThreads,
     platform = process.platform,
     signal: abortSignal,
     controllerPid = process.pid,
@@ -392,6 +393,7 @@ export async function stopOwned(
       psImpl,
       abortSignal,
       controllerPid,
+      threadsImpl,
       birthImpl: birthImpl === birthIdentity ? linuxBirth : birthImpl,
     });
   report.pgidScans = [];
@@ -522,7 +524,17 @@ export function signalLinuxOwned(expected, signal, group = false) {
 async function stopLinux(
   handle,
   report,
-  { intWaitMs, termWaitMs, killWaitMs, killImpl, psImpl, birthImpl, abortSignal, controllerPid },
+  {
+    intWaitMs,
+    termWaitMs,
+    killWaitMs,
+    killImpl,
+    psImpl,
+    birthImpl,
+    threadsImpl,
+    abortSignal,
+    controllerPid,
+  },
 ) {
   const root = handle.native;
   const endings = new Map();
@@ -561,9 +573,15 @@ async function stopLinux(
         if (!endings.has(expected.pid))
           endings.set(expected.pid, { pid: expected.pid, endedAfter: lastSignal });
       } else if (!sameLinuxBirth(expected, now) || expected.pgid !== now.pgid) fail(expected, now);
-      else if (now.state === "Z" && now.ppid === controllerPid && expected.ppid !== controllerPid) {
+      else if (
+        now.state === "Z" &&
+        now.ppid === controllerPid &&
+        expected.ppid !== controllerPid &&
+        threadsImpl(expected.pid) === 1
+      ) {
         // Reparented to the subreaper controller (#4862) and dead: libuv reaps only
         // the children it spawned, so this zombie stays until the controller exits.
+        // A Z leader whose other threads still run is alive (review-3 finding 2).
         if (!endings.has(expected.pid))
           endings.set(expected.pid, {
             pid: expected.pid,

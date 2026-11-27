@@ -56,6 +56,18 @@ export function linuxBirth(pid, read = readFileSync) {
   }
 }
 
+/** num_threads from /proc/<pid>/stat, or null when it cannot be read. */
+export function linuxThreads(pid, read = readFileSync) {
+  try {
+    const { threads } = parseLinuxStat(read(`/proc/${pid}/stat`, "utf8"), pid, {
+      withThreads: true,
+    });
+    return typeof threads === "number" ? threads : null;
+  } catch {
+    return null;
+  }
+}
+
 export function sameLinuxBirth(a, b) {
   return (
     a?.birthVersion === LINUX_BIRTH &&
