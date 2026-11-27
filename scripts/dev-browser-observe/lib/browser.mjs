@@ -400,6 +400,7 @@ export function updateSignalFrame(payload, ns, url, socket, astroFooter = false)
     url,
     socket: socket.name,
     ...(astroFooter && {
+      hasUpdatePath: Object.hasOwn(msg ?? {}, "path"),
       updatePath: typeof msg?.path === "string" ? msg.path.slice(0, 256) : null,
       updates: Array.isArray(msg?.updates)
         ? msg.updates

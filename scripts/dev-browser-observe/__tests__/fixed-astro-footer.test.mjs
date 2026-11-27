@@ -303,3 +303,12 @@ test("Playwright binding independently identifies its actual main page/frame at 
     receivedNs: "5",
   });
 });
+
+test("an absent global reload path and a malformed null reload path remain distinguishable", () => {
+  const socket = { name: "vite", typeKey: "type", events: { "full-reload": "page" } };
+  for (const msg of [{ type: "full-reload" }, { type: "full-reload", path: null }]) {
+    const row = updateSignalFrame(JSON.stringify(msg), 7n, "ws://localhost/", socket, true);
+    assert.equal(row.hasUpdatePath, Object.hasOwn(msg, "path"));
+    assert.equal(row.pageSignal, !row.hasUpdatePath);
+  }
+});
