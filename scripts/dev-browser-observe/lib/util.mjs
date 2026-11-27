@@ -1,4 +1,5 @@
 import { timed } from "./controller-timing.mjs";
+import { setTimeout as sleepFor } from "node:timers/promises";
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
@@ -194,6 +195,31 @@ export function isoNow() {
 
 export function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const abortableTimer = (ms, signal) => sleepFor(ms, undefined, signal ? { signal } : undefined);
+
+/**
+ * Wait until `clock` has advanced at least `ms` past `startNs`. A millisecond
+ * timer can fire before the monotonic interval has elapsed (the #4878 A/A r3
+ * 3000 ms quiet window woke 0.19 ms short), so a declared minimum re-arms for
+ * the remainder until the clock confirms it. Returns the clock reading at exit.
+ */
+export async function waitAtLeast(
+  ms,
+  { clock = hrtimeNs, startNs = clock(), timer = abortableTimer, signal } = {},
+) {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    await timer(0, signal);
+    return clock();
+  }
+  const target = startNs + BigInt(Math.ceil(ms * 1e6));
+  for (;;) {
+    signal?.throwIfAborted();
+    const now = clock();
+    if (now >= target) return now;
+    await timer(Math.max(1, Math.ceil(Number(target - now) / 1e6)), signal);
+  }
 }
 
 /**
