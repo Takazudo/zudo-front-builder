@@ -107,6 +107,7 @@ class Sample:
         self.known = {p["pid"]: p for p in request["known"]}
         self.proofs = {p["birth"]["pid"]: p for p in request["terminalProofs"]}
         self.custody = None
+        self.addition = None
         self.exe = request["executable"]
         self.fixed_native = None
         self.fixed_child = request.get("fixedChildExecutable")
@@ -311,6 +312,8 @@ class Sample:
                 raise
         ended = terminal(fd) or ended
         if ended:
+            if self.addition and pid == self.addition["birth"]["pid"]:
+                raise Invalid("added-live-worker-ended-during-observation", row)
             proof = dict(ended, birth=row)
             self.proof = proof
             if pid == self.root["pid"]:
@@ -323,12 +326,45 @@ class Sample:
             raise Invalid("live-metadata-unavailable", self.observed)
         else:
             result["disposition"] = "live"
-            if self.custody and result["executable"].get("workerArg") == "__zfb-compiler-worker":
+            if self.addition and pid == self.addition["birth"]["pid"]:
+                if result["executable"].get("workerArg") != "__zfb-compiler-worker":
+                    raise Invalid("unexpected-added-live-role")
+                result["fromStartupHello"] = True
+            elif self.custody and result["executable"].get("workerArg") == "__zfb-compiler-worker":
                 self.stage = "compiler-custody"
                 result["custodyToken"] = self.custody.retain(row, binding, self.fixed_native)
                 result["custodyReceipt"] = self.custody.last_receipt
         result["endNs"] = str(CLOCK())
         self.emit({"type": "observation", "process": result})
+
+    def observe_startup_addition(self, bindings, table):
+        info = self.addition
+        birth, dev = info["birth"], info["dev"]
+        pid = birth["pid"]
+        self.mark("startup-hello-observation", birth)
+        if (not self.fixed_native or not birth_matches(dev, self.fixed_native)
+                or dev["ppid"] != self.fixed_native["ppid"] or dev["pid"] not in bindings):
+            raise Invalid("startup-hello-native-parent-unverified", dev)
+        self.verify_chain(birth, bindings)
+        fd, directory = self.custody.startup_pair
+        ended = terminal(fd)
+        if ended:
+            self.emit(dict(type="observation", process=dict(birth, disposition="custodied-departure",
+                fromStartupHello=True, terminalProof=dict(ended, birth=birth), custodyToken=info["token"],
+                custodyReceipt=info["receipt"], rssKiB=None, statusKiB=None, smapsRollupKiB=None,
+                threads=None, executable=None, startedNs=self.started, endNs=str(CLOCK()))))
+            return
+        # Live readings use the transferred procdir. Pair it again with the
+        # still-live pidfd before reading image, cmdline, tasks or RSS.
+        self.mark("startup-hello-live-pair", birth)
+        named = re.findall(rb"(?m)^Pid:\s*(-?\d+)$", self.read(f"/proc/self/fdinfo/{fd}", MAX_STAT))
+        if pid not in table or named != [str(pid).encode()]:
+            raise Invalid("startup-hello-live-pair-mismatch", birth)
+        self.observed = self.stat(pid, directory, self.boot())
+        if not birth_matches(birth, self.observed) or birth["ppid"] != self.observed["ppid"]:
+            raise Invalid("startup-hello-live-pair-mismatch", self.observed)
+        self.handoff(self.observed)
+        self.observe((self.observed, fd, directory))
 
     def verify_chain(self, row, bindings):
         seen = set()
@@ -381,9 +417,19 @@ class Sample:
                     self.timing("fdCleanup", [started, CLOCK()])
 
     def run(self):
-        if len(self.known) > MAX_OWNED or self.root["pgid"] != self.root["pid"]:
+        added = self.addition["birth"] if self.addition else None
+        added_pid = added["pid"] if added else None
+        if added:
+            previous = self.known.get(added_pid)
+            if (previous and (not birth_matches(previous, added) or previous["ppid"] != added["ppid"])) or added_pid in self.proofs:
+                raise Invalid("startup-hello-prior-identity-mismatch", added)
+            self.emit(dict(type="startup-addition", addition=self.addition))
+        expected_pids = self.known.keys() | ({added_pid} if added else set())
+        if len(expected_pids) > MAX_OWNED or self.root["pgid"] != self.root["pid"]:
             raise Invalid("invalid-root-or-known-cap")
         with self.descriptors() as stack:
+            if added:
+                stack.callback(self.custody.close_startup_pair)
             root = self.bind(stack, self.root)
             self.check_root(root)
             self.handoff(root[0])
@@ -437,14 +483,22 @@ class Sample:
                 # A fixed startup worker can exit while unrelated /proc rows are
                 # scanned. Bind only after a parent or the owned group is known.
                 candidate = table[pid]
+                if pid == added_pid:
+                    if not birth_matches(added, candidate) or candidate["ppid"] != added["ppid"]:
+                        raise Invalid("startup-hello-table-birth-mismatch", candidate)
+                    continue
                 if (self.fixed_workers and pid != self.root["pid"]
                         and (candidate["pgid"] == self.root["pgid"] or candidate["ppid"] in claimed)):
-                    if len(attempted | self.known.keys() | {pid, self.root["pid"]}) > MAX_OWNED:
+                    if len(attempted | expected_pids | {pid, self.root["pid"]}) > MAX_OWNED:
                         raise Invalid("owned-process-cap")
                     bind_candidate(candidate)
                     self.mark("discovery", self.root)
             candidates = owned(table.values(), self.root)
+            if added:
+                candidates.pop(added_pid, None)
             for pid, previous in self.known.items():
+                if pid == added_pid:
+                    continue
                 if pid in table:
                     # A known birth is mandatory even after a change of ancestry.
                     # bind() compares this candidate with that immutable birth.
@@ -473,7 +527,7 @@ class Sample:
                 else:
                     self.mark("discovery-known", previous)
                     first_failure = first_failure or self.problem(Invalid("unbound-known-departure"))
-            if len(candidates.keys() | self.known.keys()) > MAX_OWNED:
+            if len(candidates.keys() | expected_pids) > MAX_OWNED:
                 raise Invalid("owned-process-cap")
             # Walk parent-before-child. Independent branches can still hand off
             # their verified births if a different branch fails before binding.
@@ -515,6 +569,8 @@ class Sample:
                     self.emit(self.problem(exc))
                     return False
                 self.partial = None
+            if added:
+                self.observe_startup_addition(bindings, table)
             self.timing("finalRootBegin", [CLOCK()])
             started = CLOCK()
             try:
@@ -618,6 +674,7 @@ def main():
                 spec.loader.exec_module(module)
                 sample.custody = module.Client(request["fixedCustody"])
                 resources.callback(sample.custody.close)
+                sample.addition = sample.custody.startup_addition
                 for pid, proof in sample.proofs.items():
                     token = sample.custody.tokens.get(str(pid))
                     if token:
