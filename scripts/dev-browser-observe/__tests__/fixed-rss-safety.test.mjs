@@ -17,7 +17,11 @@ import { join } from "node:path";
 import { test, vi } from "vitest";
 import { linuxBirth } from "../lib/linux-birth.mjs";
 import { startFixedCustody } from "../lib/fixed-rss-custody.mjs";
-import { checkFixedV2Observation, sampleRendererMemory } from "../lib/linux-rss-sample.mjs";
+import {
+  checkCustodyProofTime,
+  checkFixedV2Observation,
+  sampleRendererMemory,
+} from "../lib/linux-rss-sample.mjs";
 import { startFixedRssSafety } from "../lib/fixed-rss-safety.mjs";
 import { runSpecialMode } from "../lib/special-modes.mjs";
 
@@ -358,6 +362,14 @@ linux(
     assert.equal(existsSync(`/proc/${birth.pid}`), false);
   },
 );
+
+test("an inter-cycle terminal poll must belong to this helper's observation interval", () => {
+  const row = { startedNs: "20", endNs: "30", terminalProof: { observedNs: "25" } };
+  checkCustodyProofTime(row, "18");
+  for (const at of ["15", "31", null])
+    assert.throws(() => checkCustodyProofTime({ ...row, terminalProof: { observedNs: at } }, "18"));
+  assert.throws(() => checkCustodyProofTime(row, "22"));
+});
 
 test("v2 terminal observations reconcile their bound parent and any captured image", () => {
   const root = { pid: 3, pgid: 3 },

@@ -107,6 +107,17 @@ function checkBirth(row, bootId) {
   );
 }
 
+export function checkCustodyProofTime(row, helperEntryNs) {
+  const at = row.terminalProof?.observedNs;
+  requireValue(
+    [helperEntryNs, row.startedNs, at, row.endNs].every(ticks) &&
+      BigInt(helperEntryNs) <= BigInt(row.startedNs) &&
+      BigInt(row.startedNs) <= BigInt(at) &&
+      BigInt(at) <= BigInt(row.endNs),
+    "custody terminal proof outside its helper observation",
+  );
+}
+
 function checkProof(proof, birth) {
   requireValue(
     same(proof?.birth, birth) &&
@@ -289,6 +300,7 @@ export function sampleRendererMemory(
   const rss = new Map();
   let summedRssKiB = null;
   const observed = new Set();
+  const releaseRequired = new Set();
   const rssSources = new Map();
   let helper = null;
   let executable = null;
@@ -394,6 +406,9 @@ export function sampleRendererMemory(
           }),
         }),
       };
+      if (custody)
+        for (const pid of proofs.keys())
+          if (request.fixedCustody.tokens[pid]) releaseRequired.add(pid);
       spawnHrtimeNs = parent.spawnCallNs = now();
       child = launch();
       parent.spawnReturnNs = now();
@@ -628,6 +643,7 @@ export function sampleRendererMemory(
             custody.matches(row.birth, row.token),
           "unverified custody release",
         );
+        requireValue(releaseRequired.delete(row.birth.pid), "unexpected custody release");
         custody.forget(row.birth);
       } else if (row.type === "observation") {
         const p = row.process;
@@ -658,6 +674,7 @@ export function sampleRendererMemory(
             "unverified inter-cycle departure",
           );
           checkProof(p.terminalProof, p);
+          checkCustodyProofTime(p, stamps.entryNs);
           proofs.set(p.pid, p.terminalProof);
         } else if (p.disposition === "retained-terminal-proof") {
           if (verifiedRoles)
@@ -779,6 +796,7 @@ export function sampleRendererMemory(
       } else {
         requireValue(
           row.type === "complete" &&
+            releaseRequired.size === 0 &&
             stamps.finalRootEndNs !== null &&
             stamps.cleanupEndNs !== null &&
             uint(row.helperMaxRssKiB) &&

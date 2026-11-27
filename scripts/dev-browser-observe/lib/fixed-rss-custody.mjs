@@ -86,6 +86,7 @@ export function startFixedCustody({ append: record, abort, intent }) {
           ready.resolve();
         } else if (
           stopping &&
+          handshake &&
           !stopReport &&
           msg.stopped === true &&
           msg.epochs === epoch &&
@@ -202,7 +203,15 @@ export function startFixedCustody({ append: record, abort, intent }) {
             fault: fault?.message ?? null,
           };
           append(row);
-          if (!birth || !stopReport || ended.code !== 0 || ended.signal || pending)
+          if (
+            fault ||
+            !handshake ||
+            !birth ||
+            !stopReport ||
+            ended.code !== 0 ||
+            ended.signal ||
+            pending
+          )
             throw issue("incomplete holder shutdown");
           return row;
         } catch (error) {
