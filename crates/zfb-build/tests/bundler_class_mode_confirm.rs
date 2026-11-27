@@ -135,6 +135,7 @@ fn bundler_class_mode_project_ties_emission_and_css_injection() {
         bundle_exclude: Vec::new(),
         base_prefix: None,
         dev_trailing_slash_dispatch: false,
+        ssr_assets: None,
     };
 
     let out = bundle(input).expect("bundle should succeed");

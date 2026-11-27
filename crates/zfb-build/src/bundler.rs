@@ -702,7 +702,8 @@ pub struct BundlerInput {
     pub bundle_exclude: Vec<String>,
 
     /// Base prefix for client-script assets, emitted as
-    /// `globalThis.__zfb.base = "<prefix>"` in the synthetic `entry.mjs` so
+    /// `globalThis.__zfb.base = "<prefix>"` in a prelude module the synthetic
+    /// `entry.mjs` imports before any page module (#4887), so
     /// `clientScript(name)` can build the correct base-prefixed stable URL
     /// at SSR time.
     ///
@@ -742,6 +743,14 @@ pub struct BundlerInput {
     ///
     /// Default: `false`.
     pub dev_trailing_slash_dispatch: bool,
+    /// Normalized finalized asset record for the SSR-only runtime bundle
+    /// (#4887). `zfb build` sets it on the second (runtime) bundle only,
+    /// after asset bytes and hashes are final; the generated entry embeds it
+    /// as `createPageRouter({ assets: { assets: [...] } })`. Ignored for a
+    /// Development bundle, and an empty record emits nothing.
+    ///
+    /// Default: `None`.
+    pub ssr_assets: Option<Vec<crate::pipeline::FinalizedAsset>>,
 }
 
 impl BundlerInput {
@@ -805,6 +814,7 @@ impl BundlerInput {
             bundle_exclude: Vec::new(),
             base_prefix: None,
             dev_trailing_slash_dispatch: false,
+            ssr_assets: None,
         }
     }
 }
@@ -6610,6 +6620,7 @@ pub fn bundle_with_session(
                 input.mode,
                 input.dev_trailing_slash_dispatch,
             ),
+            ssr_assets: entry_ssr_assets(input.mode, input.ssr_assets.as_deref()),
         },
     )
     .context("bundler: failed writing entry.mjs")?;
@@ -14585,7 +14596,46 @@ struct EntryModuleInputs<'a> {
     /// Emit `devTrailingSlashDispatch: true` in the `createPageRouter` call
     /// (#4750). Only ever `true` for a Development bundle.
     dev_trailing_slash_dispatch: bool,
+    /// Finalized asset record passed as `assets: { assets: [...] }` to
+    /// `createPageRouter` (#4887). `None` or empty → omitted entirely.
+    ssr_assets: Option<&'a [crate::pipeline::FinalizedAsset]>,
 }
+
+/// The asset record the generated entry embeds (#4887): only a Production
+/// bundle carries it, and an empty record is dropped so no-asset builds stay
+/// byte-identical.
+fn entry_ssr_assets(
+    mode: BundleMode,
+    assets: Option<&[crate::pipeline::FinalizedAsset]>,
+) -> Option<&[crate::pipeline::FinalizedAsset]> {
+    assets.filter(|a| !a.is_empty() && matches!(mode, BundleMode::Production))
+}
+
+/// Serialize the finalized asset record as a JS array literal (#4887).
+/// serde_json leaves `<`, U+2028 and U+2029 raw; escaping them keeps the
+/// literal inert inside any script context and valid pre-ES2019 JS.
+fn ssr_assets_js_literal(assets: &[crate::pipeline::FinalizedAsset]) -> String {
+    let rows: Vec<serde_json::Value> = assets
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "kind": a.kind.wire_name(),
+                "stableUrl": a.stable_url,
+                "url": a.url,
+            })
+        })
+        .collect();
+    serde_json::to_string(&rows)
+        .expect("asset record serializes")
+        .replace('<', "\\u003c")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
+}
+
+/// Shadow-root prelude module that sets `globalThis.__zfb.base` (#978,
+/// #4887). Imported ahead of the page modules: ESM evaluates imports in
+/// order, so a module-top-level `clientScript()` already sees the base.
+const SHADOW_BASE_PRELUDE_FILENAME: &str = "zfb-base.mjs";
 
 /// Whether the generated entry passes `devTrailingSlashDispatch: true` (#4750):
 /// only a Development bundle whose input requested it. A Production bundle
@@ -14654,6 +14704,21 @@ fn write_entry_module(
         "// Single ESM entry shared by the embedded V8 host (T6/T7) and the runtime SSR adapter.\n",
     );
     src.push_str("// Exports: { routes, default: { fetch } }.\n\n");
+    // Client-script base prefix (#978), emitted IFF at least one `*.client.*`
+    // entry was discovered (`base_prefix` is `Some`). It lives in a prelude
+    // module imported before every page module (#4887) so module-top-level
+    // `clientScript()` calls see it. Zero-script builds emit zero bytes
+    // (#261 zero-registration parity, #940 byte-identical dev bundle skip).
+    if let Some(prefix) = base_prefix {
+        let prelude = format!(
+            "globalThis.__zfb = globalThis.__zfb ?? {{}};\nglobalThis.__zfb.base = {};\n",
+            json_str(prefix)
+        );
+        let prelude_path = shadow.join(SHADOW_BASE_PRELUDE_FILENAME);
+        fs::write(&prelude_path, prelude.as_bytes())
+            .with_context(|| format!("write {}", prelude_path.display()))?;
+        writeln!(&mut src, "import \"./{SHADOW_BASE_PRELUDE_FILENAME}\";").unwrap();
+    }
     // `createPageRouter` lives at the server-only subpath so the client-safe
     // root barrel (`@takazudo/zfb-runtime`) never pulls Hono into an island's
     // `--platform=browser` bundle (issue #1298). This SSR entry runs on the
@@ -14859,27 +14924,6 @@ fn write_entry_module(
     }
 
     // ---------------------------------------------------------------
-    // Client-script base prefix (#978).
-    //
-    // Emitted IFF at least one `*.client.*` entry was discovered
-    // (signalled by `base_prefix` being `Some`). The value is the
-    // resolved base prefix — `""` for root-mounted / no-base builds,
-    // `"/foo"` for `base="/foo/"` sub-path builds. `clientScript(name)`
-    // reads `globalThis.__zfb?.base ?? ""` so it gets the right prefix
-    // whether or not this setter ran.
-    //
-    // Zero-script builds stay byte-for-byte identical to before (#261
-    // zero-registration parity, #940 byte-identical dev bundle skip).
-    // ---------------------------------------------------------------
-    if let Some(prefix) = base_prefix {
-        src.push_str("globalThis.__zfb = globalThis.__zfb ?? {};\n");
-        src.push_str(&format!(
-            "globalThis.__zfb.base = {};\n\n",
-            json_str(prefix)
-        ));
-    }
-
-    // ---------------------------------------------------------------
     // Global MDX component-override map installer (sub-issue #616).
     //
     // Populates the `globalThis.__zfb.mdxComponents` slot read by
@@ -14962,6 +15006,14 @@ fn write_entry_module(
     src.push_str("  contentSnapshot: __zfb_content_snapshot,\n");
     if inputs.dev_trailing_slash_dispatch {
         src.push_str("  devTrailingSlashDispatch: true,\n");
+    }
+    if let Some(assets) = inputs.ssr_assets.filter(|a| !a.is_empty()) {
+        writeln!(
+            &mut src,
+            "  assets: {{ assets: {} }},",
+            ssr_assets_js_literal(assets)
+        )
+        .unwrap();
     }
     src.push_str("});\n\n");
     src.push_str("export default {\n");
@@ -19163,6 +19215,7 @@ mod tests {
             bundle_exclude: Vec::new(),
             base_prefix: None,
             dev_trailing_slash_dispatch: false,
+            ssr_assets: None,
         }
     }
 
@@ -19287,6 +19340,7 @@ mod tests {
                     mdx_components_import_spec: None,
                     base_prefix: None,
                     dev_trailing_slash_dispatch: flag,
+                    ssr_assets: None,
                 },
             )
             .unwrap();
@@ -19335,6 +19389,7 @@ mod tests {
                 mdx_components_import_spec: None,
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -19427,6 +19482,7 @@ mod tests {
                 mdx_components_import_spec: None,
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -19505,6 +19561,7 @@ mod tests {
                 mdx_components_import_spec: None,
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -19542,6 +19599,7 @@ mod tests {
                 mdx_components_import_spec: None,
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -19591,6 +19649,7 @@ mod tests {
                 mdx_components_import_spec: None,
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -19623,6 +19682,7 @@ mod tests {
                 mdx_components_import_spec: None,
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -19672,6 +19732,7 @@ mod tests {
                 mdx_components_import_spec: None,
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -19704,6 +19765,7 @@ mod tests {
                 mdx_components_import_spec: None,
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -19753,6 +19815,7 @@ mod tests {
             mdx_components_import_spec: None,
             base_prefix: Some(""),
             dev_trailing_slash_dispatch: false,
+            ssr_assets: None,
         };
         write_entry_module(&off, &[], &inputs(false)).unwrap();
         write_entry_module(&on, &[], &inputs(true)).unwrap();
@@ -19783,52 +19846,76 @@ mod tests {
 
     // --- base_prefix / globalThis.__zfb.base (#978) ---------------------------
 
+    fn base_entry_inputs(base_prefix: Option<&str>) -> EntryModuleInputs<'_> {
+        EntryModuleInputs {
+            content_snapshot_json: None,
+            content_imports: &[],
+            site: None,
+            prefetch_disabled: false,
+            emit_render_artifacts: false,
+            mdx_components_import_spec: None,
+            base_prefix,
+            dev_trailing_slash_dispatch: false,
+            ssr_assets: None,
+        }
+    }
+
+    fn one_page_route() -> Vec<RouteEntry> {
+        vec![RouteEntry {
+            route: "/".to_string(),
+            source_path: PathBuf::from("pages/index.tsx"),
+            entry_key: "/".to_string(),
+            static_html: false,
+            rel_under_pages: PathBuf::from("index.tsx"),
+        }]
+    }
+
     #[test]
     fn entry_module_emits_base_prefix_when_some() {
-        // When `base_prefix` is `Some`, the entry module must emit
-        // `globalThis.__zfb.base = <json-value>` before `createPageRouter` so
-        // `clientScript(name)` can build the correct base-prefixed stable URL.
+        // When `base_prefix` is `Some`, the base setter lives in a prelude
+        // module the entry imports before anything else, so
+        // `clientScript(name)` builds the base-prefixed stable URL even at
+        // a page module's top level (#978, #4887).
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(
-            shadow,
-            &[],
-            &EntryModuleInputs {
-                content_snapshot_json: None,
-                content_imports: &[],
-                site: None,
-                prefetch_disabled: false,
-                emit_render_artifacts: false,
-                mdx_components_import_spec: None,
-                base_prefix: Some("/foo"),
-                dev_trailing_slash_dispatch: false,
-            },
-        )
-        .unwrap();
+        write_entry_module(shadow, &[], &base_entry_inputs(Some("/foo"))).unwrap();
 
+        let prelude = fs::read_to_string(shadow.join(SHADOW_BASE_PRELUDE_FILENAME)).unwrap();
+        assert_eq!(
+            prelude,
+            "globalThis.__zfb = globalThis.__zfb ?? {};\nglobalThis.__zfb.base = \"/foo\";\n"
+        );
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+        assert!(
+            body.contains("import \"./zfb-base.mjs\";\n"),
+            "entry must import the base prelude; got:\n{body}"
+        );
+        assert!(
+            !body.contains("globalThis.__zfb.base"),
+            "the base setter must not remain in the entry body; got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn entry_module_base_prelude_is_imported_before_page_modules() {
+        // ESM evaluates a module's imports in source order and only then its
+        // body, so the prelude import must precede every page-module import
+        // (and the router import) for a top-level `clientScript()` to see the
+        // base (#4887).
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(shadow, &one_page_route(), &base_entry_inputs(Some("/foo"))).unwrap();
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
 
-        assert!(
-            body.contains("globalThis.__zfb = globalThis.__zfb ?? {};"),
-            "base_prefix branch must emit the namespacing guard; got:\n{body}"
+        let first_import = body.find("import ").expect("an import");
+        let prelude_idx = body.find("import \"./zfb-base.mjs\";").unwrap();
+        let router_idx = body.find("import { createPageRouter }").unwrap();
+        let page_idx = body.find("import * as __zfb_route_0").unwrap();
+        assert_eq!(
+            first_import, prelude_idx,
+            "prelude must be the first import:\n{body}"
         );
-        assert!(
-            body.contains("globalThis.__zfb.base = \"/foo\";"),
-            "base setter must contain the JSON-encoded prefix; got:\n{body}"
-        );
-
-        // The setter must precede createPageRouter so clientScript() calls
-        // inside any SSR route already see the value from the first request.
-        let base_idx = body
-            .find("globalThis.__zfb.base = ")
-            .expect("base setter present");
-        let router_idx = body
-            .find("createPageRouter({")
-            .expect("createPageRouter present");
-        assert!(
-            base_idx < router_idx,
-            "base setter must precede createPageRouter; base at {base_idx}, router at {router_idx}"
-        );
+        assert!(prelude_idx < router_idx && router_idx < page_idx, "{body}");
     }
 
     #[test]
@@ -19838,58 +19925,122 @@ mod tests {
         // the empty prefix), but the JSON value is `""`.
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(
-            shadow,
-            &[],
-            &EntryModuleInputs {
-                content_snapshot_json: None,
-                content_imports: &[],
-                site: None,
-                prefetch_disabled: false,
-                emit_render_artifacts: false,
-                mdx_components_import_spec: None,
-                base_prefix: Some(""),
-                dev_trailing_slash_dispatch: false,
-            },
-        )
-        .unwrap();
+        write_entry_module(shadow, &[], &base_entry_inputs(Some(""))).unwrap();
 
-        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
-
+        let prelude = fs::read_to_string(shadow.join(SHADOW_BASE_PRELUDE_FILENAME)).unwrap();
         assert!(
-            body.contains("globalThis.__zfb.base = \"\";"),
-            "empty-string base prefix must emit base = \"\"; got:\n{body}"
+            prelude.contains("globalThis.__zfb.base = \"\";"),
+            "empty-string base prefix must emit base = \"\"; got:\n{prelude}"
         );
     }
 
     #[test]
     fn entry_module_omits_base_prefix_when_none() {
         // Builds without client scripts (`base_prefix = None`) must not emit
-        // the base setter — keeping byte-for-byte parity with pre-#978 builds
-        // (#261 zero-registration parity, #940 byte-identical dev bundle skip).
+        // the base setter or its prelude — keeping byte-for-byte parity with
+        // pre-#978 builds (#261 zero-registration parity, #940
+        // byte-identical dev bundle skip).
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(
-            shadow,
-            &[],
-            &EntryModuleInputs {
-                content_snapshot_json: None,
-                content_imports: &[],
-                site: None,
-                prefetch_disabled: false,
-                emit_render_artifacts: false,
-                mdx_components_import_spec: None,
-                base_prefix: None,
-                dev_trailing_slash_dispatch: false,
-            },
-        )
-        .unwrap();
+        write_entry_module(shadow, &one_page_route(), &base_entry_inputs(None)).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(
-            !body.contains("globalThis.__zfb.base"),
+            !body.contains("globalThis.__zfb.base") && !body.contains("zfb-base.mjs"),
             "base_prefix=None → no base setter; got:\n{body}"
         );
+        assert!(!shadow.join(SHADOW_BASE_PRELUDE_FILENAME).exists());
+        assert!(
+            body.starts_with("// AUTO-GENERATED by zfb_build::bundler. Do not edit.\n"),
+            "{body}"
+        );
+    }
+
+    // --- SSR finalized asset record (#4887) ---------------------------------
+
+    fn sample_ssr_assets() -> Vec<crate::pipeline::FinalizedAsset> {
+        use crate::pipeline::{AssetKind, FinalizedAsset};
+        vec![
+            FinalizedAsset {
+                kind: AssetKind::Css,
+                stable_url: "/foo/assets/styles.css".into(),
+                url: "/foo/assets/styles-0123abcd.css".into(),
+            },
+            FinalizedAsset {
+                kind: AssetKind::Islands,
+                stable_url: "/foo/assets/islands.js".into(),
+                url: "/foo/assets/islands-4567cdef.js".into(),
+            },
+            FinalizedAsset {
+                kind: AssetKind::ClientScript,
+                stable_url: "/foo/assets/client/a</script>\u{2028}\u{2029}.js".into(),
+                url: "/foo/assets/client/a-89abcdef.js".into(),
+            },
+        ]
+    }
+
+    fn render_entry_with_assets(assets: Option<&[crate::pipeline::FinalizedAsset]>) -> String {
+        let tmp = tempfile::tempdir().unwrap();
+        let inputs = EntryModuleInputs {
+            ssr_assets: assets,
+            ..base_entry_inputs(None)
+        };
+        write_entry_module(tmp.path(), &one_page_route(), &inputs).unwrap();
+        fs::read_to_string(tmp.path().join(SHADOW_ENTRY_FILENAME)).unwrap()
+    }
+
+    #[test]
+    fn entry_module_embeds_ssr_asset_record_in_order() {
+        let assets = sample_ssr_assets();
+        let body = render_entry_with_assets(Some(&assets));
+        let line = body
+            .lines()
+            .find(|l| l.starts_with("  assets: { assets: "))
+            .unwrap_or_else(|| panic!("no assets option:\n{body}"));
+        assert_eq!(
+            line,
+            "  assets: { assets: [\
+             {\"kind\":\"css\",\"stableUrl\":\"/foo/assets/styles.css\",\"url\":\"/foo/assets/styles-0123abcd.css\"},\
+             {\"kind\":\"islands\",\"stableUrl\":\"/foo/assets/islands.js\",\"url\":\"/foo/assets/islands-4567cdef.js\"},\
+             {\"kind\":\"client-script\",\"stableUrl\":\"/foo/assets/client/a\\u003c/script>\\u2028\\u2029.js\",\"url\":\"/foo/assets/client/a-89abcdef.js\"}\
+             ] },"
+        );
+        // The escaped literal still decodes to the exact raw strings.
+        let json = line
+            .trim_start_matches("  assets: { assets: ")
+            .trim_end_matches(" },");
+        let decoded: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            decoded[2]["stableUrl"],
+            "/foo/assets/client/a</script>\u{2028}\u{2029}.js"
+        );
+        let router_idx = body.find("createPageRouter({").unwrap();
+        let assets_idx = body.find("  assets: { assets: ").unwrap();
+        let close_idx = body[router_idx..].find("});").unwrap() + router_idx;
+        assert!(router_idx < assets_idx && assets_idx < close_idx, "{body}");
+    }
+
+    #[test]
+    fn entry_module_omits_ssr_asset_record_when_none_or_empty() {
+        let none = render_entry_with_assets(None);
+        let empty = render_entry_with_assets(Some(&[]));
+        assert!(!none.contains("assets: {"), "{none}");
+        assert_eq!(
+            none, empty,
+            "an empty record must be byte-identical to none"
+        );
+    }
+
+    #[test]
+    fn entry_ssr_assets_is_production_only() {
+        let assets = sample_ssr_assets();
+        assert_eq!(
+            entry_ssr_assets(BundleMode::Production, Some(&assets)).map(<[_]>::len),
+            Some(3)
+        );
+        assert!(entry_ssr_assets(BundleMode::Development, Some(&assets)).is_none());
+        assert!(entry_ssr_assets(BundleMode::Production, Some(&[])).is_none());
+        assert!(entry_ssr_assets(BundleMode::Production, None).is_none());
     }
 
     // --- mdx-components.tsx global override map (#616) ------------------------
@@ -19995,6 +20146,7 @@ mod tests {
                 mdx_components_import_spec: Some("./mdx-components.tsx"),
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -20051,6 +20203,7 @@ mod tests {
                 mdx_components_import_spec: Some("./mdx-components.tsx"),
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -20087,6 +20240,7 @@ mod tests {
                 mdx_components_import_spec: None,
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -20130,6 +20284,7 @@ mod tests {
                 mdx_components_import_spec: Some("./mdx-components.tsx"),
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -20394,6 +20549,7 @@ mod tests {
                 mdx_components_import_spec: None,
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -24204,6 +24360,7 @@ mod tests {
                 mdx_components_import_spec: None,
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -24234,6 +24391,7 @@ mod tests {
                 mdx_components_import_spec: None,
                 base_prefix: None,
                 dev_trailing_slash_dispatch: false,
+                ssr_assets: None,
             },
         )
         .unwrap();
@@ -25278,6 +25436,7 @@ mod tests {
             bundle_exclude: Vec::new(),
             base_prefix: None,
             dev_trailing_slash_dispatch: false,
+            ssr_assets: None,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");

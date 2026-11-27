@@ -482,6 +482,7 @@ impl AssetPipeline for ProductionAssetPipeline {
             outcome.pages_written.push(r.page);
         }
 
+        outcome.finalized_assets = normalize_finalized_assets(&outcome.finalized_assets)?;
         Ok(outcome)
     }
 }
@@ -666,6 +667,13 @@ fn ship_asset(
     };
 
     outcome.hashed_asset_urls.push((kind, hashed_url.clone()));
+    if let Some(ref stable) = asset.stable_url {
+        outcome.finalized_assets.push(FinalizedAsset {
+            kind,
+            stable_url: stable.clone(),
+            url: hashed_url.clone(),
+        });
+    }
     Ok(hashed_url)
 }
 
@@ -1168,6 +1176,170 @@ mod tests {
         assert!(client_assets
             .iter()
             .any(|n| n.starts_with("analytics-") && n.ends_with(".js")));
+    }
+
+    fn fixed_emitter(
+        bytes: &'static [u8],
+        rel: &'static str,
+        stable: &'static str,
+    ) -> Box<dyn AssetEmitter> {
+        Box::new(move || {
+            Ok(Some(EmittedAsset {
+                bytes: bytes.to_vec(),
+                relative_path: PathBuf::from(rel),
+                stable_url: Some(stable.to_string()),
+                companions: Vec::new(),
+            }))
+        })
+    }
+
+    fn url_for(outcome: &BuildOutcome, kind: AssetKind, stem: &str) -> String {
+        outcome
+            .hashed_asset_urls
+            .iter()
+            .find(|(k, url)| *k == kind && url.contains(&format!("/{stem}-")))
+            .map(|(_, url)| url.clone())
+            .unwrap()
+    }
+
+    /// #4887: every shipped asset with a stable URL lands in the finalized
+    /// record, keeping the base-prefixed stable URL verbatim, in kind order
+    /// then stable-URL byte order regardless of emitter order.
+    #[test]
+    fn prod_pipeline_records_finalized_assets_in_deterministic_order() {
+        let dir = tempdir().unwrap();
+        let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
+            css: Some(fixed_emitter(
+                b".a{}",
+                "assets/styles.css",
+                "/docs/assets/styles.css",
+            )),
+            islands: Some(fixed_emitter(
+                b"// islands",
+                "assets/islands.js",
+                "/docs/assets/islands.js",
+            )),
+            client_scripts: vec![
+                fixed_emitter(
+                    b"// zeta",
+                    "assets/client/zeta.js",
+                    "/docs/assets/client/zeta.js",
+                ),
+                fixed_emitter(
+                    b"// alpha",
+                    "assets/client/alpha.js",
+                    "/docs/assets/client/alpha.js",
+                ),
+            ],
+        });
+        let ctx = ctx_with_pages(dir.path().to_path_buf(), Vec::new());
+        let outcome = pipeline.apply(&plan_full(Vec::new()), &ctx).unwrap();
+
+        let expected = vec![
+            FinalizedAsset {
+                kind: AssetKind::Css,
+                stable_url: "/docs/assets/styles.css".into(),
+                url: url_for(&outcome, AssetKind::Css, "styles"),
+            },
+            FinalizedAsset {
+                kind: AssetKind::Islands,
+                stable_url: "/docs/assets/islands.js".into(),
+                url: url_for(&outcome, AssetKind::Islands, "islands"),
+            },
+            FinalizedAsset {
+                kind: AssetKind::ClientScript,
+                stable_url: "/docs/assets/client/alpha.js".into(),
+                url: url_for(&outcome, AssetKind::ClientScript, "alpha"),
+            },
+            FinalizedAsset {
+                kind: AssetKind::ClientScript,
+                stable_url: "/docs/assets/client/zeta.js".into(),
+                url: url_for(&outcome, AssetKind::ClientScript, "zeta"),
+            },
+        ];
+        assert_eq!(outcome.finalized_assets, expected);
+        for asset in &outcome.finalized_assets {
+            assert!(asset.url.starts_with("/docs/assets/"), "{asset:?}");
+            assert_ne!(asset.url, asset.stable_url, "{asset:?}");
+            let rel = asset.url.trim_start_matches("/docs/");
+            assert!(dir.path().join(rel).is_file(), "{asset:?} not on disk");
+        }
+    }
+
+    #[test]
+    fn prod_pipeline_dedups_identical_finalized_assets() {
+        let dir = tempdir().unwrap();
+        let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
+            client_scripts: vec![
+                fixed_emitter(b"// same", "assets/client/a.js", "/assets/client/a.js"),
+                fixed_emitter(b"// same", "assets/client/a.js", "/assets/client/a.js"),
+            ],
+            ..Default::default()
+        });
+        let ctx = ctx_with_pages(dir.path().to_path_buf(), Vec::new());
+        let outcome = pipeline.apply(&plan_full(Vec::new()), &ctx).unwrap();
+        assert_eq!(outcome.hashed_asset_urls.len(), 2);
+        assert_eq!(outcome.finalized_assets.len(), 1);
+        assert_eq!(
+            outcome.finalized_assets[0].stable_url,
+            "/assets/client/a.js"
+        );
+    }
+
+    #[test]
+    fn prod_pipeline_rejects_conflicting_finalized_assets() {
+        let dir = tempdir().unwrap();
+        let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
+            client_scripts: vec![
+                fixed_emitter(b"// one", "assets/client/a.js", "/assets/client/a.js"),
+                fixed_emitter(b"// two", "assets/client/a.js", "/assets/client/a.js"),
+            ],
+            ..Default::default()
+        });
+        let ctx = ctx_with_pages(dir.path().to_path_buf(), Vec::new());
+        let err = pipeline.apply(&plan_full(Vec::new()), &ctx).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("\"/assets/client/a.js\""), "{msg}");
+        assert_eq!(msg.matches("client-script -> ").count(), 2, "{msg}");
+    }
+
+    #[test]
+    fn normalize_finalized_assets_rejects_same_stable_url_with_different_kind() {
+        let a = FinalizedAsset {
+            kind: AssetKind::Css,
+            stable_url: "/x".into(),
+            url: "/x-1".into(),
+        };
+        let b = FinalizedAsset {
+            kind: AssetKind::Islands,
+            stable_url: "/x".into(),
+            url: "/x-1".into(),
+        };
+        let msg = format!("{:#}", normalize_finalized_assets(&[b, a]).unwrap_err());
+        assert!(
+            msg.contains("css -> ") && msg.contains("islands -> "),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn prod_pipeline_without_stable_url_leaves_record_empty() {
+        let dir = tempdir().unwrap();
+        let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
+            css: Some(Box::new(|| {
+                Ok(Some(EmittedAsset {
+                    bytes: b".a{}".to_vec(),
+                    relative_path: PathBuf::from("assets/styles.css"),
+                    stable_url: None,
+                    companions: Vec::new(),
+                }))
+            })),
+            ..Default::default()
+        });
+        let ctx = ctx_with_pages(dir.path().to_path_buf(), Vec::new());
+        let outcome = pipeline.apply(&plan_full(Vec::new()), &ctx).unwrap();
+        assert_eq!(outcome.hashed_asset_urls.len(), 1);
+        assert!(outcome.finalized_assets.is_empty());
     }
 
     /// An empty `client_scripts` Vec is a strict no-op: no asset
