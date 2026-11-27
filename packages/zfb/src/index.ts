@@ -51,6 +51,8 @@ export {
   type ZfbPluginDiagnosticMetadata,
   type ZfbPreviewMiddlewareContext,
   type ZfbPreviewMiddlewareHandler,
+  type ZfbVirtualModuleOptions,
+  type ZfbWatchDirectory,
 } from "./plugins.js";
 
 export { slugify, SlugAllocator } from "./slugify.js";

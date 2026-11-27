@@ -318,6 +318,35 @@ pub struct Watcher {
     /// `watched_recursive_roots`: boot roots are permanent and unfiltered,
     /// these are reconcilable (replace semantics) and skip-dir-filtered.
     synced_recursive_dirs: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    /// On-disk identity of each `synced_recursive_dirs` key when it was
+    /// last armed. A root deleted and recreated (or swapped in by a rename)
+    /// between two syncs keeps its path but not its inode, and inotify's
+    /// watch died with the old inode, so a changed identity re-arms it.
+    synced_recursive_identities: BTreeMap<PathBuf, Option<DirIdentity>>,
+}
+
+/// What a directory watch is bound to beyond its path: `(dev, inode)` on
+/// unix plus the birth time where the filesystem records one.
+///
+/// The birth time is part of it because a directory removed and recreated
+/// at once routinely gets the same inode number back (observed on ext4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DirIdentity {
+    #[cfg(unix)]
+    inode: (u64, u64),
+    created: Option<std::time::SystemTime>,
+}
+
+fn dir_identity(path: &Path) -> Option<DirIdentity> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(DirIdentity {
+        #[cfg(unix)]
+        inode: {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.dev(), metadata.ino())
+        },
+        created: metadata.created().ok(),
+    })
 }
 
 fn file_watch_aliases(path: &Path) -> BTreeSet<PathBuf> {
@@ -342,6 +371,82 @@ fn watch_aliases(path: &Path) -> impl Iterator<Item = PathBuf> {
 /// the follow-up `watch()` fails and is warned either way).
 fn canonical_identity(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Collateral repair after a recursive unwatch of `aliases` (inotify removes
+/// every watch entry below the unwatched path, including other
+/// registrations'): re-register each surviving synced root, boot root and
+/// dependency parent nested under it, once per directory identity, under its
+/// registration spelling. Used by retirement and by a replaced root's re-arm.
+fn repair_registrations_under(
+    notify: &mut GuardedNotifyWatcher,
+    aliases: &BTreeSet<PathBuf>,
+    surviving: &BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    boot_root_registrations: &[(PathBuf, BTreeSet<PathBuf>)],
+    dependency_dir_registrations: &BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    repaired_recursive: &mut BTreeSet<PathBuf>,
+    repaired_non_recursive: &mut BTreeSet<PathBuf>,
+) {
+    let under_retired = |path: &Path| aliases.iter().any(|alias| path.starts_with(alias));
+    for (kept_root, kept_aliases) in surviving.iter() {
+        if !kept_aliases.iter().any(|kept| under_retired(kept)) {
+            continue;
+        }
+        if !repaired_recursive.insert(canonical_identity(kept_root)) {
+            continue;
+        }
+        if let Err(error) = notify.watch(kept_root, RecursiveMode::Recursive) {
+            warn!(
+                path = %kept_root.display(), %error,
+                "failed to re-register surviving recursive dir root after an unwatch"
+            );
+        }
+    }
+    // Reverse registration order so that, when one physical boot
+    // directory was registered under several spellings, the LAST
+    // registration wins the single re-watch — matching the
+    // delivered-path spelling inotify was using before retirement
+    // (the backend's wd->path map keeps the most recent spelling).
+    for (boot, boot_aliases) in boot_root_registrations.iter().rev() {
+        if !boot_aliases.iter().any(|alias| under_retired(alias)) {
+            continue;
+        }
+        if !repaired_recursive.insert(canonical_identity(boot)) {
+            continue;
+        }
+        if let Err(error) = notify.watch(boot, RecursiveMode::Recursive) {
+            warn!(
+                path = %boot.display(), %error,
+                "failed to re-register boot root after an unwatch"
+            );
+        }
+    }
+    // Exclude by ALIAS-SET intersection, not literal spelling
+    // (issue #1799 review): a dependency dir equal to the retired
+    // root under ANY spelling must not resurrect the just-retired
+    // root — its dependency coverage was already restored by the
+    // downgrade branch above.
+    for (dep, dep_aliases) in dependency_dir_registrations.iter() {
+        if dep_aliases.iter().any(|alias| aliases.contains(alias)) {
+            continue;
+        }
+        if !dep_aliases.iter().any(|alias| under_retired(alias)) {
+            continue;
+        }
+        let identity = canonical_identity(dep);
+        if repaired_recursive.contains(&identity) || !repaired_non_recursive.insert(identity) {
+            continue;
+        }
+        // The guarded watcher no-ops this when `dep` is itself a
+        // surviving synced root (already re-registered recursively
+        // above), so the repair cannot downgrade one.
+        if let Err(error) = notify.watch(dep, RecursiveMode::NonRecursive) {
+            warn!(
+                path = %dep.display(), %error,
+                "failed to re-register dependency-parent watch after an unwatch"
+            );
+        }
+    }
 }
 
 fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -504,6 +609,18 @@ struct RecursiveDirFilterCore {
     /// suppressed even though they are skip names.
     traversal_roots: BTreeSet<PathBuf>,
     traversal_names: BTreeSet<OsString>,
+    /// Alias spellings of roots below which no skip name is suppressed
+    /// (plugin `watchDirectories` roots, zfb issue #4894: the CSS infra-dir
+    /// skip list must not narrow a plugin's own declaration).
+    unfiltered_roots: BTreeSet<PathBuf>,
+    /// Active root spellings whose own create/remove/rename the notify
+    /// callback saw since the last sync: their watch may be bound to a
+    /// directory that no longer exists, so the next sync re-arms them.
+    replaced_roots: BTreeSet<PathBuf>,
+    /// Alias spellings of every desired root of the latest sync that is not
+    /// an `unfiltered_roots` entry, including roots collapsed under an outer
+    /// registration: their skip names still apply below a plugin root.
+    filtered_roots: BTreeSet<PathBuf>,
 }
 
 impl RecursiveDirFilterCore {
@@ -542,7 +659,40 @@ impl RecursiveDirFilterCore {
         if self.active_roots.is_empty() || self.skip_names.is_empty() {
             return false;
         }
-        let inside_skip_dir = self.active_roots.iter().any(|root| {
+        // Below a plugin root the innermost declared root decides: a CSS or
+        // package root nested under a plugin root keeps its own skip names,
+        // and a plugin root nested under a CSS root delivers everything.
+        let innermost_unfiltered = self
+            .unfiltered_roots
+            .iter()
+            .filter(|root| path.starts_with(root))
+            .map(|root| root.components().count())
+            .max();
+        let mut innermost_filtered: BTreeSet<PathBuf> = BTreeSet::new();
+        if let Some(plugin_depth) = innermost_unfiltered {
+            let Some(depth) = self
+                .filtered_roots
+                .iter()
+                .filter(|root| path.starts_with(root))
+                .map(|root| root.components().count())
+                .max()
+                .filter(|depth| *depth > plugin_depth)
+            else {
+                return false;
+            };
+            innermost_filtered.extend(
+                self.filtered_roots
+                    .iter()
+                    .filter(|root| path.starts_with(root) && root.components().count() == depth)
+                    .cloned(),
+            );
+        }
+        let skip_roots = if innermost_unfiltered.is_some() {
+            &innermost_filtered
+        } else {
+            &self.active_roots
+        };
+        let inside_skip_dir = skip_roots.iter().any(|root| {
             path.strip_prefix(root).is_ok_and(|rel| {
                 let mut parent = root.clone();
                 rel.components().any(|component| {
@@ -687,7 +837,21 @@ impl Watcher {
                 Ok(mut evt) => {
                     if !evt.paths.is_empty() {
                         {
-                            let filter = lock_ignoring_poison(&filter_for_events);
+                            let mut filter = lock_ignoring_poison(&filter_for_events);
+                            if matches!(
+                                evt.kind,
+                                EventKind::Create(_)
+                                    | EventKind::Remove(_)
+                                    | EventKind::Modify(notify::event::ModifyKind::Name(_))
+                            ) {
+                                let replaced: Vec<PathBuf> = evt
+                                    .paths
+                                    .iter()
+                                    .filter(|path| filter.active_roots.contains(*path))
+                                    .cloned()
+                                    .collect();
+                                filter.replaced_roots.extend(replaced);
+                            }
                             evt.paths.retain(|path| {
                                 !filter.suppresses(path, &dependency_dirs_for_events)
                             });
@@ -807,6 +971,7 @@ impl Watcher {
             dependency_dir_registrations: BTreeMap::new(),
             recursive_dir_filter,
             synced_recursive_dirs: BTreeMap::new(),
+            synced_recursive_identities: BTreeMap::new(),
         };
         watcher.watch_exact_files(options.exact_files);
         Ok((watcher, out_rx))
@@ -1004,6 +1169,31 @@ impl Watcher {
         filter.traversal_names = names.iter().map(OsString::from).collect();
     }
 
+    /// Deliver every event below `roots` even inside skip-named
+    /// directories of [`Self::sync_recursive_dir_watches`]. Replace
+    /// semantics: the latest call is the whole set.
+    pub fn set_recursive_dir_unfiltered_roots<I, P>(&mut self, roots: I)
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let mut filter = lock_ignoring_poison(&self.recursive_dir_filter);
+        filter.unfiltered_roots = roots
+            .into_iter()
+            .flat_map(|root| watch_aliases(root.as_ref()).collect::<Vec<_>>())
+            .collect();
+    }
+
+    /// Whether a replaced synced root is re-armed. inotify binds a watch to
+    /// an inode and Windows to an open directory handle, so a root replaced
+    /// at its path stays unwatched until re-registered. FSEvents (macOS) and
+    /// the poll backend watch by path and keep delivering for the
+    /// replacement, so re-arming there would only rebuild a stream (and
+    /// reopen its startup dead window) for nothing.
+    fn rearms_replaced_roots(&self) -> bool {
+        !self._notify.poll_backend && !cfg!(target_os = "macos")
+    }
+
     pub fn sync_recursive_dir_watches<I, P, N, S>(
         &mut self,
         desired_roots: I,
@@ -1048,6 +1238,10 @@ impl Watcher {
                 (root, aliases, canonical)
             })
             .collect();
+        let candidate_aliases: Vec<BTreeSet<PathBuf>> = ranked
+            .iter()
+            .map(|(_, aliases, _)| aliases.clone())
+            .collect();
         ranked.sort_by(|a, b| a.2.cmp(&b.2));
 
         // Reduce to the target registration plan: drop roots already covered
@@ -1080,6 +1274,15 @@ impl Watcher {
             let mut filter = lock_ignoring_poison(&self.recursive_dir_filter);
             filter.skip_names = skip_names;
             filter.active_roots.extend(target_aliases.iter().cloned());
+            filter.filtered_roots = candidate_aliases
+                .into_iter()
+                .filter(|aliases| {
+                    !aliases
+                        .iter()
+                        .any(|alias| filter.unfiltered_roots.contains(alias))
+                })
+                .flatten()
+                .collect();
         }
 
         // Watch target roots not already registered. Alias intersection
@@ -1087,6 +1290,7 @@ impl Watcher {
         // not a new one.
         let mut newly_watched = Vec::new();
         let mut surviving: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
+        let mut rearmed: Vec<(PathBuf, BTreeSet<PathBuf>)> = Vec::new();
         for (root, aliases) in target {
             let kept_key = self
                 .synced_recursive_dirs
@@ -1096,12 +1300,74 @@ impl Watcher {
             if let Some(key) = kept_key {
                 let mut merged = self.synced_recursive_dirs[&key].clone();
                 merged.extend(aliases);
+                // A kept root whose directory was replaced since it was armed
+                // (delete + recreate, `mv new root`, a branch checkout) is
+                // still the same path but no longer the watched directory:
+                // re-register it and report it as newly watched so the
+                // caller reconciles edits made in the unwatched window. See
+                // `rearms_replaced_roots` for the backends this applies to.
+                let current = dir_identity(&key);
+                let armed = self
+                    .synced_recursive_identities
+                    .get(&key)
+                    .copied()
+                    .flatten();
+                // Peeked, and cleared only once the re-arm has unwatched the
+                // old directory: until then its own move/delete events can
+                // still arrive and set the flag again.
+                let seen_replaced = {
+                    let filter = lock_ignoring_poison(&self.recursive_dir_filter);
+                    merged
+                        .iter()
+                        .any(|alias| filter.replaced_roots.contains(alias))
+                };
+                let clear_replaced = |filter: &Arc<Mutex<RecursiveDirFilterCore>>| {
+                    lock_ignoring_poison(filter)
+                        .replaced_roots
+                        .retain(|alias| !merged.contains(alias));
+                };
+                if self.rearms_replaced_roots()
+                    && current.is_some()
+                    && (current != armed || seen_replaced)
+                {
+                    // Unwatch first: notify keeps the old directory's watch
+                    // mapped to this path otherwise (inotify reports the
+                    // moved-away directory's edits under the root's name, and
+                    // its later deletion tears down the new watch; Windows
+                    // keeps the old handle running). An error here is the
+                    // benign "already gone" case.
+                    if let Err(error) = self._notify.unwatch(&key) {
+                        debug!(path = %key.display(), %error, "unwatch before re-arm");
+                    }
+                    match self._notify.watch(&key, RecursiveMode::Recursive) {
+                        Ok(()) => {
+                            debug!(path = %key.display(), "re-armed replaced recursive dir root");
+                            clear_replaced(&self.recursive_dir_filter);
+                            self.synced_recursive_identities
+                                .insert(key.clone(), current);
+                            newly_watched.push(key.clone());
+                        }
+                        Err(error) => {
+                            // The flag stays set and the identity is forgotten,
+                            // so the next sync retries.
+                            warn!(path = %key.display(), %error, "failed to re-arm replaced recursive dir root");
+                            self.synced_recursive_identities.insert(key.clone(), None);
+                        }
+                    }
+                    // The unwatch also removed every registration nested under
+                    // the root; restore them once `surviving` is complete.
+                    rearmed.push((key.clone(), merged.clone()));
+                } else if !self.rearms_replaced_roots() {
+                    clear_replaced(&self.recursive_dir_filter);
+                }
                 surviving.insert(key, merged);
                 continue;
             }
             match self._notify.watch(&root, RecursiveMode::Recursive) {
                 Ok(()) => {
                     debug!(path = %root.display(), "watching recursive dir root");
+                    self.synced_recursive_identities
+                        .insert(root.clone(), dir_identity(&root));
                     surviving.insert(root.clone(), aliases);
                     newly_watched.push(root);
                 }
@@ -1126,6 +1392,9 @@ impl Watcher {
         {
             let mut filter = lock_ignoring_poison(&self.recursive_dir_filter);
             filter.active_roots = surviving_aliases.clone();
+            filter
+                .replaced_roots
+                .retain(|alias| surviving_aliases.contains(alias));
         }
 
         // Retire registrations that fell out of the target set — AFTER the
@@ -1143,6 +1412,18 @@ impl Watcher {
         // would downgrade the recursive watch).
         let mut repaired_recursive: BTreeSet<PathBuf> = BTreeSet::new();
         let mut repaired_non_recursive: BTreeSet<PathBuf> = BTreeSet::new();
+        for (root, aliases) in &rearmed {
+            repaired_recursive.insert(canonical_identity(root));
+            repair_registrations_under(
+                &mut self._notify,
+                aliases,
+                &surviving,
+                &self.boot_root_registrations,
+                &self.dependency_dir_registrations,
+                &mut repaired_recursive,
+                &mut repaired_non_recursive,
+            );
+        }
         for (root, aliases) in previous {
             if surviving.contains_key(&root) {
                 continue;
@@ -1235,69 +1516,18 @@ impl Watcher {
             // these are independent streams the unwatch never touched, so
             // the re-watch is a redundant rebuild — the accepted
             // cross-platform cost (see the method docs).
-            let under_retired = |path: &Path| aliases.iter().any(|alias| path.starts_with(alias));
-            for (kept_root, kept_aliases) in surviving.iter() {
-                if !kept_aliases.iter().any(|kept| under_retired(kept)) {
-                    continue;
-                }
-                if !repaired_recursive.insert(canonical_identity(kept_root)) {
-                    continue;
-                }
-                if let Err(error) = self._notify.watch(kept_root, RecursiveMode::Recursive) {
-                    warn!(
-                        path = %kept_root.display(), %error,
-                        "failed to re-register surviving recursive dir root after retirement"
-                    );
-                }
-            }
-            // Reverse registration order so that, when one physical boot
-            // directory was registered under several spellings, the LAST
-            // registration wins the single re-watch — matching the
-            // delivered-path spelling inotify was using before retirement
-            // (the backend's wd->path map keeps the most recent spelling).
-            for (boot, boot_aliases) in self.boot_root_registrations.iter().rev() {
-                if !boot_aliases.iter().any(|alias| under_retired(alias)) {
-                    continue;
-                }
-                if !repaired_recursive.insert(canonical_identity(boot)) {
-                    continue;
-                }
-                if let Err(error) = self._notify.watch(boot, RecursiveMode::Recursive) {
-                    warn!(
-                        path = %boot.display(), %error,
-                        "failed to re-register boot root after retirement"
-                    );
-                }
-            }
-            // Exclude by ALIAS-SET intersection, not literal spelling
-            // (issue #1799 review): a dependency dir equal to the retired
-            // root under ANY spelling must not resurrect the just-retired
-            // root — its dependency coverage was already restored by the
-            // downgrade branch above.
-            for (dep, dep_aliases) in self.dependency_dir_registrations.iter() {
-                if dep_aliases.iter().any(|alias| aliases.contains(alias)) {
-                    continue;
-                }
-                if !dep_aliases.iter().any(|alias| under_retired(alias)) {
-                    continue;
-                }
-                let identity = canonical_identity(dep);
-                if repaired_recursive.contains(&identity)
-                    || !repaired_non_recursive.insert(identity)
-                {
-                    continue;
-                }
-                // The guarded watcher no-ops this when `dep` is itself a
-                // surviving synced root (already re-registered recursively
-                // above), so the repair cannot downgrade one.
-                if let Err(error) = self._notify.watch(dep, RecursiveMode::NonRecursive) {
-                    warn!(
-                        path = %dep.display(), %error,
-                        "failed to re-register dependency-parent watch after retirement"
-                    );
-                }
-            }
+            repair_registrations_under(
+                &mut self._notify,
+                &aliases,
+                &surviving,
+                &self.boot_root_registrations,
+                &self.dependency_dir_registrations,
+                &mut repaired_recursive,
+                &mut repaired_non_recursive,
+            );
         }
+        self.synced_recursive_identities
+            .retain(|root, _| surviving.contains_key(root));
         self.synced_recursive_dirs = surviving;
 
         newly_watched
@@ -3239,6 +3469,51 @@ mod tests {
             filter.suppresses(Path::new("/proj/lib/mirror/dist/view.js"), &deps),
             "a mirror root keeps pruning dist"
         );
+    }
+
+    #[test]
+    fn unfiltered_roots_keep_every_skip_name_live() {
+        let deps = SharedPathSet::default();
+        let mut filter = filter_with(&["/proj/lib"], &["dist", "node_modules"]);
+        filter.unfiltered_roots = BTreeSet::from([PathBuf::from("/proj/lib/plugin-data")]);
+        assert!(!filter.suppresses(Path::new("/proj/lib/plugin-data/dist/a.json"), &deps));
+        assert!(!filter.suppresses(
+            Path::new("/proj/lib/plugin-data/x/node_modules/b.json"),
+            &deps
+        ));
+        assert!(
+            filter.suppresses(Path::new("/proj/lib/other/dist/a.json"), &deps),
+            "other synced roots keep their skip names"
+        );
+    }
+
+    #[test]
+    fn css_root_nested_under_a_plugin_root_keeps_its_skip_names() {
+        let deps = SharedPathSet::default();
+        let mut filter = filter_with(&["/proj"], &["dist", "node_modules"]);
+        filter.unfiltered_roots = BTreeSet::from([PathBuf::from("/proj")]);
+        filter.filtered_roots = BTreeSet::from([PathBuf::from("/proj/src/styles")]);
+        assert!(
+            filter.suppresses(Path::new("/proj/src/styles/node_modules/a.css"), &deps),
+            "the nested CSS root's skip dir stays suppressed"
+        );
+        assert!(filter.suppresses(Path::new("/proj/src/styles/x/dist/b.css"), &deps));
+        assert!(!filter.suppresses(Path::new("/proj/src/styles/a.css"), &deps));
+        assert!(
+            !filter.suppresses(Path::new("/proj/node_modules/pkg/data.json"), &deps),
+            "paths covered only by the plugin root are delivered"
+        );
+        assert!(!filter.suppresses(Path::new("/proj/src/dist/c.json"), &deps));
+    }
+
+    #[test]
+    fn plugin_root_nested_under_a_css_root_stays_unfiltered_after_sync() {
+        let deps = SharedPathSet::default();
+        let mut filter = filter_with(&["/proj/lib"], &["dist"]);
+        filter.unfiltered_roots = BTreeSet::from([PathBuf::from("/proj/lib/plugin-data")]);
+        filter.filtered_roots = BTreeSet::from([PathBuf::from("/proj/lib")]);
+        assert!(!filter.suppresses(Path::new("/proj/lib/plugin-data/dist/a.json"), &deps));
+        assert!(filter.suppresses(Path::new("/proj/lib/other/dist/a.json"), &deps));
     }
 
     #[test]

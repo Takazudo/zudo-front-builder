@@ -76,6 +76,23 @@ pub struct VirtualModuleEntry {
     /// yet reads this field to register an actual dev-server watch, or
     /// to call the forced-reload variant of `invoke_virtual_loader`.
     pub watch_files: Vec<PathBuf>,
+    /// Directory dependencies from `addVirtualModule`'s optional
+    /// `{ watchDirectories }` option (issue #4894). The plugin host has
+    /// already checked that each root is an existing absolute directory;
+    /// ingest validates and compiles the globs. See
+    /// [`crate::plugin_watch_dirs`] for the matching rules.
+    pub watch_directories: Vec<WatchDirectory>,
+}
+
+/// One `addVirtualModule(..., { watchDirectories: [...] })` declaration
+/// (issue #4894): an absolute root watched recursively, with optional
+/// root-relative `/`-separated globs. `include: None` means every
+/// descendant file; an explicit empty `include` is rejected at setup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchDirectory {
+    pub path: PathBuf,
+    pub include: Option<Vec<String>>,
+    pub exclude: Vec<String>,
 }
 
 /// Map from bare specifier (exact match) → registered loader.
@@ -316,6 +333,17 @@ pub enum SetupRegistryError {
          it must be non-empty)"
     )]
     InvalidClientEntry { plugin: String, entrypoint: String },
+
+    #[error(
+        "plugin `{plugin}` registered virtual module `{specifier}` with an invalid \
+         `watchDirectories` entry `{path}`: {reason}"
+    )]
+    InvalidWatchDirectory {
+        plugin: String,
+        specifier: String,
+        path: String,
+        reason: String,
+    },
 }
 
 /// One client-side side-effect entry registered by a plugin's `setup` hook
@@ -399,6 +427,8 @@ pub(crate) enum RawSetupRegistration {
         /// non-empty-string + absolute on the JS host side; stored
         /// verbatim, no `resolve_against_root` join.
         watch_files: Vec<String>,
+        /// `{ watchDirectories }` declarations (issue #4894).
+        watch_directories: Vec<WatchDirectory>,
     },
     InjectRoute {
         pattern: String,
@@ -529,7 +559,18 @@ impl<'a> PluginSetupAccumulator<'a> {
                     specifier,
                     loader_id,
                     watch_files,
+                    watch_directories,
                 } => {
+                    for directory in &watch_directories {
+                        validate_watch_directory(directory).map_err(|reason| {
+                            SetupRegistryError::InvalidWatchDirectory {
+                                plugin: output.plugin.clone(),
+                                specifier: specifier.clone(),
+                                path: directory.path.display().to_string(),
+                                reason,
+                            }
+                        })?;
+                    }
                     if let Some(first_plugin) = self.virtual_origin.get(&specifier) {
                         if first_plugin != &output.plugin {
                             return Err(SetupRegistryError::VirtualModuleConflict {
@@ -549,6 +590,7 @@ impl<'a> PluginSetupAccumulator<'a> {
                         plugin: output.plugin.clone(),
                         loader_id,
                         watch_files: watch_files.into_iter().map(PathBuf::from).collect(),
+                        watch_directories,
                     });
                 }
                 RawSetupRegistration::InjectRoute {
@@ -675,6 +717,28 @@ impl<'a> PluginSetupAccumulator<'a> {
     }
 }
 
+/// Shape checks for one `watchDirectories` declaration. Existence is the
+/// plugin host's check (it runs at setup, next to the plugin's own fs view).
+fn validate_watch_directory(directory: &WatchDirectory) -> Result<(), String> {
+    if !directory.path.is_absolute() {
+        return Err("`path` must be an absolute directory path".to_string());
+    }
+    if let Some(include) = directory.include.as_deref() {
+        if include.is_empty() {
+            return Err(
+                "`include` must not be empty; omit it to match every file below the root"
+                    .to_string(),
+            );
+        }
+        crate::plugin_watch_dirs::compile_watch_directory_globs(include)
+            .and_then(|_| crate::plugin_watch_dirs::validate_watch_directory_include(include))
+            .map_err(|error| format!("`include`: {error}"))?;
+    }
+    crate::plugin_watch_dirs::compile_watch_directory_globs(&directory.exclude)
+        .map_err(|error| format!("`exclude`: {error}"))?;
+    Ok(())
+}
+
 /// Resolve a user-supplied path relative to the project root. Absolute
 /// inputs are passed through unchanged. The path is **not** required
 /// to exist on disk yet — Wave 2 consumers may decide whether
@@ -784,6 +848,7 @@ mod tests {
                 specifier: specifier.into(),
                 loader_id: VirtualLoaderId(loader_id.into()),
                 watch_files: vec![],
+                watch_directories: vec![],
             }],
         }
     }
@@ -887,6 +952,7 @@ mod tests {
                 specifier: "virtual:data".into(),
                 loader_id: VirtualLoaderId("v0".into()),
                 watch_files: vec!["/abs/data.json".into(), "/abs/other.json".into()],
+                watch_directories: vec![],
             }],
         })
         .unwrap();
@@ -913,6 +979,7 @@ mod tests {
                 specifier: "virtual:data".into(),
                 loader_id: VirtualLoaderId("v0".into()),
                 watch_files: vec!["/abs/a.json".into()],
+                watch_directories: vec![],
             }],
         })
         .unwrap();
@@ -922,6 +989,7 @@ mod tests {
                 specifier: "virtual:data".into(),
                 loader_id: VirtualLoaderId("v1".into()),
                 watch_files: vec!["/abs/b.json".into()],
+                watch_directories: vec![],
             }],
         })
         .unwrap();
@@ -929,6 +997,82 @@ mod tests {
         let entry = virtual_modules.get("virtual:data").unwrap();
         assert_eq!(entry.loader_id.as_str(), "v1");
         assert_eq!(entry.watch_files, vec![PathBuf::from("/abs/b.json")]);
+    }
+
+    fn ingest_watch_directory(directory: WatchDirectory) -> Result<(), SetupRegistryError> {
+        let mut acc = PluginSetupAccumulator::new(Path::new("/proj"), SetupCommand::Dev);
+        acc.ingest(RawPluginSetupOutput {
+            plugin: "p".into(),
+            registrations: vec![RawSetupRegistration::VirtualModule {
+                specifier: "virtual:dir".into(),
+                loader_id: VirtualLoaderId("v0".into()),
+                watch_files: vec![],
+                watch_directories: vec![directory],
+            }],
+        })
+    }
+
+    fn watch_dir(include: Option<&[&str]>, exclude: &[&str]) -> WatchDirectory {
+        WatchDirectory {
+            // An absolute path on every platform (`/abs` is relative on Windows).
+            path: std::env::temp_dir().join("abs-posts"),
+            include: include.map(|p| p.iter().map(|s| s.to_string()).collect()),
+            exclude: exclude.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn virtual_module_watch_directories_survive_ingest() {
+        // #4894: declarations are stored as given, nested lists included.
+        let mut acc = PluginSetupAccumulator::new(Path::new("/proj"), SetupCommand::Dev);
+        let directory = watch_dir(Some(&["**/*.md"]), &["drafts/**"]);
+        acc.ingest(RawPluginSetupOutput {
+            plugin: "p".into(),
+            registrations: vec![RawSetupRegistration::VirtualModule {
+                specifier: "virtual:dir".into(),
+                loader_id: VirtualLoaderId("v0".into()),
+                watch_files: vec![],
+                watch_directories: vec![directory.clone(), watch_dir(None, &[])],
+            }],
+        })
+        .unwrap();
+        let (_, virtual_modules, _, _) = acc.finish();
+        let entry = virtual_modules.get("virtual:dir").unwrap();
+        assert_eq!(
+            entry.watch_directories,
+            vec![directory, watch_dir(None, &[])]
+        );
+    }
+
+    #[test]
+    fn invalid_watch_directories_are_rejected_with_a_named_diagnostic() {
+        let relative = WatchDirectory {
+            path: PathBuf::from("relative/posts"),
+            ..watch_dir(None, &[])
+        };
+        for (directory, needle) in [
+            (relative, "absolute"),
+            (watch_dir(Some(&[]), &[]), "`include` must not be empty"),
+            (watch_dir(Some(&["/abs/*.md"]), &[]), "absolute"),
+            (watch_dir(None, &["../x/**"]), "`..`"),
+            (watch_dir(Some(&["a/["]), &[]), "invalid glob"),
+            (watch_dir(Some(&["C:/posts/*.md"]), &[]), "drive letter"),
+            (watch_dir(Some(&["posts\\sub/*.md"]), &[]), "backslash"),
+            (watch_dir(Some(&[".git/**"]), &[]), "`.git`"),
+            (watch_dir(None, &["a/./b.md"]), "`.` segment"),
+            (watch_dir(None, &["a//b.md"]), "empty segment"),
+        ] {
+            let message = ingest_watch_directory(directory)
+                .expect_err("invalid declaration must fail setup")
+                .to_string();
+            assert!(message.contains("virtual:dir"), "{message}");
+            assert!(message.contains("watchDirectories"), "{message}");
+            assert!(
+                message.contains(needle),
+                "{needle:?} missing from {message}"
+            );
+        }
+        assert!(ingest_watch_directory(watch_dir(Some(&["*.md"]), &[])).is_ok());
     }
 
     #[test]

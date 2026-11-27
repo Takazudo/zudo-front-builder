@@ -64,6 +64,7 @@ pub mod plugin_bundler;
 pub mod plugin_refresh;
 pub mod plugin_registries;
 pub mod plugin_runner;
+pub mod plugin_watch_dirs;
 pub mod policy;
 /// Dev-only `ZFB_DEV_PROVENANCE_TRACE` structured trace (issue #4753).
 pub mod provenance_trace;
@@ -128,13 +129,14 @@ pub use plugin_refresh::{
 pub use plugin_registries::{
     run_preview_setup, AliasEntry, AliasMap, ClientEntry, ClientEntryList, InjectedRoute,
     InjectedRouteList, SetupCommand, SetupRegistries, SetupRegistryError, VirtualLoaderId,
-    VirtualModuleEntry, VirtualModuleRegistry,
+    VirtualModuleEntry, VirtualModuleRegistry, WatchDirectory,
 };
 pub use plugin_runner::{
     annotate_with_plugin_error, extract_plugin_error, resolve_hook_timeout, BuildHookContext,
     DevRegisterContext, DevRegistration, DevRequest, DevResponse, PluginError, PluginHost,
     PluginSpec, PostBuildParamValue, PostBuildRouteEntry, PostBuildRouteManifest, SetupHookContext,
 };
+pub use plugin_watch_dirs::{compile_watch_directory_globs, PluginWatchDirectories};
 pub use policy::{
     classify_change, classify_change_with_content_roots, ssr_read_start, GranularityPolicy,
     KnownContentEntries, KnownPageSources, PathClass, RawImportInvalidation,

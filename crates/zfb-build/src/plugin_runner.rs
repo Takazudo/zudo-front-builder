@@ -922,6 +922,9 @@ impl PluginHost {
                 /// never emits the field.
                 #[serde(rename = "watchFiles", default)]
                 watch_files: Vec<String>,
+                /// `{ watchDirectories }` (issue #4894); same default rule.
+                #[serde(rename = "watchDirectories", default)]
+                watch_directories: Vec<WireWatchDirectory>,
             },
             #[serde(rename = "injectRoute")]
             InjectRoute {
@@ -935,6 +938,15 @@ impl PluginHost {
             /// Client-side side-effect entry (#1196).
             #[serde(rename = "addClientEntry")]
             AddClientEntry { entrypoint: String },
+        }
+
+        #[derive(Deserialize)]
+        struct WireWatchDirectory {
+            path: String,
+            #[serde(default)]
+            include: Option<Vec<String>>,
+            #[serde(default)]
+            exclude: Vec<String>,
         }
 
         #[derive(Deserialize)]
@@ -965,10 +977,19 @@ impl PluginHost {
                         specifier,
                         loader_id,
                         watch_files,
+                        watch_directories,
                     } => RawSetupRegistration::VirtualModule {
                         specifier,
                         loader_id: VirtualLoaderId(loader_id),
                         watch_files,
+                        watch_directories: watch_directories
+                            .into_iter()
+                            .map(|directory| crate::plugin_registries::WatchDirectory {
+                                path: PathBuf::from(directory.path),
+                                include: directory.include,
+                                exclude: directory.exclude,
+                            })
+                            .collect(),
                     },
                     WireRegistration::InjectRoute {
                         pattern,
@@ -2482,6 +2503,183 @@ mod tests {
             "expected a directory-rejection error, got: {msg}"
         );
         host.shutdown().await.ok();
+    }
+
+    /// Run one plugin's `setup` (issue #4894 helpers): `body` is the
+    /// `setup` hook's body with `addVirtualModule` in scope.
+    async fn run_setup_with_body(
+        tmp: &tempfile::TempDir,
+        body: &str,
+    ) -> Result<crate::plugin_registries::SetupRegistries> {
+        let plugin_path = tmp.path().join("dirs.mjs");
+        let plugin_src = format!(
+            "export default {{ name: \"dirs\", setup({{ addVirtualModule }}) {{ {body} }} }};"
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "dirs".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+        let result = host
+            .run_setup(
+                tmp.path(),
+                &tmp.path().join(".zfb-build").join("plugins"),
+                crate::plugin_registries::SetupCommand::Dev,
+                &serde_json::json!({}),
+            )
+            .await;
+        host.shutdown().await.ok();
+        result
+    }
+
+    #[tokio::test]
+    async fn setup_hook_virtual_module_watch_directories_round_trip_and_copy() {
+        // #4894: declarations cross the wire intact, and mutating the
+        // caller's objects after registration changes nothing.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let posts = tmp.path().join("posts");
+        let data = tmp.path().join("data");
+        std::fs::create_dir_all(&posts).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        let body = format!(
+            r#"
+            const decl = {{ path: {posts:?}, include: ["**/*.md", "x:notes.md", "\\[slug\\].md"], exclude: ["drafts/**"] }};
+            const list = [decl, {{ path: {data:?} }}];
+            addVirtualModule("virtual:posts", () => 'export default 1', {{ watchDirectories: list }});
+            decl.path = "/elsewhere";
+            decl.include.push("**/*.txt");
+            decl.exclude.length = 0;
+            list.push({{ path: "/also-elsewhere" }});
+            "#,
+            posts = posts.to_string_lossy(),
+            data = data.to_string_lossy(),
+        );
+        let regs = run_setup_with_body(&tmp, &body).await.expect("setup ok");
+        let vm = regs
+            .virtual_modules
+            .get("virtual:posts")
+            .expect("vm registered");
+        assert!(vm.watch_files.is_empty());
+        assert_eq!(
+            vm.watch_directories,
+            vec![
+                crate::plugin_registries::WatchDirectory {
+                    path: posts,
+                    include: Some(vec![
+                        "**/*.md".into(),
+                        "x:notes.md".into(),
+                        "\\[slug\\].md".into(),
+                    ]),
+                    exclude: vec!["drafts/**".into()],
+                },
+                crate::plugin_registries::WatchDirectory {
+                    path: data,
+                    include: None,
+                    exclude: vec![],
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn setup_hook_virtual_module_rejects_invalid_watch_directories() {
+        // #4894: every rejected shape names `watchDirectories` and the reason.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let file = tmp.path().join("file.txt");
+        std::fs::write(&file, "x").unwrap();
+        let root = root.to_string_lossy().to_string();
+        let cases = [
+            ("{ path: \"relative/dir\" }".to_string(), "absolute"),
+            (
+                format!(
+                    "{{ path: {:?} }}",
+                    tmp.path().join("missing").to_string_lossy()
+                ),
+                "does not exist",
+            ),
+            (
+                format!("{{ path: {:?} }}", file.to_string_lossy()),
+                "not a directory",
+            ),
+            (
+                format!("{{ path: {root:?}, include: [] }}"),
+                "must not be empty",
+            ),
+            (
+                format!("{{ path: {root:?}, include: [\"/abs/*.md\"] }}"),
+                "absolute",
+            ),
+            (
+                format!("{{ path: {root:?}, exclude: [\"../x/**\"] }}"),
+                "`..`",
+            ),
+            (
+                format!("{{ path: {root:?}, include: [42] }}"),
+                "non-empty strings",
+            ),
+            (
+                format!("{{ path: {root:?}, include: [\"C:/posts/*.md\"] }}"),
+                "drive letter",
+            ),
+            (
+                format!("{{ path: {root:?}, include: [\"posts\\\\sub/*.md\"] }}"),
+                "backslash",
+            ),
+            (
+                format!("{{ path: {root:?}, include: [\".git/**\"] }}"),
+                "`.git`",
+            ),
+            (
+                format!("{{ path: {root:?}, include: [\"./a.md\"] }}"),
+                "`.` segment",
+            ),
+            (
+                format!("{{ path: {root:?}, exclude: [\"a//b.md\"] }}"),
+                "empty segment",
+            ),
+            (
+                format!("{{ path: {root:?}, exclude: [\"drafts/\"] }}"),
+                "empty segment",
+            ),
+            (
+                format!("{{ path: {root:?}, include: [\"a/[\"] }}"),
+                "invalid glob",
+            ),
+            ("\"/abs/dir\"".to_string(), "must be objects"),
+        ];
+        for (decl, needle) in cases {
+            let body = format!(
+                "addVirtualModule(\"virtual:x\", () => 'export default 1', {{ watchDirectories: [{decl}] }});"
+            );
+            let err = run_setup_with_body(&tmp, &body)
+                .await
+                .expect_err(&format!("{decl} must be rejected"));
+            let msg = format!("{err:#}");
+            assert!(msg.contains("watchDirectories"), "{decl}: {msg}");
+            assert!(msg.contains(needle), "{decl}: expected {needle:?} in {msg}");
+        }
+        let body =
+            "addVirtualModule(\"virtual:x\", () => 'export default 1', { watchDirectories: {} });";
+        let err = run_setup_with_body(&tmp, body)
+            .await
+            .expect_err("non-array");
+        assert!(format!("{err:#}").contains("must be an array"));
     }
 
     #[tokio::test]

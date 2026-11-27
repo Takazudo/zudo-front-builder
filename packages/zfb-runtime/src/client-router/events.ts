@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 import { safeReplaceState } from "./history-safe.js";
-import { swap } from "./swap-functions.js";
+import { flushPersistedFocusReveal, focusedPersistedElement, swap } from "./swap-functions.js";
 import type { Direction, NavigationTypeString } from "./types.js";
 
 export const TRANSITION_BEFORE_PREPARATION = "zfb:before-preparation";
@@ -211,6 +211,10 @@ export async function doSwap(
   if (beforeSwap?.(event) === false) {
     return { swapped: false as const, event };
   }
+  // Sampled after every before-swap listener and the pre-swap callback, around
+  // the real (possibly consumer-replaced) swap, so it covers custom swaps too.
+  const focusedPersisted = focusedPersistedElement();
   event.swap();
+  flushPersistedFocusReveal(focusedPersisted);
   return { swapped: true as const, event };
 }
