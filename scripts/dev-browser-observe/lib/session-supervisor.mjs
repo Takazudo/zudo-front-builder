@@ -1,4 +1,5 @@
 import { fork } from "node:child_process";
+import { takeNextOuterChannel } from "./next-outer-channel.mjs";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -123,14 +124,27 @@ export function superviseController({
   diagnostic = false,
   onVerifiedExit,
   recordFailure = () => {},
+  nextOuterChannel,
 }) {
   return new Promise((resolve) => {
     const started = monotonicMs();
     const workDeadline = deadline - terminalMs;
-    const child = fork(worker, [JSON.stringify({ ...args, workDeadline })], {
-      execArgv: [],
-      stdio: ["ignore", "inherit", "inherit", "ipc"],
-    });
+    const channel = nextOuterChannel && takeNextOuterChannel(nextOuterChannel);
+    let child;
+    let closeFailure;
+    try {
+      child = fork(worker, [JSON.stringify({ ...args, workDeadline })], {
+        execArgv: [],
+        stdio: ["ignore", "inherit", "inherit", "ipc", ...(channel?.descriptors ?? [])],
+      });
+    } finally {
+      try {
+        channel?.close();
+      } catch (error) {
+        if (!child) throw error;
+        closeFailure = error;
+      }
+    }
     let workTimer;
     let terminalTimer;
     let reason = null;
@@ -230,5 +244,6 @@ export function superviseController({
       () => stopWork("session wall cleanup reserve reached"),
       Math.max(0, workDeadline - monotonicMs()),
     );
+    if (closeFailure) stopWork("outer channel cleanup failed: " + closeFailure.message);
   });
 }
