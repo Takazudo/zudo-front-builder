@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   openSync,
   closeSync,
@@ -40,7 +41,69 @@ export function peerArgv(raw, nextServer) {
   return raw.slice(0, -1).split("\0");
 }
 
-export function identifyPeerRoles(rows, { framework, rootPid, appDir, node, port }, ready) {
+export function identifyPeerRoles(rows, cfg, ready) {
+  try {
+    return classifyPeerRoles(rows, cfg, ready);
+  } catch (error) {
+    // The sampler already owns these births. Preserve observations separately
+    // from accepted roles; in particular, a Node image alone is ambiguous.
+    let remaining = 64 * 1024;
+    const observed = rows.map((row) => {
+      const {
+        pid,
+        ppid,
+        pgid,
+        startTicks,
+        bootId,
+        birthVersion,
+        before,
+        after,
+        cwd,
+        image,
+        elfHeader,
+        privateWorker,
+        devServer,
+      } = row;
+      const argvBytes = Buffer.from(JSON.stringify(row.argv));
+      const include = argvBytes.length <= remaining;
+      if (include) remaining -= argvBytes.length;
+      return {
+        pid,
+        ppid,
+        pgid,
+        startTicks,
+        bootId,
+        birthVersion,
+        before,
+        after,
+        cwd,
+        image,
+        elfHeader,
+        privateWorker,
+        devServer,
+        ...(include
+          ? { argv: row.argv }
+          : {
+              argvOmitted: true,
+              argvJsonBytes: argvBytes.length,
+              argvJsonSha256: createHash("sha256").update(argvBytes).digest("hex"),
+            }),
+      };
+    });
+    error.details = {
+      stage: "peer-role-classification",
+      roleQualified: false,
+      framework: cfg.framework,
+      rootPid: cfg.rootPid,
+      port: cfg.port,
+      ready,
+      observed,
+    };
+    throw error;
+  }
+}
+
+function classifyPeerRoles(rows, { framework, rootPid, appDir, node, port }, ready) {
   const root = rows.find((r) => r.pid === rootPid);
   assert(root, "root missing");
   const prefix =

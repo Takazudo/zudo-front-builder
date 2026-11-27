@@ -478,3 +478,97 @@ test.skipIf(process.platform !== "linux")(
     assert.equal(actual.info.ino, statSync(process.execPath, { bigint: true }).ino);
   },
 );
+
+test.each([false, true])(
+  "a fourth live Next process is rejected with bounded, durable partial evidence (long argv %s)",
+  async (large) => {
+    const cfg = { framework: "next", node: "/pin/node", appDir: "/app", port: 3456, rootPid: 10 };
+    const proc = (pid, ppid, argv) => ({
+      pid,
+      ppid,
+      pgid: 10,
+      startTicks: String(100 + pid),
+      bootId: "boot",
+      before: { pid, state: "R" },
+      after: { pid, state: "S" },
+      cwd: "/app",
+      image: { path: "/pin/node", device: "7", inode: "10" },
+      argv,
+      privateWorker: true,
+      devServer: true,
+    });
+    const rows = [
+      proc(10, 1, [
+        "/pin/node",
+        "/app/scripts/dev-content.mjs",
+        "--hostname",
+        "127.0.0.1",
+        "--port",
+        "3456",
+      ]),
+      proc(11, 10, [
+        "/pin/node",
+        "/app/node_modules/next/dist/bin/next",
+        "dev",
+        "--hostname",
+        "127.0.0.1",
+        "--port",
+        "3456",
+      ]),
+      proc(12, 11, ["next-server (v16.4.6)"]),
+      proc(13, 12, ["/pin/node", large ? "x".repeat(65536) : "/app/unknown.js"]),
+    ];
+    const records = [],
+      fail = Promise.withResolvers(),
+      ns = process.hrtime.bigint();
+    const monitor = startFixedRssSafety({
+      server: {},
+      fixedExecutables: { root: { path: cfg.node } },
+      peer: cfg,
+      limits: { rssCeilingKiB: 4194304, sampleEveryMs: 1000 },
+      append: (row) => records.push(JSON.parse(JSON.stringify(row))),
+      abort: fail.resolve,
+      sample: async () => ({
+        summedRssKiB: 4,
+        helper: { closed: true, pipesClosed: true, spawnHrtimeNs: String(ns) },
+        timing: {
+          clock: { qualified: true },
+          parent: {
+            entryNs: String(ns),
+            resultNs: String(ns),
+            deadlineNs: String(ns + 750000000n),
+          },
+        },
+        processes: rows.map((row) => ({
+          pid: row.pid,
+          statusKiB: { VmRSS: 1 },
+          smapsRollupKiB: { Rss: 1 },
+          disposition: "live",
+        })),
+      }),
+      checkRoles: () => identify(rows, cfg, true),
+    });
+    try {
+      assert.match((await fail.promise).message, /unknown role/);
+      const failure = await monitor.stop();
+      const saved = records.find((r) => r.type === "fixed-rss-failure").failure;
+      assert.deepEqual(saved, JSON.parse(JSON.stringify(failure)));
+      assert.equal(saved.details.roleQualified, false);
+      assert.equal(saved.details.observed.length, 4);
+      const last = saved.details.observed[3];
+      if (large) {
+        assert.equal(last.argvOmitted, true);
+        assert.equal(last.argv, undefined);
+        assert.equal(last.argvJsonSha256, sha256(Buffer.from(JSON.stringify(rows[3].argv))));
+      } else assert.deepEqual(last.argv, rows[3].argv);
+      assert.deepEqual(last.after, rows[3].after);
+      assert.equal(last.role, undefined);
+      assert.equal(
+        records.some((r) => r.type === "fixed-peer-roles"),
+        false,
+      );
+    } finally {
+      await monitor.stop();
+    }
+  },
+);

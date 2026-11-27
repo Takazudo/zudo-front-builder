@@ -798,6 +798,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
               ok: false,
               method: "linux-proc-birth-role-executable",
               actual: String(error.message),
+              ...(error.details && { details: error.details }),
             },
           ];
         }
