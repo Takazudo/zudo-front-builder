@@ -52,6 +52,8 @@ test.each([
   "abort",
   "request",
   "wrong-population",
+  "topology-after-journal",
+  "image-after-journal",
   "fails-after-journal",
 ])("normal family batch at blank boundary: %s", async (mode) => {
   const temp = mkdtempSync(join(tmpdir(), "family-admission-"));
@@ -97,9 +99,14 @@ test.each([
     const invoke = () =>
       runOriginalFamilyBatch(input, {
         browserAudit: audit,
-        snapshot: () => [root, dev],
+        snapshot: () =>
+          mode === "topology-after-journal" && rows.length
+            ? [root, dev, identity(8, 4, 8)]
+            : [root, dev],
         known: mode === "wrong-population" ? new Map() : known,
-        verifyImages() {},
+        verifyImages() {
+          if (mode === "image-after-journal" && rows.length) throw Error("image changed");
+        },
         deadlineNs: process.hrtime.bigint() + 10_000_000_000n,
         signal: ac.signal,
         append: (r) => rows.push(r),

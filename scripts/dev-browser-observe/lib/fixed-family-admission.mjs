@@ -38,13 +38,18 @@ export function verifyFamilyImages(proof, pins) {
         buf = Buffer.alloc(16385);
       try {
         let offset = 0;
-        while (offset < buf.length) {
+        let eof = false;
+        for (let read = 0; read < 8 && offset < buf.length; read++) {
           const n = readSync(cmd, buf, offset, buf.length - offset, null);
-          if (!n) break;
+          if (!n) {
+            eof = true;
+            break;
+          }
           offset += n;
         }
         assert(
-          offset < buf.length &&
+          eof &&
+            offset < buf.length &&
             buf.subarray(0, offset).equals(Buffer.from(args.join("\0") + "\0")),
           "family role argv mismatch",
         );
@@ -70,7 +75,18 @@ export function blankBrowserAudit() {
   const onRequest = (request) => {
     if (/^https?:/i.test(request.url())) httpRequests++;
   };
+  const inspect = () => {
+    const pages = context?.pages();
+    return {
+      tracked: Boolean(context),
+      httpRequests: context ? httpRequests : null,
+      pageUrl: pages?.length === 1 ? pages[0].url() : null,
+      workloadWriteCalls,
+      snapshots,
+    };
+  };
   return {
+    inspect,
     attach(value) {
       assert(!context && value.pages().length === 0, "family context must begin empty");
       context = value;
@@ -97,16 +113,8 @@ export function blankBrowserAudit() {
     },
     finish() {
       if (captured) return captured;
-      const pages = context?.pages();
-      const pageUrl = pages?.length === 1 ? pages[0].url() : null;
+      captured = inspect();
       context?.off("request", onRequest);
-      captured = {
-        tracked: Boolean(context),
-        httpRequests: context ? httpRequests : null,
-        pageUrl,
-        workloadWriteCalls,
-        snapshots,
-      };
       return captured;
     },
   };
@@ -118,14 +126,10 @@ export function runOriginalFamilyBatch(
   input,
   { safety, snapshot, known, browserAudit, signal, append, deadlineNs, verifyImages },
 ) {
-  const audit = browserAudit.finish();
-  const row = {
-    type: "original-family-admission",
-    ...audit,
-    batchEntered: false,
-  };
-  try {
-    signal.throwIfAborted();
+  const row = { type: "original-family-admission", batchEntered: false };
+  let journaled = false,
+    admission;
+  const requireBlank = (audit) =>
     assert(
       audit.tracked &&
         audit.pageUrl === "about:blank" &&
@@ -134,46 +138,51 @@ export function runOriginalFamilyBatch(
         audit.snapshots === 0,
       "family browser left blank setup",
     );
+  try {
+    signal.throwIfAborted();
+    const initial = browserAudit.inspect();
+    requireBlank(initial);
+    const provisional = safety.verifyFamilyAdmission();
+    append({ ...row, ...initial, status: "pre-batch-proof", proof: provisional });
+    journaled = true;
+    // The filesystem journal may stall. Make the authoritative census and
+    // live image/argv checks only after it returns; no extra scheduling.
+    signal.throwIfAborted();
     const owned = snapshot();
-    const proof = safety.verifyFamilyAdmission();
     assert(
-      population(proof.sample.live, [proof.root, proof.dev]) &&
-        population(owned, [proof.root, proof.dev]) &&
-        population([...known.values()], [proof.root, proof.dev, proof.worker]),
+      population(provisional.sample.live, [provisional.root, provisional.dev]) &&
+        population(owned, [provisional.root, provisional.dev]) &&
+        population([...known.values()], [provisional.root, provisional.dev, provisional.worker]),
       "family ownership population changed",
     );
     assert(
       owned.every((p) => !["X", "x", "Z"].includes(p.state)),
       "family root/native unavailable",
     );
+    verifyImages(provisional);
+    const audit = browserAudit.finish();
+    requireBlank(audit);
+    const proof = safety.verifyFamilyAdmission();
+    assert(
+      same(proof.root, provisional.root) &&
+        same(proof.dev, provisional.dev) &&
+        same(proof.worker, provisional.worker),
+      "family startup ownership changed",
+    );
     signal.throwIfAborted();
-    assert(process.hrtime.bigint() < deadlineNs, "family work deadline expired");
-    verifyImages(proof);
-    row.proof = proof;
-    row.owned = owned;
-    row.known = [...known.values()];
-  } catch (error) {
-    append({ ...row, admitted: false, reason: String(error?.message ?? error) });
-    throw error;
-  }
-  append({ ...row, status: "pre-batch-proof" });
-  // Journaling can itself exhaust the clock. Refuse without entering the batch.
-  try {
-    signal.throwIfAborted();
-    safety.verifyFamilyAdmission();
-    assert(process.hrtime.bigint() < deadlineNs, "family work deadline expired after journal");
+    const stamp = process.hrtime.bigint();
+    assert(stamp < deadlineNs, "family work deadline expired");
+    admission = { decisionNs: String(stamp), owned, known: [...known.values()], ...audit };
   } catch (error) {
     append({
       ...row,
+      ...browserAudit.finish(),
       admitted: false,
+      afterJournal: journaled,
       reason: String(error?.message ?? error),
-      afterJournal: true,
     });
     throw error;
   }
   browserAudit.enter();
-  return runBatch({
-    ...input,
-    deps: { ...input.deps, familyAdmissionDecisionNs: String(process.hrtime.bigint()) },
-  });
+  return runBatch({ ...input, deps: { ...input.deps, familyAdmission: admission } });
 }
