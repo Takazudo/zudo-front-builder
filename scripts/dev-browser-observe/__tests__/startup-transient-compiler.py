@@ -55,6 +55,7 @@ go = os.environ.get("GO")
 while go and not os.path.exists(go):
     time.sleep(0.002)
 argv = ["/bin/true"] if os.environ["WORKER"] == "foreign" else [sys.executable, "__zfb-compiler-worker"]
+argv += os.environ.get("EXTRA_ARG", "").split()
 child = subprocess.Popen(argv, executable=argv[0] if argv[0] == "/bin/true" else os.path.realpath(sys.executable),
                          start_new_session=True)
 if os.environ["REAP"] == "now":
@@ -123,14 +124,15 @@ def kill_cell(cwd):
 
 
 class Cell:
-    def __init__(self, worker="live", native_delay=0.0, worker_delay=0.0, dev="run", reap="no", go=False):
+    def __init__(self, worker="live", native_delay=0.0, worker_delay=0.0, dev="run", reap="no", go=False,
+                 extra_arg=""):
         self.dir = tempfile.TemporaryDirectory()
         self.cwd = self.dir.name
         for name, body in (("shim.py", SHIM), ("dev.py", DEV), ("__zfb-compiler-worker", WORKER)):
             Path(self.cwd, name).write_text(body)
         self.go = os.path.join(self.cwd, "go") if go else None
         env = dict(os.environ, NATIVE_DELAY=str(native_delay), WORKER_DELAY=str(worker_delay),
-                   WORKER=worker, DEV=dev, REAP=reap, **({"GO": self.go} if go else {}))
+                   WORKER=worker, DEV=dev, REAP=reap, EXTRA_ARG=extra_arg, **({"GO": self.go} if go else {}))
         self.shim = os.path.join(self.cwd, "shim.py")
         self.root = subprocess.Popen([PY, self.shim, "dev.py"], executable=PY, cwd=self.cwd, env=env,
                                      start_new_session=True, stdin=subprocess.DEVNULL,
@@ -151,9 +153,12 @@ class Cell:
             # The holder's own order (linux-rss-custody.py publish): settle, then poll.
             if pair is not None:
                 self.before_retention(pair, worker_birth)
-                worker_birth = custody.settle_startup_worker(self.s, pair, worker_birth, dev_birth)
-                self.published.append(dict(worker=worker_birth, dev=dev_birth,
-                                           retainable=custody.retainable_startup_state(pair[0], worker_birth)))
+                try:
+                    worker_birth = custody.startup_retention_birth(self.s, pair, worker_birth, dev_birth)
+                except ValueError:
+                    self.published.append(dict(worker=worker_birth, dev=dev_birth, retainable=False))
+                    raise
+                self.published.append(dict(worker=worker_birth, dev=dev_birth, retainable=True))
 
         import inspect
         extra = ([self.completions.append]
@@ -293,6 +298,8 @@ for label, kwargs, message in (
     ("foreign-terminal-child", dict(worker="foreign"), "startup role first seen terminal"),
     ("terminal-zfb-native", dict(dev="exit"), "startup role first seen terminal"),
     ("leader-exit-live-thread", dict(worker="leader-exit"), "startup transient pidfd not terminal"),
+    # A live worker that fails a check is not routed as an exit: its pidfd is live.
+    ("live-worker-foreign-argv", dict(worker="live", extra_arg="--inspect"), "startup process argv mismatch"),
 ):
     s, published, completions = run_case(**kwargs)
     expect(label, s.status == "failed" and s.failure == message and not published and not completions,

@@ -241,6 +241,13 @@ def retainable_startup_state(pidfd, worker):
             transient.get("role") == "__zfb-compiler-worker")
 
 
+def startup_retention_birth(scout, pair, worker, dev):
+    """The birth the holder retains: settled, then re-polled under the ownership lock."""
+    worker = settle_startup_worker(scout, pair, worker, dev)
+    require(retainable_startup_state(pair[0], worker), "startup worker exited before retention")
+    return worker
+
+
 def settle_startup_worker(scout, pair, worker, dev):
     """A live-verified worker that ended before retention is re-read by the scout:
     a clean zombie becomes a completed transient role, a reaped one raises the
@@ -304,8 +311,7 @@ def serve(shared, parent, session, startup_mode=False):
             require(not held or key in held, "ambiguous startup retention")
             # A concurrent ordinary epoch may have held the lock since the
             # scout's last live check. Take a new nonblocking group poll here.
-            worker = settle_startup_worker(scout, pair, worker, dev)
-            require(retainable_startup_state(pair[0], worker), "startup worker exited before retention")
+            worker = startup_retention_birth(scout, pair, worker, dev)
             live_ns = time.monotonic_ns()
             require(live_ns < scout.end_ns and not scout.stop.is_set(), "startup handoff expired")
             first_retained = key

@@ -1961,6 +1961,15 @@ it.each([
           "lock-closed",
         ]),
       );
+      // #4862: the subreaper is set before custody and cleared after the readiness census.
+      const subreaper = records.filter((r) => r.type === "fixed-controller-subreaper");
+      expect(subreaper.map((r) => [r.enabled, r.phase ?? null])).toEqual([
+        [true, null],
+        [false, "cleared-after-readiness-census"],
+      ]);
+      expect(records.indexOf(subreaper[1])).toBeLessThan(
+        records.findIndex((r) => r.type === "original-family-admission"),
+      );
       if (released) {
         expect(code, JSON.stringify({ stderr, errors: records.filter((r) => r.error) })).toBe(
           EXIT.ok,
