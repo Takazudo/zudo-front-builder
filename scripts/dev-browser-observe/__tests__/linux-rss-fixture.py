@@ -91,6 +91,19 @@ class CustodyMessages(unittest.TestCase):
                     self.module.receive(right, [2])
                 self.assertEqual(set(os.listdir("/proc/self/fd")), before)
 
+    def test_retrieval_rechecks_both_received_descriptor_identities_and_types(self):
+        marker = self.module.Client.__new__(self.module.Client)
+        marker.tokens = {"12": "token"}
+        with open("/dev/null", "rb") as source:
+            for identities in ([["0","0"],["0","0"]], [self.module.identity(source.fileno())]*2):
+                fds=[os.dup(source.fileno()),os.dup(source.fileno())]
+                with patch.object(marker, "exchange", return_value=({"descriptors":identities},fds)):
+                    with self.assertRaisesRegex(ValueError, "retrieved descriptor mismatch"):
+                        marker.retrieve({"pid":12})
+                for fd in fds:
+                    with self.assertRaises(OSError):
+                        os.fstat(fd)
+
     def test_ack_requires_original_session_epoch_holder_and_helper(self):
         marker = self.module.Client.__new__(self.module.Client)
         marker.session,marker.epoch,marker.holder_pid = "original", 4, 151

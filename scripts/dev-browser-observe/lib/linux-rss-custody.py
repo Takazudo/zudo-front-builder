@@ -166,8 +166,16 @@ class Client:
 
     def retrieve(self, birth):
         token = self.tokens[str(birth["pid"])]
-        _, fds = self.exchange(dict(op="get", birth=birth, token=token), expect=2)
-        return fds
+        msg, fds = self.exchange(dict(op="get", birth=birth, token=token), expect=2)
+        try:
+            require(msg.get("descriptors") == list(map(identity, fds)) and
+                    os.readlink(f"/proc/self/fd/{fds[0]}") == "anon_inode:[pidfd]" and
+                    stat.S_ISDIR(os.fstat(fds[1]).st_mode), "custody retrieved descriptor mismatch")
+            return fds
+        except BaseException:
+            for fd in fds:
+                os.close(fd)
+            raise
 
     def release(self, birth, token):
         self.exchange(dict(op="release", birth=birth, token=token))

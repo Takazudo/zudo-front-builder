@@ -622,7 +622,8 @@ def main():
                     token = sample.custody.tokens.get(str(pid))
                     if token:
                         sample.custody.release(proof["birth"], token)
-                        emit(dict(type="custody-release", birth=proof["birth"], token=token))
+                        emit(dict(type="custody-release", birth=proof["birth"], token=token,
+                                  receipt=sample.custody.last_receipt))
             code = 0 if sample.run() else 1
     except (OSError, ValueError, Invalid) as exc:
         emit(sample.problem(exc))

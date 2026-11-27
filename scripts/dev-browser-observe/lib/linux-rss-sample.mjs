@@ -664,6 +664,17 @@ export function sampleRendererMemory(
           "unverified custody release",
         );
         requireValue(releaseRequired.delete(row.birth.pid), "unexpected custody release");
+        const r = row.receipt;
+        requireValue(
+          r?.session === request.fixedCustody.session &&
+            r.epoch === request.fixedCustody.epoch &&
+            r.helperPid === helper.pid &&
+            r.holderPid === request.fixedCustody.holderPid &&
+            ticks(r.verifiedNs) &&
+            BigInt(stamps.entryNs) <= BigInt(r.verifiedNs) &&
+            BigInt(r.verifiedNs) <= BigInt(callbackNs),
+          "unverified custody release acknowledgment",
+        );
         custody.forget(row.birth);
       } else if (row.type === "observation") {
         const p = row.process;
@@ -697,6 +708,10 @@ export function sampleRendererMemory(
           checkCustodyTransfer(p, request.fixedCustody, helper);
           requireValue(custody.sameDescriptors(p), "custodied departure descriptor mismatch");
           checkCustodyProofTime(p, stamps.entryNs);
+          requireValue(
+            BigInt(p.custodyReceipt.verifiedNs) <= BigInt(p.terminalProof.observedNs),
+            "custody poll predates descriptor receipt",
+          );
           proofs.set(p.pid, p.terminalProof);
         } else if (p.disposition === "retained-terminal-proof") {
           if (verifiedRoles)
