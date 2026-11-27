@@ -317,6 +317,9 @@ linux(
         final.processes.find((p) => p.pid === workerPid).disposition,
         "retained-terminal-proof",
       );
+      assert.equal(final.custodyReleases.length, 1);
+      assert.equal(final.custodyReleases[0].token, worker.custodyToken);
+      assert.equal(final.custodyReleases[0].receipt.helperPid, final.helper.pid);
       assert.deepEqual(failures, []);
     } catch (error) {
       primaryFailure = error;

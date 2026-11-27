@@ -321,6 +321,7 @@ export function sampleRendererMemory(
   let summedRssKiB = null;
   const observed = new Set();
   const releaseRequired = new Set();
+  const custodyReleases = [];
   const rssSources = new Map();
   let helper = null;
   let executable = null;
@@ -337,6 +338,7 @@ export function sampleRendererMemory(
     timing,
     helper,
     verifiedDiscoveries: discoveries,
+    ...(custody && { custodyReleases }),
     journalFailures,
     processes,
     summedRssKiB,
@@ -675,6 +677,7 @@ export function sampleRendererMemory(
             BigInt(r.verifiedNs) <= BigInt(callbackNs),
           "unverified custody release acknowledgment",
         );
+        custodyReleases.push({ birth: compactBirth(row.birth), token: row.token, receipt: r });
         custody.forget(row.birth);
       } else if (row.type === "observation") {
         const p = row.process;
