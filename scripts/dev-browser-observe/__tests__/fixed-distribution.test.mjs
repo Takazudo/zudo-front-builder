@@ -1899,6 +1899,7 @@ it.each([
         hooks: {
           freePort: async () => 4555,
           enableChildSubreaper: async () => ({ enabled: true, pid: process.pid }),
+          clearChildSubreaper: async () => ({ enabled: false, pid: process.pid }),
           startDevServer: () => ({
             handle,
             zfbEnv: {},

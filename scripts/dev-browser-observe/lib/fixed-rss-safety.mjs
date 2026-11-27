@@ -279,6 +279,9 @@ export function startFixedRssSafety({
                 startTicks,
                 birthVersion,
               })),
+            departures: result.processes
+              .filter((row) => row.disposition !== "live")
+              .map(({ pid, disposition }) => ({ pid, disposition })),
           };
         readyAtEntry?.resolve();
       })

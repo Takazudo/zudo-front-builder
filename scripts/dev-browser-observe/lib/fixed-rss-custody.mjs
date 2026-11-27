@@ -590,6 +590,8 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
       const same = (a, b) => sameLinuxBirth(a, b) && a.ppid === b.ppid && a.pgid === b.pgid;
       const ok =
         sample?.strict &&
+        Array.isArray(sample.departures) &&
+        sample.departures.length === 0 &&
         live.length === 2 &&
         live.some((p) => same(p, seed)) &&
         live.some((p) => same(p, native)) &&
@@ -601,6 +603,7 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
         sampleStartedNs: sample?.startedNs ?? null,
         sampleResultNs: sample?.resultNs ?? null,
         live,
+        departures: sample?.departures ?? null,
         controllerChildren,
         expectedChildren,
         unknownControllerChildren: unknown,
