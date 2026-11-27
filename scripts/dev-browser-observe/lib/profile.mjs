@@ -183,9 +183,13 @@ function originalStartupLimits(p) {
     !p.resourceStudy
   );
 }
+export const ZFB_FOOTER_JOIN_OWNED = "original-shared-layout-join-owned.v2";
+
 function fixedErrors(profile) {
   const errors = [];
-  const footer = profile.fixedZfbFooter === "original-shared-layout.v1";
+  const footer = ["original-shared-layout.v1", ZFB_FOOTER_JOIN_OWNED].includes(
+    profile.fixedZfbFooter,
+  );
   if (
     footer &&
     (!originalStartupLimits(profile) ||

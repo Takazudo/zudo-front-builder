@@ -52,6 +52,7 @@ const nativeCases = [
   "valid-reload",
   "foreign-native-frame",
   "missing-handshake",
+  "pending-before-write",
   "wrong-restore-frame",
   "wrong-or-extra-token",
 ];
@@ -266,7 +267,12 @@ test.each(cases)("%s footer: %s", async (framework, scenarioCase) => {
       fixedAstroFooter: !native,
       fixedZfbFooter: native,
       workDeadlineNs: 99000000000n,
-      beforeAstroWrite: () => {},
+      beforeAstroWrite: () => {
+        if (scenarioCase === "pending-before-write") {
+          assert.equal(writes, 0);
+          throw Error("family RSS observation missing, failed, pending or stopped");
+        }
+      },
       stageBudget: (ms, ns) => {
         deadline = ns + BigInt(ms) * 1000000n;
         return ms;
@@ -275,7 +281,11 @@ test.each(cases)("%s footer: %s", async (framework, scenarioCase) => {
     const { accounting } = await runBatch({ deps: d, scenarios: [scenario] });
     assert.equal(
       writes,
-      ["source-ambiguous", "no-supplement", "missing-handshake"].includes(scenarioCase) ? 0 : 1,
+      ["source-ambiguous", "no-supplement", "missing-handshake", "pending-before-write"].includes(
+        scenarioCase,
+      )
+        ? 0
+        : 1,
     );
     if (["success", "valid-reload"].includes(scenarioCase)) {
       assert.equal(accounting.success, 1);

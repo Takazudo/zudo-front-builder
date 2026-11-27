@@ -49,45 +49,49 @@ test("ZFB footer accepts one local upgrade and authenticated native page payload
   session.emit("Network.webSocketClosed", { requestId: "ok" });
   assert.equal(page.peerSocketTracking.size, 0);
 });
-test("native shared footer safety is a separate exact opt-in", () => {
-  const p = JSON.parse(
-    readFileSync(
-      new URL(
-        "../profiles/field-notes-fixed-zfb-original-memoized-100.example.json",
-        import.meta.url,
+test.each(["original-shared-layout.v1", "original-shared-layout-join-owned.v2"])(
+  "native shared footer safety is a separate exact opt-in: %s",
+  (variant) => {
+    const p = JSON.parse(
+      readFileSync(
+        new URL(
+          "../profiles/field-notes-fixed-zfb-original-memoized-100.example.json",
+          import.meta.url,
+        ),
       ),
-    ),
-  );
-  p.fixedRssSafety = "linux-fixed-zfb.v4";
-  p.fixedZfbFooter = "original-shared-layout.v1";
-  p.fixedPeerBrowser = {
-    executablePath: "/chrome",
-    executableSha256: "a".repeat(64),
-    defaultExecutableSha256: "b".repeat(64),
-  };
-  const footer = p.scenarios.find((x) => x.id === "fn-shared-component");
-  delete footer.ops[0].repeat;
-  p.scenarios = [footer];
-  p.server.readyTimeoutMs = 300000;
-  p.limits.wallCeilingMs = 7200000;
-  Object.assign(p.timeouts, { attemptMs: 60000, supplementalMs: 60000, restoreMs: 120000 });
-  const errors = (q) => [...validateAs(profileSchemaFor(q), q), ...semanticErrors(q)];
-  assert.deepEqual(errors(p), []);
-  for (const change of [
-    (q) => (q.fixedRssSafety = "linux-fixed-zfb.v3"),
-    (q) => (q.framework = "astro"),
-    (q) => (q.fixedFamilyAdmission = "blank-before-custody.v1"),
-    (q) => (q.fixture.adapter = "recovered-snapshot"),
-    (q) => (q.fixture.importedCss = false),
-    (q) => delete q.fixedPeerBrowser,
-    (q) => (q.scenarios[0].ops[0].op = "edit-managed-css"),
-    (q) => (q.scenarios[0].ops[0].repeat = { warmups: 0, measured: 1 }),
-  ]) {
-    const wrong = structuredClone(p);
-    change(wrong);
-    assert(errors(wrong).length);
-  }
-});
+    );
+    p.fixedRssSafety = "linux-fixed-zfb.v4";
+    p.fixedZfbFooter = variant;
+    p.fixedPeerBrowser = {
+      executablePath: "/chrome",
+      executableSha256: "a".repeat(64),
+      defaultExecutableSha256: "b".repeat(64),
+    };
+    const footer = p.scenarios.find((x) => x.id === "fn-shared-component");
+    delete footer.ops[0].repeat;
+    p.scenarios = [footer];
+    p.server.readyTimeoutMs = 300000;
+    p.limits.wallCeilingMs = 7200000;
+    Object.assign(p.timeouts, { attemptMs: 60000, supplementalMs: 60000, restoreMs: 120000 });
+    const errors = (q) => [...validateAs(profileSchemaFor(q), q), ...semanticErrors(q)];
+    assert.deepEqual(errors(p), []);
+    for (const change of [
+      (q) => (q.fixedRssSafety = "linux-fixed-zfb.v3"),
+      (q) => (q.framework = "astro"),
+      (q) => (q.fixedFamilyAdmission = "blank-before-custody.v1"),
+      (q) => (q.fixedFamilyAdmission = "blank-join-owned.v2"),
+      (q) => (q.fixture.adapter = "recovered-snapshot"),
+      (q) => (q.fixture.importedCss = false),
+      (q) => delete q.fixedPeerBrowser,
+      (q) => (q.scenarios[0].ops[0].op = "edit-managed-css"),
+      (q) => (q.scenarios[0].ops[0].repeat = { warmups: 0, measured: 1 }),
+    ]) {
+      const wrong = structuredClone(p);
+      change(wrong);
+      assert(errors(wrong).length);
+    }
+  },
+);
 
 test("native ZFB final population preserves physical cleanup while rejecting an unexpected birth", () => {
   const b = (pid, ppid, pgid) => ({

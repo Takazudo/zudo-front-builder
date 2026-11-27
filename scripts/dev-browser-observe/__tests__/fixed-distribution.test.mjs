@@ -1739,6 +1739,9 @@ describe("review fixes (fixed distributions)", () => {
 });
 
 it.each([
+  "footer-v1-refuse",
+  "footer-v2-joined",
+  "footer-v2-idle",
   "v1-accept",
   "v1-refuse",
   "joined",
@@ -1756,7 +1759,8 @@ it.each([
   "normal ZFB family controller reaches blank setup before full custody (release %s)",
   async (mode) => {
     const cancellation = new AbortController();
-    const v2 = !mode.startsWith("v1");
+    const footer = mode.startsWith("footer-");
+    const v2 = !mode.includes("v1");
     const released = ["v1-accept", "joined", "idle"].includes(mode);
     const { s, installs } = shared();
     const label = "family-" + mode;
@@ -1779,6 +1783,27 @@ it.each([
         ],
       },
     ];
+    if (footer) {
+      delete profile.fixedFamilyAdmission;
+      profile.fixedZfbFooter = v2
+        ? "original-shared-layout-join-owned.v2"
+        : "original-shared-layout.v1";
+      profile.fixedPeerBrowser = {
+        executablePath: "/controlled/chrome",
+        executableSha256: "a".repeat(64),
+        defaultExecutableSha256: "b".repeat(64),
+      };
+      profile.scenarios = [
+        {
+          id: "fn-shared-component",
+          set: "workload",
+          warmOrder: "none",
+          ops: [
+            { id: "footer", op: "edit-shared-component", writeMethod: "in-place", targetPath: "/" },
+          ],
+        },
+      ];
+    }
     profile.server.readyTimeoutMs = 300000;
     profile.limits.wallCeilingMs = 7200000;
     Object.assign(profile.timeouts, { attemptMs: 60000, supplementalMs: 60000, restoreMs: 120000 });
@@ -1816,6 +1841,22 @@ it.each([
     ];
     const page = fakePage(),
       handle = { native: root, launcher: "none", exit: null, known };
+    if (footer) {
+      page.url = (p) => "http://127.0.0.1:4555" + p;
+      page.prepare = async (p) => {
+        page.prepared.push(p);
+        return { httpStatus: 200, docUUID: "home", url: page.url(p) };
+      };
+      page.arm = async () => ({
+        armed: true,
+        docUUID: "home",
+        observedUrl: page.url("/"),
+        actual: [1, "Same content. Same design. Three build systems."],
+      });
+      page.peerSocketTracking = new Map([
+        ["home", { requestId: "home", status: 101, url: "ws://127.0.0.1:4555/__zfb/reload/ws" }],
+      ]);
+    }
     const start = Number(process.hrtime.bigint() / 1000000n);
     vi.spyOn(lockModule, "acquireLock").mockResolvedValue({
       release: async () => events.push("lock-closed"),
@@ -1833,7 +1874,12 @@ it.each([
       captureFamilyCycle(receipt) {
         events.push("check");
         if (mode === "no-release") throw Error("release unavailable");
-        if (mode === "idle") return { before: proof, settlement: null };
+        if (footer) {
+          events.push("blank-capture");
+          expect(page.prepared).toEqual([]);
+        }
+        if (mode === "idle" || mode === "footer-v2-idle")
+          return { before: proof, settlement: null };
         const now = process.hrtime.bigint();
         const start = String(now);
         const deadline = String(
@@ -1873,7 +1919,12 @@ it.each([
       },
       verifyFamilyAdmission() {
         events.push("check");
-        if (mode === "v1-refuse" || mode === "failed") throw Error("release unavailable");
+        if (footer && page.prepared.length) {
+          events.push("refused-before-write");
+          throw Error("controlled pending at pre-write");
+        }
+        if (mode === "footer-v1-refuse" || mode === "v1-refuse" || mode === "failed")
+          throw Error("release unavailable");
         return proof;
       },
       async stop() {
@@ -1929,7 +1980,10 @@ it.each([
             c.pages = () => pages;
             onBlankContext(c);
             pages = [Object.assign(new EventEmitter(), { url: () => "about:blank" })];
-            return { observer: page, identity: { engine: "fake" } };
+            return {
+              observer: page,
+              identity: { engine: "fake", ...(footer && { executableSha256: "b".repeat(64) }) },
+            };
           },
           closeOwnedBrowser: async () => {
             events.push("browser-closed");
@@ -1959,7 +2013,28 @@ it.each([
           "lock-closed",
         ]),
       );
-      if (released) {
+      expect(safetyModule.startFixedRssSafety.mock.calls[0][0].joinOwnedFamily).toBe(v2);
+      if (footer) {
+        const { report } = aggregate({ sessions: [{ label, dir, variant: "stock-footer" }] });
+        expect(report.sessions[0]).toMatchObject({ timingExcluded: true, blocks: [] });
+        expect(Object.keys(report.pooled)).toHaveLength(0);
+      }
+      if (footer && v2) {
+        expect(code).not.toBe(EXIT.ok);
+        expect(events.filter((e) => e === "blank-capture")).toHaveLength(1);
+        expect(events, JSON.stringify(records.filter((r) => r.error))).toContain(
+          "refused-before-write",
+        );
+        const gate = records.find((r) => r.type === "scenario-start").familyAdmission;
+        expect(gate.setup.settlementOutcome).toBe(
+          mode === "footer-v2-joined" ? "accepted" : "no-pending",
+        );
+        expect(gate.pageUrl).toBe("about:blank");
+        expect(records.some((r) => r.type === "fixed-peer-edit-disk" || r.writePerformed)).toBe(
+          false,
+        );
+        expect(records.some((r) => r.type === "fixed-peer-prewrite")).toBe(true);
+      } else if (released) {
         expect(code, JSON.stringify({ stderr, errors: records.filter((r) => r.error) })).toBe(
           EXIT.ok,
         );

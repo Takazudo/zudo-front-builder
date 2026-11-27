@@ -25,7 +25,7 @@ import {
 import { LockBusyError, acquireLock } from "./lock.mjs";
 import { hostIdentity, probeMac, sampledPeak } from "./mac-process-adapter.mjs";
 import { liveOwnedFromRegistry, shouldRegisterOwned, stopOwned } from "./process-owner.mjs";
-import { LABEL_RE, loadProfile } from "./profile.mjs";
+import { LABEL_RE, loadProfile, ZFB_FOOTER_JOIN_OWNED } from "./profile.mjs";
 import { ControllerTiming, timed } from "./controller-timing.mjs";
 import { Recorder } from "./recorder.mjs";
 import { createRendererMemoryStudy } from "./renderer-memory-study.mjs";
@@ -346,7 +346,11 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   const fixedAstro = isFixedAstroProtocol(profile.fixedRssSafety);
   const fixedZfbFooter = Boolean(profile.fixedZfbFooter);
   const strictBrowser = fixedAstro || fixedZfbFooter;
-  const familyAudit = profile.fixedFamilyAdmission || fixedZfbFooter ? blankBrowserAudit() : null;
+  const blankAdmission =
+    profile.fixedZfbFooter === ZFB_FOOTER_JOIN_OWNED
+      ? "blank-join-owned.v2"
+      : profile.fixedFamilyAdmission;
+  const familyAudit = blankAdmission || fixedZfbFooter ? blankBrowserAudit() : null;
   const fixedAbort = profile.fixedRssSafety ? new AbortController() : null;
   if (fixedAbort)
     loaded.signal = loaded.signal
@@ -729,7 +733,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       fixedCustody.attachStartup(server.handle, fixedExecutables);
     if (fixedExecutables) {
       fixedSafety = startFixedRssSafety({
-        joinOwnedFamily: profile.fixedFamilyAdmission === "blank-join-owned.v2",
+        joinOwnedFamily: blankAdmission === "blank-join-owned.v2",
         server,
         fixedExecutables,
         custody: fixedCustody,
@@ -1100,6 +1104,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           fixedAstroTitle: profile.fixedRssSafety === FIXED_ASTRO_TITLE_PROTOCOL,
           beforeAstroWrite: fixedZfbFooter
             ? () => {
+                // Once the home route has been prepared, only a synchronous check may precede the edit.
                 const proof = fixedSafety.verifyFamilyAdmission();
                 verifyFamilyImages(proof, fixedExecutables);
               }
@@ -1124,7 +1129,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       const { accounting, stopped } = await (familyAudit
         ? runOriginalFamilyBatch(batchInput, {
             safety: fixedSafety,
-            strategy: profile.fixedFamilyAdmission,
+            strategy: blankAdmission,
             verifyImages: (proof) => verifyFamilyImages(proof, fixedExecutables),
             browserAudit: familyAudit,
             signal: loaded.signal,
