@@ -1435,9 +1435,10 @@ async fn replaced_synced_root_is_rearmed_by_the_next_sync() {
     sentinel_round_trip(&mut rx, &root, "before-replace").await;
 
     // Delete + recreate with no sync in between. The root's own removal is
-    // received first so the notify thread has finished with the old watch
-    // before the sync below re-arms the path (the dev loop only syncs after
-    // a debounced batch, so it always has this ordering).
+    // received first so the third sync below has no late event left to
+    // flag the root again. The dev loop usually has this ordering too, but
+    // not always (a forced flush of a large batch can sync mid-deletion);
+    // a late flag only costs one more re-arm.
     std::fs::remove_dir_all(&root).expect("remove root");
     wait_for_change_at(&mut rx, &root, "root-removed").await;
     std::fs::create_dir_all(root.join("nested")).expect("recreate root");
@@ -1502,6 +1503,103 @@ async fn css_root_nested_under_unfiltered_root_keeps_its_skip_names() {
     if !seen.iter().any(|change| change.path == plugin_file) {
         sentinel_round_trip(&mut rx, &plugin_skip.join("pkg"), "plugin-skip-live").await;
     }
+
+    watcher.shutdown().await;
+}
+
+/// Issue #4894 re-review — `mv gen gen.old && mv gen.new gen` keeps the old
+/// directory alive. After the re-arm, edits under `gen.old` must not surface
+/// as `gen/` paths, and deleting `gen.old` must neither report removals of
+/// live `gen/` files nor tear down the new watch.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn swapped_root_with_old_directory_kept_is_rearmed_cleanly() {
+    let (_tmp, ws, project) = workspace();
+    let root = ws.join("gen");
+    std::fs::create_dir_all(root.join("nested")).expect("root dirs");
+    std::fs::write(root.join("nested/live.txt"), b"old").expect("old file");
+
+    let (mut watcher, mut rx) = start_watcher(&project);
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([&root], SKIPS),
+        vec![root.clone()]
+    );
+    sentinel_round_trip(&mut rx, &root, "before-swap").await;
+
+    let old = ws.join("gen.old");
+    let staged = ws.join("gen.new");
+    std::fs::create_dir_all(staged.join("nested")).expect("staged root");
+    std::fs::write(staged.join("nested/live.txt"), b"new").expect("new file");
+    std::fs::rename(&root, &old).expect("move old root away");
+    std::fs::rename(&staged, &root).expect("swap new root in");
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([&root], SKIPS),
+        vec![root.clone()],
+        "the swapped-in root must be re-armed"
+    );
+    let mut seen = sentinel_round_trip(&mut rx, &root.join("nested"), "after-swap").await;
+
+    // Doubted traffic in the old directory, then its removal.
+    std::fs::write(old.join("nested/live.txt"), b"edited-old").expect("edit old");
+    std::fs::write(old.join("nested/stray.txt"), b"x").expect("new old file");
+    std::fs::remove_dir_all(&old).expect("remove old root");
+
+    seen.extend(sentinel_round_trip(&mut rx, &root.join("nested"), "after-old-removal").await);
+    seen.extend(drain_batch_tail(&mut rx).await);
+    for change in &seen {
+        assert_ne!(
+            change.path,
+            root.join("nested/stray.txt"),
+            "an edit under gen.old surfaced as a gen/ path: {seen:#?}"
+        );
+        assert!(
+            !(change.path == root.join("nested/live.txt")
+                && change.kind == zfb_watcher::ChangeKind::Removed),
+            "deleting gen.old reported a live gen/ file as removed: {seen:#?}"
+        );
+    }
+    assert!(
+        watcher
+            .sync_recursive_dir_watches([&root], SKIPS)
+            .is_empty(),
+        "nothing left to re-arm"
+    );
+    // The new watch survived the old directory's deletion.
+    sentinel_round_trip(&mut rx, &root.join("nested"), "still-live").await;
+
+    watcher.shutdown().await;
+}
+
+/// Issue #4894 re-review — re-arming a replaced root unwatches it first,
+/// which on inotify also drops registrations nested under it; a boot root
+/// inside the replaced root is re-registered like after a retirement.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rearm_of_replaced_root_repairs_nested_boot_root() {
+    let (_tmp, ws, project) = workspace();
+    let (mut watcher, mut rx) = start_watcher(&project);
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([&project], SKIPS),
+        vec![project.clone()]
+    );
+    sentinel_round_trip(&mut rx, &project.join("pages"), "before-swap").await;
+
+    let staged = ws.join("app.new");
+    std::fs::create_dir_all(staged.join("pages")).expect("staged project");
+    std::fs::rename(&project, ws.join("app.old")).expect("move project away");
+    std::fs::rename(&staged, &project).expect("swap project in");
+    watcher.enable_watch_call_log();
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([&project], SKIPS),
+        vec![project.clone()]
+    );
+    let calls = watcher.take_watch_call_log();
+    assert!(calls.contains(&(project.clone(), true)), "{calls:?}");
+    assert!(
+        calls.contains(&(project.join("pages"), true)),
+        "the nested boot root must be re-registered: {calls:?}"
+    );
+    sentinel_round_trip(&mut rx, &project.join("pages"), "after-swap").await;
 
     watcher.shutdown().await;
 }
