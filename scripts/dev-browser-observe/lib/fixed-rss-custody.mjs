@@ -125,6 +125,7 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
     outputBytes = 0;
   let stopReport, exit, fault, closePromise;
   let targetHandle;
+  let startupDev;
   let seed, startupBirth, acquiredNs, scoutReport, scoutTimer, confirmedStartup, releasedStartup;
   const fail = (error) => {
     if (fault) return;
@@ -223,6 +224,7 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
           )
             throw issue("invalid startup acquisition time");
           acquiredNs = msg.acquiredNs;
+          startupDev = msg.dev;
           startupBirth = b;
           registerStartupBirth(targetHandle, b);
           retained.set(b.pid, { birth: b, token: msg.token, descriptors: msg.descriptors });
@@ -399,6 +401,18 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
     },
     verifyStartup() {
       if (startup) requireStartupRelease(scoutReport?.status, confirmedStartup, releasedStartup);
+    },
+    familyProof() {
+      if (!startup || stopping || fault || !handshake || retained.size !== 0)
+        throw issue("family startup custody unavailable");
+      requireStartupRelease(scoutReport?.status, confirmedStartup, releasedStartup);
+      return {
+        root: seed,
+        dev: startupDev,
+        worker: startupBirth,
+        terminal: confirmedStartup,
+        release: releasedStartup,
+      };
     },
     forget(b) {
       retained.delete(b.pid);

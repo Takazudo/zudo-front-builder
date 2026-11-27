@@ -1,3 +1,8 @@
+import {
+  blankBrowserAudit,
+  runOriginalFamilyBatch,
+  verifyFamilyImages,
+} from "./fixed-family-admission.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { admissionPath, reserveSession } from "./admission.mjs";
@@ -338,6 +343,7 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
 async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
   const { profile, resolved } = loaded;
   const fixedAstro = isFixedAstroProtocol(profile.fixedRssSafety);
+  const familyAudit = profile.fixedFamilyAdmission ? blankBrowserAudit() : null;
   const fixedAbort = profile.fixedRssSafety ? new AbortController() : null;
   if (fixedAbort)
     loaded.signal = loaded.signal
@@ -787,6 +793,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       if (fixedAstro && ready.baseUrl !== "http://127.0.0.1:" + launch.port)
         throw new Error("fixed Astro readiness URL mismatch");
       if (fixedAstro) await interruptible(fixedSafety.verifyReady(ready.readyNs), loaded.signal);
+      else if (familyAudit)
+        await interruptible(fixedSafety.verifyFamilyBrowserReady(), loaded.signal);
       else if (fixedSafety) await fixedSafety.verifyReady();
       browserTiming?.mark("server-readiness-observed");
     } catch (error) {
@@ -869,6 +877,13 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           lateFailure = { reason: "process-identity", outcome: "identity-rejected", checks: bad };
         return lateFailure;
       };
+      if (
+        familyAudit &&
+        (owned.length !== 2 ||
+          !roles.some((p) => p.role === "zfb-shim" && p.pid === server.handle.native.pid) ||
+          !roles.some((p) => p.role === "zfb-native" && p.ppid === server.handle.native.pid))
+      )
+        throw Error("family pre-browser root/native role mismatch");
       receipt.server.processIdentity = processChecks;
       if (processChecks.some((c) => !c.ok)) {
         // A process of the tree runs an executable the install did not record (e.g. PATH's node):
@@ -963,6 +978,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     const launchBrowser = hooks.launchOwnedBrowser ?? launchOwnedBrowser;
     browserHandle = await timeBrowserAsync(browserTiming, "browser.initialize", null, (parentId) =>
       launchBrowser(browserOptions, {
+        ...(familyAudit && { onBlankContext: familyAudit.attach }),
         timing: browserTiming,
         parentId,
         signal: browserSignal,
@@ -1015,7 +1031,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         return s;
       });
 
-    const fixtureOps = kind.ops(m, profile);
+    const regularFixtureOps = kind.ops(m, profile);
+    const fixtureOps = familyAudit
+      ? familyAudit.trackFixture(regularFixtureOps)
+      : regularFixtureOps;
 
     if (batch) {
       if (rendererMemory) await rendererMemory.beforeEdits();
@@ -1039,7 +1058,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
             },
           }
         : rec;
-      const { accounting, stopped } = await runBatch({
+      const batchInput = {
         scenarios: runScenarios,
         deps: {
           recorder,
@@ -1090,7 +1109,19 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
                 }
               : null,
         },
-      });
+      };
+      const { accounting, stopped } = await (familyAudit
+        ? runOriginalFamilyBatch(batchInput, {
+            safety: fixedSafety,
+            verifyImages: (proof) => verifyFamilyImages(proof, fixedExecutables),
+            browserAudit: familyAudit,
+            signal: loaded.signal,
+            snapshot: () => (hooks.snapshotOwned ?? snapshotOwnedWithArgs)(server.handle),
+            known: server.handle.known,
+            deadlineNs: BigInt(loaded.workDeadline) * 1000000n,
+            append: (r) => rec.append(r),
+          })
+        : runBatch(batchInput));
       if (rendererMemory) {
         summaryExtra.accountingFinal = accounting;
         await rendererMemory.finalIdle({
@@ -1166,6 +1197,18 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         stderr(`record write failed (${r.type}): ${error?.message ?? error}`);
       }
     };
+    if (familyAudit && !familyAudit.finished) {
+      try {
+        safeAppend({
+          type: "original-family-admission-not-reached",
+          ...familyAudit.finish(),
+          batchEntered: false,
+        });
+      } catch (error) {
+        evidenceFailed = true;
+        stderr("family pre-batch audit unavailable: " + error.message);
+      }
+    }
     const terminalNow = performance.now();
     const terminalEnd =
       terminalNow +

@@ -80,6 +80,7 @@ export function startFixedRssSafety({
   let readyCheck = null;
   let stopped = false;
   let measuredCycles = 0;
+  let lastAccepted;
   let peakKiB = null;
   const stable = new Map();
   let readyNs,
@@ -225,6 +226,31 @@ export function startFixedRssSafety({
             new Error(`fixed safety RSS invalid or over ceiling: ${result.summedRssKiB}`),
             { details: result },
           );
+        if (fixedExecutables.protocol === "linux-fixed-zfb.v4")
+          lastAccepted = {
+            startedNs,
+            resultNs: result.timing?.parent?.resultNs,
+            epoch: measuredCycles,
+            strict:
+              result.helperResult === "complete" &&
+              result.helper?.closed &&
+              result.helper?.pipesClosed &&
+              result.timing?.clock?.qualified &&
+              result.startupEpochCoverage?.complete &&
+              Number.isSafeInteger(result.summedRssKiB) &&
+              result.summedRssKiB > 0 &&
+              result.summedRssKiB <= limits.rssCeilingKiB,
+            live: result.processes
+              .filter((row) => row.disposition === "live")
+              .map(({ pid, ppid, pgid, bootId, startTicks, birthVersion }) => ({
+                pid,
+                ppid,
+                pgid,
+                bootId,
+                startTicks,
+                birthVersion,
+              })),
+          };
         readyAtEntry?.resolve();
       })
       .catch(fail)
@@ -288,6 +314,30 @@ export function startFixedRssSafety({
       if (fixedExecutables.protocol !== "linux-fixed-zfb.v4")
         throw new Error("observation-only readiness requires startup custody v4");
       await observeReady();
+    },
+    async verifyFamilyBrowserReady() {
+      if (fixedExecutables.protocol !== "linux-fixed-zfb.v4")
+        throw Error("family observation requires v4");
+      await observeReady();
+      if (!lastAccepted?.strict || lastAccepted.live.length !== 2 || !nativeBirth)
+        throw Error("family blank setup requires complete root/native RSS observation");
+    },
+    verifyFamilyAdmission() {
+      if (
+        fixedExecutables.protocol !== "linux-fixed-zfb.v4" ||
+        failure ||
+        stopped ||
+        pending ||
+        !lastAccepted?.strict ||
+        !lastAccepted.resultNs
+      )
+        throw Error("family RSS observation missing, failed, pending or stopped");
+      if (
+        process.hrtime.bigint() >=
+        BigInt(lastAccepted.startedNs) + BigInt(limits.sampleEveryMs) * 1000000n
+      )
+        throw Error("family RSS cadence due before admission");
+      return { sample: lastAccepted, ...custody.familyProof() };
     },
     async verifyReady(actualReadyNs) {
       await observeReady(actualReadyNs);

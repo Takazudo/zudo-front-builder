@@ -686,3 +686,56 @@ test("an observation-only startup milestone never admits edits without a later r
     vi.useRealTimers();
   }
 });
+
+test("the family dispatch gate never waits for an outstanding or overdue regular sample", async () => {
+  vi.useFakeTimers();
+  const root = { pid: 5 },
+    child = { pid: 6, ppid: 5, startTicks: "6", bootId: "boot", disposition: "live" };
+  let pending;
+  const monitor = startFixedRssSafety({
+    server: { handle: { native: root } },
+    fixedExecutables: { protocol: "linux-fixed-zfb.v4", root: { path: "/node" } },
+    limits: { rssCeilingKiB: 100, sampleEveryMs: 1000 },
+    append() {},
+    abort() {},
+    custody: { familyProof: () => ({ root }) },
+    sample: () => {
+      pending = Promise.withResolvers();
+      return pending.promise;
+    },
+  });
+  const done = () =>
+    pending.resolve({
+      helperResult: "complete",
+      helper: { closed: true, pipesClosed: true },
+      timing: { clock: { qualified: true }, parent: { resultNs: String(process.hrtime.bigint()) } },
+      startupEpochCoverage: { complete: true },
+      summedRssKiB: 10,
+      processes: [{ ...root, disposition: "live" }, child],
+    });
+  try {
+    done();
+    await vi.advanceTimersByTimeAsync(0);
+    const ready = monitor.verifyFamilyBrowserReady();
+    await vi.advanceTimersByTimeAsync(1000);
+    done();
+    await ready;
+    await vi.advanceTimersByTimeAsync(0);
+    assert.equal(monitor.verifyFamilyAdmission().sample.epoch, 2);
+    await vi.advanceTimersByTimeAsync(1000);
+    assert.throws(() => monitor.verifyFamilyAdmission(), /pending/);
+    done();
+    await vi.advanceTimersByTimeAsync(0);
+    const current = process.hrtime.bigint();
+    const fake = vi.spyOn(process.hrtime, "bigint").mockReturnValue(current + 1_000_000_000n);
+    try {
+      assert.throws(() => monitor.verifyFamilyAdmission(), /cadence due/);
+    } finally {
+      fake.mockRestore();
+    }
+  } finally {
+    done();
+    await monitor.stop();
+    vi.useRealTimers();
+  }
+});
