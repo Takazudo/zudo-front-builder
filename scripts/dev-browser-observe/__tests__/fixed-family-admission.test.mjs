@@ -52,6 +52,7 @@ test.each([
   "abort",
   "request",
   "wrong-population",
+  "request-during-journal",
   "topology-after-journal",
   "image-after-journal",
   "fails-after-journal",
@@ -109,7 +110,11 @@ test.each([
         },
         deadlineNs: process.hrtime.bigint() + 10_000_000_000n,
         signal: ac.signal,
-        append: (r) => rows.push(r),
+        append: (r) => {
+          rows.push(r);
+          if (mode === "request-during-journal" && r.status === "pre-batch-proof")
+            ctx.emit("request", { url: () => "http://127.0.0.1:1234/" });
+        },
         safety: {
           verifyFamilyAdmission() {
             checks++;
@@ -135,6 +140,7 @@ test.each([
         ),
       );
       assert.equal(rows.at(-1).admitted, false);
+      if (mode === "request-during-journal") assert.equal(rows.at(-1).httpRequests, 1);
     }
     assert.equal(rows[0].workloadWriteCalls, 0);
     assert.equal(rows[0].snapshots, 0);
