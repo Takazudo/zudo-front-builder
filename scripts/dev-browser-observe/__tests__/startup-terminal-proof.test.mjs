@@ -176,14 +176,16 @@ test("a pre-seed epoch cannot claim or lose a concurrent cleanup-only startup bi
     ]),
     bound = new Map([[10, root]]);
   const old = startupEpochCoverage(known, [root], bound, new Set([10]));
-  assert.equal(old.complete, true);
-  assert.equal(old.deferred[0].pid, 31);
+  assert.equal(old.complete, false);
+  assert.equal(old.missing[0].birth.pid, 31);
+  assert.equal(old.missing[0].rssKiB, null);
+  assert.equal(old.missing[0].source, "fixed-startup-scout");
   assert.equal(startupEpochCoverage(known, [root, worker], bound, new Set([10])).complete, false);
   bound.set(31, worker);
   assert.equal(startupEpochCoverage(known, [root], bound, new Set([10])).complete, false);
   assert.deepEqual(startupEpochCoverage(known, [root], bound, new Set([10, 31])), {
     complete: true,
-    deferred: [],
+    missing: [],
   });
   bound.delete(31);
   known.set(50, { pid: 50, source: "unknown" });

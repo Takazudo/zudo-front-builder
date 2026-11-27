@@ -91,22 +91,18 @@ export function timeStartupSelection(select, clock, deadline) {
   return { resultNs, error, selection: error ? null : selection };
 }
 
-// A fresh helper can answer only for its immutable request plus births it
-// actually bound. A concurrently proven startup birth belongs immediately to
-// teardown and to the next request, but has no metric in an older response.
+// The immutable request doesn't account for a birth that the concurrent
+// scout verified during this cycle. Without a matching observation, the
+// existing per-process readings are only a lower bound for the owned sum.
 export function startupEpochCoverage(known, requested, bound, observed) {
-  const expected = new Set([...requested.map((row) => row.pid), ...bound.keys()]);
-  const deferred = [];
-  for (const row of known.values()) {
-    if (expected.has(row.pid)) continue;
-    if (row.source !== "fixed-startup-scout" || deferred.length)
-      return { complete: false, deferred };
-    deferred.push(compactBirth(row));
-  }
-  return {
-    complete: expected.size === observed.size && [...expected].every((pid) => observed.has(pid)),
-    deferred,
-  };
+  const expected = new Set([...known.keys(), ...requested.map((row) => row.pid), ...bound.keys()]);
+  const missing = [...expected]
+    .filter((pid) => !observed.has(pid))
+    .map((pid) => {
+      const row = known.get(pid) ?? bound.get(pid) ?? requested.find((p) => p.pid === pid);
+      return { birth: compactBirth(row), source: row.source ?? null, rssKiB: null };
+    });
+  return { complete: missing.length === 0 && expected.size === observed.size, missing };
 }
 
 function compactBirth(p) {
@@ -373,7 +369,12 @@ export function sampleRendererMemory(
     verifiedDiscoveries: discoveries,
     ...(custody && { custodyReleases }),
     ...(startupSelection && { startupSelection }),
-    ...(startupCoverage && { startupEpochCoverage: startupCoverage }),
+    ...(startupCoverage && {
+      startupEpochCoverage: startupCoverage,
+      ...(startupCoverage.complete
+        ? {}
+        : { rssCoverage: "partial", observedSubtotalKiB: summedRssKiB }),
+    }),
     journalFailures,
     processes,
     summedRssKiB,
@@ -399,6 +400,10 @@ export function sampleRendererMemory(
       clearTimeout(timer);
       clearTimeout(closeTimer);
       qualify(timing, envelopeOk);
+      // A startup receipt can arrive after the helper's complete frame while
+      // the controller is still waiting for its exit/pipe closure.
+      if (request && fixedExecutables?.protocol === "linux-fixed-zfb.v4" && !coverageComplete())
+        fail("startup-population", "missing official observation for an owned birth");
       // Selection, including release-to-terminal reconciliation, belongs to
       // the same core decision as the normal sample.
       if (!fault && fixedExecutables?.protocol === "linux-fixed-zfb.v4") {
