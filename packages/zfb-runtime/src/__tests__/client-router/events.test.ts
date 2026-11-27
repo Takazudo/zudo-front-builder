@@ -334,6 +334,117 @@ describe("doSwap — lifecycle ordering", () => {
     expect(swap).not.toHaveBeenCalled();
   });
 
+  describe("persisted focus around the swap", () => {
+    const PERSIST = "data-zfb-transition-persist";
+    const prep = () =>
+      new TransitionBeforePreparationEvent(
+        new URL("http://test.local/a"),
+        new URL("http://test.local/b"),
+        "forward",
+        "push",
+        undefined,
+        undefined,
+        window.document,
+        new AbortController().signal,
+        undefined,
+        async () => {},
+      );
+    const vt = { skipTransition: () => {} } as unknown as ViewTransition;
+    const replaceSwap = (swap: () => void) => {
+      const handler = (event: Event) => {
+        if (isTransitionBeforeSwapEvent(event)) event.swap = swap;
+      };
+      document.addEventListener("zfb:before-swap", handler);
+      return () => document.removeEventListener("zfb:before-swap", handler);
+    };
+
+    it("runs a custom swap once, then forces layout for the still-focused persisted element", async () => {
+      document.body.innerHTML = `<div ${PERSIST}="p"><input id="i"></div>`;
+      const input = document.getElementById("i") as HTMLInputElement;
+      input.focus();
+      const order: string[] = [];
+      vi.spyOn(input, "getBoundingClientRect").mockImplementation(() => {
+        order.push("layout");
+        return new DOMRect();
+      });
+      const swap = vi.fn(() => order.push("swap"));
+      const remove = replaceSwap(swap);
+
+      const result = await doSwap(prep(), vt);
+      remove();
+
+      expect(result.swapped).toBe(true);
+      expect(swap).toHaveBeenCalledOnce();
+      expect(order).toEqual(["swap", "layout"]);
+    });
+
+    it("samples focus after before-swap listeners and the pre-swap callback", async () => {
+      document.body.innerHTML = `<div ${PERSIST}="p"><input id="i"></div><input id="plain">`;
+      const input = document.getElementById("i") as HTMLInputElement;
+      const layout = vi.spyOn(input, "getBoundingClientRect");
+      const remove = replaceSwap(() => {});
+
+      // Focus lands on the persisted input only in the pre-swap callback.
+      const result = await doSwap(prep(), vt, undefined, () => {
+        input.focus();
+      });
+      remove();
+
+      expect(result.swapped).toBe(true);
+      expect(layout).toHaveBeenCalledOnce();
+    });
+
+    it("does no layout work when the focused element is not persisted", async () => {
+      document.body.innerHTML = `<input id="plain">`;
+      const plain = document.getElementById("plain") as HTMLInputElement;
+      plain.focus();
+      const layout = vi.spyOn(plain, "getBoundingClientRect");
+      const remove = replaceSwap(() => {});
+
+      await doSwap(prep(), vt);
+      remove();
+
+      expect(layout).not.toHaveBeenCalled();
+    });
+
+    it("does no layout work when the swap discarded or blurred the element", async () => {
+      document.body.innerHTML = `<div ${PERSIST}="p"><input id="a"></div><div ${PERSIST}="q"><input id="b"></div>`;
+      const a = document.getElementById("a") as HTMLInputElement;
+      const b = document.getElementById("b") as HTMLInputElement;
+      const layoutA = vi.spyOn(a, "getBoundingClientRect");
+      const layoutB = vi.spyOn(b, "getBoundingClientRect");
+
+      a.focus();
+      let remove = replaceSwap(() => a.remove());
+      await doSwap(prep(), vt);
+      remove();
+
+      b.focus();
+      remove = replaceSwap(() => b.blur());
+      await doSwap(prep(), vt);
+      remove();
+
+      expect(layoutA).not.toHaveBeenCalled();
+      expect(layoutB).not.toHaveBeenCalled();
+    });
+
+    it("does nothing when the pre-swap callback vetoes the swap", async () => {
+      document.body.innerHTML = `<div ${PERSIST}="p"><input id="i"></div>`;
+      const input = document.getElementById("i") as HTMLInputElement;
+      input.focus();
+      const layout = vi.spyOn(input, "getBoundingClientRect");
+      const swap = vi.fn();
+      const remove = replaceSwap(swap);
+
+      const result = await doSwap(prep(), vt, undefined, () => false);
+      remove();
+
+      expect(result.swapped).toBe(false);
+      expect(swap).not.toHaveBeenCalled();
+      expect(layout).not.toHaveBeenCalled();
+    });
+  });
+
   it("isTransitionBeforeSwapEvent guards correctly", () => {
     const ok = new TransitionBeforeSwapEvent(
       new TransitionBeforePreparationEvent(

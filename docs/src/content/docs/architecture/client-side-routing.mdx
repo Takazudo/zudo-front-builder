@@ -662,6 +662,8 @@ For islands, use the SDK's `persist` prop. The SDK writes the persistence key on
 
 Use the same nonempty `persist` key on each page where the island should survive. Keys must be unique within each document; duplicate keys make the navigation fail before the DOM swap. When the key matches, the wrapper and live component instance survive, so state such as an open menu or a focused input is not reset.
 
+A focused element inside a persisted island keeps its focus and its text selection across the swap, but it does not decide where the page scrolls. The new page still lands on its usual position: the top, the `#hash` target, or the scroll position saved in the history entry. The swap runs the same way when `event.swap` is replaced. A navigation to a `#hash` takes focus away from the persisted element, as the browser does for any fragment navigation.
+
 By default, navigation refreshes the persisted island's props from the incoming page. Identical props keep the current instance. Changed props dispose it once and mount a fresh instance with the incoming props, so the island does not keep showing stale page data. Any internal state held by the old instance is lost during that remount.
 
 For an island still waiting on `when="visible"`, `"idle"`, or `"media"`, changed props do not start its first mount early. When its condition fires, the runtime renders the latest props over the retained DOM. A live island with changed props still remounts immediately.

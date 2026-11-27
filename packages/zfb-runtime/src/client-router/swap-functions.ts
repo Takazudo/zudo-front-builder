@@ -316,12 +316,32 @@ export const saveFocus = (): (() => void) => {
 };
 
 export const restoreFocus = ({ activeElement, start, end }: SavedFocus) => {
-  if (activeElement) {
-    activeElement.focus();
+  if (activeElement?.isConnected) {
+    // The router owns the post-swap scroll position (top / hash / traversed entry).
+    activeElement.focus({ preventScroll: true });
     if (activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement) {
       if (typeof start === "number") activeElement.selectionStart = start;
       if (typeof end === "number") activeElement.selectionEnd = end;
     }
+  }
+};
+
+/** The focused element when it lives in a persisted subtree, otherwise null. */
+export const focusedPersistedElement = (): Element | null => {
+  const activeElement = document.activeElement;
+  return activeElement?.closest(`[${PERSIST_ATTR}]`) ? activeElement : null;
+};
+
+/*
+ * Chromium keeps focus on an element moved with moveBefore() and scrolls it into
+ * view at the next layout, which would otherwise run after the router has settled
+ * the scroll position and override it (#4893). When the same persisted element
+ * is still connected and focused after the swap, force that layout now so the
+ * reveal happens before the settle. Every other navigation does no extra work.
+ */
+export const flushPersistedFocusReveal = (element: Element | null) => {
+  if (element?.isConnected && document.activeElement === element) {
+    element.getBoundingClientRect();
   }
 };
 
