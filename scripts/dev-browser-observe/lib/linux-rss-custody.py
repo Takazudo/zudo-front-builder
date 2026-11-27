@@ -267,6 +267,16 @@ def serve(shared, parent, session, startup_mode=False):
     startup_binding = None
     hello_transfers = 0
 
+    def complete(record):
+        # The scout bound zfb live but never saw its config worker. Nothing is
+        # retained; the controller confirms the record against readiness later.
+        nonlocal startup_key, first_retained
+        with ownership_lock:
+            require(first_retained is None and not held, "startup completion after retention")
+            first_retained = ("product-completion",)
+            print(json.dumps(dict(startupCompletion=record, session=session,
+                                  publishedNs=str(time.monotonic_ns()))), flush=True)
+
     def publish(pair, worker, dev, launch):
         nonlocal retains, high_water, startup_key, first_retained, startup_binding
         if pair is None:
@@ -319,7 +329,7 @@ def serve(shared, parent, session, startup_mode=False):
                     os.path.join(os.path.dirname(__file__), "linux-fixed-startup.py"))
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-            scout = module.Startup(seed["fixed"], parent, seed["root"], publish)
+            scout = module.Startup(seed["fixed"], parent, seed["root"], publish, complete)
             scout.thread.start()
             continue
         ancillary_cap = socket.CMSG_SPACE(MAX_FDS * 4) + socket.CMSG_SPACE(U32.size)

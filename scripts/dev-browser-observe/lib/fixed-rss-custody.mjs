@@ -72,9 +72,83 @@ export function startupReleaseObservation(releases, cycle, terminal) {
   return row;
 }
 
-export function requireStartupRelease(status, terminal, release) {
+export function requireStartupRelease(status, terminal, release, completion = null) {
+  if (status === "worker-not-observed" && completion?.confirmed && !terminal && !release) return;
   if (status !== "retained" || !terminal || !release)
     throw new Error("startup custody requires accepted terminal and later release cycles");
+}
+
+const STAT = (line) => {
+  const close = line.lastIndexOf(") ");
+  const open = line.indexOf(" (");
+  if (close < 0 || open < 0 || open >= close) return null;
+  return {
+    pid: Number(line.slice(0, open)),
+    comm: line.slice(open + 2, close),
+    fields: line.slice(close + 2).split(" "),
+  };
+};
+
+// The scout's zombie record is the holder's word. Re-derive every field from
+// its own stat line before accepting the custody as a completed transient role.
+export function checkCompletedTransient(b, dev) {
+  const t = b.completedTransient;
+  const stat = typeof t?.stat === "string" ? STAT(t.stat) : null;
+  return Boolean(
+    stat &&
+    t.role === "__zfb-compiler-worker" &&
+    t.exitCode === 0 &&
+    b.state === "Z" &&
+    stat.pid === b.pid &&
+    stat.comm === b.comm &&
+    stat.fields[0] === "Z" &&
+    Number(stat.fields[1]) === b.ppid &&
+    b.ppid === dev.pid &&
+    Number(stat.fields[2]) === b.pgid &&
+    b.pgid === b.pid &&
+    stat.fields[19] === b.startTicks &&
+    BigInt(b.startTicks) >= BigInt(dev.startTicks) &&
+    stat.fields.length >= 50 &&
+    stat.fields[49] === "0" &&
+    t.parent?.pid === dev.pid &&
+    t.parent?.startTicks === dev.startTicks &&
+    /^\d{1,20}$/.test(t.observedNs),
+  );
+}
+
+// A product-completion record: zfb bound live, no compiler child ever bound,
+// and zfb's own count of faults of waited-for children went above zero.
+export function checkProductCompletion(record, seed) {
+  const birth = (row) =>
+    row &&
+    row.birthVersion === "linux-proc-v1" &&
+    Number.isSafeInteger(row.pid) &&
+    row.pid > 0 &&
+    /^\d+$/.test(row.startTicks) &&
+    row.bootId === seed.bootId;
+  const { root, native, bracket } = record ?? {};
+  const upper = bracket?.upper;
+  const lower = bracket?.lower;
+  return Boolean(
+    record?.outcome === "product-completion" &&
+    birth(root) &&
+    birth(native) &&
+    sameLinuxBirth(seed, root) &&
+    root.ppid === process.pid &&
+    native.ppid === seed.pid &&
+    native.pgid === seed.pgid &&
+    Number.isSafeInteger(upper?.nativeCminflt) &&
+    upper.nativeCminflt > 0 &&
+    upper.children === 0 &&
+    ((lower?.kind === "observed-zero" &&
+      lower.nativeCminflt === 0 &&
+      lower.children === 0 &&
+      lower.sweep < upper.sweep) ||
+      (lower?.kind === "native-birth" && lower.startTicks === native.startTicks)) &&
+    Array.isArray(record.trace) &&
+    record.trace.length <= 16 &&
+    /^\d{1,20}$/.test(record.observedNs),
+  );
 }
 
 // Install a positive private-PGID birth for cleanup before any fallible
@@ -132,6 +206,8 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
     helloTransfer,
     helloAccepted = false;
   let seed, startupBirth, acquiredNs, scoutReport, scoutTimer, confirmedStartup, releasedStartup;
+  let startupCompletion = null,
+    startupOutcome = null;
   const fail = (error) => {
     if (fault) return;
     fault = error;
@@ -210,6 +286,8 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
                 /^\d+$/.test(row.startTicks) &&
                 row.bootId === seed.bootId,
             ) ||
+            (b.completedTransient !== undefined && !checkCompletedTransient(b, msg.dev)) ||
+            (b.completedTransient === undefined && ["Z", "X", "x"].includes(b.state)) ||
             !/^[a-f0-9]{32}$/.test(msg.token) ||
             !Array.isArray(msg.descriptors) ||
             msg.descriptors.length !== 2 ||
@@ -241,7 +319,36 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
           startupBirth = b;
           registerStartupBirth(targetHandle, b);
           retained.set(b.pid, { birth: b, token: msg.token, descriptors: msg.descriptors });
-          append({ type: "fixed-startup-live-custody", ...msg });
+          startupOutcome = b.completedTransient ? "zombie-custody" : "live-custody";
+          append({
+            type: b.completedTransient
+              ? "fixed-startup-transient-custody"
+              : "fixed-startup-live-custody",
+            ...msg,
+          });
+        } else if (
+          startup &&
+          handshake &&
+          seed &&
+          msg.session === session &&
+          msg.startupCompletion &&
+          !startupBirth &&
+          !startupCompletion &&
+          !scoutReport
+        ) {
+          if (
+            retained.size ||
+            !checkProductCompletion(msg.startupCompletion, seed) ||
+            !/^\d{1,20}$/.test(msg.publishedNs) ||
+            BigInt(msg.startupCompletion.observedNs) > BigInt(msg.publishedNs)
+          )
+            throw issue("invalid startup product-completion record");
+          // The scan's bounded-binding check reads the decision time as acquiredNs.
+          acquiredNs = msg.startupCompletion.observedNs;
+          startupCompletion = { ...msg.startupCompletion, confirmed: null };
+          startupDev = msg.startupCompletion.native;
+          startupOutcome = "product-completion";
+          append({ type: "fixed-startup-product-completion", session, ...msg });
         } else if (startup && msg.session === session && msg.startupHello && !helloTransfer) {
           const h = msg.startupHello;
           if (
@@ -269,8 +376,10 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
           clearTimeout(scoutTimer);
           append({ type: "fixed-startup-scout-end", session, ...scoutReport });
           if (
-            scoutReport.status !== "retained" ||
-            !startupBirth ||
+            !(
+              (scoutReport.status === "retained" && startupBirth && !startupCompletion) ||
+              (scoutReport.status === "worker-not-observed" && startupCompletion && !startupBirth)
+            ) ||
             scoutReport.error ||
             !Number.isSafeInteger(scoutReport.sweeps) ||
             scoutReport.sweeps < 1 ||
@@ -470,19 +579,73 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
       if (selection?.terminal) confirmedStartup = selection.terminal;
       if (selection?.release) releasedStartup = selection.release;
     },
+    // Product completion is confirmed once, at the first readiness-qualified
+    // ordinary sample: zfb live with the scout's birth, no zfb child, a complete
+    // census, and no unknown child of this (subreaper) controller.
+    confirmStartupCompletion({ sample, controllerChildren, expectedChildren }) {
+      if (!startup || !startupCompletion || startupCompletion.confirmed) return;
+      const native = startupCompletion.native;
+      const live = sample?.live ?? [];
+      const unknown = controllerChildren.filter((pid) => !expectedChildren.includes(pid));
+      const same = (a, b) => sameLinuxBirth(a, b) && a.ppid === b.ppid && a.pgid === b.pgid;
+      const ok =
+        sample?.strict &&
+        live.length === 2 &&
+        live.some((p) => same(p, seed)) &&
+        live.some((p) => same(p, native)) &&
+        unknown.length === 0;
+      const row = {
+        type: "fixed-startup-completion-confirmation",
+        session,
+        epoch: sample?.epoch ?? null,
+        sampleStartedNs: sample?.startedNs ?? null,
+        sampleResultNs: sample?.resultNs ?? null,
+        live,
+        controllerChildren,
+        expectedChildren,
+        unknownControllerChildren: unknown,
+        ok: Boolean(ok),
+      };
+      append(row);
+      if (!ok) throw issue("startup product completion unconfirmed at readiness");
+      startupCompletion.confirmed = { epoch: sample.epoch, startedNs: sample.startedNs };
+    },
+    get startupCompletionPending() {
+      return Boolean(startup && startupCompletion && !startupCompletion.confirmed);
+    },
+    startupOutcome() {
+      const kinds = ["live-custody", "zombie-custody", "product-completion"];
+      return {
+        outcome: startupOutcome,
+        scoutStatus: scoutReport?.status ?? null,
+        counts: Object.fromEntries(kinds.map((k) => [k, Number(startupOutcome === k)])),
+      };
+    },
     verifyStartup() {
-      if (startup) requireStartupRelease(scoutReport?.status, confirmedStartup, releasedStartup);
+      if (startup)
+        requireStartupRelease(
+          scoutReport?.status,
+          confirmedStartup,
+          releasedStartup,
+          startupCompletion,
+        );
     },
     familyProof() {
       if (!startup || stopping || fault || !handshake || retained.size !== 0)
         throw issue("family startup custody unavailable");
-      requireStartupRelease(scoutReport?.status, confirmedStartup, releasedStartup);
+      requireStartupRelease(
+        scoutReport?.status,
+        confirmedStartup,
+        releasedStartup,
+        startupCompletion,
+      );
       return {
         root: seed,
         dev: startupDev,
-        worker: startupBirth,
-        terminal: confirmedStartup,
-        release: releasedStartup,
+        worker: startupBirth ?? null,
+        terminal: confirmedStartup ?? null,
+        release: releasedStartup ?? null,
+        ...(startupCompletion && { completion: structuredClone(startupCompletion) }),
       };
     },
     forget(b) {

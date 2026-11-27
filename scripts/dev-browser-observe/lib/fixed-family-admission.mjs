@@ -241,7 +241,10 @@ export function runOriginalFamilyBatch(
     assert(
       population(provisional.sample.live, [provisional.root, provisional.dev]) &&
         population(owned, [provisional.root, provisional.dev]) &&
-        population([...known.values()], [provisional.root, provisional.dev, provisional.worker]),
+        population(
+          [...known.values()],
+          [provisional.root, provisional.dev, ...(provisional.worker ? [provisional.worker] : [])],
+        ),
       "family ownership population changed",
     );
     assert(
@@ -269,11 +272,14 @@ export function runOriginalFamilyBatch(
       assert.equal(proof.sample, provisional.sample, "family accepted sample changed");
       assert.deepEqual(proof.terminal, provisional.terminal, "family terminal changed");
       assert.deepEqual(proof.release, provisional.release, "family release changed");
+      assert.deepEqual(proof.completion, provisional.completion, "family completion changed");
     }
     assert(
       same(proof.root, provisional.root) &&
         same(proof.dev, provisional.dev) &&
-        same(proof.worker, provisional.worker),
+        (proof.worker === null && provisional.worker === null && proof.completion?.confirmed
+          ? true
+          : same(proof.worker, provisional.worker)),
       "family startup ownership changed",
     );
     signal.throwIfAborted();
@@ -342,7 +348,7 @@ export function runOriginalFamilyBatch(
           BigInt(accepted.resultNs) <= BigInt(setup.settlementObservedNs),
         "family settlement changed cycle",
       );
-      for (const name of ["root", "dev", "worker", "terminal", "release"])
+      for (const name of ["root", "dev", "worker", "terminal", "release", "completion"])
         assert.deepEqual(
           current[name],
           captured.before[name],
@@ -409,7 +415,7 @@ export function runOriginalFamilyBatch(
       requireBlank(browserAudit.inspect());
       const captured = safety.captureFamilyCycle(setup);
       assert(captured.settlement, "family next cadence cycle not joinable");
-      for (const name of ["root", "dev", "worker", "terminal", "release"])
+      for (const name of ["root", "dev", "worker", "terminal", "release", "completion"])
         assert.deepEqual(
           captured.before[name],
           first.before[name],

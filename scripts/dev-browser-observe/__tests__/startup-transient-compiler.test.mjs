@@ -13,47 +13,43 @@ const repo = fileURLToPath(new URL("../../..", import.meta.url));
 const onLinux = process.platform === "linux";
 
 test.runIf(onLinux)(
-  "the startup scout accepts only a status-0 transient compiler worker as first seen terminal",
+  "the startup scout's compiler slot: live, zombie or product completion, and every refusal",
   async () => {
     const { stdout } = await run("python3", ["-I", "-B", fixture], { timeout: 60_000 });
     assert.match(stdout.trim(), /^PASS /);
   },
 );
 
-test.runIf(onLinux)(
-  "the r4 shape refuses on f8ab37bfb and is a completed transient now",
-  async () => {
-    const dir = mkdtempSync(join(tmpdir(), "scout-old-"));
-    try {
-      const old = join(dir, "linux-fixed-startup.py");
-      writeFileSync(
-        old,
-        execFileSync(
-          "git",
-          ["show", "f8ab37bfb:scripts/dev-browser-observe/lib/linux-fixed-startup.py"],
-          { cwd: repo },
-        ),
+// @verification: one-time proof that the f8ab37bfb scout refused the r4 zombie shape and
+// this branch accepts it. It needs that SHA to be reachable, so it stays out of the gate.
+test.skip("the r4 shape refuses on f8ab37bfb and is a completed transient now", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "scout-old-"));
+  try {
+    const old = join(dir, "linux-fixed-startup.py");
+    writeFileSync(
+      old,
+      execFileSync(
+        "git",
+        ["show", "f8ab37bfb:scripts/dev-browser-observe/lib/linux-fixed-startup.py"],
+        { cwd: repo },
+      ),
+    );
+    const replay = async (...args) =>
+      JSON.parse(
+        (
+          await run("python3", ["-I", "-B", fixture, ...args], {
+            env: { ...process.env, CASES: "r4-replay" },
+            timeout: 30_000,
+          })
+        ).stdout,
       );
-      const replay = async (...args) =>
-        JSON.parse(
-          (
-            await run("python3", ["-I", "-B", fixture, ...args], {
-              env: { ...process.env, CASES: "r4-replay" },
-              timeout: 30_000,
-            })
-          ).stdout,
-        );
-      const before = await replay(old);
-      assert.deepEqual(
-        [before.status, before.error],
-        ["failed", "startup role first seen terminal"],
-      );
-      assert.equal(before.published.length, 0);
-      const after = await replay();
-      assert.equal(after.status, "retained");
-      assert.equal(after.published[0].worker.completedTransient.exitCode, 0);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  },
-);
+    const before = await replay(old);
+    assert.deepEqual([before.status, before.error], ["failed", "startup role first seen terminal"]);
+    assert.equal(before.published.length, 0);
+    const after = await replay();
+    assert.equal(after.status, "retained");
+    assert.equal(after.published[0].worker.completedTransient.exitCode, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
