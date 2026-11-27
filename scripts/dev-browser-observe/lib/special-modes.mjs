@@ -1,8 +1,8 @@
 import { interruptible } from "./session-deadline.mjs";
 import { classifyMechanism } from "./state-machine.mjs";
-import { nsToMs } from "./util.mjs";
+import { nsToMs, waitAtLeast } from "./util.mjs";
 
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const wait = (ms) => waitAtLeast(ms);
 
 async function doWrites(fs, writes, clock, signal) {
   signal?.throwIfAborted();

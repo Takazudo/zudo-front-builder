@@ -1,7 +1,8 @@
-import { setTimeout as delay } from "node:timers/promises";
 import { PROTOCOLS, RESOURCE_STUDY_PROTOCOL } from "./schedule.mjs";
 import { distribution } from "./stats.mjs";
-import { nsToMs } from "./util.mjs";
+import { nsToMs, waitAtLeast } from "./util.mjs";
+
+const atLeast = (ms, _value, options) => waitAtLeast(ms, { signal: options?.signal });
 
 /**
  * Resource-study sampler and idle phases for one session. Samples owned processes every
@@ -9,7 +10,7 @@ import { nsToMs } from "./util.mjs";
  * wall cost. A sample is never started while the previous one is still running; such a tick is
  * counted in overlappingSkipped.
  */
-export function createResourceStudy({ study, sampleNow, append, clock, signal, sleep = delay }) {
+export function createResourceStudy({ study, sampleNow, append, clock, signal, sleep = atLeast }) {
   const constants = PROTOCOLS[RESOURCE_STUDY_PROTOCOL];
   const state = {
     phase: { step: "start", cycle: null },

@@ -1,8 +1,11 @@
+import { startSourceTimingSafety, CSEC_EXE_SHA256 } from "./source-timing-safety.mjs";
 import { samplerClosureAudit } from "./linux-rss-sample.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { admissionPath, reserveSession } from "./admission.mjs";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { open } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { OBSERVER_PATH, closeOwnedBrowser, launchOwnedBrowser } from "./browser.mjs";
 import { BrowserTiming, timeBrowserAsync, timeBrowserSync } from "./browser-timing.mjs";
@@ -158,6 +161,28 @@ function identityVerdict({ profile, resolved, manifest, receipt, extraAppDirs })
       provenance: variant.provenance,
     });
   }
+  if (profile.sourceTimingSafety) {
+    extra.push({
+      name: "source-timing-csec-binary",
+      expected: CSEC_EXE_SHA256,
+      actual: receipt?.exe?.sha256 ?? null,
+      ok: receipt?.exe?.sha256 === CSEC_EXE_SHA256,
+    });
+    extra.push({
+      name: "source-timing-csec-build",
+      expected: "clean locked C-sec dev default rustc 1.99.1, 64 embedded members",
+      ok:
+        receipt?.source?.dirty === false &&
+        receipt?.toolchain?.rustc?.release === "1.99.1" &&
+        receipt?.cargoLockSha256 ===
+          "804d5b831930816471fc101bd5c4ab390ccd1861d73808e046b4bfedb22c1dc4" &&
+        receipt?.embeddedBytes?.checked === 64 &&
+        receipt.embeddedBytes.missing?.length === 0 &&
+        receipt?.build?.profile === "dev" &&
+        receipt.build.noDefaultFeatures === false &&
+        receipt.build.features?.length === 0,
+    });
+  }
   if (profile.rendererMemoryStudy) {
     const { browserExecutable, browserExecutableSha256 } = profile.rendererMemoryStudy;
     let actual = null;
@@ -221,11 +246,18 @@ export async function execute({
     return EXIT.usage;
   }
   if (
-    (profile.rendererMemoryStudy || startup || tiny || profile.fixedRssSafety) &&
+    (profile.rendererMemoryStudy ||
+      startup ||
+      tiny ||
+      profile.fixedRssSafety ||
+      profile.sourceTimingSafety) &&
     (command !== (tiny ? "tiny-acceptance" : startup ? "startup-acceptance" : "run") ||
       scenarios !== null ||
       process.platform !== "linux" ||
       !supervisorId ||
+      (profile.sourceTimingSafety &&
+        (workDeadline !== supervisorDeadlineMs - 60000 ||
+          supervisorDeadlineMs - supervisorStartedMs !== profile.limits.wallCeilingMs)) ||
       ![supervisorStartedMs, workDeadline, supervisorDeadlineMs].every(Number.isSafeInteger))
   ) {
     stderr("renderer-memory diagnostics require a standalone Linux run with a supervisor");
@@ -343,12 +375,11 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
 export function recordSamplerClosureAudits(unresolved, fixedSafety, rendererMemory, append) {
   for (const resource of unresolved) {
     if (!resource.helper) {
-      const monitor =
-        resource.resource === "fixed-rss-sampler"
-          ? fixedSafety
-          : resource.resource === "renderer-memory-sampler"
-            ? rendererMemory
-            : null;
+      const monitor = ["fixed-rss-sampler", "source-timing-sampler"].includes(resource.resource)
+        ? fixedSafety
+        : resource.resource === "renderer-memory-sampler"
+          ? rendererMemory
+          : null;
       const helper = monitor?.unresolvedHelper;
       if (helper) resource.helper = helper;
     }
@@ -363,7 +394,8 @@ export function recordSamplerClosureAudits(unresolved, fixedSafety, rendererMemo
 async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
   const { profile, resolved } = loaded;
   const fixedAstro = isFixedAstroProtocol(profile.fixedRssSafety);
-  const fixedAbort = profile.fixedRssSafety ? new AbortController() : null;
+  const sourceTiming = Boolean(profile.sourceTimingSafety);
+  const fixedAbort = profile.fixedRssSafety || sourceTiming ? new AbortController() : null;
   if (fixedAbort)
     loaded.signal = loaded.signal
       ? AbortSignal.any([loaded.signal, fixedAbort.signal])
@@ -415,7 +447,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     scenarioSelection: loaded.scenarioSelection ?? null,
     schedule,
     resourceStudy: command === "run" ? (profile.resourceStudy ?? null) : null,
-    ...(fixedAbort && { fixedRssSafety: profile.fixedRssSafety }),
+    ...(profile.fixedRssSafety && { fixedRssSafety: profile.fixedRssSafety }),
+    ...(sourceTiming && { sourceTimingSafety: profile.sourceTimingSafety }),
     ...(memoryProfile ? { diagnostic: true, rendererMemoryStudy: memoryProfile } : {}),
     ...(acceptance && { diagnostic: true, [acceptanceKey]: acceptance }),
   });
@@ -441,7 +474,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     productSha: profile.productSha ?? null,
     productDirtyIdentity: profile.productDirtyIdentity ?? null,
     diagnostic: profile.diagnostic === true,
-    ...(fixedAbort && { fixedRssSafety: profile.fixedRssSafety }),
+    ...(profile.fixedRssSafety && { fixedRssSafety: profile.fixedRssSafety }),
+    ...(sourceTiming && { sourceTimingSafety: profile.sourceTimingSafety }),
     ...(timing && { controllerTiming: "controller-timing.json" }),
     ...(acceptance && {
       [acceptanceKey]: {
@@ -656,6 +690,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       return exitCode;
     }
 
+    if (sourceTiming) {
+      for (const name of Object.keys(process.env)) {
+        if (
+          process.env[name] &&
+          (/^(?:MALLOC_|LD_)/.test(name) ||
+            ["GLIBC_TUNABLES", "NODE_OPTIONS", "NODE_PATH"].includes(name))
+        )
+          throw Error("source timing environment contains " + name);
+      }
+    }
     if (fixedAstro) {
       for (const name of [
         "NODE_OPTIONS",
@@ -670,7 +714,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     }
     const fixedExecutables = fixedAstro
       ? fixedAstroExecutables(verdict.facts, profile.fixedRssSafety)
-      : fixedAbort
+      : profile.fixedRssSafety
         ? fixedZfbExecutables(m.appDir, verdict.facts, profile.fixedRssSafety)
         : null;
     let launch = null;
@@ -702,7 +746,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     };
     const readyTimeoutMs = rendererMemory
       ? rendererMemory.clamp("server readiness", profile.server.readyTimeoutMs)
-      : fixedAstro
+      : fixedAstro || sourceTiming
         ? peerBudget(profile.server.readyTimeoutMs)
         : profile.server.readyTimeoutMs;
     if (intentPath)
@@ -716,6 +760,33 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       });
       await fixedCustody.ready;
       loaded.signal?.throwIfAborted();
+    }
+    let sourceImage;
+    if (sourceTiming) {
+      const path = realpathSync(buildReceipt.exe.path);
+      const fd = await open(path, "r");
+      try {
+        const file = await fd.stat({ bigint: true });
+        const digest = createHash("sha256");
+        for await (const chunk of fd.createReadStream({ autoClose: false })) {
+          loaded.signal?.throwIfAborted();
+          digest.update(chunk);
+        }
+        const after = await fd.stat({ bigint: true });
+        const sha256 = digest.digest("hex");
+        if (
+          file.ctimeNs !== after.ctimeNs ||
+          file.size !== after.size ||
+          sha256 !== (hooks.sourceTimingExpectedDigest ?? CSEC_EXE_SHA256)
+        )
+          throw Error("source timing opened executable digest or inode contents changed");
+        receipt.sourceTimingImageSha256 = sha256;
+        sourceImage = { path, device: String(file.dev), inode: String(file.ino) };
+      } finally {
+        await fd.close();
+      }
+      loaded.signal?.throwIfAborted();
+      receipt.sourceTimingImage = sourceImage;
     }
     spawning = true;
     startupLoop?.start(rendererMemory.signal);
@@ -732,8 +803,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       host: profile.server.host,
       env: profile.server.env ?? {},
       diagnostic: profile.diagnostic === true,
-      declaredZfbEnvOnly: Boolean(tiny),
-      readyTimeoutMs,
+      declaredZfbEnvOnly: Boolean(tiny || sourceTiming),
+      readyTimeoutMs: sourceTiming ? peerBudget(profile.server.readyTimeoutMs) : readyTimeoutMs,
       logPath: join(labelDir, "server.log"),
     });
     spawning = false;
@@ -743,6 +814,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     };
     if (profile.fixedRssSafety === "linux-fixed-zfb.v4")
       fixedCustody.attachStartup(server.handle, fixedExecutables);
+    const abortSampling = (error) => {
+      fixedAbort.abort(error);
+      // Let the already-owned helper settle before signalling the server.
+      // Finalization consumes the original stop promise even when browser
+      // startup or a pending filesystem read outlasts the failed observation.
+      const stopping = fixedSafety
+        ? fixedSafety.stop()
+        : Promise.resolve().then(() => fixedSafety.stop());
+      void stopping.then(() => stopServer(server.handle)).catch(() => {});
+    };
     if (fixedExecutables) {
       fixedSafety = startFixedRssSafety({
         server,
@@ -760,16 +841,19 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         }),
         limits: profile.limits,
         append: (r) => rec.append(r),
-        abort(error) {
-          fixedAbort.abort(error);
-          // Some browser/library operations must retain ownership through settlement.
-          // Stop the verified server independently while the controller unwinds;
-          // the finalizer consumes the same stop promise and its original outcome.
-          void fixedSafety
-            .stop()
-            .then(() => stopServer(server.handle))
-            .catch(() => {});
-        },
+        abort: abortSampling,
+      });
+    }
+    if (sourceTiming) {
+      fixedSafety = startSourceTimingSafety({
+        image: sourceImage,
+        workDeadlineNs: BigInt(loaded.workDeadline) * 1000000n,
+        server,
+        executable: buildReceipt.exe.path,
+        limits: profile.limits,
+        append: (r) => rec.append(r),
+        abort: abortSampling,
+        ...(hooks.sourceTimingSample && { sample: hooks.sourceTimingSample }),
       });
     }
     const firstSample = rendererMemory?.startSampling(server);
@@ -812,6 +896,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       if (fixedAstro && ready.baseUrl !== "http://127.0.0.1:" + launch.port)
         throw new Error("fixed Astro readiness URL mismatch");
       if (fixedAstro) await interruptible(fixedSafety.verifyReady(ready.readyNs), loaded.signal);
+      else if (sourceTiming) await interruptible(fixedSafety.ready(), loaded.signal);
       else if (fixedSafety) await fixedSafety.verifyReady();
       browserTiming?.mark("server-readiness-observed");
     } catch (error) {
@@ -960,7 +1045,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     browserSignal?.throwIfAborted();
     const launchTimeoutMs = rendererMemory
       ? () => rendererMemory.clamp("browser startup", 30_000)
-      : fixedAstro
+      : fixedAstro || sourceTiming
         ? () => peerBudget(30000)
         : undefined;
     const browserOptions = {
@@ -1034,6 +1119,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
 
     const sampleServer = () =>
       timed(timing, "run.sampleServer", {}, () => {
+        if (sourceTiming) return fixedSafety.latest();
         const raw = server.sampleResources(timing);
         const s = fixedSafety ? fixedContextSample(raw) : raw;
         samples.push(s);
@@ -1064,6 +1150,14 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
             },
           }
         : rec;
+      if (sourceTiming) {
+        const decided = await fixedSafety.decide({
+          site: "pre-batch",
+          capNs: BigInt(loaded.workDeadline) * 1_000_000n,
+          signal: loaded.signal,
+        });
+        rec.append({ type: "source-timing-decision", ...decided.decision });
+      }
       const { accounting, stopped } = await runBatch({
         scenarios: runScenarios,
         deps: {
@@ -1071,7 +1165,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           signal: rendererMemory?.signal ?? loaded.signal,
           rendererMemory,
           safetySignal: fixedAbort?.signal,
-          ...(fixedAstro && {
+          ...(sourceTiming && { sourceTimingSafety: fixedSafety }),
+          ...((fixedAstro || sourceTiming) && {
             stageBudget: peerBudget,
             workDeadlineNs: BigInt(loaded.workDeadline) * 1_000_000n,
           }),
@@ -1228,14 +1323,23 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       try {
         const failure = await bounded("fixed-rss-stop", 1000, () => fixedSafety.stop());
         if (failure) {
-          receipt.fixedRssFailure = failure;
+          if (sourceTiming) receipt.sourceTimingFailure = failure;
+          else receipt.fixedRssFailure = failure;
           evidenceFailed = true;
           exitCode = EXIT.controllerError;
         }
         if (fixedSafety.unresolvedHelper)
-          unresolved.push({ resource: "fixed-rss-helper", helper: fixedSafety.unresolvedHelper });
+          unresolved.push({
+            resource: sourceTiming ? "source-timing-sampler" : "fixed-rss-helper",
+            helper: fixedSafety.unresolvedHelper,
+          });
       } catch (error) {
-        unresolved.push({ resource: "fixed-rss-sampler", error: String(error) });
+        unresolved.push({
+          resource: sourceTiming ? "source-timing-sampler" : "fixed-rss-sampler",
+          error: String(error),
+          ...(sourceTiming &&
+            fixedSafety.unresolvedHelper && { pendingAtTimeout: fixedSafety.unresolvedHelper }),
+        });
       }
     }
     if (fixedCustody) {
@@ -1519,14 +1623,30 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
               },
             }
           : {}),
-        resourceSamples: {
-          count: samples.length,
-          peak:
-            fixedSafety && !samples.some((s) => typeof s.summedRssKiB === "number")
-              ? null
-              : sampledPeak(samples),
-        },
-        ...(fixedSafety && { fixedRssSafety: fixedSafety.report() }),
+        resourceSamples:
+          sourceTiming && fixedSafety
+            ? {
+                count: fixedSafety.report().accepted,
+                peak:
+                  fixedSafety.report().peakSummedOwnedRssKiB === null
+                    ? null
+                    : {
+                        summedRssKiB: fixedSafety.report().peakSummedOwnedRssKiB,
+                        label:
+                          "observed complete per-birth owned RSS; separate from partial observations",
+                      },
+              }
+            : {
+                count: samples.length,
+                peak:
+                  fixedSafety && !samples.some((s) => typeof s.summedRssKiB === "number")
+                    ? null
+                    : sampledPeak(samples),
+              },
+        ...(fixedSafety &&
+          (sourceTiming
+            ? { sourceTimingSafety: fixedSafety.report() }
+            : { fixedRssSafety: fixedSafety.report() })),
         resourceStudy:
           command === "run" && profile.resourceStudy
             ? {

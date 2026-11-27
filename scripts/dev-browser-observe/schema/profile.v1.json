@@ -34,6 +34,7 @@
       "type": "boolean",
       "description": "true only for diagnostic profiles; required for ZFB_DEV_TIMING or ZFB_DEV_PROVENANCE_TRACE in server.env. Non-diagnostic runs strip both from the inherited env."
     },
+    "sourceTimingSafety": { "const": "linux-source-csec-body.v1" },
     "tinyAcceptance": {
       "type": "object",
       "required": ["protocol", "probe"],
