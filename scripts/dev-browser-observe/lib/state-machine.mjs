@@ -609,6 +609,20 @@ export async function runBatch({ scenarios, deps }) {
 
         acc.attempted += 1;
         acc.notAttempted -= 1;
+        // Only the v2 singleton in-place body edit can prove that this gate
+        // precedes every possible mutation in the cell.
+        const targetPath = attempt.write.path;
+        const original = activeSnapshot.files?.[targetPath];
+        const zeroWriteTarget =
+          deps.beforePeerMutation &&
+          planned === 1 &&
+          !op.inject &&
+          op.op === "edit-body" &&
+          attempt.write.method === "in-place" &&
+          (attempt.writes?.length ?? 1) === 1 &&
+          original
+            ? fs.readPeerTarget(targetPath, original)
+            : null;
         const recBase = {
           ...base,
           token: attempt.token,
@@ -627,9 +641,8 @@ export async function runBatch({ scenarios, deps }) {
                 injectedFrom: attempt.injectedFrom ?? null,
               }
             : null,
-          targetSha256Before: fs.hashOf
-            ? fs.hashOf(attempt.injectedFrom ?? attempt.write.path)
-            : null,
+          targetSha256Before:
+            zeroWriteTarget?.sha256 ?? fs.hashOf?.(attempt.injectedFrom ?? targetPath) ?? null,
           writeMethods: attempt.writes
             ? attempt.writes.map((w) => w.method)
             : [attempt.write.method],
@@ -843,6 +856,45 @@ export async function runBatch({ scenarios, deps }) {
             acc.lastArmedUnknownOperation = null;
             count(acc, "identity-rejected");
             stop("identity-rejected", where);
+            if (zeroWriteTarget) {
+              let after, auditError;
+              try {
+                after = fs.readPeerTarget(targetPath, original);
+              } catch (e) {
+                auditError = String(e.message ?? e);
+              }
+              const unchanged =
+                after &&
+                original.sha256 === zeroWriteTarget.sha256 &&
+                after.sha256 === original.sha256 &&
+                after.device === zeroWriteTarget.device &&
+                after.inode === zeroWriteTarget.inode;
+              append({
+                type: "fixed-peer-refused-disk-audit",
+                path: targetPath,
+                expectedSha256: original.sha256,
+                before: zeroWriteTarget,
+                after: after ?? null,
+                error: auditError ?? null,
+                unchanged: Boolean(unchanged),
+              });
+              if (unchanged) {
+                append({
+                  type: "cleanup",
+                  label: "cleanup",
+                  measured: false,
+                  reason: "after-stop:identity-rejected",
+                  ok: false,
+                  restored: false,
+                  live: [],
+                  liveSkipped: "before-mutation-no-write",
+                  writePerformed: false,
+                  actions: [],
+                  mismatches: [],
+                });
+                activeSnapshot = null;
+              }
+            }
             break outer;
           }
         }

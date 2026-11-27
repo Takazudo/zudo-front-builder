@@ -4,9 +4,11 @@ import {
   closeSync,
   constants,
   existsSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   statSync,
@@ -829,6 +831,42 @@ export function warmPaths(materialized, scenario) {
 }
 
 /** sha256 of a file, or null when it does not exist. */
+// The original snapshot fixes the read allowance; never grow it from the live file.
+export function readPeerTarget(path, original) {
+  if (!Buffer.isBuffer(original?.bytes)) throw new Error("missing body target snapshot");
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = fstatSync(fd, { bigint: true });
+    if (!before.isFile() || before.size !== BigInt(original.bytes.length))
+      throw new Error("body target size or type differs from snapshot");
+    const bytes = Buffer.alloc(original.bytes.length);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const n = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (!n) throw new Error("truncated body target");
+      offset += n;
+    }
+    const after = fstatSync(fd, { bigint: true }),
+      named = statSync(path, { bigint: true });
+    if (
+      after.ctimeNs !== before.ctimeNs ||
+      after.size !== before.size ||
+      named.dev !== after.dev ||
+      named.ino !== after.ino
+    )
+      throw new Error("body target changed during read");
+    return {
+      path,
+      device: String(after.dev),
+      inode: String(after.ino),
+      bytes: bytes.length,
+      sha256: sha256(bytes),
+    };
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function hashOf(path) {
   return existsSync(path) ? sha256(readFileSync(path)) : null;
 }

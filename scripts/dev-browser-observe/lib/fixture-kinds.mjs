@@ -15,6 +15,7 @@ import {
   adapterPath,
   blockWrite,
   hashOf,
+  readPeerTarget,
   loadFixture,
   materialize,
   missingSibling,
@@ -36,6 +37,7 @@ export function fixtureKind(profile) {
 
 const injectionFsHelpers = {
   hashOf,
+  readPeerTarget,
   missingSibling,
   blockWrite,
   unblockWrite,
