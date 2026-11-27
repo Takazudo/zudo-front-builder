@@ -351,6 +351,22 @@ function qualify(timing, envelopeOk) {
   }
 }
 
+// Only an unresolved original ChildProcess can populate its own late event ledger.
+// No timer, signal, additional process lookup or wait is started by finalization.
+const unresolvedClosures = new WeakMap();
+export function samplerClosureAudit(helper) {
+  const ledger = unresolvedClosures.get(helper);
+  if (!ledger) return null;
+  const events = { ...ledger.events };
+  return {
+    sampledNs: now(),
+    closureDeadlineNs: ledger.deadlineNs,
+    events,
+    outcomes: structuredClone(ledger.outcomes),
+    complete: ledger.required.every((name) => events[name] !== undefined),
+  };
+}
+
 /** A single direct child scans, pins and samples the owned set in one bounded cycle. */
 export function sampleRendererMemory(
   server,
@@ -429,7 +445,32 @@ export function sampleRendererMemory(
     fault ??= { stage, error: message };
   };
   return new Promise((resolve, reject) => {
-    let child, timer, closeTimer;
+    let child, timer, closeTimer, closureDeadline;
+    let exitCode, exitSignal;
+    const pipeNames = ["stdinCloseNs", "stdoutCloseNs", "stderrCloseNs"];
+    const extraPipes = [];
+    const closureEvents = {};
+    const closureOutcomes = {};
+    const observedBy = (name) =>
+      closureEvents[name] !== undefined &&
+      (closureDeadline === undefined || BigInt(closureEvents[name]) <= closureDeadline);
+    const freezeClosure = () => {
+      if (!helper) return;
+      helper = {
+        ...helper,
+        closed: observedBy("exitNs") && observedBy("closeNs"),
+        pipesClosed: pipeNames.every(observedBy),
+        ...(observedBy("closeNs") && { code: exitCode, signal: exitSignal }),
+      };
+      if (!helper.closed || !helper.pipesClosed) {
+        unresolvedClosures.set(helper, {
+          deadlineNs: parent.closureDeadlineNs,
+          events: closureEvents,
+          outcomes: closureOutcomes,
+          required: ["exitNs", "closeNs", ...pipeNames],
+        });
+      }
+    };
     const coverageComplete = () => {
       if (fixedExecutables?.protocol !== "linux-fixed-zfb.v4")
         return observed.size === handle.known.size;
@@ -439,6 +480,7 @@ export function sampleRendererMemory(
     const finish = () => {
       if (finished) return;
       finished = true;
+      freezeClosure();
       clearTimeout(timer);
       clearTimeout(closeTimer);
       qualify(timing, envelopeOk);
@@ -483,19 +525,40 @@ export function sampleRendererMemory(
       }
     };
 
-    const kill = () => {
-      if (child?.pid && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); // direct, unreaped ChildProcess handle only
-      if (child && !closeTimer) {
-        parent.closureDeadlineNs = String(process.hrtime.bigint() + BigInt(closeMs) * 1_000_000n);
-        closeTimer = setTimeout(() => {
-          parent.closureDispatchNs = now();
-          fail("helper-close", "sampling helper closure unverified");
-          // Leave the failed resource identity in the receipt for admission.
-          for (const pipe of [child.stdin, child.stdout, child.stderr]) pipe.destroy();
-          child.unref();
-          finish();
-        }, closeMs);
+    const expireClosure = (cause) => {
+      if (finished) return;
+      const left = closureDeadline - process.hrtime.bigint();
+      if (left > 0n) {
+        closeTimer = setTimeout(() => expireClosure("timer"), Math.ceil(Number(left) / 1e6));
+        return;
       }
+      parent.closureDecisionNs = now();
+      parent.closureDecisionCause = cause;
+      if (cause === "timer") parent.closureDispatchNs = parent.closureDecisionNs;
+      fail("helper-close", "sampling helper closure unverified");
+      // Freeze before destroying pipes: controller-initiated closure cannot be
+      // counted as callback evidence which was present at the cutoff.
+      finish();
+      for (const pipe of [child.stdin, child.stdout, child.stderr, ...extraPipes]) pipe.destroy();
+      child.unref();
+    };
+    const kill = () => {
+      if (!child || finished || closureDeadline !== undefined) return;
+      const cancelNs = process.hrtime.bigint();
+      parent.cancellationNs = String(cancelNs);
+      parent.cancellationAfterCoreDeadlineNs = String(
+        cancelNs > deadline ? cancelNs - deadline : 0n,
+      );
+      closureDeadline = cancelNs + BigInt(closeMs) * 1_000_000n;
+      parent.closureDeadlineNs = String(closureDeadline);
+      if (child.pid && child.exitCode === null && child.signalCode === null) {
+        try {
+          parent.killAccepted = child.kill("SIGKILL");
+        } catch (error) {
+          parent.killError = String(error.message).slice(0, 256);
+        }
+      }
+      if (!finished) expireClosure("cancel");
     };
     let request, spawnHrtimeNs;
     try {
@@ -1079,24 +1142,50 @@ export function sampleRendererMemory(
         kill();
       } else stderr += chunk.toString("utf8");
     });
-    for (const stream of [child.stdin, child.stdout, child.stderr]) {
-      stream.on("error", (error) => {
-        fail("pipe", String(error.message));
-        kill();
-      });
-    }
     child.once("error", (error) => {
       fail("spawn", String(error.message));
       kill();
     });
+    const closureEvent = (field) => {
+      const ns = now();
+      closureEvents[field] = ns;
+      if (finished) return;
+      parent[field] = ns;
+      if (closureDeadline !== undefined && BigInt(ns) > closureDeadline) {
+        expireClosure("event");
+      } else if (
+        closureEvents.exitNs &&
+        closureEvents.closeNs &&
+        pipeNames.every((name) => closureEvents[name] !== undefined)
+      ) {
+        finish();
+      }
+    };
     const markEvent = (emitter, event, field) => {
       const record = () => {
-        if (!finished) parent[field] = now();
+        if (event === "close") closureEvent(field);
+        else if (!finished) parent[field] = now();
       };
       // Node may emit ChildProcess.close inside its own last pipe close listener.
       if (event === "close") emitter.prependOnceListener(event, record);
       else emitter.once(event, record);
     };
+    // An existing fd3 custody socket is borrowed from the holder. Node
+    // exposes no new stream for that inherited fd; the child exit covers its
+    // copy. Any extra pipe actually created for this child has its own close.
+    for (const [offset, pipe] of (child.stdio?.slice(3) ?? []).entries()) {
+      if (!pipe || pipe === custody?.channel) continue;
+      const name = "fd" + (offset + 3) + "CloseNs";
+      pipeNames.push(name);
+      extraPipes.push(pipe);
+      markEvent(pipe, "close", name);
+    }
+    for (const stream of [child.stdin, child.stdout, child.stderr, ...extraPipes]) {
+      stream.on("error", (error) => {
+        fail("pipe", String(error.message));
+        kill();
+      });
+    }
     markEvent(child, "spawn", "spawnEventNs");
     markEvent(child.stdin, "finish", "requestFinishedNs");
     markEvent(child.stdin, "close", "stdinCloseNs");
@@ -1108,22 +1197,29 @@ export function sampleRendererMemory(
       markEvent(stream, "close", name + "CloseNs");
     }
     child.once("exit", (code, signal) => {
-      if (finished) return;
-      parent.exitNs = now();
-      parent.exitCode = code;
-      parent.exitSignal = signal;
+      closureOutcomes.exit = { code, signal };
+      if (!finished) {
+        parent.exitCode = code;
+        parent.exitSignal = signal;
+      }
+      closureEvent("exitNs");
     });
     child.once("close", (code, signal) => {
-      if (finished) return;
-      parent.closeNs = now();
-      helper = { ...helper, closed: true, pipesClosed: true, code, signal };
-      if (partial.length || !summary || stamps.preExitNs === null || code !== 0 || signal)
+      closureOutcomes.close = { code, signal };
+      exitCode = code;
+      exitSignal = signal;
+      if (
+        !finished &&
+        (partial.length || !summary || stamps.preExitNs === null || code !== 0 || signal)
+      )
         fail("helper-close", "sampling helper failed or returned incomplete output");
-      finish();
+      closureEvent("closeNs");
+      if (fault && !finished) kill();
     });
     // A millisecond timer may wake before the monotonic nanosecond cutoff.
     // An early wake must not start the separate cancellation reserve.
     const checkDeadline = () => {
+      if (finished) return;
       const remaining = deadline - process.hrtime.bigint();
       if (remaining > 0n) {
         timer = setTimeout(checkDeadline, Math.ceil(Number(remaining) / 1e6));
@@ -1134,10 +1230,16 @@ export function sampleRendererMemory(
       kill();
     };
     checkDeadline();
-    parent.requestStartNs = now();
-    const encodedRequest = JSON.stringify(request);
-    parent.requestBytes = Buffer.byteLength(encodedRequest);
-    child.stdin.end(encodedRequest);
-    parent.requestEndNs = now();
+    if (fault) return;
+    try {
+      parent.requestStartNs = now();
+      const encodedRequest = JSON.stringify(request);
+      parent.requestBytes = Buffer.byteLength(encodedRequest);
+      child.stdin.end(encodedRequest);
+      parent.requestEndNs = now();
+    } catch (error) {
+      fail("pipe", String(error.message));
+      kill();
+    }
   });
 }
