@@ -26,7 +26,7 @@ export function fixedZfbExecutables(appDir, facts, protocol = "linux-fixed-zfb.v
   if (!child || facts.installReceipt.node.realpath !== realpathSync(process.execPath))
     throw new Error("fixed safety requires the verified Node launcher and packaged native binary");
   let launch;
-  if (["linux-fixed-zfb.v2", "linux-fixed-zfb.v3"].includes(protocol)) {
+  if (["linux-fixed-zfb.v2", "linux-fixed-zfb.v3", "linux-fixed-zfb.v4"].includes(protocol)) {
     const shim = facts.install.executables.find((exe) => exe.role === "zfb-shim" && exe.ok);
     if (!shim) throw new Error("fixed v2 requires the verified distribution shim");
     launch = { cwd: realpathSync(appDir), shim: pin(join(appDir, shim.path), shim.sha256) };
@@ -167,6 +167,7 @@ export function startFixedRssSafety({
       if (stopped) throw new Error("fixed safety sampling stopped before readiness");
       readyCheck ??= Promise.withResolvers();
       await readyCheck.promise;
+      custody?.verifyStartup?.();
       if (failure) throw new Error(failure.error);
       if (stopped) throw new Error("fixed safety sampling stopped before readiness");
     },

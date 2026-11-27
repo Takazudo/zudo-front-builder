@@ -631,8 +631,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       : profile.server.readyTimeoutMs;
     if (intentPath)
       intent = reserveSession(intentPath, { labelDir, registryPath: resolved.registryPath });
-    if (profile.fixedRssSafety === "linux-fixed-zfb.v3") {
+    if (["linux-fixed-zfb.v3", "linux-fixed-zfb.v4"].includes(profile.fixedRssSafety)) {
       fixedCustody = startFixedCustody({
+        startup: profile.fixedRssSafety === "linux-fixed-zfb.v4",
         intent,
         append: (row) => rec.append(row),
         abort: (error) => fixedAbort.abort(error),
@@ -664,6 +665,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       if (shouldRegisterOwned(server.handle.native, p))
         appendJsonlSync(resolved.registryPath, { type: "owned", label, at: isoNow(), ...p });
     };
+    if (profile.fixedRssSafety === "linux-fixed-zfb.v4")
+      fixedCustody.attachStartup(server.handle, fixedExecutables);
     if (fixedExecutables) {
       fixedSafety = startFixedRssSafety({
         server,

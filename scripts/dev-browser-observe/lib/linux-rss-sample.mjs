@@ -309,7 +309,7 @@ export function sampleRendererMemory(
   const root = handle.native;
   const proofs = terminalProofs.get(handle) ?? new Map();
   terminalProofs.set(handle, proofs);
-  const verifiedRoles = ["linux-fixed-zfb.v2", "linux-fixed-zfb.v3"].includes(
+  const verifiedRoles = ["linux-fixed-zfb.v2", "linux-fixed-zfb.v3", "linux-fixed-zfb.v4"].includes(
     fixedExecutables?.protocol,
   );
   const processes = [];
@@ -375,7 +375,10 @@ export function sampleRendererMemory(
             },
           }),
         );
-      else resolve(record);
+      else {
+        custody?.acceptStartupCycle?.(processes, request?.fixedCustody);
+        resolve(record);
+      }
     };
 
     const kill = () => {
@@ -411,11 +414,12 @@ export function sampleRendererMemory(
         "invalid expected executable path",
       );
       requireValue(
-        (fixedExecutables?.protocol === "linux-fixed-zfb.v3") === Boolean(custody),
+        ["linux-fixed-zfb.v3", "linux-fixed-zfb.v4"].includes(fixedExecutables?.protocol) ===
+          Boolean(custody),
         "missing or unexpected fixed custody",
       );
       request = {
-        ...(custody && { fixedCustody: { ...custody.begin(), root: compactBirth(root) } }),
+        ...(custody && { fixedCustody: { ...custody.begin(handle), root: compactBirth(root) } }),
         root: compactBirth(root),
         known: [...handle.known.values()].map(compactBirth),
         terminalProofs: [...proofs.values()],
@@ -428,9 +432,12 @@ export function sampleRendererMemory(
           }),
         }),
       };
+      const startupPoll = request.fixedCustody?.startupPollPid;
+      if (startupPoll)
+        request.terminalProofs = request.terminalProofs.filter((p) => p.birth.pid !== startupPoll);
       if (custody)
         for (const pid of proofs.keys())
-          if (request.fixedCustody.tokens[pid]) releaseRequired.add(pid);
+          if (pid !== startupPoll && request.fixedCustody.tokens[pid]) releaseRequired.add(pid);
       spawnHrtimeNs = parent.spawnCallNs = now();
       child = launch();
       parent.spawnReturnNs = now();
@@ -695,7 +702,10 @@ export function sampleRendererMemory(
           requireValue(
             custody &&
               !bound.has(p.pid) &&
-              !prior &&
+              (!prior ||
+                (request.fixedCustody.startupPollPid === p.pid &&
+                  same(prior.birth, p) &&
+                  prior.birth.ppid === p.ppid)) &&
               p.pid !== root.pid &&
               custody.matches(p, p.custodyToken) &&
               p.terminalProof?.birth?.ppid === p.ppid &&

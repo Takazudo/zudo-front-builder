@@ -13,6 +13,8 @@ import stat
 import struct
 import sys
 import time
+import threading
+import importlib.util
 
 MAX_OWNED = 64
 MAX_PACKET = 2048
@@ -184,7 +186,7 @@ class Client:
         self.peer.close()
 
 
-def serve(shared, parent, session):
+def serve(shared, parent, session, startup_mode=False):
     # Parent is the only process that creates and distributes the shared endpoint.
     # SO_PEERCRED on that inherited socket describes its original creator, so
     # require kernel credentials on each helper's one-byte rendezvous instead.
@@ -194,13 +196,58 @@ def serve(shared, parent, session):
     retains = gets = releases = 0
     epoch = 0
     root = None
+    scout = None
+    ownership_lock = threading.Lock()
+    startup_key = None
+    first_retained = None
+
+    def publish(pair, worker, dev, launch):
+        nonlocal retains, high_water, startup_key, first_retained
+        if pair is None:
+            print(json.dumps(dict(startupReport=scout.report(), session=session)), flush=True)
+            return
+        key = birth_key(worker)
+        descriptors = list(map(identity, pair))
+        with ownership_lock:
+            require(first_retained is None or key == first_retained, "second startup compiler birth")
+            require(not held or key in held, "ambiguous startup retention")
+            first_retained = key
+            if key in held:
+                token, original = held[key]
+                require(list(map(identity, original)) == descriptors, "conflicting startup pair")
+            else:
+                token = secrets.token_hex(16)
+                original = [os.dup(pair[0]), os.dup(pair[1])]
+                held[key] = (token, original)
+                retains += 1
+                high_water = 1
+            startup_key = key
+            print(json.dumps(dict(startupBirth=worker, dev=dev, root=launch, token=token,
+                                  descriptors=descriptors, session=session,
+                                  acquiredNs=str(time.monotonic_ns()))), flush=True)
+
     print(json.dumps(dict(ready=True, pid=os.getpid(), session=session,
                           timeNamespace=os.readlink("/proc/self/ns/time"))), flush=True)
     while True:
         readable, _, _ = select.select([shared, sys.stdin], [], [])
         if sys.stdin in readable:
-            require(sys.stdin.buffer.read(1) == b"", "invalid custody stop")
-            break
+            if not startup_mode:
+                require(sys.stdin.buffer.read(1) == b"", "invalid custody stop")
+                break
+            line = sys.stdin.buffer.readline(16385)
+            if not line:
+                break
+            require(startup_mode and scout is None and len(line) <= 16384, "unexpected custody seed")
+            seed = json.loads(line)
+            require(seed["session"] == session and seed["root"]["ppid"] == parent
+                    and seed["root"]["pid"] == seed["root"]["pgid"], "invalid scout root")
+            spec = importlib.util.spec_from_file_location("fixed_startup",
+                    os.path.join(os.path.dirname(__file__), "linux-fixed-startup.py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            scout = module.Startup(seed["fixed"], parent, seed["root"], publish)
+            scout.thread.start()
+            continue
         ancillary_cap = socket.CMSG_SPACE(MAX_FDS * 4) + socket.CMSG_SPACE(U32.size)
         raw, ancillary, flags, _ = shared.recvmsg(1, ancillary_cap, CLOEXEC)
         # Any malformed transfer exits the holder; the kernel closes every FD.
@@ -239,29 +286,44 @@ def serve(shared, parent, session):
                 msg, fds, _ = receive(peer, [0,2])
                 key = birth_key(msg["birth"])
                 action = msg["op"]
-                if action == "retain":
-                    require(len(held)<MAX_PAIRS and len(fds)==2 and key not in held, "duplicate or excessive custody")
-                    verify_pair(fds, msg, root)
-                    token = secrets.token_hex(16)
-                    held[key] = (token, fds)
-                    retains += 1
-                    high_water=max(high_water,len(held))
-                    ack(dict(token=token,descriptors=list(map(identity,fds))))
-                else:
-                    token, existing = held[key]
-                    require(not fds and secrets.compare_digest(token, msg["token"]), "unverified custody token")
-                    if action == "get":
-                        gets += 1
-                        ack(dict(descriptors=list(map(identity,existing))),existing)
+                with ownership_lock:
+                    if action == "retain":
+                        if startup_mode:
+                            require(first_retained is None or first_retained == key, "second compiler birth")
+                            first_retained = key
+                        require(len(fds) == 2 and (not held or (startup_mode and key == startup_key and key in held)), "duplicate or excessive custody")
+                        verify_pair(fds, msg, root)
+                        if key in held:
+                            token, original = held[key]
+                            require(list(map(identity, fds)) == list(map(identity, original)), "changed startup pair")
+                            for fd in fds:
+                                os.close(fd)
+                            fds = original
+                        else:
+                            token = secrets.token_hex(16)
+                            held[key] = (token, fds)
+                            retains += 1
+                        high_water=max(high_water,len(held))
+                        ack(dict(token=token,descriptors=list(map(identity,fds))))
                     else:
-                        require(action == "release", "unsupported custody operation")
-                        for fd in existing:
-                            os.close(fd)
-                        del held[key]
-                        releases += 1
-                        ack()
+                        token, existing = held[key]
+                        require(not fds and secrets.compare_digest(token, msg["token"]), "unverified custody token")
+                        if action == "get":
+                            gets += 1
+                            ack(dict(descriptors=list(map(identity,existing))),existing)
+                        else:
+                            require(action == "release", "unsupported custody operation")
+                            for fd in existing:
+                                os.close(fd)
+                            del held[key]
+                            releases += 1
+                            ack()
             else:
                 raise ValueError("custody operation cap")
+    if scout is not None:
+        scout.stop.set()
+        scout.thread.join(0.15)
+        require(not scout.thread.is_alive(), "startup scout still running")
     lines = sorted("|".join(map(str, (*key, record[0]))) for key,record in held.items())
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     for _, fds in held.values():
@@ -281,4 +343,4 @@ if __name__ == "__main__":
     session=sys.stdin.buffer.readline(128).decode().strip()
     require(re.fullmatch("[0-9a-f]{32}",session),"invalid custody session")
     with socket.socket(fileno=3) as shared:
-        serve(shared,parent,session)
+        serve(shared,parent,session,sys.argv[2:] == ["--startup"])
