@@ -24,6 +24,7 @@ import {
   sha256,
   treeHashDir,
   walkFiles,
+  waitAtLeast,
 } from "./util.mjs";
 
 export const FIXTURE_SCHEMA = "tiny-fixture.v1";
@@ -863,7 +864,7 @@ export async function performWrites(
   steps,
   now,
   fsImpl = REAL_FS,
-  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  sleep = (ms) => waitAtLeast(ms),
   signal,
 ) {
   if (!Array.isArray(steps) || steps.length === 0) throw noWriteStepsError();

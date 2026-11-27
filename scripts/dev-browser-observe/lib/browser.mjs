@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, join } from "node:path";
 import { timeBrowserAsync, timeBrowserSync } from "./browser-timing.mjs";
-import { HARNESS_DIR, hrtimeNs, isoNow, nsToMs, sha256, sha256File } from "./util.mjs";
+import { HARNESS_DIR, hrtimeNs, isoNow, nsToMs, sha256, sha256File, waitAtLeast } from "./util.mjs";
 
 export const OBSERVER_PATH = join(HARNESS_DIR, "observer-init.js");
 
@@ -502,6 +502,7 @@ export class ObserverPage {
     this.context = context;
     this.observerSource = observerSource;
     this.clock = clock;
+    this.timer = undefined;
     this.page = null;
     this.baseUrl = null;
     this.docInits = [];
@@ -989,8 +990,8 @@ export class ObserverPage {
   async quietWindow(ms) {
     const m = this.mark();
     const start = this.clock();
-    await new Promise((r) => setTimeout(r, ms));
-    return { quietMs: ms, observedMs: nsToMs(this.clock() - start), ...this.since(m, start) };
+    const end = await waitAtLeast(ms, { clock: this.clock, startNs: start, timer: this.timer });
+    return { quietMs: ms, observedMs: nsToMs(end - start), ...this.since(m, start) };
   }
 
   waitNotify(token, timeoutMs, onLate = () => {}) {
@@ -1315,7 +1316,8 @@ export class ObserverPage {
     let basis = null;
     if (looksGone(reads[0]) && nativeUpdateConfirmed) basis = "settle-native-update";
     else if (looksGone(reads[0])) {
-      await new Promise((r) => setTimeout(r, quietMs));
+      // Unrecorded, so measured on the real monotonic clock rather than the injectable one.
+      await waitAtLeast(quietMs, { timer: this.timer });
       reads.push(await read());
       if (looksGone(reads[1])) basis = "stable-reads";
     }
