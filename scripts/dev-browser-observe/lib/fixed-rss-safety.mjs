@@ -70,6 +70,7 @@ export function startFixedRssSafety({
   sample = sampleRendererMemory,
   joinOwnedFamily = false,
   custody = null,
+  startupCensus = null,
   peer,
   checkRoles = samplePeerRoles,
 }) {
@@ -290,6 +291,19 @@ export function startFixedRssSafety({
   };
   take();
   const timer = setInterval(take, limits.sampleEveryMs);
+  const confirmStartupCompletion = () => {
+    if (!custody?.startupCompletionPending) return;
+    if (!startupCensus) throw Error("startup product completion unconfirmed: no controller census");
+    const census = startupCensus();
+    custody.confirmStartupCompletion({
+      sample: lastAccepted,
+      controllerChildren: census.controllerChildren,
+      expectedChildren: [
+        ...census.expectedChildren.filter(Boolean),
+        ...(pending && active?.helper?.pid ? [active.helper.pid] : []),
+      ],
+    });
+  };
   async function observeReady(actualReadyNs) {
     if (failure) throw new Error(failure.error);
     if (stopped) throw new Error("fixed safety sampling stopped before readiness");
@@ -337,6 +351,14 @@ export function startFixedRssSafety({
     get unresolvedHelper() {
       return unresolvedHelper;
     },
+    // The readiness-qualified accepted sample and any helper the sampler has in
+    // flight, for the startup product-completion confirmation.
+    acceptedSample() {
+      return lastAccepted ? structuredClone(lastAccepted) : null;
+    },
+    inFlightHelperPid() {
+      return pending ? (active?.helper?.pid ?? null) : null;
+    },
     // Only the zero-edit stock adapter uses this read-only milestone. All
     // normal workload entry points still require full readiness below.
     async verifyZeroEditObservationReady() {
@@ -350,6 +372,7 @@ export function startFixedRssSafety({
       await observeReady();
       if (!lastAccepted?.strict || lastAccepted.live.length !== 2 || !nativeBirth)
         throw Error("family blank setup requires complete root/native RSS observation");
+      confirmStartupCompletion();
     },
     captureFamilyCycle(receipt, { idleNeedsFullPeriod = false } = {}) {
       const proof = lastAccepted;
@@ -369,8 +392,11 @@ export function startFixedRssSafety({
       );
       const before = { sample: proof, ...structuredClone(custody.familyProof()) };
       assert(
-        Number.isSafeInteger(before.release?.receipt?.epoch) &&
-          before.release.receipt.epoch <= proof.epoch,
+        before.completion
+          ? Number.isSafeInteger(before.completion.confirmed?.epoch) &&
+              before.completion.confirmed.epoch <= proof.epoch
+          : Number.isSafeInteger(before.release?.receipt?.epoch) &&
+              before.release.receipt.epoch <= proof.epoch,
         "family release lacks a previously accepted epoch",
       );
       if (!pending) {
@@ -422,6 +448,7 @@ export function startFixedRssSafety({
     },
     async verifyReady(actualReadyNs) {
       await observeReady(actualReadyNs);
+      confirmStartupCompletion();
       custody?.verifyStartup?.();
     },
     async stop() {

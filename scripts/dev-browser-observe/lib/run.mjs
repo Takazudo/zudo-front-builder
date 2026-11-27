@@ -5,6 +5,7 @@ import {
 } from "./fixed-family-admission.mjs";
 import { samplerClosureAudit } from "./linux-rss-sample.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
+import { controllerChildren, enableChildSubreaper } from "./linux-subreaper.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { admissionPath, reserveSession } from "./admission.mjs";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
@@ -335,7 +336,16 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
       }
       throw error;
     }
-    return await executeLocked({ loaded, label, labelDir, command, stderr, hooks, intentPath });
+    return await executeLocked({
+      loaded,
+      label,
+      labelDir,
+      command,
+      stderr,
+      hooks,
+      intentPath,
+      lockHelperPid: lock?.helperPid ?? null,
+    });
   } finally {
     await lock.release();
   }
@@ -364,7 +374,16 @@ export function recordSamplerClosureAudits(unresolved, fixedSafety, rendererMemo
   }
 }
 
-async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
+async function executeLocked({
+  loaded,
+  label,
+  labelDir,
+  command,
+  stderr,
+  hooks = {},
+  intentPath,
+  lockHelperPid = null,
+}) {
   const { profile, resolved } = loaded;
   const fixedAstro = isFixedAstroProtocol(profile.fixedRssSafety);
   const familyAudit = profile.fixedFamilyAdmission ? blankBrowserAudit() : null;
@@ -712,6 +731,11 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         : profile.server.readyTimeoutMs;
     if (intentPath)
       intent = reserveSession(intentPath, { labelDir, registryPath: resolved.registryPath });
+    if (profile.fixedRssSafety === "linux-fixed-zfb.v4")
+      rec.append({
+        type: "fixed-controller-subreaper",
+        ...(await (hooks.enableChildSubreaper ?? enableChildSubreaper)()),
+      });
     if (["linux-fixed-zfb.v3", "linux-fixed-zfb.v4"].includes(profile.fixedRssSafety)) {
       fixedCustody = startFixedCustody({
         startup: profile.fixedRssSafety === "linux-fixed-zfb.v4",
@@ -754,6 +778,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         server,
         fixedExecutables,
         custody: fixedCustody,
+        startupCensus: () => ({
+          controllerChildren: (hooks.controllerChildren ?? controllerChildren)(),
+          expectedChildren: [server.handle.native?.pid, fixedCustody?.identity.pid, lockHelperPid],
+        }),
         ...(fixedAstro && {
           peer: {
             framework: profile.framework,
@@ -1283,6 +1311,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     }
     if (fixedCustody) {
       try {
+        receipt.startupCustody = fixedCustody.startupOutcome?.() ?? null;
         await bounded("fixed-custody-stop", 500, () => fixedCustody.stop());
       } catch (error) {
         unresolved.push({

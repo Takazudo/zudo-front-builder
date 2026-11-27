@@ -36,7 +36,7 @@ afterEach(() => {
 
 // Virtual monotonic clock: fake timer time plus synchronous work that blocks
 // the event loop (it advances hrtime without letting any timer fire).
-function harness(mode, { sampleEveryMs = 1000 } = {}) {
+function harness(mode, { sampleEveryMs = 1000, completion = null } = {}) {
   vi.useFakeTimers({
     toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"],
   });
@@ -59,7 +59,10 @@ function harness(mode, { sampleEveryMs = 1000 } = {}) {
     append() {},
     abort: (error) => failures.push(error),
     custody: {
-      familyProof: () => ({ root, dev, worker, terminal, release: { receipt: { epoch: 1 } } }),
+      familyProof: () =>
+        completion
+          ? { root, dev, worker: null, terminal: null, release: null, completion }
+          : { root, dev, worker, terminal, release: { receipt: { epoch: 1 } } },
     },
     sample(_server, _path, { onHelperSpawn }) {
       dispatches++;
@@ -124,6 +127,7 @@ function batch(
     snapshot = () => [root, dev],
     cost = ADMISSION_COST_NS,
     snapshotCostNs = 0n,
+    known = [root, dev, worker],
     imagesCostNs = 0n,
   } = {},
 ) {
@@ -150,7 +154,7 @@ function batch(
         h.block(snapshotCostNs);
         return snapshot();
       },
-      known: new Map([root, dev, worker].map((x) => [x.pid, x])),
+      known: new Map(known.map((x) => [x.pid, x])),
       verifyImages() {
         calls.verifyImages++;
         h.block(imagesCostNs);
@@ -477,6 +481,29 @@ test.each([
     }
     if (mode === "work-deadline")
       assert.equal(refusal.setup.idleDeferral.waitBoundNs, refusal.setup.workDeadlineNs);
+  } finally {
+    await stopMonitor(h);
+  }
+});
+
+// #4862 product completion: no worker birth, terminal or release, only the confirmed
+// completion record. The deferred join and its custody comparisons still apply.
+test.each([
+  ["confirmed", { confirmed: { epoch: 1, startedNs: "1" } }, null],
+  ["unconfirmed", { confirmed: null }, /release lacks a previously accepted epoch/],
+])("a family admission on a %s product completion", async (_label, completion, refusal) => {
+  const h = harness("completion", { completion });
+  try {
+    await atProofPhase(h, SETUP_PHASE_NS);
+    const b = batch(h, { known: [root, dev] });
+    const { error } = await settleAll(Promise.resolve().then(b.run));
+    if (refusal) assert.match(String(error?.message), refusal);
+    else {
+      assert.equal(error, undefined, String(error));
+      const start = b.input.deps.recorder.records.find((r) => r.type === "scenario-start");
+      assert.deepEqual(start.familyAdmission.setup.priorCustody.completion, completion);
+      assert.equal(start.familyAdmission.setup.priorCustody.worker, null);
+    }
   } finally {
     await stopMonitor(h);
   }
