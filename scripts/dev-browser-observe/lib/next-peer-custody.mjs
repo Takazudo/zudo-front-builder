@@ -51,6 +51,7 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
     armed = false;
   let watchdog;
   let terminalVerified = false;
+  let terminalProof = null;
   const acknowledged = new Set();
   let windowEnd = null;
   const secondaryErrors = [];
@@ -311,7 +312,11 @@ export function startNextPeerCustody({ contract, append, abort, intent }) {
     },
     terminal(b) {
       assert(same(b, accepted?.birth));
+      terminalProof = b.terminalProof;
       terminalVerified = true;
+    },
+    get terminalProof() {
+      return terminalProof;
     },
     get terminalVerified() {
       return terminalVerified;

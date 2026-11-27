@@ -1,3 +1,8 @@
+import {
+  markNextRegistry,
+  readNextRegistry,
+  reconcileNextPopulation,
+} from "./next-peer-population.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { admissionPath, reserveSession } from "./admission.mjs";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
@@ -319,6 +324,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   const nextProtocol = profile.fixedRssSafety === NEXT_BOOTSTRAP_PROTOCOL;
   const fixedPeer = nextProtocol || profile.fixedRssSafety === FIXED_PEER_PROTOCOL;
   let nextCustody = null;
+  let nextRegistryMark;
   const fixedAbort = profile.fixedRssSafety ? new AbortController() : null;
   if (fixedAbort)
     loaded.signal = loaded.signal
@@ -669,6 +675,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       : fixedPeer
         ? peerBudget(profile.server.readyTimeoutMs)
         : profile.server.readyTimeoutMs;
+    if (nextProtocol) nextRegistryMark = markNextRegistry(resolved.registryPath);
     if (intentPath)
       intent = reserveSession(intentPath, { labelDir, registryPath: resolved.registryPath });
     spawning = true;
@@ -1354,6 +1361,25 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         evidenceFailed = true;
         stderr(`registry write failed: ${error?.message ?? error}`);
       }
+    }
+    if (nextProtocol && server) {
+      try {
+        receipt.nextPeerPopulation = reconcileNextPopulation({
+          chain: fixedSafety?.qualifiedPeer?.chain,
+          worker: nextCustody?.qualified,
+          terminalProof: nextCustody?.terminalProof,
+          stop: stopReport,
+          registry: readNextRegistry(resolved.registryPath, nextRegistryMark, label),
+        });
+      } catch (error) {
+        receipt.nextPeerPopulation = {
+          ok: false,
+          resourceAbsent: stopReport.absent,
+          error: String(error),
+        };
+      }
+      safeAppend({ type: "next-peer-population", ...receipt.nextPeerPopulation });
+      if (!receipt.nextPeerPopulation.ok) evidenceFailed = true;
     }
     if (browserHandle) {
       try {
