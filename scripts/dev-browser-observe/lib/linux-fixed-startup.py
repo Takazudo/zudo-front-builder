@@ -67,6 +67,9 @@ class Startup:
             raise ValueError("startup process ancestry mismatch")
         if state in (b"Z", b"X", b"x"):
             raise ValueError("startup role first seen terminal")
+        fdinfo = self.read(f"/proc/self/fdinfo/{process}").splitlines()
+        if b"Pid:\t" + str(pid).encode() not in fdinfo:
+            raise ValueError("startup unpaired pidfd")
         if (
             self.read("cmdline", directory)
             != b"\0".join(map(os.fsencode, argv)) + b"\0"
@@ -86,9 +89,6 @@ class Startup:
                 raise ValueError("startup process image mismatch")
         finally:
             os.close(exe)
-        fdinfo = self.read(f"/proc/self/fdinfo/{process}").splitlines()
-        if b"Pid:\t" + str(pid).encode() not in fdinfo:
-            raise ValueError("startup unpaired pidfd")
         poller = select.poll()
         poller.register(process, select.POLLIN)
         if poller.poll(0):
