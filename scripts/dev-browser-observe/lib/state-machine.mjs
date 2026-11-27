@@ -262,6 +262,24 @@ export async function runBatch({ scenarios, deps }) {
   };
 
   const cleanup = async (snapshot, reason, blocked = [], { retry = false } = {}) => {
+    if (deps.outerDecisionOnly) {
+      // The diagnostic stopped before any authorized syscall. Even after a
+      // failed precheck or unexpected disk drift only a read-only audit is
+      // allowed; a restoration or live visit would itself change the study.
+      append({
+        type: "cleanup",
+        label: "cleanup",
+        measured: false,
+        reason,
+        ok: false,
+        restored: false,
+        live: [],
+        liveSkipped: "decision-only-before-write",
+        writePerformed: false,
+        actions: [],
+      });
+      return false;
+    }
     // A refused safety observation leaves this disposable work copy intact.
     // Restoring it while its server is live would trigger another rebuild.
     if (deps.safetySignal?.aborted) {
@@ -1015,6 +1033,10 @@ export async function runBatch({ scenarios, deps }) {
             }
           }
         };
+        if (deps.outerDecisionOnly && (!zeroWriteTarget || !deps.outerPeerWriteTime)) {
+          await recordPrewriteRefusal(new Error("unexpected decision-only mutation shape"));
+          break outer;
+        }
         if (deps.beforePeerMutation) {
           try {
             if (deps.beforePeerDecision)
@@ -1039,6 +1061,8 @@ export async function runBatch({ scenarios, deps }) {
               if (deps.outerPeerWriteTime) {
                 try {
                   const proof = deps.outerPeerWriteTime(() => clock.now());
+                  if (deps.outerDecisionOnly)
+                    throw new Error("decision-only callback returned before write");
                   recBase.prewriteDecision = proof;
                   return BigInt(proof.t0Ns);
                 } catch (error) {

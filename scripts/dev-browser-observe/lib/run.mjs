@@ -1296,6 +1296,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           }),
           ...(nextProtocol && {
             ...(outerProtocol && {
+              outerDecisionOnly: profile.fixedNextOuterObserver.operation === "decision-only",
               beforePeerDecision: ({ attemptStart, attemptMs }) => {
                 loaded.signal.throwIfAborted();
                 assert(outerGate, "independent outer receipt unavailable");
