@@ -27,7 +27,7 @@ export async function superviseSession({
   const startup = Boolean(profile.startupAcceptance);
   const tiny = Boolean(profile.tinyAcceptance);
   const diagnostic = Boolean(profile.rendererMemoryStudy || startup || tiny);
-  const bounded = diagnostic || Boolean(profile.fixedRssSafety);
+  const bounded = diagnostic || Boolean(profile.fixedRssSafety || profile.sourceTimingSafety);
   if ((command === "startup-acceptance") !== startup || (command === "tiny-acceptance") !== tiny) {
     stderr("acceptance requires its own profile and command");
     return EXIT.usage;
@@ -117,6 +117,7 @@ export async function superviseSession({
         ? {
             diagnostic,
             ...(profile.fixedRssSafety && { fixedRssSafety: profile.fixedRssSafety }),
+            ...(profile.sourceTimingSafety && { sourceTimingSafety: profile.sourceTimingSafety }),
             startedMonotonicMs: started,
             deadlineMonotonicMs: deadline,
             ...controllerExit,

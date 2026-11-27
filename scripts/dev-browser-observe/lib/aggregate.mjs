@@ -1,3 +1,4 @@
+import { sourceTimingEvidenceValid } from "./source-timing-safety.mjs";
 import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { rendererMemoryBuild } from "./renderer-memory-protocol.mjs";
@@ -127,6 +128,7 @@ export function sessionFacets(receipt) {
     },
     observer: {
       pin: profile.pins?.observerSha256 ?? null,
+      sourceTimingProtocol: profile.sourceTimingSafety ?? null,
       browserObserverSha256: receipt.browser?.observerSha256 ?? null,
     },
     host: omit(receipt.host, ["freememBytes", "loadavg"]),
@@ -329,8 +331,16 @@ function terminalEvidence(dir, receipt, summary, records, seriesStatus, seriesEx
   const stops = records.filter((r) => r.type === "server-stop");
   if (stops.length !== 1 || stops[0].report?.absent !== true || stops[0].report?.error)
     problems.push("missing verified server-stop");
+  const sourceTiming =
+    records.some((r) => r.sourceTimingSafety || r.type === "source-timing-rss-sample") ||
+    receipt?.sourceTimingSafety ||
+    summary?.sourceTimingSafety;
+  if (sourceTiming && (!receipt?.profile?.sourceTimingSafety || !receipt.supervisorId))
+    problems.push("source timing identity or supervisor missing");
   if (receipt?.supervisorId != null) {
     const completion = readJson(join(dir, "supervisor-completion.json"));
+    if (sourceTiming && !sourceTimingEvidenceValid({ records, receipt, summary, completion }))
+      problems.push("source timing session lacks complete accepted safety evidence");
     if (
       completion.schema !== "dev-browser-observe.supervisor-completion.v1" ||
       completion.supervisorId !== receipt.supervisorId ||
@@ -475,6 +485,13 @@ export function readSession({
     schedulePresent,
     facets: receipt ? sessionFacets(receipt) : null,
     blocks,
+    ...(!complete &&
+      (receipt?.profile?.sourceTimingSafety ||
+        receipt?.sourceTimingSafety ||
+        summary?.sourceTimingSafety ||
+        records.some((r) => r.sourceTimingSafety || r.type === "source-timing-rss-sample")) && {
+        timingExcluded: true,
+      }),
     resourceStudy: summary?.resourceStudy ?? null,
   };
 }
@@ -526,6 +543,9 @@ export function aggregate({ sessions, declaredDifferences = [], protocol = null,
     declaredDifferences,
   );
   const incomplete = read.filter((s) => s.status !== "complete").map((s) => s.label);
+  const sourceProtocols = new Set(
+    read.filter((s) => s.facets).map((s) => s.facets.observer.sourceTimingProtocol),
+  );
   const report = {
     schema: AGGREGATE_SCHEMA,
     protocol,
@@ -540,7 +560,7 @@ export function aggregate({ sessions, declaredDifferences = [], protocol = null,
     sessions: read.map(({ facets: _f, ...rest }) => rest),
     facets: Object.fromEntries(read.filter((s) => s.ran).map((s) => [s.label, s.facets])),
     pooledComparable: incomplete.length === 0 && identity.ok,
-    pooled: poolVariants(read.filter((s) => !s.timingExcluded)),
+    pooled: sourceProtocols.size > 1 ? {} : poolVariants(read.filter((s) => !s.timingExcluded)),
   };
   const exitCode = !identity.ok ? 3 : incomplete.length > 0 ? 1 : 0;
   return { report, exitCode };

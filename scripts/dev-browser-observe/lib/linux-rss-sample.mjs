@@ -376,6 +376,7 @@ export function sampleRendererMemory(
     custody = null,
     nextCustody = null,
     outerCycle = null,
+    onHelperSpawn = null,
     launch = () =>
       spawn("python3", ["-I", "-B", script, String(process.pid)], {
         stdio: [
@@ -641,6 +642,13 @@ export function sampleRendererMemory(
       closed: false,
       pipesClosed: false,
     };
+
+    onHelperSpawn?.({
+      pid: helper.pid,
+      spawnHrtimeNs,
+      entryNs: String(start),
+      deadlineNs: String(deadline),
+    });
 
     let partial = Buffer.alloc(0);
     let bytes = 0;

@@ -20,6 +20,7 @@ import {
 } from "./fixed-peer-roles.mjs";
 import { rendererMemoryProfileErrors } from "./renderer-memory-protocol.mjs";
 import { startupProfileErrors } from "./startup-acceptance.mjs";
+import { sourceTimingProfileValid } from "./source-timing-safety.mjs";
 import { scheduleErrors } from "./schedule.mjs";
 import { validateAs } from "./schema.mjs";
 import { DIAGNOSTIC_ENV } from "./server.mjs";
@@ -361,6 +362,10 @@ function fieldNotesErrors(profile) {
 
 export function semanticErrors(profile) {
   const errors = [];
+  if (profile.sourceTimingSafety && !sourceTimingProfileValid(profile))
+    errors.push(
+      "$.sourceTimingSafety requires the exact trace-free 100-article C-sec body timing profile",
+    );
   if (profile.mode === "fixed-distribution") errors.push(...fixedErrors(profile));
   const kind = profile.fixture?.kind ?? "tiny";
   if (kind === "field-notes") errors.push(...fieldNotesErrors(profile));

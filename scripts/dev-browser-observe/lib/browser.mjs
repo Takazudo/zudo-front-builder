@@ -1,11 +1,48 @@
-import { readFileSync, realpathSync } from "node:fs";
+import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { timeBrowserAsync, timeBrowserSync } from "./browser-timing.mjs";
-import { HARNESS_DIR, hrtimeNs, isoNow, nsToMs, sha256, sha256File } from "./util.mjs";
+import { HARNESS_DIR, hrtimeNs, isoNow, nsToMs, sha256, sha256File, waitAtLeast } from "./util.mjs";
 
 export const OBSERVER_PATH = join(HARNESS_DIR, "observer-init.js");
+
+export function directChildPids(pid = process.pid, read = readFileSync, list = readdirSync) {
+  const ids = new Set();
+  for (const task of list(`/proc/${pid}/task`)) {
+    try {
+      for (const s of read(`/proc/${pid}/task/${task}/children`, "utf8").trim().split(/\s+/))
+        if (/^[1-9]\d*$/.test(s)) ids.add(Number(s));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  return [...ids].sort((a, b) => a - b);
+}
+
+// Playwright's library default (full Chromium) is not necessarily what runs:
+// headless launches use the separate chromium_headless_shell build. Identify the
+// one new direct child running a Playwright browser image after launch.
+export function selectRunningBrowser({ before, after, browsersRoot, readLink = readlinkSync }) {
+  const known = new Set(before);
+  const found = [];
+  for (const pid of after.filter((p) => !known.has(p))) {
+    let path;
+    try {
+      path = readLink(`/proc/${pid}/exe`);
+    } catch {
+      continue;
+    }
+    if (
+      path.startsWith(browsersRoot + "/") &&
+      ["chrome", "chrome-headless-shell"].includes(basename(path))
+    )
+      found.push({ pid, path });
+  }
+  if (found.length !== 1)
+    throw new Error(`expected one launched browser child, found ${JSON.stringify(found)}`);
+  return found[0];
+}
 
 export const DEFAULT_BROWSER = {
   headless: true,
@@ -201,13 +238,15 @@ export async function launchOwnedBrowser(
   signal?.throwIfAborted();
   if (diagnosticExecutable && actualHash !== diagnosticExecutable.sha256)
     throw new Error(`diagnostic browser executable digest differs: ${actualPath}`);
-  const timeout = actualPath ? (launchTimeoutMs?.() ?? diagnosticExecutable.timeoutMs) : undefined;
+  const timeout = launchTimeoutMs?.() ?? diagnosticExecutable?.timeoutMs;
+  const childrenBefore = !chromiumImpl && process.platform === "linux" ? directChildPids() : null;
   signal?.throwIfAborted();
   const browser = await timeBrowserAsync(timing, "browser.chromium.launch", parentId, () =>
     chromium.launch({
       headless: cfg.headless,
       args: cfg.args,
-      ...(actualPath ? { executablePath: actualPath, timeout } : {}),
+      ...(actualPath ? { executablePath: actualPath } : {}),
+      ...(timeout !== undefined && { timeout }),
     }),
   );
   try {
@@ -221,6 +260,33 @@ export async function launchOwnedBrowser(
     );
     const executableSha256 = await executableDigest(executablePath, "library-default", readOptions);
     signal?.throwIfAborted();
+    let running = {};
+    if (childrenBefore) {
+      try {
+        const root = realpathSync(dirname(dirname(dirname(realpathSync(executablePath)))));
+        const child = selectRunningBrowser({
+          before: childrenBefore,
+          after: directChildPids(),
+          browsersRoot: root,
+        });
+        running = {
+          runningExecutablePath: child.path,
+          // /proc/<pid>/exe reads the image the process actually executes.
+          runningExecutableSha256: await executableDigest(
+            `/proc/${child.pid}/exe`,
+            "running-launched",
+            readOptions,
+          ),
+        };
+      } catch (error) {
+        running = {
+          runningExecutablePath: null,
+          runningExecutableSha256: null,
+          runningExecutableError: String(error?.message ?? error),
+        };
+      }
+      signal?.throwIfAborted();
+    }
     const identity = {
       engine: "chromium",
       executablePath,
@@ -228,6 +294,7 @@ export async function launchOwnedBrowser(
       ...(actualPath
         ? { launchedExecutablePath: actualPath, launchedExecutableSha256: actualHash }
         : {}),
+      ...running,
       version: timeBrowserSync(timing, "browser.version", parentId, {}, () => browser.version()),
       headless: cfg.headless,
       args: cfg.args,
@@ -435,6 +502,7 @@ export class ObserverPage {
     this.context = context;
     this.observerSource = observerSource;
     this.clock = clock;
+    this.timer = undefined;
     this.page = null;
     this.baseUrl = null;
     this.docInits = [];
@@ -923,8 +991,8 @@ export class ObserverPage {
   async quietWindow(ms) {
     const m = this.mark();
     const start = this.clock();
-    await new Promise((r) => setTimeout(r, ms));
-    return { quietMs: ms, observedMs: nsToMs(this.clock() - start), ...this.since(m, start) };
+    const end = await waitAtLeast(ms, { clock: this.clock, startNs: start, timer: this.timer });
+    return { quietMs: ms, observedMs: nsToMs(end - start), ...this.since(m, start) };
   }
 
   waitNotify(token, timeoutMs, onLate = () => {}) {
@@ -1249,7 +1317,8 @@ export class ObserverPage {
     let basis = null;
     if (looksGone(reads[0]) && nativeUpdateConfirmed) basis = "settle-native-update";
     else if (looksGone(reads[0])) {
-      await new Promise((r) => setTimeout(r, quietMs));
+      // Unrecorded, so measured on the real monotonic clock rather than the injectable one.
+      await waitAtLeast(quietMs, { timer: this.timer });
       reads.push(await read());
       if (looksGone(reads[1])) basis = "stable-reads";
     }

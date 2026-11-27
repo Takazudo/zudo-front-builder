@@ -282,6 +282,18 @@ export async function runBatch({ scenarios, deps }) {
     }
     // A refused safety observation leaves this disposable work copy intact.
     // Restoring it while its server is live would trigger another rebuild.
+    if (deps.sourceTimingSafety && !deps.safetySignal.aborted) {
+      try {
+        const entry = await deps.sourceTimingSafety.decide({
+          site: "cleanup-entry",
+          capNs: deps.workDeadlineNs,
+          signal,
+        });
+        append({ type: "source-timing-decision", reason, ...entry.decision });
+      } catch (error) {
+        if (!deps.safetySignal.aborted) throw error;
+      }
+    }
     if (deps.safetySignal?.aborted) {
       append({
         type: "cleanup",
@@ -312,8 +324,19 @@ export async function runBatch({ scenarios, deps }) {
         step: "apply",
         blocks,
       });
-    const restoreNs = clock.now();
+    const legacyRestoreNs = deps.sourceTimingSafety ? null : clock.now();
     const mark = page.mark?.() ?? null;
+    let restoreDecision = null;
+    if (deps.sourceTimingSafety)
+      restoreDecision = await deps.sourceTimingSafety.awaitDecision({
+        site: "restore",
+        capNs: deps.workDeadlineNs,
+        signal,
+      });
+    const restoreNs = deps.sourceTimingSafety
+      ? BigInt(deps.sourceTimingSafety.current().decisionNs)
+      : legacyRestoreNs;
+    if (restoreDecision) restoreDecision.decisionNs = String(restoreNs);
     const restore = fs.restore(snapshot);
     let peerRestoration;
     if (peerWrite) {
@@ -509,6 +532,7 @@ export async function runBatch({ scenarios, deps }) {
       restorationWriteMethod: restore.writeMethod ?? null,
       actions: restore.actions ?? null,
       mismatches: restore.mismatches,
+      ...(restoreDecision && { sourceTimingDecision: restoreDecision }),
       settle,
       quiet,
       live,
@@ -641,7 +665,21 @@ export async function runBatch({ scenarios, deps }) {
           stop("server-exit", where);
           break outer;
         }
-        const sample = server.sampleResources();
+        let sample;
+        if (deps.sourceTimingSafety) {
+          const decided = await deps.sourceTimingSafety.decide({
+            site: "precheck",
+            capNs: deps.workDeadlineNs,
+            signal,
+          });
+          append({
+            type: "source-timing-decision",
+            scenario: base.scenario,
+            opId: base.opId,
+            ...decided.decision,
+          });
+          sample = decided;
+        } else sample = server.sampleResources();
         const wallMs = nsToMs(clock.now() - startedNs);
         const tripped = overLimits(limits, sample, wallMs);
         if (tripped) {
@@ -947,6 +985,34 @@ export async function runBatch({ scenarios, deps }) {
           };
         }
         const preDocUUID = armed.docUUID;
+        if (deps.sourceTimingSafety) {
+          // Settle before the attempt marks and instability check, so the
+          // synchronous T0 decision below reads this sample with no await between.
+          try {
+            recBase.sourceTimingDecision = await deps.sourceTimingSafety.awaitDecision({
+              site: "write",
+              capNs:
+                attemptStart !== null
+                  ? attemptStart + BigInt(timeouts.attemptMs) * 1000000n
+                  : deps.workDeadlineNs,
+              signal,
+            });
+          } catch (error) {
+            if (!signal?.aborted) await wait(page.disarm());
+            append({
+              ...recBase,
+              outcome: "resource-limit",
+              phase: "before-mutation",
+              writePerformed: false,
+              error: error.message,
+              ...(error.decision && { sourceTimingDecision: error.decision }),
+            });
+            current.armedToken = null;
+            count(acc, "resource-limit");
+            stop("resource-limit", where);
+            break outer;
+          }
+        }
         const logMark = server.logMark?.() ?? null;
         const serverPidBefore = server.pid();
         page.markAttempt();
@@ -1088,6 +1154,19 @@ export async function runBatch({ scenarios, deps }) {
                   throw error;
                 }
               }
+              if (deps.sourceTimingSafety) {
+                try {
+                  const accepted = deps.sourceTimingSafety.current();
+                  recBase.sourceTimingWriteEpoch = accepted.epoch;
+                  recBase.sourceTimingAcceptedNs = accepted.acceptedNs;
+                  if (recBase.sourceTimingDecision)
+                    recBase.sourceTimingDecision.decisionNs = accepted.decisionNs;
+                  return BigInt(accepted.decisionNs);
+                } catch (error) {
+                  error.beforeSourceTimingWrite = true;
+                  throw error;
+                }
+              }
               const stamp = clock.now();
               if (deps.checkPeerWriteTime) {
                 try {
@@ -1107,6 +1186,19 @@ export async function runBatch({ scenarios, deps }) {
           // actual filesystem error must continue down the ambiguous-write path.
           if (preSyscallRefusal && error === preSyscallRefusal) {
             await recordPrewriteRefusal(error);
+            break outer;
+          }
+          if (error?.beforeSourceTimingWrite && deps.sourceTimingSafety) {
+            append({
+              ...recBase,
+              outcome: "resource-limit",
+              phase: "before-mutation",
+              writePerformed: false,
+              error: error.message,
+            });
+            current.armedToken = null;
+            count(acc, "resource-limit");
+            stop("resource-limit", where);
             break outer;
           }
           if (error?.steps?.length) {
@@ -1156,25 +1248,26 @@ export async function runBatch({ scenarios, deps }) {
           everyMs: limits.sampleEveryMs ?? 1000,
         };
         let sampler = null;
-        const resourceTrip = diagnostic
-          ? null
-          : new Promise((resolve) => {
-              sampler = setInterval(async () => {
-                const s = server.sampleResourcesAsync
-                  ? await server.sampleResourcesAsync()
-                  : server.sampleResources();
-                waitSamples.count += 1;
-                if (typeof s?.summedRssKiB === "number")
-                  waitSamples.peakSummedRssKiB = Math.max(
-                    waitSamples.peakSummedRssKiB,
-                    s.summedRssKiB,
-                  );
-                const wall = nsToMs(clock.now() - startedNs);
-                const trip = overLimits(limits, s, wall);
-                if (trip)
-                  resolve({ kind: "resource-limit", sample: s, tripped: trip, wallMs: wall });
-              }, waitSamples.everyMs);
-            });
+        const resourceTrip =
+          diagnostic || deps.sourceTimingSafety
+            ? null
+            : new Promise((resolve) => {
+                sampler = setInterval(async () => {
+                  const s = server.sampleResourcesAsync
+                    ? await server.sampleResourcesAsync()
+                    : server.sampleResources();
+                  waitSamples.count += 1;
+                  if (typeof s?.summedRssKiB === "number")
+                    waitSamples.peakSummedRssKiB = Math.max(
+                      waitSamples.peakSummedRssKiB,
+                      s.summedRssKiB,
+                    );
+                  const wall = nsToMs(clock.now() - startedNs);
+                  const trip = overLimits(limits, s, wall);
+                  if (trip)
+                    resolve({ kind: "resource-limit", sample: s, tripped: trip, wallMs: wall });
+                }, waitSamples.everyMs);
+              });
         let waited, peerDecision;
         try {
           const timeoutMs = diagnostic
