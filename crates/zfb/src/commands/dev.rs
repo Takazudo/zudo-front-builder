@@ -16077,24 +16077,31 @@ mod tests {
                 result.as_ref().unwrap_err().to_string(),
                 "intentional late CSS failure"
             );
-            // The request writer uses the same real exclusion lock as apply.
-            // Waiting on this write from inside the callback would time out
-            // if the callback still ran under apply's lock.
-            let (sent, received) = mpsc::channel();
+            // Revalidation runs under the request/apply exclusion and before
+            // filesystem I/O. Bound the lock-acquisition witness separately
+            // from the subsequent real atomic write and fsync.
+            let (acquired, observed) = mpsc::channel();
+            let (publish, permitted) = mpsc::channel();
             let dest = dir.path().to_path_buf();
             let write = std::thread::spawn(move || {
-                let result = writer.request_write(
+                writer.request_write_guarded(
                     &dest,
                     Path::new("request.html"),
                     b"request after apply".to_vec(),
-                );
-                let _ = sent.send(result);
+                    || {
+                        acquired.send(()).unwrap();
+                        permitted.recv().is_ok()
+                    },
+                )
             });
-            received
+            observed
                 .recv_timeout(std::time::Duration::from_secs(5))
-                .expect("apply still holds the request-writer exclusion")
-                .unwrap();
-            write.join().unwrap();
+                .expect("apply still holds the request-writer exclusion");
+            publish.send(()).unwrap();
+            assert!(matches!(
+                write.join().unwrap().unwrap(),
+                zfb_build::pipeline::GuardedWriteOutcome::Written(_)
+            ));
         });
         assert_eq!(
             result.unwrap_err().to_string(),
