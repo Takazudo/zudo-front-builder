@@ -682,6 +682,15 @@ pub struct BuildOutcome {
     /// shipped without re-reading dist.
     pub hashed_asset_urls: Vec<(AssetKind, String)>,
 
+    /// Stable-to-final URL record of every shipped asset that declared a
+    /// stable URL (#4887), normalized by [`prod::normalize_finalized_assets`].
+    ///
+    /// Populated by [`prod::ProductionAssetPipeline`] and left empty by
+    /// [`DevAssetPipeline`]. `zfb build` embeds it in the SSR-only runtime
+    /// bundle so request-time HTML can reference the same final URLs as
+    /// SSG pages.
+    pub finalized_assets: Vec<prod::FinalizedAsset>,
+
     /// Relative output paths (under the dist root) the renderer marked
     /// STALE this tick instead of rendering eagerly (issue #1025 — lazy
     /// dev render). Populated by [`DevAssetPipeline`] from its

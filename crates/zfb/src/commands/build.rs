@@ -7478,7 +7478,10 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         anyhow::bail!(msg);
     }
 
-    if static_routes.is_empty() {
+    // An SSR-only project (only dynamic `prerender = false` routes without
+    // `paths()`) has no static output but still needs its assets, runtime
+    // bundle and adapter (#4887). Only a project with no route at all stops.
+    if static_routes.is_empty() && ssr_route_keys_for_runtime_bundle.is_empty() {
         warn_build(
             codes::EMPTY_ROUTES,
             "no routes to render after runtime paths() evaluation; dist will be empty",
@@ -7531,9 +7534,18 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         // landed on disk.
         prod_head_assets,
     };
-    let render_out = runner
-        .render_all(renderer_input)
-        .context("renderer step failed")?;
+    let render_out = if renderer_input.route_universe.is_empty() {
+        RendererOutput {
+            ssg_files_written: Vec::new(),
+            static_html_files_written: Vec::new(),
+            ssr_manifest: Default::default(),
+            runtime_logs: String::new(),
+        }
+    } else {
+        runner
+            .render_all(renderer_input)
+            .context("renderer step failed")?
+    };
 
     // .html-page emission (Option B, zfb#409): files written from
     // `.html` page sources are emitted verbatim per the v1 contract —
@@ -7566,15 +7578,21 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // file's stable URLs to the hashed equivalents in place. This is
     // a no-op (no asset writes, HTML round-tripped) when both
     // emitter slots returned `None`.
-    if prod_asset_inputs.css.is_some()
+    //
+    // The outcome's finalized record (#4887) feeds the SSR-only runtime
+    // bundle below so request-time HTML uses the same final URLs.
+    let finalized_assets = if prod_asset_inputs.css.is_some()
         || prod_asset_inputs.islands.is_some()
         || !prod_asset_inputs.client_scripts.is_empty()
     {
         let prod_pages =
             build_prod_rendered_files(outdir, &route_universe_for_rewrite, &post_processable_pages);
         apply_prod_asset_pipeline(outdir, prod_pages, prod_asset_inputs)
-            .context("production asset pipeline (hash + URL rewrite) failed")?;
-    }
+            .context("production asset pipeline (hash + URL rewrite) failed")?
+            .finalized_assets
+    } else {
+        Vec::new()
+    };
 
     // 3.6. User-link base rewrite (issue #228).
     //
@@ -7704,6 +7722,10 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         runtime_bundler_input.worker_only_routes = Some(ssr_route_keys_for_runtime_bundle);
         runtime_bundler_input.bundle_basename =
             Some(zfb_types::scratch_layout::RUNTIME_BUNDLE_BASENAME.to_string());
+        // Embedded after every asset byte and hash is final (#4887). It never
+        // feeds the browser islands bundle; the build identity stays the one
+        // cloned from the SSG bundle input.
+        runtime_bundler_input.ssr_assets = Some(finalized_assets);
         let runtime_bundler_out = runner
             .bundle(runtime_bundler_input)
             .context("runtime-only bundler step (for deploy adapter) failed")?;
@@ -19369,6 +19391,175 @@ mod tests {
              got universe: {:?}",
             universe.iter().map(|e| &e.url_path).collect::<Vec<_>>()
         );
+    }
+
+    /// An SSR-only project: one `prerender = false` catch-all without
+    /// `paths()` and no static route at all (#4887).
+    fn ssr_only_catchall_project(project_root: &Path) -> Vec<zfb_router::Route> {
+        make_runtime(project_root);
+        std::fs::create_dir_all(project_root.join("pages/foo")).unwrap();
+        std::fs::write(
+            project_root.join("pages/foo/[...rest].tsx"),
+            "export const frontmatter = { title: \"Catch-all\" };\n\
+             export const prerender = false;\n\
+             export default function P() { return null; }\n",
+        )
+        .unwrap();
+        vec![zfb_router::Route {
+            source_path: PathBuf::from("pages/foo/[...rest].tsx"),
+            segments: vec![
+                zfb_router::Segment::Static("foo".into()),
+                zfb_router::Segment::Catchall("rest".into()),
+            ],
+            kind: zfb_router::RouteKind::Dynamic,
+            specificity: 0,
+            output_extension: None,
+            static_html: false,
+        }]
+    }
+
+    fn ssr_shared_asset_payload(
+        bytes: &[u8],
+        rel: &str,
+    ) -> zfb_build::pipeline::AssetEmitterPayload {
+        zfb_build::pipeline::AssetEmitterPayload {
+            bytes: bytes.to_vec(),
+            relative_path: PathBuf::from(rel),
+            stable_url: format!("/{rel}"),
+            companions: Vec::new(),
+        }
+    }
+
+    /// #4887: zero static routes is not zero routes. An SSR-only catch-all
+    /// build skips the SSG render but still ships its assets, builds the
+    /// runtime bundle with the finalized record, and dispatches the adapter.
+    #[test]
+    fn run_build_ssr_only_catchall_reaches_runtime_bundle_with_asset_record() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        let routes = ssr_only_catchall_project(project_root);
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
+                css: Some(ssr_shared_asset_payload(b".a{}", "assets/styles.css")),
+                islands: Some(ssr_shared_asset_payload(b"// islands", "assets/islands.js")),
+                client_scripts: vec![ssr_shared_asset_payload(
+                    b"// widget",
+                    "assets/client/widget.js",
+                )],
+            });
+        let cfg = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            base: Some("/sub/".to_string()),
+            ..Config::default()
+        };
+        let fake_adapter = FakeAdapterRunner::new();
+        let (pages, _) = run_build(BuildArgsResolved {
+            project_root,
+            scratch: &default_layout(project_root),
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+            minify_html: false,
+        })
+        .unwrap();
+
+        assert_eq!(pages, 0, "an SSR-only build writes no static page");
+        assert!(
+            runner.render_calls.borrow().is_empty(),
+            "an empty SSG universe must not boot the renderer"
+        );
+        let calls = runner.bundle_calls.borrow();
+        assert_eq!(calls.len(), 2, "SSG bundle pass + runtime-only bundle pass");
+        assert!(
+            calls[0].ssr_assets.is_none(),
+            "the SSG bundle never carries the record"
+        );
+        assert!(calls[1]
+            .worker_only_routes
+            .as_ref()
+            .is_some_and(|keys| keys.contains("/foo/:rest{.+}")));
+        assert!(calls[1].zudo_react_build.is_some());
+        assert_eq!(
+            calls[0].zudo_react_build, calls[1].zudo_react_build,
+            "SSR and SSG bundles must share one build identity"
+        );
+
+        let record = calls[1].ssr_assets.as_ref().expect("runtime bundle record");
+        let summary: Vec<(&str, &str)> = record
+            .iter()
+            .map(|a| (a.kind.wire_name(), a.stable_url.as_str()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("css", "/sub/assets/styles.css"),
+                ("islands", "/sub/assets/islands.js"),
+                ("client-script", "/sub/assets/client/widget.js"),
+            ]
+        );
+        for asset in record {
+            let rel = asset
+                .url
+                .strip_prefix("/sub/")
+                .unwrap_or_else(|| panic!("final URL keeps the base: {asset:?}"));
+            assert_ne!(asset.url, asset.stable_url);
+            assert!(outdir.join(rel).is_file(), "{asset:?} must be on disk");
+        }
+
+        let adapter_calls = fake_adapter.calls.borrow();
+        assert_eq!(
+            adapter_calls.len(),
+            1,
+            "the adapter must still be dispatched"
+        );
+    }
+
+    /// #4887: an SSR-only build with zero assets still reaches the runtime
+    /// bundle and the adapter; its record is present but empty, so the
+    /// generated entry stays byte-identical to a pre-record build.
+    #[test]
+    fn run_build_ssr_only_catchall_without_assets_passes_empty_record() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        let routes = ssr_only_catchall_project(project_root);
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let cfg = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            ..Config::default()
+        };
+        let fake_adapter = FakeAdapterRunner::new();
+        let (pages, _) = run_build(BuildArgsResolved {
+            project_root,
+            scratch: &default_layout(project_root),
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+            minify_html: false,
+        })
+        .unwrap();
+
+        assert_eq!(pages, 0);
+        let calls = runner.bundle_calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].ssr_assets.as_deref(), Some(&[][..]));
+        assert!(!outdir.join("assets").exists());
+        assert_eq!(fake_adapter.calls.borrow().len(), 1);
     }
 
     // ---------------------------------------------------------------------------
