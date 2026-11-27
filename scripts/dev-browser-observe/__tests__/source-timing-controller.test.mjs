@@ -387,6 +387,28 @@ test.each([
           assert.equal(observe().sessions[0].timingExcluded, true);
           assert.equal(summary.accounting.success, 12);
           assert.equal(fs.writes.length, 12);
+          // Every gated decision goes through the shared settle-then-decide helper.
+          const decisions = rows.filter((r) => r.type === "source-timing-decision");
+          assert.deepEqual(
+            decisions.map((d) => d.site),
+            ["pre-batch", ...Array(12).fill("precheck"), "cleanup-entry"],
+          );
+          const writes = rows.filter((r) => r.type === "attempt");
+          assert.equal(writes.length, 12);
+          for (const a of writes) {
+            assert.equal(a.sourceTimingDecision.site, "write");
+            assert.equal(a.sourceTimingDecision.decisionNs, a.t0Ns);
+          }
+          const restored = rows.find((r) => r.type === "cleanup").sourceTimingDecision;
+          assert.equal(restored.site, "restore");
+          for (const d of [...decisions, ...writes.map((a) => a.sourceTimingDecision), restored]) {
+            assert(["fresh", "settled"].includes(d.outcome), JSON.stringify(d));
+            assert.equal(typeof d.pendingAtDecision, "boolean");
+            assert.equal(typeof d.staleAtDecision, "boolean");
+            assert(/^\d+$/.test(d.enteredNs) && BigInt(d.enteredNs) <= BigInt(d.decisionNs));
+            assert(Number.isSafeInteger(d.settledEpoch) && d.settledEpoch >= 1);
+            assert(/^\d+$/.test(d.waitedNs) && /^\d+$/.test(d.decisionNs));
+          }
           assert.equal(summary.sourceTimingSafety.accepted, calls);
           assert.equal(summary.sourceTimingSafety.failure, null);
           assert.equal(rows.filter((x) => x.type === "attempt" && x.label === "warmup").length, 2);
@@ -399,7 +421,9 @@ test.each([
           assert.equal(summary.sourceTimingSafety.peakFailedObservedSubtotalKiB, 71);
           assert.match(
             summary.sourceTimingSafety.failure.error,
-            mode === "armed-overlap" ? /overlap/ : /pending/,
+            // The write now waits for the in-flight sample (#4878 owner decision);
+            // one that never settles refuses at its core+closure bound.
+            mode === "armed-overlap" ? /overlap/ : /never-settles/,
           );
           const marker = JSON.parse(readFileSync(join(dir, "active.json")));
           assert(marker.unresolved.some((r) => r.helper?.pid === 123));
