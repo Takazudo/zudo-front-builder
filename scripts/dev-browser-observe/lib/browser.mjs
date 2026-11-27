@@ -422,6 +422,7 @@ export class ObserverPage {
     this.wsFrames = [];
     this.otherFrames = [];
     this.updateSockets = [];
+    this.peerSocketTracking = null;
     this.requests = [];
     this.resolved = new Set();
     this.duplicates = [];
@@ -474,6 +475,18 @@ export class ObserverPage {
       this.page.on("websocket", (ws) => {
         const url = ws.url();
         if (!isLivereloadSocket(url) && !declaredSocketFor(url, this.updateSockets)) return;
+        if (
+          this.peerSocketTracking &&
+          declaredSocketFor(url, this.updateSockets) &&
+          new URL(url).host === new URL(this.baseUrl).host
+        ) {
+          const row = { url, openedNs: String(this.clock()), firstFrameNs: null };
+          this.peerSocketTracking.set(ws, row);
+          ws.on("framereceived", () => {
+            row.firstFrameNs ??= String(this.clock());
+          });
+          ws.on("close", () => this.peerSocketTracking.delete(ws));
+        }
         ws.on("framereceived", ({ payload }) => this.recordSocketFrame(url, payload));
       });
     });
@@ -703,7 +716,8 @@ export class ObserverPage {
       const waitedMs = nsToMs(now - begun);
       const nativeUpdateObserved =
         ev.wsFrames.some((f) => UPDATE_EVENTS.has(f.event)) || ev.newDocuments > 0;
-      const doc = ev.docInits.at(-1);
+      const doc =
+        ev.docInits.at(-1) ?? (bodyRevision?.allowSameDocument ? this.docInits.at(-1) : null);
       if (
         bodyRevision &&
         doc &&

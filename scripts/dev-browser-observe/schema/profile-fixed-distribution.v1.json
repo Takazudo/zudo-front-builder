@@ -24,8 +24,18 @@
       "const": "dev-browser-observe.profile.fixed-distribution.v1"
     },
     "fixedRssSafety": {
-      "const": "linux-fixed-zfb.v1",
-      "description": "Use birth-bound Linux RSS observations for a direct Node shim and its pinned zfb native child."
+      "enum": ["linux-fixed-zfb.v1", "linux-fixed-peer.v1"],
+      "description": "Use birth-bound Linux RSS observations for a direct Node shim and its pinned zfb native child. The peer contract verifies the pinned Astro or Next Node process tree for one body-edit correctness cell."
+    },
+    "fixedPeerBrowser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executablePath", "executableSha256", "defaultExecutableSha256"],
+      "properties": {
+        "executablePath": { "type": "string", "pattern": "^/" },
+        "executableSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "defaultExecutableSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
     },
     "description": {
       "type": "string"

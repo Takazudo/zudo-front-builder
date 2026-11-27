@@ -44,9 +44,11 @@ import {
   processIdentityChecks,
   resolveNpmCli,
 } from "./distribution.mjs";
+import { FIXED_PEER_PROTOCOL } from "./fixed-peer-roles.mjs";
 import { FN_SEL } from "./fieldnotes.mjs";
 import {
   fixedContextSample,
+  fixedPeerExecutables,
   fixedZfbExecutables,
   startFixedRssSafety,
 } from "./fixed-rss-safety.mjs";
@@ -312,6 +314,7 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
 
 async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
   const { profile, resolved } = loaded;
+  const fixedPeer = profile.fixedRssSafety === FIXED_PEER_PROTOCOL;
   const fixedAbort = profile.fixedRssSafety ? new AbortController() : null;
   if (fixedAbort)
     loaded.signal = loaded.signal
@@ -603,7 +606,33 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       return exitCode;
     }
 
-    const fixedExecutables = fixedAbort ? fixedZfbExecutables(m.appDir, verdict.facts) : null;
+    if (fixedPeer) {
+      for (const name of [
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "LD_PRELOAD",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "ASTRO_DEV_BACKGROUND",
+      ])
+        if (process.env[name] || profile.server.env?.[name])
+          throw new Error("fixed peer launch environment contains " + name);
+    }
+    const readinessSpec =
+      fixedPeer && profile.framework === "next"
+        ? {
+            ...m.entry.readiness,
+            require: [
+              ...m.entry.readiness.require,
+              String.raw`\[field-notes-dev\] external content watcher ready \(100 files; 20 ms debounce\)`,
+            ],
+          }
+        : m.entry?.readiness;
+    const fixedExecutables = fixedPeer
+      ? fixedPeerExecutables(verdict.facts)
+      : fixedAbort
+        ? fixedZfbExecutables(m.appDir, verdict.facts)
+        : null;
     let launch = null;
     if (fixed) {
       const port =
@@ -622,9 +651,20 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       launch.port = port;
     }
     loaded.signal?.throwIfAborted();
+    const peerBudget = (maximum, startedNs = hrtimeNs()) => {
+      const now = hrtimeNs();
+      const remaining = Math.min(
+        loaded.workDeadline - Number(now / 1_000_000n),
+        maximum - Math.ceil(Number(now - startedNs) / 1e6),
+      );
+      if (remaining <= 0) throw new Error("fixed peer work budget exhausted");
+      return Math.min(maximum, remaining);
+    };
     const readyTimeoutMs = rendererMemory
       ? rendererMemory.clamp("server readiness", profile.server.readyTimeoutMs)
-      : profile.server.readyTimeoutMs;
+      : fixedPeer
+        ? peerBudget(profile.server.readyTimeoutMs)
+        : profile.server.readyTimeoutMs;
     if (intentPath)
       intent = reserveSession(intentPath, { labelDir, registryPath: resolved.registryPath });
     spawning = true;
@@ -634,7 +674,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         ? {
             command: launch.command,
             args: launch.args,
-            readiness: createReadiness(m.entry.readiness, { port: launch.port }),
+            readiness: createReadiness(readinessSpec, { port: launch.port }),
           }
         : { exe: buildReceipt.exe.path, extraArgs: profile.server.extraArgs ?? [] }),
       appDir: m.appDir,
@@ -655,6 +695,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       fixedSafety = startFixedRssSafety({
         server,
         fixedExecutables,
+        ...(fixedPeer && {
+          peer: {
+            framework: profile.framework,
+            rootPid: server.handle.native.pid,
+            appDir: m.appDir,
+            node: process.execPath,
+            port: launch.port,
+            image: fixedExecutables.root,
+          },
+        }),
         limits: profile.limits,
         append: (r) => rec.append(r),
         abort(error) {
@@ -698,7 +748,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
               args: launch.args,
               port: launch.port,
             },
-            readiness: m.entry.readiness,
+            readiness: readinessSpec,
           }
         : {}),
     };
@@ -706,7 +756,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     let ready;
     try {
       ready = await interruptible(server.ready, rendererMemory?.signal ?? loaded.signal);
-      if (fixedSafety) await fixedSafety.verifyReady();
+      if (fixedPeer && ready.baseUrl !== "http://127.0.0.1:" + launch.port)
+        throw new Error("fixed peer readiness URL mismatch");
+      if (fixedSafety) await interruptible(fixedSafety.verifyReady(ready.readyNs), loaded.signal);
       browserTiming?.mark("server-readiness-observed");
     } catch (error) {
       browserTiming?.mark("server-readiness-failed");
@@ -841,9 +893,20 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     browserSignal?.throwIfAborted();
     const launchTimeoutMs = rendererMemory
       ? () => rendererMemory.clamp("browser startup", 30_000)
-      : undefined;
+      : fixedPeer
+        ? () => peerBudget(30000)
+        : undefined;
     const browserOptions = {
       ...profile.browser,
+      ...(fixedPeer
+        ? {
+            diagnosticExecutable: {
+              path: profile.fixedPeerBrowser.executablePath,
+              sha256: profile.fixedPeerBrowser.executableSha256,
+              timeoutMs: launchTimeoutMs(),
+            },
+          }
+        : {}),
       ...(memoryProfile || tiny
         ? {
             diagnosticExecutable: {
@@ -881,8 +944,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     );
     browserTiming?.mark("browser-initialization-return-observed");
     browserSignal?.throwIfAborted();
+    if (
+      fixedPeer &&
+      browserHandle.identity.executableSha256 !== profile.fixedPeerBrowser.defaultExecutableSha256
+    ) {
+      receipt.browser = browserHandle.identity;
+      throw new Error("fixed peer library-default browser digest mismatch");
+    }
     const observer = browserHandle.observer;
     observer.baseUrl = ready.baseUrl;
+    if (fixedPeer) observer.peerSocketTracking = new Map();
     // Fixed distributions declare their own HMR sockets; zfb livereload needs none.
     if (fixed) observer.updateSockets = m.entry.updateSignal?.sockets ?? [];
     observer.onStray = (payload) =>
@@ -933,6 +1004,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           signal: rendererMemory?.signal ?? loaded.signal,
           rendererMemory,
           safetySignal: fixedAbort?.signal,
+          ...(fixedPeer && { stageBudget: peerBudget }),
           afterScenario: study?.afterScenario,
           beforeCleanup: rendererMemory
             ? () => rendererMemory.enter("restoration")
@@ -953,8 +1025,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           },
           page: observer,
           fs: fixtureOps,
+          fixedPeer,
           verifyBodyRevision:
-            tiny?.probe === "B" || (!fixed && profile.fixture.kind === "field-notes"),
+            fixedPeer || tiny?.probe === "B" || (!fixed && profile.fixture.kind === "field-notes"),
           requiredBodyBaseline: tiny?.probe === "B" ? "Body marker body-a-v0 for article a." : null,
           limits: profile.limits,
           timeouts: profile.timeouts,
@@ -991,7 +1064,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         ? EXIT.identityRejected
         : studyFailure || rendererMemory?.failure
           ? EXIT.controllerError
-          : batchExitOk(accounting, stopped)
+          : batchExitOk(accounting, stopped) && (!fixedPeer || accounting.success === 1)
             ? EXIT.ok
             : EXIT.stopped;
       if (lateFailure) {
@@ -1050,7 +1123,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       terminalNow +
       Math.min(
         60000,
-        rendererMemory ? loaded.supervisorDeadlineMs - Number(hrtimeNs() / 1_000_000n) : 60000,
+        rendererMemory || fixedPeer
+          ? loaded.supervisorDeadlineMs - Number(hrtimeNs() / 1_000_000n)
+          : 60000,
       );
     const bounded = async (phase, ms, operation) => {
       const remaining = Math.max(1, Math.min(ms, terminalEnd - performance.now()));

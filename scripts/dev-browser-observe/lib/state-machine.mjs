@@ -188,9 +188,26 @@ export async function runBatch({ scenarios, deps }) {
   const { recorder, clock, server, page, fs, limits = {}, timeouts, signal } = deps;
   const wait = (work) => interruptible(work, signal);
   const diagnostic = deps.rendererMemory;
-  const stage = (name, maximum, started, action) => {
+  const stage = async (name, maximum, started, action) => {
     deps.safetySignal?.throwIfAborted();
-    return diagnostic ? diagnostic.runStage(name, maximum, started, action) : wait(action(maximum));
+    if (diagnostic) return diagnostic.runStage(name, maximum, started, action);
+    if (!deps.stageBudget) return wait(action(maximum));
+    const ms = deps.stageBudget(maximum, started);
+    let timer;
+    try {
+      const result = await wait(
+        Promise.race([
+          action(ms),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(name + " exceeded its budget")), ms);
+          }),
+        ]),
+      );
+      deps.stageBudget(maximum, started);
+      return result;
+    } finally {
+      clearTimeout(timer);
+    }
   };
   const planned = scenarios.reduce((n, s) => n + s.ops.length, 0);
   const acc = newAccounting(planned);
@@ -350,7 +367,12 @@ export async function runBatch({ scenarios, deps }) {
       !bodyRevision ||
       (liveSkipped === null &&
         (!rule.requireNativeUpdate || (settle?.settled && settle.bodyRevision?.matched === true)) &&
-        live.some((check) => check.path === bodyRevision.path && check.ok));
+        live.some(
+          (check) =>
+            check.path === bodyRevision.path &&
+            check.ok &&
+            (!deps.fixedPeer || (check.docUUID && check.docUUID !== settle?.bodyRevision?.docUUID)),
+        ));
     let ok =
       !signal?.aborted &&
       restore.mismatches.length === 0 &&
@@ -544,11 +566,12 @@ export async function runBatch({ scenarios, deps }) {
             attempt.write = { ...attempt.write, path: fs.missingSibling(attempt.write.path) };
             if (attempt.writes) attempt.writes = [attempt.write, ...attempt.writes.slice(1)];
           }
-          preparedState = diagnostic
-            ? await stage("attempt prepare", timeouts.attemptMs, attemptStart, (ms) =>
-                page.prepare(attempt.targetPath, Math.min(ms, 30000)),
-              )
-            : await wait(page.prepare(attempt.targetPath));
+          preparedState =
+            diagnostic || deps.stageBudget
+              ? await stage("attempt prepare", timeouts.attemptMs, attemptStart, (ms) =>
+                  page.prepare(attempt.targetPath, Math.min(ms, 30000)),
+                )
+              : await wait(page.prepare(attempt.targetPath));
           page.markPre?.();
         } catch (error) {
           append({
@@ -720,7 +743,21 @@ export async function runBatch({ scenarios, deps }) {
             (deps.requiredBodyBaseline && armed.actual !== deps.requiredBodyBaseline)
           )
             throw new Error("missing pre-edit rendered body baseline");
+          if (deps.fixedPeer) {
+            const sockets = [...page.peerSocketTracking.values()].filter(
+              (row) => row.firstFrameNs !== null,
+            );
+            append({
+              type: "fixed-peer-prewrite",
+              docUUID: armed.docUUID,
+              originalBody: armed.actual,
+              sockets,
+            });
+            if (!armed.docUUID || !sockets.length)
+              throw new Error("peer update socket or original document unverified");
+          }
           bodyRevision = {
+            ...(deps.fixedPeer && { allowSameDocument: true }),
             path: attempt.targetPath,
             predicate: { kind: "text", selector: attempt.predicate.selector, equals: armed.actual },
           };
@@ -751,6 +788,7 @@ export async function runBatch({ scenarios, deps }) {
         }
 
         signal?.throwIfAborted();
+        deps.stageBudget?.(timeouts.attemptMs, attemptStart);
         diagnostic?.beforeMutation?.();
         diagnostic?.clamp("attempt write", timeouts.attemptMs, attemptStart);
         let t0;
@@ -836,7 +874,7 @@ export async function runBatch({ scenarios, deps }) {
         try {
           const timeoutMs = diagnostic
             ? diagnostic.clamp("attempt observation", timeouts.attemptMs, attemptStart)
-            : timeouts.attemptMs;
+            : (deps.stageBudget?.(timeouts.attemptMs, attemptStart) ?? timeouts.attemptMs);
           waited = await wait(
             Promise.race([
               page.waitNotify(attempt.token, timeoutMs, (payload) => {
