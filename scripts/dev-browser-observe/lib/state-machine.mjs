@@ -815,12 +815,38 @@ export async function runBatch({ scenarios, deps }) {
         let t0;
         let tLast = null;
         let writeSteps = null;
-        try {
-          if (deps.beforePeerMutation) {
+        if (deps.beforePeerMutation) {
+          try {
             deps.beforePeerMutation();
             signal?.throwIfAborted();
             deps.stageBudget?.(timeouts.attemptMs, attemptStart);
+          } catch (error) {
+            let observerDisarmed = false,
+              disarmError = null;
+            if (!signal?.aborted) {
+              try {
+                await wait(page.disarm());
+                observerDisarmed = true;
+              } catch (e) {
+                disarmError = String(e.message ?? e);
+              }
+            }
+            append({
+              ...recBase,
+              outcome: "identity-rejected",
+              phase: "before-mutation",
+              error: String(error.message ?? error),
+              writePerformed: false,
+              observerDisarmed,
+              disarmError,
+            });
+            acc.lastArmedUnknownOperation = null;
+            count(acc, "identity-rejected");
+            stop("identity-rejected", where);
+            break outer;
           }
+        }
+        try {
           if (attempt.writes && attempt.writes.length > 1 && fs.performWrites) {
             const r = await fs.performWrites(attempt.writes, () => clock.now(), signal);
             t0 = r.t0;

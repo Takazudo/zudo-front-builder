@@ -265,13 +265,11 @@ export function startFixedRssSafety({
       const custody = nextOwner();
       if (!custody) return peerProcessIdentity(owned, known, qualifiedPeer, peer);
       const isWorker = (p) => custody.isWorker(p);
-      for (const p of known.filter(isWorker)) {
-        if (!owned.some((b) => isWorker(b)))
-          assert(
-            custody.terminalVerified,
-            "known Next worker missing before official terminal decision",
-          );
-      }
+      if (known.some(isWorker) && !owned.some(isWorker))
+        assert(
+          custody.terminalVerified,
+          "known Next worker missing before official terminal decision",
+        );
       const results = peerProcessIdentity(
         owned.filter((p) => !isWorker(p)),
         known.filter((p) => !isWorker(p)),

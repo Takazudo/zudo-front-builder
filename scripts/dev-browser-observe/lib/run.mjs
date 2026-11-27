@@ -1028,17 +1028,13 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         if (!first) return prepare(route, ...args);
         first = false;
         await nextCustody.openWindow("first-route", peerBudget(30000));
-        let firstFailure;
+        let value;
         try {
-          return await prepare(route, ...args);
-        } catch (error) {
-          firstFailure = error;
-          throw error;
-        } finally {
+          value = await prepare(route, ...args);
+        } catch (firstFailure) {
           try {
             await nextCustody.closeWindow("first-route");
           } catch (error) {
-            if (!firstFailure) throw error;
             try {
               rec.append({
                 type: "next-custody-secondary-close-failure",
@@ -1049,7 +1045,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
               stderr(`Next custody closure evidence write failed: ${e.message}`);
             }
           }
+          throw firstFailure;
         }
+        await nextCustody.closeWindow("first-route");
+        return value;
       };
     }
     if (fixedPeer) observer.peerSocketTracking = new Map();

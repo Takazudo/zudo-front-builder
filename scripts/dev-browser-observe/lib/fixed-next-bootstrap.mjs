@@ -107,7 +107,7 @@ export function buildNextBootstrapContract({
   assert.equal(server.ppid, cli.pid);
   assert.equal(new Set(chain.map((p) => p.pid)).size, 3);
   const roles = identifyPeerRoles(
-    chain.map(({ role, ...rest }) => rest),
+    chain.map(({ role: _role, ...rest }) => rest),
     { framework, rootPid: root.pid, appDir, node: image.path, port },
     true,
   );
