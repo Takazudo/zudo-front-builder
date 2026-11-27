@@ -4,6 +4,15 @@ import { linuxBirth, sameLinuxBirth } from "./linux-birth.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { runBatch } from "./state-machine.mjs";
 
+// The idle branch admits on the last accepted sample only while a full cadence
+// period remains before its next dispatch. The 4862 rapid slot-01 receipt
+// measured 527.1 ms from capture to the cadence refusal (two accepted
+// admissions took 56.3 and 58.4 ms), so a shorter reserve still leaves the
+// decision dependent on the readiness phase. Every other idle start joins the
+// next original cadence sample, whose decision phase is fixed after dispatch.
+export const FAMILY_IDLE_ADMISSION_RESERVE_NS = 1_000_000_000n;
+const FAMILY_HELPER_CORE_NS = 750_000_000n;
+
 const same = (a, b) => sameLinuxBirth(a, b) && a.ppid === b.ppid && a.pgid === b.pgid;
 function population(rows, expected) {
   return (
@@ -287,6 +296,66 @@ export function runOriginalFamilyBatch(
     }
     return run();
   };
+  const joinPending = (captured) => {
+    setup.priorCustody = captured.before;
+    checkPopulation(captured.before);
+    return join(captured);
+  };
+  const deferToNextCycle = async (first) => {
+    const cadenceDeadlineNs = BigInt(first.before.sample.cadenceDeadlineNs);
+    const boundNs =
+      cadenceDeadlineNs + FAMILY_HELPER_CORE_NS < deadlineNs
+        ? cadenceDeadlineNs + FAMILY_HELPER_CORE_NS
+        : deadlineNs;
+    const deferral = {
+      reserveNs: String(FAMILY_IDLE_ADMISSION_RESERVE_NS),
+      remainingCadenceNs: String(first.deferred.remainingCadenceNs),
+      capturedNs: setup.capturedNs,
+      previousEpoch: setup.previousEpoch,
+      cadenceDeadlineNs: String(cadenceDeadlineNs),
+      waitBoundNs: String(boundNs),
+      outcome: "waiting",
+    };
+    setup.idleDeferral = deferral;
+    setup.settlementOutcome = "deferred-next-cycle";
+    let timer;
+    try {
+      const begin = process.hrtime.bigint();
+      deferral.waitStartedNs = String(begin);
+      assert(begin < boundNs, "family next cadence dispatch expired");
+      const bounded = new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(Error("family next cadence dispatch expired")),
+          Math.ceil(Number(boundNs - begin) / 1e6),
+        );
+      });
+      try {
+        await interruptible(Promise.race([safety.nextFamilyHelper(), bounded]), signal);
+      } finally {
+        clearTimeout(timer);
+        const observed = process.hrtime.bigint();
+        deferral.helperObservedNs = String(observed);
+        deferral.addedWaitNs = String(observed - begin);
+      }
+      signal.throwIfAborted();
+      assert(BigInt(deferral.helperObservedNs) < boundNs, "family next cadence dispatch expired");
+      requireBlank(browserAudit.inspect());
+      const captured = safety.captureFamilyCycle(setup);
+      assert(captured.settlement, "family next cadence cycle not joinable");
+      for (const name of ["root", "dev", "worker", "terminal", "release"])
+        assert.deepEqual(
+          captured.before[name],
+          first.before[name],
+          "family custody changed during deferral",
+        );
+      deferral.outcome = "joined";
+      return joinPending(captured);
+    } catch (error) {
+      deferral.outcome = "refused";
+      setup.settlementOutcome = "refused";
+      return refuse(error);
+    }
+  };
   try {
     signal.throwIfAborted();
     const initial = browserAudit.inspect();
@@ -296,12 +365,11 @@ export function runOriginalFamilyBatch(
       setup.initialBlank = initial;
       browserAudit.watchSettlementPage();
       setup.pageWatchStartedNs = String(process.hrtime.bigint());
-      const captured = safety.captureFamilyCycle(setup);
-      if (captured.settlement) {
-        setup.priorCustody = captured.before;
-        checkPopulation(captured.before);
-        return join(captured);
-      }
+      const captured = safety.captureFamilyCycle(setup, {
+        idleReserveNs: FAMILY_IDLE_ADMISSION_RESERVE_NS,
+      });
+      if (captured.settlement) return joinPending(captured);
+      if (captured.deferred) return deferToNextCycle(captured);
       setup.settlementOutcome = "no-pending";
       enter(initial, captured.before);
     } else enter(initial, safety.verifyFamilyAdmission());

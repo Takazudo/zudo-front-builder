@@ -83,6 +83,11 @@ export function startFixedRssSafety({
   let stopped = false;
   let measuredCycles = 0;
   let lastAccepted;
+  const helperWaiters = new Set();
+  const wakeHelperWaiters = () => {
+    for (const wake of helperWaiters) wake();
+    helperWaiters.clear();
+  };
   let peakKiB = null;
   const stable = new Map();
   let readyNs,
@@ -114,6 +119,7 @@ export function startFixedRssSafety({
     }
     failure = issue;
     readyCheck?.resolve();
+    wakeHelperWaiters();
     abort(new Error(failure.error));
     try {
       append({ type: "fixed-rss-failure", failure });
@@ -142,6 +148,7 @@ export function startFixedRssSafety({
             ...(cycle && {
               onHelperSpawn: (h) => {
                 cycle.helper = h;
+                wakeHelperWaiters();
               },
             }),
           })
@@ -344,7 +351,7 @@ export function startFixedRssSafety({
       if (!lastAccepted?.strict || lastAccepted.live.length !== 2 || !nativeBirth)
         throw Error("family blank setup requires complete root/native RSS observation");
     },
-    captureFamilyCycle(receipt) {
+    captureFamilyCycle(receipt, { idleReserveNs = null } = {}) {
       const proof = lastAccepted;
       Object.assign(receipt, {
         capturedNs: String(process.hrtime.bigint()),
@@ -366,7 +373,12 @@ export function startFixedRssSafety({
           before.release.receipt.epoch <= proof.epoch,
         "family release lacks a previously accepted epoch",
       );
-      if (!pending) return { before: this.verifyFamilyAdmission(), settlement: null };
+      if (!pending) {
+        const remainingCadenceNs = BigInt(proof.cadenceDeadlineNs) - BigInt(receipt.capturedNs);
+        if (idleReserveNs !== null && remainingCadenceNs < idleReserveNs)
+          return { before, settlement: null, deferred: { remainingCadenceNs } };
+        return { before: this.verifyFamilyAdmission(), settlement: null };
+      }
       const { helper, epoch, startedNs } = active;
       assert(
         helper &&
@@ -381,6 +393,14 @@ export function startFixedRssSafety({
         "invalid or expired family helper",
       );
       return { before, settlement: pending };
+    },
+    // Wakes on the next helper spawn, a sampler failure or stop. It never
+    // dispatches a sample; captureFamilyCycle must still qualify the cycle.
+    nextFamilyHelper() {
+      return new Promise((resolve) => {
+        if (failure || stopped || active?.helper) resolve();
+        else helperWaiters.add(resolve);
+      });
     },
     verifyFamilyAdmission() {
       if (
@@ -406,6 +426,7 @@ export function startFixedRssSafety({
     async stop() {
       stopped = true;
       readyCheck?.resolve();
+      wakeHelperWaiters();
       clearInterval(timer);
       clearTimeout(expiry);
       await pending;
