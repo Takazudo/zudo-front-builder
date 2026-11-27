@@ -3,7 +3,15 @@
 // through settlement underneath the normal independent supervisor.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { constants, closeSync, openSync, readSync, readlinkSync, opendirSync } from "node:fs";
+import {
+  constants,
+  closeSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readlinkSync,
+  opendirSync,
+} from "node:fs";
 import { open, readlink } from "node:fs/promises";
 import { linuxBirth, sameLinuxBirth, parseLinuxStat } from "./linux-birth.mjs";
 
@@ -131,6 +139,51 @@ export function nextOuterChildren(pid, counts = { tasks: 0, bytes: 0 }) {
   return [...ids].sort((a, b) => a - b);
 }
 
+// Refusal-time identity of one unexpected direct child, read once on the refusal
+// path. It explains a refusal and never admits the child.
+export function describeGraphChild(pid, now = process.hrtime.bigint) {
+  const observedNs = String(now());
+  const birth = linuxBirth(pid);
+  const read = (f) => {
+    try {
+      return f();
+    } catch (error) {
+      return { error: String(error.code ?? error) };
+    }
+  };
+  return {
+    pid,
+    observedNs,
+    birth: birth && !birth.birthUnverifiable ? birth : null,
+    birthError: !birth ? "absent" : birth.birthUnverifiable ? String(birth.error) : null,
+    exe: read(() => readlinkSync("/proc/" + pid + "/exe")),
+    argv: read(() =>
+      readFileSync("/proc/" + pid + "/cmdline")
+        .subarray(0, 512)
+        .toString("utf8")
+        .split("\0")
+        .filter(Boolean),
+    ),
+  };
+}
+
+export function exactChildren(prior, expected, counts, describe = describeGraphChild) {
+  const actual = nextOuterChildren(prior.pid, counts);
+  const want = expected.map((p) => p.pid).sort((a, b) => a - b);
+  try {
+    assert.deepEqual(actual, want, "unexpected outer graph child");
+  } catch (error) {
+    error.graphRefusal = {
+      parent: { pid: prior.pid, startTicks: prior.startTicks, bootId: prior.bootId },
+      expected: want,
+      actual,
+      extra: actual.filter((pid) => !want.includes(pid)).map((pid) => describe(pid)),
+      missing: want.filter((pid) => !actual.includes(pid)),
+    };
+    throw error;
+  }
+}
+
 // The benchmark lock and Chromium are ordinary controller children in this
 // WSL launch. A new child cannot become an accepted worker by sharing its name.
 export function verifyNextOuterWiring({
@@ -158,11 +211,7 @@ export function verifyNextOuterWiring({
   };
   const exact = (prior, expected) => {
     see(prior);
-    assert.deepEqual(
-      nextOuterChildren(prior.pid, counts),
-      expected.map((p) => p.pid).sort((a, b) => a - b),
-      "unexpected outer graph child",
-    );
+    exactChildren(prior, expected, counts);
     checks.push(prior.pid);
   };
   exact(outer, [supervisor]);

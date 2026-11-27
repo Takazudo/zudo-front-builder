@@ -29,6 +29,7 @@ const SUBPROCESS_SUITES = [
   "scripts/dev-browser-observe/__tests__/process-control.test.mjs",
   "scripts/dev-browser-observe/__tests__/lock-helper-lifecycle.test.mjs",
   "scripts/dev-browser-observe/__tests__/subprocess-children.test.mjs",
+  "scripts/dev-browser-observe/__tests__/outer-graph-attribution.test.mjs",
   "scripts/__tests__/docs-dev-supervisor.test.mjs",
   "scripts/__tests__/harvest-supervisor-timelines.test.mjs",
   "scripts/__tests__/install-playwright-linux.test.mjs",

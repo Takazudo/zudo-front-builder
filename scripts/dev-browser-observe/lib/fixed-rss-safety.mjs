@@ -70,6 +70,26 @@ export function fixedContextSample(result) {
   return { ...result, partialSummedRssKiB: result.summedRssKiB, summedRssKiB: null };
 }
 
+// Explains each unexpected direct child against the sampler's own recorded
+// helper births. A full match (pid, startTicks, bootId) is still a refusal:
+// this record attributes the cause and never admits the child.
+export function attributeGraphRefusal(refusal, helpers) {
+  const same = (a, b) =>
+    Boolean(a && b) && a.pid === b.pid && a.startTicks === b.startTicks && a.bootId === b.bootId;
+  return {
+    ...refusal,
+    extra: refusal.extra.map((child) => {
+      let attribution = null;
+      if (!child.birth) attribution = "no-birth";
+      else if (same(child.birth, helpers.pending)) attribution = "pending-ordinary-helper";
+      else if (same(child.birth, helpers.lastAccepted)) attribution = "closed-ordinary-helper";
+      else if ([helpers.pending, helpers.lastAccepted].some((h) => h && h.pid === child.pid))
+        attribution = "helper-pid-different-birth";
+      return { ...child, attribution };
+    }),
+  };
+}
+
 export function startFixedRssSafety({
   server,
   fixedExecutables,
@@ -279,6 +299,7 @@ export function startFixedRssSafety({
               startedNs,
               coreResultNs: result.timing.parent.resultNs,
               cadenceDeadlineNs: outerCycle.cadenceDeadlineNs,
+              helperBirth: outerCycle.helperBirth && { ...outerCycle.helperBirth },
             };
           return;
         }
@@ -409,7 +430,16 @@ export function startFixedRssSafety({
           coverage,
           productGraph: productGraph === "checking" ? "failed" : productGraph,
           observerGraph: observerGraph === "checking" ? "failed" : observerGraph,
-          lastAccepted: acceptedOuterCycle && { ...acceptedOuterCycle },
+          lastAccepted: acceptedOuterCycle && {
+            ...acceptedOuterCycle,
+            helperBirth: acceptedOuterCycle.helperBirth && { ...acceptedOuterCycle.helperBirth },
+          },
+          observerGraphDetail: error.graphRefusal
+            ? attributeGraphRefusal(error.graphRefusal, {
+                pending: pendingOuterCycle?.helperBirth ?? null,
+                lastAccepted: acceptedOuterCycle?.helperBirth ?? null,
+              })
+            : null,
           pending: pendingOuterCycle && {
             ...pendingOuterCycle,
             helperBirth: pendingOuterCycle.helperBirth && { ...pendingOuterCycle.helperBirth },
