@@ -52,6 +52,7 @@ test.each([
   "abort",
   "request",
   "wrong-population",
+  "navigated-during-journal",
   "request-during-journal",
   "topology-after-journal",
   "image-after-journal",
@@ -112,6 +113,8 @@ test.each([
         signal: ac.signal,
         append: (r) => {
           rows.push(r);
+          if (mode === "navigated-during-journal" && r.status === "pre-batch-proof")
+            pages = [{ url: () => "https://example.invalid/" }];
           if (mode === "request-during-journal" && r.status === "pre-batch-proof")
             ctx.emit("request", { url: () => "http://127.0.0.1:1234/" });
         },
@@ -140,6 +143,8 @@ test.each([
         ),
       );
       assert.equal(rows.at(-1).admitted, false);
+      if (mode === "navigated-during-journal")
+        assert.equal(rows.at(-1).pageUrl, "https://example.invalid/");
       if (mode === "request-during-journal") assert.equal(rows.at(-1).httpRequests, 1);
     }
     assert.equal(rows[0].workloadWriteCalls, 0);
