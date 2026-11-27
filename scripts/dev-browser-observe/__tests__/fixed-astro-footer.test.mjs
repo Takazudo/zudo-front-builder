@@ -27,11 +27,11 @@ const routes = [
   "/archive/2/",
   "/category/architecture/",
 ];
-const template = readFileSync(
+const astroTemplate = readFileSync(
   new URL("../fixtures/field-notes/distributions/astro/Site.astro.src", import.meta.url),
   "utf8",
 );
-test.each([
+const astroCases = [
   "success",
   "source-ambiguous",
   "wrong-or-extra-token",
@@ -47,11 +47,27 @@ test.each([
   "retired-home",
   "foreign-frame",
   "valid-reload",
-])("real Astro layout planner, update and ordered restoration: %s", async (scenarioCase) => {
+];
+const nativeCases = [
+  "valid-reload",
+  "foreign-native-frame",
+  "missing-handshake",
+  "wrong-restore-frame",
+  "wrong-or-extra-token",
+];
+const cases = [...astroCases.map((s) => ["astro", s]), ...nativeCases.map((s) => ["zfb", s])];
+test.each(cases)("%s footer: %s", async (framework, scenarioCase) => {
+  const native = framework === "zfb";
+  const template = native
+    ? readFileSync(
+        new URL("../fixtures/field-notes/distributions/zfb/Layout.tsx.src", import.meta.url),
+        "utf8",
+      )
+    : astroTemplate;
   const dir = mkdtempSync(join(tmpdir(), "astro-footer-"));
   try {
     const contentDir = join(dir, "content"),
-      layoutPath = join(dir, "Site.astro"),
+      layoutPath = join(dir, native ? "Layout.tsx" : "Site.astro"),
       publicCssPath = join(dir, "public", "site.css");
     mkdirSync(contentDir);
     mkdirSync(join(dir, "public"));
@@ -63,7 +79,7 @@ test.each([
     );
     const ops = fieldNotesOps(
       { model, layoutPath, contentDir, publicCssPath, manifest: { layoutFooter: ASTRO_FOOTER } },
-      { strictAstroFooter: true },
+      { strictAstroFooter: true, strictZfbFooter: native },
     );
     const fs = { ...ops, hashOf, performWrite };
     const clock = {
@@ -115,9 +131,17 @@ test.each([
         p.evidence.wsFrames = [];
         const t1 =
           scenarioCase === "late" ? deadline + 1n : scenarioCase === "early" ? 1n : clock.now();
-        const changed = ["retired-home", "valid-reload"].includes(scenarioCase);
+        const changed = native || ["retired-home", "valid-reload"].includes(scenarioCase);
         const activeDoc = changed ? "home-reloaded" : "home-edited";
         const url = page.url("/");
+        if (native)
+          p.evidence.wsFrames.push({
+            ns: String(t1 - 3n),
+            event: "page",
+            pageSignal: true,
+            nativeRequestId: scenarioCase === "foreign-native-frame" ? "foreign" : "home-ws",
+            url: "ws://localhost:1234/__zfb/reload/ws",
+          });
         if (changed) {
           p.evidence.navigations.push({ ns: String(t1 - 2n), url });
           p.evidence.docInits.push({
@@ -154,8 +178,24 @@ test.each([
       },
     });
     page.url = (path) => "http://localhost:1234" + path;
-    page.prepare = async (path) => ({ docUUID: "home-edited", url: page.url(path) });
-    page.peerSocketTracking = new Map([[1, { firstFrameNs: "1" }]]);
+    page.prepare = async (path) => ({
+      httpStatus: 200,
+      docUUID: "home-edited",
+      url: page.url(path),
+    });
+    const sock = "ws://localhost:1234/__zfb/reload/ws";
+    page.peerSocketTracking = new Map([
+      [
+        1,
+        native
+          ? {
+              requestId: "home-ws",
+              url: sock,
+              status: scenarioCase === "missing-handshake" ? 0 : 101,
+            }
+          : { firstFrameNs: "1" },
+      ],
+    ]);
     page.arm = async () => ({
       armed: true,
       docUUID: "home-edited",
@@ -164,8 +204,13 @@ test.each([
     });
     page.supplemental = async (c) => {
       active = c.path;
+      if (native)
+        page.peerSocketTracking = new Map([
+          ["archive-ws", { requestId: "archive-ws", status: 101, url: sock }],
+        ]);
       return {
         ok: true,
+        httpStatus: 200,
         docUUID: "archive-edited",
         actual: [1, scenarioCase === "supplement-wrong-text" ? "other" : target],
       };
@@ -176,9 +221,29 @@ test.each([
       return {
         settled: path === active && scenarioCase !== "wrong-restore-route",
         nativeUpdateObserved: true,
+        ...(native && {
+          navigations: [{ ns: String(opts.startNs + 2n), url: page.url(active) }],
+          docInits: [
+            {
+              ns: String(opts.startNs + 3n),
+              designatedMain: true,
+              docUUID: "archive-restored",
+              url: page.url(active),
+            },
+          ],
+          wsFrames: [
+            {
+              ns: String(opts.startNs + 1n),
+              event: "page",
+              pageSignal: true,
+              nativeRequestId: scenarioCase === "wrong-restore-frame" ? "foreign" : "archive-ws",
+              url: sock,
+            },
+          ],
+        }),
         bodyRevision: {
           matched: path === active,
-          docUUID: "archive-edited",
+          docUUID: native ? "archive-restored" : "archive-edited",
           actual: [1, ASTRO_FOOTER],
         },
       };
@@ -188,6 +253,7 @@ test.each([
         assert.deepEqual(c.predicate.of[1], astroFooterPredicate(ASTRO_FOOTER));
       return {
         ok: true,
+        httpStatus: 200,
         docUUID:
           scenarioCase === "reused-archive" && c.path === active
             ? "archive-edited"
@@ -197,7 +263,8 @@ test.each([
     };
     const d = {
       ...deps({ fs, page, clock }),
-      fixedAstroFooter: true,
+      fixedAstroFooter: !native,
+      fixedZfbFooter: native,
       workDeadlineNs: 99000000000n,
       beforeAstroWrite: () => {},
       stageBudget: (ms, ns) => {
@@ -206,7 +273,10 @@ test.each([
       },
     };
     const { accounting } = await runBatch({ deps: d, scenarios: [scenario] });
-    assert.equal(writes, ["source-ambiguous", "no-supplement"].includes(scenarioCase) ? 0 : 1);
+    assert.equal(
+      writes,
+      ["source-ambiguous", "no-supplement", "missing-handshake"].includes(scenarioCase) ? 0 : 1,
+    );
     if (["success", "valid-reload"].includes(scenarioCase)) {
       assert.equal(accounting.success, 1);
       assert.equal(accounting.restorationFailures, 0);

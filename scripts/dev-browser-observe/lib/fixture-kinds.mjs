@@ -267,7 +267,9 @@ const fieldNotes = {
     ...injectionFsHelpers,
     ...fieldNotesOps(m, {
       restorationWriteMethod: profile.restoration.writeMethod,
-      strictAstroFooter: profile.fixedRssSafety === "linux-fixed-astro-footer.v1",
+      strictAstroFooter:
+        profile.fixedRssSafety === "linux-fixed-astro-footer.v1" || Boolean(profile.fixedZfbFooter),
+      strictZfbFooter: Boolean(profile.fixedZfbFooter),
       strictAstroCategory: profile.fixedRssSafety === "linux-fixed-astro-category.v1",
       strictAstroTitle: profile.fixedRssSafety === "linux-fixed-astro-title.v1",
     }),

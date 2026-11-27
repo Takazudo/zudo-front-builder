@@ -2,6 +2,7 @@ import {
   blankBrowserAudit,
   runOriginalFamilyBatch,
   verifyFamilyImages,
+  zfbFooterStopPopulation,
 } from "./fixed-family-admission.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
 import { interruptible } from "./session-deadline.mjs";
@@ -343,7 +344,9 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
 async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
   const { profile, resolved } = loaded;
   const fixedAstro = isFixedAstroProtocol(profile.fixedRssSafety);
-  const familyAudit = profile.fixedFamilyAdmission ? blankBrowserAudit() : null;
+  const fixedZfbFooter = Boolean(profile.fixedZfbFooter);
+  const strictBrowser = fixedAstro || fixedZfbFooter;
+  const familyAudit = profile.fixedFamilyAdmission || fixedZfbFooter ? blankBrowserAudit() : null;
   const fixedAbort = profile.fixedRssSafety ? new AbortController() : null;
   if (fixedAbort)
     loaded.signal = loaded.signal
@@ -683,7 +686,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     };
     const readyTimeoutMs = rendererMemory
       ? rendererMemory.clamp("server readiness", profile.server.readyTimeoutMs)
-      : fixedAstro
+      : strictBrowser
         ? peerBudget(profile.server.readyTimeoutMs)
         : profile.server.readyTimeoutMs;
     if (intentPath)
@@ -790,7 +793,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     let ready;
     try {
       ready = await interruptible(server.ready, rendererMemory?.signal ?? loaded.signal);
-      if (fixedAstro && ready.baseUrl !== "http://127.0.0.1:" + launch.port)
+      if (strictBrowser && ready.baseUrl !== "http://127.0.0.1:" + launch.port)
         throw new Error("fixed Astro readiness URL mismatch");
       if (fixedAstro) await interruptible(fixedSafety.verifyReady(ready.readyNs), loaded.signal);
       else if (familyAudit)
@@ -950,12 +953,12 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     browserSignal?.throwIfAborted();
     const launchTimeoutMs = rendererMemory
       ? () => rendererMemory.clamp("browser startup", 30_000)
-      : fixedAstro
+      : strictBrowser
         ? () => peerBudget(30000)
         : undefined;
     const browserOptions = {
       ...profile.browser,
-      ...(fixedAstro
+      ...(strictBrowser
         ? {
             diagnosticExecutable: {
               path: profile.fixedPeerBrowser.executablePath,
@@ -1003,7 +1006,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     browserTiming?.mark("browser-initialization-return-observed");
     browserSignal?.throwIfAborted();
     if (
-      fixedAstro &&
+      strictBrowser &&
       browserHandle.identity.executableSha256 !== profile.fixedPeerBrowser.defaultExecutableSha256
     ) {
       receipt.browser = browserHandle.identity;
@@ -1012,6 +1015,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     const observer = browserHandle.observer;
     observer.baseUrl = ready.baseUrl;
     if (fixedAstro) observer.peerSocketTracking = new Map();
+    if (fixedZfbFooter) observer.nativeReloadSetupSignal = loaded.signal;
     // Fixed distributions declare their own HMR sockets; zfb livereload needs none.
     if (fixed) observer.updateSockets = m.entry.updateSignal?.sockets ?? [];
     observer.onStray = (payload) =>
@@ -1065,7 +1069,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           signal: rendererMemory?.signal ?? loaded.signal,
           rendererMemory,
           safetySignal: fixedAbort?.signal,
-          ...(fixedAstro && {
+          ...(strictBrowser && {
             stageBudget: peerBudget,
             workDeadlineNs: BigInt(loaded.workDeadline) * 1_000_000n,
           }),
@@ -1089,10 +1093,16 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           },
           page: observer,
           fs: fixtureOps,
+          fixedZfbFooter,
           fixedAstroFooter: profile.fixedRssSafety === FIXED_ASTRO_FOOTER_PROTOCOL,
           fixedAstroCategory: profile.fixedRssSafety === FIXED_ASTRO_CATEGORY_PROTOCOL,
           fixedAstroTitle: profile.fixedRssSafety === FIXED_ASTRO_TITLE_PROTOCOL,
-          beforeAstroWrite: verifyAstroCurrent,
+          beforeAstroWrite: fixedZfbFooter
+            ? () => {
+                const proof = fixedSafety.verifyFamilyAdmission();
+                verifyFamilyImages(proof, fixedExecutables);
+              }
+            : verifyAstroCurrent,
           verifyBodyRevision:
             tiny?.probe === "B" || (!fixed && profile.fixture.kind === "field-notes"),
           requiredBodyBaseline: tiny?.probe === "B" ? "Body marker body-a-v0 for article a." : null,
@@ -1143,7 +1153,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         ? EXIT.identityRejected
         : studyFailure || rendererMemory?.failure
           ? EXIT.controllerError
-          : batchExitOk(accounting, stopped) && (!fixedAstro || accounting.success === 1)
+          : batchExitOk(accounting, stopped) && (!strictBrowser || accounting.success === 1)
             ? EXIT.ok
             : EXIT.stopped;
       if (lateFailure) {
@@ -1324,6 +1334,18 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         stopReport = { ...stopReport, absent: false, unresolved };
       }
       if (logClose?.errors?.length) evidenceFailed = true;
+      if (fixedZfbFooter) {
+        const valid = zfbFooterStopPopulation(
+          rec.records.find((r) => r.type === "fixed-startup-live-custody"),
+          stopReport,
+        );
+        safeAppend({
+          type: "zfb-footer-terminal-population",
+          valid,
+          resourceAbsent: stopReport.absent,
+        });
+        if (!valid) evidenceFailed = true;
+      }
       if (fixedAstro) {
         const valid = verifyAstroPopulation(server.handle.native, stopReport);
         safeAppend({ type: "astro-terminal-population", valid, resourceAbsent: stopReport.absent });

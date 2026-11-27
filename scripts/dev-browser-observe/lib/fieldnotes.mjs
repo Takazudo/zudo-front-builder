@@ -587,7 +587,13 @@ export function planFieldNotesOp(
   m,
   model,
   op,
-  { token = newToken(), tokens = null, strictAstroFooter = false, strictAstroTitle = false } = {},
+  {
+    token = newToken(),
+    tokens = null,
+    strictAstroFooter = false,
+    strictZfbFooter = false,
+    strictAstroTitle = false,
+  } = {},
 ) {
   const methods = FN_OP_WRITE_METHODS[op.op];
   if (!methods) throw new Error(`unknown field-notes op ${op.op}`);
@@ -615,6 +621,12 @@ export function planFieldNotesOp(
     case "edit-shared-component": {
       const src = readFileSync(m.layoutPath, "utf8");
       const marker = m.manifest.layoutFooter;
+      if (
+        strictZfbFooter &&
+        sha256(Buffer.from(src)) !==
+          "423293138fda260cedc95e5dce8b3a3ff406fa98a0a48ce67fc22968b154f583"
+      )
+        throw Error("unexpected packaged ZFB shared layout bytes");
       if (
         strictAstroFooter &&
         (marker !== ASTRO_FOOTER || src.split(marker).length !== 2 || src.includes(token))
@@ -1398,6 +1410,7 @@ export function fieldNotesOps(
   {
     restorationWriteMethod = "in-place",
     strictAstroFooter = false,
+    strictZfbFooter = false,
     strictAstroTitle = false,
     strictAstroCategory = false,
   } = {},
@@ -1413,7 +1426,11 @@ export function fieldNotesOps(
     state,
     ...(categoryContract && { categoryContract }),
     prepareAttempt: (op) => {
-      const a = planFieldNotesOp(m, state.model, op, { strictAstroFooter, strictAstroTitle });
+      const a = planFieldNotesOp(m, state.model, op, {
+        strictAstroFooter,
+        strictZfbFooter,
+        strictAstroTitle,
+      });
       if (categoryContract) {
         const source = readArticle(m, CATEGORY_ARTICLE);
         if (

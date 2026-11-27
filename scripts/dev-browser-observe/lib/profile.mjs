@@ -154,6 +154,11 @@ function originalFamilyAdmission(p) {
     isDeepStrictEqual(p.scenarios, [
       { id, set: "workload", warmOrder: "none", ops: [originalFamilyOps[id]] },
     ]) &&
+    originalStartupLimits(p)
+  );
+}
+function originalStartupLimits(p) {
+  return (
     p.fixedRssSafety === "linux-fixed-zfb.v4" &&
     p.framework === "zfb" &&
     p.distribution?.launch === "direct" &&
@@ -180,16 +185,37 @@ function originalFamilyAdmission(p) {
 }
 function fixedErrors(profile) {
   const errors = [];
+  const footer = profile.fixedZfbFooter === "original-shared-layout.v1";
+  if (
+    footer &&
+    (!originalStartupLimits(profile) ||
+      profile.fixedFamilyAdmission ||
+      !profile.fixedPeerBrowser ||
+      !isDeepStrictEqual(profile.scenarios, [
+        {
+          id: "fn-shared-component",
+          set: "workload",
+          warmOrder: "none",
+          ops: [
+            { id: "footer", op: "edit-shared-component", writeMethod: "in-place", targetPath: "/" },
+          ],
+        },
+      ]))
+  )
+    errors.push(
+      "$.fixedZfbFooter requires the exact singleton pinned original ZFB v4 shared-layout operation",
+    );
   if (profile.fixedFamilyAdmission && !originalFamilyAdmission(profile))
     errors.push(
       "$.fixedFamilyAdmission requires one exact original 100-article ZFB v4 burst or rapid family",
     );
   if (isFixedAstroProtocol(profile.fixedRssSafety)) errors.push(...fixedAstroErrors(profile));
-  else if (profile.fixedPeerBrowser)
+  else if (profile.fixedPeerBrowser && !footer)
     errors.push("$.fixedPeerBrowser requires a fixed Astro observation protocol");
   if (
     profile.fixedRssSafety &&
     !isFixedAstroProtocol(profile.fixedRssSafety) &&
+    !footer &&
     (profile.framework !== "zfb" ||
       (profile.distribution?.launch ?? "direct") !== "direct" ||
       profile.fixture?.scale !== 100 ||

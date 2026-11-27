@@ -1,3 +1,4 @@
+import { interruptible } from "./session-deadline.mjs";
 import { readFileSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -326,6 +327,38 @@ export function isLivereloadSocket(url) {
 }
 
 /** livereload.js frames are JSON `{ event, data }`; anything else is kept raw. */
+export function nativeReloadUrl(baseUrl) {
+  const url = new URL("/__zfb/reload/ws", baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.href;
+}
+
+export function nativePageReload(evidence, socket, pageUrl, before, after, from, to) {
+  if (!socket || !before || !after || before === after || !evidence) return false;
+  const during = (r) => BigInt(r.ns) >= from && BigInt(r.ns) <= to;
+  const docs = (evidence.docInits ?? []).filter(during),
+    navs = (evidence.navigations ?? []).filter(during);
+  if (
+    docs.length !== 1 ||
+    navs.length !== 1 ||
+    !docs[0].designatedMain ||
+    docs[0].docUUID !== after ||
+    docs[0].url !== pageUrl ||
+    navs[0].url !== pageUrl
+  )
+    return false;
+  return evidence.wsFrames.some(
+    (f) =>
+      during(f) &&
+      f.nativeRequestId === socket &&
+      f.url === nativeReloadUrl(pageUrl) &&
+      f.event === "page" &&
+      f.pageSignal === true &&
+      BigInt(f.ns) <= BigInt(navs[0].ns) &&
+      BigInt(f.ns) <= BigInt(docs[0].ns),
+  );
+}
+
 export function livereloadFrame(payload, ns, url) {
   const text = typeof payload === "string" ? payload : Buffer.from(payload).toString("utf8");
   let event = "unparsed";
@@ -500,6 +533,7 @@ export class ObserverPage {
         });
       });
       this.page.on("websocket", (ws) => {
+        if (this.nativeReload) return; // The strict ZFB path uses the authenticated upgrade channel.
         const url = ws.url();
         if (!isLivereloadSocket(url) && !declaredSocketFor(url, this.updateSockets)) return;
         if (this.peerSocketTracking) {
@@ -525,6 +559,43 @@ export class ObserverPage {
    * wsFrames when it maps to an update or activity event, otherwise to otherFrames (recorded,
    * not evidence).
    */
+  // ZFB sends application frames only for updates. A passive, successful
+  // WebSocket upgrade establishes readiness without waiting for an edit.
+  async trackNativeReload() {
+    if (this.peerSocketTracking) throw Error("socket tracking already active");
+    const pending = new Map();
+    this.peerSocketTracking = new Map();
+    this.nativeReload = true;
+    const origin = nativeReloadUrl(this.baseUrl);
+    const session = await this.context.newCDPSession(this.page);
+    session.on("Network.webSocketCreated", ({ requestId, url }) => {
+      if (url === origin && this.page.frames().length === 1)
+        pending.set(requestId, { requestId, url, openedNs: String(this.clock()) });
+    });
+    session.on("Network.webSocketHandshakeResponseReceived", ({ requestId, response }) => {
+      const row = pending.get(requestId);
+      if (row && response?.status === 101 && this.page.frames().length === 1)
+        this.peerSocketTracking.set(requestId, {
+          ...row,
+          handshakeNs: String(this.clock()),
+          status: 101,
+        });
+    });
+    session.on("Network.webSocketFrameReceived", ({ requestId, response }) => {
+      const row = this.peerSocketTracking.get(requestId);
+      if (!row || response?.opcode !== 1 || this.page.frames().length !== 1) return;
+      const f = livereloadFrame(response.payloadData, this.clock(), row.url);
+      f.nativeRequestId = requestId;
+      f.pageSignal = f.event === "page" && f.data === "{}";
+      this.wsFrames.push(f);
+    });
+    session.on("Network.webSocketClosed", ({ requestId }) => {
+      pending.delete(requestId);
+      this.peerSocketTracking.delete(requestId);
+    });
+    await session.send("Network.enable");
+  }
+
   recordSocketFrame(url, payload) {
     if (isLivereloadSocket(url)) {
       this.wsFrames.push(livereloadFrame(payload, this.clock(), url));
@@ -660,6 +731,15 @@ export class ObserverPage {
 
   /** Pre-attempt navigation (never inside a measured attempt). */
   async prepare(path, timeoutMs = 30000) {
+    if (this.nativeReloadSetupSignal && !this.nativeReload) {
+      // Instrument only the first already-admitted preparation. The handshake
+      // observer cannot add time before the v4 blank-browser admission gate.
+      const end = this.clock() + BigInt(timeoutMs) * 1_000_000n;
+      await interruptible(this.trackNativeReload(), this.nativeReloadSetupSignal);
+      this.nativeReloadSetupSignal.throwIfAborted();
+      timeoutMs = Number((end - this.clock()) / 1_000_000n);
+      if (timeoutMs <= 0) throw Error("native socket setup exceeded route preparation budget");
+    }
     await this.disarm();
     const response = await this.page.goto(this.url(path), {
       waitUntil: "load",

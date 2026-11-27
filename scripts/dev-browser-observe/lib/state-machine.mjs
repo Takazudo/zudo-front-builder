@@ -1,3 +1,4 @@
+import { nativeReloadUrl, nativePageReload } from "./browser.mjs";
 import { CATEGORY_DETAIL, matchesAstroPredicate } from "./astro-category.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { ASTRO_TITLE, TITLE_DETAIL, TITLE_SELECTOR, validateTitlePlan } from "./astro-title.mjs";
@@ -224,7 +225,9 @@ export async function runBatch({ scenarios, deps }) {
   if (deps.fixedAstroCategory && !category)
     throw new Error("missing fixed category corpus contract");
   const articleOperation = Boolean(category || deps.fixedAstroTitle);
-  const fixedAstro = deps.fixedAstroFooter || articleOperation;
+  const strictFooter = deps.fixedAstroFooter || deps.fixedZfbFooter;
+  const fixedText = strictFooter || articleOperation;
+  let nativeEditSocket;
   const originalText = deps.fixedAstroTitle ? ASTRO_TITLE : ASTRO_FOOTER;
   const primaryOriginal =
     category?.original ??
@@ -294,6 +297,11 @@ export async function runBatch({ scenarios, deps }) {
         step: "apply",
         blocks,
       });
+    const nativeRestoreSockets = deps.fixedZfbFooter
+      ? [...(page.peerSocketTracking?.values() ?? [])].filter(
+          (r) => r.status === 101 && r.url === nativeReloadUrl(page.url("/")),
+        )
+      : [];
     const restoreNs = clock.now();
     const mark = page.mark?.() ?? null;
     const restore = fs.restore(snapshot);
@@ -376,14 +384,14 @@ export async function runBatch({ scenarios, deps }) {
       for (const originalCheck of liveSkipped ? [] : fs.liveChecks(snapshot)) {
         // Recheck the exact body during its existing detail visit, preserving the navigation order.
         const check =
-          bodyRevision && originalCheck.path === (fixedAstro ? freshPath : bodyRevision.path)
+          bodyRevision && originalCheck.path === (fixedText ? freshPath : bodyRevision.path)
             ? {
                 ...originalCheck,
                 predicate: {
                   kind: "all",
                   of: [
                     originalCheck.predicate,
-                    fixedAstro ? primaryOriginal : bodyRevision.predicate,
+                    fixedText ? primaryOriginal : bodyRevision.predicate,
                   ],
                 },
               }
@@ -419,9 +427,9 @@ export async function runBatch({ scenarios, deps }) {
         (!rule.requireNativeUpdate || (settle?.settled && settle.bodyRevision?.matched === true)) &&
         live.some(
           (check) =>
-            check.path === (fixedAstro ? freshPath : bodyRevision.path) &&
+            check.path === (fixedText ? freshPath : bodyRevision.path) &&
             check.ok &&
-            (!fixedAstro || (check.docUUID && check.docUUID !== settle?.bodyRevision?.docUUID)),
+            (!fixedText || (check.docUUID && check.docUUID !== settle?.bodyRevision?.docUUID)),
         ));
     const expectedRoutes = [
       "/",
@@ -433,14 +441,14 @@ export async function runBatch({ scenarios, deps }) {
     if (articleOperation) expectedRoutes.splice(2, 0, freshPath);
     const freshWitness = live.find((row) => row.path === freshPath);
     const astroRoutes =
-      !fixedAstro ||
+      !fixedText ||
       (live.length === expectedRoutes.length &&
         live.every(
           (row, i) =>
             row.path === expectedRoutes[i] &&
             row.docUUID &&
             row.ok &&
-            (!category || row.httpStatus === 200),
+            (!(category || deps.fixedZfbFooter) || row.httpStatus === 200),
         ) &&
         new Set(live.map((row) => row.docUUID)).size === live.length &&
         bodyRevision?.path === finalAffected &&
@@ -452,7 +460,20 @@ export async function runBatch({ scenarios, deps }) {
           primaryOriginal,
         ) &&
         matchesAstroPredicate(settle?.bodyRevision?.actual, bodyRevision.predicate));
+    const restoreNative =
+      !deps.fixedZfbFooter ||
+      (nativeRestoreSockets.length === 1 &&
+        nativePageReload(
+          settle,
+          nativeRestoreSockets[0].requestId,
+          page.url(freshPath),
+          bodyRevision?.affectedDocUUID,
+          settle?.bodyRevision?.docUUID,
+          restoreNs,
+          clock.now(),
+        ));
     let ok =
+      restoreNative &&
       astroRoutes &&
       !signal?.aborted &&
       restore.mismatches.length === 0 &&
@@ -473,7 +494,8 @@ export async function runBatch({ scenarios, deps }) {
       }
     const cleanupRec = {
       ...(peerRestoration && { peerRestoration }),
-      ...(fixedAstro &&
+      ...(deps.fixedZfbFooter && { nativeRestoreSockets, restoreNative }),
+      ...(fixedText &&
         bodyRevision && {
           restorationWitness: {
             path: bodyRevision.path,
@@ -655,7 +677,7 @@ export async function runBatch({ scenarios, deps }) {
           )
             throw new Error("invalid complete fixed Astro category operation");
           if (
-            deps.fixedAstroFooter &&
+            strictFooter &&
             (attempt.supplemental.length !== 1 ||
               attempt.supplemental[0].path !== "/archive/1/" ||
               attempt.targetPath !== "/" ||
@@ -846,8 +868,8 @@ export async function runBatch({ scenarios, deps }) {
         }
         // arm already read this value before the first edit. Reuse it across consecutive
         // edits so a previous tokenized revision cannot become the cleanup baseline.
-        if ((verifyBodyRevision || fixedAstro) && !bodyRevision) {
-          if (fixedAstro) {
+        if ((verifyBodyRevision || fixedText) && !bodyRevision) {
+          if (fixedText) {
             if (!matchesAstroPredicate(armed.actual, primaryOriginal))
               throw new Error("unverified original Astro text");
           } else if (
@@ -856,10 +878,17 @@ export async function runBatch({ scenarios, deps }) {
             (deps.requiredBodyBaseline && armed.actual !== deps.requiredBodyBaseline)
           )
             throw new Error("missing pre-edit rendered body baseline");
-          if (fixedAstro) {
-            const sockets = [...page.peerSocketTracking.values()].filter(
-              (row) => row.firstFrameNs !== null,
+          if (fixedText) {
+            const sockets = [...page.peerSocketTracking.values()].filter((row) =>
+              deps.fixedZfbFooter
+                ? row.status === 101 && row.url === nativeReloadUrl(page.url("/"))
+                : row.firstFrameNs !== null,
             );
+            if (deps.fixedZfbFooter) {
+              if (sockets.length !== 1)
+                throw Error("ambiguous or missing native ZFB reload connection");
+              nativeEditSocket = sockets[0].requestId;
+            }
             append({
               type: "fixed-peer-prewrite",
               docUUID: armed.docUUID,
@@ -877,7 +906,7 @@ export async function runBatch({ scenarios, deps }) {
             });
             if (
               !armed.docUUID ||
-              (category && preparedState?.httpStatus !== 200) ||
+              ((category || deps.fixedZfbFooter) && preparedState?.httpStatus !== 200) ||
               armed.docUUID !== preparedState?.docUUID ||
               armed.observedUrl !== page.url(attempt.targetPath) ||
               preparedState.url !== armed.observedUrl ||
@@ -886,9 +915,9 @@ export async function runBatch({ scenarios, deps }) {
               throw new Error("peer update socket or original document unverified");
           }
           bodyRevision = {
-            ...(fixedAstro && { allowSameDocument: true }),
+            ...(fixedText && { allowSameDocument: true }),
             path: attempt.targetPath,
-            predicate: fixedAstro
+            predicate: fixedText
               ? primaryOriginal
               : { kind: "text", selector: attempt.predicate.selector, equals: armed.actual },
           };
@@ -920,7 +949,7 @@ export async function runBatch({ scenarios, deps }) {
 
         signal?.throwIfAborted();
         deps.stageBudget?.(timeouts.attemptMs, attemptStart);
-        if (fixedAstro) {
+        if (fixedText) {
           deps.beforeAstroWrite("before-write");
           signal?.throwIfAborted();
           deps.stageBudget(timeouts.attemptMs, attemptStart);
@@ -1027,7 +1056,7 @@ export async function runBatch({ scenarios, deps }) {
               ...(resourceTrip ? [resourceTrip] : []),
             ]),
           );
-          if (fixedAstro) {
+          if (fixedText) {
             signal?.throwIfAborted();
             const attemptEnd = attemptStart + BigInt(timeouts.attemptMs) * 1_000_000n;
             const end = deps.workDeadlineNs < attemptEnd ? deps.workDeadlineNs : attemptEnd;
@@ -1089,7 +1118,7 @@ export async function runBatch({ scenarios, deps }) {
           },
           injectKill,
         };
-        if (fixedAstro) {
+        if (fixedText) {
           const write = attempt.write;
           const expected = sha256(write.bytes);
           const actual = fs.hashOf(write.path);
@@ -1128,9 +1157,19 @@ export async function runBatch({ scenarios, deps }) {
           rec.observerDisarmed = true;
           acc.lastArmedUnknownOperation = { ...where, token: attempt.token, writeCompleted: true };
         } else if (waited.kind === "notify") {
-          if (fixedAstro) {
+          if (fixedText) {
             const payload = waited.payload;
             if (
+              (deps.fixedZfbFooter &&
+                !nativePageReload(
+                  evidence,
+                  nativeEditSocket,
+                  page.url(attempt.targetPath),
+                  preDocUUID,
+                  payload.docUUID,
+                  t0,
+                  waited.t1,
+                )) ||
               !astroProducerMatches(
                 payload,
                 preDocUUID,
@@ -1248,11 +1287,11 @@ export async function runBatch({ scenarios, deps }) {
           } catch (error) {
             res = { ok: false, error: String(error?.message ?? error) };
           }
-          if (fixedAstro && res.ok) {
+          if (fixedText && res.ok) {
             res.ok = Boolean(
               res.docUUID &&
               res.docUUID !== rec.notify.docUUID &&
-              (!category || res.httpStatus === 200) &&
+              (!(category || deps.fixedZfbFooter) || res.httpStatus === 200) &&
               !seenSupplementalDocs.has(res.docUUID) &&
               matchesAstroPredicate(res.notify?.actual ?? res.actual, check.predicate),
             );

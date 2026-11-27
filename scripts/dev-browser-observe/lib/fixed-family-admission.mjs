@@ -11,6 +11,41 @@ function population(rows, expected) {
   );
 }
 
+export function zfbFooterStopPopulation(cap, stop) {
+  if (
+    !cap ||
+    !stop?.rootAlive ||
+    !stop.absent ||
+    stop.error ||
+    stop.remaining?.length !== 0 ||
+    !Array.isArray(stop.known) ||
+    !Array.isArray(stop.ownedBefore) ||
+    stop.endings?.length !== 3
+  )
+    return false;
+  const root = cap.root,
+    dev = cap.dev,
+    worker = cap.startupBirth;
+  if (!population(stop.known, [root, dev, worker]) || !population(stop.ownedBefore, [root, dev]))
+    return false;
+  return [root, dev, worker].every((b) => {
+    const ending = stop.endings.find((r) => r.pid === b.pid);
+    if (!ending) return false;
+    if (b.pid === worker.pid) return ending.endedAfter === "before-stop";
+    return (
+      (b.pid !== root.pid ||
+        (stop.exit && JSON.stringify(ending.exit) === JSON.stringify(stop.exit))) &&
+      ["SIGINT", "SIGTERM", "SIGKILL"].includes(ending.endedAfter) &&
+      stop.steps?.some(
+        (step) =>
+          step.delivery === "sent" &&
+          step.target === "group:" + root.pgid &&
+          step.signal === ending.endedAfter,
+      )
+    );
+  });
+}
+
 // Verify the currently running images, not just the cached successful sampler
 // row. Both Linux birth reads surround all accesses for the same PID.
 export function verifyFamilyImages(proof, pins) {
