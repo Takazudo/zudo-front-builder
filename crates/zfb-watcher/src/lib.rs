@@ -1786,7 +1786,8 @@ async fn emit_ready_racing_shutdown(
     // The process-test bundle barrier needs proof of actual delivery rather
     // than the normal handoff marker (which precedes potentially blocked sends).
     let test_delivery_paths = (handoff_batch_id != 0
-        && std::env::var_os("ZFB_DEV_TEST_NATIVE_BUNDLE_GATE").is_some())
+        && (std::env::var_os("ZFB_DEV_TEST_NATIVE_BUNDLE_GATE").is_some()
+            || std::env::var_os("ZFB_DEV_TEST_FIRST_DRAIN_GATE").is_some()))
     .then(|| {
         ready
             .iter()

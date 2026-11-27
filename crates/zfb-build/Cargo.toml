@@ -81,7 +81,7 @@ globset = { workspace = true }
 # brings `tokio::process::Command`, `io-util` brings `AsyncBufReadExt`
 # / `AsyncWriteExt`, `fs` brings `tokio::fs::write` for staging the
 # embedded `plugin-host.mjs` into a tempdir at spawn time.
-tokio = { version = "1", features = ["sync", "rt", "macros", "time", "process", "io-util", "fs"] }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "process", "io-util", "fs", "net"] }
 tracing = "0.1"
 # SWC umbrella crate — used by `expand_import_meta_glob` to parse
 # `.ts/.tsx/.js/.jsx` shadow files and collect the byte-spans of

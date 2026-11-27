@@ -2561,6 +2561,20 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         );
         pending.extend(unobserved_edits_under(&self.config.policy, &newly_watched));
 
+        // Process-test rendezvous after boot publication and watch registration.
+        // The channel can accept real deliveries, but no tick can inspect the
+        // filesystem or refresh the graph before the test releases this gate.
+        #[cfg(unix)]
+        if let Some(path) = std::env::var_os("ZFB_DEV_TEST_FIRST_DRAIN_GATE") {
+            use tokio::io::AsyncReadExt;
+            tokio::time::timeout(Duration::from_secs(60), async {
+                let mut gate = tokio::net::UnixStream::connect(Path::new(&path)).await?;
+                anyhow::ensure!(gate.read_u8().await? == b'G', "invalid first-drain release");
+                Ok::<(), anyhow::Error>(())
+            })
+            .await??;
+        }
+
         // Deterministic fault-injection knobs (issue #2100, Dev Supervision
         // epic #2099 Sub #2100). Both are read here — AFTER the boot hook
         // has completed and the post-boot watch registration above has run
