@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { afterEach, test, vi } from "vitest";
-import {
-  FAMILY_IDLE_ADMISSION_RESERVE_NS,
-  blankBrowserAudit,
-  runOriginalFamilyBatch,
-} from "../lib/fixed-family-admission.mjs";
+import { blankBrowserAudit, runOriginalFamilyBatch } from "../lib/fixed-family-admission.mjs";
 import { startFixedRssSafety } from "../lib/fixed-rss-safety.mjs";
 import { deps, fakeFs, fakePage } from "./fakes.mjs";
 
@@ -17,6 +13,8 @@ const SETUP_PHASE_NS = 877_311_406n;
 const ADMISSION_COST_NS = 527_062_550n;
 const SETTLE_MS = 53;
 const MS = 1_000_000n;
+// The reserve is one full cadence period of the harness (limits.sampleEveryMs).
+const RESERVE_NS = 1000n * MS;
 
 const identity = (pid, ppid, pgid) => ({
   pid,
@@ -38,7 +36,7 @@ afterEach(() => {
 
 // Virtual monotonic clock: fake timer time plus synchronous work that blocks
 // the event loop (it advances hrtime without letting any timer fire).
-function harness(mode) {
+function harness(mode, { sampleEveryMs = 1000 } = {}) {
   vi.useFakeTimers({
     toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"],
   });
@@ -56,7 +54,7 @@ function harness(mode) {
     joinOwnedFamily: true,
     server: { handle: { native: { pid: 3 } } },
     fixedExecutables: { protocol: "linux-fixed-zfb.v4", root: { path: "/node" } },
-    limits: { rssCeilingKiB: 4194304, sampleEveryMs: 1000 },
+    limits: { rssCeilingKiB: 4194304, sampleEveryMs },
     append() {},
     abort: (error) => failures.push(error),
     custody: {
@@ -207,9 +205,13 @@ test("the recorded slot-01 phase joins the next original cadence sample instead 
     const setup = start.familyAdmission.setup;
     assert.equal(setup.settlementOutcome, "accepted");
     assert.equal(setup.idleDeferral.outcome, "joined");
-    assert.equal(setup.idleDeferral.reserveNs, String(FAMILY_IDLE_ADMISSION_RESERVE_NS));
+    assert.equal(setup.idleDeferral.reserveNs, String(RESERVE_NS));
     assert.equal(setup.idleDeferral.remainingCadenceNs, String(1000n * MS - SETUP_PHASE_NS));
-    assert.equal(setup.idleDeferral.previousEpoch, 5);
+    assert.equal(setup.idleDeferral.firstCapture.previousEpoch, 5);
+    assert.equal(setup.idleDeferral.firstCapture.pending, false);
+    assert.equal(setup.idleDeferral.firstCapture.strict, true);
+    assert.equal(setup.idleDeferral.firstCapture.cycle, null);
+    assert.equal(setup.pending, true, "the second capture joined an in-flight sample");
     assert.equal(setup.cycle.epoch, 6);
     assert(BigInt(setup.idleDeferral.addedWaitNs) > 0n);
     assert(BigInt(setup.addedSettlementNs) > 0n);
@@ -338,6 +340,30 @@ test("reserve equality admits on the idle sample without waiting", async () => {
   }
 });
 
+test("the reserve follows limits.sampleEveryMs, so a longer period still defers", async () => {
+  const h = harness("period-2000", { sampleEveryMs: 2000 });
+  try {
+    // Samples dispatch every 2000 ms from T-4000 ms; the one at T settles at T+53 ms.
+    await vi.advanceTimersByTimeAsync(4000 + 500);
+    assert.equal(process.hrtime.bigint(), T + 500n * MS);
+    const b = batch(h, { cost: 50n * MS });
+    const result = b.run();
+    assert(
+      !b.rows.some((r) => r.status === "pre-batch-proof"),
+      "1500 ms remaining is less than one 2000 ms period and must not admit idle",
+    );
+    const { error } = await settleAll(result);
+    assert.equal(error, undefined, String(error));
+    const setup = b.input.deps.recorder.records.find((r) => r.type === "scenario-start")
+      .familyAdmission.setup;
+    assert.equal(setup.idleDeferral.reserveNs, String(2000n * MS));
+    assert.equal(setup.idleDeferral.remainingCadenceNs, String(1500n * MS));
+    assert.equal(setup.idleDeferral.outcome, "joined");
+  } finally {
+    await stopMonitor(h);
+  }
+});
+
 test("one nanosecond short of the reserve defers to the next cadence sample", async () => {
   const h = harness("reserve-minus-one");
   try {
@@ -352,10 +378,7 @@ test("one nanosecond short of the reserve defers to the next cadence sample", as
     assert.equal(error, undefined, String(error));
     const setup = b.input.deps.recorder.records.find((r) => r.type === "scenario-start")
       .familyAdmission.setup;
-    assert.equal(
-      setup.idleDeferral.remainingCadenceNs,
-      String(FAMILY_IDLE_ADMISSION_RESERVE_NS - 1n),
-    );
+    assert.equal(setup.idleDeferral.remainingCadenceNs, String(RESERVE_NS - 1n));
     assert.equal(setup.idleDeferral.outcome, "joined");
     assert.equal(setup.cycle.epoch, 7);
   } finally {
@@ -412,7 +435,7 @@ test.each([
         ? "joined"
         : "refused",
     );
-    assert.equal(refusal.setup.idleDeferral.reserveNs, String(FAMILY_IDLE_ADMISSION_RESERVE_NS));
+    assert.equal(refusal.setup.idleDeferral.reserveNs, String(RESERVE_NS));
     assert.match(
       String(error.message),
       {

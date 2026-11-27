@@ -351,7 +351,7 @@ export function startFixedRssSafety({
       if (!lastAccepted?.strict || lastAccepted.live.length !== 2 || !nativeBirth)
         throw Error("family blank setup requires complete root/native RSS observation");
     },
-    captureFamilyCycle(receipt, { idleReserveNs = null } = {}) {
+    captureFamilyCycle(receipt, { idleNeedsFullPeriod = false } = {}) {
       const proof = lastAccepted;
       Object.assign(receipt, {
         capturedNs: String(process.hrtime.bigint()),
@@ -374,9 +374,10 @@ export function startFixedRssSafety({
         "family release lacks a previously accepted epoch",
       );
       if (!pending) {
+        const reserveNs = BigInt(limits.sampleEveryMs) * 1000000n;
         const remainingCadenceNs = BigInt(proof.cadenceDeadlineNs) - BigInt(receipt.capturedNs);
-        if (idleReserveNs !== null && remainingCadenceNs < idleReserveNs)
-          return { before, settlement: null, deferred: { remainingCadenceNs } };
+        if (idleNeedsFullPeriod && remainingCadenceNs < reserveNs)
+          return { before, settlement: null, deferred: { reserveNs, remainingCadenceNs } };
         return { before: this.verifyFamilyAdmission(), settlement: null };
       }
       const { helper, epoch, startedNs } = active;

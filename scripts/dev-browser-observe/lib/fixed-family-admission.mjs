@@ -4,13 +4,22 @@ import { linuxBirth, sameLinuxBirth } from "./linux-birth.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { runBatch } from "./state-machine.mjs";
 
-// The idle branch admits on the last accepted sample only while a full cadence
-// period remains before its next dispatch. The 4862 rapid slot-01 receipt
-// measured 527.1 ms from capture to the cadence refusal (two accepted
-// admissions took 56.3 and 58.4 ms), so a shorter reserve still leaves the
-// decision dependent on the readiness phase. Every other idle start joins the
-// next original cadence sample, whose decision phase is fixed after dispatch.
-export const FAMILY_IDLE_ADMISSION_RESERVE_NS = 1_000_000_000n;
+// An idle capture admits on the already-accepted sample only while one full
+// cadence period (limits.sampleEveryMs) is still ahead, which no real sample
+// (43-53 ms to settle) leaves. Every other idle capture joins the next original
+// cadence sample, so the decision sits at a fixed point after that dispatch
+// instead of wherever browser readiness landed (#4862 slot 01 refused 527.1 ms
+// after an idle capture at T+877.3 ms).
+//
+// Admission-cost bound, with S = sample settle time after dispatch, P = one
+// population check (snapshot + verifyImages), J = the journal append, c = the
+// capture offset inside an in-flight sample, the decision precedes the joined
+// sample's cadence deadline (dispatch + 1000 ms) when
+//   deferred: S + J + P < 1000 ms
+//   pending:  max(S, c + P) + J + P < 1000 ms, and c + P < 750 ms (helper core)
+// Both branches admit for every c < S when 2P + J < 1000 ms - S (about 947 ms
+// at S = 53 ms) and P < 750 ms - S. At P = 490 ms, J = 400 ms the deferred
+// branch admits (943 ms) and the pending branch refuses (1400 ms at c = 20 ms).
 const FAMILY_HELPER_CORE_NS = 750_000_000n;
 
 const same = (a, b) => sameLinuxBirth(a, b) && a.ppid === b.ppid && a.pgid === b.pgid;
@@ -326,10 +335,15 @@ export function runOriginalFamilyBatch(
         ? cadenceDeadlineNs + FAMILY_HELPER_CORE_NS
         : deadlineNs;
     const deferral = {
-      reserveNs: String(FAMILY_IDLE_ADMISSION_RESERVE_NS),
+      reserveNs: String(first.deferred.reserveNs),
       remainingCadenceNs: String(first.deferred.remainingCadenceNs),
-      capturedNs: setup.capturedNs,
-      previousEpoch: setup.previousEpoch,
+      firstCapture: structuredClone(
+        Object.fromEntries(
+          ["capturedNs", "pending", "failed", "stopped", "strict", "previousEpoch", "cycle"].map(
+            (key) => [key, setup[key]],
+          ),
+        ),
+      ),
       cadenceDeadlineNs: String(cadenceDeadlineNs),
       waitBoundNs: String(boundNs),
       outcome: "waiting",
@@ -386,9 +400,7 @@ export function runOriginalFamilyBatch(
       setup.initialBlank = initial;
       browserAudit.watchSettlementPage();
       setup.pageWatchStartedNs = String(process.hrtime.bigint());
-      const captured = safety.captureFamilyCycle(setup, {
-        idleReserveNs: FAMILY_IDLE_ADMISSION_RESERVE_NS,
-      });
+      const captured = safety.captureFamilyCycle(setup, { idleNeedsFullPeriod: true });
       if (captured.settlement) return joinPending(captured);
       if (captured.deferred) return deferToNextCycle(captured);
       setup.settlementOutcome = "no-pending";
