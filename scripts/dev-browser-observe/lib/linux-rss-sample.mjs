@@ -78,6 +78,19 @@ function requireValue(ok, msg) {
   if (!ok) throw new Error(msg);
 }
 
+export function timeStartupSelection(select, clock, deadline) {
+  let selection = null;
+  let error = null;
+  try {
+    selection = select();
+  } catch (cause) {
+    error = String(cause?.message ?? cause);
+  }
+  const resultNs = clock();
+  if (BigInt(resultNs) > deadline) error ??= "sampling helper deadline reached";
+  return { resultNs, error, selection: error ? null : selection };
+}
+
 function compactBirth(p) {
   return {
     pid: p.pid,
@@ -326,6 +339,7 @@ export function sampleRendererMemory(
   let helper = null;
   let executable = null;
   let summary = null;
+  let startupSelection = null;
   let fault = null;
   let stderr = "";
   let finished = false;
@@ -339,6 +353,7 @@ export function sampleRendererMemory(
     helper,
     verifiedDiscoveries: discoveries,
     ...(custody && { custodyReleases }),
+    ...(startupSelection && { startupSelection }),
     journalFailures,
     processes,
     summedRssKiB,
@@ -358,8 +373,22 @@ export function sampleRendererMemory(
       clearTimeout(timer);
       clearTimeout(closeTimer);
       qualify(timing, envelopeOk);
-      parent.resultNs = now();
-      if (BigInt(parent.resultNs) > deadline) fail("deadline", "sampling helper deadline reached");
+      // Selection, including release-to-terminal reconciliation, belongs to
+      // the same core decision as the normal sample.
+      if (!fault && fixedExecutables?.protocol === "linux-fixed-zfb.v4") {
+        const decision = timeStartupSelection(
+          () => custody.selectStartupCycle(processes, custodyReleases, request?.fixedCustody),
+          now,
+          deadline,
+        );
+        startupSelection = decision.selection;
+        parent.resultNs = decision.resultNs;
+        if (decision.error) fail("startup-custody", decision.error);
+      } else {
+        parent.resultNs = now();
+        if (BigInt(parent.resultNs) > deadline)
+          fail("deadline", "sampling helper deadline reached");
+      }
       const record = details();
       if (fault)
         reject(
@@ -376,7 +405,7 @@ export function sampleRendererMemory(
           }),
         );
       else {
-        custody?.acceptStartupCycle?.(processes, request?.fixedCustody);
+        if (startupSelection) custody.commitStartupCycle(startupSelection);
         resolve(record);
       }
     };

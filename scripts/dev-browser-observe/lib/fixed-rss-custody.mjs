@@ -43,6 +43,39 @@ export function startupTerminalObservation(processes, cycle, birth, acquiredNs) 
   );
 }
 
+// Release is a second independently closed ordinary epoch. The earlier
+// terminal row cannot establish that the holder actually closed both FDs.
+export function startupReleaseObservation(releases, cycle, terminal) {
+  if (!releases.length) return null;
+  const [row] = releases;
+  const first = terminal?.custodyReceipt;
+  const ack = row.receipt;
+  if (
+    releases.length !== 1 ||
+    !first ||
+    !sameLinuxBirth(row.birth, terminal) ||
+    row.birth.ppid !== terminal.ppid ||
+    row.birth.pgid !== terminal.pgid ||
+    row.token !== terminal.custodyToken ||
+    ack.session !== first.session ||
+    ack.session !== cycle.session ||
+    ack.holderPid !== first.holderPid ||
+    ack.helperPid === first.helperPid ||
+    ack.epoch !== cycle.epoch ||
+    ack.epoch <= first.epoch ||
+    BigInt(ack.verifiedNs) <= BigInt(terminal.terminalProof.observedNs) ||
+    JSON.stringify(ack.descriptors) !== JSON.stringify(first.descriptors)
+  ) {
+    throw new Error("unverified subsequent startup pair release");
+  }
+  return row;
+}
+
+export function requireStartupRelease(status, terminal, release) {
+  if (status !== "retained" || !terminal || !release)
+    throw new Error("startup custody requires accepted terminal and later release cycles");
+}
+
 export function startFixedCustody({ append: record, abort, intent, startup = false }) {
   const append = (row) => {
     if (row.type === "fixed-custody-spawn" || row.type === "fixed-custody-ready")
@@ -72,7 +105,7 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
     stderr = "",
     outputBytes = 0;
   let stopReport, exit, fault, closePromise;
-  let seed, startupBirth, acquiredNs, scoutReport, scoutTimer, confirmedStartup;
+  let seed, startupBirth, acquiredNs, scoutReport, scoutTimer, confirmedStartup, releasedStartup;
   const fail = (error) => {
     if (fault) return;
     fault = error;
@@ -341,13 +374,19 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
         });
       }
     },
-    acceptStartupCycle(processes, cycle) {
-      if (!startupBirth || confirmedStartup) return;
-      confirmedStartup = startupTerminalObservation(processes, cycle, startupBirth, acquiredNs);
+    selectStartupCycle(processes, releases, cycle) {
+      if (!startupBirth || !cycle) return null;
+      const terminal = startupTerminalObservation(processes, cycle, startupBirth, acquiredNs);
+      if (terminal) return { terminal };
+      const release = startupReleaseObservation(releases, cycle, confirmedStartup);
+      return release ? { release } : null;
+    },
+    commitStartupCycle(selection) {
+      if (selection?.terminal) confirmedStartup = selection.terminal;
+      if (selection?.release) releasedStartup = selection.release;
     },
     verifyStartup() {
-      if (startup && (!startupBirth || scoutReport?.status !== "retained" || !confirmedStartup))
-        throw issue("startup live-to-official-terminal sequence incomplete");
+      if (startup) requireStartupRelease(scoutReport?.status, confirmedStartup, releasedStartup);
     },
     forget(b) {
       retained.delete(b.pid);

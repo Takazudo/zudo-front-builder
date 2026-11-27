@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { startupTerminalObservation } from "../lib/fixed-rss-custody.mjs";
+import { timeStartupSelection } from "../lib/linux-rss-sample.mjs";
+import {
+  requireStartupRelease,
+  startupReleaseObservation,
+  startupTerminalObservation,
+} from "../lib/fixed-rss-custody.mjs";
 
 test("a startup role needs a later independent ordinary original-pair terminal observation", () => {
   const birth = {
@@ -42,4 +47,92 @@ test("a startup role needs a later independent ordinary original-pair terminal o
   }
   assert.equal(check(p, { ...cycle, startupPollPid: 30 }), null);
   assert.equal(check(p, { epoch: 2, session: "session" }), null);
+});
+
+test("startup readiness requires a later distinct closed epoch releasing the same original pair", () => {
+  const birth = {
+    pid: 30,
+    ppid: 22,
+    pgid: 30,
+    bootId: "boot",
+    startTicks: "100",
+    birthVersion: "linux-proc-v1",
+  };
+  const desc = [
+    ["5", "64"],
+    ["61", "842"],
+  ];
+  const first = { epoch: 2, session: "session", holderPid: 40, helperPid: 41, descriptors: desc };
+  const terminal = {
+    ...birth,
+    custodyReceipt: first,
+    custodyToken: "token",
+    terminalProof: { observedNs: "400" },
+  };
+  const cycle = { epoch: 3, session: "session" };
+  const release = {
+    birth,
+    token: "token",
+    receipt: { ...first, epoch: 3, helperPid: 42, verifiedNs: "500" },
+  };
+  assert.equal(startupReleaseObservation([release], cycle, terminal), release);
+  assert.equal(startupReleaseObservation([], cycle, terminal), null);
+  assert.throws(() => requireStartupRelease("retained", terminal, null));
+  requireStartupRelease("retained", terminal, release);
+  for (const delta of [
+    { epoch: 2 },
+    { epoch: 4 },
+    { helperPid: 41 },
+    { holderPid: 39 },
+    { session: "other" },
+    { verifiedNs: "399" },
+    { descriptors: [desc[0], ["61", "843"]] },
+  ])
+    assert.throws(() =>
+      startupReleaseObservation(
+        [{ ...release, receipt: { ...release.receipt, ...delta } }],
+        cycle,
+        terminal,
+      ),
+    );
+  assert.throws(() => startupReleaseObservation([{ ...release, token: "wrong" }], cycle, terminal));
+  assert.throws(() => startupReleaseObservation([release, release], cycle, terminal));
+});
+
+test("startup validation completes within the core even when selecting a receipt takes time", () => {
+  let at = 99n;
+  const select = () => {
+    at += 2n;
+    return { terminal: true };
+  };
+  assert.deepEqual(
+    timeStartupSelection(select, () => String(at), 100n),
+    {
+      resultNs: "101",
+      error: "sampling helper deadline reached",
+      selection: null,
+    },
+  );
+  assert.deepEqual(
+    timeStartupSelection(
+      () => {
+        throw Error("bad release");
+      },
+      () => String(at),
+      200n,
+    ),
+    {
+      resultNs: "101",
+      error: "bad release",
+      selection: null,
+    },
+  );
+  assert.deepEqual(
+    timeStartupSelection(select, () => String(at), 103n),
+    {
+      resultNs: "103",
+      error: null,
+      selection: { terminal: true },
+    },
+  );
 });

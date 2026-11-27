@@ -217,7 +217,12 @@ def serve(shared, parent, session, startup_mode=False):
                 require(list(map(identity, original)) == descriptors, "conflicting startup pair")
             else:
                 token = secrets.token_hex(16)
-                original = [os.dup(pair[0]), os.dup(pair[1])]
+                first = os.dup(pair[0])
+                try:
+                    original = [first, os.dup(pair[1])]
+                except BaseException:
+                    os.close(first)
+                    raise
                 held[key] = (token, original)
                 retains += 1
                 high_water = 1
@@ -313,11 +318,12 @@ def serve(shared, parent, session, startup_mode=False):
                             ack(dict(descriptors=list(map(identity,existing))),existing)
                         else:
                             require(action == "release", "unsupported custody operation")
+                            released = list(map(identity, existing)) if startup_mode else None
                             for fd in existing:
                                 os.close(fd)
                             del held[key]
                             releases += 1
-                            ack()
+                            ack(dict(descriptors=released) if startup_mode else None)
             else:
                 raise ValueError("custody operation cap")
     if scout is not None:
