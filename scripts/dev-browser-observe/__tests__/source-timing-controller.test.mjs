@@ -145,8 +145,10 @@ test.each([
           const ns = process.hrtime.bigint(),
             t = String(ns);
           const helper = {
-            pid: 99,
-            birth: { ...root, pid: 99 },
+            // Each real sample spawns its own helper, and the evidence validator
+            // requires distinct helper births; a session can span several ticks.
+            pid: 1000 + calls,
+            birth: { ...root, pid: 1000 + calls, startTicks: String(100 + calls) },
             spawnHrtimeNs: t,
             closed: true,
             pipesClosed: mode !== "unclosed",
