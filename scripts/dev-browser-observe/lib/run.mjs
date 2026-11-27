@@ -9,6 +9,7 @@ import {
 } from "./next-outer-provider.mjs";
 import { observeNextOuterReceipt } from "./next-outer-channel.mjs";
 import { outerTerminalGate } from "./next-outer-terminal.mjs";
+import { samplerClosureAudit } from "./linux-rss-sample.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
 import {
   markNextRegistry,
@@ -355,6 +356,29 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
     return await executeLocked({ loaded, label, labelDir, command, stderr, hooks, intentPath });
   } finally {
     await lock.release();
+  }
+}
+
+// A bounded stop may reject before its original in-flight helper settles.
+// At the existing finalization boundary, preserve any newly available identity
+// and closure evidence without waiting again or releasing the original hold.
+export function recordSamplerClosureAudits(unresolved, fixedSafety, rendererMemory, append) {
+  for (const resource of unresolved) {
+    if (!resource.helper) {
+      const monitor =
+        resource.resource === "fixed-rss-sampler"
+          ? fixedSafety
+          : resource.resource === "renderer-memory-sampler"
+            ? rendererMemory
+            : null;
+      const helper = monitor?.unresolvedHelper;
+      if (helper) resource.helper = helper;
+    }
+    const closure = resource.helper && samplerClosureAudit(resource.helper);
+    if (closure) {
+      resource.closureAudit = closure;
+      append({ type: "sampler-closure-audit", ...resource });
+    }
   }
 }
 
@@ -1761,6 +1785,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         else if (memoryReport.failure) exitCode = EXIT.stopped;
       }
     }
+    recordSamplerClosureAudits(unresolved, fixedSafety, rendererMemory, safeAppend);
     let stopFailure = null;
     if (!stopReport.absent || stopReport.error || unresolved.length) {
       stopFailure = {
