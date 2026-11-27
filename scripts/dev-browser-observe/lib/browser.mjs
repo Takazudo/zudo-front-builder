@@ -201,13 +201,14 @@ export async function launchOwnedBrowser(
   signal?.throwIfAborted();
   if (diagnosticExecutable && actualHash !== diagnosticExecutable.sha256)
     throw new Error(`diagnostic browser executable digest differs: ${actualPath}`);
-  const timeout = actualPath ? (launchTimeoutMs?.() ?? diagnosticExecutable.timeoutMs) : undefined;
+  const timeout = launchTimeoutMs?.() ?? diagnosticExecutable?.timeoutMs;
   signal?.throwIfAborted();
   const browser = await timeBrowserAsync(timing, "browser.chromium.launch", parentId, () =>
     chromium.launch({
       headless: cfg.headless,
       args: cfg.args,
-      ...(actualPath ? { executablePath: actualPath, timeout } : {}),
+      ...(actualPath ? { executablePath: actualPath } : {}),
+      ...(timeout !== undefined && { timeout }),
     }),
   );
   try {
