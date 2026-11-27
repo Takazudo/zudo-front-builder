@@ -1,3 +1,4 @@
+import { ASTRO_FOOTER, astroFooterPredicate } from "./astro-footer.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -578,7 +579,12 @@ function routeNotExpandedEvidence(m, slug, renamed) {
  * predicate on targetPath, supplemental checks after the endpoint) and the
  * model the files will describe once the writes complete (`nextModel`).
  */
-export function planFieldNotesOp(m, model, op, { token = newToken(), tokens = null } = {}) {
+export function planFieldNotesOp(
+  m,
+  model,
+  op,
+  { token = newToken(), tokens = null, strictAstroFooter = false } = {},
+) {
   const methods = FN_OP_WRITE_METHODS[op.op];
   if (!methods) throw new Error(`unknown field-notes op ${op.op}`);
   const method = op.writeMethod ?? methods[0];
@@ -605,14 +611,21 @@ export function planFieldNotesOp(m, model, op, { token = newToken(), tokens = nu
     case "edit-shared-component": {
       const src = readFileSync(m.layoutPath, "utf8");
       const marker = m.manifest.layoutFooter;
+      if (
+        strictAstroFooter &&
+        (marker !== ASTRO_FOOTER || src.split(marker).length !== 2 || src.includes(token))
+      )
+        throw new Error("Astro layout requires one original footer and a new token");
+      const edited = marker + " " + token;
+      const predicate = strictAstroFooter
+        ? astroFooterPredicate(edited)
+        : text(FN_SEL.footerNote, "includes", token);
       if (!src.includes(marker)) throw new Error("Layout.tsx footer text not found");
       return {
         ...base,
         targetPath: op.targetPath ?? "/",
-        predicate: text(FN_SEL.footerNote, "includes", token),
-        supplemental: [
-          { path: "/archive/1/", predicate: text(FN_SEL.footerNote, "includes", token) },
-        ],
+        predicate,
+        supplemental: [{ path: "/archive/1/", predicate }],
         writes: [inPlace(m.layoutPath, src.replace(marker, `${marker} ${token}`))],
         nextModel: model,
       };
@@ -1364,7 +1377,10 @@ export function fnWarmPaths(scenario) {
  * fixtureOps for the state machine. The planner tracks the model the files
  * describe; restoration resets it to the materialized original.
  */
-export function fieldNotesOps(m, { restorationWriteMethod = "in-place" } = {}) {
+export function fieldNotesOps(
+  m,
+  { restorationWriteMethod = "in-place", strictAstroFooter = false } = {},
+) {
   const original = m.model;
   const state = { model: original, touched: new Set(), titles: new Map() };
   const snapshotSpec = {
@@ -1374,7 +1390,7 @@ export function fieldNotesOps(m, { restorationWriteMethod = "in-place" } = {}) {
   return {
     state,
     prepareAttempt: (op) => {
-      const a = planFieldNotesOp(m, state.model, op);
+      const a = planFieldNotesOp(m, state.model, op, { strictAstroFooter });
       for (const s of a.touched ?? []) state.touched.add(s);
       a.applied = () => {
         state.model = a.nextModel;
