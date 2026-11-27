@@ -231,6 +231,15 @@ async function phase({ late, helper, phi, legacy = false }) {
       await w.settle();
       w.block((phi - late - helper) * MS);
       d = call();
+      if (!legacy && phi >= 1000n - BigInt(DECISION_SETTLE.freshMarginMs)) {
+        // Inside the fresh margin: the decision takes the tick path to the next slot.
+        await w.flush();
+        assert.equal(d.done, false, `phase ${phi} must not decide inside the fresh margin`);
+        w.block(sched + 1000n * MS - w.now());
+        await vi.advanceTimersByTimeAsync(1000);
+        w.block(helper * MS);
+        await w.settle();
+      }
     }
   }
   await d.promise;
@@ -259,17 +268,23 @@ test.each([
       const r = await phase({ late, helper, phi });
       assert(r.ok, `phase ${phi}: ${r.error}`);
       assert.equal(r.aborts, 0);
-      assert.equal(r.ops, 2, "no sample dispatched by a decision");
-      assert.equal(r.value.epoch, 2);
+      const margin = phi >= 1000n - BigInt(DECISION_SETTLE.freshMarginMs);
+      assert.equal(r.ops, margin ? 3 : 2, "only the scheduled sampler dispatches");
+      assert.equal(r.value.epoch, margin ? 3 : 2);
+      if (margin) assert.equal(r.value.decision.withinFreshMargin, true);
       assert(BigInt(r.value.decisionNs) >= r.sched + (late + helper) * MS);
       assert(BigInt(r.value.decisionNs) < BigInt(r.value.deadlineNs));
-      assert.equal(r.value.decision.outcome, phi < late + helper ? "settled" : "fresh");
+      assert.equal(r.value.decision.outcome, phi < late + helper || margin ? "settled" : "fresh");
       if (r.value.decision.outcome === "settled") waited++;
       const old = await phase({ late, helper, phi, legacy: true });
       if (!old.ok) legacyRefusals++;
     }
-    assert.equal(waited, Number(late + helper));
-    assert.equal(legacyRefusals, waited, "legacy refuses exactly the phases that now settle");
+    assert.equal(waited, Number(late + helper) + DECISION_SETTLE.freshMarginMs);
+    assert.equal(
+      legacyRefusals,
+      Number(late + helper),
+      "legacy refuses exactly the pending/stale phases",
+    );
   },
 );
 
@@ -403,4 +418,103 @@ test("refuses a settled sample that is already stale, a dead server, and the cal
     assert.match(String(d.error), /deadline-before-settle/);
     vi.useRealTimers();
   }
+});
+
+// Review-1 finding 1: the write site runs synchronous work between the decision and
+// its T0 current(). A decision must leave at least that much coverage.
+const LOADED_PRE_T0_MAX_NS = ms(5.5); // measured: 24 busy loops on 12 cores, max 5.5 ms
+async function freshWorld() {
+  const w = world();
+  await w.settle();
+  await w.monitor.ready();
+  return { w, deadline: ORIGIN + 1000n * MS };
+}
+
+test("write-site probe: a decision with too little coverage left takes the tick path, so T0 never goes stale", async () => {
+  assert.equal(DECISION_SETTLE.freshMarginMs, 25);
+  const { w, deadline } = await freshWorld();
+  await w.advance(deadline - 1n * MS - w.now());
+  w.block(1n * MS - ms(0.1));
+  const d = tracked(w.monitor.awaitDecision({ site: "write" }));
+  await w.flush();
+  assert.equal(d.done, false, "0.1 ms left must not count as fresh");
+  w.block(ms(0.1));
+  await vi.advanceTimersByTimeAsync(1);
+  w.block(30n * MS);
+  await w.settle();
+  await d.promise;
+  assert.equal(d.error, null, String(d.error));
+  assert.equal(d.value.outcome, "settled");
+  assert.equal(d.value.withinFreshMargin, true);
+  w.block(LOADED_PRE_T0_MAX_NS);
+  const t0 = w.monitor.current();
+  assert.equal(t0.epoch, 2);
+  assert.equal(w.aborts.length, 0);
+  await w.monitor.stop();
+});
+
+test("near-deadline write sweep: with the loaded worst-case pre-T0 work, no T0 refuses", async () => {
+  let viaTick = 0;
+  for (let left = 0n; left <= 40n * MS; left += ms(0.5)) {
+    const { w, deadline } = await freshWorld();
+    await w.advance(deadline - 50n * MS - w.now());
+    w.block(50n * MS - left);
+    const d = tracked(w.monitor.awaitDecision({ site: "write" }));
+    await w.flush();
+    if (!d.done) {
+      viaTick++;
+      w.block(deadline - w.now());
+      await vi.advanceTimersByTimeAsync(100);
+      w.block(30n * MS);
+      await w.settle();
+    }
+    await d.promise;
+    assert.equal(d.error, null, `left ${left}: ${d.error}`);
+    w.block(LOADED_PRE_T0_MAX_NS);
+    assert.doesNotThrow(() => w.monitor.current(), `left ${left} ns`);
+    assert.equal(w.aborts.length, 0);
+    await w.monitor.stop();
+    vi.useRealTimers();
+  }
+  assert.equal(viaTick, 51, "every left <= 25 ms takes the tick path");
+});
+
+test("an abort ends a settle wait at once, and a failure wakes a tick wait at once", async () => {
+  {
+    const { w } = await pendingWorld();
+    const ac = new AbortController();
+    const d = tracked(w.monitor.awaitDecision({ site: "write", signal: ac.signal }));
+    await w.flush();
+    ac.abort(Error("session stop"));
+    await w.flush();
+    assert.equal(d.done, true, "abort must not wait for the 950 ms bound");
+    assert.match(String(d.error), /session stop/);
+    vi.useRealTimers();
+  }
+  {
+    const { w, deadline } = await freshWorld();
+    await w.advance(deadline - 1n * MS - w.now());
+    w.block(2n * MS);
+    const d = tracked(w.monitor.awaitDecision({ site: "precheck" }));
+    await w.flush();
+    assert.equal(d.done, false);
+    assert.throws(() => w.monitor.current(), /stale/);
+    await w.flush();
+    assert.equal(d.done, true, "the failure must wake the tick wait, not the 400 ms bound");
+    assert.match(String(d.error), /stale/);
+    vi.useRealTimers();
+  }
+});
+
+test("a sample that settles inside the fresh margin of its own deadline refuses", async () => {
+  const w = world();
+  await w.settle();
+  await w.monitor.ready();
+  await dispatchLate(w, ORIGIN + 1000n * MS, 900n * MS);
+  const d = tracked(w.monitor.decide({ site: "write" }));
+  await w.flush();
+  w.block(90n * MS);
+  await w.settle();
+  await d.promise;
+  assert.match(String(d.error), /stale-after-settle/);
 });
