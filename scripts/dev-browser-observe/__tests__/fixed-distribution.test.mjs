@@ -14,7 +14,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import * as safetyModule from "../lib/fixed-rss-safety.mjs";
+import * as custodyModule from "../lib/fixed-rss-custody.mjs";
+import * as familyModule from "../lib/fixed-family-admission.mjs";
+import * as lockModule from "../lib/lock.mjs";
 import { aggregate } from "../lib/aggregate.mjs";
 import {
   appTreeHash,
@@ -1732,3 +1737,180 @@ describe("review fixes (fixed distributions)", () => {
     ).toMatch(/productSha: expected null/);
   });
 });
+
+it.each([true, false])(
+  "normal ZFB family controller reaches blank setup before full custody (release %s)",
+  async (released) => {
+    const { s, installs } = shared();
+    const label = released ? "family-released" : "family-refused";
+    const { path, profile } = fixedProfile(s, "zfb", installs.zfb.out, {}, label + ".json");
+    profile.fixedRssSafety = "linux-fixed-zfb.v4";
+    profile.fixedFamilyAdmission = "blank-before-custody.v1";
+    profile.scenarios = [
+      {
+        id: "fn-rapid-add-delete",
+        set: "workload",
+        warmOrder: "none",
+        ops: [
+          {
+            id: "rapid-add-delete",
+            op: "rapid-sequence",
+            variant: "add-then-delete",
+            writeMethod: "create",
+            spacingMs: 100,
+          },
+        ],
+      },
+    ];
+    profile.server.readyTimeoutMs = 300000;
+    profile.limits.wallCeilingMs = 7200000;
+    Object.assign(profile.timeouts, { attemptMs: 60000, supplementalMs: 60000, restoreMs: 120000 });
+    writeFileSync(path, JSON.stringify(profile));
+    const birth = (pid, ppid, pgid) => ({
+      pid,
+      ppid,
+      pgid,
+      state: "S",
+      startTicks: String(pid),
+      bootId: "boot",
+      birthVersion: "linux-proc-v1",
+      comm: "node",
+    });
+    const root = birth(100, 99, 100),
+      dev = birth(101, 100, 100),
+      worker = birth(102, 101, 102);
+    const known = new Map([root, dev, worker].map((b) => [b.pid, b])),
+      events = [];
+    const proof = { root, dev, worker, sample: { live: [root, dev] } };
+    const native = join(installs.zfb.out, "apps/zfb/node_modules/@takazudo/zfb-linux-x64-gnu/zfb");
+    const live = [
+      { ...root, args: "node /node_modules/@takazudo/zfb/bin/zfb.mjs dev" },
+      { ...dev, args: native + " dev" },
+    ];
+    const page = fakePage(),
+      handle = { native: root, launcher: "none", exit: null, known };
+    const start = Number(process.hrtime.bigint() / 1000000n);
+    vi.spyOn(lockModule, "acquireLock").mockResolvedValue({
+      release: async () => events.push("lock-closed"),
+    });
+    vi.spyOn(custodyModule, "startFixedCustody").mockReturnValue({
+      ready: Promise.resolve(),
+      attachStartup() {},
+      stop: async () => events.push("holder-closed"),
+    });
+    vi.spyOn(familyModule, "verifyFamilyImages").mockImplementation(() => {});
+    vi.spyOn(safetyModule, "startFixedRssSafety").mockReturnValue({
+      async verifyFamilyBrowserReady() {
+        events.push("rss-ready");
+      },
+      verifyFamilyAdmission() {
+        events.push("check");
+        if (!released) throw Error("release unavailable");
+        return proof;
+      },
+      async stop() {
+        events.push("sampler-closed");
+        return null;
+      },
+      report() {
+        return {};
+      },
+    });
+    const stderr = [];
+    try {
+      const code = await execute({
+        profilePath: path,
+        label,
+        command: "run",
+        supervisorId: "controlled",
+        supervisorStartedMs: start,
+        workDeadline: start + 7140000,
+        supervisorDeadlineMs: start + 7200000,
+        stderr: (s) => stderr.push(s),
+        hooks: {
+          freePort: async () => 4555,
+          startDevServer: () => ({
+            handle,
+            zfbEnv: {},
+            envOverrides: {},
+            removedDiagnosticEnv: [],
+            args: [],
+            startedNs: process.hrtime.bigint(),
+            ready: Promise.resolve({
+              baseUrl: "http://127.0.0.1:4555",
+              readyNs: process.hrtime.bigint(),
+            }),
+            closeLog: async () => ({ pipes: "closed" }),
+            isAlive: () => ({ alive: true }),
+            pid: () => 100,
+            waitExit: () => new Promise(() => {}),
+            sampleResources: () => ({ summedRssKiB: 1 }),
+            sampleResourcesAsync: async () => ({ summedRssKiB: 1 }),
+          }),
+          snapshotOwned: () => live,
+          processExecutable: (pid) => ({
+            path: pid === 100 ? process.execPath : pid === 101 ? native : null,
+            method: "controlled",
+          }),
+          processAlive: (pid) => pid !== 102,
+          launchOwnedBrowser: async (_cfg, { onBlankContext }) => {
+            events.push("blank");
+            const c = new EventEmitter();
+            let pages = [];
+            c.pages = () => pages;
+            onBlankContext(c);
+            pages = [{ url: () => "about:blank" }];
+            return { observer: page, identity: { engine: "fake" } };
+          },
+          closeOwnedBrowser: async () => {
+            events.push("browser-closed");
+            return [];
+          },
+          stopOwned: async () => {
+            events.push("server-closed");
+            return { absent: true };
+          },
+        },
+      });
+      const dir = join(s.root, "out", label);
+      const records = readFileSync(join(dir, "records.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map(JSON.parse);
+      expect(
+        events.slice(0, 3),
+        JSON.stringify({ stderr, events, errors: records.filter((r) => r.error) }),
+      ).toEqual(["rss-ready", "blank", "check"]);
+      expect(events).toEqual(
+        expect.arrayContaining([
+          "server-closed",
+          "sampler-closed",
+          "browser-closed",
+          "holder-closed",
+          "lock-closed",
+        ]),
+      );
+      if (released) {
+        expect(code, JSON.stringify({ stderr, errors: records.filter((r) => r.error) })).toBe(
+          EXIT.ok,
+        );
+        expect(records.find((r) => r.type === "attempt")).toMatchObject({
+          mode: "final-state",
+          writePerformed: true,
+        });
+      } else {
+        expect(code).not.toBe(EXIT.ok);
+        expect(page.prepared).toEqual([]);
+        expect(records.some((r) => r.type === "cleanup" || r.type === "attempt")).toBe(false);
+        expect(records.find((r) => r.type === "original-family-admission")).toMatchObject({
+          admitted: false,
+          httpRequests: 0,
+          workloadWriteCalls: 0,
+          snapshots: 0,
+        });
+      }
+    } finally {
+      vi.restoreAllMocks();
+    }
+  },
+);

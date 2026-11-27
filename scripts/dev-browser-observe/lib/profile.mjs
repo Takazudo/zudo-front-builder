@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
@@ -113,8 +114,70 @@ function fixedAstroErrors(p) {
 }
 
 /** fixed-distribution rules: the framework's declared helper, no zfb-only diagnostic/recovery families. */
+const originalFamilyOps = {
+  "fn-burst": {
+    id: "burst-03",
+    op: "burst",
+    article: "article-00003",
+    writeMethod: "in-place",
+    count: 5,
+    spacingMs: 50,
+    expect: "classify",
+  },
+  "fn-rapid-title-category": {
+    id: "rapid-04",
+    op: "rapid-sequence",
+    variant: "title-then-category",
+    article: "article-00004",
+    writeMethod: "in-place",
+    spacingMs: 100,
+    expect: "classify",
+  },
+  "fn-rapid-add-delete": {
+    id: "rapid-add-delete",
+    op: "rapid-sequence",
+    variant: "add-then-delete",
+    writeMethod: "create",
+    spacingMs: 100,
+  },
+};
+function originalFamilyAdmission(p) {
+  const id = p.scenarios?.[0]?.id;
+  return (
+    Object.hasOwn(originalFamilyOps, id) &&
+    isDeepStrictEqual(p.scenarios, [
+      { id, set: "workload", warmOrder: "none", ops: [originalFamilyOps[id]] },
+    ]) &&
+    p.fixedRssSafety === "linux-fixed-zfb.v4" &&
+    p.framework === "zfb" &&
+    p.distribution?.launch === "direct" &&
+    p.fixture?.scale === 100 &&
+    p.fixture.adapter === "original-memoized" &&
+    p.fixture.placement === "external" &&
+    p.fixture.importedCss === true &&
+    p.browser?.headless === true &&
+    p.server?.host === "127.0.0.1" &&
+    p.server?.port?.mode === "ephemeral" &&
+    p.server.readyTimeoutMs === 300000 &&
+    p.limits?.wallCeilingMs === 7200000 &&
+    p.limits.rssCeilingKiB === 4194304 &&
+    p.limits.sampleEveryMs === 1000 &&
+    p.timeouts?.attemptMs === 60000 &&
+    p.timeouts?.supplementalMs === 60000 &&
+    p.timeouts?.restoreMs === 120000 &&
+    p.timeouts?.quietMs === 3000 &&
+    p.timeouts?.stopTermMs === 5000 &&
+    p.timeouts?.stopKillMs === 3000 &&
+    p.restoration?.writeMethod === "in-place" &&
+    !p.resourceStudy
+  );
+}
 function fixedErrors(profile) {
   const errors = [];
+  if (profile.fixedFamilyAdmission && !originalFamilyAdmission(profile))
+    errors.push(
+      "$.fixedFamilyAdmission requires one exact original 100-article ZFB v4 burst or rapid family",
+    );
   if (isFixedAstroProtocol(profile.fixedRssSafety)) errors.push(...fixedAstroErrors(profile));
   else if (profile.fixedPeerBrowser)
     errors.push("$.fixedPeerBrowser requires a fixed Astro observation protocol");

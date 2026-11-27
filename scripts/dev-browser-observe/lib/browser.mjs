@@ -146,6 +146,7 @@ export async function launchOwnedBrowser(
   {
     chromiumImpl = null,
     observerFactory = null,
+    onBlankContext,
     readExecutable = readFile,
     onReadState,
     signal,
@@ -219,6 +220,7 @@ export async function launchOwnedBrowser(
         serviceWorkers: "block",
       }),
     );
+    onBlankContext?.(context);
     const executableSha256 = await executableDigest(executablePath, "library-default", readOptions);
     signal?.throwIfAborted();
     const identity = {

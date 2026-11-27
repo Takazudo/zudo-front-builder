@@ -533,6 +533,9 @@ export async function runBatch({ scenarios, deps }) {
         );
       append({
         type: "scenario-start",
+        ...(deps.familyAdmissionDecisionNs && {
+          familyAdmissionDecisionNs: deps.familyAdmissionDecisionNs,
+        }),
         scenario: scenario.id,
         ops: scenario.ops.map((o) => o.id ?? o.op),
         warmOrder: scenario.warmOrder ?? "none",
