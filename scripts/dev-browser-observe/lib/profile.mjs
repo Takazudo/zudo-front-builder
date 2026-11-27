@@ -237,7 +237,7 @@ function fieldNotesErrors(profile) {
         errors.push(
           `${at(s, i)}: edit-managed-css needs fixture.${profile.mode === "fixed-distribution" ? "importedCss" : "managedCss"}: true`,
         );
-      if (op.op === "edit-public-css" && (op.expect ?? "success") !== "success")
+      if (op.op === "edit-public-css" && op.expect !== "classify")
         errors.push(
           `${at(s, i)}: edit-public-css must declare expect: "classify" (public CSS may have no auto-update contract)`,
         );
