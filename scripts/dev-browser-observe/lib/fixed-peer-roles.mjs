@@ -6,8 +6,13 @@ import { linuxBirth, sameLinuxBirth } from "./linux-birth.mjs";
 export const FIXED_ASTRO_FOOTER_PROTOCOL = "linux-fixed-astro-footer.v1";
 
 export const FIXED_ASTRO_TITLE_PROTOCOL = "linux-fixed-astro-title.v1";
+export const FIXED_ASTRO_CATEGORY_PROTOCOL = "linux-fixed-astro-category.v1";
 export function isFixedAstroProtocol(protocol) {
-  return protocol === FIXED_ASTRO_FOOTER_PROTOCOL || protocol === FIXED_ASTRO_TITLE_PROTOCOL;
+  return (
+    protocol === FIXED_ASTRO_FOOTER_PROTOCOL ||
+    protocol === FIXED_ASTRO_TITLE_PROTOCOL ||
+    protocol === FIXED_ASTRO_CATEGORY_PROTOCOL
+  );
 }
 
 // Each live member runs the same pinned Node image. Its actual argv, stable

@@ -48,6 +48,7 @@ import {
 import {
   FIXED_ASTRO_FOOTER_PROTOCOL,
   FIXED_ASTRO_TITLE_PROTOCOL,
+  FIXED_ASTRO_CATEGORY_PROTOCOL,
   isFixedAstroProtocol,
   verifyAstroPopulation,
 } from "./fixed-peer-roles.mjs";
@@ -1070,6 +1071,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           page: observer,
           fs: fixtureOps,
           fixedAstroFooter: profile.fixedRssSafety === FIXED_ASTRO_FOOTER_PROTOCOL,
+          fixedAstroCategory: profile.fixedRssSafety === FIXED_ASTRO_CATEGORY_PROTOCOL,
           fixedAstroTitle: profile.fixedRssSafety === FIXED_ASTRO_TITLE_PROTOCOL,
           beforeAstroWrite: verifyAstroCurrent,
           verifyBodyRevision:
