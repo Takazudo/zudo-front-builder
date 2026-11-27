@@ -278,7 +278,7 @@ function validateWatchDirectories(value) {
             `${prefix} entry \`${key}\` must contain non-empty strings (got ${JSON.stringify(pattern)})`,
           );
         }
-        if (pattern.startsWith("/") || isAbsolute(pattern)) {
+        if (pattern.startsWith("/")) {
           throw new Error(
             `${prefix} glob ${JSON.stringify(pattern)} is absolute; patterns are relative to the root`,
           );

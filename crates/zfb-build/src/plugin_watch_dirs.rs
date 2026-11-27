@@ -412,7 +412,7 @@ impl PluginWatchDirectories {
     /// Walk `dir`'s subtree only when `dir` is new or was replaced since it
     /// was last walked.
     fn relearn_if_changed(&self, index: usize, rel: String, dir: &Path) {
-        let identity = dir_identity_of(&std::fs::symlink_metadata(dir).ok());
+        let identity = dir_identity_of(&std::fs::metadata(dir).ok());
         if self.remember(index, rel, identity) {
             self.learn_subtree(index, dir);
         }
@@ -455,12 +455,15 @@ impl PluginWatchDirectories {
 
 /// What a directory is beyond its path: `(dev, inode)` on unix plus the
 /// birth time where the filesystem records one (a recreated directory can
-/// get its inode number back).
+/// get its inode number back), and its mtime, which moves when a child is
+/// added, removed or renamed (a directory moved away and back keeps its
+/// inode and birth time but not the children it had when it was walked).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DirIdentity {
     #[cfg(unix)]
     inode: (u64, u64),
     created: Option<SystemTime>,
+    modified: Option<SystemTime>,
 }
 
 fn dir_identity_of(metadata: &Option<std::fs::Metadata>) -> Option<DirIdentity> {
@@ -472,6 +475,7 @@ fn dir_identity_of(metadata: &Option<std::fs::Metadata>) -> Option<DirIdentity> 
             (metadata.dev(), metadata.ino())
         },
         created: metadata.created().ok(),
+        modified: metadata.modified().ok(),
     })
 }
 
@@ -701,6 +705,29 @@ mod tests {
         assert!(m.is_match(&root));
         std::fs::remove_dir_all(root.join("again")).unwrap();
         assert!(m.is_match(&root.join("again")));
+    }
+
+    #[test]
+    fn directory_moved_away_and_back_learns_children_added_meanwhile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("posts");
+        write(&root.join("a/x.md"));
+        let m = matcher(vec![(
+            "virtual:posts",
+            vec![directory(&root, Some(&["**/*.md"]), &[])],
+        )]);
+        std::fs::rename(root.join("a"), root.join("b")).unwrap();
+        assert!(m.is_match(&root.join("b")));
+        write(&root.join("b/sub/y.md"));
+        assert!(m.is_match(&root.join("b/sub")));
+        // Same inode and birth time as the boot-learned `a`, new children.
+        std::fs::rename(root.join("b"), root.join("a")).unwrap();
+        assert!(m.is_match(&root.join("a")));
+        std::fs::remove_dir_all(root.join("a/sub")).unwrap();
+        assert!(
+            m.is_match(&root.join("a/sub")),
+            "the child added while the directory was away is known under its old name"
+        );
     }
 
     #[test]
