@@ -265,7 +265,10 @@ const fieldNotes = {
   }),
   ops: (m, profile) => ({
     ...injectionFsHelpers,
-    ...fieldNotesOps(m, { restorationWriteMethod: profile.restoration.writeMethod }),
+    ...fieldNotesOps(m, {
+      restorationWriteMethod: profile.restoration.writeMethod,
+      strictAstroFooter: profile.fixedRssSafety === "linux-fixed-astro-footer.v1",
+    }),
     pageFor: (url) => fnPageFor(m, url),
   }),
   calibrationPage: () => "/archive/1/",
