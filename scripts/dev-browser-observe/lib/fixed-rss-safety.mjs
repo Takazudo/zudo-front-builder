@@ -17,6 +17,10 @@ import { interruptible } from "./session-deadline.mjs";
 // ordinary sample in flight waits for it to settle, bounded by its 750 ms core
 // plus the 200 ms closure, and then decides on that fresh sample.
 const ORDINARY_SETTLE_BOUND_NS = 950_000_000n;
+// A decision after the cadence cutoff with nothing in flight joins the imminent
+// ordinary dispatch. The #4862 slot-01 receipt recorded a tick 231.6 ms late
+// (sample gap 1231.6 ms); 300 ms covers it with margin, and a later tick refuses.
+const DISPATCH_SKEW_ALLOWANCE_NS = 300_000_000n;
 
 function pin(path, digest) {
   const real = realpathSync(path);
@@ -115,6 +119,11 @@ export function startFixedRssSafety({
     decisionAbort;
   const intervalNs = BigInt(limits.sampleEveryMs) * 1000000n;
   let nextDispatchNs = process.hrtime.bigint() + intervalNs;
+  const dispatchWaiters = new Set();
+  const wakeDispatchWaiters = () => {
+    for (const wake of dispatchWaiters) wake();
+    dispatchWaiters.clear();
+  };
   let failure = null;
   let secondaryHelperFailure = null;
   let nativeBirth = null;
@@ -154,6 +163,7 @@ export function startFixedRssSafety({
     }
     failure = issue;
     readyCheck?.resolve();
+    wakeDispatchWaiters();
     abort(new Error(failure.error));
     try {
       append({ type: "fixed-rss-failure", failure });
@@ -337,6 +347,7 @@ export function startFixedRssSafety({
         pending = null;
         pendingOuterCycle = null;
       });
+    wakeDispatchWaiters();
     return pending;
   };
   take();
@@ -459,43 +470,76 @@ export function startFixedRssSafety({
     // never accepts the older cycle and leaves every refusal to verifyOuterGraph.
     async settleOrdinaryBeforeDecision({ deadlineNs, signal }) {
       const enteredNs = process.hrtime.bigint();
-      const cycle = pendingOuterCycle;
       const record = {
         pendingAtDecision: Boolean(pending),
         enteredNs: String(enteredNs),
         waitedNs: "0",
-        pendingEpoch: cycle?.epoch ?? null,
+        pendingEpoch: pendingOuterCycle?.epoch ?? null,
         settledEpoch: null,
         boundNs: null,
         outcome: pending ? "waiting" : "not-pending",
       };
-      if (!pending || failure || stopped || !cycle) return record;
-      const core = BigInt(cycle.startedNs) + ORDINARY_SETTLE_BOUND_NS;
-      const boundNs = core < deadlineNs ? core : deadlineNs;
-      record.boundNs = String(boundNs);
+      const capped = (ns) => (ns < deadlineNs ? ns : deadlineNs);
       let timer;
-      try {
-        if (enteredNs >= boundNs) record.outcome = "bound-expired";
-        else {
-          const expired = new Promise((resolve) => {
-            timer = setTimeout(
-              () => resolve("bound-expired"),
-              Math.ceil(Number(boundNs - enteredNs) / 1e6),
-            );
-          });
-          record.outcome = await interruptible(
-            Promise.race([pending.then(() => "settled"), expired]),
-            signal,
+      const until = (boundNs, work) => {
+        const now = process.hrtime.bigint();
+        if (now >= boundNs) return Promise.resolve("bound-expired");
+        const expired = new Promise((resolve) => {
+          timer = setTimeout(
+            () => resolve("bound-expired"),
+            Math.ceil(Number(boundNs - now) / 1e6),
           );
+        });
+        return interruptible(Promise.race([work, expired]), signal).finally(() =>
+          clearTimeout(timer),
+        );
+      };
+      try {
+        if (failure || stopped || decision) return record;
+        let joined = false;
+        if (
+          !pending &&
+          acceptedOuterCycle &&
+          postCycles === 2 &&
+          enteredNs >= BigInt(acceptedOuterCycle.cadenceDeadlineNs)
+        ) {
+          // Nothing in flight after the cutoff: wait for the ordinary timer's own
+          // next dispatch. This never dispatches a sample.
+          const dispatchBoundNs = capped(nextDispatchNs + DISPATCH_SKEW_ALLOWANCE_NS);
+          record.scheduledDispatchNs = String(nextDispatchNs);
+          record.dispatchBoundNs = String(dispatchBoundNs);
+          record.outcome = "waiting-next-dispatch";
+          const dispatched = await until(
+            dispatchBoundNs,
+            new Promise((resolve) => {
+              dispatchWaiters.add(() => resolve("dispatched"));
+            }),
+          );
+          if (dispatched !== "dispatched" || !pending || failure || stopped) {
+            record.outcome = dispatched === "dispatched" ? "dispatch-unavailable" : "dispatch-late";
+            return record;
+          }
+          record.pendingEpoch = pendingOuterCycle?.epoch ?? null;
+          joined = true;
         }
+        const cycle = pendingOuterCycle;
+        if (!pending || !cycle) return record;
+        const boundNs = capped(BigInt(cycle.startedNs) + ORDINARY_SETTLE_BOUND_NS);
+        record.boundNs = String(boundNs);
+        record.outcome = "waiting";
+        const settled = await until(
+          boundNs,
+          pending.then(() => "settled"),
+        );
+        record.outcome = settled === "settled" && joined ? "joined-next-dispatch" : settled;
+        return record;
       } finally {
         clearTimeout(timer);
-        const observed = process.hrtime.bigint();
-        record.waitedNs = String(observed - enteredNs);
-        if (record.outcome === "waiting") record.outcome = "aborted";
+        record.waitedNs = String(process.hrtime.bigint() - enteredNs);
+        if (record.outcome === "waiting" || record.outcome === "waiting-next-dispatch")
+          record.outcome = "aborted";
         record.settledEpoch = acceptedOuterCycle?.epoch ?? null;
       }
-      return record;
     },
     async verifyPrewriteTerminal({ getOwned, workDeadlineNs, signal }) {
       const custody = nextOwner();
@@ -582,6 +626,7 @@ export function startFixedRssSafety({
     },
     async stop() {
       stopped = true;
+      wakeDispatchWaiters();
       readyCheck?.resolve();
       clearInterval(timer);
       clearTimeout(expiry);

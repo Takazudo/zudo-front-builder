@@ -66,6 +66,17 @@ function harness() {
     else queueMicrotask(settle);
     return done.promise;
   });
+  const lateTicks = new Map();
+  let ticks = 0;
+  const realSetInterval = globalThis.setInterval;
+  // Model a late ordinary tick: the timer fires on time but the dispatch runs later.
+  vi.spyOn(globalThis, "setInterval").mockImplementation((cb, ms) =>
+    realSetInterval(() => {
+      const late = lateTicks.get(++ticks);
+      if (late) setTimeout(cb, late);
+      else cb();
+    }, ms),
+  );
   const monitor = startFixedRssSafety({
     server: { handle: { known } },
     fixedExecutables: { protocol: "linux-fixed-peer.v4", root: { path: "/node" } },
@@ -83,6 +94,10 @@ function harness() {
     monitor,
     sample,
     plans,
+    lateTicks,
+    get ticks() {
+      return ticks;
+    },
     ancestors,
     async done() {
       for (const d of hanging) d.reject(Error("test cleanup"));
@@ -218,22 +233,59 @@ test.each([0, 1, 30, 66, 96, 97, 150, 500, 900, 994, 995, 999])(
       await vi.advanceTimersByTimeAsync(1000);
       if (phaseMs) await vi.advanceTimersByTimeAsync(phaseMs);
       const { value, error } = await settled(decide(h, gate), 1);
-      if (phaseMs >= 995) {
-        assert.equal(error?.outerRefusal?.coverage, "cadence-due", String(error));
-        assert.equal(error.outerRefusal.preDecisionSettle.outcome, "not-pending");
-        return;
-      }
       assert.equal(error, undefined, String(error));
       const s = value.preDecisionSettle;
+      // After the cadence cutoff (dispatch + 995 ms) nothing is in flight; the
+      // decision joins the ordinary timer's next dispatch and settles it.
+      const joined = phaseMs >= 995;
       assert.equal(s.pendingAtDecision, phaseMs < R3_HELPER_MS);
-      assert.equal(s.outcome, phaseMs < R3_HELPER_MS ? "settled" : "not-pending");
-      if (phaseMs >= R3_HELPER_MS) assert.equal(s.waitedNs, "0");
+      assert.equal(
+        s.outcome,
+        joined ? "joined-next-dispatch" : phaseMs < R3_HELPER_MS ? "settled" : "not-pending",
+      );
+      if (!joined && phaseMs >= R3_HELPER_MS) assert.equal(s.waitedNs, "0");
+      if (joined) {
+        assert.equal(BigInt(s.waitedNs), BigInt(1000 - phaseMs + R3_HELPER_MS) * MS);
+        assert.equal(s.settledEpoch, s.pendingEpoch);
+        assert.equal(value.outerCadence.epoch, s.pendingEpoch);
+        assert.equal(BigInt(s.dispatchBoundNs), BigInt(s.scheduledDispatchNs) + 300n * MS);
+      }
       assert(BigInt(value.outerDecision.decisionNs) < BigInt(value.outerCadence.cadenceDeadlineNs));
     } finally {
       await h.done();
     }
   },
 );
+
+test.each([
+  [250, "joined"],
+  [299, "joined"],
+  [350, "refused"],
+])("a decision after the cutoff with the next tick %i ms late is %s", async (lateMs, verdict) => {
+  const h = harness();
+  try {
+    await ready(h);
+    const base = h.sample.mock.calls.length;
+    for (let n = base + 1; n <= base + 3; n++) h.plans.set(n, { ms: R3_HELPER_MS });
+    const gate = receivedGate();
+    await vi.advanceTimersByTimeAsync(1000 + 997);
+    h.lateTicks.set(h.ticks + 1, lateMs);
+    const { value, error } = await settled(decide(h, gate), 1);
+    if (verdict === "joined") {
+      assert.equal(error, undefined, String(error));
+      assert.equal(value.preDecisionSettle.outcome, "joined-next-dispatch");
+      assert.equal(h.sample.mock.calls.length, base + 2, "only the ordinary timer dispatched");
+    } else {
+      assert.equal(error?.outerRefusal?.coverage, "cadence-due", String(error));
+      const s = error.outerRefusal.preDecisionSettle;
+      assert.equal(s.outcome, "dispatch-late");
+      assert.equal(BigInt(s.waitedNs), BigInt(s.dispatchBoundNs) - BigInt(s.enteredNs));
+      assert.equal(h.sample.mock.calls.length, base + 1, "no sample was dispatched to rescue it");
+    }
+  } finally {
+    await h.done();
+  }
+});
 
 test.each([
   "receipt-expires-during-wait",
