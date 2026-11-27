@@ -457,12 +457,21 @@ describe("round 5: dev-server stream handling on real processes", () => {
 
   it("#1/#10 late output after stop never crashes, the log closes, and kept lines are capped", async () => {
     const dir = tmp();
-    const exe = shellServer(
-      dir,
-      `trap '' INT; printf '→ ready on http://127.0.0.1:9\\n'; seq 1 ${SERVER_LINES_KEPT + 500}; while true; do echo tick; sleep 0.01; done`,
-    );
+    // Keep producing after SIGINT without spawning descendants. Process-tree
+    // churn is covered by the ownership tests, independently of log retention.
     const server = startDevServer({
-      exe,
+      command: NODE,
+      args: [
+        "-e",
+        `
+        let interrupted = false;
+        process.on("SIGINT", () => { interrupted = true; });
+        console.log("→ ready on http://127.0.0.1:9");
+        const lines = Array.from({length: ${SERVER_LINES_KEPT + 500}}, (_, i) => String(i + 1));
+        process.stdout.write(lines.join("\\n") + "\\n");
+        setInterval(() => console.log(interrupted ? "tick after SIGINT" : "tick"), 10);
+      `,
+      ],
       appDir: dir,
       port: { mode: "ephemeral" },
       readyTimeoutMs: 5000,
@@ -479,13 +488,19 @@ describe("round 5: dev-server stream handling on real processes", () => {
       killWaitMs: 1000,
     });
     expect(report.absent).toBe(true);
+    expect(report.ownedBefore.map((birth) => birth.pid)).toEqual([server.handle.native.pid]);
+    expect(report.exit).toMatchObject({ exitCode: null, signalCode: "SIGTERM" });
     const closed = await server.closeLog(2000);
     expect(closed.errors).toEqual([]);
     server.log.write("late line after close\n");
     expect(server.log.droppedAfterEnd).toBeGreaterThanOrEqual(1);
     const since = server.logSince(mark0, 0n);
+    expect(since.lineCount).toBe(SERVER_LINES_KEPT);
     expect(since.droppedBeforeMark).toBeGreaterThan(0);
-    expect(readFileSync(join(dir, "server.log"), "utf8")).toContain("ready on http://127.0.0.1:9");
+    const disk = readFileSync(join(dir, "server.log"), "utf8");
+    expect(disk).toContain("ready on http://127.0.0.1:9");
+    expect(disk).toContain(`[stdout] ${SERVER_LINES_KEPT + 500}\n`);
+    expect(disk).toContain("[stdout] tick after SIGINT\n");
   });
 });
 
