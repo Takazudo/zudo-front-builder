@@ -475,11 +475,12 @@ export class ObserverPage {
       this.page.on("websocket", (ws) => {
         const url = ws.url();
         if (!isLivereloadSocket(url) && !declaredSocketFor(url, this.updateSockets)) return;
-        if (
-          this.peerSocketTracking &&
-          declaredSocketFor(url, this.updateSockets) &&
-          new URL(url).host === new URL(this.baseUrl).host
-        ) {
+        if (this.peerSocketTracking) {
+          if (
+            !declaredSocketFor(url, this.updateSockets) ||
+            new URL(url).host !== new URL(this.baseUrl).host
+          )
+            return;
           const row = { url, openedNs: String(this.clock()), firstFrameNs: null };
           this.peerSocketTracking.set(ws, row);
           ws.on("framereceived", () => {

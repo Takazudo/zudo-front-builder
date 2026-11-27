@@ -26,6 +26,12 @@ function boundedText(path, cap) {
   }
 }
 
+export function peerArgv(raw, nextServer) {
+  assert(raw.endsWith("\0"), "unterminated peer argv");
+  if (nextServer && /^next-server \(v16\.4\.6\)\x00+$/.test(raw)) return ["next-server (v16.4.6)"];
+  return raw.slice(0, -1).split("\0");
+}
+
 export function identifyPeerRoles(rows, { framework, rootPid, appDir, node, port }, ready) {
   const root = rows.find((r) => r.pid === rootPid);
   assert(root, "root missing");
@@ -120,7 +126,11 @@ function ownsListener(pid, port) {
   throw Error("expected serving role does not own printed port");
 }
 export function samplePeerRoles(sample, cfg, ready) {
-  const sameBirth = (a, b) => sameLinuxBirth(a, b) && a.ppid === b.ppid && a.pgid === b.pgid;
+  const sameBirth = (a, b) =>
+    sameLinuxBirth(a, b) &&
+    !["Z", "X", "x"].includes(b.state) &&
+    a.ppid === b.ppid &&
+    a.pgid === b.pgid;
   const live = sample.processes;
   const rows = live.map((p) => {
     assert.equal(p.disposition, "live", "departed or unresolved role before closure");
@@ -128,8 +138,10 @@ export function samplePeerRoles(sample, cfg, ready) {
     const before = linuxBirth(p.pid);
     assert(sameBirth(p, before));
     const base = "/proc/" + p.pid + "/",
-      argv = boundedText(base + "cmdline", 65536).split("\0");
-    while (argv.at(-1) === "") argv.pop();
+      argv = peerArgv(
+        boundedText(base + "cmdline", 65536),
+        cfg.framework === "next" && p.ppid !== cfg.rootPid && p.pid !== cfg.rootPid,
+      );
     const cwd = readlinkSync(base + "cwd");
     assert.equal(cwd, cfg.appDir);
     const exe = statSync(base + "exe", { bigint: true });
@@ -166,7 +178,10 @@ export function samplePeerRoles(sample, cfg, ready) {
   if (ready) {
     const serving = chain.at(-1);
     socket = ownsListener(serving.pid, cfg.port);
-    assert(sameBirth(serving, linuxBirth(serving.pid)));
+  }
+  for (const row of chain) {
+    row.finalBirth = linuxBirth(row.pid);
+    assert(sameBirth(row, row.finalBirth), "peer role changed during ownership checks");
   }
   return { chain, socket };
 }

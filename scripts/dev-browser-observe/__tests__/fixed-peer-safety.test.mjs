@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import { ObserverPage } from "../lib/browser.mjs";
+import { sha256 } from "../lib/util.mjs";
+import { peerArgv } from "../lib/fixed-peer-roles.mjs";
+import { deps, fakeFs, fakePage } from "./fakes.mjs";
+import { runBatch } from "../lib/state-machine.mjs";
 import { readFileSync } from "node:fs";
 import { profileSchemaFor, semanticErrors } from "../lib/profile.mjs";
 import { validateAs } from "../lib/schema.mjs";
@@ -184,3 +189,132 @@ test("the fixed peer mode admits only one archived 100-article body classificati
     }
   }
 });
+
+test("only the exact designated Next server title can contain NUL padding", () => {
+  assert.deepEqual(peerArgv("node\0cli\0\0", false), ["node", "cli", ""]);
+  assert.deepEqual(peerArgv("next-server (v16.4.6)\0\0", true), ["next-server (v16.4.6)"]);
+  assert.deepEqual(peerArgv("next-server (v16.4.6)\0\0", false), ["next-server (v16.4.6)", ""]);
+  assert.deepEqual(peerArgv("next-server (v16.4.6)\0x\0", true), ["next-server (v16.4.6)", "x"]);
+  assert.throws(() => peerArgv("node", false));
+});
+
+test.each([true, false])(
+  "peer body edit checks socket before writing and proves a distinct restored document (socket %s)",
+  async (connected) => {
+    const fs = fakeFs(),
+      page = fakePage({
+        behaviors: [{ kind: "notify", t1: 2000000000n }],
+        liveCheck: () => ({ ok: true, docUUID: "fresh-detail" }),
+      });
+    page.peerSocketTracking = new Map(connected ? [[1, { firstFrameNs: "10" }]] : []);
+    const oldArm = page.arm;
+    page.arm = async (...args) => ({ ...(await oldArm(...args)), actual: "v0" });
+    const write = fs.performWrite;
+    fs.performWrite = (w, now) => {
+      w.evidence = { inodeBefore: 13, inodeAfter: 13 };
+      return write(w, now);
+    };
+    fs.hashOf = (path) => sha256(fs.files[path]);
+    const oldRestore = fs.restore;
+    fs.restore = (snapshot) => ({
+      ...oldRestore(snapshot),
+      actions: fs.writes.length
+        ? [{ path: "a.md", method: "in-place", evidence: { inodeBefore: 13, inodeAfter: 13 } }]
+        : [],
+    });
+    page.settle = async () => ({
+      settled: true,
+      nativeUpdateObserved: true,
+      bodyRevision: { matched: true, docUUID: "doc-1" },
+    });
+    const d = {
+      ...deps({ fs, page }),
+      verifyBodyRevision: true,
+      fixedPeer: true,
+      stageBudget: (max, start) => {
+        assert.equal(typeof start, "bigint");
+        return max;
+      },
+    };
+    const { accounting } = await runBatch({
+      deps: d,
+      scenarios: [
+        {
+          id: "fn-edit-body",
+          ops: [{ id: "body-05", op: "edit-body", article: "a", expect: "classify" }],
+        },
+      ],
+    });
+    assert.equal(fs.writes.length, connected ? 1 : 0);
+    assert.equal(accounting.success, connected ? 1 : 0);
+    if (connected) assert.equal(accounting.restorationFailures, 0);
+  },
+);
+
+test("the readiness deadline originates at the printed event, including controller delay", async () => {
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "hrtime"],
+  });
+  const sample = Promise.withResolvers(),
+    failures = [];
+  const monitor = startFixedRssSafety({
+    server: {},
+    fixedExecutables: { root: { path: "/node" } },
+    peer: {},
+    sample: () => sample.promise,
+    append: () => {},
+    abort: (e) => failures.push(e),
+    limits: { sampleEveryMs: 1000 },
+  });
+  try {
+    await assert.rejects(
+      monitor.verifyReady(process.hrtime.bigint() - 3000000001n),
+      /window expired/,
+    );
+    assert.equal(failures.length, 1);
+  } finally {
+    sample.reject(new Error("controlled pending helper settlement"));
+    await monitor.stop();
+    vi.useRealTimers();
+  }
+});
+
+test.each(["module", "rsc", "activity"])(
+  "peer restoration retains update evidence for same-document %s",
+  async (event) => {
+    vi.useFakeTimers();
+    try {
+      const clock = () => BigInt(Date.now()) * 1000000n,
+        observer = new ObserverPage(null, "", clock);
+      observer.baseUrl = "http://127.0.0.1:1234";
+      const path = "/articles/a/",
+        url = observer.url(path);
+      observer.docInits.push({ docUUID: "old", url, ns: String(clock()) });
+      const mark = observer.mark();
+      observer.page = {
+        evaluate: async () => ({ docUUID: "old", url, loading: false, matched: true }),
+      };
+      const pending = observer.settle({
+        mark,
+        startNs: clock(),
+        quietMs: 2,
+        boundMs: 12,
+        stepMs: 1,
+        requireNativeUpdate: true,
+        bodyRevision: {
+          allowSameDocument: true,
+          path,
+          predicate: { kind: "text", equals: "original" },
+        },
+      });
+      observer.wsFrames.push({ event, ns: String(clock()) });
+      await vi.advanceTimersByTimeAsync(12);
+      const result = await pending;
+      assert.equal(result.settled, event !== "activity");
+      assert.equal(result.nativeUpdateObserved, event !== "activity");
+      assert.equal(result.bodyRevision.docUUID, "old");
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);

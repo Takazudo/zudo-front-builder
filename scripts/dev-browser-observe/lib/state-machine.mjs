@@ -2,7 +2,7 @@ import { interruptible } from "./session-deadline.mjs";
 import { runSpecialMode } from "./special-modes.mjs";
 import { RENAME_NOOP } from "./fixture.mjs";
 import { attemptProvenance } from "./provenance.mjs";
-import { NO_WRITE_STEPS, noWriteStepsError, nsToMs } from "./util.mjs";
+import { NO_WRITE_STEPS, noWriteStepsError, nsToMs, sha256 } from "./util.mjs";
 
 export const OUTCOMES = [
   "success",
@@ -215,6 +215,7 @@ export async function runBatch({ scenarios, deps }) {
   const startedNs = deps.startedNs ?? clock.now();
   let activeSnapshot = null;
   let bodyRevision = null;
+  let peerWrite = null;
   let stopped = false;
 
   const append = (rec) => recorder.append(rec);
@@ -270,6 +271,23 @@ export async function runBatch({ scenarios, deps }) {
     const restoreNs = clock.now();
     const mark = page.mark?.() ?? null;
     const restore = fs.restore(snapshot);
+    let peerRestoration;
+    if (peerWrite) {
+      const action = restore.actions?.find((a) => a.path === peerWrite.path);
+      const restored = fs.hashOf(peerWrite.path);
+      peerRestoration = {
+        path: peerWrite.path,
+        originalSha256: peerWrite.originalSha256,
+        restoredSha256: restored,
+        ok:
+          restore.actions?.length === 1 &&
+          action?.method === "in-place" &&
+          restored === peerWrite.originalSha256 &&
+          Number.isSafeInteger(peerWrite.inode) &&
+          action.evidence?.inodeBefore === peerWrite.inode &&
+          action.evidence?.inodeAfter === peerWrite.inode,
+      };
+    }
     const alive = server.isAlive();
     const live = [];
     let liveSkipped = null;
@@ -377,6 +395,7 @@ export async function runBatch({ scenarios, deps }) {
       !signal?.aborted &&
       restore.mismatches.length === 0 &&
       (diskOnlyControl || (liveSkipped === null && settled)) &&
+      (!peerRestoration || peerRestoration.ok) &&
       bodyVerified &&
       live.every((l) => l.ok);
     let quiet = null;
@@ -391,6 +410,7 @@ export async function runBatch({ scenarios, deps }) {
         ok = false;
       }
     const cleanupRec = {
+      ...(peerRestoration && { peerRestoration }),
       type: "cleanup",
       label: "cleanup",
       measured: false,
@@ -550,7 +570,7 @@ export async function runBatch({ scenarios, deps }) {
           break outer;
         }
 
-        const attemptStart = diagnostic ? clock.now() : null;
+        const attemptStart = diagnostic || deps.stageBudget ? clock.now() : null;
         let attempt;
         let preparedState = null;
         try {
@@ -751,6 +771,7 @@ export async function runBatch({ scenarios, deps }) {
               type: "fixed-peer-prewrite",
               docUUID: armed.docUUID,
               originalBody: armed.actual,
+              armObservedNs: String(clock.now()),
               sockets,
             });
             if (!armed.docUUID || !sockets.length)
@@ -891,6 +912,7 @@ export async function runBatch({ scenarios, deps }) {
               ...(resourceTrip ? [resourceTrip] : []),
             ]),
           );
+          deps.stageBudget?.(timeouts.attemptMs, attemptStart);
         } finally {
           clearInterval(sampler);
         }
@@ -915,6 +937,30 @@ export async function runBatch({ scenarios, deps }) {
           },
           injectKill,
         };
+        if (deps.fixedPeer) {
+          const write = attempt.write;
+          const expected = sha256(write.bytes);
+          const actual = fs.hashOf(write.path);
+          peerWrite = {
+            path: write.path,
+            originalSha256: rec.targetSha256Before,
+            inode: write.evidence?.inodeBefore,
+          };
+          rec.peerDisk = {
+            bytes: Buffer.byteLength(write.bytes),
+            expectedSha256: expected,
+            observedSha256: actual,
+            ok:
+              /^[a-f0-9]{64}$/.test(peerWrite.originalSha256) &&
+              expected === actual &&
+              expected !== peerWrite.originalSha256 &&
+              Number.isSafeInteger(peerWrite.inode) &&
+              peerWrite.inode === write.evidence?.inodeAfter,
+          };
+          append({ type: "fixed-peer-edit-disk", ...peerWrite, ...rec.peerDisk });
+          if (!rec.peerDisk.ok)
+            throw new Error("fixed peer edited bytes or in-place inode mismatch");
+        }
         if (writeSteps) {
           rec.writeSteps = writeSteps;
           rec.tLastWriteNs = String(tLast);
@@ -1017,7 +1063,7 @@ export async function runBatch({ scenarios, deps }) {
           break outer;
         }
 
-        const supplementalStart = diagnostic ? clock.now() : null;
+        const supplementalStart = diagnostic || deps.stageBudget ? clock.now() : null;
         for (const check of attempt.supplemental) {
           let res;
           try {
