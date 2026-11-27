@@ -5,6 +5,7 @@ import {
   constants,
   existsSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -847,8 +848,9 @@ export function readPeerTarget(path, original) {
       offset += n;
     }
     const after = fstatSync(fd, { bigint: true }),
-      named = statSync(path, { bigint: true });
+      named = lstatSync(path, { bigint: true });
     if (
+      !named.isFile() ||
       after.ctimeNs !== before.ctimeNs ||
       after.size !== before.size ||
       named.dev !== after.dev ||
