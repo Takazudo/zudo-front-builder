@@ -5983,6 +5983,26 @@ mod tests {
         assert!(unobserved_edits_under(&policy, &[tmp.path().join("elsewhere")]).is_empty());
     }
 
+    /// Issue #4894 re-review — a root declared inside `node_modules` is
+    /// reconciled like any other (the docs say `node_modules` stays live).
+    #[test]
+    fn plugin_watch_directory_root_inside_node_modules_is_reconciled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("node_modules/data-pkg/entries");
+        std::fs::create_dir_all(&root).unwrap();
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let policy = policy_with_plugin_watch_directory(&root, None, Some(since));
+        std::fs::write(root.join("a.json"), "{}").unwrap();
+        let changes = unobserved_edits_under(&policy, std::slice::from_ref(&root));
+        let paths: Vec<PathBuf> = changes.into_iter().map(|change| change.path).collect();
+        assert_eq!(paths, vec![root.join("a.json")]);
+        assert!(policy.is_plugin_watch_target(&root.join("a.json")));
+    }
+
     /// The negative that distinguishes option (b) from the REJECTED option
     /// (a) (`Content` → `mark_css` unconditionally). An ordinary in-root
     /// markdown edit must NOT gain a zudo-wind rescan — that would be a real

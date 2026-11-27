@@ -2553,7 +2553,7 @@ mod tests {
         std::fs::create_dir_all(&data).unwrap();
         let body = format!(
             r#"
-            const decl = {{ path: {posts:?}, include: ["**/*.md"], exclude: ["drafts/**"] }};
+            const decl = {{ path: {posts:?}, include: ["**/*.md", "x:notes.md", "\\[slug\\].md"], exclude: ["drafts/**"] }};
             const list = [decl, {{ path: {data:?} }}];
             addVirtualModule("virtual:posts", () => 'export default 1', {{ watchDirectories: list }});
             decl.path = "/elsewhere";
@@ -2575,7 +2575,11 @@ mod tests {
             vec![
                 crate::plugin_registries::WatchDirectory {
                     path: posts,
-                    include: Some(vec!["**/*.md".into()]),
+                    include: Some(vec![
+                        "**/*.md".into(),
+                        "x:notes.md".into(),
+                        "\\[slug\\].md".into(),
+                    ]),
                     exclude: vec!["drafts/**".into()],
                 },
                 crate::plugin_registries::WatchDirectory {
@@ -2634,8 +2638,12 @@ mod tests {
                 "drive letter",
             ),
             (
-                format!("{{ path: {root:?}, include: [\"posts\\\\*.md\"] }}"),
+                format!("{{ path: {root:?}, include: [\"posts\\\\sub/*.md\"] }}"),
                 "backslash",
+            ),
+            (
+                format!("{{ path: {root:?}, include: [\".git/**\"] }}"),
+                "`.git`",
             ),
             (
                 format!("{{ path: {root:?}, include: [\"./a.md\"] }}"),

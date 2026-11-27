@@ -45,7 +45,7 @@
 //! children are known too. The set only grows: a stale entry can only
 //! cause an extra refresh, never a missed one.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
@@ -65,6 +65,9 @@ pub fn compile_watch_directory_globs(patterns: &[String]) -> Result<GlobSet, Str
         validate_pattern(pattern)?;
         let glob = GlobBuilder::new(pattern)
             .literal_separator(true)
+            // globset's default differs by platform (off on Windows); the
+            // contract is the same everywhere.
+            .backslash_escape(true)
             .build()
             .map_err(|error| format!("invalid glob {pattern:?}: {error}"))?;
         builder.add(glob);
@@ -73,6 +76,10 @@ pub fn compile_watch_directory_globs(patterns: &[String]) -> Result<GlobSet, Str
         .build()
         .map_err(|error| format!("failed to compile globs: {error}"))
 }
+
+/// Characters a backslash may escape in a pattern (globset's
+/// metacharacters plus the backslash itself). Mirrored in `plugin-host.mjs`.
+const ESCAPABLE: &str = "*?[]{}\\,!-^";
 
 fn validate_pattern(pattern: &str) -> Result<(), String> {
     if pattern.is_empty() {
@@ -83,31 +90,53 @@ fn validate_pattern(pattern: &str) -> Result<(), String> {
             "glob {pattern:?} is absolute; patterns are relative to the directory root"
         ));
     }
-    if pattern.contains('\\') {
-        return Err(format!(
-            "glob {pattern:?} contains a backslash; separate segments with `/`"
-        ));
-    }
     let bytes = pattern.as_bytes();
-    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+    if bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes.get(2), None | Some(b'/') | Some(b'\\'))
+    {
         return Err(format!(
             "glob {pattern:?} starts with a drive letter; patterns are relative to the directory root"
         ));
     }
-    if pattern.split('/').any(|segment| segment == "..") {
+    let mut chars = pattern.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' && !chars.next().is_some_and(|next| ESCAPABLE.contains(next)) {
+            return Err(format!(
+                "glob {pattern:?} has a backslash that escapes no glob metacharacter; separate \
+                 segments with `/`, and escape a literal metacharacter as `\\[` or `[[]`"
+            ));
+        }
+    }
+    let segments: Vec<&str> = pattern.split('/').collect();
+    if segments.contains(&"..") {
         return Err(format!(
             "glob {pattern:?} contains a `..` segment; patterns cannot leave the directory root"
         ));
     }
-    if pattern.split('/').any(|segment| segment == ".") {
+    if segments.contains(&".") {
         return Err(format!(
             "glob {pattern:?} contains a `.` segment, which never matches; remove it"
         ));
     }
-    if pattern.split('/').any(str::is_empty) {
+    if segments.contains(&"") {
         return Err(format!(
             "glob {pattern:?} has an empty segment (`//` or a trailing `/`), which never matches"
         ));
+    }
+    Ok(())
+}
+
+/// `include` patterns may not name a `.git` segment: nothing below `.git`
+/// ever matches, so such a pattern could never refresh its loader.
+pub fn validate_watch_directory_include(patterns: &[String]) -> Result<(), String> {
+    for pattern in patterns {
+        if pattern.split('/').any(|segment| segment == GIT_DIR) {
+            return Err(format!(
+                "glob {pattern:?} targets `.git`, whose files never refresh a loader"
+            ));
+        }
     }
     Ok(())
 }
@@ -127,9 +156,14 @@ struct Declaration {
 struct Inner {
     declarations: Vec<Declaration>,
     /// `(declaration index, root-relative path)` of every directory seen.
-    known_dirs: RwLock<BTreeSet<(usize, String)>>,
+    /// Keyed `(declaration index, root-relative path)`; the root itself is
+    /// `""`. The value is the directory's identity when last walked, so a
+    /// repeated event on an unchanged directory does not walk it again.
+    known_dirs: RwLock<BTreeMap<(usize, String), Option<DirIdentity>>>,
     /// Roots zfb writes into itself; nothing below them matches.
     ignored_roots: RwLock<Vec<PathBuf>>,
+    #[cfg(test)]
+    subtree_walks: std::sync::atomic::AtomicUsize,
 }
 
 const GIT_DIR: &str = ".git";
@@ -190,13 +224,15 @@ impl PluginWatchDirectories {
         let this = Self {
             inner: Arc::new(Inner {
                 declarations,
-                known_dirs: RwLock::new(BTreeSet::new()),
+                known_dirs: RwLock::new(BTreeMap::new()),
                 ignored_roots: RwLock::new(Vec::new()),
+                #[cfg(test)]
+                subtree_walks: Default::default(),
             }),
         };
         for index in 0..this.inner.declarations.len() {
             let root = this.inner.declarations[index].root.clone();
-            this.learn_subtree(index, &root);
+            this.relearn_if_changed(index, String::new(), &root);
         }
         this
     }
@@ -204,9 +240,38 @@ impl PluginWatchDirectories {
     /// Replace the roots zfb writes into itself (all spellings). Clones
     /// share the setting.
     pub fn set_ignored_roots(&self, roots: impl IntoIterator<Item = PathBuf>) {
-        if let Ok(mut stored) = self.inner.ignored_roots.write() {
-            *stored = roots.into_iter().collect();
+        let roots: Vec<PathBuf> = roots.into_iter().collect();
+        for root in self.roots_inside(&roots) {
+            // Setup cannot reject these: the output roots are only known to
+            // the dev command, after plugin setup has run.
+            warn!(path = %root.display(), "watchDirectories root is inside a directory zfb writes into; it never refreshes its loader");
+            eprintln!(
+                "[zfb] warning: watchDirectories root {} is inside a directory zfb writes into \
+                 (output, dev assets or .zfb scratch); its changes never refresh the loader",
+                root.display()
+            );
         }
+        if let Ok(mut stored) = self.inner.ignored_roots.write() {
+            *stored = roots;
+        }
+    }
+
+    /// Declared roots (as declared) that lie inside one of `ignored`.
+    pub fn roots_inside(&self, ignored: &[PathBuf]) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = self
+            .inner
+            .declarations
+            .iter()
+            .filter(|declaration| {
+                declaration
+                    .root_aliases
+                    .iter()
+                    .any(|alias| ignored.iter().any(|root| alias.starts_with(root)))
+            })
+            .map(|declaration| declaration.root.clone())
+            .collect();
+        out.dedup();
+        out
     }
 
     fn is_ignored(&self, path: &Path) -> bool {
@@ -279,7 +344,7 @@ impl PluginWatchDirectories {
                     continue;
                 };
                 if entry.file_type().is_dir() {
-                    self.remember(index, rel.clone());
+                    self.remember(index, rel.clone(), dir_identity_of(&entry.metadata().ok()));
                 }
                 let modified = entry
                     .metadata()
@@ -310,7 +375,7 @@ impl PluginWatchDirectories {
         }
         if rel.is_empty() {
             if root.is_dir() {
-                self.learn_subtree(index, &root);
+                self.relearn_if_changed(index, String::new(), &root);
             }
             return true;
         }
@@ -320,10 +385,9 @@ impl PluginWatchDirectories {
         let candidate = root.join(&rel);
         match std::fs::symlink_metadata(&candidate).or_else(|_| std::fs::symlink_metadata(path)) {
             Ok(metadata) if metadata.is_dir() => {
-                // Learned even when already known: a recreated directory's
+                // Re-learned when new or replaced: a recreated directory's
                 // new children must be recognised when they are removed.
-                self.remember(index, rel.clone());
-                self.learn_subtree(index, &candidate);
+                self.relearn_if_changed(index, rel.clone(), &candidate);
                 !declaration.exclude.is_match(&rel)
             }
             Ok(_) => file_matches(declaration, &rel),
@@ -332,23 +396,41 @@ impl PluginWatchDirectories {
         }
     }
 
-    fn remember(&self, index: usize, rel: String) -> bool {
+    /// Record `rel` with `identity`; `true` when it was unknown or its
+    /// identity changed.
+    fn remember(&self, index: usize, rel: String, identity: Option<DirIdentity>) -> bool {
         self.inner
             .known_dirs
             .write()
-            .map(|mut dirs| dirs.insert((index, rel)))
+            .map(|mut dirs| match dirs.insert((index, rel), identity) {
+                None => true,
+                Some(previous) => previous != identity,
+            })
             .unwrap_or(false)
+    }
+
+    /// Walk `dir`'s subtree only when `dir` is new or was replaced since it
+    /// was last walked.
+    fn relearn_if_changed(&self, index: usize, rel: String, dir: &Path) {
+        let identity = dir_identity_of(&std::fs::symlink_metadata(dir).ok());
+        if self.remember(index, rel, identity) {
+            self.learn_subtree(index, dir);
+        }
     }
 
     fn is_known_dir(&self, index: usize, rel: &str) -> bool {
         self.inner
             .known_dirs
             .read()
-            .map(|dirs| dirs.contains(&(index, rel.to_string())))
+            .map(|dirs| dirs.contains_key(&(index, rel.to_string())))
             .unwrap_or(true)
     }
 
     fn learn_subtree(&self, index: usize, dir: &Path) {
+        #[cfg(test)]
+        self.inner
+            .subtree_walks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = &self.inner.declarations[index].root;
         for entry in WalkDir::new(dir)
             .follow_links(false)
@@ -365,10 +447,32 @@ impl PluginWatchDirectories {
                 })
                 .filter(|rel| !rel.is_empty());
             if let Some(rel) = key {
-                self.remember(index, rel);
+                self.remember(index, rel, dir_identity_of(&entry.metadata().ok()));
             }
         }
     }
+}
+
+/// What a directory is beyond its path: `(dev, inode)` on unix plus the
+/// birth time where the filesystem records one (a recreated directory can
+/// get its inode number back).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DirIdentity {
+    #[cfg(unix)]
+    inode: (u64, u64),
+    created: Option<SystemTime>,
+}
+
+fn dir_identity_of(metadata: &Option<std::fs::Metadata>) -> Option<DirIdentity> {
+    let metadata = metadata.as_ref()?;
+    Some(DirIdentity {
+        #[cfg(unix)]
+        inode: {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.dev(), metadata.ino())
+        },
+        created: metadata.created().ok(),
+    })
 }
 
 fn file_matches(declaration: &Declaration, rel: &str) -> bool {
@@ -461,8 +565,10 @@ mod tests {
     fn glob_validation_rejects_patterns_that_can_never_match() {
         for (bad, reason) in [
             ("C:/posts/*.md", "drive letter"),
-            ("c:*.md", "drive letter"),
-            ("posts\\*.md", "backslash"),
+            ("c:", "drive letter"),
+            ("posts\\sub/*.md", "backslash"),
+            ("posts\\a.md", "backslash"),
+            ("trailing\\", "backslash"),
             ("./a.md", "`.` segment"),
             ("a/./b.md", "`.` segment"),
             ("a//b.md", "empty segment"),
@@ -472,7 +578,24 @@ mod tests {
                 .expect_err(&format!("{bad:?} must be rejected"));
             assert!(error.contains(reason), "{bad:?}: {error}");
         }
-        assert!(compile_watch_directory_globs(&[".hidden/*.md".to_string()]).is_ok());
+        for good in [
+            ".hidden/*.md",
+            "x:foo.md",
+            "\\[slug\\].md",
+            "a\\*b.md",
+            "a\\\\b",
+        ] {
+            assert!(
+                compile_watch_directory_globs(&[good.to_string()]).is_ok(),
+                "{good:?} must be accepted"
+            );
+        }
+        let escaped = compile_watch_directory_globs(&["\\[slug\\].md".to_string()]).unwrap();
+        assert!(escaped.is_match("[slug].md"));
+        assert!(!escaped.is_match("s.md"));
+        assert!(validate_watch_directory_include(&[".git/**".to_string()]).is_err());
+        assert!(validate_watch_directory_include(&["a/.git/x".to_string()]).is_err());
+        assert!(validate_watch_directory_include(&[".github/*.yml".to_string()]).is_ok());
     }
 
     #[test]
@@ -501,6 +624,16 @@ mod tests {
         assert!(m.is_match(&root.join("node_modules/pkg/data.json")));
         assert!(m.is_match(&root.join("distribution/a.md")));
         assert!(m.is_match(&root), "the root itself still matches");
+        assert!(m.roots_inside(&[root.join("dist")]).is_empty());
+        let inside = matcher(vec![(
+            "virtual:out",
+            vec![directory(&root.join("dist/assets"), None, &[])],
+        )]);
+        assert_eq!(
+            inside.roots_inside(&[root.join("dist")]),
+            vec![root.join("dist/assets")],
+            "a root inside an output directory is reported"
+        );
 
         // The reconcile walk skips them too.
         let since = SystemTime::UNIX_EPOCH;
@@ -512,6 +645,35 @@ mod tests {
             "{found:?}"
         );
         assert!(found.contains(&root.join("src/a.md")));
+    }
+
+    #[test]
+    fn unchanged_directories_are_not_walked_again_on_repeated_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("posts");
+        write(&root.join("sub/deep/a.md"));
+        let m = matcher(vec![(
+            "virtual:posts",
+            vec![directory(&root, Some(&["**/*.md"]), &[])],
+        )]);
+        let walks = || {
+            m.inner
+                .subtree_walks
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+        let after_boot = walks();
+        for _ in 0..5 {
+            assert!(m.is_match(&root));
+            assert!(m.is_match(&root.join("sub")));
+            assert!(m.is_match(&root.join("sub/deep")));
+            assert!(!m.owners_of(&root.join("sub")).is_empty());
+        }
+        assert_eq!(walks(), after_boot, "no walk for unchanged directories");
+        write(&root.join("fresh/b.md"));
+        assert!(m.is_match(&root.join("fresh")));
+        assert_eq!(walks(), after_boot + 1, "a new directory is walked once");
+        assert!(m.is_match(&root.join("fresh")));
+        assert_eq!(walks(), after_boot + 1);
     }
 
     #[test]

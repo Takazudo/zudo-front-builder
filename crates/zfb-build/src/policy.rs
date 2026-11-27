@@ -1114,9 +1114,9 @@ impl RawImportInvalidation {
                 let Ok(mtime) = std::fs::metadata(&path).and_then(|meta| meta.modified()) else {
                     continue;
                 };
-                if self.is_zfb_written(&path) {
-                    continue;
-                }
+                // No `is_zfb_written` check: the matcher already ignores
+                // zfb's output roots, and a declared root may live inside
+                // `node_modules`, which that predicate would drop.
                 let file = Self::reconcile_key(&path);
                 if accounted.get(&file) == Some(&mtime) {
                     continue;

@@ -283,15 +283,21 @@ function validateWatchDirectories(value) {
             `${prefix} glob ${JSON.stringify(pattern)} is absolute; patterns are relative to the root`,
           );
         }
-        if (pattern.includes("\\")) {
-          throw new Error(
-            `${prefix} glob ${JSON.stringify(pattern)} contains a backslash; separate segments with \`/\``,
-          );
-        }
-        if (/^[A-Za-z]:/.test(pattern)) {
+        if (/^[A-Za-z]:(\/|\\|$)/.test(pattern)) {
           throw new Error(
             `${prefix} glob ${JSON.stringify(pattern)} starts with a drive letter; patterns are relative to the root`,
           );
+        }
+        for (let i = 0; i < pattern.length; i++) {
+          if (pattern[i] !== "\\") continue;
+          // Mirrors ESCAPABLE in crates/zfb-build/src/plugin_watch_dirs.rs.
+          if (i + 1 >= pattern.length || !"*?[]{}\\,!-^".includes(pattern[i + 1])) {
+            throw new Error(
+              `${prefix} glob ${JSON.stringify(pattern)} has a backslash that escapes no glob metacharacter; ` +
+                "separate segments with `/`, and escape a literal metacharacter as `\\[` or `[[]`",
+            );
+          }
+          i++;
         }
         const segments = pattern.split("/");
         if (segments.includes("..")) {
@@ -313,6 +319,13 @@ function validateWatchDirectories(value) {
     let includeCopy = null;
     if (include !== undefined) {
       includeCopy = copyPatterns(include, "include");
+      for (const pattern of includeCopy) {
+        if (pattern.split("/").includes(".git")) {
+          throw new Error(
+            `${prefix} glob ${JSON.stringify(pattern)} targets \`.git\`, whose files never refresh a loader`,
+          );
+        }
+      }
       if (includeCopy.length === 0) {
         throw new Error(
           `${prefix} entry \`include\` must not be empty; omit it to match every file below the root`,

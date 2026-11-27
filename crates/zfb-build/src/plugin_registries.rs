@@ -731,6 +731,7 @@ fn validate_watch_directory(directory: &WatchDirectory) -> Result<(), String> {
             );
         }
         crate::plugin_watch_dirs::compile_watch_directory_globs(include)
+            .and_then(|_| crate::plugin_watch_dirs::validate_watch_directory_include(include))
             .map_err(|error| format!("`include`: {error}"))?;
     }
     crate::plugin_watch_dirs::compile_watch_directory_globs(&directory.exclude)
@@ -1056,7 +1057,8 @@ mod tests {
             (watch_dir(None, &["../x/**"]), "`..`"),
             (watch_dir(Some(&["a/["]), &[]), "invalid glob"),
             (watch_dir(Some(&["C:/posts/*.md"]), &[]), "drive letter"),
-            (watch_dir(Some(&["posts\\*.md"]), &[]), "backslash"),
+            (watch_dir(Some(&["posts\\sub/*.md"]), &[]), "backslash"),
+            (watch_dir(Some(&[".git/**"]), &[]), "`.git`"),
             (watch_dir(None, &["a/./b.md"]), "`.` segment"),
             (watch_dir(None, &["a//b.md"]), "empty segment"),
         ] {
