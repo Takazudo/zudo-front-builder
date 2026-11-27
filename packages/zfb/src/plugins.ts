@@ -289,6 +289,58 @@ export type ZfbVirtualModuleOptions = {
    * at `setup` time.
    */
   watchFiles?: string[];
+  /**
+   * Directories whose contents the loader reads itself (issue #4894). Under
+   * `zfb dev`, each `path` is watched recursively, and the loader is
+   * re-invoked (memo bypassed) when a matching file is added, changed,
+   * deleted or renamed, or when a directory below the root (or the root
+   * itself) is created, deleted or renamed. `watchFiles` semantics are
+   * unchanged; use both when a loader reads single files and directories.
+   *
+   * The loader must enumerate the directory itself on every run — zfb
+   * passes it no file list. `zfb build` invokes each loader once and never
+   * watches. Registrations are copied at `setup`; mutating the objects or
+   * arrays afterwards has no effect.
+   *
+   * ```ts
+   * addVirtualModule("virtual:posts", () => listPosts(postsDir), {
+   *   watchDirectories: [
+   *     { path: postsDir, include: ["**\/*.md"], exclude: ["drafts/**"] },
+   *   ],
+   * });
+   * ```
+   */
+  watchDirectories?: ZfbWatchDirectory[];
+};
+
+/**
+ * One `watchDirectories` declaration (issue #4894).
+ */
+export type ZfbWatchDirectory = {
+  /**
+   * Absolute path of an existing directory. A missing path, a relative
+   * path or a non-directory throws at `setup` time; zfb does not resolve
+   * it against the project root or wait for it to appear. After `setup`,
+   * deleting, recreating or renaming the root is handled.
+   */
+  path: string;
+  /**
+   * Root-relative, `/`-separated globs a file must match. `*` matches one
+   * path segment and `**` any number of segments (`*.md` matches only the
+   * root's own files; `**\/*.md` matches every depth). Omit it to match
+   * every file below the root; an empty array throws. Absolute patterns and
+   * `..` segments throw. Directory create/delete/rename events are handled
+   * even when the directory name does not match these globs.
+   */
+  include?: string[];
+  /**
+   * Root-relative globs to ignore, with the same syntax. An excluded path
+   * is ignored by this declaration only: another declaration (of this or
+   * another loader) that matches the path still triggers its refresh.
+   * Exclude a directory itself (`"drafts"`) as well as its contents
+   * (`"drafts/**"`) to ignore the directory's own create/delete events.
+   */
+  exclude?: string[];
 };
 
 /**
@@ -393,7 +445,8 @@ export type ZfbSetupContext = {
    * The optional third argument's `watchFiles` (#2167) declares extra
    * absolute filesystem paths a `zfb dev` watcher should track on this
    * loader's behalf — see [`ZfbVirtualModuleOptions`]. Every entry must
-   * be an absolute path; a relative entry throws.
+   * be an absolute path; a relative entry throws. `watchDirectories`
+   * (#4894) declares directories the loader enumerates itself.
    *
    * Two plugins registering the same `specifier` raises
    * `VirtualModuleConflict` and aborts the build.

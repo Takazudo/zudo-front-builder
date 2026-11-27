@@ -147,6 +147,20 @@ pub struct RawImportInvalidation {
     /// not directory-shaped like `css_mirror_roots`.
     plugin_watch_files: Arc<RwLock<BTreeSet<PathBuf>>>,
 
+    /// `addVirtualModule(..., { watchDirectories })` declarations (issue
+    /// #4894) and the read start of the setup that first enumerated them.
+    /// Directory-shaped: the roots join the recursive watch set, and
+    /// membership is decided by the shared
+    /// [`crate::plugin_watch_dirs::PluginWatchDirectories`] matcher, the
+    /// same instance the refresh ownership map holds. Published once at
+    /// boot, like `plugin_watch_files`.
+    plugin_watch_directories: Arc<
+        RwLock<(
+            crate::plugin_watch_dirs::PluginWatchDirectories,
+            Option<SystemTime>,
+        )>,
+    >,
+
     /// Real source files the dev SSR bundle transitively imports (issue
     /// #3162), published from the dev refresh's esbuild metafile after every
     /// successful bundle. File-shaped like the browser-closure sets, and
@@ -349,6 +363,11 @@ impl RawImportInvalidation {
         } else {
             return true;
         }
+        exempt.extend(
+            self.plugin_watch_directory_roots()
+                .into_iter()
+                .flat_map(Self::aliases),
+        );
         for set in [
             &self.islands,
             &self.client_scripts,
@@ -800,9 +819,50 @@ impl RawImportInvalidation {
             .unwrap_or_default()
     }
 
-    /// Whether `path` is a registered plugin virtual-module watch file.
+    /// Whether `path` is a registered plugin virtual-module watch file, or
+    /// matches a `watchDirectories` declaration (issue #4894; see
+    /// [`crate::plugin_watch_dirs`] for the rules).
     pub fn is_plugin_watch_target(&self, path: &Path) -> bool {
         Self::contains(&self.plugin_watch_files, path)
+            || self.plugin_watch_directories().is_match(path)
+    }
+
+    /// Publish the `watchDirectories` matcher (issue #4894) without a read
+    /// start: the watch-arm reconcile then skips it.
+    pub fn replace_plugin_watch_directories(
+        &self,
+        directories: crate::plugin_watch_dirs::PluginWatchDirectories,
+    ) {
+        if let Ok(mut slot) = self.plugin_watch_directories.write() {
+            *slot = (directories, None);
+        }
+    }
+
+    /// [`Self::replace_plugin_watch_directories`] with the read start taken
+    /// just before plugin `setup`, so a root whose recursive watch is armed
+    /// later (boot, or after the root is deleted and recreated) is
+    /// reconciled by [`Self::modified_since_read`].
+    pub fn replace_plugin_watch_directories_read_since(
+        &self,
+        directories: crate::plugin_watch_dirs::PluginWatchDirectories,
+        read_since: SystemTime,
+    ) {
+        if let Ok(mut slot) = self.plugin_watch_directories.write() {
+            *slot = (directories, Some(read_since));
+        }
+    }
+
+    fn plugin_watch_directories(&self) -> crate::plugin_watch_dirs::PluginWatchDirectories {
+        self.plugin_watch_directories
+            .read()
+            .map(|slot| slot.0.clone())
+            .unwrap_or_default()
+    }
+
+    /// Every declared `watchDirectories` root: watched recursively, and
+    /// through its parent so the root's own deletion and recreation arrive.
+    pub fn plugin_watch_directory_roots(&self) -> BTreeSet<PathBuf> {
+        self.plugin_watch_directories().roots()
     }
 
     /// Atomically replace the dev SSR module-dependency set after a
@@ -1030,6 +1090,29 @@ impl RawImportInvalidation {
                 }
             }
         }
+        let (directories, read_since) = self
+            .plugin_watch_directories
+            .read()
+            .map(|slot| slot.clone())
+            .unwrap_or_default();
+        if let Some(read_since) = read_since {
+            for path in directories.modified_since(read_since, &in_scope) {
+                let Ok(mtime) = std::fs::metadata(&path).and_then(|meta| meta.modified()) else {
+                    continue;
+                };
+                if self.is_zfb_written(&path) {
+                    continue;
+                }
+                let file = Self::reconcile_key(&path);
+                if accounted.get(&file) == Some(&mtime) {
+                    continue;
+                }
+                if seen_files.insert(file.clone()) {
+                    accounted.insert(file, mtime);
+                    modified.push(path);
+                }
+            }
+        }
         modified
     }
 
@@ -1072,7 +1155,7 @@ impl RawImportInvalidation {
             self.file_set(set)
                 .read()
                 .is_ok_and(|paths| paths.contains(path))
-        })
+        }) || self.plugin_watch_directories().is_match(path)
     }
 
     /// The explicit manifest exception permits node_modules, but never a
@@ -1641,7 +1724,8 @@ impl GranularityPolicy {
 
     /// Whether this exact changed path is a registered plugin virtual-module
     /// watch file (issue #2168) — a loader's `addVirtualModule(..., {
-    /// watchFiles })` entry (issue #2167).
+    /// watchFiles })` entry (issue #2167) — or matches one of its
+    /// `watchDirectories` declarations (issue #4894).
     pub fn is_plugin_watch_target(&self, path: &Path) -> bool {
         self.raw_import_invalidation.is_plugin_watch_target(path)
     }
@@ -1691,6 +1775,11 @@ impl GranularityPolicy {
     /// Snapshot the declared package-root set for recursive watching.
     pub fn css_package_root_paths(&self) -> BTreeSet<PathBuf> {
         self.raw_import_invalidation.css_package_roots()
+    }
+
+    /// Declared plugin `watchDirectories` roots (issue #4894).
+    pub fn plugin_watch_directory_roots(&self) -> BTreeSet<PathBuf> {
+        self.raw_import_invalidation.plugin_watch_directory_roots()
     }
 
     /// Locate `path` inside a declared package root.

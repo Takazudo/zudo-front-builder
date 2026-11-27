@@ -504,6 +504,10 @@ struct RecursiveDirFilterCore {
     /// suppressed even though they are skip names.
     traversal_roots: BTreeSet<PathBuf>,
     traversal_names: BTreeSet<OsString>,
+    /// Alias spellings of roots below which no skip name is suppressed
+    /// (plugin `watchDirectories` roots, zfb issue #4894: the CSS infra-dir
+    /// skip list must not narrow a plugin's own declaration).
+    unfiltered_roots: BTreeSet<PathBuf>,
 }
 
 impl RecursiveDirFilterCore {
@@ -540,6 +544,13 @@ impl RecursiveDirFilterCore {
             return true;
         }
         if self.active_roots.is_empty() || self.skip_names.is_empty() {
+            return false;
+        }
+        if self
+            .unfiltered_roots
+            .iter()
+            .any(|root| path.starts_with(root))
+        {
             return false;
         }
         let inside_skip_dir = self.active_roots.iter().any(|root| {
@@ -1002,6 +1013,21 @@ impl Watcher {
             .flat_map(|root| watch_aliases(root.as_ref()).collect::<Vec<_>>())
             .collect();
         filter.traversal_names = names.iter().map(OsString::from).collect();
+    }
+
+    /// Deliver every event below `roots` even inside skip-named
+    /// directories of [`Self::sync_recursive_dir_watches`]. Replace
+    /// semantics: the latest call is the whole set.
+    pub fn set_recursive_dir_unfiltered_roots<I, P>(&mut self, roots: I)
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let mut filter = lock_ignoring_poison(&self.recursive_dir_filter);
+        filter.unfiltered_roots = roots
+            .into_iter()
+            .flat_map(|root| watch_aliases(root.as_ref()).collect::<Vec<_>>())
+            .collect();
     }
 
     pub fn sync_recursive_dir_watches<I, P, N, S>(
@@ -3238,6 +3264,22 @@ mod tests {
         assert!(
             filter.suppresses(Path::new("/proj/lib/mirror/dist/view.js"), &deps),
             "a mirror root keeps pruning dist"
+        );
+    }
+
+    #[test]
+    fn unfiltered_roots_keep_every_skip_name_live() {
+        let deps = SharedPathSet::default();
+        let mut filter = filter_with(&["/proj/lib"], &["dist", "node_modules"]);
+        filter.unfiltered_roots = BTreeSet::from([PathBuf::from("/proj/lib/plugin-data")]);
+        assert!(!filter.suppresses(Path::new("/proj/lib/plugin-data/dist/a.json"), &deps));
+        assert!(!filter.suppresses(
+            Path::new("/proj/lib/plugin-data/x/node_modules/b.json"),
+            &deps
+        ));
+        assert!(
+            filter.suppresses(Path::new("/proj/lib/other/dist/a.json"), &deps),
+            "other synced roots keep their skip names"
         );
     }
 
