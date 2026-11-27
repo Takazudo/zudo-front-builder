@@ -9,7 +9,7 @@ import { fieldNotesOps } from "../lib/fieldnotes.mjs";
 import { performWrite, hashOf } from "../lib/fixture.mjs";
 import { semanticErrors, profileSchemaFor } from "../lib/profile.mjs";
 import { validateAs } from "../lib/schema.mjs";
-import { updateSignalFrame } from "../lib/browser.mjs";
+import { ObserverPage, updateSignalFrame } from "../lib/browser.mjs";
 import { runBatch } from "../lib/state-machine.mjs";
 import { SPEC, articleRow } from "./fieldnotes-fake.mjs";
 import { deps, fakePage } from "./fakes.mjs";
@@ -42,6 +42,11 @@ test.each([
   "missing-archive-2",
   "bad-inode",
   "late",
+  "early",
+  "foreign-uuid",
+  "retired-home",
+  "foreign-frame",
+  "valid-reload",
 ])("real Astro layout planner, update and ordered restoration: %s", async (scenarioCase) => {
   const dir = mkdtempSync(join(tmpdir(), "astro-footer-"));
   try {
@@ -108,14 +113,41 @@ test.each([
         p.evidence.docInits = [];
         p.evidence.navigations = [];
         p.evidence.wsFrames = [];
+        const t1 =
+          scenarioCase === "late" ? deadline + 1n : scenarioCase === "early" ? 1n : clock.now();
+        const changed = ["retired-home", "valid-reload"].includes(scenarioCase);
+        const activeDoc = changed ? "home-reloaded" : "home-edited";
+        const url = page.url("/");
+        if (changed) {
+          p.evidence.navigations.push({ ns: String(t1 - 2n), url });
+          p.evidence.docInits.push({
+            ns: String(t1 - 1n),
+            url,
+            docUUID: activeDoc,
+            designatedMain: true,
+          });
+        }
+        const docUUID =
+          scenarioCase === "foreign-uuid"
+            ? "unseen"
+            : scenarioCase === "retired-home"
+              ? "home-edited"
+              : activeDoc;
         return Promise.resolve({
           kind: "notify",
-          t1: scenarioCase === "late" ? deadline + 1n : clock.now(),
+          t1,
           payload: {
             token: tok,
-            docUUID: "home-edited",
+            docUUID,
             armedDocUUID: "home-edited",
-            url: page.url("/"),
+            url,
+            producer: {
+              designatedMain: scenarioCase !== "foreign-frame",
+              frameUrl: url,
+              latestDocUUID: activeDoc,
+              latestDocNs: String(changed ? t1 - 1n : 100n),
+              receivedNs: String(t1),
+            },
             actual: [1, scenarioCase === "wrong-or-extra-token" ? target + " extra" : target],
           },
         });
@@ -175,7 +207,7 @@ test.each([
     };
     const { accounting } = await runBatch({ deps: d, scenarios: [scenario] });
     assert.equal(writes, ["source-ambiguous", "no-supplement"].includes(scenarioCase) ? 0 : 1);
-    if (scenarioCase === "success") {
+    if (["success", "valid-reload"].includes(scenarioCase)) {
       assert.equal(accounting.success, 1);
       assert.equal(accounting.restorationFailures, 0);
       assert.equal(accounting.supplementalFailures, 0);
@@ -234,4 +266,40 @@ test("only declared layout updates qualify for module attribution", () => {
     );
     assert.equal(frame.layoutModule, path === "/src/layouts/Site.astro");
   }
+});
+
+test("Playwright binding independently identifies its actual main page/frame at dispatch", () => {
+  const observer = new ObserverPage(null, "");
+  const url = "http://localhost/";
+  const main = { url: () => url },
+    iframe = { url: () => url };
+  const page = { mainFrame: () => main };
+  observer.page = page;
+  observer.peerSocketTracking = new Map();
+  const genuine = { page, frame: main },
+    wrongFrame = { page, frame: iframe },
+    wrongPage = { page: {}, frame: main };
+  observer.onDocInit({ docUUID: "home", url }, 1n, genuine);
+  for (const source of [wrongPage, wrongFrame]) {
+    observer.onDocInit({ docUUID: "bogus", url }, 2n, source);
+    assert.equal(observer.docInits.length, 1);
+    observer.armedToken = "foreign";
+    observer.onNotify(
+      { token: "foreign", docUUID: "home", producer: { designatedMain: true } },
+      3n,
+      source,
+    );
+    assert.equal(observer.early.get("foreign").payload.producer.designatedMain, false);
+    observer.early.clear();
+  }
+  observer.onDocInit({ docUUID: "reloaded", url }, 4n, genuine);
+  observer.armedToken = "proper";
+  observer.onNotify({ token: "proper", docUUID: "reloaded" }, 5n, genuine);
+  assert.deepEqual(observer.early.get("proper").payload.producer, {
+    designatedMain: true,
+    frameUrl: url,
+    latestDocUUID: "reloaded",
+    latestDocNs: "4",
+    receivedNs: "5",
+  });
 });

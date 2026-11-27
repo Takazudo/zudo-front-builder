@@ -1,4 +1,9 @@
-import { ASTRO_FOOTER, astroFooterPredicate, matchesAstroFooter } from "./astro-footer.mjs";
+import {
+  ASTRO_FOOTER,
+  astroFooterPredicate,
+  matchesAstroFooter,
+  footerProducerMatches,
+} from "./astro-footer.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { runSpecialMode } from "./special-modes.mjs";
 import { RENAME_NOOP } from "./fixture.mjs";
@@ -1077,6 +1082,14 @@ export async function runBatch({ scenarios, deps }) {
           if (deps.fixedAstroFooter) {
             const payload = waited.payload;
             if (
+              !footerProducerMatches(
+                payload,
+                preDocUUID,
+                page.url(attempt.targetPath),
+                t0,
+                waited.t1,
+                evidence,
+              ) ||
               !payload.docUUID ||
               payload.token !== attempt.token ||
               payload.armedDocUUID !== preDocUUID ||

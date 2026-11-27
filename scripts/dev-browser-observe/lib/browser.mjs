@@ -457,8 +457,8 @@ export class ObserverPage {
 
   async install(timing, parentId, signal) {
     await timeBrowserAsync(timing, "browser.observer.binding.notify", parentId, () =>
-      this.context.exposeBinding("__dboNotify", (_source, payload) =>
-        this.onNotify(payload, this.clock()),
+      this.context.exposeBinding("__dboNotify", (source, payload) =>
+        this.onNotify(payload, this.clock(), source),
       ),
     );
     signal?.throwIfAborted();
@@ -469,8 +469,8 @@ export class ObserverPage {
     );
     signal?.throwIfAborted();
     await timeBrowserAsync(timing, "browser.observer.binding.doc-init", parentId, () =>
-      this.context.exposeBinding("__dboDocInit", (_source, payload) =>
-        this.onDocInit(payload, this.clock()),
+      this.context.exposeBinding("__dboDocInit", (source, payload) =>
+        this.onDocInit(payload, this.clock(), source),
       ),
     );
     signal?.throwIfAborted();
@@ -541,7 +541,23 @@ export class ObserverPage {
   }
 
   /** Returns true so the observer persists `delivered` only after this ack. */
-  onNotify(payload, t1) {
+  onNotify(payload, t1, source) {
+    if (this.peerSocketTracking) {
+      const last = this.docInits.at(-1);
+      const designatedMain = Boolean(
+        this.page && source?.page === this.page && source.frame === this.page.mainFrame(),
+      );
+      payload = {
+        ...payload,
+        producer: {
+          designatedMain,
+          frameUrl: designatedMain ? source.frame.url() : null,
+          latestDocUUID: last?.designatedMain === true ? last.docUUID : null,
+          latestDocNs: last?.designatedMain === true ? last.ns : null,
+          receivedNs: String(t1),
+        },
+      };
+    }
     const received = { ...payload, receivedNs: String(t1) };
     if (this.resolved.has(payload.token) || (!this.waiter && this.early.has(payload.token))) {
       this.duplicates.push(received);
@@ -572,7 +588,12 @@ export class ObserverPage {
     }
   }
 
-  onDocInit(payload, t) {
+  onDocInit(payload, t, source) {
+    if (this.peerSocketTracking) {
+      if (!this.page || source?.page !== this.page || source.frame !== this.page.mainFrame())
+        return;
+      payload = { ...payload, designatedMain: true };
+    }
     const rec = { ...payload, ns: String(t), at: isoNow() };
     this.docInits.push(rec);
     const waiters = this.docInitWaiters;
@@ -1094,7 +1115,11 @@ export class ObserverPage {
         waited.kind === "notify" &&
         !transient &&
         (!this.peerSocketTracking ||
-          (waited.payload.token === token &&
+          (waited.payload.producer?.designatedMain === true &&
+            waited.payload.producer.frameUrl === state.url &&
+            waited.payload.producer.latestDocUUID === armed.docUUID &&
+            waited.payload.producer.receivedNs === String(waited.t1) &&
+            waited.payload.token === token &&
             waited.payload.docUUID === armed.docUUID &&
             waited.payload.armedDocUUID === armed.docUUID &&
             waited.payload.url === state.url &&
