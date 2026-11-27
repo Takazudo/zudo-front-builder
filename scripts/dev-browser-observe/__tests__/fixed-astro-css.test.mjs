@@ -215,6 +215,7 @@ const ROUTE_REJECTIONS = [
   "sixth-route",
   "reordered",
   "missing-route",
+  "duplicate-doc",
   "reused-home",
   "fresh-home-edited",
   "bad-inode",
@@ -345,7 +346,11 @@ test.each([
       return {
         ok: true,
         docUUID:
-          scenarioCase === "reused-home" && c.path === "/" ? "home-edited" : "fresh" + c.path,
+          scenarioCase === "reused-home" && c.path === "/"
+            ? "home-edited"
+            : scenarioCase === "duplicate-doc" && c.path === "/archive/2/"
+              ? "fresh/archive/1/"
+              : "fresh" + c.path,
         actual: [[], scenarioCase === "fresh-home-edited" ? [1, token, "#f5f2e9"] : ORIGINAL_CSS],
       };
     };
