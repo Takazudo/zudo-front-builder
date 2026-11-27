@@ -381,6 +381,67 @@ test.each([
             writeRows(at, forged);
             assert.equal(observe().sessions[0].timingExcluded, true);
           }
+          // Two accepted samples must come from distinct helper births (review-2).
+          // Forge one extra accepted sample one interval later; with a fresh birth
+          // the evidence stays valid, with a duplicated birth it must be excluded.
+          const summaryPath = join(at, "summary.json"),
+            summaryBytes = readFileSync(summaryPath);
+          const withExtraSample = (duplicate) => {
+            const forged = structuredClone(rows);
+            const samples = forged.filter((r) => r.type === "source-timing-rss-sample");
+            const last = samples.at(-1);
+            const extra = structuredClone(last);
+            const delta = 1000000000n;
+            const shift = (o, k) => {
+              o[k] = String(BigInt(o[k]) + delta);
+            };
+            extra.epoch = last.epoch + 1;
+            shift(extra, "scheduledNs");
+            shift(extra, "startNs");
+            for (const k of [
+              "entryNs",
+              "spawnCallNs",
+              "spawnReturnNs",
+              "resultNs",
+              "deadlineNs",
+              "exitNs",
+              "closeNs",
+              "stdinCloseNs",
+              "stdoutCloseNs",
+              "stderrCloseNs",
+            ])
+              shift(extra.result.timing.parent, k);
+            shift(extra.result.helper, "spawnHrtimeNs");
+            const birth = duplicate
+              ? { ...samples[0].result.helper.birth }
+              : { ...last.result.helper.birth, pid: 9000, startTicks: "9000" };
+            extra.result.helper.birth = birth;
+            extra.result.helper.pid = birth.pid;
+            forged.splice(forged.indexOf(last) + 1, 0, extra);
+            forged.forEach((r, i) => {
+              r.seq = i;
+            });
+            writeRows(at, forged);
+            const sm = JSON.parse(summaryBytes);
+            sm.sourceTimingSafety.accepted += 1;
+            sm.sourceTimingSafety.dispatched += 1;
+            writeFileSync(summaryPath, JSON.stringify(sm));
+            return observe();
+          };
+          assert.equal(
+            withExtraSample(false).complete,
+            true,
+            "forged distinct second sample stays valid",
+          );
+          const duplicated = withExtraSample(true);
+          assert.equal(duplicated.complete, false);
+          assert.equal(
+            duplicated.sessions[0].timingExcluded,
+            true,
+            "duplicated helper birth must be excluded",
+          );
+          writeFileSync(summaryPath, summaryBytes);
+          writeRows(at, rows);
           const damaged = rows.filter((r) => r.type !== "source-timing-rss-sample");
           writeFileSync(
             join(at, "records.jsonl"),
