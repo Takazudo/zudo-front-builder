@@ -160,8 +160,6 @@ export function runOriginalFamilyBatch(
       "family root/native unavailable",
     );
     verifyImages(provisional);
-    const audit = browserAudit.finish();
-    requireBlank(audit);
     const proof = safety.verifyFamilyAdmission();
     assert(
       same(proof.root, provisional.root) &&
@@ -170,6 +168,8 @@ export function runOriginalFamilyBatch(
       "family startup ownership changed",
     );
     signal.throwIfAborted();
+    const audit = browserAudit.inspect();
+    requireBlank(audit);
     const stamp = process.hrtime.bigint();
     assert(stamp < deadlineNs, "family work deadline expired");
     admission = { decisionNs: String(stamp), owned, known: [...known.values()], ...audit };
@@ -183,6 +183,7 @@ export function runOriginalFamilyBatch(
     });
     throw error;
   }
+  browserAudit.finish();
   browserAudit.enter();
   return runBatch({ ...input, deps: { ...input.deps, familyAdmission: admission } });
 }
