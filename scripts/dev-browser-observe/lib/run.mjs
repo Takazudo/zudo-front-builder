@@ -7,7 +7,7 @@ import {
   verifyNextOuterWiring,
   verifyNextOuterProvider,
 } from "./next-outer-provider.mjs";
-import { observeNextOuterReceipt } from "./next-outer-channel.mjs";
+import { nextOuterNonceDigest, observeNextOuterReceipt } from "./next-outer-channel.mjs";
 import { outerTerminalGate } from "./next-outer-terminal.mjs";
 import { samplerClosureAudit } from "./linux-rss-sample.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
@@ -1177,7 +1177,11 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
             };
             outerGate = outerTerminalGate({ authority });
             outerReceiver.sendAuthority(header);
-            rec.append({ type: "next-outer-authority", authority });
+            rec.append({
+              type: "next-outer-authority",
+              authority,
+              nonceSha256: nextOuterNonceDigest(header.nonce),
+            });
           },
         }),
         contract,

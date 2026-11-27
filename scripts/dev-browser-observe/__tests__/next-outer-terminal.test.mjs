@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import {
+  nextOuterNonceDigest,
+  readNextOuterDeclaration,
+  NEXT_OUTER_PROVIDER,
+} from "../lib/next-outer-channel.mjs";
+import { linuxBirth } from "../lib/linux-birth.mjs";
 import { outerTerminalGate } from "../lib/next-outer-terminal.mjs";
 
 const birth = (pid) => ({
@@ -121,5 +127,36 @@ test.each(["success", "equality", "new-birth", "replay", "retired"])(
     if (mode === "success") assert.equal(check().t0Ns, "95");
     else assert.throws(check);
     assert.throws(check);
+  },
+);
+
+test.skipIf(process.platform !== "linux")(
+  "an outer declaration rejects a wrong or crossed run digest",
+  () => {
+    const key = "ZFB_NEXT_OUTER_CHANNEL",
+      prior = process.env[key],
+      profile = { provider: NEXT_OUTER_PROVIDER };
+    const nonce = "00".repeat(16),
+      declared = {
+        ...profile,
+        nonce,
+        nonceSha256: "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb",
+        outer: linuxBirth(process.ppid),
+      };
+    try {
+      assert.equal(nextOuterNonceDigest(nonce), declared.nonceSha256);
+      process.env[key] = JSON.stringify(declared);
+      assert.equal(readNextOuterDeclaration(profile).nonce, nonce);
+      for (const changed of [
+        { nonce: "aa".repeat(16) },
+        { nonceSha256: nextOuterNonceDigest("ab".repeat(16)) },
+      ]) {
+        process.env[key] = JSON.stringify({ ...declared, ...changed });
+        assert.throws(() => readNextOuterDeclaration(profile), /nonce digest mismatch/);
+      }
+    } finally {
+      if (prior === undefined) delete process.env[key];
+      else process.env[key] = prior;
+    }
   },
 );

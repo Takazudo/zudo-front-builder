@@ -1,5 +1,6 @@
 """Opt-in transport in the independent WSL Python wrapper that already inventories the browser."""
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -117,6 +118,7 @@ if __name__=="__main__":
     end=started+7200_000_000_000
     work_end=end-life.FINALIZATION_NS
     nonce=secrets.token_hex(16)
+    nonce_digest=hashlib.sha256(bytes.fromhex(nonce)).hexdigest()
     directory=Path(profile["outDir"])/label
     browser_file=root/(label+"-owned-browser.json")
     logfile=root/(label+"-outer.jsonl")
@@ -133,7 +135,7 @@ if __name__=="__main__":
     pairs[0][0].setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
     for endpoint in pairs[1]:endpoint.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
     fds=[child.fileno() for owner,child in pairs]
-    declaration=dict(provider=spec["provider"],nonce=nonce,outer=self_birth,fds=fds,
+    declaration=dict(provider=spec["provider"],nonce=nonce,nonceSha256=nonce_digest,outer=self_birth,fds=fds,
                      sockets=[os.readlink(f"/proc/self/fd/{fd}") for fd in fds])
     env={**os.environ,"ZFB_NEXT_OUTER_CHANNEL":json.dumps(declaration,separators=(",",":"))}
     sel=selectors.DefaultSelector()
@@ -161,7 +163,7 @@ if __name__=="__main__":
         sel.register(pidfd,selectors.EVENT_READ,"exit")
         sel.register(pairs[1][0],selectors.EVENT_READ,"header")
         nxt=now()
-        record(dict(stage="started",outer=self_birth,supervisor=supervisor,descriptors=declaration["sockets"]))
+        record(dict(stage="started",outer=self_birth,supervisor=supervisor,descriptors=declaration["sockets"],nonceSha256=nonce_digest))
         while result is None:
             stamp=now()
             need(stamp<work_end,"outer supervisor work cutoff")
@@ -198,7 +200,7 @@ if __name__=="__main__":
                     marker.append(dict(stage="controller",birth=controller_handle[1]))
                     obs=reader.OuterObservation(data["contract"],data["holder"],data["worker"],
                         nonce,data["token"],data["descriptors"],min(work_end,now()+3_000_000_000),record)
-                    record(dict(stage="authenticated-header",controller=data["controller"],
+                    record(dict(stage="authenticated-header",nonceSha256=hashlib.sha256(bytes.fromhex(data["nonce"])).hexdigest(),controller=data["controller"],
                                 holder=data["holder"],worker=data["worker"],descriptors=data["descriptors"]))
                     sel.register(pairs[0][0],selectors.EVENT_READ,"pair")
                 elif key.data=="pair":

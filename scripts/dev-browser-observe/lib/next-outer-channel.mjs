@@ -2,10 +2,16 @@
 // fd3 remains the controller's ordinary IPC. fd4 is separately forwarded to
 // the holder. Receipt/wakeup descriptors never reach a product or sampler.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { closeSync, fstatSync, readlinkSync } from "node:fs";
 import { linuxBirth, sameLinuxBirth } from "./linux-birth.mjs";
 
 export const NEXT_OUTER_PROVIDER = "linux-next-outer-receipt.v1";
+
+export function nextOuterNonceDigest(nonce) {
+  assert(typeof nonce === "string" && /^[0-9a-f]{32}$/.test(nonce), "invalid outer receipt nonce");
+  return createHash("sha256").update(Buffer.from(nonce, "hex")).digest("hex");
+}
 
 export function readNextOuterDeclaration(profile) {
   const raw = process.env.ZFB_NEXT_OUTER_CHANNEL;
@@ -13,7 +19,11 @@ export function readNextOuterDeclaration(profile) {
   const decl = JSON.parse(raw);
   assert.equal(profile.provider, NEXT_OUTER_PROVIDER);
   assert.equal(decl.provider, profile.provider);
-  assert(/^[0-9a-f]{32}$/.test(decl.nonce));
+  assert.equal(
+    decl.nonceSha256,
+    nextOuterNonceDigest(decl.nonce),
+    "outer declaration nonce digest mismatch",
+  );
   const outer = linuxBirth(process.ppid);
   assert(
     sameLinuxBirth(outer, decl.outer) &&
