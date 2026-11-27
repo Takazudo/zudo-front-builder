@@ -39,9 +39,10 @@ def send(sock, data, fds=()):
     require(sock.sendmsg([payload], ancillary) == len(payload), "incomplete custody send")
 
 
-def receive(sock, want, credential=False):
+def receive(sock, want, credential=False, max_packet=MAX_PACKET):
     cap = socket.CMSG_SPACE(MAX_FDS * 4) + socket.CMSG_SPACE(U32.size)
-    payload, ancillary, flags, _ = sock.recvmsg(MAX_PACKET, cap, CLOEXEC)
+    require(0 < max_packet <= MAX_PACKET, "invalid custody input cap")
+    payload, ancillary, flags, _ = sock.recvmsg(max_packet, cap, CLOEXEC)
     fds = []
     creds = []
     valid = True

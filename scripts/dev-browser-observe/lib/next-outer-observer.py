@@ -21,6 +21,55 @@ def load_scout_helpers():
     return module
 
 
+def receive_authority(sock, outer, supervisor, nonce, paths):
+    """Bind reverse header to the actual controller before trusting holder metadata.
+
+    paths is supplied by the sealed outer wrapper. A sender cannot supply its
+    own executable, script or cwd pins through the packet it asks us to trust.
+    """
+    io=load_scout_helpers()
+    io.require(not sock.getblocking() and sock.type==socket.SOCK_SEQPACKET and
+               sock.getsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED)==1,
+               "unverified reverse authority channel")
+    packet, _, creds=io.receive(sock,[0],credential=True,max_packet=8192)
+    controller=packet["controller"]
+    holder=packet["holder"]
+    io.require(creds==(controller["pid"],os.getuid(),os.getgid()) and packet["nonce"]==nonce,
+               "wrong authority issuer")
+    io.require(outer["pid"]==os.getpid() and supervisor["ppid"]==outer["pid"] and
+               controller["ppid"]==supervisor["pid"] and holder["ppid"]==controller["pid"],
+               "wrong authority process chain")
+    for role,expected in (("supervisor",supervisor),("controller",controller),("holder",holder)):
+        handle=io.bind(expected["pid"])
+        try:
+            image=paths["python"] if role=="holder" else paths["node"]
+            exe=os.stat("exe",dir_fd=handle[1])
+            io.require(io.key(handle[2])==io.key(expected) and
+                       os.readlink("exe",dir_fd=handle[1])==image["path"] and
+                       str(exe.st_dev)==image["device"] and str(exe.st_ino)==image["inode"] and
+                       os.readlink("cwd",dir_fd=handle[1])==paths["cwd"],
+                       "authority role executable/cwd/birth")
+            args=io.field(handle[1],"cmdline",16384).split(b"\0")
+            if role=="holder":
+                wanted=[paths["python"]["path"],"-I","-B",paths["holderScript"],str(controller["pid"])]
+                io.require(args==[os.fsencode(x) for x in wanted]+[b""],"authority holder argv")
+            elif role=="supervisor":
+                io.require(args==[os.fsencode(x) for x in paths["supervisorArgv"]]+[b""],
+                           "authority supervisor argv")
+            else:
+                io.require(len(args)==4 and args[:2]==[os.fsencode(image["path"]),
+                           os.fsencode(paths["workerScript"])] and args[-1]==b"",
+                           "authority controller entry")
+                claim=json.loads(args[2])
+                io.require(claim["label"]==paths["label"] and
+                           claim["profilePath"]==paths["profilePath"], "authority controller run")
+            io.require(io.key(io.birth(handle[1]))==io.key(expected) and
+                       io.poll_terminal(handle[0]) is None,"authority role lost")
+        finally:
+            io.close_pair(handle)
+    return packet
+
+
 class OuterObservation:
     """Caller owns passive readiness, finite wall budget and raw journal."""
 

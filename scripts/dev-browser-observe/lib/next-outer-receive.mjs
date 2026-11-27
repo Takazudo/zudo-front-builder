@@ -9,6 +9,7 @@ const RIGHTS = 1;
 const CREDENTIALS = 2;
 const DONTWAIT = 0x40;
 const CMSG_CLOEXEC = 0x40000000;
+const NOSIGNAL = 0x4000;
 
 // msghdr/iovec/cmsghdr and constants are tied to this exact Linux x86_64 ABI.
 // Kept behind the explicit transport factory so ordinary runs never load FFI.
@@ -60,6 +61,7 @@ export async function openNextOuterReceiver({ signal, deadlineNs } = {}) {
     assert.equal(digest.digest("hex"), libcDigest);
     handle = ffi.dlopen("/proc/self/fd/" + file.fd, {
       recvmsg: { arguments: ["int32", "buffer", "int32"], return: "int64" },
+      send: { arguments: ["int32", "buffer", "uint64", "int32"], return: "int64" },
     });
   } finally {
     await file.close();
@@ -73,6 +75,12 @@ export async function openNextOuterReceiver({ signal, deadlineNs } = {}) {
   return {
     close() {
       handle.lib.close();
+    },
+    sendAuthority(fd, authority) {
+      const packet = Buffer.from(JSON.stringify(authority));
+      assert(packet.length > 0 && packet.length <= 8192, "outer authority cap");
+      const sent = handle.functions.send(fd, packet, BigInt(packet.length), DONTWAIT | NOSIGNAL);
+      assert.equal(Number(sent), packet.length, "outer authority delivery unavailable");
     },
     receive(fd, peer) {
       const body = Buffer.alloc(MAX_PACKET);

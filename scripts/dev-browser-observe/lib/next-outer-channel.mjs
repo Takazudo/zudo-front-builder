@@ -90,6 +90,7 @@ export async function observeNextOuterReceipt({
     }
     throw error;
   }
+  let declared = false;
   let delivered = false;
   let stopped = false;
   let failure;
@@ -120,6 +121,11 @@ export async function observeNextOuterReceipt({
     }
   });
   return {
+    sendAuthority(authority) {
+      assert(!declared && !stopped && !failure, "outer authority already sent or retired");
+      declared = true;
+      reader.sendAuthority(5, authority);
+    },
     async stop() {
       if (!stopped) {
         stopped = true;
