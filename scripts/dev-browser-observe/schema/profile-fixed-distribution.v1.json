@@ -24,7 +24,12 @@
       "const": "dev-browser-observe.profile.fixed-distribution.v1"
     },
     "fixedRssSafety": {
-      "enum": ["linux-fixed-zfb.v1", "linux-fixed-astro-footer.v1", "linux-fixed-astro-title.v1"],
+      "enum": [
+        "linux-fixed-zfb.v1",
+        "linux-fixed-astro-footer.v1",
+        "linux-fixed-astro-title.v1",
+        "linux-fixed-astro-category.v1"
+      ],
       "description": "Use birth-bound Linux RSS observations for a direct Node shim and its pinned zfb native child. The Astro footer contract verifies the pinned single Astro process for one shared layout correctness cell."
     },
     "fixedPeerBrowser": {

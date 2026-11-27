@@ -1,3 +1,5 @@
+import { fixedCategoryContract, CATEGORY_ARTICLE } from "./astro-category.mjs";
+import { isDeepStrictEqual } from "node:util";
 import { astroTextPredicate } from "./astro-text.mjs";
 import { ASTRO_TITLE } from "./astro-title.mjs";
 import { ASTRO_FOOTER, astroFooterPredicate } from "./astro-footer.mjs";
@@ -1393,9 +1395,15 @@ export function fnWarmPaths(scenario) {
  */
 export function fieldNotesOps(
   m,
-  { restorationWriteMethod = "in-place", strictAstroFooter = false, strictAstroTitle = false } = {},
+  {
+    restorationWriteMethod = "in-place",
+    strictAstroFooter = false,
+    strictAstroTitle = false,
+    strictAstroCategory = false,
+  } = {},
 ) {
   const original = m.model;
+  const categoryContract = strictAstroCategory ? fixedCategoryContract(original) : null;
   const state = { model: original, touched: new Set(), titles: new Map() };
   const snapshotSpec = {
     dirs: [m.contentDir],
@@ -1403,8 +1411,41 @@ export function fieldNotesOps(
   };
   return {
     state,
+    ...(categoryContract && { categoryContract }),
     prepareAttempt: (op) => {
       const a = planFieldNotesOp(m, state.model, op, { strictAstroFooter, strictAstroTitle });
+      if (categoryContract) {
+        const source = readArticle(m, CATEGORY_ARTICLE);
+        if (
+          op.op !== "edit-category" ||
+          a.targetPath !== href(CATEGORY_ARTICLE) ||
+          !isDeepStrictEqual(a.touched, [CATEGORY_ARTICLE]) ||
+          !isDeepStrictEqual(a.declared, {
+            from: "performance",
+            to: "testing",
+            label: "Testing",
+          }) ||
+          !isDeepStrictEqual(a.supplemental, categoryContract.selected) ||
+          !isDeepStrictEqual(a.predicate, text(FN_SEL.eyebrow, "equals", "Testing")) ||
+          getFrontmatter(source, "category") !== "performance" ||
+          getFrontmatter(source, "categoryLabel") !== "Performance" ||
+          ["category", "categoryLabel"].some(
+            (key) => source.split("\n").filter((line) => line.startsWith(key + ":")).length !== 1,
+          ) ||
+          !a.writes[0].bytes.equals(
+            Buffer.from(
+              setFrontmatter(
+                setFrontmatter(source, "category", "testing"),
+                "categoryLabel",
+                "Testing",
+              ),
+            ),
+          )
+        )
+          throw new Error("unexpected fixed Astro category source or operation plan");
+        a.predicate = structuredClone(categoryContract.edited);
+        a.supplemental = structuredClone(categoryContract.supplemental);
+      }
       for (const s of a.touched ?? []) state.touched.add(s);
       a.applied = () => {
         state.model = a.nextModel;
