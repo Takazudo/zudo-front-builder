@@ -14,6 +14,7 @@ import {
 import { OP_WRITE_METHODS } from "./fixture.mjs";
 import {
   FIXED_ASTRO_CATEGORY_PROTOCOL,
+  FIXED_ASTRO_CSS_PROTOCOL,
   FIXED_ASTRO_TITLE_PROTOCOL,
   isFixedAstroProtocol,
 } from "./fixed-peer-roles.mjs";
@@ -52,10 +53,12 @@ export const FIXED_ADAPTERS = {
   next: ["archive"],
 };
 
-// This contract qualifies the exact archived fn-shared-component correctness cell.
+// Each protocol qualifies exactly one archived correctness cell: fn-shared-component,
+// fn-title-detail, fn-category or fn-managed-css.
 function fixedAstroErrors(p) {
   const category = p.fixedRssSafety === FIXED_ASTRO_CATEGORY_PROTOCOL;
   const title = p.fixedRssSafety === FIXED_ASTRO_TITLE_PROTOCOL;
+  const css = p.fixedRssSafety === FIXED_ASTRO_CSS_PROTOCOL;
   const [scenario] = p.scenarios ?? [];
   const [op] = scenario?.ops ?? [];
   const errors = [];
@@ -78,7 +81,13 @@ function fixedAstroErrors(p) {
   if (
     p.scenarios?.length !== 1 ||
     scenario?.id !==
-      (category ? "fn-category" : title ? "fn-title-detail" : "fn-shared-component") ||
+      (category
+        ? "fn-category"
+        : title
+          ? "fn-title-detail"
+          : css
+            ? "fn-managed-css"
+            : "fn-shared-component") ||
     scenario.set !== "workload" ||
     Object.keys(scenario).some((k) => !["id", "set", "warmOrder", "ops"].includes(k)) ||
     scenario.warmOrder !== "none" ||
@@ -89,10 +98,10 @@ function fixedAstroErrors(p) {
         op.article !== (category ? "article-00015" : "article-00005") ||
         op.expect !== "classify" ||
         Object.keys(op).some((k) => !["id", "op", "article", "writeMethod", "expect"].includes(k))
-      : op?.id !== "footer" ||
-        op.op !== "edit-shared-component" ||
+      : op?.id !== (css ? "managed-css" : "footer") ||
+        op.op !== (css ? "edit-managed-css" : "edit-shared-component") ||
         op.targetPath !== "/" ||
-        (op.expect ?? "success") !== "success" ||
+        (css ? op.expect !== "classify" : (op.expect ?? "success") !== "success") ||
         Object.keys(op).some(
           (k) => !["id", "op", "targetPath", "writeMethod", "expect"].includes(k),
         )) ||

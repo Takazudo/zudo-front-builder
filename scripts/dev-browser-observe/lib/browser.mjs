@@ -423,6 +423,13 @@ export function updateSignalFrame(payload, ns, url, socket, astroFooter = false)
       pageSignal:
         event === "page" &&
         (msg.path === undefined || msg.path === "*" || msg.path === "/src/layouts/Site.astro"),
+      astroManagedCss:
+        event === "css" &&
+        Array.isArray(msg?.updates) &&
+        msg.updates.length === 1 &&
+        msg.updates[0]?.type === "css-update" &&
+        msg.updates[0].path === "/src/styles/site.imported.css" &&
+        msg.updates[0].acceptedPath === "/src/styles/site.imported.css",
     }),
     rawType,
     event,

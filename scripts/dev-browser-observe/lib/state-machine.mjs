@@ -116,6 +116,22 @@ export function newAccounting(planned) {
   };
 }
 
+export function astroCssPredicate(marker) {
+  return {
+    kind: "all",
+    of: [
+      { kind: "count", selector: ":root", equals: 1 },
+      {
+        kind: "computed-style",
+        selector: ":root",
+        property: "--fn-managed-marker",
+        equals: marker,
+      },
+      { kind: "computed-style", selector: ":root", property: "--paper", equals: "#f5f2e9" },
+    ],
+  };
+}
+
 export function classifyMechanism({
   preDocUUID,
   notifyDocUUID,
@@ -224,21 +240,31 @@ export async function runBatch({ scenarios, deps }) {
   if (deps.fixedAstroCategory && !category)
     throw new Error("missing fixed category corpus contract");
   const articleOperation = Boolean(category || deps.fixedAstroTitle);
-  const fixedAstro = deps.fixedAstroFooter || articleOperation;
+  const fixedAstroCss = Boolean(deps.fixedAstroCss);
+  const fixedAstro = deps.fixedAstroFooter || fixedAstroCss || articleOperation;
   const originalText = deps.fixedAstroTitle ? ASTRO_TITLE : ASTRO_FOOTER;
   const primaryOriginal =
     category?.original ??
-    astroTextPredicate(originalText, deps.fixedAstroTitle ? TITLE_SELECTOR : ASTRO_FOOTER_SELECTOR);
+    (fixedAstroCss
+      ? astroCssPredicate("")
+      : astroTextPredicate(
+          originalText,
+          deps.fixedAstroTitle ? TITLE_SELECTOR : ASTRO_FOOTER_SELECTOR,
+        ));
   const freshPath = category
     ? CATEGORY_DETAIL
     : deps.fixedAstroTitle
       ? TITLE_DETAIL
-      : "/archive/1/";
+      : fixedAstroCss
+        ? "/"
+        : "/archive/1/";
   const finalAffected = category
     ? category.finalPath
     : deps.fixedAstroTitle
       ? "/articles/article-00095/"
-      : "/archive/1/";
+      : fixedAstroCss
+        ? "/"
+        : "/archive/1/";
   const seenSupplementalDocs = new Set();
 
   let peerWrite = null;
@@ -664,6 +690,24 @@ export async function runBatch({ scenarios, deps }) {
                 JSON.stringify(attempt.predicate))
           )
             throw new Error("missing or unexpected original Astro text plan");
+          if (fixedAstroCss) {
+            if (
+              attempt.targetPath !== "/" ||
+              attempt.supplemental?.length !== 0 ||
+              attempt.touched?.length !== 0 ||
+              attempt.writes?.length !== 1 ||
+              attempt.writes[0] !== attempt.write ||
+              attempt.write.method !== "in-place" ||
+              !isDeepStrictEqual(attempt.predicate, {
+                kind: "computed-style",
+                selector: ":root",
+                property: "--fn-managed-marker",
+                includes: attempt.token,
+              })
+            )
+              throw new Error("missing or unexpected original Astro managed CSS plan");
+            attempt.predicate = astroCssPredicate(attempt.token);
+          }
           if (
             (Array.isArray(attempt.writes) && attempt.writes.length === 0) ||
             (!attempt.writes && !attempt.write)
@@ -870,7 +914,9 @@ export async function runBatch({ scenarios, deps }) {
                 ? { originalCategory: armed.actual }
                 : deps.fixedAstroTitle
                   ? { originalTitle: armed.actual }
-                  : { originalFooter: armed.actual }),
+                  : fixedAstroCss
+                    ? { originalCss: armed.actual }
+                    : { originalFooter: armed.actual }),
               armObservedNs: String(clock.now()),
               sockets,
             });
@@ -1053,12 +1099,17 @@ export async function runBatch({ scenarios, deps }) {
             mainFrameNavigations: during(evidence.navigations).length,
             newDocuments: during(evidence.docInits).length,
             livereloadEvents: during(evidence.wsFrames).map((f) =>
-              f.event === "css" ||
-              (f.event === "module" && (articleOperation || !f.layoutModule)) ||
-              (f.event === "page" &&
-                (!f.pageSignal || (articleOperation && f.hasUpdatePath && f.updatePath !== "*")))
-                ? "unattributed"
-                : f.event,
+              fixedAstroCss
+                ? f.event === "css" && !f.astroManagedCss
+                  ? "other-css"
+                  : f.event
+                : f.event === "css" ||
+                    (f.event === "module" && (articleOperation || !f.layoutModule)) ||
+                    (f.event === "page" &&
+                      (!f.pageSignal ||
+                        (articleOperation && f.hasUpdatePath && f.updatePath !== "*")))
+                  ? "unattributed"
+                  : f.event,
             ),
           };
           peerDecision.window = {
@@ -1146,6 +1197,7 @@ export async function runBatch({ scenarios, deps }) {
             )
               throw new Error("Astro update did not confirm the exact armed text and target");
           }
+          if (fixedAstroCss) bodyRevision.affectedDocUUID = waited.payload.docUUID;
           if (articleOperation) {
             seenSupplementalDocs.add(preDocUUID);
             seenSupplementalDocs.add(waited.payload.docUUID);

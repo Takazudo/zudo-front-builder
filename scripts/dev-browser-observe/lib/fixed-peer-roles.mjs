@@ -7,11 +7,13 @@ export const FIXED_ASTRO_FOOTER_PROTOCOL = "linux-fixed-astro-footer.v1";
 
 export const FIXED_ASTRO_TITLE_PROTOCOL = "linux-fixed-astro-title.v1";
 export const FIXED_ASTRO_CATEGORY_PROTOCOL = "linux-fixed-astro-category.v1";
+export const FIXED_ASTRO_CSS_PROTOCOL = "linux-fixed-astro-css.v1";
 export function isFixedAstroProtocol(protocol) {
   return (
     protocol === FIXED_ASTRO_FOOTER_PROTOCOL ||
     protocol === FIXED_ASTRO_TITLE_PROTOCOL ||
-    protocol === FIXED_ASTRO_CATEGORY_PROTOCOL
+    protocol === FIXED_ASTRO_CATEGORY_PROTOCOL ||
+    protocol === FIXED_ASTRO_CSS_PROTOCOL
   );
 }
 
