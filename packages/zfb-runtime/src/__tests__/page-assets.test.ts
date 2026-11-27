@@ -128,7 +128,7 @@ describe("finalizeHtmlAssets: stable URL rewrite", () => {
     );
   });
 
-  it("rewrites the attribute-escaped spelling of a key to the escaped final URL", () => {
+  it("leaves an attribute-escaped spelling alone, like the SSG pipeline", () => {
     const escaped: PageAssetManifest = {
       assets: [
         { kind: "css", stableUrl: "/assets/a.css?x=1&y=2", url: "/assets/a-999.css?x=1&y=2" },
@@ -138,9 +138,7 @@ describe("finalizeHtmlAssets: stable URL rewrite", () => {
       `<html><head><link rel="stylesheet" href="/assets/a.css?x=1&amp;y=2"></head></html>`,
       escaped,
     );
-    expect(out).toBe(
-      `<html><head><link rel="stylesheet" href="/assets/a-999.css?x=1&amp;y=2"></head></html>`,
-    );
+    expect(out).toContain(`href="/assets/a.css?x=1&amp;y=2"`);
   });
 });
 

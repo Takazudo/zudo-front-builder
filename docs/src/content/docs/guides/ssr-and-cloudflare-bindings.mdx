@@ -183,8 +183,9 @@ and then builds the `Response`:
   passed through untouched. Its body is not read, so a stream's first
   chunk reaches the client without waiting for the rest.
 - A page that returns a plain string, or that sets a non-HTML
-  `contentType`, is sent as-is. Wrap a string in `htmlPage()` if you want
-  the asset handling.
+  `contentType`, gets no asset handling. The only change is the existing
+  one: an HTML string that starts with `<html` gets `<!doctype html>`.
+  Wrap a string in `htmlPage()` if you want the asset handling.
 - `.html` pages are still copied verbatim.
 
 ### Development server

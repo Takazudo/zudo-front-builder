@@ -92,11 +92,9 @@ export function createHtmlAssetFinalizer(
   const rewrites: Rewrite[] = [];
   for (const { stableUrl, url } of snapshot.assets) {
     if (stableUrl.length === 0) continue;
+    // Only the raw spelling, like `ProductionAssetPipeline::apply`, so an SSR
+    // page and its SSG twin resolve the same references.
     rewrites.push({ from: stableUrl, to: url });
-    // An attribute-escaped reference (`&amp;` in a query, for example) keeps
-    // its escaping after the rewrite.
-    const escapedFrom = escapeAttr(stableUrl);
-    if (escapedFrom !== stableUrl) rewrites.push({ from: escapedFrom, to: escapeAttr(url) });
   }
   // Longest key first, like `ProductionAssetPipeline` (prod.rs). `sort` is
   // stable, so equal lengths keep record order.

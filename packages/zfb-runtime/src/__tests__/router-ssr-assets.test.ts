@@ -303,6 +303,7 @@ describe("htmlPage descriptor", () => {
     [{ status: 205 }, /raw Response/],
     [{ status: 304 }, /raw Response/],
     [{ statusText: "bad\nline" }, /statusText/],
+    [{ statusText: "snow \u2603" }, /statusText/],
     [{ headers: { "Content-Type": "application/json" } }, /text\/html/],
     [{ headers: { "Content-Encoding": "gzip" } }, /Content-Encoding/],
   ])("rejects %o with a TypeError", (init, message) => {
@@ -313,6 +314,16 @@ describe("htmlPage descriptor", () => {
   it("rejects a Response or nested descriptor body", () => {
     expect(() => htmlPage(new Response("x"))).toThrow(TypeError);
     expect(() => htmlPage(htmlPage("x"))).toThrow(TypeError);
+  });
+
+  it.each([
+    ["a ReadableStream", () => new ReadableStream()],
+    ["a Uint8Array", () => new Uint8Array([60])],
+    ["an ArrayBuffer", () => new ArrayBuffer(1)],
+    ["a Blob", () => new Blob(["<p>x</p>"])],
+    ["a Promise", () => Promise.resolve("<p>x</p>")],
+  ])("rejects %s body", (_label, make) => {
+    expect(() => htmlPage(make())).toThrow(/raw Response for streams/);
   });
 
   it("accepts an explicit text/html Content-Type with parameters", () => {

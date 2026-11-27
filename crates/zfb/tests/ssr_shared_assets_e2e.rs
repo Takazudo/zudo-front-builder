@@ -21,7 +21,7 @@ use std::sync::LazyLock;
 #[path = "support/e2e_platform.rs"]
 mod e2e_platform;
 
-use e2e_platform::{link_dir, PNPM_PROGRAM};
+use e2e_platform::link_dir;
 use serde_json::Value;
 use zfb_test_utils::zfb_binary;
 
@@ -52,17 +52,20 @@ fn copy_dir(src: &Path, dst: &Path) {
 }
 
 fn tools_available() -> bool {
-    let ok = |program: &str| {
-        Command::new(program)
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    };
-    if ok("node") && ok(PNPM_PROGRAM) {
+    let node = Command::new("node")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if node {
         return true;
     }
-    eprintln!("[ssr_shared_assets_e2e] node or pnpm unavailable; skipping.");
+    // CI must never report a skipped acceptance run as a pass.
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "[ssr_shared_assets_e2e] node is required in CI"
+    );
+    eprintln!("[ssr_shared_assets_e2e] node unavailable; skipping.");
     false
 }
 

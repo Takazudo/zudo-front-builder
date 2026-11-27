@@ -27,6 +27,19 @@ const BODY_DERIVED_HEADERS = [
 /** Statuses whose responses carry no body; return a raw `Response` for them. */
 const BODYLESS_STATUSES: ReadonlySet<number> = new Set([204, 205, 304]);
 
+// `reason-phrase` in RFC 9112 section 4, checked here because the embedded
+// dev runtime's `Response` does not validate it.
+const REASON_PHRASE = /^[\t\x20-\x7e\x80-\xff]*$/;
+
+function isNonMarkupBody(body: unknown): boolean {
+  if (typeof body !== "object" || body === null) return false;
+  if (typeof (body as { then?: unknown }).then === "function") return true;
+  if (ArrayBuffer.isView(body) || body instanceof ArrayBuffer) return true;
+  if (typeof ReadableStream !== "undefined" && body instanceof ReadableStream) return true;
+  if (typeof Blob !== "undefined" && body instanceof Blob) return true;
+  return false;
+}
+
 /** Options accepted by [`htmlPage`]. */
 export interface HtmlPageInit {
   /** HTTP status, an integer in 200..599 other than 204, 205 and 304. Default 200. */
@@ -75,6 +88,11 @@ export function htmlPage(body: unknown, init: HtmlPageInit = {}): HtmlPageResult
   if (isHtmlPage(body)) {
     throw new TypeError("[zfb-runtime] htmlPage: body is already an htmlPage(...) result");
   }
+  if (isNonMarkupBody(body)) {
+    throw new TypeError(
+      "[zfb-runtime] htmlPage: body must be JSX or an HTML string; return a raw Response for streams, binary data or promises",
+    );
+  }
 
   const status = init.status ?? 200;
   if (!Number.isInteger(status) || status < 200 || status > 599) {
@@ -90,15 +108,7 @@ export function htmlPage(body: unknown, init: HtmlPageInit = {}): HtmlPageResult
 
   const statusText = init.statusText;
   if (statusText !== undefined) {
-    let valid = typeof statusText === "string";
-    if (valid) {
-      try {
-        new Response(null, { status: 200, statusText });
-      } catch {
-        valid = false;
-      }
-    }
-    if (!valid) {
+    if (typeof statusText !== "string" || !REASON_PHRASE.test(statusText)) {
       throw new TypeError(
         `[zfb-runtime] htmlPage: statusText must be a valid HTTP reason phrase, got ${JSON.stringify(statusText)}`,
       );
