@@ -1,0 +1,4 @@
+{
+  "wind": false,
+  "adapter": "@takazudo/zfb-adapter-cloudflare"
+}

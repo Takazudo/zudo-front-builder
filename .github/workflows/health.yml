@@ -550,6 +550,12 @@ jobs:
         if: ${{ !cancelled() && steps.chromium.outcome == 'success' && steps.workspace_nextest.outcome == 'success' }}
         run: pnpm exec playwright test --config tests/scanner-boundary-acceptance/playwright.config.mjs
 
+      # #4887: ssr_shared_assets_e2e preserves its root and subpath builds for
+      # this check, which serves them through the real built worker.
+      - name: SSR shared assets (Chromium)
+        if: ${{ !cancelled() && steps.chromium.outcome == 'success' && steps.workspace_nextest.outcome == 'success' }}
+        run: pnpm exec playwright test --config tests/ssr-shared-assets/playwright.config.mjs
+
       # #3939 runs the documented MDX recipe as a packed external consumer.
       # Its JS packages are packed from this checkout, and the Rust binary
       # built above must match the exact checked-out source SHA.
