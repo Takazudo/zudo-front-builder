@@ -1,5 +1,6 @@
 // Reconcile the completed cleanup census without influencing its signal decisions.
 import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import { openSync, closeSync, fstatSync, readSync, statSync } from "node:fs";
 import { sameLinuxBirth } from "./linux-birth.mjs";
 
@@ -83,7 +84,13 @@ export function reconcileNextPopulation({ chain, worker, terminalProof, stop, re
     return ids;
   };
   const known = inventory("known", stop.known);
-  inventory("ownedBefore", stop.ownedBefore);
+  const before = inventory("ownedBefore", stop.ownedBefore);
+  for (const b of chain) {
+    const observed = stop.ownedBefore.find((r) => same(r, b));
+    if (!observed || !["R", "S", "D", "T", "t", "K", "W", "P", "I"].includes(observed.state))
+      reject("ownedBefore", "persistent role not live at initial stop census", b);
+  }
+  if (stop.rootAlive !== true) reject("ownedBefore", "root liveness not verified");
   const remaining = inventory("remaining", stop.remaining);
   if (!stop.absent || remaining.size) reject("remaining", "server cleanup incomplete");
   const spawn = registry.filter((r) => r.type === "spawn");
@@ -106,8 +113,31 @@ export function reconcileNextPopulation({ chain, worker, terminalProof, stop, re
     "missing or excessive stop endings",
   );
   const ended = new Set();
+  const stages = new Set((stop.steps ?? []).map((step) => step.signal));
+  // Linux stopOwned records the last signal stage when absence was seen.
+  // This is an observation boundary, not proof the signal caused the exit.
+
   for (const e of stop.endings) {
     if (!known.has(e.pid) || ended.has(e.pid)) reject("endings", "unmatched or duplicate PID", e);
+    const recorded = stop.known.find((b) => b.pid === e.pid);
+    const conflicting =
+      recorded &&
+      ["ppid", "pgid", "startTicks", "bootId", "birthVersion"].some(
+        (k) => Object.hasOwn(e, k) && recorded[k] !== e[k],
+      );
+    if (conflicting) reject("endings", "ending contradicts its unique recorded birth", e);
+    if (e.endedAfter === "before-stop") {
+      if (chain.some((b) => b.pid === e.pid))
+        reject("endings", "persistent role ended before intentional stop", e);
+    } else if (
+      !before.has(e.pid) ||
+      !["SIGINT", "SIGTERM", "SIGKILL"].includes(e.endedAfter) ||
+      !stages.has(e.endedAfter)
+    ) {
+      reject("endings", "ending stage inconsistent with initial census or signal stages", e);
+    }
+    if (e.pid === chain[0].pid && (!stop.exit || !isDeepStrictEqual(e.exit, stop.exit)))
+      reject("endings", "root exit receipt mismatch", e);
     ended.add(e.pid);
   }
   for (const pid of known) if (!ended.has(pid)) reject("endings", "missing final PID", { pid });

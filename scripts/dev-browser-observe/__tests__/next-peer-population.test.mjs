@@ -21,7 +21,14 @@ function fixture() {
     remaining: [],
     known: [...all],
     ownedBefore: [...chain],
-    endings: all.map((r) => ({ pid: r.pid, endedAfter: "SIGINT" })),
+    rootAlive: true,
+    exit: { exitCode: 0, signalCode: null },
+    steps: [{ signal: "SIGINT", target: "group:21", delivery: "sent" }],
+    endings: all.map((r) => ({
+      pid: r.pid,
+      endedAfter: r.pid === worker.pid ? "before-stop" : "SIGINT",
+      ...(r.pid === 21 && { exit: { exitCode: 0, signalCode: null } }),
+    })),
   };
   const registry = all
     .map((b, i) => ({ ...b, type: i ? "owned" : "spawn" }))
@@ -52,5 +59,28 @@ test("clean teardown cannot qualify an unknown or changed population, omitted re
     assert.equal(report.resourceAbsent, true);
     assert.equal(report.ok, false);
     assert(report.violations.length > 0);
+  }
+});
+
+test("persistent roles must be live at the pre-stop census and every ending has a consistent stage", () => {
+  const changes = [
+    (x) => x.stop.ownedBefore.pop(),
+    (x) => x.stop.ownedBefore.splice(0),
+    (x) => (x.stop.ownedBefore[0] = { ...x.chain[0], state: "Z" }),
+    (x) => (x.stop.rootAlive = false),
+    (x) => (x.stop.endings[1].endedAfter = "never"),
+    (x) => delete x.stop.endings[1].endedAfter,
+    (x) => (x.stop.endings[0].endedAfter = "before-stop"),
+    (x) => (x.stop.endings.at(-1).endedAfter = "SIGINT"),
+    (x) => (x.stop.endings[2].startTicks = "wrong"),
+    (x) => x.stop.steps.splice(0),
+    (x) => (x.stop.endings[0].exit = { exitCode: 7 }),
+  ];
+  for (const change of changes) {
+    const x = fixture();
+    change(x);
+    const r = reconcileNextPopulation(x);
+    assert.equal(r.resourceAbsent, true);
+    assert.equal(r.ok, false);
   }
 });
