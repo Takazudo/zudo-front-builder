@@ -348,7 +348,7 @@ export function startNextPeerCustody({
       terminalProof = b.terminalProof;
       terminalVerified = true;
     },
-    async pollBeforeMutation({ deadlineNs, signal }) {
+    async pollBeforeMutation({ deadlineNs, enteredNs, signal }) {
       assert(
         prewriteDecision &&
           !decisionAttempted &&
@@ -372,6 +372,7 @@ export function startNextPeerCustody({
           token: accepted.token,
           descriptors: accepted.descriptors,
           deadlineNs,
+          enteredNs,
           signal,
           append: (r) => notify("decision-helper", { receipt: r }),
         });
@@ -414,6 +415,11 @@ export function startNextPeerCustody({
             !firstFailure && !buf && stopReceipt && result.code === 0 && !result.signal,
             "unverified scout cleanup: " + stderr,
           );
+          if (
+            decisionReceipt &&
+            (!decisionReceipt.closed || !Object.values(decisionReceipt.pipes ?? {}).every(Boolean))
+          )
+            throw new Error("pre-write decision helper closure unverified");
           const row = {
             result,
             birth,

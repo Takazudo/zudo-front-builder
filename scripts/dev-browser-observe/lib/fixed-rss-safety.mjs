@@ -277,6 +277,7 @@ export function startFixedRssSafety({
       assert(custody?.pollBeforeMutation && !failure && !stopped, "pre-write safety unavailable");
       const worker = custody.qualified;
       if (!worker || custody.terminalVerified || custody.decisionProof) return;
+      const enteredNs = process.hrtime.bigint();
       const owned = getOwned();
       if (owned.some((p) => custody.isWorker(p))) return;
       // Check all other observed and remembered births first. The new helper is
@@ -295,6 +296,7 @@ export function startFixedRssSafety({
         workDeadlineNs < nextDispatchNs - 5000000n ? workDeadlineNs : nextDispatchNs - 5000000n;
       decision = custody.pollBeforeMutation({
         deadlineNs,
+        enteredNs,
         signal: signal ? AbortSignal.any([signal, decisionAbort.signal]) : decisionAbort.signal,
       });
       try {

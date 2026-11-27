@@ -1132,6 +1132,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
               const reason = checkLateProcesses();
               rec.append({
                 type: "next-custody-pre-mutation",
+                ...(decisionProtocol && {
+                  decisionProof: nextCustody.decisionProof,
+                  identityAccepted: !reason,
+                }),
                 reason,
                 checkedNs: String(process.hrtime.bigint()),
               });

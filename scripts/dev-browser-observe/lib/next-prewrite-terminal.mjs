@@ -54,6 +54,18 @@ export function validatePrewritePoll(options) {
   return { birth: qualified, pidfdFlags: 0, pollMask: row.pollMask, observedNs: row.observedNs };
 }
 
+// Timers can fire early or late; all acceptance uses absolute monotonic clocks.
+function atDeadline(at, callback) {
+  let timer;
+  const check = () => {
+    const left = at - process.hrtime.bigint();
+    if (left <= 0n) callback();
+    else timer = setTimeout(check, Math.ceil(Number(left) / 1e6));
+  };
+  check();
+  return () => clearTimeout(timer);
+}
+
 export function pollPrewriteTerminal(options) {
   const {
     python,
@@ -67,59 +79,94 @@ export function pollPrewriteTerminal(options) {
     signal,
     deadlineNs,
   } = options;
-  const start = process.hrtime.bigint(),
-    coreEnd = start + CORE_NS;
-  assert(start + CORE_NS + CLOSE_NS <= deadlineNs, "insufficient pre-write decision budget");
+  const start = options.enteredNs ?? process.hrtime.bigint();
+  const coreEnd = start + CORE_NS;
+  const reserveEnd = coreEnd + CLOSE_NS;
+  assert(
+    reserveEnd <= deadlineNs && process.hrtime.bigint() < coreEnd,
+    "insufficient pre-write decision budget",
+  );
   signal?.throwIfAborted();
+  const spawnNs = process.hrtime.bigint();
   const child = spawn(python, ["-I", "-B", script, String(process.pid), "--prewrite-terminal"], {
     stdio: ["pipe", "pipe", "pipe", channel],
   });
   const birth = child.pid ? linuxBirth(child.pid) : null;
   let failure,
+    exit,
     output = "",
     stderr = "",
     bytes = 0,
-    exit,
     settled = false;
+  const pipes = { stdin: false, stdout: false, stderr: false };
   return new Promise((resolve, reject) => {
-    let timer;
+    let clearTimer = () => {};
+    const stamp = () => ({
+      purpose: "prewrite-terminal",
+      session,
+      helper: birth,
+      pid: child.pid ?? null,
+      startedNs: String(start),
+      spawnNs: String(spawnNs),
+      coreDeadlineNs: String(coreEnd),
+      reserveDeadlineNs: String(reserveEnd),
+    });
     const finish = (closed) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      clearTimer();
       signal?.removeEventListener("abort", interrupt);
       const at = process.hrtime.bigint();
       const receipt = {
-        purpose: "prewrite-terminal",
-        helper: birth,
-        pid: child.pid ?? null,
-        session,
-        startedNs: String(start),
-        finishedNs: String(at),
+        ...stamp(),
         closed,
         exit,
+        pipes: { ...pipes },
         stderr,
         stdout: output,
+        closedObservedNs: String(at),
       };
       try {
+        // Log raw physical results once, separately from any authority to write.
+        // Even a late, malformed or nonterminal reply remains useful evidence.
+        if (output.endsWith("\n")) {
+          try {
+            receipt.row = JSON.parse(output);
+            validatePrewriteAck({ ...options, row: receipt.row, birth });
+            receipt.authenticatedAck = true;
+          } catch (error) {
+            receipt.validationError = String(error);
+          }
+        }
+        append({ ...receipt, status: "transport-observation" });
         if (failure) throw failure;
         assert(
-          closed && at <= coreEnd && exit?.code === 0 && !exit.signal && output.endsWith("\n"),
-          "pre-write helper incomplete",
+          closed && Object.values(pipes).every(Boolean) && exit?.code === 0 && !exit.signal,
+          "pre-write helper closure incomplete",
         );
-        const row = JSON.parse(output);
-        receipt.row = row;
-        validatePrewriteAck({ ...options, row, birth });
-        receipt.authenticatedAck = true;
-        receipt.proof = validatePrewritePoll({ ...options, row, birth, start, closed: at });
-        assert(process.hrtime.bigint() <= coreEnd, "pre-write validation exceeded core");
-        append(receipt);
-        assert(process.hrtime.bigint() <= coreEnd, "pre-write evidence commit exceeded core");
+        assert(receipt.authenticatedAck, "pre-write handoff could not be authenticated");
+        receipt.proof = validatePrewritePoll({
+          ...options,
+          row: receipt.row,
+          birth,
+          start,
+          closed: at,
+        });
+        const verified = process.hrtime.bigint();
+        assert(verified <= coreEnd, "pre-write evidence or validation exceeded core");
+        receipt.verifiedNs = String(verified);
+        // Full acceptance is published by the caller only after a fresh graph
+        // check; this transport row alone can never authorize mutation.
         resolve(receipt);
       } catch (error) {
         receipt.error = String(error.message ?? error);
         try {
-          append(receipt);
+          append({
+            ...stamp(),
+            status: "refused",
+            observedNs: String(process.hrtime.bigint()),
+            reason: receipt.error,
+          });
         } catch (writeError) {
           receipt.evidenceFailure = String(writeError);
         }
@@ -128,29 +175,53 @@ export function pollPrewriteTerminal(options) {
     };
     const cancel = (e) => {
       if (settled || failure) return;
-      failure = e instanceof Error ? e : new Error(String(e));
-      clearTimeout(timer);
+      failure = e instanceof Error ? e : Error(String(e));
+      clearTimer();
       if (child.exitCode === null && child.signalCode === null) {
         try {
           child.kill("SIGKILL");
-        } catch (killError) {
-          failure.killError = String(killError);
+        } catch (error) {
+          failure.killError = String(error);
         }
       }
-      timer = setTimeout(() => finish(false), Number(CLOSE_NS / 1_000_000n));
+      // Early cancellation gets at most 50 ms closure, and never outlives the
+      // original absolute reserve even if a callback was dispatched late.
+      const closeEnd = process.hrtime.bigint() + CLOSE_NS;
+      clearTimer = atDeadline(closeEnd < reserveEnd ? closeEnd : reserveEnd, () => finish(false));
     };
     const interrupt = () => cancel(signal?.reason ?? Error("pre-write decision interrupted"));
-    const expire = () => {
-      const left = coreEnd - process.hrtime.bigint();
-      if (left > 0n) timer = setTimeout(expire, Math.ceil(Number(left) / 1e6));
-      else cancel(Error("pre-write decision core expired"));
-    };
-    for (const stream of child.stdio) stream?.on("error", cancel);
+    for (const [name, stream] of [
+      ["stdin", child.stdin],
+      ["stdout", child.stdout],
+      ["stderr", child.stderr],
+    ]) {
+      stream.prependOnceListener("close", () => {
+        pipes[name] = true;
+      });
+      stream.once("error", cancel);
+    }
     child.once("error", cancel);
     child.once("exit", (code, term) => {
       exit = { code, signal: term };
     });
-    child.once("close", () => finish(true));
+    child.once("close", () => {
+      if (!settled) {
+        finish(true);
+        return;
+      }
+      // A late closure never changes the original result or lifts its hold.
+      try {
+        append({
+          ...stamp(),
+          status: "late-closure",
+          observedNs: String(process.hrtime.bigint()),
+          exit,
+          pipes: { ...pipes },
+        });
+      } catch {
+        /* The original unresolved receipt already requires reconciliation. */
+      }
+    });
     child.stdout.on("data", (chunk) => {
       bytes += chunk.length;
       if (bytes > 4096) cancel(Error("pre-write reply cap"));
@@ -161,8 +232,9 @@ export function pollPrewriteTerminal(options) {
       else stderr += chunk;
     });
     signal?.addEventListener("abort", interrupt, { once: true });
-    expire();
+    clearTimer = atDeadline(coreEnd, () => cancel(Error("pre-write decision core expired")));
     try {
+      if (failure || settled) return;
       assert(
         birth &&
           !birth.birthUnverifiable &&
@@ -170,12 +242,7 @@ export function pollPrewriteTerminal(options) {
           readlinkSync(`/proc/${child.pid}/exe`) === python,
         "unverified decision helper birth/image",
       );
-      append({
-        purpose: "prewrite-terminal-spawn",
-        session,
-        helper: birth,
-        startedNs: String(start),
-      });
+      append({ ...stamp(), status: "spawn" });
       child.stdin.end(
         JSON.stringify({
           purpose: "prewrite-terminal",
@@ -186,8 +253,8 @@ export function pollPrewriteTerminal(options) {
           tokens: { [qualified.pid]: token },
         }) + "\n",
       );
-    } catch (e) {
-      cancel(e);
+    } catch (error) {
+      cancel(error);
     }
   });
 }
