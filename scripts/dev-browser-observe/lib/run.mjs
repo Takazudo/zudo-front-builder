@@ -633,18 +633,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       intent = reserveSession(intentPath, { labelDir, registryPath: resolved.registryPath });
     if (profile.fixedRssSafety === "linux-fixed-zfb.v3") {
       fixedCustody = startFixedCustody({
-        append: (row) => {
-          if (row.type === "fixed-custody-spawn" || row.type === "fixed-custody-ready")
-            intent?.update({
-              phase: row.type,
-              fixedCustody: {
-                pid: row.pid ?? row.birth?.pid,
-                birth: row.birth,
-                session: row.session,
-              },
-            });
-          rec.append(row);
-        },
+        intent,
+        append: (row) => rec.append(row),
         abort: (error) => fixedAbort.abort(error),
       });
       await fixedCustody.ready;

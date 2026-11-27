@@ -22,7 +22,15 @@ function interpreter() {
   throw new Error("fixed custody requires Python 3");
 }
 
-export function startFixedCustody({ append, abort }) {
+export function startFixedCustody({ append: record, abort, intent }) {
+  const append = (row) => {
+    if (row.type === "fixed-custody-spawn" || row.type === "fixed-custody-ready")
+      intent?.update({
+        phase: row.type,
+        fixedCustody: { pid: row.pid ?? row.birth?.pid, birth: row.birth, session: row.session },
+      });
+    record(row);
+  };
   const session = randomBytes(16).toString("hex");
   const python = interpreter();
   const child = spawn(python, ["-I", "-B", path, String(process.pid)], {

@@ -335,6 +335,30 @@ linux(
   },
 );
 
+linux(
+  "loss of the holder permanently refuses new cycles and carries unverified closure",
+  async () => {
+    const rows = [];
+    const failure = Promise.withResolvers();
+    const holder = startFixedCustody({
+      append: (r) => rows.push(r),
+      abort: (e) => failure.resolve(e),
+    });
+    await holder.ready;
+    const birth = rows.find((r) => r.type === "fixed-custody-ready").birth;
+    assert.equal(linuxBirth(birth.pid).startTicks, birth.startTicks);
+    process.kill(birth.pid, "SIGKILL");
+    assert.match((await failure.promise).message, /holder exited/);
+    assert.throws(() => holder.begin(), /holder exited/);
+    await assert.rejects(holder.stop(), /incomplete holder shutdown/);
+    const last = rows.at(-1);
+    assert.equal(last.type, "fixed-custody-stop-failure");
+    assert.equal(last.birth.startTicks, birth.startTicks);
+    assert.equal(last.exit.signal, "SIGKILL");
+    assert.equal(existsSync(`/proc/${birth.pid}`), false);
+  },
+);
+
 test("v2 terminal observations reconcile their bound parent and any captured image", () => {
   const root = { pid: 3, pgid: 3 },
     binding = { ppid: 4 };
