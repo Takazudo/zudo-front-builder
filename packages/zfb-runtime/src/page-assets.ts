@@ -204,13 +204,16 @@ function escapeAttr(value: string): string {
 }
 
 /**
- * Insert `tags` before the first `</head>` (case-insensitive), skipping any
+ * Insert `tags` before the first `</head>` (lowercase first, then any case), skipping any
  * tag whose exact text already appears before it. Without a `</head>` nothing
  * is inserted: a head or document is never synthesized.
  */
 function injectHeadTags(html: string, tags: readonly string[]): string {
   if (tags.length === 0) return html;
-  const closeAt = html.search(/<\/head>/i);
+  // Same lookup order as `find_close_head` in head_inject.rs: a lowercase
+  // `</head>` first, then any case, so SSR and SSG pick the same position.
+  const lowerAt = html.indexOf("</head>");
+  const closeAt = lowerAt !== -1 ? lowerAt : html.search(/<\/head>/i);
   if (closeAt === -1) return html;
   const before = html.slice(0, closeAt);
   const missing = tags.filter((tag) => !before.includes(tag));
