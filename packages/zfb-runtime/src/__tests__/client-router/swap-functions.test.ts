@@ -10,7 +10,7 @@
 // because that's the contract `router.ts` depends on; covering each independently
 // keeps a regression localised when one part shifts.
 
-import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { drainHappyDom, htmlDoc, installHappyDomShim, resetDocument } from "./_helpers.js";
 
@@ -19,6 +19,8 @@ installHappyDomShim();
 import {
   deselectScripts,
   detectScriptExecuted,
+  flushPersistedFocusReveal,
+  focusedPersistedElement,
   restoreFocus,
   saveFocus,
   swap,
@@ -489,6 +491,83 @@ describe("saveFocus / restoreFocus", () => {
 
   it("restoreFocus tolerates a null activeElement (no throw)", () => {
     expect(() => restoreFocus({ activeElement: null })).not.toThrow();
+  });
+
+  it("restores focus with preventScroll so the router keeps the scroll position", () => {
+    document.body.innerHTML = `<div ${PERSIST_ATTR}="p"><input id="i" value="hello"></div>`;
+    const input = document.getElementById("i") as HTMLInputElement;
+    const focus = vi.spyOn(input, "focus");
+
+    restoreFocus({ activeElement: input, start: 1, end: 3 });
+
+    expect(focus).toHaveBeenCalledOnce();
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(input.selectionStart).toBe(1);
+    expect(input.selectionEnd).toBe(3);
+  });
+
+  it("does not focus a saved element that the swap discarded", () => {
+    document.body.innerHTML = `<div ${PERSIST_ATTR}="p"><input id="i"></div>`;
+    const input = document.getElementById("i") as HTMLInputElement;
+    input.focus();
+    const restore = saveFocus();
+    const focus = vi.spyOn(input, "focus");
+
+    document.body.innerHTML = `<main>new</main>`;
+    restore();
+
+    expect(input.isConnected).toBe(false);
+    expect(focus).not.toHaveBeenCalled();
+  });
+});
+
+describe("focusedPersistedElement / flushPersistedFocusReveal", () => {
+  it("reports the focused element only inside a persisted subtree", () => {
+    document.body.innerHTML = `<div ${PERSIST_ATTR}="p"><button id="in">in</button></div><button id="out">out</button>`;
+    const inside = document.getElementById("in") as HTMLButtonElement;
+    const outside = document.getElementById("out") as HTMLButtonElement;
+
+    inside.focus();
+    expect(focusedPersistedElement()).toBe(inside);
+    outside.focus();
+    expect(focusedPersistedElement()).toBeNull();
+    outside.blur();
+    expect(focusedPersistedElement()).toBeNull();
+  });
+
+  it("forces layout once when the same element is still connected and focused", () => {
+    document.body.innerHTML = `<div ${PERSIST_ATTR}="p"><button id="b">b</button></div>`;
+    const button = document.getElementById("b") as HTMLButtonElement;
+    button.focus();
+    const layout = vi.spyOn(button, "getBoundingClientRect");
+
+    flushPersistedFocusReveal(button);
+
+    expect(layout).toHaveBeenCalledOnce();
+  });
+
+  it("does no layout work for a disconnected element", () => {
+    document.body.innerHTML = `<div ${PERSIST_ATTR}="p"><button id="b">b</button></div>`;
+    const button = document.getElementById("b") as HTMLButtonElement;
+    button.focus();
+    const layout = vi.spyOn(button, "getBoundingClientRect");
+    button.remove();
+
+    flushPersistedFocusReveal(button);
+
+    expect(layout).not.toHaveBeenCalled();
+  });
+
+  it("does no layout work when focus moved to another element", () => {
+    document.body.innerHTML = `<div ${PERSIST_ATTR}="p"><button id="b">b</button></div><input id="other">`;
+    const button = document.getElementById("b") as HTMLButtonElement;
+    const layout = vi.spyOn(button, "getBoundingClientRect");
+    (document.getElementById("other") as HTMLInputElement).focus();
+
+    flushPersistedFocusReveal(button);
+    flushPersistedFocusReveal(null);
+
+    expect(layout).not.toHaveBeenCalled();
   });
 });
 
