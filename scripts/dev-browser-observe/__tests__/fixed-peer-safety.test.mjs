@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { processExecutable, processIdentityChecks } from "../lib/distribution.mjs";
+import * as peerRoles from "../lib/fixed-peer-roles.mjs";
 import { peerProcessIdentity, readPeerExecutable } from "../lib/fixed-peer-roles.mjs";
 import { realpathSync, statSync } from "node:fs";
 import { ObserverPage } from "../lib/browser.mjs";
@@ -134,6 +135,48 @@ test("peer readiness requires two new cycles and a later role loss aborts safety
   } finally {
     await monitor.stop();
     vi.useRealTimers();
+  }
+});
+
+test("a scout-first missing worker needs official terminal proof even before registry publication", async () => {
+  const worker = { pid: 42, startTicks: "100" };
+  const custody = {
+    qualified: worker,
+    isWorker: (p) => p.pid === worker.pid,
+    terminalVerified: false,
+  };
+  const ancestors = [{ pid: 1 }, { pid: 2 }, { pid: 3 }];
+  const checks = ancestors.map((p) => ({ ...p, ok: true }));
+  const check = vi.spyOn(peerRoles, "peerProcessIdentity").mockReturnValue(checks);
+  let finish;
+  const pending = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const monitor = startFixedRssSafety({
+    server: {},
+    fixedExecutables: { root: { path: "/node" } },
+    peer: {},
+    limits: { rssCeilingKiB: 4194304, sampleEveryMs: 1000 },
+    nextOwner: () => custody,
+    sample: () => pending,
+    append() {},
+    abort() {},
+  });
+  try {
+    for (const known of [ancestors, [...ancestors, worker]]) {
+      assert.throws(
+        () => monitor.verifyPeerProcesses(ancestors, known),
+        /missing before official terminal decision/,
+      );
+    }
+    assert.equal(check.mock.calls.length, 0);
+    custody.terminalVerified = true;
+    assert.equal(monitor.verifyPeerProcesses(ancestors, ancestors), checks);
+    assert.equal(check.mock.calls.length, 1);
+  } finally {
+    finish({ processes: [], summedRssKiB: null });
+    await monitor.stop();
+    check.mockRestore();
   }
 });
 

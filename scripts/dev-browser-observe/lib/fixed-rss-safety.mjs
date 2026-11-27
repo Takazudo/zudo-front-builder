@@ -266,7 +266,8 @@ export function startFixedRssSafety({
       const custody = nextOwner();
       if (!custody) return peerProcessIdentity(owned, known, qualifiedPeer, peer);
       const isWorker = (p) => custody.isWorker(p);
-      if (known.some(isWorker) && !owned.some(isWorker))
+      // Scout qualification can precede the next sampler's known-map commit.
+      if (custody.qualified && !owned.some(isWorker))
         assert(
           custody.terminalVerified,
           "known Next worker missing before official terminal decision",
