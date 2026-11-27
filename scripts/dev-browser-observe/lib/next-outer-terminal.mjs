@@ -33,6 +33,82 @@ export function outerCheckpoint(stage, operation, now = process.hrtime.bigint) {
   }
 }
 
+/**
+ * The outer pre-write decision. An ordinary sample in flight is first allowed
+ * to settle (bounded; see settleOrdinaryBeforeDecision), then the one-use
+ * receipt is consumed against a fresh coverage, graph and census check. The
+ * settle record travels with the decision or the refusal, outside workload timing.
+ */
+export async function outerPrewriteDecision({
+  safety,
+  gate,
+  readProductGraph,
+  verifyWiring,
+  attemptDeadlineNs,
+  workDeadlineNs,
+  signal,
+  now = process.hrtime.bigint,
+}) {
+  const entryNs = String(now());
+  let preDecisionSettle;
+  try {
+    signal?.throwIfAborted();
+    preDecisionSettle = await safety.settleOrdinaryBeforeDecision({
+      deadlineNs: attemptDeadlineNs < workDeadlineNs ? attemptDeadlineNs : workDeadlineNs,
+      signal,
+    });
+  } catch (error) {
+    error.outerRefusal ??= {
+      stage: "prewrite-settle",
+      entryNs,
+      refusedNs: String(now()),
+      coverage: "unknown",
+      productGraph: "unknown",
+      observerGraph: "unknown",
+      lastAccepted: null,
+      pending: null,
+    };
+    throw error;
+  }
+  try {
+    return outerCheckpoint(
+      "prewrite-decision",
+      () => {
+        signal?.throwIfAborted();
+        assert(gate, "independent outer receipt unavailable");
+        let graph, outerCadence, outerDecision;
+        try {
+          outerDecision = gate.consume(() => {
+            outerCadence = safety.verifyOuterGraph(
+              readProductGraph,
+              () => {
+                graph = verifyWiring();
+              },
+              "prewrite-decision",
+            );
+            return true;
+          });
+          outerDecision.attemptDeadlineNs = String(attemptDeadlineNs);
+          const stamp = BigInt(outerDecision.decisionNs);
+          assert(
+            stamp < attemptDeadlineNs && stamp < BigInt(outerCadence.cadenceDeadlineNs),
+            "outer decision expired",
+          );
+        } catch (error) {
+          // A receipt consumed before a later refusal stays attributable.
+          if (outerDecision) error.outerDecision = outerDecision;
+          throw error;
+        }
+        return { outerDecision, outerCadence, graph, preDecisionSettle };
+      },
+      now,
+    );
+  } catch (error) {
+    if (error.outerRefusal) error.outerRefusal.preDecisionSettle = preDecisionSettle;
+    throw error;
+  }
+}
+
 export function outerTerminalGate({ authority, now = process.hrtime.bigint }) {
   const expected = structuredClone(authority);
   assert(sameOwner(expected.outer, expected.outer) && sameOwner(expected.worker, expected.worker));

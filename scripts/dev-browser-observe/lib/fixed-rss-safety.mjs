@@ -11,6 +11,12 @@ import {
   FIXED_PEER_PROTOCOL,
 } from "./fixed-peer-roles.mjs";
 import { sampleRendererMemory } from "./linux-rss-sample.mjs";
+import { interruptible } from "./session-deadline.mjs";
+
+// Owner decision on #4870 (2026-11-27): a pre-write decision that finds an
+// ordinary sample in flight waits for it to settle, bounded by its 750 ms core
+// plus the 200 ms closure, and then decides on that fresh sample.
+const ORDINARY_SETTLE_BOUND_NS = 950_000_000n;
 
 function pin(path, digest) {
   const real = realpathSync(path);
@@ -448,6 +454,48 @@ export function startFixedRssSafety({
         };
         throw error;
       }
+    },
+    // Waits only on the ordinary sample already in flight; it never dispatches,
+    // never accepts the older cycle and leaves every refusal to verifyOuterGraph.
+    async settleOrdinaryBeforeDecision({ deadlineNs, signal }) {
+      const enteredNs = process.hrtime.bigint();
+      const cycle = pendingOuterCycle;
+      const record = {
+        pendingAtDecision: Boolean(pending),
+        enteredNs: String(enteredNs),
+        waitedNs: "0",
+        pendingEpoch: cycle?.epoch ?? null,
+        settledEpoch: null,
+        boundNs: null,
+        outcome: pending ? "waiting" : "not-pending",
+      };
+      if (!pending || failure || stopped || !cycle) return record;
+      const core = BigInt(cycle.startedNs) + ORDINARY_SETTLE_BOUND_NS;
+      const boundNs = core < deadlineNs ? core : deadlineNs;
+      record.boundNs = String(boundNs);
+      let timer;
+      try {
+        if (enteredNs >= boundNs) record.outcome = "bound-expired";
+        else {
+          const expired = new Promise((resolve) => {
+            timer = setTimeout(
+              () => resolve("bound-expired"),
+              Math.ceil(Number(boundNs - enteredNs) / 1e6),
+            );
+          });
+          record.outcome = await interruptible(
+            Promise.race([pending.then(() => "settled"), expired]),
+            signal,
+          );
+        }
+      } finally {
+        clearTimeout(timer);
+        const observed = process.hrtime.bigint();
+        record.waitedNs = String(observed - enteredNs);
+        if (record.outcome === "waiting") record.outcome = "aborted";
+        record.settledEpoch = acceptedOuterCycle?.epoch ?? null;
+      }
+      return record;
     },
     async verifyPrewriteTerminal({ getOwned, workDeadlineNs, signal }) {
       const custody = nextOwner();

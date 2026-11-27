@@ -8,7 +8,11 @@ import {
   verifyNextOuterProvider,
 } from "./next-outer-provider.mjs";
 import { nextOuterNonceDigest, observeNextOuterReceipt } from "./next-outer-channel.mjs";
-import { outerCheckpoint, outerTerminalGate } from "./next-outer-terminal.mjs";
+import {
+  outerCheckpoint,
+  outerPrewriteDecision,
+  outerTerminalGate,
+} from "./next-outer-terminal.mjs";
 import { samplerClosureAudit } from "./linux-rss-sample.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
 import {
@@ -1301,32 +1305,31 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           ...(nextProtocol && {
             ...(outerProtocol && {
               outerDecisionOnly: profile.fixedNextOuterObserver.operation === "decision-only",
-              beforePeerDecision: ({ attemptStart, attemptMs }) =>
-                outerCheckpoint("prewrite-decision", () => {
-                  loaded.signal.throwIfAborted();
-                  assert(outerGate, "independent outer receipt unavailable");
-                  let graph;
-                  outerDecision = outerGate.consume(() => {
-                    outerCadence = fixedSafety.verifyOuterGraph(
-                      () => readNextOuterProductGraph(server.handle.native),
-                      () => {
-                        graph = verifyNextOuterWiring(outerWiring);
-                      },
-                      "prewrite-decision",
-                    );
-                    return true;
+              beforePeerDecision: async ({ attemptStart, attemptMs }) => {
+                let decided;
+                try {
+                  decided = await outerPrewriteDecision({
+                    safety: fixedSafety,
+                    gate: outerGate,
+                    readProductGraph: () => readNextOuterProductGraph(server.handle.native),
+                    verifyWiring: () => verifyNextOuterWiring(outerWiring),
+                    attemptDeadlineNs: attemptStart + BigInt(attemptMs) * 1000000n,
+                    workDeadlineNs: BigInt(loaded.workDeadline) * 1000000n,
+                    signal: loaded.signal,
                   });
-                  outerDecision.attemptDeadlineNs = String(
-                    attemptStart + BigInt(attemptMs) * 1000000n,
-                  );
-                  const stamp = BigInt(outerDecision.decisionNs);
-                  assert(
-                    stamp < BigInt(outerDecision.attemptDeadlineNs) &&
-                      stamp < BigInt(outerCadence.cadenceDeadlineNs),
-                    "outer decision expired",
-                  );
-                  rec.append({ type: "next-outer-decision", outerDecision, outerCadence, graph });
-                }),
+                } catch (error) {
+                  if (error.outerDecision) outerDecision = error.outerDecision;
+                  throw error;
+                }
+                ({ outerDecision, outerCadence } = decided);
+                rec.append({
+                  type: "next-outer-decision",
+                  outerDecision,
+                  outerCadence,
+                  graph: decided.graph,
+                  preDecisionSettle: decided.preDecisionSettle,
+                });
+              },
               outerPeerWriteTime: (now) =>
                 outerCheckpoint("pre-truncate", () => {
                   loaded.signal.throwIfAborted();
