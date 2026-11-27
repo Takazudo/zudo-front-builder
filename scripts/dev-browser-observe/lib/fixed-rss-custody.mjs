@@ -196,7 +196,12 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
                 JSON.stringify(prior.descriptors) !== JSON.stringify(msg.descriptors)))
           )
             throw issue("startup custody conflicts with ordinary safety");
-          if (!/^\d{1,20}$/.test(msg.acquiredNs)) throw issue("invalid startup acquisition time");
+          if (
+            !/^\d{1,20}$/.test(msg.acquiredNs) ||
+            !/^\d{1,20}$/.test(msg.liveVerifiedNs) ||
+            BigInt(msg.liveVerifiedNs) > BigInt(msg.acquiredNs)
+          )
+            throw issue("invalid startup acquisition time");
           acquiredNs = msg.acquiredNs;
           startupBirth = b;
           retained.set(b.pid, { birth: b, token: msg.token, descriptors: msg.descriptors });

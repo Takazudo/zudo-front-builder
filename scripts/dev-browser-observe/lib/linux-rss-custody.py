@@ -186,6 +186,15 @@ class Client:
         self.peer.close()
 
 
+def duplicate_startup_pair(pair):
+    first = os.dup(pair[0])
+    try:
+        return [first, os.dup(pair[1])]
+    except BaseException:
+        os.close(first)
+        raise
+
+
 def serve(shared, parent, session, startup_mode=False):
     # Parent is the only process that creates and distributes the shared endpoint.
     # SO_PEERCRED on that inherited socket describes its original creator, so
@@ -211,25 +220,27 @@ def serve(shared, parent, session, startup_mode=False):
         with ownership_lock:
             require(first_retained is None or key == first_retained, "second startup compiler birth")
             require(not held or key in held, "ambiguous startup retention")
+            # A concurrent ordinary epoch may have held the lock since the
+            # scout's last live check. Take a new nonblocking group poll here.
+            poll = select.poll()
+            poll.register(pair[0], select.POLLIN)
+            require(not poll.poll(0), "startup worker exited before retention")
+            live_ns = time.monotonic_ns()
+            require(live_ns < scout.end_ns and not scout.stop.is_set(), "startup handoff expired")
             first_retained = key
             if key in held:
                 token, original = held[key]
                 require(list(map(identity, original)) == descriptors, "conflicting startup pair")
             else:
                 token = secrets.token_hex(16)
-                first = os.dup(pair[0])
-                try:
-                    original = [first, os.dup(pair[1])]
-                except BaseException:
-                    os.close(first)
-                    raise
+                original = duplicate_startup_pair(pair)
                 held[key] = (token, original)
                 retains += 1
                 high_water = 1
             startup_key = key
             print(json.dumps(dict(startupBirth=worker, dev=dev, root=launch, token=token,
                                   descriptors=descriptors, session=session,
-                                  acquiredNs=str(time.monotonic_ns()))), flush=True)
+                                  liveVerifiedNs=str(live_ns), acquiredNs=str(time.monotonic_ns()))), flush=True)
 
     print(json.dumps(dict(ready=True, pid=os.getpid(), session=session,
                           timeNamespace=os.readlink("/proc/self/ns/time"))), flush=True)
