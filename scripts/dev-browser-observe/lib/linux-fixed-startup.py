@@ -7,18 +7,29 @@ import threading
 import time
 
 # zfb's config bundler (`zfb __zfb-compiler-worker`, crates/zfb-compiler-worker)
-# can exit before the first 20 ms sweep reaches it (#4862 r4 slot 01). Only that
-# role may be first seen terminal, and only as a zombie that exited with status 0.
+# lives tens of ms, and zfb 6.0.1 reaps it within one 5 ms WNOWAIT poll of its
+# exit (parent.rs:23,483-489), so a 20 ms sweep sees it live, as a zombie, or not
+# at all (#4862 r4 slot 01). Each is a defined outcome; see DESIGN in sweep().
 COMPILER_WORKER_ARG = "__zfb-compiler-worker"
-STAT_EXIT_CODE = 49  # /proc/<pid>/stat field 52, counted after the ")" of comm
+# /proc/<pid>/stat fields counted after the ")" of comm: field N is index N - 3.
+STAT_CMINFLT = 8  # field 11: minor faults of children this process has waited for
+STAT_EXIT_CODE = 49  # field 52
+TRACE_CAP = 16
+
+
+class WorkerGone(Exception):
+    """The compiler worker was reaped between being listed and being bound."""
 
 
 class Startup:
-    def __init__(self, config, parent, seed, publish):
+    def __init__(self, config, parent, seed, publish, complete=None):
         self.config = config
         self.parent = parent
         self.seed = seed
         self.publish = publish
+        self.complete = complete
+        self.trace = []
+        self.reaped_mid_bind = []
         self.stop = threading.Event()
         self.reads = self.bytes = self.sweeps = 0
         self.start_ns = time.monotonic_ns()
@@ -63,9 +74,15 @@ class Startup:
 
     def verify(self, pair, pid, ppid, pgid, pin, argv, transient_parent=None):
         process, directory = pair
-        raw = self.read("stat", directory)
+        try:
+            raw = self.read("stat", directory)
+        except ProcessLookupError:
+            if transient_parent is None:
+                raise
+            raise WorkerGone("stat-esrch")
         head, tail = raw.rsplit(b")", 1)
-        state, parent, group, *rest = tail.split()
+        fields = tail.split()
+        state, parent, group, *rest = fields
         if (
             int(head.split(b"(", 1)[0]) != pid
             or int(parent) != ppid
@@ -75,11 +92,8 @@ class Startup:
         if state in (b"Z", b"X", b"x"):
             if transient_parent is None:
                 raise ValueError("startup role first seen terminal")
-            return self.completed(process, raw, head, state, rest, pid, ppid, pgid, pin,
-                                  argv, transient_parent)
-        fdinfo = self.read(f"/proc/self/fdinfo/{process}").splitlines()
-        if b"Pid:\t" + str(pid).encode() not in fdinfo:
-            raise ValueError("startup unpaired pidfd")
+            return self.completed(pair, raw, head, fields, pid, ppid, pgid, pin, transient_parent)
+        self.paired(process, pid, transient_parent is not None)
         if (
             self.read("cmdline", directory)
             != b"\0".join(map(os.fsencode, argv)) + b"\0"
@@ -108,37 +122,48 @@ class Startup:
             ppid=ppid,
             pgid=pgid,
             bootId=self.seed["bootId"],
-            startTicks=rest[16].decode(),
+            startTicks=fields[19].decode(),
             birthVersion="linux-proc-v1",
             state=state.decode(),
             comm=head.split(b"(", 1)[1].decode(),
+            cminflt=int(fields[STAT_CMINFLT]),
         )
 
-    def completed(self, process, raw, head, state, rest, pid, ppid, pgid, pin, argv, parent):
+    def paired(self, process, pid, worker):
+        fdinfo = self.read(f"/proc/self/fdinfo/{process}").splitlines()
+        if b"Pid:\t" + str(pid).encode() in fdinfo:
+            return
+        if worker and b"Pid:\t-1" in fdinfo:
+            raise WorkerGone("fdinfo-pid-minus-one")
+        raise ValueError("startup unpaired pidfd")
+
+    def completed(self, pair, raw, head, fields, pid, ppid, pgid, pin, parent):
         """A compiler worker already exited at first sight: identity from stat only.
 
-        A zombie has no readable cmdline, cwd or exe. Its private group, the
-        exact zfb parent birth, its image name and a zero exit status bind it.
+        A zombie has no readable cmdline, cwd or exe. Within zfb only
+        WorkerLauncher spawns the zfb image with process_group(0) (parent.rs:236-245),
+        so the private group, the exact zfb parent birth, the image name as comm,
+        a start no earlier than zfb's and a zero exit status bind it.
         """
+        process, directory = pair
         comm = head.split(b"(", 1)[1]
-        fields = [state, b"", b"", *rest]
         if (
-            state != b"Z"
-            or argv != [pin["path"], COMPILER_WORKER_ARG]
+            fields[0] != b"Z"
             or pgid != pid
             or ppid != parent["pid"]
             or comm != os.path.basename(pin["path"]).encode()[:15]
-            or int(rest[16]) < int(parent["startTicks"])
+            or int(fields[19]) < int(parent["startTicks"])
         ):
             raise ValueError("startup role first seen terminal")
+        # Without ptrace read access the kernel prints 0 for exit_code.
+        if os.fstat(directory).st_uid != os.geteuid():
+            raise ValueError("startup transient exit status unreadable")
         if len(fields) <= STAT_EXIT_CODE:
             raise ValueError("startup transient exit status unreadable")
         exit_code = int(fields[STAT_EXIT_CODE])
         if exit_code != 0:
             raise ValueError("startup transient compiler exited unsuccessfully")
-        fdinfo = self.read(f"/proc/self/fdinfo/{process}").splitlines()
-        if b"Pid:\t" + str(pid).encode() not in fdinfo:
-            raise ValueError("startup unpaired pidfd")
+        self.paired(process, pid, True)
         poller = select.poll()
         poller.register(process, select.POLLIN)
         if not poller.poll(0):
@@ -148,7 +173,7 @@ class Startup:
             ppid=ppid,
             pgid=pgid,
             bootId=self.seed["bootId"],
-            startTicks=rest[16].decode(),
+            startTicks=fields[19].decode(),
             birthVersion="linux-proc-v1",
             state="Z",
             comm=comm.decode(),
@@ -179,9 +204,20 @@ class Startup:
         with contextlib.ExitStack() as cleanup:
 
             def bind(pid, ppid, group, image, args, transient_parent=None):
-                process = os.pidfd_open(pid, 0)
+                worker = transient_parent is not None
+                try:
+                    process = os.pidfd_open(pid, 0)
+                except ProcessLookupError:
+                    if worker:
+                        raise WorkerGone("pidfd-open-esrch")
+                    raise
                 cleanup.callback(os.close, process)
-                directory = os.open(f"/proc/{pid}", os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    directory = os.open(f"/proc/{pid}", os.O_RDONLY | os.O_DIRECTORY)
+                except FileNotFoundError:
+                    if worker:
+                        raise WorkerGone("procdir-enoent")
+                    raise
                 cleanup.callback(os.close, directory)
                 pair = (process, directory)
                 inputs = (pair, pid, ppid, group, image, args)
@@ -209,19 +245,31 @@ class Startup:
                 [fixed["child"]["path"], *argv[1:]],
             )
             workers = self.children(v[1])
+            self.trace.append(dict(sweep=self.sweeps, ns=str(time.monotonic_ns()),
+                                   nativeCminflt=vb["cminflt"], children=len(workers)))
             if not workers:
+                # DESIGN: no compiler child is listed. Before zfb's first reap its
+                # cminflt is 0; after it, the config worker has been waited for.
+                if vb["cminflt"] > 0:
+                    self.conclude(rb, ri, vb, vi)
                 return
             if len(workers) != 1:
                 raise ValueError("ambiguous startup compiler child")
             pid = workers.pop()
-            w, wb, wi = bind(
-                pid,
-                vb["pid"],
-                pid,
-                fixed["child"],
-                [fixed["child"]["path"], COMPILER_WORKER_ARG],
-                vb,
-            )
+            try:
+                w, wb, wi = bind(
+                    pid,
+                    vb["pid"],
+                    pid,
+                    fixed["child"],
+                    [fixed["child"]["path"], COMPILER_WORKER_ARG],
+                    vb,
+                )
+            except WorkerGone as gone:
+                # Reaped between children() and binding: never observed. The next
+                # sweep decides on the native evidence; keep the partial attribution.
+                self.reaped_mid_bind.append(dict(sweep=self.sweeps, pid=pid, reason=str(gone)))
+                return
             roles = ((rb, ri), (vb, vi))
             if "completedTransient" in wb:
                 # The pidfd is bound to that exact exited process; zfb may reap it
@@ -244,6 +292,34 @@ class Startup:
             self.publish(w, wb, vb, rb)
             self.status = "retained"
 
+    def conclude(self, rb, ri, vb, vi):
+        """Worker not observed: zfb's own wait on a child is the only remaining evidence."""
+        for prior, inputs in ((rb, ri), (vb, vi)):
+            after = self.verify(*inputs)
+            if any(prior[k] != after[k] for k in ("pid", "ppid", "pgid", "bootId", "startTicks")):
+                raise ValueError("startup role changed during verification")
+        if after["cminflt"] < vb["cminflt"] or self.children(inputs[0][1]):
+            raise ValueError("startup role changed during verification")
+        if time.monotonic_ns() >= self.end_ns or self.stop.is_set():
+            raise ValueError("startup live handoff expired")
+        zero = [t for t in self.trace if t["nativeCminflt"] == 0 and t["children"] == 0]
+        lower = (dict(kind="observed-zero", **zero[-1]) if zero
+                 else dict(kind="native-birth", startTicks=vb["startTicks"], nativeCminflt=0))
+        record = dict(
+            outcome="product-completion",
+            root={k: rb[k] for k in ("pid", "ppid", "pgid", "bootId", "startTicks", "birthVersion")},
+            native={k: vb[k] for k in ("pid", "ppid", "pgid", "bootId", "startTicks", "birthVersion")},
+            bracket=dict(lower=lower, upper=dict(self.trace[-1], nativeCminflt=after["cminflt"])),
+            trace=self.trace[-TRACE_CAP:],
+            traceLength=len(self.trace),
+            reapedMidBind=self.reaped_mid_bind[-TRACE_CAP:],
+            observedNs=str(time.monotonic_ns()),
+        )
+        if self.complete is None:
+            raise ValueError("startup completion has no publisher")
+        self.complete(record)
+        self.status = "worker-not-observed"
+
     def run(self):
         try:
             while (
@@ -253,10 +329,10 @@ class Startup:
             ):
                 self.sweeps += 1
                 self.sweep()
-                if self.status == "retained":
+                if self.status in ("retained", "worker-not-observed"):
                     break
                 self.stop.wait(0.020)
-            if self.status != "retained":
+            if self.status not in ("retained", "worker-not-observed"):
                 self.status = "missed"
         except Exception as error:
             self.status = "failed"
