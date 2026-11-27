@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="zfb-view-transitions-enabled" content="" />
+    <meta name="zfb-view-transitions-fallback" content="animate" />
+    <title>Persist focus short</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 0;
+      }
+      header,
+      footer {
+        padding: 1rem;
+        background: #eee;
+      }
+      main {
+        padding: 1rem;
+      }
+      .spacer {
+        height: 3000px;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "@takazudo/zfb/runtime": "/island-stubs.js"
+        }
+      }
+    </script>
+    <script type="module" src="/persist-focus.js"></script>
+  </head>
+  <body>
+    <header data-zfb-transition-persist="pf-header">
+      <label>Header search <input id="pf-header-input" type="text" value="header text" /></label>
+    </header>
+    <main>
+      <h1 id="pf-title">Persist focus short</h1>
+      
+      <section id="deep"><h2>Deep section</h2></section>
+      
+    </main>
+    <footer data-zfb-transition-persist="pf-footer">
+      <label>Footer note <textarea id="pf-footer-input">footer text</textarea></label>
+      <button id="pf-footer-button" type="button">Footer action</button>
+    </footer>
+  </body>
+</html>
