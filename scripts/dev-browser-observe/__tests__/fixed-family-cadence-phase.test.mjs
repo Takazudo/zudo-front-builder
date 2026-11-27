@@ -269,6 +269,41 @@ test("a deferred join admits with about 900 ms of journal plus population cost",
     const spent = BigInt(decisionNs) - BigInt(setup.settlementObservedNs);
     assert(spent >= 890n * MS && spent < 900n * MS, String(spent));
     assert(BigInt(decisionNs) < BigInt(setup.cycle.startedNs) + 1000n * MS);
+    const byStage = Object.fromEntries(
+      setup.stages.map((r) => [r.phase + ":" + r.stage, BigInt(r.endNs) - BigInt(r.startNs)]),
+    );
+    assert.deepEqual(byStage, {
+      "enter:journal-append": 400n * MS,
+      "enter:snapshot": 450n * MS,
+      "enter:verify-images": 40n * MS,
+      "enter:verify-family-admission": 0n,
+    });
+  } finally {
+    await stopMonitor(h);
+  }
+});
+
+test("the same cost still refuses at the pending branch, which checks population twice", async () => {
+  const h = harness("pending-slow");
+  try {
+    await vi.advanceTimersByTimeAsync(4020);
+    const b = batch(h, { cost: 400n * MS, snapshotCostNs: 450n * MS, imagesCostNs: 40n * MS });
+    const { error } = await settleAll(Promise.resolve().then(b.run));
+    assert.match(String(error?.message), /cadence due|family RSS cadence/);
+    assert.equal(b.calls.snapshot, 2);
+    const refusal = b.rows.at(-1);
+    assert.deepEqual(
+      refusal.setup.stages.map((r) => r.phase + ":" + r.stage),
+      [
+        "pre-settlement:snapshot",
+        "pre-settlement:verify-images",
+        "enter:journal-append",
+        "enter:snapshot",
+        "enter:verify-images",
+        "enter:verify-family-admission",
+      ],
+    );
+    assert.equal(refusal.setup.stages.at(-1).threw, true);
   } finally {
     await stopMonitor(h);
   }

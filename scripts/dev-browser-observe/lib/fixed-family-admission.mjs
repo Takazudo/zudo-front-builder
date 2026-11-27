@@ -174,10 +174,26 @@ export function runOriginalFamilyBatch(
           workDeadlineNs: String(deadlineNs),
           settlementOutcome: "not-started",
           addedSettlementNs: "0",
+          stages: [],
         }
       : null;
-  const checkPopulation = (provisional) => {
-    const owned = snapshot();
+  // Monotonic setup-stage stamps, so an admission refusal is attributable from
+  // the receipt. They are setup evidence, never workload timing.
+  const stage = (name, phase, work) => {
+    if (!setup) return work();
+    const row = { stage: name, phase, startNs: String(process.hrtime.bigint()) };
+    setup.stages.push(row);
+    try {
+      return work();
+    } catch (error) {
+      row.threw = true;
+      throw error;
+    } finally {
+      row.endNs = String(process.hrtime.bigint());
+    }
+  };
+  const checkPopulation = (provisional, phase) => {
+    const owned = stage("snapshot", phase, snapshot);
     assert(
       population(provisional.sample.live, [provisional.root, provisional.dev]) &&
         population(owned, [provisional.root, provisional.dev]) &&
@@ -188,21 +204,23 @@ export function runOriginalFamilyBatch(
       owned.every((p) => !["X", "x", "Z"].includes(p.state)),
       "family root/native unavailable",
     );
-    verifyImages(provisional);
+    stage("verify-images", phase, () => verifyImages(provisional));
     return owned;
   };
   const enter = (initial, provisional) => {
-    append({
-      ...row,
-      ...initial,
-      status: "pre-batch-proof",
-      proof: provisional,
-      ...(setup && { setup: { ...setup } }),
-    });
+    stage("journal-append", "enter", () =>
+      append({
+        ...row,
+        ...initial,
+        status: "pre-batch-proof",
+        proof: provisional,
+        ...(setup && { setup: { ...setup, stages: structuredClone(setup.stages) } }),
+      }),
+    );
     journaled = true;
     signal.throwIfAborted();
-    const owned = checkPopulation(provisional);
-    const proof = safety.verifyFamilyAdmission();
+    const owned = checkPopulation(provisional, "enter");
+    const proof = stage("verify-family-admission", "enter", () => safety.verifyFamilyAdmission());
     if (setup) {
       assert.equal(proof.sample, provisional.sample, "family accepted sample changed");
       assert.deepEqual(proof.terminal, provisional.terminal, "family terminal changed");
@@ -298,7 +316,7 @@ export function runOriginalFamilyBatch(
   };
   const joinPending = (captured) => {
     setup.priorCustody = captured.before;
-    checkPopulation(captured.before);
+    checkPopulation(captured.before, "pre-settlement");
     return join(captured);
   };
   const deferToNextCycle = async (first) => {
