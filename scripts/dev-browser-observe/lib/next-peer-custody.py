@@ -230,6 +230,8 @@ def serving_socket(handle, cfg):
             if cells[3] == "0A" and int(port, 16) == expected["port"]:
                 found.append((addr, cells[9]))
     require(found == [(expected["addr"], expected["inode"])], "listener address/inode drift")
+    return {"fd": expected["fd"], "fdLink": "socket:[" + expected["inode"] + "]",
+            "port": expected["port"], "matched": found}
 
 
 def children(fd):

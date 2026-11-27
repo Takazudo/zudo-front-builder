@@ -2,6 +2,7 @@
 
 import fcntl
 import importlib.util
+import json
 import os
 import socket
 import stat
@@ -32,7 +33,9 @@ class OuterObservation:
         self.token = token
         self.descriptors = descriptors
         self.deadline = deadline_ns
-        self.record = record
+        self.write_record = record
+        self.trace_bytes = 0
+        self.trace_rows = 0
         self.pair = None
         self.anchors = []
         self.views = []
@@ -60,6 +63,14 @@ class OuterObservation:
         self.io.cfg = dict(image=contract["image"], app=contract["app"], server=server,
                            script=contract["script"]["path"], parentJestId=None,
                            socket=contract["socket"])
+
+    def record(self, data):
+        bytes_used = len(json.dumps(data,separators=(",",":"),ensure_ascii=True).encode())+1
+        self.trace_bytes += bytes_used
+        self.trace_rows += 1
+        self.io.require(bytes_used<=48*1024 and self.trace_bytes<=128*1024 and self.trace_rows<=3,
+                        "outer raw trace cap")
+        self.write_record(data)
 
     def check_budget(self):
         self.io.require(time.monotonic_ns() < self.deadline and
@@ -120,8 +131,10 @@ class OuterObservation:
             self.io.require(self.state == "observing" and len(self.views) < 2,"outer live view count")
             self.check_budget()
             start = time.monotonic_ns()
+            anchor_views=[]
             for anchor, expected in zip(self.anchors,self.contract["ancestors"]):
                 view = self.io.view(anchor)
+                anchor_views.append(view)
                 raw = bytes.fromhex(view["argvHex"])
                 wanted = b"\0".join(os.fsencode(arg) for arg in expected["argv"])+b"\0"
                 good = raw == wanted
@@ -131,7 +144,7 @@ class OuterObservation:
                                 self.io.key(view["birth"])==self.io.key(expected),"outer ancestor role")
             self.io.require(view["private"] and view["dev"] and view["jestId"] is None,
                             "outer serving role")
-            self.io.serving_socket(self.anchors[-1],self.io.cfg)
+            listener=self.io.serving_socket(self.anchors[-1],self.io.cfg)
             self.io.require(self.io.children(self.anchors[-1][1]) == {self.worker["pid"]},
                             "ambiguous outer candidate population")
             self.io.confirm_script(self.contract["script"])
@@ -141,7 +154,8 @@ class OuterObservation:
             end = time.monotonic_ns()
             self.io.require(end-start < 50_000_000 and
                             (not self.views or self.views[0] < start),"overlapping/late outer view")
-            self.record(dict(stage="independent-live-view", parent=view, worker=worker_view,
+            self.record(dict(stage="independent-live-view", ancestors=anchor_views, listener=listener,
+                             worker=worker_view,
                              index=len(self.views)+1, startNs=str(start), endNs=str(end)))
             self.views.append(end)
             self.check_budget()

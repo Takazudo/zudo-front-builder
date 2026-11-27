@@ -71,11 +71,23 @@ export async function observeNextOuterReceipt({
     throw error;
   }
   let wake;
+  const wakeIdentity = readlinkSync("/proc/self/fd/6");
   try {
     wake = new Socket({ fd: 6, readable: true, writable: false });
   } catch (error) {
-    reader.close();
-    closeSync(5);
+    try {
+      // libuv may already have disposed of the given fd. Never close an
+      // unrelated descriptor that reused its number.
+      if (readlinkSync("/proc/self/fd/6") === wakeIdentity) closeSync(6);
+    } catch (checkError) {
+      if (checkError.code !== "ENOENT") throw new AggregateError([error, checkError]);
+    } finally {
+      try {
+        closeSync(5);
+      } finally {
+        reader.close();
+      }
+    }
     throw error;
   }
   let delivered = false;
