@@ -228,6 +228,19 @@ class Client:
             self.peer.close()
 
 
+def retainable_startup_state(pidfd, worker):
+    """A live startup worker must still be live. A completed transient compiler
+    worker, verified by the scout as a status-0 zombie, must still be terminal."""
+    poll = select.poll()
+    poll.register(pidfd, select.POLLIN)
+    ended = bool(poll.poll(0))
+    transient = worker.get("completedTransient")
+    if transient is None:
+        return not ended
+    return (ended and worker.get("state") == "Z" and transient.get("exitCode") == 0 and
+            transient.get("role") == "__zfb-compiler-worker")
+
+
 def duplicate_startup_pair(pair):
     first = os.dup(pair[0])
     try:
@@ -266,9 +279,7 @@ def serve(shared, parent, session, startup_mode=False):
             require(not held or key in held, "ambiguous startup retention")
             # A concurrent ordinary epoch may have held the lock since the
             # scout's last live check. Take a new nonblocking group poll here.
-            poll = select.poll()
-            poll.register(pair[0], select.POLLIN)
-            require(not poll.poll(0), "startup worker exited before retention")
+            require(retainable_startup_state(pair[0], worker), "startup worker exited before retention")
             live_ns = time.monotonic_ns()
             require(live_ns < scout.end_ns and not scout.stop.is_set(), "startup handoff expired")
             first_retained = key
