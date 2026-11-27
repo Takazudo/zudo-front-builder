@@ -154,6 +154,45 @@ export function checkCustodyTransfer(p, cycle, helper) {
   );
 }
 
+export function validateStartupHelloRow(addition, cycle, helper, root, entryNs, receivedNs) {
+  const { birth, dev, root: launch, receipt, descriptors, token, acquiredNs } = addition;
+  requireValue(
+    cycle?.allowStartupAddition === true &&
+      !cycle.startupPollPid &&
+      Object.keys(cycle.tokens).length === 0 &&
+      same(root, launch) &&
+      launch.ppid === root.ppid &&
+      dev.ppid === root.pid &&
+      dev.pgid === root.pgid &&
+      birth.ppid === dev.pid &&
+      birth.pid === birth.pgid &&
+      new Set([birth.pid, dev.pid, root.pid]).size === 3 &&
+      [birth, dev, launch].every(
+        (b) =>
+          uint(b.pid) &&
+          b.pid > 0 &&
+          b.bootId === root.bootId &&
+          b.birthVersion === LINUX_BIRTH &&
+          ticks(b.startTicks),
+      ) &&
+      /^[0-9a-f]{32}$/.test(token) &&
+      ticks(acquiredNs) &&
+      receipt?.session === cycle.session &&
+      receipt.epoch === cycle.epoch &&
+      receipt.helperPid === helper.pid &&
+      receipt.holderPid === cycle.holderPid &&
+      ticks(receipt.verifiedNs) &&
+      BigInt(acquiredNs) <= BigInt(receipt.verifiedNs) &&
+      BigInt(entryNs) <= BigInt(receipt.verifiedNs) &&
+      BigInt(receipt.verifiedNs) <= BigInt(receivedNs) &&
+      Array.isArray(descriptors) &&
+      descriptors.length === 2 &&
+      descriptors.every((pair) => Array.isArray(pair) && pair.length === 2 && pair.every(ticks)) &&
+      JSON.stringify(receipt.descriptors) === JSON.stringify(descriptors),
+    "invalid startup hello addition",
+  );
+}
+
 export function checkCustodyProofTime(row, helperEntryNs) {
   const at = row.terminalProof?.observedNs;
   requireValue(
@@ -353,6 +392,7 @@ export function sampleRendererMemory(
   let helper = null;
   let executable = null;
   let summary = null;
+  let startupAddition = null;
   let startupSelection = null;
   let startupCoverage = null;
   let fault = null;
@@ -369,6 +409,7 @@ export function sampleRendererMemory(
     verifiedDiscoveries: discoveries,
     ...(custody && { custodyReleases }),
     ...(startupSelection && { startupSelection }),
+    ...(startupAddition && { startupAddition }),
     ...(startupCoverage && {
       startupEpochCoverage: startupCoverage,
       ...(startupCoverage.complete
@@ -654,6 +695,27 @@ export function sampleRendererMemory(
         return;
       }
       requireValue(row.type === "failure" || executable, "sample data before helper identity");
+      if (row.type === "startup-addition") {
+        requireValue(
+          fixedExecutables?.protocol === "linux-fixed-zfb.v4" &&
+            !startupAddition &&
+            !bound.size &&
+            !observed.size &&
+            helper?.birth,
+          "unexpected or duplicate startup hello",
+        );
+        validateStartupHelloRow(
+          row.addition,
+          request.fixedCustody,
+          helper,
+          root,
+          stamps.entryNs,
+          callbackNs,
+        );
+        custody.validateStartupHello(row.addition, request.fixedCustody, helper);
+        startupAddition = row.addition;
+        return;
+      }
       if (row.type === "bound") {
         const p = row.birth;
         checkBirth(p, root.bootId);
@@ -751,6 +813,32 @@ export function sampleRendererMemory(
       } else if (row.type === "observation") {
         const p = row.process;
         const prior = proofs.get(p?.pid);
+        const addedWorker = Boolean(startupAddition && p?.pid === startupAddition.birth.pid);
+        requireValue(
+          Boolean(p?.fromStartupHello) === addedWorker,
+          "missing or forged startup observation",
+        );
+        if (addedWorker) {
+          requireValue(
+            processes.some(
+              (parent) =>
+                parent.disposition === "live" &&
+                same(parent, startupAddition.dev) &&
+                parent.ppid === root.pid &&
+                matchesExecutable(parent.executable, fixedExecutables.child),
+            ) &&
+              same(startupAddition.birth, p) &&
+              startupAddition.birth.ppid === p.ppid &&
+              ["live", "custodied-departure"].includes(p.disposition) &&
+              (p.disposition !== "live" ||
+                (p.executable?.workerArg === "__zfb-compiler-worker" &&
+                  BigInt(p.startedNs) >= BigInt(startupAddition.receipt.verifiedNs))) &&
+              (p.disposition !== "custodied-departure" ||
+                (p.custodyToken === startupAddition.token &&
+                  JSON.stringify(p.custodyReceipt) === JSON.stringify(startupAddition.receipt))),
+            "inconsistent startup hello observation",
+          );
+        }
         requireValue(
           same(handle.known.get(p?.pid), p) &&
             !observed.has(p.pid) &&
@@ -840,6 +928,7 @@ export function sampleRendererMemory(
         if (
           custody &&
           p.disposition === "live" &&
+          !addedWorker &&
           p.executable?.workerArg === "__zfb-compiler-worker"
         ) {
           checkCustodyTransfer(p, request.fixedCustody, helper);
@@ -912,6 +1001,7 @@ export function sampleRendererMemory(
         requireValue(
           row.type === "complete" &&
             releaseRequired.size === 0 &&
+            (!startupAddition || observed.has(startupAddition.birth.pid)) &&
             stamps.finalRootEndNs !== null &&
             stamps.cleanupEndNs !== null &&
             uint(row.helperMaxRssKiB) &&

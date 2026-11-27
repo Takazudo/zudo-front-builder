@@ -30,6 +30,7 @@ export function startupTerminalObservation(processes, cycle, birth, acquiredNs) 
     processes.find(
       (p) =>
         p.disposition === "custodied-departure" &&
+        !p.fromStartupHello &&
         sameLinuxBirth(p, birth) &&
         p.ppid === birth.ppid &&
         p.pgid === birth.pgid &&
@@ -125,6 +126,9 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
     outputBytes = 0;
   let stopReport, exit, fault, closePromise;
   let targetHandle;
+  let startupDev,
+    helloTransfer,
+    helloAccepted = false;
   let seed, startupBirth, acquiredNs, scoutReport, scoutTimer, confirmedStartup, releasedStartup;
   const fail = (error) => {
     if (fault) return;
@@ -223,10 +227,26 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
           )
             throw issue("invalid startup acquisition time");
           acquiredNs = msg.acquiredNs;
+          startupDev = msg.dev;
           startupBirth = b;
           registerStartupBirth(targetHandle, b);
           retained.set(b.pid, { birth: b, token: msg.token, descriptors: msg.descriptors });
           append({ type: "fixed-startup-live-custody", ...msg });
+        } else if (startup && msg.session === session && msg.startupHello && !helloTransfer) {
+          const h = msg.startupHello;
+          if (
+            !startupBirth ||
+            h.epoch !== epoch ||
+            h.holderPid !== birth.pid ||
+            !Number.isSafeInteger(h.helperPid) ||
+            h.helperPid <= 0 ||
+            !/^\d{1,20}$/.test(h.verifiedNs) ||
+            BigInt(h.verifiedNs) < BigInt(acquiredNs) ||
+            retained.get(startupBirth.pid)?.token !== h.token
+          )
+            throw issue("unverified holder startup hello");
+          helloTransfer = h;
+          append({ type: "fixed-startup-hello-transfer", session, ...h });
         } else if (
           startup &&
           handshake &&
@@ -277,6 +297,8 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
           Number.isFinite(msg.systemSeconds) &&
           msg.systemSeconds >= 0
         ) {
+          if (startup && msg.startupHelloTransfers !== Number(Boolean(helloTransfer)))
+            throw issue("startup hello transfer not reconciled");
           const lines = [...retained.values()]
             .map(({ birth: b, token }) =>
               [b.bootId, b.pid, b.ppid, b.pgid, b.startTicks, token].join("|"),
@@ -285,7 +307,7 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
           const digest = createHash("sha256").update(lines.join("\n")).digest("hex");
           if (msg.pairsClosed !== retained.size || msg.retainedDigest !== digest)
             throw issue("holder/controller ownership mismatch");
-          stopReport = msg;
+          stopReport = startup ? { ...msg, startupHelloCorroborated: helloAccepted } : msg;
         } else throw issue("unexpected handoff response");
       }
     } catch (error) {
@@ -340,11 +362,37 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
       if (startupBirth) registerStartupBirth(handle, startupBirth);
       return {
         session,
+        ...(startup && !startupBirth && retained.size === 0 && { allowStartupAddition: true }),
         ...(startupBirth && !confirmedStartup && { startupPollPid: startupBirth.pid }),
         holderPid: birth.pid,
         epoch: ++epoch,
         tokens: Object.fromEntries([...retained].map(([pid, item]) => [pid, item.token])),
       };
+    },
+    // Holder stdout and helper stdout are separate streams. An announcement
+    // still uncorroborated at this decision must fail without waiting.
+    validateStartupHello(addition, cycle, helper) {
+      if (
+        helloAccepted ||
+        !helloTransfer ||
+        !cycle.allowStartupAddition ||
+        !startupBirth ||
+        !this.matches(addition.birth, addition.token) ||
+        addition.acquiredNs !== acquiredNs ||
+        !sameLinuxBirth(addition.dev, startupDev) ||
+        addition.dev.ppid !== startupDev.ppid ||
+        addition.dev.pgid !== startupDev.pgid ||
+        !sameLinuxBirth(addition.root, seed) ||
+        addition.root.ppid !== seed.ppid ||
+        addition.root.pgid !== seed.pgid ||
+        helloTransfer.epoch !== cycle.epoch ||
+        helloTransfer.helperPid !== helper.pid ||
+        helloTransfer.verifiedNs !== addition.receipt.verifiedNs ||
+        JSON.stringify(retained.get(addition.birth.pid)?.descriptors) !==
+          JSON.stringify(addition.descriptors)
+      )
+        throw issue("startup hello contradicts independent holder publication");
+      helloAccepted = true;
     },
     matches(b, token) {
       const prev = retained.get(b.pid);
