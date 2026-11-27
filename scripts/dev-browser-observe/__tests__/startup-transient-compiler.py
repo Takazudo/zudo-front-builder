@@ -349,7 +349,11 @@ for label, target, patcher in (
          and is_worker(int(path.rsplit("/", 1)[1])), real_open, FileNotFoundError()))),
     ("native-pidfd-open-esrch", "native",
      lambda: mock.patch.object(os, "pidfd_open", once(lambda pid, *_: is_native(pid), real_pidfd_open,
-                                                     ProcessLookupError()))),
+                                                     ProcessLookupError("native gone")))),
+    ("native-procdir-enoent", "native",
+     lambda: mock.patch.object(os, "open", once(
+         lambda path, *_: isinstance(path, str) and path.startswith("/proc/") and path.count("/") == 2
+         and is_native(int(path.rsplit("/", 1)[1])), real_open, FileNotFoundError("native gone")))),
 ):
     cell = Cell(worker="live")
     try:
@@ -362,7 +366,9 @@ for label, target, patcher in (
                    and s.reaped_mid_bind[0]["reason"] in ("pidfd-open-esrch", "procdir-enoent"),
                    (s.status, s.failure, s.reaped_mid_bind))
         else:
-            expect(label, s.status == "failed" and not s.reaped_mid_bind, (s.status, s.failure))
+            # The raw kernel answer surfaces: zfb itself is never deferred as reaped.
+            expect(label, s.status == "failed" and s.failure == "native gone" and not s.reaped_mid_bind,
+                   (s.status, s.failure))
     finally:
         cell.close()
 
@@ -396,6 +402,25 @@ for label, reason in (("reaped-stat-esrch", "stat-esrch"), ("reaped-fdinfo-minus
                (s.status, s.failure, s.reaped_mid_bind))
     finally:
         cell.close()
+
+cell = Cell(worker="live")
+try:
+    wait_for(lambda: cell.native() is not None and children_of(cell.native()))
+    s = cell.scout()
+    real_read = s.read
+
+    def native_stat_gone(path, directory=None):
+        if path == "stat" and directory is not None:
+            if is_native(int(os.readlink(f"/proc/self/fd/{directory}").rsplit("/", 1)[1])):
+                raise ProcessLookupError("native gone")
+        return real_read(path, directory)
+
+    s.read = native_stat_gone
+    s.run()
+    expect("native-stat-esrch", s.status == "failed" and s.failure == "native gone" and not s.reaped_mid_bind,
+           (s.status, s.failure))
+finally:
+    cell.close()
 
 # 10. The holder never retains a live pair as a completed transient role.
 live = subprocess.Popen(["sleep", "30"])

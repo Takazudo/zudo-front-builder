@@ -593,7 +593,6 @@ export function startFixedCustody({ append: record, abort, intent, startup = fal
         live.length === 2 &&
         live.some((p) => same(p, seed)) &&
         live.some((p) => same(p, native)) &&
-        !live.some((p) => p.ppid === native.pid) &&
         unknown.length === 0;
       const row = {
         type: "fixed-startup-completion-confirmation",

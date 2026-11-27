@@ -246,6 +246,7 @@ test("a product completion is confirmed at readiness and carried into the family
 
 test.each([
   ["an unknown (adopted) controller child", { children: [500, fake.pid, 4242] }],
+  // live.length === 2 with both seed and zfb matched also excludes any zfb child.
   ["a zfb child at readiness", { live: [root, native, birth(503, 501, 503, 1004)] }],
   ["a replaced zfb", { live: [root, { ...native, startTicks: "1009" }] }],
   ["an incomplete census", { strict: false }],
