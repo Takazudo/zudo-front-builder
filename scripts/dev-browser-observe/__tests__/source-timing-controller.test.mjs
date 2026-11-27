@@ -26,11 +26,19 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
-test.each(["complete", "partial-startup", "unclosed", "armed-overlap", "prewrite-pending"])(
+test.each([
+  "complete",
+  "loader-trace",
+  "partial-startup",
+  "unclosed",
+  "armed-overlap",
+  "prewrite-pending",
+])(
   "normal source-built controller: %s",
   async (mode) => {
     vi.stubEnv("NODE_PATH", undefined);
     vi.stubEnv("NODE_OPTIONS", undefined);
+    if (mode === "loader-trace") vi.stubEnv("LD_DEBUG", "bindings");
     const dir = mkdtempSync(join(tmpdir(), "source-timing-control-")),
       exe = join(dir, "pinned-image");
     try {
@@ -278,6 +286,14 @@ test.each(["complete", "partial-startup", "unclosed", "armed-overlap", "prewrite
           .trim()
           .split("\n")
           .map(JSON.parse);
+        if (mode === "loader-trace") {
+          assert.equal(calls, 0);
+          assert.equal(browserStarts, 0);
+          assert.equal(fs.writes.length, 0);
+          assert.notEqual(code, EXIT.ok);
+          assert(JSON.stringify(rows).includes("source timing environment contains LD_DEBUG"));
+          return;
+        }
         assert.equal(
           maxActive,
           1,

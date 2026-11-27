@@ -692,15 +692,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       for (const name of Object.keys(process.env)) {
         if (
           process.env[name] &&
-          (/^MALLOC_/.test(name) ||
-            [
-              "LD_PRELOAD",
-              "LD_AUDIT",
-              "LD_LIBRARY_PATH",
-              "GLIBC_TUNABLES",
-              "NODE_OPTIONS",
-              "NODE_PATH",
-            ].includes(name))
+          (/^(?:MALLOC_|LD_)/.test(name) ||
+            ["GLIBC_TUNABLES", "NODE_OPTIONS", "NODE_PATH"].includes(name))
         )
           throw Error("source timing environment contains " + name);
       }
