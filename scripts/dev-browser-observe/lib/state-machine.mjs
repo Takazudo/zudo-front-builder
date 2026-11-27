@@ -664,6 +664,23 @@ export async function runBatch({ scenarios, deps }) {
         let preparedState = null;
         try {
           attempt = fs.prepareAttempt(op);
+          if (
+            deps.outerDecisionOnly &&
+            (planned !== 1 ||
+              op.op !== "edit-body" ||
+              op.article !== "article-00005" ||
+              op.inject ||
+              (attempt.mode && attempt.mode !== "standard") ||
+              attempt.targetPath !== "/articles/article-00005/" ||
+              attempt.supplemental?.length !== 0 ||
+              attempt.write?.method !== "in-place" ||
+              !attempt.write.path.endsWith("/article-00005.md") ||
+              !Object.hasOwn(activeSnapshot.files ?? {}, attempt.write.path) ||
+              (attempt.writes &&
+                (attempt.writes.length !== 1 ||
+                  !isDeepStrictEqual(attempt.writes[0], attempt.write))))
+          )
+            throw new Error("unexpected decision-only plan before route preparation");
           if (deps.fixedAstroTitle) validateTitlePlan(attempt);
           if (
             category &&

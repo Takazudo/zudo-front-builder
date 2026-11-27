@@ -124,68 +124,82 @@ test.each([
   }
 });
 
-test.each(["prepare-failed", "drift-after-snapshot", "unexpected-return", "unexpected-multiwrite"])(
-  "the no-write experiment cannot edit, restore or visit recovery routes on %s",
-  async (mode) => {
-    const dir = mkdtempSync(join(tmpdir(), "outer-no-recovery-"));
-    try {
-      const path = join(dir, "article-00005.md");
-      writeFileSync(path, "v0");
-      const fs = fakeFs(),
-        page = fakePage();
-      let writes = 0,
-        restores = 0,
-        visits = 0;
-      fs.snapshot = () => snapshotPaths({ files: [path] });
-      fs.readPeerTarget = readPeerTarget;
-      fs.performWrite = (w, t0) => {
-        const stamp = t0();
-        writes++;
-        return stamp;
+test.each([
+  "prepare-failed",
+  "drift-after-snapshot",
+  "unexpected-return",
+  "unexpected-multiwrite",
+  "unexpected-special",
+  "unexpected-route",
+])("the no-write experiment cannot edit, restore or visit recovery routes on %s", async (mode) => {
+  const dir = mkdtempSync(join(tmpdir(), "outer-no-recovery-"));
+  try {
+    const path = join(dir, "article-00005.md");
+    writeFileSync(path, "v0");
+    const fs = fakeFs(),
+      page = fakePage();
+    let writes = 0,
+      restores = 0,
+      visits = 0;
+    fs.snapshot = () => snapshotPaths({ files: [path] });
+    fs.readPeerTarget = readPeerTarget;
+    fs.performWrite = (w, t0) => {
+      const stamp = t0();
+      writes++;
+      return stamp;
+    };
+    fs.performWrites = async () => {
+      writes++;
+      return { t0: 0n };
+    };
+    fs.restore = () => {
+      restores++;
+      return { mismatches: [], actions: [] };
+    };
+    page.liveCheck = async () => {
+      visits++;
+      return { ok: true };
+    };
+    fs.prepareAttempt = () => {
+      if (mode === "prepare-failed") throw Error("controlled early preparation failure");
+      const write = { method: "in-place", path, bytes: Buffer.from("next") };
+      return {
+        token: "controlled",
+        targetPath: "/articles/article-00005/",
+        predicate: { kind: "text", selector: ".body", includes: "next" },
+        write,
+        ...(mode === "unexpected-multiwrite" && { writes: [write, write] }),
+        ...(mode === "unexpected-special" && { mode: "hidden" }),
+        ...(mode === "unexpected-route" && { targetPath: "/wrong/" }),
+        supplemental: [],
       };
-      fs.performWrites = async () => {
-        writes++;
-        return { t0: 0n };
-      };
-      fs.restore = () => {
-        restores++;
-        return { mismatches: [], actions: [] };
-      };
-      page.liveCheck = async () => {
-        visits++;
-        return { ok: true };
-      };
-      fs.prepareAttempt = () => {
-        if (mode === "prepare-failed") throw Error("controlled early preparation failure");
-        const write = { method: "in-place", path, bytes: Buffer.from("next") };
-        return {
-          token: "controlled",
-          targetPath: "/articles/article-00005/",
-          predicate: { kind: "text", selector: ".body", includes: "next" },
-          write,
-          ...(mode === "unexpected-multiwrite" && { writes: [write, write] }),
-          supplemental: [],
-        };
-      };
-      const d = {
-        ...deps({ page, fs }),
-        outerDecisionOnly: true,
-        beforePeerMutation: () => {
-          if (mode === "drift-after-snapshot") {
-            writeFileSync(path, "external drift");
-            throw Error("changed witness");
-          }
-        },
-        outerPeerWriteTime: (now) => ({ t0Ns: String(now()) }),
-      };
-      const op = { id: "edit-05", op: "edit-body", article: "article-00005", expect: "classify" };
-      const result = await runBatch({ deps: d, scenarios: [{ id: "fn-edit-body", ops: [op] }] });
-      assert(result.stopped);
-      assert.deepEqual({ writes, restores, visits }, { writes: 0, restores: 0, visits: 0 });
-      const cleanup = d.recorder.records.find((r) => r.type === "cleanup");
-      assert(cleanup && cleanup.restored === false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
+    };
+    const d = {
+      ...deps({ page, fs }),
+      outerDecisionOnly: true,
+      beforePeerMutation: () => {
+        if (mode === "drift-after-snapshot") {
+          writeFileSync(path, "external drift");
+          throw Error("changed witness");
+        }
+      },
+      outerPeerWriteTime: (now) => ({ t0Ns: String(now()) }),
+    };
+    const op = { id: "edit-05", op: "edit-body", article: "article-00005", expect: "classify" };
+    const result = await runBatch({ deps: d, scenarios: [{ id: "fn-edit-body", ops: [op] }] });
+    assert(result.stopped);
+    assert.deepEqual({ writes, restores, visits }, { writes: 0, restores: 0, visits: 0 });
+    const cleanup = d.recorder.records.find((r) => r.type === "cleanup");
+    assert(cleanup && cleanup.restored === false);
+    if (["unexpected-multiwrite", "unexpected-special", "unexpected-route"].includes(mode)) {
+      assert.equal(page.prepared.length, 0);
+      assert(
+        d.recorder.records.some(
+          (r) => r.type === "precheck" && r.error.includes("before route preparation"),
+        ),
+      );
     }
-  },
-);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
