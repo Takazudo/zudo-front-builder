@@ -126,7 +126,10 @@ class Sampling(unittest.TestCase):
         self.start_ns = time.monotonic_ns()
         argv = ([os.path.realpath(sys.executable), str(here)] if fixed else
                 [sys.executable, "-B", __file__])
+        # Fixed role verification needs Python and the script as argv[0:2].
+        # Preserve that shape while keeping the fixture import out of the source tree.
         child = subprocess.Popen([*argv, "fixture", mode],
+                                 env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"} if fixed else None,
                                  start_new_session=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                  text=True)
         self.addCleanup(self.close, child)
