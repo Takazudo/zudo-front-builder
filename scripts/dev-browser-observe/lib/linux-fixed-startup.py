@@ -21,6 +21,11 @@ class WorkerGone(Exception):
     """The compiler worker was reaped between being listed and being bound."""
 
 
+class MaybeEnded(ValueError):
+    """A worker-slot answer that an exited process also gives: empty argv or a
+    terminal pidfd. Any other mismatch is real negative evidence and refuses."""
+
+
 class Startup:
     def __init__(self, config, parent, seed, publish, complete=None):
         self.config = config
@@ -95,11 +100,9 @@ class Startup:
             return self.completed(pair, raw, head, fields, pid, ppid, pgid, pin, transient_parent)
         try:
             self.paired(process, pid, transient_parent is not None)
-            if (
-                self.read("cmdline", directory)
-                != b"\0".join(map(os.fsencode, argv)) + b"\0"
-            ):
-                raise ValueError("startup process argv mismatch")
+            cmdline = self.read("cmdline", directory)
+            if cmdline != b"\0".join(map(os.fsencode, argv)) + b"\0":
+                raise (MaybeEnded if cmdline == b"" else ValueError)("startup process argv mismatch")
             if os.readlink("cwd", dir_fd=directory) != self.config["launch"]["cwd"]:
                 raise ValueError("startup process cwd mismatch")
             exe = os.open("exe", os.O_RDONLY, dir_fd=directory)
@@ -117,10 +120,12 @@ class Startup:
             poller = select.poll()
             poller.register(process, select.POLLIN)
             if poller.poll(0):
-                raise ValueError("startup role exited during binding")
-        except (ValueError, OSError) as error:
+                raise MaybeEnded("startup role exited during binding")
+        except (MaybeEnded, FileNotFoundError, ProcessLookupError) as error:
             # A zombie's cmdline reads empty and its cwd/exe raise ENOENT; a reaped
-            # process answers ESRCH. Only the worker slot may have ended here.
+            # process answers ESRCH. Only the worker slot may have ended here. A
+            # non-empty foreign argv, or a readable cwd or exe that differs, refuses
+            # even if the process has exited since (review-3 finding 1).
             if transient_parent is None:
                 raise
             return self.exited(pair, pid, ppid, pgid, pin, transient_parent, error)

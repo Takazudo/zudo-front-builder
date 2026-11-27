@@ -146,12 +146,13 @@ class Cell:
         config = dict(launch=dict(cwd=self.cwd, shim=pin(self.shim)), root=pin(PY), child=pin(PY))
         seed = dict(pid=self.root.pid, argv=[self.shim, "dev.py"], startTicks=start_ticks(self.root.pid),
                     bootId=Path("/proc/sys/kernel/random/boot_id").read_text().strip())
-        self.published, self.completions = [], []
+        self.published, self.completions, self.offered = [], [], []
         self.before_retention = lambda pair, worker_birth: None
 
         def publish(pair, worker_birth, dev_birth, launch):
             # The holder's own order (linux-rss-custody.py publish): settle, then poll.
             if pair is not None:
+                self.offered.append(worker_birth)  # as the scout hands it over, before settle
                 self.before_retention(pair, worker_birth)
                 try:
                     worker_birth = custody.startup_retention_birth(self.s, pair, worker_birth, dev_birth)
@@ -455,7 +456,7 @@ def end_worker(cell, pid, reaped):
         wait_for(lambda: stat_fields(pid)[0] == b"Z")
 
 
-for point in ("cmdline", "cwd", "exe", "reverify", "retention"):
+for point in ("cmdline", "cwd", "exe", "poll", "reverify", "retention"):
     for reaped in (False, True):
         cell = Cell(worker="exit-on-file", reap="now" if reaped else "no")
         try:
@@ -487,6 +488,24 @@ for point in ("cmdline", "cwd", "exe", "reverify", "retention"):
                         trigger(fd_pid(kwargs["dir_fd"]))
                     return _real(path, *args, **kwargs)
                 patches.append(mock.patch.object(os, "readlink" if name == "cwd" else "open", hooked))
+            elif point == "poll":
+                # Exit after every identity read passed, just before the closing pidfd poll:
+                # the worker's exe fd is closed right before verify() polls (review-3 m4).
+                real_open, real_close = os.open, os.close
+                exe_fds = []
+
+                def opened(path, *args, _real=real_open, **kwargs):
+                    fd = _real(path, *args, **kwargs)
+                    if path == "exe" and kwargs.get("dir_fd") is not None and fd_pid(kwargs["dir_fd"]) == worker_pid:
+                        exe_fds.append(fd)
+                    return fd
+
+                def closed(fd, _real=real_close):
+                    if fd in exe_fds:
+                        exe_fds.remove(fd)
+                        trigger(worker_pid)
+                    return _real(fd)
+                patches += [mock.patch.object(os, "open", opened), mock.patch.object(os, "close", closed)]
             elif point == "reverify":
                 real_verify = s.verify
                 calls = []
@@ -515,12 +534,94 @@ for point in ("cmdline", "cwd", "exe", "reverify", "retention"):
                        (s.status, s.failure, s.reaped_mid_bind, fired))
             else:
                 w = cell.published[0]["worker"] if cell.published else {}
+                # The scout itself hands over zombie custody, except at retention where it
+                # verified a live worker and the holder settles it (review-3 V1).
+                offered = cell.offered[0] if cell.offered else {}
                 expect(label, fired and s.status == "retained" and len(cell.published) == 1
+                       and ("completedTransient" in offered) == (point != "retention")
                        and w.get("completedTransient", {}).get("exitCode") == 0
                        and cell.published[0]["retainable"] is True and not cell.completions,
                        (s.status, s.failure, fired, w))
         finally:
             cell.close()
+
+# 9b'. review-3 finding 1: positive negative evidence is never routed as an exit. A
+# worker whose real non-empty argv was foreign, or whose readable cwd or exe differs,
+# refuses even if it has exited (here: left a status-0 zombie) right after the read.
+for point in ("argv", "cwd", "exe"):
+    cell = Cell(worker="exit-on-file", extra_arg="--inspect" if point == "argv" else "")
+    try:
+        wait_for(lambda: cell.native() is not None and children_of(cell.native()))
+        worker_pid = next(iter(children_of(cell.native())))
+        s = cell.scout()
+        seen = []
+        patches = []
+        if point == "argv":
+            real_read = s.read
+
+            def read(path, directory=None, _real=real_read):
+                data = _real(path, directory)
+                if path == "cmdline" and directory is not None and fd_pid(directory) == worker_pid and not seen:
+                    seen.append(data)
+                    end_worker(cell, worker_pid, False)
+                return data
+            s.read = read
+        else:
+            real_readlink = os.readlink
+
+            def readlink(path, *args, _name=point, **kwargs):
+                value = real_readlink(path, *args, **kwargs)
+                fd = kwargs.get("dir_fd")
+                if path == _name and fd is not None and fd_pid(fd) == worker_pid and not seen:
+                    # The real read succeeded; report a differing target, then exit.
+                    seen.append(value)
+                    end_worker(cell, worker_pid, False)
+                    return "/foreign-" + _name
+                return value
+            patches.append(mock.patch.object(os, "readlink", readlink))
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            s.run()
+        message = {"argv": "startup process argv mismatch", "cwd": "startup process cwd mismatch",
+                   "exe": "startup process image mismatch"}[point]
+        expect(f"exited-after-foreign-{point}",
+               seen and (point != "argv" or b"--inspect" in seen[0])
+               and stat_fields(worker_pid)[0] == b"Z"
+               and s.status == "failed" and s.failure == message and not cell.published
+               and not cell.completions, (s.status, s.failure, seen))
+    finally:
+        cell.close()
+
+# review-3 X4: exited() re-reads stat; an ancestry that moved since binding refuses
+# rather than relying on completed(), which checks the caller's ppid/pgid only.
+cell = Cell(worker="exit-on-file")
+try:
+    wait_for(lambda: cell.native() is not None and children_of(cell.native()))
+    worker_pid = next(iter(children_of(cell.native())))
+    s = cell.scout()
+    real_read = s.read
+    state = dict(ended=False, forged=False)
+
+    def read(path, directory=None, _real=real_read):
+        if path in ("cmdline", "stat") and directory is not None and fd_pid(directory) == worker_pid:
+            if path == "cmdline" and not state["ended"]:
+                state["ended"] = True
+                end_worker(cell, worker_pid, False)
+            elif path == "stat" and state["ended"]:
+                data = _real(path, directory)
+                head, tail = data.rsplit(b")", 1)
+                fields = tail.split()
+                fields[1] = b"1"
+                state["forged"] = True
+                return head + b") " + b" ".join(fields) + b"\n"
+        return _real(path, directory)
+    s.read = read
+    s.run()
+    expect("exited-ancestry-moved", state["forged"] and s.status == "failed"
+           and s.failure == "startup process ancestry mismatch" and not cell.published, (s.status, s.failure))
+finally:
+    cell.close()
 
 # 9c. conclude() re-checks zfb after the decision sweep (review-2 J8, J8b), and a
 # native fdinfo -1 is never a deferral (J15).
