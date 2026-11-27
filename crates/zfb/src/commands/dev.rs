@@ -1510,6 +1510,10 @@ async fn run_dev(args: &DevArgs) -> Result<()> {
     // Extracted before `plugin_watch_ownership` moves into `plugin_refresh`
     // below; consumed further down once `raw_import_invalidation` exists.
     let plugin_watch_files = plugin_watch_ownership.watched_paths();
+    // Issue #4894 — the SAME matcher instance the ownership map consults is
+    // published to the policy below, so the refresh gate and the loader
+    // selection cannot disagree.
+    let plugin_watch_directories = plugin_watch_ownership.directories().clone();
     let plugin_virtual_module_store =
         zfb_build::PluginVirtualModuleStore::seeded(dev_plugin_virtual_modules.iter().cloned());
     let plugin_refresh = zfb_build::PluginRefreshState::new(
@@ -2294,6 +2298,10 @@ async fn run_dev(args: &DevArgs) -> Result<()> {
     // would call `replace_plugin_watch_files` again.
     raw_import_invalidation
         .replace_plugin_watch_files_read_since(plugin_watch_files, plugin_watch_files_read_since);
+    raw_import_invalidation.replace_plugin_watch_directories_read_since(
+        plugin_watch_directories,
+        plugin_watch_files_read_since,
+    );
     // Issue #3162 — the dev SSR module-dependency set rides the same
     // registry. Installing it replays the eager boot bundle's set (recorded
     // by `seed_boot_module_edges` above, before this registry existed), so

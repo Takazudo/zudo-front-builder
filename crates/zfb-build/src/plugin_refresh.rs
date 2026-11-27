@@ -63,6 +63,7 @@ use tracing::warn;
 
 use crate::plugin_registries::{VirtualLoaderId, VirtualModuleRegistry};
 use crate::plugin_runner::PluginHost;
+use crate::plugin_watch_dirs::PluginWatchDirectories;
 use crate::policy::RawImportInvalidation;
 
 /// Shared, interior-mutable `specifier -> source text` store for plugin
@@ -144,6 +145,10 @@ impl PluginVirtualModuleStore {
 #[derive(Debug, Clone, Default)]
 pub struct PluginWatchOwnership {
     by_path: BTreeMap<PathBuf, Vec<(String, VirtualLoaderId)>>,
+    /// `watchDirectories` declarations (issue #4894). The same instance is
+    /// published to the policy, so ownership and the policy gate share one
+    /// matching decision.
+    directories: PluginWatchDirectories,
 }
 
 impl PluginWatchOwnership {
@@ -163,7 +168,16 @@ impl PluginWatchOwnership {
                 }
             }
         }
-        Self { by_path }
+        Self {
+            by_path,
+            directories: PluginWatchDirectories::from_registry(registry),
+        }
+    }
+
+    /// The compiled `watchDirectories` matcher — feeds
+    /// `RawImportInvalidation::replace_plugin_watch_directories_read_since`.
+    pub fn directories(&self) -> &PluginWatchDirectories {
+        &self.directories
     }
 
     /// Every registered watch-file alias — feeds
@@ -173,9 +187,10 @@ impl PluginWatchOwnership {
         self.by_path.keys().cloned().collect()
     }
 
-    /// `true` when no registered loader declared any `watchFiles`.
+    /// `true` when no registered loader declared any `watchFiles` or
+    /// `watchDirectories`.
     pub fn is_empty(&self) -> bool {
-        self.by_path.is_empty()
+        self.by_path.is_empty() && self.directories.is_empty()
     }
 
     /// Resolve `changed_paths` to the distinct `(specifier, loader_id)`
@@ -194,6 +209,11 @@ impl PluginWatchOwnership {
                     if seen.insert(specifier.clone()) {
                         out.push((specifier.clone(), loader_id.clone()));
                     }
+                }
+            }
+            for (specifier, loader_id) in self.directories.owners_of(path) {
+                if seen.insert(specifier.clone()) {
+                    out.push((specifier, loader_id));
                 }
             }
         }
@@ -439,6 +459,7 @@ mod tests {
                 plugin: plugin.to_string(),
                 loader_id: VirtualLoaderId(format!("loader:{specifier}")),
                 watch_files,
+                watch_directories: Vec::new(),
             });
         }
         registry
@@ -846,6 +867,137 @@ mod tests {
         assert!(outcome.failed.is_empty());
         assert!(state.store().get("virtual:a").unwrap().contains("\"two\""));
         assert!(state.store().get("virtual:b").unwrap().contains("\"two\""));
+
+        host.shutdown().await.ok();
+    }
+
+    #[test]
+    fn ownership_resolves_watch_directory_owners_alongside_watch_files() {
+        // #4894: directory declarations and watchFiles fold into one
+        // deduplicated affected set.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("posts");
+        std::fs::create_dir_all(&root).unwrap();
+        let note = tmp.path().join("note.txt");
+        let mut registry = registry_with(vec![("virtual:note", "p", vec![note.clone()])]);
+        for (specifier, include) in [
+            ("virtual:posts", vec!["**/*.md".to_string()]),
+            ("virtual:index", vec!["*.md".to_string()]),
+        ] {
+            registry.insert(crate::plugin_registries::VirtualModuleEntry {
+                specifier: specifier.to_string(),
+                plugin: "p".to_string(),
+                loader_id: VirtualLoaderId(format!("loader:{specifier}")),
+                watch_files: Vec::new(),
+                watch_directories: vec![crate::plugin_registries::WatchDirectory {
+                    path: root.clone(),
+                    include: Some(include),
+                    exclude: Vec::new(),
+                }],
+            });
+        }
+        let ownership = PluginWatchOwnership::from_registry(&registry);
+        assert!(!ownership.is_empty());
+        let specs = |paths: &[PathBuf]| -> Vec<String> {
+            let mut out: Vec<String> = ownership
+                .affected(paths)
+                .into_iter()
+                .map(|(s, _)| s)
+                .collect();
+            out.sort();
+            out
+        };
+        assert_eq!(
+            specs(&[root.join("a.md")]),
+            vec!["virtual:index", "virtual:posts"]
+        );
+        assert_eq!(specs(&[root.join("sub/a.md")]), vec!["virtual:posts"]);
+        assert_eq!(
+            specs(&[root.join("a.md"), root.join("b.md"), note.clone()]),
+            vec!["virtual:index", "virtual:note", "virtual:posts"],
+            "many files and owners in one batch are deduplicated"
+        );
+        assert!(specs(&[root.join("a.txt")]).is_empty());
+        assert_eq!(ownership.directories().roots(), BTreeSet::from([root]));
+    }
+
+    #[tokio::test]
+    async fn refresh_watch_directory_enumerates_and_recovers_after_failure() {
+        // #4894: the loader enumerates its root on every run; a failure
+        // in one owner publishes nothing for the batch, and the next
+        // change retries both owners.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("posts");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.md"), "A").unwrap();
+        let plugin_src = format!(
+            r#"
+            import {{ readdirSync, existsSync }} from "node:fs";
+            import {{ join }} from "node:path";
+            const root = {root:?};
+            const list = () => readdirSync(root, {{ recursive: true }}).map(String).sort();
+            export default {{
+              name: "dirs",
+              setup({{ addVirtualModule }}) {{
+                addVirtualModule("virtual:list", () => `export default ${{JSON.stringify(list())}}`,
+                  {{ watchDirectories: [{{ path: root, include: ["**/*.md"] }}] }});
+                addVirtualModule("virtual:guard", () => {{
+                  if (existsSync(join(root, "FAIL.md"))) throw new Error("guard failed");
+                  return `export default ${{JSON.stringify(list().length)}}`;
+                }}, {{ watchDirectories: [{{ path: root }}] }});
+              }},
+            }};
+            "#,
+            root = root.to_string_lossy().to_string(),
+        );
+        let (host, regs) = spawn_and_setup(tmp.path(), "dirs", &plugin_src).await;
+        let ownership = PluginWatchOwnership::from_registry(&regs.virtual_modules);
+        let state = PluginRefreshState::new(
+            Some(host.clone()),
+            ownership,
+            PluginVirtualModuleStore::seeded([
+                ("virtual:list".to_string(), "boot".to_string()),
+                ("virtual:guard".to_string(), "boot".to_string()),
+            ]),
+        );
+
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::write(root.join("nested/b.md"), "B").unwrap();
+        let outcome = state.refresh(&[root.join("nested/b.md")]).await;
+        assert_eq!(outcome.refreshed, vec!["virtual:guard", "virtual:list"]);
+        assert_eq!(
+            state.store().get("virtual:list").as_deref(),
+            Some(r#"export default ["a.md","nested","nested/b.md"]"#)
+        );
+
+        std::fs::write(root.join("FAIL.md"), "x").unwrap();
+        let outcome = state.refresh(&[root.join("FAIL.md")]).await;
+        assert!(outcome.refreshed.is_empty());
+        assert_eq!(outcome.failed.len(), 1);
+        assert_eq!(
+            state.store().get("virtual:list").as_deref(),
+            Some(r#"export default ["a.md","nested","nested/b.md"]"#),
+            "the sibling's fresh output is not published from a failed batch"
+        );
+
+        std::fs::remove_file(root.join("FAIL.md")).unwrap();
+        let outcome = state.refresh(&[root.join("FAIL.md")]).await;
+        assert!(outcome.failed.is_empty());
+        assert_eq!(outcome.refreshed, vec!["virtual:guard", "virtual:list"]);
+        assert_eq!(
+            state.store().get("virtual:guard").as_deref(),
+            Some("export default 3")
+        );
+
+        // A non-matching file edit owned by neither declaration's include
+        // still reaches `virtual:guard` (no include), never `virtual:list`.
+        std::fs::write(root.join("notes.txt"), "n").unwrap();
+        let outcome = state.refresh(&[root.join("notes.txt")]).await;
+        assert_eq!(outcome.refreshed, vec!["virtual:guard"]);
 
         host.shutdown().await.ok();
     }

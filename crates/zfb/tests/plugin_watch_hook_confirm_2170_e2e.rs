@@ -243,10 +243,14 @@ const FRESHNESS_DEADLINE: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 fn fixture_dir() -> PathBuf {
+    fixture_named("plugin-watch-hook-confirm")
+}
+
+fn fixture_named(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
-        .join("plugin-watch-hook-confirm")
+        .join(name)
 }
 
 /// Recursive directory copy (same shape as every sibling dev e2e's
@@ -343,6 +347,10 @@ impl DevSession {
 /// piped child that outgrows the OS pipe buffer blocks on write and
 /// masquerades as a hang, `build_terminates.rs` pattern).
 fn spawn_dev(tmp: &tempfile::TempDir) -> DevSession {
+    spawn_dev_from(tmp, &fixture_dir())
+}
+
+fn spawn_dev_from(tmp: &tempfile::TempDir, fixture: &Path) -> DevSession {
     // macOS /tmp is a symlink to /private/tmp; notify reports canonical
     // paths, and the plugin preset joins `projectRoot` (this canonical
     // path) with `plugin-watched/note.txt` — every path the dev process,
@@ -352,7 +360,7 @@ fn spawn_dev(tmp: &tempfile::TempDir) -> DevSession {
         .path()
         .canonicalize()
         .expect("canonicalize fixture root");
-    copy_dir(&fixture_dir(), &root).expect("copy fixture into tempdir");
+    copy_dir(fixture, &root).expect("copy fixture into tempdir");
 
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
@@ -865,6 +873,298 @@ async fn watched_file_edit_refreshes_served_virtual_module_content() {
         Err(_) => panic!(
             "[watchdog] plugin_watch_hook_confirm_2170_e2e did not finish within {}s.",
             OVERALL_DEADLINE.as_secs(),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #4894 — `addVirtualModule(..., { watchDirectories })`.
+//
+// Fixture `tests/fixtures/plugin-watch-directories/` (see its `preset.mjs`):
+// `virtual:listing` enumerates `plugin-dirs/**/*.md` and also keeps a
+// `watchFiles` entry; `virtual:count` counts the root's own `*.md` files
+// through two identical declarations. `plugin-dirs/` is not a default watch
+// root and no other channel claims it, so every served change below can only
+// come from the directory registration. Each step asserts the HTML actually
+// served by both an SSR-only route (`/`, store refresh) and a prerendered
+// route (`/prerendered/`, page invalidation), with condition-keyed polls only.
+// ---------------------------------------------------------------------------
+
+const DIRECTORIES_OVERALL_DEADLINE: Duration = Duration::from_secs(360);
+const REFRESH_LINE: &str = "[zfb-timing] plugin-refresh: pre-tick refresh completed";
+const LISTING_FAILURE_MARKER: &str = "plugin \"plugin-watch-directories-preset\" failed to reload \
+                                      virtual module \"virtual:listing\"";
+
+async fn expect_served(
+    client: &reqwest::Client,
+    base: &str,
+    marker: &str,
+    phase: &str,
+    session: &DevSession,
+) {
+    for route in ["/", "/prerendered/"] {
+        poll_until_response_contains(
+            client,
+            &format!("{base}{route}"),
+            marker,
+            &format!("{phase} ({route})"),
+            session,
+        )
+        .await;
+    }
+}
+
+async fn wait_for_log(session: &DevSession, needle: &str, phase: &str) {
+    let deadline = Instant::now() + FRESHNESS_DEADLINE;
+    while !session.logs().contains(needle) {
+        assert!(
+            Instant::now() < deadline,
+            "[{phase}] expected {needle:?} in the dev logs.\n{}",
+            session.logs()
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+async fn run_directories_scenario() -> ScenarioOutcome {
+    let tmp = tempfile::tempdir().expect("create tempdir for plugin-watch-directories fixture");
+    let mut session = spawn_dev_from(&tmp, &fixture_named("plugin-watch-directories"));
+    let Some((base, client)) = boot_and_wait_ready(&mut session).await else {
+        return ScenarioOutcome::Skipped;
+    };
+
+    let stdout_path = session.stdout_path.clone();
+    let stderr_path = session.stderr_path.clone();
+    let root = session.root.clone();
+    let result = watcher_live_handshake(
+        HandshakeOpts::new(HANDSHAKE_DEADLINE).with_marker_interval(Duration::from_millis(400)),
+        {
+            let root = root.clone();
+            move |idx| write_warmup_marker(&root, idx)
+        },
+        move || dump_logs(&stdout_path, &stderr_path).contains("[zfb-timing] tick():"),
+    )
+    .await;
+    assert!(
+        result.live,
+        "watcher never became live.\n{}",
+        session.logs()
+    );
+
+    let dirs = root.join("plugin-dirs");
+    let s = &session;
+    expect_served(&client, &base, "LIST:a.md=A:END", "boot listing", s).await;
+    expect_served(&client, &base, "COUNT:1:2", "boot count", s).await;
+    expect_served(&client, &base, "NOTE-V1", "boot note", s).await;
+
+    // Add, change, delete.
+    fs::write(dirs.join("b.md"), "B\n").unwrap();
+    expect_served(&client, &base, "LIST:a.md=A|b.md=B:END", "file add", s).await;
+    expect_served(&client, &base, "COUNT:2:4", "file add (second owner)", s).await;
+    fs::write(dirs.join("a.md"), "A2\n").unwrap();
+    expect_served(&client, &base, "LIST:a.md=A2|b.md=B:END", "file change", s).await;
+    fs::remove_file(dirs.join("b.md")).unwrap();
+    expect_served(&client, &base, "LIST:a.md=A2:END", "file delete", s).await;
+    expect_served(&client, &base, "COUNT:1:3", "file delete (second owner)", s).await;
+
+    // Nested directories, file rename, directory rename.
+    fs::create_dir_all(dirs.join("sub/deep")).unwrap();
+    fs::write(dirs.join("sub/deep/c.md"), "C\n").unwrap();
+    expect_served(
+        &client,
+        &base,
+        "LIST:a.md=A2|sub/deep/c.md=C:END",
+        "nested add",
+        s,
+    )
+    .await;
+    fs::rename(dirs.join("sub/deep/c.md"), dirs.join("sub/deep/d.md")).unwrap();
+    expect_served(
+        &client,
+        &base,
+        "LIST:a.md=A2|sub/deep/d.md=C:END",
+        "file rename",
+        s,
+    )
+    .await;
+    fs::rename(dirs.join("sub"), dirs.join("moved")).unwrap();
+    expect_served(
+        &client,
+        &base,
+        "LIST:a.md=A2|moved/deep/d.md=C:END",
+        "directory rename",
+        s,
+    )
+    .await;
+    fs::remove_dir_all(dirs.join("moved")).unwrap();
+    expect_served(&client, &base, "LIST:a.md=A2:END", "directory delete", s).await;
+
+    // `watchFiles` keeps working beside `watchDirectories`.
+    fs::write(root.join("plugin-watched/note.txt"), "NOTE-V2\n").unwrap();
+    expect_served(&client, &base, "NOTE-V2", "watchFiles edit", s).await;
+
+    // A file no declaration includes is delivered (it lies under the
+    // recursive root) but never refreshes a loader. The sentinel edit
+    // after it bounds the window: ticks run serially, so any refresh the
+    // non-matching edit caused would print before the sentinel's intake.
+    fs::write(dirs.join("notes.txt"), "not markdown\n").unwrap();
+    wait_for_log(s, "plugin-dirs/notes.txt:", "non-matching edit intake").await;
+    fs::write(dirs.join("e.md"), "E\n").unwrap();
+    expect_served(
+        &client,
+        &base,
+        "LIST:a.md=A2|e.md=E:END",
+        "sentinel after non-matching edit",
+        s,
+    )
+    .await;
+    {
+        let logs = read_log(&s.stderr_path);
+        let lines: Vec<&str> = logs.lines().collect();
+        let pure: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| {
+                line.contains("intake paths:")
+                    && line.contains("plugin-dirs/notes.txt:")
+                    && !line.contains(".md:")
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert!(
+            !pure.is_empty(),
+            "expected a notes.txt-only intake batch.\n{}",
+            s.logs()
+        );
+        for start in pure {
+            let window: Vec<&str> = lines[start + 1..]
+                .iter()
+                .take_while(|line| !line.contains("intake paths:"))
+                .copied()
+                .collect();
+            assert!(
+                !window.iter().any(|line| line.contains(REFRESH_LINE)),
+                "editing a non-matching file must not refresh any loader; lines after its \
+                 intake:\n{}\n{}",
+                window.join("\n"),
+                s.logs()
+            );
+        }
+    }
+
+    // Failure publishes nothing (both owners affected) and keeps last-good;
+    // the next change recovers both.
+    fs::write(dirs.join("a.md"), "THROW-ON-REINVOKE\n").unwrap();
+    wait_for_log(s, LISTING_FAILURE_MARKER, "failing loader").await;
+    expect_served(
+        &client,
+        &base,
+        "LIST:a.md=A2|e.md=E:END",
+        "failure keeps last-good listing",
+        s,
+    )
+    .await;
+    expect_served(
+        &client,
+        &base,
+        "COUNT:2:5",
+        "failure publishes no partial update",
+        s,
+    )
+    .await;
+    fs::write(dirs.join("a.md"), "A33\n").unwrap();
+    expect_served(&client, &base, "LIST:a.md=A33|e.md=E:END", "recovery", s).await;
+    expect_served(&client, &base, "COUNT:2:6", "recovery (second owner)", s).await;
+
+    // Root delete, then recreate empty, then the first file in it.
+    fs::remove_dir_all(&dirs).unwrap();
+    expect_served(&client, &base, "LIST:MISSING", "root delete", s).await;
+    expect_served(&client, &base, "COUNT:0:0", "root delete (second owner)", s).await;
+    fs::create_dir(&dirs).unwrap();
+    expect_served(&client, &base, "LIST::END", "root recreate", s).await;
+    fs::write(dirs.join("f.md"), "F\n").unwrap();
+    expect_served(
+        &client,
+        &base,
+        "LIST:f.md=F:END",
+        "first file in recreated root",
+        s,
+    )
+    .await;
+    fs::create_dir_all(dirs.join("later")).unwrap();
+    fs::write(dirs.join("later/g.md"), "G\n").unwrap();
+    expect_served(
+        &client,
+        &base,
+        "LIST:f.md=F|later/g.md=G:END",
+        "nested add after recreate",
+        s,
+    )
+    .await;
+    expect_served(&client, &base, "COUNT:1:2", "count after recreate", s).await;
+
+    // Review of #4894: replace the root in one go, with no served state in
+    // between, so the dev loop never syncs while it is missing. The recursive
+    // watch must be re-armed on the new directory: the edit inside it after
+    // the swap is only seen through that watch.
+    let staged = dirs.with_file_name("plugin-dirs.next");
+    fs::create_dir_all(&staged).unwrap();
+    fs::write(staged.join("h.md"), "H\n").unwrap();
+    fs::remove_dir_all(&dirs).unwrap();
+    fs::rename(&staged, &dirs).unwrap();
+    expect_served(&client, &base, "LIST:h.md=H:END", "root swapped in", s).await;
+    fs::write(dirs.join("i.md"), "I\n").unwrap();
+    expect_served(
+        &client,
+        &base,
+        "LIST:h.md=H|i.md=I:END",
+        "edit inside the swapped-in root",
+        s,
+    )
+    .await;
+    fs::remove_dir_all(&dirs).unwrap();
+    fs::create_dir(&dirs).unwrap();
+    fs::write(dirs.join("j.md"), "J\n").unwrap();
+    expect_served(
+        &client,
+        &base,
+        "LIST:j.md=J:END",
+        "root recreated in one go",
+        s,
+    )
+    .await;
+    fs::write(dirs.join("j.md"), "J2\n").unwrap();
+    expect_served(
+        &client,
+        &base,
+        "LIST:j.md=J2:END",
+        "edit inside the recreated root",
+        s,
+    )
+    .await;
+    expect_served(
+        &client,
+        &base,
+        "COUNT:1:3",
+        "count after one-go recreate",
+        s,
+    )
+    .await;
+
+    ScenarioOutcome::Completed
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn watched_directory_changes_refresh_served_virtual_module_content() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+
+    match tokio::time::timeout(DIRECTORIES_OVERALL_DEADLINE, run_directories_scenario()).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] watched_directory_changes_refresh_served_virtual_module_content did not \
+             finish within {}s.",
+            DIRECTORIES_OVERALL_DEADLINE.as_secs(),
         ),
     }
 }

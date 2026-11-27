@@ -5,7 +5,8 @@
 // `addVirtualModule` `watchFiles` option + forced `virtualLoad` reload
 // in the Plugin Watch Hook epic #2166 / sub-issue #2167, and for global
 // `console` redirection + directory `watchFiles` rejection in the
-// Plugin Diagnostics & Hygiene epic #2368 / sub-issue #2373).
+// Plugin Diagnostics & Hygiene epic #2368 / sub-issue #2373), and for
+// the `watchDirectories` option (issue #4894).
 // Do not edit unless you also update the Rust caller in
 // `crates/zfb-build/src/plugin_runner.rs`.
 //
@@ -229,6 +230,113 @@ globalThis.console = new Console({
   stderr: makeEnvelopeStream("error"),
 });
 
+// #4894: validate and deep-copy `addVirtualModule`'s `watchDirectories`.
+// Each root must exist as an absolute directory when `setup` runs; globs
+// are root-relative and `/`-separated (Rust compiles them and reports
+// syntax errors). The copy keeps a later mutation of the caller's objects
+// from changing the registration, which is serialized after `setup` ends.
+function validateWatchDirectories(value) {
+  const prefix = "addVirtualModule: `options.watchDirectories`";
+  if (!Array.isArray(value)) {
+    throw new Error(`${prefix} must be an array of { path, include?, exclude? } objects`);
+  }
+  return value.map((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`${prefix} entries must be objects (got ${JSON.stringify(entry)})`);
+    }
+    const { path, include, exclude } = entry;
+    if (typeof path !== "string" || path.length === 0) {
+      throw new Error(`${prefix} entry \`path\` must be a non-empty string`);
+    }
+    if (!isAbsolute(path)) {
+      throw new Error(
+        `${prefix} entry \`path\` must be absolute (got ${JSON.stringify(path)}); ` +
+          "zfb does not resolve watchDirectories against the project root",
+      );
+    }
+    let rootStat;
+    try {
+      rootStat = statSync(path);
+    } catch (err) {
+      if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") throw err;
+    }
+    if (rootStat === undefined) {
+      throw new Error(
+        `${prefix} root ${JSON.stringify(path)} does not exist; create the directory before setup`,
+      );
+    }
+    if (!rootStat.isDirectory()) {
+      throw new Error(`${prefix} root ${JSON.stringify(path)} is not a directory`);
+    }
+    const copyPatterns = (patterns, key) => {
+      if (!Array.isArray(patterns)) {
+        throw new Error(`${prefix} entry \`${key}\` must be an array of glob strings`);
+      }
+      for (const pattern of patterns) {
+        if (typeof pattern !== "string" || pattern.length === 0) {
+          throw new Error(
+            `${prefix} entry \`${key}\` must contain non-empty strings (got ${JSON.stringify(pattern)})`,
+          );
+        }
+        if (pattern.startsWith("/") || isAbsolute(pattern)) {
+          throw new Error(
+            `${prefix} glob ${JSON.stringify(pattern)} is absolute; patterns are relative to the root`,
+          );
+        }
+        if (/^[A-Za-z]:(\/|\\|$)/.test(pattern)) {
+          throw new Error(
+            `${prefix} glob ${JSON.stringify(pattern)} starts with a drive letter; patterns are relative to the root`,
+          );
+        }
+        for (let i = 0; i < pattern.length; i++) {
+          if (pattern[i] !== "\\") continue;
+          // Mirrors ESCAPABLE in crates/zfb-build/src/plugin_watch_dirs.rs.
+          if (i + 1 >= pattern.length || !"*?[]{}\\,!-^".includes(pattern[i + 1])) {
+            throw new Error(
+              `${prefix} glob ${JSON.stringify(pattern)} has a backslash that escapes no glob metacharacter; ` +
+                "separate segments with `/`, and escape a literal metacharacter as `\\[` or `[[]`",
+            );
+          }
+          i++;
+        }
+        const segments = pattern.split("/");
+        if (segments.includes("..")) {
+          throw new Error(`${prefix} glob ${JSON.stringify(pattern)} contains a \`..\` segment`);
+        }
+        if (segments.includes(".")) {
+          throw new Error(
+            `${prefix} glob ${JSON.stringify(pattern)} contains a \`.\` segment, which never matches`,
+          );
+        }
+        if (segments.includes("")) {
+          throw new Error(
+            `${prefix} glob ${JSON.stringify(pattern)} has an empty segment (\`//\` or a trailing \`/\`), which never matches`,
+          );
+        }
+      }
+      return patterns.slice();
+    };
+    let includeCopy = null;
+    if (include !== undefined) {
+      includeCopy = copyPatterns(include, "include");
+      for (const pattern of includeCopy) {
+        if (pattern.split("/").includes(".git")) {
+          throw new Error(
+            `${prefix} glob ${JSON.stringify(pattern)} targets \`.git\`, whose files never refresh a loader`,
+          );
+        }
+      }
+      if (includeCopy.length === 0) {
+        throw new Error(
+          `${prefix} entry \`include\` must not be empty; omit it to match every file below the root`,
+        );
+      }
+    }
+    const excludeCopy = exclude === undefined ? [] : copyPatterns(exclude, "exclude");
+    return { path, include: includeCopy, exclude: excludeCopy };
+  });
+}
+
 function makeLogger(pluginName) {
   const log = (level, msg, diagnostic) => {
     // Only additive diagnostic fields cross this boundary. A metadata object
@@ -410,6 +518,7 @@ async function handleSetup(id, msg) {
         // against the project root downstream, so a relative entry would
         // have no defined base directory to resolve against.
         let watchFiles = [];
+        let watchDirectories = [];
         if (options != null) {
           if (typeof options !== "object") {
             throw new Error(
@@ -455,7 +564,8 @@ async function handleSetup(id, msg) {
               if (entryStat?.isDirectory()) {
                 throw new Error(
                   `addVirtualModule: \`options.watchFiles\` entries must be files ` +
-                    `(got ${JSON.stringify(entry)}); directories are not watched recursively`,
+                    `(got ${JSON.stringify(entry)}); directories are not watched recursively ` +
+                    "(declare a directory with `watchDirectories` instead)",
                 );
               }
             }
@@ -468,10 +578,19 @@ async function handleSetup(id, msg) {
             // corrupt an already-registered entry's watchFiles.
             watchFiles = options.watchFiles.slice();
           }
+          if (options.watchDirectories !== undefined) {
+            watchDirectories = validateWatchDirectories(options.watchDirectories);
+          }
         }
         const loaderId = `v${nextLoaderId++}`;
         virtualLoaders.set(loaderId, { plugin: p.name, loader });
-        registrations.push({ kind: "virtualModule", specifier, loaderId, watchFiles });
+        registrations.push({
+          kind: "virtualModule",
+          specifier,
+          loaderId,
+          watchFiles,
+          watchDirectories,
+        });
       },
       injectRoute(pattern, entrypoint, opts) {
         if (typeof pattern !== "string" || !pattern.startsWith("/")) {

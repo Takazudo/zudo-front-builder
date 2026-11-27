@@ -68,6 +68,15 @@ trait DynamicWatchRegistrar: Send + 'static {
 
     /// Roots below which `names` stay live although they are skip names.
     fn set_recursive_dir_traversals(&mut self, _roots: BTreeSet<PathBuf>, _names: &[&str]) {}
+
+    /// Exact-file parent watches: only events naming one of `paths`, not
+    /// their siblings, are delivered from the parent watch.
+    fn watch_exact_files(&mut self, _paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
+        Vec::new()
+    }
+
+    /// Roots below which no skip name is suppressed.
+    fn set_recursive_dir_unfiltered_roots(&mut self, _roots: BTreeSet<PathBuf>) {}
 }
 
 impl DynamicWatchRegistrar for Watcher {
@@ -85,6 +94,14 @@ impl DynamicWatchRegistrar for Watcher {
 
     fn set_recursive_dir_traversals(&mut self, roots: BTreeSet<PathBuf>, names: &[&str]) {
         Watcher::set_recursive_dir_traversals(self, roots, names)
+    }
+
+    fn watch_exact_files(&mut self, paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
+        Watcher::watch_exact_files(self, paths)
+    }
+
+    fn set_recursive_dir_unfiltered_roots(&mut self, roots: BTreeSet<PathBuf>) {
+        Watcher::set_recursive_dir_unfiltered_roots(self, roots)
     }
 }
 
@@ -164,8 +181,18 @@ fn register_dynamic_dependency_watches<R: DynamicWatchRegistrar>(
     // `dist`/`node_modules` live, as the wind walk does.
     let package_roots = policy.css_package_root_paths();
     watcher.set_recursive_dir_traversals(package_roots.clone(), PACKAGE_ROOT_TRAVERSED_DIR_NAMES);
+    // Issue #4894 — plugin `watchDirectories` roots join the SAME replace-
+    // semantics recursive set (adding them separately would retire the CSS
+    // roots), keep every skip-named subdirectory live (the CSS skip list is
+    // not the plugin's declaration), and get an exact-file watch on their
+    // parent so the root's own delete/recreate/rename is delivered and the
+    // root is re-armed by the next call.
+    let plugin_roots = policy.plugin_watch_directory_roots();
+    watcher.set_recursive_dir_unfiltered_roots(plugin_roots.clone());
+    newly_watched.extend(watcher.watch_exact_files(plugin_roots.clone()));
     let mut recursive_roots = policy.css_mirror_root_paths();
     recursive_roots.extend(package_roots);
+    recursive_roots.extend(plugin_roots);
     let newly_watched_dirs =
         watcher.sync_recursive_dir_watches(recursive_roots, css_mirror_skip_dir_names);
     if dev_timing_enabled() {
@@ -5744,6 +5771,236 @@ mod tests {
             !orch.plan_for_changes([mirror_dist]).rerun_css,
             "a mirror root still prunes dist"
         );
+    }
+
+    /// Policy holding one `watchDirectories` declaration (issue #4894).
+    fn policy_with_plugin_watch_directory(
+        root: &Path,
+        include: Option<&[&str]>,
+        read_since: Option<std::time::SystemTime>,
+    ) -> crate::policy::GranularityPolicy {
+        let mut registry = crate::plugin_registries::VirtualModuleRegistry::new();
+        registry.insert(crate::plugin_registries::VirtualModuleEntry {
+            specifier: "virtual:posts".into(),
+            plugin: "p".into(),
+            loader_id: crate::plugin_registries::VirtualLoaderId("v0".into()),
+            watch_files: Vec::new(),
+            watch_directories: vec![crate::plugin_registries::WatchDirectory {
+                path: root.to_path_buf(),
+                include: include.map(|p| p.iter().map(|s| s.to_string()).collect()),
+                exclude: Vec::new(),
+            }],
+        });
+        let directories =
+            crate::plugin_watch_dirs::PluginWatchDirectories::from_registry(&registry);
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        match read_since {
+            Some(since) => {
+                invalidation.replace_plugin_watch_directories_read_since(directories, since)
+            }
+            None => invalidation.replace_plugin_watch_directories(directories),
+        }
+        crate::policy::GranularityPolicy::default().with_raw_import_invalidation(invalidation)
+    }
+
+    /// Issue #4894 — plugin roots are ADDED to the replace-semantics
+    /// recursive set (CSS mirror and package roots survive), stay
+    /// unfiltered by the CSS skip names, and get an exact parent watch.
+    #[test]
+    fn plugin_watch_directory_roots_join_recursive_set_without_dropping_css_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        let (_project, mirror_root, _) = css_mirror_root_fixture(&ws);
+        let plugin_root = ws.join("plugin-data");
+        std::fs::create_dir_all(&plugin_root).unwrap();
+        let package_root = ws.join("packages/ui");
+        std::fs::create_dir_all(&package_root).unwrap();
+        let policy = policy_with_plugin_watch_directory(&plugin_root, None, None);
+        policy
+            .raw_import_invalidation
+            .replace_css_mirror_roots([mirror_root.clone()]);
+        policy
+            .raw_import_invalidation
+            .replace_css_package_roots([package_root.clone()]);
+
+        #[derive(Default)]
+        struct Recorder {
+            synced: Vec<BTreeSet<PathBuf>>,
+            exact: Vec<BTreeSet<PathBuf>>,
+            unfiltered: Vec<BTreeSet<PathBuf>>,
+        }
+        impl DynamicWatchRegistrar for Recorder {
+            fn watch_additional_files(&mut self, _paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
+                Vec::new()
+            }
+            fn sync_recursive_dir_watches(
+                &mut self,
+                desired_roots: BTreeSet<PathBuf>,
+                _skip_dir_names: &[String],
+            ) -> Vec<PathBuf> {
+                self.synced.push(desired_roots);
+                Vec::new()
+            }
+            fn watch_exact_files(&mut self, paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
+                self.exact.push(paths);
+                Vec::new()
+            }
+            fn set_recursive_dir_unfiltered_roots(&mut self, roots: BTreeSet<PathBuf>) {
+                self.unfiltered.push(roots);
+            }
+        }
+        let mut recorder = Recorder::default();
+        register_dynamic_dependency_watches(&mut recorder, &policy, &css_mirror_skip_dir_names());
+        assert_eq!(
+            recorder.synced[0],
+            BTreeSet::from([mirror_root, package_root, plugin_root.clone()])
+        );
+        assert_eq!(recorder.exact[0], BTreeSet::from([plugin_root.clone()]));
+        assert_eq!(recorder.unfiltered[0], BTreeSet::from([plugin_root]));
+    }
+
+    /// Issue #4894 — a matching file or a directory structure change gates
+    /// the pre-tick refresh and invalidates every page; a non-matching
+    /// file edit does neither.
+    #[test]
+    fn plugin_watch_directory_match_gates_refresh_and_invalidation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap().join("posts");
+        std::fs::create_dir_all(&root).unwrap();
+        let policy = policy_with_plugin_watch_directory(&root, Some(&["**/*.md"]), None);
+        let notes = root.join("notes.txt");
+        std::fs::write(&notes, "x").unwrap();
+        let new_dir = root.join("nested");
+        std::fs::create_dir_all(&new_dir).unwrap();
+
+        assert!(pre_tick_refresh_applies(
+            &policy,
+            &[(root.join("a.md"), ChangeKind::Created)]
+        ));
+        assert!(pre_tick_refresh_applies(
+            &policy,
+            &[(new_dir.clone(), ChangeKind::Created)]
+        ));
+        assert!(pre_tick_refresh_applies(
+            &policy,
+            &[(root.clone(), ChangeKind::Removed)]
+        ));
+        assert!(!pre_tick_refresh_applies(
+            &policy,
+            &[(notes.clone(), ChangeKind::Modified)]
+        ));
+
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(tmp.path(), Vec::<PathBuf>::new()).with_policy(policy),
+            make_graph(),
+            CountingPipeline::default(),
+        );
+        let plan = orch.plan_for_changes([new_dir]);
+        assert!(plan.pages.is_all());
+        assert!(plan.ssr_reload_needed);
+        assert!(!orch.plan_for_changes([notes]).pages.is_all());
+    }
+
+    /// Issue #4894 review — a project-wide root with no `include` must not
+    /// refresh itself on zfb's own output writes or `.git` traffic, whichever
+    /// of the written roots and the declarations is published first.
+    #[test]
+    fn plugin_watch_directory_root_ignores_zfb_outputs_and_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap().join("site");
+        for dir in ["dist", ".zfb-build/dev-assets", ".git", "content"] {
+            std::fs::create_dir_all(project.join(dir)).unwrap();
+        }
+        let written = [project.join("dist"), project.join(".zfb-build")];
+        let check = |policy: &crate::policy::GranularityPolicy| {
+            for own in [
+                project.join("dist/index.html"),
+                project.join(".zfb-build/dev-assets/islands.js"),
+                project.join(".git/index"),
+            ] {
+                assert!(
+                    !pre_tick_refresh_applies(policy, &[(own.clone(), ChangeKind::Modified)]),
+                    "{own:?}"
+                );
+            }
+            assert!(pre_tick_refresh_applies(
+                policy,
+                &[(project.join("content/a.md"), ChangeKind::Modified)]
+            ));
+        };
+
+        // Declarations first, written roots second.
+        let policy = policy_with_plugin_watch_directory(&project, None, None);
+        policy
+            .raw_import_invalidation
+            .set_zfb_written_roots(written.clone());
+        check(&policy);
+
+        // Written roots first, declarations second.
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.set_zfb_written_roots(written);
+        let directories = {
+            let mut registry = crate::plugin_registries::VirtualModuleRegistry::new();
+            registry.insert(crate::plugin_registries::VirtualModuleEntry {
+                specifier: "virtual:all".into(),
+                plugin: "p".into(),
+                loader_id: crate::plugin_registries::VirtualLoaderId("v1".into()),
+                watch_files: Vec::new(),
+                watch_directories: vec![crate::plugin_registries::WatchDirectory {
+                    path: project.clone(),
+                    include: None,
+                    exclude: Vec::new(),
+                }],
+            });
+            crate::plugin_watch_dirs::PluginWatchDirectories::from_registry(&registry)
+        };
+        invalidation.replace_plugin_watch_directories(directories);
+        let policy =
+            crate::policy::GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        check(&policy);
+    }
+
+    /// Issue #4894 — once a recreated root is re-armed, files written
+    /// before the arm (after setup's read start) are reconciled, and each
+    /// (file, mtime) only once.
+    #[test]
+    fn rearmed_plugin_watch_directory_root_reconciles_unobserved_edits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap().join("posts");
+        std::fs::create_dir_all(&root).unwrap();
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let policy = policy_with_plugin_watch_directory(&root, Some(&["**/*.md"]), Some(since));
+        std::fs::write(root.join("a.md"), "a").unwrap();
+        std::fs::write(root.join("skip.txt"), "s").unwrap();
+
+        let changes = unobserved_edits_under(&policy, std::slice::from_ref(&root));
+        let paths: Vec<PathBuf> = changes.into_iter().map(|change| change.path).collect();
+        assert_eq!(paths, vec![root.join("a.md")]);
+        assert!(
+            unobserved_edits_under(&policy, std::slice::from_ref(&root)).is_empty(),
+            "an accounted (file, mtime) is not reported twice"
+        );
+        assert!(unobserved_edits_under(&policy, &[tmp.path().join("elsewhere")]).is_empty());
+    }
+
+    /// Issue #4894 re-review — a root declared inside `node_modules` is
+    /// reconciled like any other (the docs say `node_modules` stays live).
+    #[test]
+    fn plugin_watch_directory_root_inside_node_modules_is_reconciled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("node_modules/data-pkg/entries");
+        std::fs::create_dir_all(&root).unwrap();
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let policy = policy_with_plugin_watch_directory(&root, None, Some(since));
+        std::fs::write(root.join("a.json"), "{}").unwrap();
+        let changes = unobserved_edits_under(&policy, std::slice::from_ref(&root));
+        let paths: Vec<PathBuf> = changes.into_iter().map(|change| change.path).collect();
+        assert_eq!(paths, vec![root.join("a.json")]);
+        assert!(policy.is_plugin_watch_target(&root.join("a.json")));
     }
 
     /// The negative that distinguishes option (b) from the REJECTED option
