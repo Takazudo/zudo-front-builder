@@ -833,6 +833,7 @@ impl RawImportInvalidation {
         &self,
         directories: crate::plugin_watch_dirs::PluginWatchDirectories,
     ) {
+        directories.set_ignored_roots(self.zfb_written_root_aliases());
         if let Ok(mut slot) = self.plugin_watch_directories.write() {
             *slot = (directories, None);
         }
@@ -847,6 +848,7 @@ impl RawImportInvalidation {
         directories: crate::plugin_watch_dirs::PluginWatchDirectories,
         read_since: SystemTime,
     ) {
+        directories.set_ignored_roots(self.zfb_written_root_aliases());
         if let Ok(mut slot) = self.plugin_watch_directories.write() {
             *slot = (directories, Some(read_since));
         }
@@ -995,7 +997,8 @@ impl RawImportInvalidation {
     /// Register the directories zfb itself writes into for this session
     /// (issue #3201): `<project>/.zfb/` (`graph.bin`, staged JSON), the dev
     /// asset root, and the output roots. Replaces any earlier registration.
-    /// Only [`Self::modified_since_read`] consults them — the sets and their
+    /// [`Self::modified_since_read`] consults them, and so does the
+    /// `watchDirectories` matcher (issue #4894) — the other sets and their
     /// watches are unchanged.
     pub fn set_zfb_written_roots(&self, roots: impl IntoIterator<Item = PathBuf>) {
         if let Ok(mut stored) = self.zfb_written_roots.write() {
@@ -1005,6 +1008,17 @@ impl RawImportInvalidation {
                 .filter(|root| !root.as_os_str().is_empty())
                 .collect();
         }
+        // Issue #4894: a `watchDirectories` root that contains zfb's own
+        // outputs must not refresh itself on every write zfb makes.
+        self.plugin_watch_directories()
+            .set_ignored_roots(self.zfb_written_root_aliases());
+    }
+
+    fn zfb_written_root_aliases(&self) -> Vec<PathBuf> {
+        self.zfb_written_roots
+            .read()
+            .map(|roots| roots.clone())
+            .unwrap_or_default()
     }
 
     /// The one exclusion predicate for the watch-arm reconcile (issue

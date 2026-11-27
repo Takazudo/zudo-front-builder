@@ -2630,6 +2630,26 @@ mod tests {
                 "non-empty strings",
             ),
             (
+                format!("{{ path: {root:?}, include: [\"C:/posts/*.md\"] }}"),
+                "drive letter",
+            ),
+            (
+                format!("{{ path: {root:?}, include: [\"posts\\\\*.md\"] }}"),
+                "backslash",
+            ),
+            (
+                format!("{{ path: {root:?}, include: [\"./a.md\"] }}"),
+                "`.` segment",
+            ),
+            (
+                format!("{{ path: {root:?}, exclude: [\"a//b.md\"] }}"),
+                "empty segment",
+            ),
+            (
+                format!("{{ path: {root:?}, exclude: [\"drafts/\"] }}"),
+                "empty segment",
+            ),
+            (
                 format!("{{ path: {root:?}, include: [\"a/[\"] }}"),
                 "invalid glob",
             ),

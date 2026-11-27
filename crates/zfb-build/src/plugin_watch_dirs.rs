@@ -28,10 +28,22 @@
 //! `literal_separator(true)` (`*` is one segment, `**` recurses), the same
 //! option `bundle.exclude` and `import.meta.glob` use.
 //!
+//! Two kinds of path never match, so a root that contains them (a whole
+//! project root with no `include`, say) cannot refresh itself in a loop:
+//!
+//! - anything below a directory zfb itself writes into this session (the
+//!   dev output, asset and scratch roots the policy registers with
+//!   [`PluginWatchDirectories::set_ignored_roots`]);
+//! - anything below a `.git` directory.
+//!
+//! `node_modules` is not ignored: a plugin may declare a root inside it.
+//!
 //! Directories are remembered once seen (boot walk, a directory event, or
 //! the re-arm reconcile walk) so a later removal is still recognised as a
-//! structure change after the directory is gone. The set only grows: a
-//! stale entry can only cause an extra refresh, never a missed one.
+//! structure change after the directory is gone. A directory event
+//! re-learns that directory's subtree, so a recreated directory's new
+//! children are known too. The set only grows: a stale entry can only
+//! cause an extra refresh, never a missed one.
 
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
@@ -71,9 +83,30 @@ fn validate_pattern(pattern: &str) -> Result<(), String> {
             "glob {pattern:?} is absolute; patterns are relative to the directory root"
         ));
     }
+    if pattern.contains('\\') {
+        return Err(format!(
+            "glob {pattern:?} contains a backslash; separate segments with `/`"
+        ));
+    }
+    let bytes = pattern.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return Err(format!(
+            "glob {pattern:?} starts with a drive letter; patterns are relative to the directory root"
+        ));
+    }
     if pattern.split('/').any(|segment| segment == "..") {
         return Err(format!(
             "glob {pattern:?} contains a `..` segment; patterns cannot leave the directory root"
+        ));
+    }
+    if pattern.split('/').any(|segment| segment == ".") {
+        return Err(format!(
+            "glob {pattern:?} contains a `.` segment, which never matches; remove it"
+        ));
+    }
+    if pattern.split('/').any(str::is_empty) {
+        return Err(format!(
+            "glob {pattern:?} has an empty segment (`//` or a trailing `/`), which never matches"
         ));
     }
     Ok(())
@@ -95,7 +128,11 @@ struct Inner {
     declarations: Vec<Declaration>,
     /// `(declaration index, root-relative path)` of every directory seen.
     known_dirs: RwLock<BTreeSet<(usize, String)>>,
+    /// Roots zfb writes into itself; nothing below them matches.
+    ignored_roots: RwLock<Vec<PathBuf>>,
 }
+
+const GIT_DIR: &str = ".git";
 
 /// Compiled `watchDirectories` declarations of every registered loader.
 /// Cheap to clone; clones share the remembered-directory state.
@@ -154,6 +191,7 @@ impl PluginWatchDirectories {
             inner: Arc::new(Inner {
                 declarations,
                 known_dirs: RwLock::new(BTreeSet::new()),
+                ignored_roots: RwLock::new(Vec::new()),
             }),
         };
         for index in 0..this.inner.declarations.len() {
@@ -161,6 +199,24 @@ impl PluginWatchDirectories {
             this.learn_subtree(index, &root);
         }
         this
+    }
+
+    /// Replace the roots zfb writes into itself (all spellings). Clones
+    /// share the setting.
+    pub fn set_ignored_roots(&self, roots: impl IntoIterator<Item = PathBuf>) {
+        if let Ok(mut stored) = self.inner.ignored_roots.write() {
+            *stored = roots.into_iter().collect();
+        }
+    }
+
+    fn is_ignored(&self, path: &Path) -> bool {
+        let Ok(roots) = self.inner.ignored_roots.read() else {
+            return false;
+        };
+        !roots.is_empty()
+            && crate::policy::RawImportInvalidation::path_aliases(path)
+                .iter()
+                .any(|alias| roots.iter().any(|root| alias.starts_with(root)))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -215,6 +271,7 @@ impl PluginWatchDirectories {
                 .follow_links(false)
                 .min_depth(1)
                 .into_iter()
+                .filter_entry(|entry| !self.walk_skips(entry))
                 .filter_map(Result::ok)
             {
                 let path = entry.path();
@@ -238,20 +295,35 @@ impl PluginWatchDirectories {
         out.into_iter().collect()
     }
 
+    fn walk_skips(&self, entry: &walkdir::DirEntry) -> bool {
+        entry.file_type().is_dir()
+            && (entry.file_name() == GIT_DIR || self.is_ignored(entry.path()))
+    }
+
     fn declaration_matches(&self, index: usize, path: &Path) -> bool {
         let declaration = &self.inner.declarations[index];
         let Some((root, rel)) = declaration_relative(declaration, path) else {
             return false;
         };
+        if self.is_ignored(path) {
+            return false;
+        }
         if rel.is_empty() {
+            if root.is_dir() {
+                self.learn_subtree(index, &root);
+            }
             return true;
+        }
+        if rel.split('/').any(|segment| segment == GIT_DIR) {
+            return false;
         }
         let candidate = root.join(&rel);
         match std::fs::symlink_metadata(&candidate).or_else(|_| std::fs::symlink_metadata(path)) {
             Ok(metadata) if metadata.is_dir() => {
-                if self.remember(index, rel.clone()) {
-                    self.learn_subtree(index, &candidate);
-                }
+                // Learned even when already known: a recreated directory's
+                // new children must be recognised when they are removed.
+                self.remember(index, rel.clone());
+                self.learn_subtree(index, &candidate);
                 !declaration.exclude.is_match(&rel)
             }
             Ok(_) => file_matches(declaration, &rel),
@@ -282,6 +354,7 @@ impl PluginWatchDirectories {
             .follow_links(false)
             .min_depth(1)
             .into_iter()
+            .filter_entry(|entry| !self.walk_skips(entry))
             .filter_map(Result::ok)
             .filter(|entry| entry.file_type().is_dir())
         {
@@ -382,6 +455,90 @@ mod tests {
         assert!(
             compile_watch_directory_globs(&["**/*.md".to_string(), "a..b/*".to_string()]).is_ok()
         );
+    }
+
+    #[test]
+    fn glob_validation_rejects_patterns_that_can_never_match() {
+        for (bad, reason) in [
+            ("C:/posts/*.md", "drive letter"),
+            ("c:*.md", "drive letter"),
+            ("posts\\*.md", "backslash"),
+            ("./a.md", "`.` segment"),
+            ("a/./b.md", "`.` segment"),
+            ("a//b.md", "empty segment"),
+            ("drafts/", "empty segment"),
+        ] {
+            let error = compile_watch_directory_globs(&[bad.to_string()])
+                .expect_err(&format!("{bad:?} must be rejected"));
+            assert!(error.contains(reason), "{bad:?}: {error}");
+        }
+        assert!(compile_watch_directory_globs(&[".hidden/*.md".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn zfb_written_roots_and_git_dirs_never_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+        std::fs::create_dir_all(root.join("dist/assets")).unwrap();
+        write(&root.join("src/a.md"));
+        write(&root.join("node_modules/pkg/data.json"));
+        let m = matcher(vec![("virtual:all", vec![directory(&root, None, &[])])]);
+        let clone = m.clone();
+        clone.set_ignored_roots([root.join("dist"), root.join(".zfb-build")]);
+        for ignored in [
+            root.join("dist/index.html"),
+            root.join("dist/assets"),
+            root.join("dist"),
+            root.join(".zfb-build/dev/a.js"),
+            root.join(".git/index"),
+            root.join(".git/objects"),
+            root.join("sub/.git/HEAD"),
+        ] {
+            assert!(!m.is_match(&ignored), "{ignored:?}");
+        }
+        assert!(m.is_match(&root.join("src/a.md")));
+        assert!(m.is_match(&root.join("node_modules/pkg/data.json")));
+        assert!(m.is_match(&root.join("distribution/a.md")));
+        assert!(m.is_match(&root), "the root itself still matches");
+
+        // The reconcile walk skips them too.
+        let since = SystemTime::UNIX_EPOCH;
+        let found = m.modified_since(since, |_| true);
+        assert!(
+            found
+                .iter()
+                .all(|p| !p.starts_with(root.join("dist")) && !p.starts_with(root.join(".git"))),
+            "{found:?}"
+        );
+        assert!(found.contains(&root.join("src/a.md")));
+    }
+
+    #[test]
+    fn recreated_known_directory_relearns_its_new_subtree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("posts");
+        write(&root.join("sub/a.md"));
+        let m = matcher(vec![(
+            "virtual:posts",
+            vec![directory(&root, Some(&["**/*.md"]), &[])],
+        )]);
+        std::fs::remove_dir_all(root.join("sub")).unwrap();
+        assert!(m.is_match(&root.join("sub")), "removed known dir");
+        write(&root.join("sub/fresh/b.md"));
+        assert!(m.is_match(&root.join("sub")), "recreated known dir");
+        std::fs::remove_dir_all(root.join("sub")).unwrap();
+        assert!(
+            m.is_match(&root.join("sub/fresh")),
+            "the recreated dir's new child is remembered after removal"
+        );
+
+        // Same through a recreated root.
+        std::fs::remove_dir_all(&root).unwrap();
+        write(&root.join("again/c.md"));
+        assert!(m.is_match(&root));
+        std::fs::remove_dir_all(root.join("again")).unwrap();
+        assert!(m.is_match(&root.join("again")));
     }
 
     #[test]

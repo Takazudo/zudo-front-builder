@@ -283,8 +283,29 @@ function validateWatchDirectories(value) {
             `${prefix} glob ${JSON.stringify(pattern)} is absolute; patterns are relative to the root`,
           );
         }
-        if (pattern.split("/").includes("..")) {
+        if (pattern.includes("\\")) {
+          throw new Error(
+            `${prefix} glob ${JSON.stringify(pattern)} contains a backslash; separate segments with \`/\``,
+          );
+        }
+        if (/^[A-Za-z]:/.test(pattern)) {
+          throw new Error(
+            `${prefix} glob ${JSON.stringify(pattern)} starts with a drive letter; patterns are relative to the root`,
+          );
+        }
+        const segments = pattern.split("/");
+        if (segments.includes("..")) {
           throw new Error(`${prefix} glob ${JSON.stringify(pattern)} contains a \`..\` segment`);
+        }
+        if (segments.includes(".")) {
+          throw new Error(
+            `${prefix} glob ${JSON.stringify(pattern)} contains a \`.\` segment, which never matches`,
+          );
+        }
+        if (segments.includes("")) {
+          throw new Error(
+            `${prefix} glob ${JSON.stringify(pattern)} has an empty segment (\`//\` or a trailing \`/\`), which never matches`,
+          );
         }
       }
       return patterns.slice();

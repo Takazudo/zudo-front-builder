@@ -1103,6 +1103,54 @@ async fn run_directories_scenario() -> ScenarioOutcome {
     .await;
     expect_served(&client, &base, "COUNT:1:2", "count after recreate", s).await;
 
+    // Review of #4894: replace the root in one go, with no served state in
+    // between, so the dev loop never syncs while it is missing. The recursive
+    // watch must be re-armed on the new directory: the edit inside it after
+    // the swap is only seen through that watch.
+    let staged = dirs.with_file_name("plugin-dirs.next");
+    fs::create_dir_all(&staged).unwrap();
+    fs::write(staged.join("h.md"), "H\n").unwrap();
+    fs::remove_dir_all(&dirs).unwrap();
+    fs::rename(&staged, &dirs).unwrap();
+    expect_served(&client, &base, "LIST:h.md=H:END", "root swapped in", s).await;
+    fs::write(dirs.join("i.md"), "I\n").unwrap();
+    expect_served(
+        &client,
+        &base,
+        "LIST:h.md=H|i.md=I:END",
+        "edit inside the swapped-in root",
+        s,
+    )
+    .await;
+    fs::remove_dir_all(&dirs).unwrap();
+    fs::create_dir(&dirs).unwrap();
+    fs::write(dirs.join("j.md"), "J\n").unwrap();
+    expect_served(
+        &client,
+        &base,
+        "LIST:j.md=J:END",
+        "root recreated in one go",
+        s,
+    )
+    .await;
+    fs::write(dirs.join("j.md"), "J2\n").unwrap();
+    expect_served(
+        &client,
+        &base,
+        "LIST:j.md=J2:END",
+        "edit inside the recreated root",
+        s,
+    )
+    .await;
+    expect_served(
+        &client,
+        &base,
+        "COUNT:1:3",
+        "count after one-go recreate",
+        s,
+    )
+    .await;
+
     ScenarioOutcome::Completed
 }
 

@@ -302,6 +302,10 @@ export type ZfbVirtualModuleOptions = {
    * watches. Registrations are copied at `setup`; mutating the objects or
    * arrays afterwards has no effect.
    *
+   * Files below zfb's own dev outputs (output directory, dev assets,
+   * `.zfb-build` scratch) and below any `.git` directory never match, so a
+   * root such as the project root cannot refresh itself.
+   *
    * ```ts
    * addVirtualModule("virtual:posts", () => listPosts(postsDir), {
    *   watchDirectories: [
@@ -328,8 +332,9 @@ export type ZfbWatchDirectory = {
    * Root-relative, `/`-separated globs a file must match. `*` matches one
    * path segment and `**` any number of segments (`*.md` matches only the
    * root's own files; `**\/*.md` matches every depth). Omit it to match
-   * every file below the root; an empty array throws. Absolute patterns and
-   * `..` segments throw. Directory create/delete/rename events are handled
+   * every file below the root; an empty array throws. Absolute patterns,
+   * drive letters, backslashes, `..` or `.` segments and empty segments
+   * (`a//b`, a trailing `/`) throw. Directory create/delete/rename events are handled
    * even when the directory name does not match these globs.
    */
   include?: string[];

@@ -5901,6 +5901,65 @@ mod tests {
         assert!(!orch.plan_for_changes([notes]).pages.is_all());
     }
 
+    /// Issue #4894 review — a project-wide root with no `include` must not
+    /// refresh itself on zfb's own output writes or `.git` traffic, whichever
+    /// of the written roots and the declarations is published first.
+    #[test]
+    fn plugin_watch_directory_root_ignores_zfb_outputs_and_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap().join("site");
+        for dir in ["dist", ".zfb-build/dev-assets", ".git", "content"] {
+            std::fs::create_dir_all(project.join(dir)).unwrap();
+        }
+        let written = [project.join("dist"), project.join(".zfb-build")];
+        let check = |policy: &crate::policy::GranularityPolicy| {
+            for own in [
+                project.join("dist/index.html"),
+                project.join(".zfb-build/dev-assets/islands.js"),
+                project.join(".git/index"),
+            ] {
+                assert!(
+                    !pre_tick_refresh_applies(policy, &[(own.clone(), ChangeKind::Modified)]),
+                    "{own:?}"
+                );
+            }
+            assert!(pre_tick_refresh_applies(
+                policy,
+                &[(project.join("content/a.md"), ChangeKind::Modified)]
+            ));
+        };
+
+        // Declarations first, written roots second.
+        let policy = policy_with_plugin_watch_directory(&project, None, None);
+        policy
+            .raw_import_invalidation
+            .set_zfb_written_roots(written.clone());
+        check(&policy);
+
+        // Written roots first, declarations second.
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.set_zfb_written_roots(written);
+        let directories = {
+            let mut registry = crate::plugin_registries::VirtualModuleRegistry::new();
+            registry.insert(crate::plugin_registries::VirtualModuleEntry {
+                specifier: "virtual:all".into(),
+                plugin: "p".into(),
+                loader_id: crate::plugin_registries::VirtualLoaderId("v1".into()),
+                watch_files: Vec::new(),
+                watch_directories: vec![crate::plugin_registries::WatchDirectory {
+                    path: project.clone(),
+                    include: None,
+                    exclude: Vec::new(),
+                }],
+            });
+            crate::plugin_watch_dirs::PluginWatchDirectories::from_registry(&registry)
+        };
+        invalidation.replace_plugin_watch_directories(directories);
+        let policy =
+            crate::policy::GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        check(&policy);
+    }
+
     /// Issue #4894 — once a recreated root is re-armed, files written
     /// before the arm (after setup's read start) are reconciled, and each
     /// (file, mtime) only once.

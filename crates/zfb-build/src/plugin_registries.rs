@@ -717,10 +717,6 @@ impl<'a> PluginSetupAccumulator<'a> {
     }
 }
 
-/// Resolve a user-supplied path relative to the project root. Absolute
-/// inputs are passed through unchanged. The path is **not** required
-/// to exist on disk yet — Wave 2 consumers may decide whether
-/// missing-target is an error at use time.
 /// Shape checks for one `watchDirectories` declaration. Existence is the
 /// plugin host's check (it runs at setup, next to the plugin's own fs view).
 fn validate_watch_directory(directory: &WatchDirectory) -> Result<(), String> {
@@ -742,6 +738,10 @@ fn validate_watch_directory(directory: &WatchDirectory) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve a user-supplied path relative to the project root. Absolute
+/// inputs are passed through unchanged. The path is **not** required
+/// to exist on disk yet — Wave 2 consumers may decide whether
+/// missing-target is an error at use time.
 fn resolve_against_root(project_root: &Path, raw: &str) -> PathBuf {
     let candidate = PathBuf::from(raw);
     if candidate.is_absolute() {
@@ -1055,6 +1055,10 @@ mod tests {
             (watch_dir(Some(&["/abs/*.md"]), &[]), "absolute"),
             (watch_dir(None, &["../x/**"]), "`..`"),
             (watch_dir(Some(&["a/["]), &[]), "invalid glob"),
+            (watch_dir(Some(&["C:/posts/*.md"]), &[]), "drive letter"),
+            (watch_dir(Some(&["posts\\*.md"]), &[]), "backslash"),
+            (watch_dir(None, &["a/./b.md"]), "`.` segment"),
+            (watch_dir(None, &["a//b.md"]), "empty segment"),
         ] {
             let message = ingest_watch_directory(directory)
                 .expect_err("invalid declaration must fail setup")
