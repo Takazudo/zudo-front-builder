@@ -649,3 +649,40 @@ test("readiness rejects the first refused cycle before an independent abort list
     vi.useRealTimers();
   }
 });
+
+test("an observation-only startup milestone never admits edits without a later release", async () => {
+  vi.useFakeTimers();
+  let cycles = 0;
+  const monitor = startFixedRssSafety({
+    server: { handle: { native: { pid: 5 } } },
+    fixedExecutables: { protocol: "linux-fixed-zfb.v4", root: { path: "/node" } },
+    limits: { rssCeilingKiB: 100, sampleEveryMs: 1000 },
+    append() {},
+    abort() {},
+    custody: {
+      verifyStartup() {
+        if (cycles < 4) throw Error("original pair not released");
+      },
+    },
+    sample: async () => {
+      cycles++;
+      return {
+        summedRssKiB: 10,
+        processes: [{ pid: 6, ppid: 5, disposition: "live", startTicks: "6", bootId: "boot" }],
+      };
+    },
+  });
+  try {
+    const first = monitor.verifyZeroEditObservationReady();
+    await vi.advanceTimersByTimeAsync(1000);
+    await first;
+    assert.equal(cycles, 2);
+    await assert.rejects(monitor.verifyReady(), /not released/);
+    await vi.advanceTimersByTimeAsync(2000);
+    await monitor.verifyReady();
+    assert.equal(cycles, 4);
+  } finally {
+    await monitor.stop();
+    vi.useRealTimers();
+  }
+});

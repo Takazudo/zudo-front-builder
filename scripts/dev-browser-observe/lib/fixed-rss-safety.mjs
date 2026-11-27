@@ -152,6 +152,14 @@ export function startFixedRssSafety({
   };
   take();
   const timer = setInterval(take, limits.sampleEveryMs);
+  async function observeReady() {
+    if (failure) throw new Error(failure.error);
+    if (stopped) throw new Error("fixed safety sampling stopped before readiness");
+    readyCheck ??= Promise.withResolvers();
+    await readyCheck.promise;
+    if (failure) throw new Error(failure.error);
+    if (stopped) throw new Error("fixed safety sampling stopped before readiness");
+  }
   return {
     report() {
       return {
@@ -166,14 +174,16 @@ export function startFixedRssSafety({
     get unresolvedHelper() {
       return unresolvedHelper;
     },
+    // Only the zero-edit stock adapter uses this read-only milestone. All
+    // normal workload entry points still require full readiness below.
+    async verifyZeroEditObservationReady() {
+      if (fixedExecutables.protocol !== "linux-fixed-zfb.v4")
+        throw new Error("observation-only readiness requires startup custody v4");
+      await observeReady();
+    },
     async verifyReady() {
-      if (failure) throw new Error(failure.error);
-      if (stopped) throw new Error("fixed safety sampling stopped before readiness");
-      readyCheck ??= Promise.withResolvers();
-      await readyCheck.promise;
+      await observeReady();
       custody?.verifyStartup?.();
-      if (failure) throw new Error(failure.error);
-      if (stopped) throw new Error("fixed safety sampling stopped before readiness");
     },
     async stop() {
       stopped = true;
