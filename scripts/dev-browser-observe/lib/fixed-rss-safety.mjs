@@ -117,15 +117,13 @@ export function startFixedRssSafety({
     // legitimately predate the native child. Qualify a new periodic sample.
     const readyAtEntry = readyCheck;
     const startedNs = String(process.hrtime.bigint());
-    pending = (
-      peer
-        ? sample(
-            server,
-            fixedExecutables.root.path,
-            nextOwner() ? { nextCustody: nextOwner() } : undefined,
-          )
-        : sample(server, fixedExecutables.root.path, { fixedExecutables })
-    )
+    const custodyAtEntry = nextOwner();
+    const args = peer
+      ? custodyAtEntry
+        ? [server, fixedExecutables.root.path, { nextCustody: custodyAtEntry }]
+        : [server, fixedExecutables.root.path]
+      : [server, fixedExecutables.root.path, { fixedExecutables }];
+    pending = sample(...args)
       .then((result) => {
         measuredCycles++;
         if (Number.isSafeInteger(result.summedRssKiB))
@@ -150,11 +148,14 @@ export function startFixedRssSafety({
               BigInt(t.deadlineNs) === BigInt(t.entryNs) + 750_000_000n,
             "invalid peer sampler bracket",
           );
-          const custody = nextOwner();
+          const custody = custodyAtEntry;
           const worker = custody?.qualified;
           const isWorker = (p) => worker && custody.isWorker(p);
           const sum = result.processes.reduce((n, p) => {
-            if (custody && isWorker(p) && p.disposition !== "live") {
+            // V1 performs metric aggregation here and validates live disposition
+            // through its unchanged peer classifier. Preserve that callback contract.
+            if (!custody) return n + Math.max(p.statusKiB.VmRSS, p.smapsRollupKiB.Rss);
+            if (isWorker(p) && p.disposition !== "live") {
               assert(
                 ["proved-departure", "custodied-departure", "retained-terminal-proof"].includes(
                   p.disposition,
