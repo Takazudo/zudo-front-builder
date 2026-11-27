@@ -791,7 +791,6 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         await fd.close();
       }
       loaded.signal?.throwIfAborted();
-      peerBudget(profile.server.readyTimeoutMs);
       receipt.sourceTimingImage = sourceImage;
     }
     spawning = true;
@@ -810,7 +809,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       env: profile.server.env ?? {},
       diagnostic: profile.diagnostic === true,
       declaredZfbEnvOnly: Boolean(tiny || sourceTiming),
-      readyTimeoutMs,
+      readyTimeoutMs: sourceTiming ? peerBudget(profile.server.readyTimeoutMs) : readyTimeoutMs,
       logPath: join(labelDir, "server.log"),
     });
     spawning = false;

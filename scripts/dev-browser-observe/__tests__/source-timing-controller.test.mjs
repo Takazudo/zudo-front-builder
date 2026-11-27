@@ -16,6 +16,7 @@ import { aggregate } from "../lib/aggregate.mjs";
 import { execute, EXIT } from "../lib/run.mjs";
 import { loadProfile } from "../lib/profile.mjs";
 import { CSEC_EXE_SHA256, SOURCE_TIMING_PROTOCOL } from "../lib/source-timing-safety.mjs";
+import * as util from "../lib/util.mjs";
 import * as lock from "../lib/lock.mjs";
 import * as identity from "../lib/identity.mjs";
 import * as kinds from "../lib/fixture-kinds.mjs";
@@ -213,6 +214,7 @@ test.each(["complete", "partial-startup", "unclosed", "armed-overlap", "prewrite
       let timer;
       const now = Number(process.hrtime.bigint() / 1000000n);
       const err = [];
+      let launchClock;
       try {
         const code = await execute({
           profilePath: pp,
@@ -225,11 +227,26 @@ test.each(["complete", "partial-startup", "unclosed", "armed-overlap", "prewrite
           stderr: (x) => err.push(x),
           hooks: {
             admissionPath: join(dir, "active.json"),
-            startDevServer: () => server,
+            startDevServer: (args) => {
+              if (mode === "complete") {
+                launchClock.mockRestore();
+                assert.equal(
+                  args.readyTimeoutMs,
+                  17,
+                  "readiness allowance after executable digest",
+                );
+              }
+              return server;
+            },
             sourceTimingSample: sample,
-            sourceTimingExpectedDigest: createHash("sha256")
-              .update("controlled nonexecutable")
-              .digest("hex"),
+            get sourceTimingExpectedDigest() {
+              if (mode === "complete") {
+                launchClock = vi
+                  .spyOn(util, "hrtimeNs")
+                  .mockReturnValue(BigInt(now + 7140000 - 17) * 1000000n);
+              }
+              return createHash("sha256").update("controlled nonexecutable").digest("hex");
+            },
             launchOwnedBrowser: async (_, { signal }) => {
               browserStarts++;
               if (pendingCase)
