@@ -191,7 +191,7 @@ def serve(shared, parent, session):
     shared.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
     held = {}
     high_water = 0
-    transfers = 0
+    retains = gets = releases = 0
     epoch = 0
     root = None
     print(json.dumps(dict(ready=True, pid=os.getpid(), session=session,
@@ -244,19 +244,21 @@ def serve(shared, parent, session):
                     verify_pair(fds, msg, root)
                     token = secrets.token_hex(16)
                     held[key] = (token, fds)
-                    transfers += 1
+                    retains += 1
                     high_water=max(high_water,len(held))
                     ack(dict(token=token,descriptors=list(map(identity,fds))))
                 else:
                     token, existing = held[key]
                     require(not fds and secrets.compare_digest(token, msg["token"]), "unverified custody token")
                     if action == "get":
+                        gets += 1
                         ack(dict(descriptors=list(map(identity,existing))),existing)
                     else:
                         require(action == "release", "unsupported custody operation")
                         for fd in existing:
                             os.close(fd)
                         del held[key]
+                        releases += 1
                         ack()
             else:
                 raise ValueError("custody operation cap")
@@ -267,7 +269,7 @@ def serve(shared, parent, session):
             os.close(fd)
     usage=resource.getrusage(resource.RUSAGE_SELF)
     print(json.dumps(dict(stopped=True,pairsClosed=len(held),retainedDigest=digest,epochs=epoch,
-                          maxPairs=high_water,transfers=transfers,maxRssKiB=usage.ru_maxrss,
+                          maxPairs=high_water,retains=retains,gets=gets,releases=releases,maxRssKiB=usage.ru_maxrss,
                           userSeconds=usage.ru_utime,systemSeconds=usage.ru_stime)),flush=True)
 
 

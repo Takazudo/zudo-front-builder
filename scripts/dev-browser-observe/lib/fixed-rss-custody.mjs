@@ -98,8 +98,9 @@ export function startFixedCustody({ append: record, abort, intent }) {
           Number.isSafeInteger(msg.maxPairs) &&
           msg.maxPairs >= msg.pairsClosed &&
           msg.maxPairs <= 1 &&
-          Number.isSafeInteger(msg.transfers) &&
-          msg.transfers >= msg.maxPairs &&
+          [msg.retains, msg.gets, msg.releases].every((n) => Number.isSafeInteger(n) && n >= 0) &&
+          msg.retains >= msg.maxPairs &&
+          msg.retains - msg.releases === msg.pairsClosed &&
           Number.isSafeInteger(msg.maxRssKiB) &&
           msg.maxRssKiB > 0 &&
           Number.isFinite(msg.userSeconds) &&
