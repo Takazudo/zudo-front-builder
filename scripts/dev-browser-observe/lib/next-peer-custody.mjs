@@ -1,7 +1,7 @@
 import { pollPrewriteTerminal } from "./next-prewrite-terminal.mjs";
 // Linux fd3 is a preconnected Unix socket. The controller passes its endpoint
 // only to fresh sampling helpers. Each helper sends a private reply socket.
-import { accessSync, constants, readlinkSync, realpathSync } from "node:fs";
+import { accessSync, closeSync, constants, readlinkSync, realpathSync } from "node:fs";
 import { join, delimiter } from "node:path";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -33,12 +33,22 @@ export function startNextPeerCustody({
   abort,
   intent,
   prewriteDecision = false,
+  outerOffer,
 }) {
   const session = randomBytes(16).toString("hex"),
     python = interpreter();
-  const child = spawn(python, ["-I", "-B", path, String(process.pid)], {
-    stdio: ["pipe", "pipe", "pipe", "pipe"],
-  });
+  if (outerOffer) {
+    assert.equal(outerOffer.fd, 4);
+    assert(/^[0-9a-f]{32}$/.test(outerOffer.nonce));
+  }
+  let child;
+  try {
+    child = spawn(python, ["-I", "-B", path, String(process.pid)], {
+      stdio: ["pipe", "pipe", "pipe", "pipe", ...(outerOffer ? [outerOffer.fd] : [])],
+    });
+  } finally {
+    if (outerOffer) closeSync(outerOffer.fd);
+  }
   const birth = child.pid && linuxBirth(child.pid),
     ready = Promise.withResolvers(),
     closed = Promise.withResolvers();
@@ -201,6 +211,7 @@ export function startNextPeerCustody({
           m.token === (accepted?.token ?? null) &&
           m.closedPairs === 3 + Number(Boolean(seen)) &&
           m.helperTransfers === acknowledged.size &&
+          (!outerOffer || m.outerTransfers === Number(Boolean(accepted))) &&
           (!accepted || terminalVerified || decisionProof || prewriteDecision) &&
           (!prewriteDecision ||
             m.prewriteTransfers === Number(Boolean(decisionReceipt?.authenticatedAck))),
@@ -257,7 +268,12 @@ export function startNextPeerCustody({
       nextCustody: { session, birth, pid: child.pid },
     });
     notify("spawn", { birth });
-    write({ contract, session, ...(prewriteDecision && { prewriteDecision: true }) });
+    write({
+      contract,
+      session,
+      ...(prewriteDecision && { prewriteDecision: true }),
+      ...(outerOffer && { outerNonce: outerOffer.nonce }),
+    });
   } catch (e) {
     refuse(e);
   }
@@ -409,6 +425,15 @@ export function startNextPeerCustody({
     },
     get terminalVerified() {
       return terminalVerified;
+    },
+    get outerAuthority() {
+      return outerOffer && accepted && !firstFailure && !policyFailure && !stopPromise
+        ? {
+            token: accepted.token,
+            descriptors: structuredClone(accepted.descriptors),
+            worker: structuredClone(accepted.birth),
+          }
+        : null;
     },
     get qualified() {
       return accepted?.birth;

@@ -285,9 +285,14 @@ def confirm_script(pin):
 
 
 class Scout:
-    def __init__(self, contract, session, parent, decision_enabled=False):
+    def __init__(self, contract, session, parent, decision_enabled=False, outer_nonce=None):
         global cfg
         self.session = session
+        self.outer_nonce = outer_nonce
+        self.outer_sent = False
+        if outer_nonce is not None:
+            require(isinstance(outer_nonce,str) and len(outer_nonce) == 32 and
+                    all(c in "0123456789abcdef" for c in outer_nonce), "invalid outer nonce")
         self.decision_enabled = decision_enabled
         self.decision_used = False
         self.second_refusal = None
@@ -475,6 +480,18 @@ class Scout:
                 "qualification exceeded sweep/window deadline",
             )
             self.token = secrets.token_hex(16)
+            if self.outer_nonce is not None:
+                require(not self.outer_sent, "duplicate outer transfer")
+                # fd4 is dedicated to the original external observer. fd3
+                # remains the ordinary helper socket throughout this path.
+                with socket.socket(fileno=4) as channel:
+                    require(channel.family==socket.AF_UNIX and
+                            channel.type==socket.SOCK_SEQPACKET, "outer socket kind")
+                    channel.setblocking(False)
+                    send(channel,dict(nonce=self.outer_nonce,token=self.token,worker=self.known[2],
+                                      descriptors=[identity(fd) for fd in self.known[:2]]),
+                         self.known[:2])
+                self.outer_sent = True
             self.message(
                 "qualified",
                 birth=self.known[2],
@@ -752,6 +769,8 @@ class Scout:
             close_pair(self.known)
         for handle in self.anchors:
             close_pair(handle)
+        if self.outer_nonce is not None and not self.outer_sent:
+            os.close(4)
         usage = resource.getrusage(resource.RUSAGE_SELF)
         self.message(
             "stopped",
@@ -760,6 +779,7 @@ class Scout:
             releasedWorkerDescriptors=released,
             windows=self.windows,
             helperTransfers=self.counts["gets"],
+            **({"outerTransfers":int(self.outer_sent)} if self.outer_nonce is not None else {}),
             **(
                 {"prewriteTransfers": int(self.decision_used), "secondRefusal": self.second_refusal}
                 if self.decision_enabled
@@ -903,6 +923,7 @@ if __name__ == "__main__":
     with socket.socket(fileno=3) as shared:
         shared.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         scout = Scout(
-            first["contract"], first["session"], parent, first.get("prewriteDecision") is True
+            first["contract"], first["session"], parent, first.get("prewriteDecision") is True,
+            first.get("outerNonce")
         )
         scout.loop(shared)

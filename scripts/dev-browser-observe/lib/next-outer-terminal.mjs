@@ -37,6 +37,7 @@ export function outerTerminalGate({ authority, now = process.hrtime.bigint }) {
   assert(start < expires);
   let state = "waiting";
   let receipt;
+  let decisionNs;
   return {
     accept({ kernelSender, packet, currentOuter }) {
       try {
@@ -82,7 +83,23 @@ export function outerTerminalGate({ authority, now = process.hrtime.bigint }) {
         stamp(receipt.receivedNs) < decision && decision < expires,
         "receipt unavailable before decision",
       );
+      state = "decided";
+      decisionNs = decision;
       return { ...receipt, decisionNs: String(decision) };
+    },
+    checkWriteTime(t0, verifyCurrentGraph) {
+      const previous = state;
+      state = "spent";
+      assert.equal(previous, "decided", "outer decision unavailable at T0");
+      // Evaluate the graph before drawing T0. No operation inside this callback
+      // can open a helper, wait on an event or manufacture an earlier receipt.
+      assert.equal(verifyCurrentGraph(), true, "current graph incomplete at T0");
+      const actual = t0();
+      assert(
+        typeof actual === "bigint" && decisionNs <= actual && actual < expires,
+        "outer receipt expired at T0",
+      );
+      return { ...receipt, decisionNs: String(decisionNs), t0Ns: String(actual) };
     },
     retire() {
       state = "refused";

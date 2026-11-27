@@ -45,3 +45,74 @@ export function takeNextOuterChannel({ provider, outer, fds, sockets }) {
     },
   };
 }
+
+// These fixed descriptors belong to the controller after the normal fork.
+// The listener runs independently of the mutation gate. It accepts no queued
+// data retroactively if the holder's qualified token is still unavailable.
+export async function observeNextOuterReceipt({ peer, gateAtDelivery, onFailure, record }) {
+  const { Socket } = await import("node:net");
+  const { openNextOuterReceiver } = await import("./next-outer-receive.mjs");
+  let reader;
+  try {
+    reader = await openNextOuterReceiver();
+  } catch (error) {
+    try {
+      closeSync(5);
+    } finally {
+      closeSync(6);
+    }
+    throw error;
+  }
+  let wake;
+  try {
+    wake = new Socket({ fd: 6, readable: true, writable: false });
+  } catch (error) {
+    reader.close();
+    closeSync(5);
+    throw error;
+  }
+  let delivered = false;
+  let stopped = false;
+  let failure;
+  const closed = new Promise((resolve) => wake.once("close", resolve));
+  const fail = (error) => {
+    if (failure || stopped) return;
+    failure = error;
+    wake.destroy();
+    onFailure(error);
+  };
+  wake.on("error", fail);
+  wake.on("end", () => {
+    if (!delivered) fail(new Error("outer closed before terminal receipt"));
+  });
+  wake.on("data", (bytes) => {
+    try {
+      assert(!delivered && !failure && !stopped, "conflicting outer wake");
+      assert.deepEqual(bytes, Buffer.from([71]), "invalid outer wake");
+      const { payload, peer: kernelSender, receivedNs } = reader.receive(5, peer);
+      const gate = gateAtDelivery();
+      assert(gate, "outer receipt preceded official holder qualification");
+      const currentOuter = linuxBirth(peer.pid);
+      gate.accept({ kernelSender, packet: payload, currentOuter });
+      delivered = true;
+      record({ kernelSender, payload, receivedNs, acceptedNs: String(process.hrtime.bigint()) });
+    } catch (error) {
+      fail(error);
+    }
+  });
+  return {
+    async stop() {
+      if (!stopped) {
+        stopped = true;
+        wake.destroy();
+        try {
+          closeSync(5);
+        } finally {
+          reader.close();
+        }
+      }
+      await closed;
+      if (failure) throw failure;
+    },
+  };
+}

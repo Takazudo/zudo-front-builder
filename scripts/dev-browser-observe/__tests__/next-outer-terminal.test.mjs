@@ -99,3 +99,27 @@ test.each([
   );
   assert.throws(() => gate.accept(receipt));
 });
+
+test.each(["success", "equality", "new-birth", "replay", "retired"])(
+  "actual T0 again requires an unexpired decision and current graph: %s",
+  (mode) => {
+    const { gate, receipt, set } = fixture();
+    gate.accept(receipt);
+    set(90n);
+    gate.consume(() => true);
+    if (mode === "retired") gate.retire();
+    if (mode === "replay")
+      gate.checkWriteTime(
+        () => 91n,
+        () => true,
+      );
+    const check = () =>
+      gate.checkWriteTime(
+        () => (mode === "equality" ? 100n : 95n),
+        () => mode !== "new-birth",
+      );
+    if (mode === "success") assert.equal(check().t0Ns, "95");
+    else assert.throws(check);
+    assert.throws(check);
+  },
+);
