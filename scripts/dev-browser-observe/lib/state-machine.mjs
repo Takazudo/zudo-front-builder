@@ -2,7 +2,7 @@ import { interruptible } from "./session-deadline.mjs";
 import { runSpecialMode } from "./special-modes.mjs";
 import { RENAME_NOOP } from "./fixture.mjs";
 import { attemptProvenance } from "./provenance.mjs";
-import { NO_WRITE_STEPS, noWriteStepsError, nsToMs } from "./util.mjs";
+import { NO_WRITE_STEPS, noWriteStepsError, nsToMs, sha256 } from "./util.mjs";
 
 export const OUTCOMES = [
   "success",
@@ -111,6 +111,22 @@ export function newAccounting(planned) {
   };
 }
 
+export function astroCssPredicate(marker) {
+  return {
+    kind: "all",
+    of: [
+      { kind: "count", selector: ":root", equals: 1 },
+      {
+        kind: "computed-style",
+        selector: ":root",
+        property: "--fn-managed-marker",
+        equals: marker,
+      },
+      { kind: "computed-style", selector: ":root", property: "--paper", equals: "#f5f2e9" },
+    ],
+  };
+}
+
 export function classifyMechanism({
   preDocUUID,
   notifyDocUUID,
@@ -188,9 +204,26 @@ export async function runBatch({ scenarios, deps }) {
   const { recorder, clock, server, page, fs, limits = {}, timeouts, signal } = deps;
   const wait = (work) => interruptible(work, signal);
   const diagnostic = deps.rendererMemory;
-  const stage = (name, maximum, started, action) => {
+  const stage = async (name, maximum, started, action) => {
     deps.safetySignal?.throwIfAborted();
-    return diagnostic ? diagnostic.runStage(name, maximum, started, action) : wait(action(maximum));
+    if (diagnostic) return diagnostic.runStage(name, maximum, started, action);
+    if (!deps.stageBudget) return wait(action(maximum));
+    const ms = deps.stageBudget(maximum, started);
+    let timer;
+    try {
+      const result = await wait(
+        Promise.race([
+          action(ms),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(name + " exceeded its budget")), ms);
+          }),
+        ]),
+      );
+      deps.stageBudget(maximum, started);
+      return result;
+    } finally {
+      clearTimeout(timer);
+    }
   };
   const planned = scenarios.reduce((n, s) => n + s.ops.length, 0);
   const acc = newAccounting(planned);
@@ -198,6 +231,7 @@ export async function runBatch({ scenarios, deps }) {
   const startedNs = deps.startedNs ?? clock.now();
   let activeSnapshot = null;
   let bodyRevision = null;
+  let peerWrite = null;
   let stopped = false;
 
   const append = (rec) => recorder.append(rec);
@@ -253,6 +287,23 @@ export async function runBatch({ scenarios, deps }) {
     const restoreNs = clock.now();
     const mark = page.mark?.() ?? null;
     const restore = fs.restore(snapshot);
+    let peerRestoration;
+    if (peerWrite) {
+      const action = restore.actions?.find((a) => a.path === peerWrite.path);
+      const restored = fs.hashOf(peerWrite.path);
+      peerRestoration = {
+        path: peerWrite.path,
+        originalSha256: peerWrite.originalSha256,
+        restoredSha256: restored,
+        ok:
+          restore.actions?.length === 1 &&
+          action?.method === "in-place" &&
+          restored === peerWrite.originalSha256 &&
+          Number.isSafeInteger(peerWrite.inode) &&
+          action.evidence?.inodeBefore === peerWrite.inode &&
+          action.evidence?.inodeAfter === peerWrite.inode,
+      };
+    }
     const alive = server.isAlive();
     const live = [];
     let liveSkipped = null;
@@ -350,11 +401,27 @@ export async function runBatch({ scenarios, deps }) {
       !bodyRevision ||
       (liveSkipped === null &&
         (!rule.requireNativeUpdate || (settle?.settled && settle.bodyRevision?.matched === true)) &&
-        live.some((check) => check.path === bodyRevision.path && check.ok));
+        live.some(
+          (check) =>
+            check.path === bodyRevision.path &&
+            check.ok &&
+            (!deps.fixedPeer || (check.docUUID && check.docUUID !== settle?.bodyRevision?.docUUID)),
+        ));
+    const cssRoutes =
+      !deps.fixedPeer ||
+      (live.length === 6 &&
+        live.every((row) => row.docUUID && row.ok) &&
+        new Set(live.map((row) => row.docUUID)).size === 6 &&
+        live[0].path === "/" &&
+        JSON.stringify((live[0].notify?.actual ?? live[0].actual)?.[1]) ===
+          JSON.stringify([1, "", "#f5f2e9"]) &&
+        JSON.stringify(settle?.bodyRevision?.actual) === JSON.stringify([1, "", "#f5f2e9"]));
     let ok =
+      cssRoutes &&
       !signal?.aborted &&
       restore.mismatches.length === 0 &&
       (diskOnlyControl || (liveSkipped === null && settled)) &&
+      (!peerRestoration || peerRestoration.ok) &&
       bodyVerified &&
       live.every((l) => l.ok);
     let quiet = null;
@@ -369,6 +436,7 @@ export async function runBatch({ scenarios, deps }) {
         ok = false;
       }
     const cleanupRec = {
+      ...(peerRestoration && { peerRestoration }),
       type: "cleanup",
       label: "cleanup",
       measured: false,
@@ -528,11 +596,12 @@ export async function runBatch({ scenarios, deps }) {
           break outer;
         }
 
-        const attemptStart = diagnostic ? clock.now() : null;
+        const attemptStart = diagnostic || deps.stageBudget ? clock.now() : null;
         let attempt;
         let preparedState = null;
         try {
           attempt = fs.prepareAttempt(op);
+          if (deps.fixedPeer) attempt.predicate = astroCssPredicate(attempt.token);
           if (
             (Array.isArray(attempt.writes) && attempt.writes.length === 0) ||
             (!attempt.writes && !attempt.write)
@@ -544,11 +613,12 @@ export async function runBatch({ scenarios, deps }) {
             attempt.write = { ...attempt.write, path: fs.missingSibling(attempt.write.path) };
             if (attempt.writes) attempt.writes = [attempt.write, ...attempt.writes.slice(1)];
           }
-          preparedState = diagnostic
-            ? await stage("attempt prepare", timeouts.attemptMs, attemptStart, (ms) =>
-                page.prepare(attempt.targetPath, Math.min(ms, 30000)),
-              )
-            : await wait(page.prepare(attempt.targetPath));
+          preparedState =
+            diagnostic || deps.stageBudget
+              ? await stage("attempt prepare", timeouts.attemptMs, attemptStart, (ms) =>
+                  page.prepare(attempt.targetPath, Math.min(ms, 30000)),
+                )
+              : await wait(page.prepare(attempt.targetPath));
           page.markPre?.();
         } catch (error) {
           append({
@@ -713,16 +783,42 @@ export async function runBatch({ scenarios, deps }) {
         }
         // arm already read this value before the first edit. Reuse it across consecutive
         // edits so a previous tokenized revision cannot become the cleanup baseline.
-        if (verifyBodyRevision && !bodyRevision) {
-          if (
+        if ((verifyBodyRevision || deps.fixedPeer) && !bodyRevision) {
+          if (deps.fixedPeer) {
+            if (
+              !Array.isArray(armed.actual) ||
+              armed.actual.length !== 3 ||
+              armed.actual[0] !== 1 ||
+              armed.actual[1] !== "" ||
+              armed.actual[2] !== "#f5f2e9"
+            )
+              throw new Error("unverified original Astro stylesheet");
+          } else if (
             typeof armed.actual !== "string" ||
             !armed.actual.trim() ||
             (deps.requiredBodyBaseline && armed.actual !== deps.requiredBodyBaseline)
           )
             throw new Error("missing pre-edit rendered body baseline");
+          if (deps.fixedPeer) {
+            const sockets = [...page.peerSocketTracking.values()].filter(
+              (row) => row.firstFrameNs !== null,
+            );
+            append({
+              type: "fixed-peer-prewrite",
+              docUUID: armed.docUUID,
+              originalCss: armed.actual,
+              armObservedNs: String(clock.now()),
+              sockets,
+            });
+            if (!armed.docUUID || !sockets.length)
+              throw new Error("peer update socket or original document unverified");
+          }
           bodyRevision = {
+            ...(deps.fixedPeer && { allowSameDocument: true }),
             path: attempt.targetPath,
-            predicate: { kind: "text", selector: attempt.predicate.selector, equals: armed.actual },
+            predicate: deps.fixedPeer
+              ? astroCssPredicate("")
+              : { kind: "text", selector: attempt.predicate.selector, equals: armed.actual },
           };
         }
         const preDocUUID = armed.docUUID;
@@ -751,6 +847,12 @@ export async function runBatch({ scenarios, deps }) {
         }
 
         signal?.throwIfAborted();
+        deps.stageBudget?.(timeouts.attemptMs, attemptStart);
+        if (deps.fixedPeer) {
+          deps.beforeAstroWrite("before-write");
+          signal?.throwIfAborted();
+          deps.stageBudget(timeouts.attemptMs, attemptStart);
+        }
         diagnostic?.beforeMutation?.();
         diagnostic?.clamp("attempt write", timeouts.attemptMs, attemptStart);
         let t0;
@@ -832,11 +934,11 @@ export async function runBatch({ scenarios, deps }) {
                   resolve({ kind: "resource-limit", sample: s, tripped: trip, wallMs: wall });
               }, waitSamples.everyMs);
             });
-        let waited;
+        let waited, peerDecision;
         try {
           const timeoutMs = diagnostic
             ? diagnostic.clamp("attempt observation", timeouts.attemptMs, attemptStart)
-            : timeouts.attemptMs;
+            : (deps.stageBudget?.(timeouts.attemptMs, attemptStart) ?? timeouts.attemptMs);
           waited = await wait(
             Promise.race([
               page.waitNotify(attempt.token, timeoutMs, (payload) => {
@@ -853,10 +955,42 @@ export async function runBatch({ scenarios, deps }) {
               ...(resourceTrip ? [resourceTrip] : []),
             ]),
           );
+          if (deps.fixedPeer) {
+            signal?.throwIfAborted();
+            const attemptEnd = attemptStart + BigInt(timeouts.attemptMs) * 1_000_000n;
+            const end = deps.workDeadlineNs < attemptEnd ? deps.workDeadlineNs : attemptEnd;
+            peerDecision = {
+              deadlineNs: String(end),
+              dispatchNs: String(clock.now()),
+              kind: waited.kind,
+            };
+            if (waited.kind === "notify" && waited.t1 > end) {
+              peerDecision.lateNotify = { receivedNs: String(waited.t1), payload: waited.payload };
+              waited = { kind: "timeout" };
+            }
+          }
         } finally {
           clearInterval(sampler);
         }
         const evidence = page.collectAttempt(t0);
+        let classification = evidence;
+        if (peerDecision) {
+          const cutoff = waited.kind === "notify" ? waited.t1 : BigInt(peerDecision.deadlineNs);
+          const during = (rows) =>
+            rows.filter((row) => BigInt(row.ns) >= t0 && BigInt(row.ns) <= cutoff);
+          classification = {
+            mainFrameNavigations: during(evidence.navigations).length,
+            newDocuments: during(evidence.docInits).length,
+            livereloadEvents: during(evidence.wsFrames).map((f) =>
+              f.event === "css" && !f.astroManagedCss ? "other-css" : f.event,
+            ),
+          };
+          peerDecision.window = {
+            fromNs: String(t0),
+            throughNs: String(cutoff),
+            ...classification,
+          };
+        }
         const serverPidAfter = server.pid();
         const serverLog = logMark === null ? null : server.logSince(logMark, t0);
 
@@ -864,6 +998,7 @@ export async function runBatch({ scenarios, deps }) {
         const rec = {
           ...recBase,
           preDocUUID,
+          ...(peerDecision && { peerDecision }),
           t0Ns: String(t0),
           serverPidBefore,
           serverPidAfter,
@@ -877,6 +1012,30 @@ export async function runBatch({ scenarios, deps }) {
           },
           injectKill,
         };
+        if (deps.fixedPeer) {
+          const write = attempt.write;
+          const expected = sha256(write.bytes);
+          const actual = fs.hashOf(write.path);
+          peerWrite = {
+            path: write.path,
+            originalSha256: rec.targetSha256Before,
+            inode: write.evidence?.inodeBefore,
+          };
+          rec.peerDisk = {
+            bytes: Buffer.byteLength(write.bytes),
+            expectedSha256: expected,
+            observedSha256: actual,
+            ok:
+              /^[a-f0-9]{64}$/.test(peerWrite.originalSha256) &&
+              expected === actual &&
+              expected !== peerWrite.originalSha256 &&
+              Number.isSafeInteger(peerWrite.inode) &&
+              peerWrite.inode === write.evidence?.inodeAfter,
+          };
+          append({ type: "fixed-peer-edit-disk", ...peerWrite, ...rec.peerDisk });
+          if (!rec.peerDisk.ok)
+            throw new Error("fixed peer edited bytes or in-place inode mismatch");
+        }
         if (writeSteps) {
           rec.writeSteps = writeSteps;
           rec.tLastWriteNs = String(tLast);
@@ -892,6 +1051,19 @@ export async function runBatch({ scenarios, deps }) {
           rec.observerDisarmed = true;
           acc.lastArmedUnknownOperation = { ...where, token: attempt.token, writeCompleted: true };
         } else if (waited.kind === "notify") {
+          if (deps.fixedPeer) {
+            const payload = waited.payload;
+            if (
+              !payload.docUUID ||
+              payload.token !== attempt.token ||
+              payload.armedDocUUID !== preDocUUID ||
+              payload.url !== page.url(attempt.targetPath) ||
+              JSON.stringify(payload.actual) !== JSON.stringify([1, attempt.token, "#f5f2e9"])
+            )
+              throw new Error(
+                "Astro update did not confirm the exact armed CSSOM value and target",
+              );
+          }
           outcome = "success";
           rec.t1Ns = String(waited.t1);
           rec.latencyMs = nsToMs(waited.t1 - t0);
@@ -905,10 +1077,10 @@ export async function runBatch({ scenarios, deps }) {
           rec.mechanism = classifyMechanism({
             preDocUUID,
             notifyDocUUID: waited.payload.docUUID,
-            mainFrameNavigations: evidence.mainFrameNavigations,
+            mainFrameNavigations: classification.mainFrameNavigations,
             serverPidBefore,
             serverPidAfter,
-            livereloadEvents: evidence.livereloadEvents ?? [],
+            livereloadEvents: classification.livereloadEvents ?? [],
           });
           acc.lastArmedUnknownOperation = null;
         } else {
@@ -924,7 +1096,7 @@ export async function runBatch({ scenarios, deps }) {
               limits,
             };
           } else {
-            outcome = evidence.newDocuments > 0 ? "stale" : "timeout";
+            outcome = classification.newDocuments > 0 ? "stale" : "timeout";
             rec.timeoutMs = timeouts.attemptMs;
           }
           const disarmed = await wait(page.disarm());
@@ -979,7 +1151,7 @@ export async function runBatch({ scenarios, deps }) {
           break outer;
         }
 
-        const supplementalStart = diagnostic ? clock.now() : null;
+        const supplementalStart = diagnostic || deps.stageBudget ? clock.now() : null;
         for (const check of attempt.supplemental) {
           let res;
           try {

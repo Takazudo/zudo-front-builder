@@ -377,7 +377,7 @@ export function declaredSocketFor(url, sockets = []) {
  * (`custom:astro:content-changed`). The declared events map the most specific raw type first,
  * then the base type; anything else is `unmapped` and recorded, never used as update evidence.
  */
-export function updateSignalFrame(payload, ns, url, socket) {
+export function updateSignalFrame(payload, ns, url, socket, astroCss = false) {
   const text = typeof payload === "string" ? payload : Buffer.from(payload).toString("utf8");
   let msg = null;
   try {
@@ -399,6 +399,24 @@ export function updateSignalFrame(payload, ns, url, socket) {
     ns: String(ns),
     url,
     socket: socket.name,
+    ...(astroCss &&
+      Array.isArray(msg?.updates) && {
+        astroManagedCss:
+          event === "css" &&
+          msg.updates.length === 1 &&
+          msg.updates[0]?.type === "css-update" &&
+          msg.updates[0].path === "/src/styles/site.imported.css" &&
+          msg.updates[0].acceptedPath === "/src/styles/site.imported.css",
+        updates: msg.updates
+          .slice(0, 8)
+          .map((u) =>
+            Object.fromEntries(
+              ["type", "path", "acceptedPath"]
+                .filter((k) => typeof u?.[k] === "string")
+                .map((k) => [k, u[k].slice(0, 256)]),
+            ),
+          ),
+      }),
     rawType,
     event,
     raw: base ? undefined : text.slice(0, 200),
@@ -422,6 +440,7 @@ export class ObserverPage {
     this.wsFrames = [];
     this.otherFrames = [];
     this.updateSockets = [];
+    this.peerSocketTracking = null;
     this.requests = [];
     this.resolved = new Set();
     this.duplicates = [];
@@ -474,6 +493,19 @@ export class ObserverPage {
       this.page.on("websocket", (ws) => {
         const url = ws.url();
         if (!isLivereloadSocket(url) && !declaredSocketFor(url, this.updateSockets)) return;
+        if (this.peerSocketTracking) {
+          if (
+            !declaredSocketFor(url, this.updateSockets) ||
+            new URL(url).host !== new URL(this.baseUrl).host
+          )
+            return;
+          const row = { url, openedNs: String(this.clock()), firstFrameNs: null };
+          this.peerSocketTracking.set(ws, row);
+          ws.on("framereceived", () => {
+            row.firstFrameNs ??= String(this.clock());
+          });
+          ws.on("close", () => this.peerSocketTracking.delete(ws));
+        }
         ws.on("framereceived", ({ payload }) => this.recordSocketFrame(url, payload));
       });
     });
@@ -491,7 +523,13 @@ export class ObserverPage {
     }
     const socket = declaredSocketFor(url, this.updateSockets);
     if (!socket) return;
-    const frame = updateSignalFrame(payload, this.clock(), url, socket);
+    const frame = updateSignalFrame(
+      payload,
+      this.clock(),
+      url,
+      socket,
+      Boolean(this.peerSocketTracking),
+    );
     const kept = UPDATE_EVENTS.has(frame.event) || ACTIVITY_EVENTS.has(frame.event);
     (kept ? this.wsFrames : this.otherFrames).push(frame);
   }
@@ -692,32 +730,42 @@ export class ObserverPage {
   }) {
     const begun = this.clock();
     let revision = null;
+    let evaluatedEvents;
     for (;;) {
       const ev = this.since(mark, startNs);
-      const lastNs = [
+      const events = [...ev.wsFrames, ...ev.navigations, ...ev.docInits];
+      // A fixed peer may change its DOM without creating a new document. Even
+      // an unmapped declared socket frame interrupts quiet, but only a mapped
+      // update or document initialization can prove native restoration.
+      if (bodyRevision?.allowSameDocument) events.push(...(ev.otherFrames ?? []));
+      const lastNs = events.reduce(
+        (last, row) => (BigInt(row.ns) > last ? BigInt(row.ns) : last),
         startNs,
-        ...[...ev.wsFrames, ...ev.navigations, ...ev.docInits].map((x) => BigInt(x.ns)),
-      ].reduce((a, b) => (b > a ? b : a));
+      );
       const now = this.clock();
       const quietFor = nsToMs(now - lastNs);
       const waitedMs = nsToMs(now - begun);
       const nativeUpdateObserved =
         ev.wsFrames.some((f) => UPDATE_EVENTS.has(f.event)) || ev.newDocuments > 0;
-      const doc = ev.docInits.at(-1);
+      const doc =
+        ev.docInits.at(-1) ?? (bodyRevision?.allowSameDocument ? this.docInits.at(-1) : null);
       if (
         bodyRevision &&
         doc &&
         quietFor >= quietMs &&
         waitedMs < boundMs &&
-        (revision?.docUUID !== doc.docUUID || revision?.loading)
+        (revision?.docUUID !== doc.docUUID ||
+          revision?.loading ||
+          (bodyRevision.allowSameDocument && evaluatedEvents !== events.length))
       ) {
+        evaluatedEvents = events.length;
         const view = await boundedObservation(
           this.page.evaluate(
             (predicate) => ({
               url: location.href,
               docUUID: window.__dbo?.state().docUUID,
               loading: document.readyState === "loading",
-              matched: window.__dbo?.evaluate(predicate).matched === true,
+              ...window.__dbo?.evaluate(predicate),
             }),
             bodyRevision.predicate,
           ),
@@ -726,6 +774,7 @@ export class ObserverPage {
         revision = {
           docUUID: doc.docUUID,
           observedDocUUID: view.docUUID ?? null,
+          ...(bodyRevision.allowSameDocument && { actual: view.actual ?? null }),
           url: view.url ?? null,
           loading: view.loading === true,
           matched:
