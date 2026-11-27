@@ -49,12 +49,19 @@ export function takeNextOuterChannel({ provider, outer, fds, sockets }) {
 // These fixed descriptors belong to the controller after the normal fork.
 // The listener runs independently of the mutation gate. It accepts no queued
 // data retroactively if the holder's qualified token is still unavailable.
-export async function observeNextOuterReceipt({ peer, gateAtDelivery, onFailure, record }) {
+export async function observeNextOuterReceipt({
+  peer,
+  gateAtDelivery,
+  onFailure,
+  record,
+  signal,
+  deadlineNs,
+}) {
   const { Socket } = await import("node:net");
   const { openNextOuterReceiver } = await import("./next-outer-receive.mjs");
   let reader;
   try {
-    reader = await openNextOuterReceiver();
+    reader = await openNextOuterReceiver({ signal, deadlineNs });
   } catch (error) {
     try {
       closeSync(5);

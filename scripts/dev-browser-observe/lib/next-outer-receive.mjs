@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { closeSync, fstatSync, openSync, readSync, constants } from "node:fs";
+import { closeSync, constants } from "node:fs";
+import { open } from "node:fs/promises";
 import { createHash } from "node:crypto";
 const MAX_PACKET = 4096;
 const CONTROL_SIZE = 56;
@@ -13,38 +14,61 @@ const CMSG_CLOEXEC = 0x40000000;
 // Kept behind the explicit transport factory so ordinary runs never load FFI.
 const libcPath = "/usr/lib/x86_64-linux-gnu/libc.so.6";
 const libcDigest = "3a15d66867d83762c7f2f1e37359cb8f6c5743edb369c65285cb0b1c4f7498bf";
-export async function openNextOuterReceiver() {
+export async function openNextOuterReceiver({ signal, deadlineNs } = {}) {
+  const current = process.hrtime.bigint();
+  const localEnd = current + 2_000_000_000n;
+  const end = deadlineNs !== undefined && deadlineNs < localEnd ? deadlineNs : localEnd;
+  const check = () => {
+    signal?.throwIfAborted();
+    assert(process.hrtime.bigint() < end, "outer receiver preparation expired");
+  };
+  check();
   assert.equal(process.platform, "linux");
   assert.equal(process.arch, "x64");
   assert.equal(process.version, "v26.13.1");
   const ffi = await import("node:ffi");
   // Load the same descriptor whose bytes were verified. Initial hashing belongs
   // in bounded pre-launch preparation, outside the decision path.
-  const fd = openSync(libcPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  check();
+  const file = await open(
+    libcPath,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
   let handle;
   try {
-    const before = fstatSync(fd, { bigint: true });
+    check();
+    const before = await file.stat({ bigint: true });
     assert(before.isFile() && before.size > 0n && before.size <= 4n * 1024n * 1024n);
     const digest = createHash("sha256");
     const segment = Buffer.alloc(64 * 1024);
     for (let pos = 0; pos < Number(before.size);) {
       const want = Math.min(segment.length, Number(before.size) - pos);
-      assert.equal(readSync(fd, segment, 0, want, pos), want);
+      check();
+      const { bytesRead } = await file.read(segment, 0, want, pos);
+      check();
+      assert.equal(bytesRead, want);
       digest.update(segment.subarray(0, want));
       pos += want;
     }
-    const after = fstatSync(fd, { bigint: true });
+    const after = await file.stat({ bigint: true });
+    check();
     assert(
       after.ctimeNs === before.ctimeNs &&
         after.mtimeNs === before.mtimeNs &&
         after.size === before.size,
     );
     assert.equal(digest.digest("hex"), libcDigest);
-    handle = ffi.dlopen("/proc/self/fd/" + fd, {
+    handle = ffi.dlopen("/proc/self/fd/" + file.fd, {
       recvmsg: { arguments: ["int32", "buffer", "int32"], return: "int64" },
     });
   } finally {
-    closeSync(fd);
+    await file.close();
+  }
+  try {
+    check();
+  } catch (error) {
+    handle.lib.close();
+    throw error;
   }
   return {
     close() {
@@ -64,7 +88,7 @@ export async function openNextOuterReceiver() {
       const bytes = Number(handle.functions.recvmsg(fd, message, DONTWAIT | CMSG_CLOEXEC));
       // Keep all buffers holding native pointers rooted through the synchronous call.
       assert.equal(vec.readBigUInt64LE(0), ffi.getRawPointer(body));
-      assert(bytes > 0 && bytes <= body.length, "missing or invalid datagram");
+      assert(bytes >= 0, "outer recvmsg failed");
       const flags = message.readInt32LE(48);
       const size = Number(message.readBigUInt64LE(40));
       assert(size >= 0 && size <= control.length, "control size");
@@ -90,6 +114,9 @@ export async function openNextOuterReceiver() {
           } else unexpected = true;
           off += Math.ceil(length / 8) * 8;
         }
+        // A zero-byte AF_UNIX packet may still have installed SCM_RIGHTS.
+        // Parse the kernel's ancillary vector before rejecting any payload.
+        assert(bytes > 0 && bytes <= body.length, "missing or invalid datagram");
         assert(
           !(flags & (32 | 8)) && !unexpected && !rights.length,
           "unexpected/truncated ancillary data",
