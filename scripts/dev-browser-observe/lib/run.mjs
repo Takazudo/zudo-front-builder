@@ -335,6 +335,29 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
   }
 }
 
+// A bounded stop may reject before its original in-flight helper settles.
+// At the existing finalization boundary, preserve any newly available identity
+// and closure evidence without waiting again or releasing the original hold.
+export function recordSamplerClosureAudits(unresolved, fixedSafety, rendererMemory, append) {
+  for (const resource of unresolved) {
+    if (!resource.helper) {
+      const monitor =
+        resource.resource === "fixed-rss-sampler"
+          ? fixedSafety
+          : resource.resource === "renderer-memory-sampler"
+            ? rendererMemory
+            : null;
+      const helper = monitor?.unresolvedHelper;
+      if (helper) resource.helper = helper;
+    }
+    const closure = resource.helper && samplerClosureAudit(resource.helper);
+    if (closure) {
+      resource.closureAudit = closure;
+      append({ type: "sampler-closure-audit", ...resource });
+    }
+  }
+}
+
 async function executeLocked({ loaded, label, labelDir, command, stderr, hooks = {}, intentPath }) {
   const { profile, resolved } = loaded;
   const fixedAstro = isFixedAstroProtocol(profile.fixedRssSafety);
@@ -1408,13 +1431,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         else if (memoryReport.failure) exitCode = EXIT.stopped;
       }
     }
-    for (const resource of unresolved) {
-      const closure = resource.helper && samplerClosureAudit(resource.helper);
-      if (closure) {
-        resource.closureAudit = closure;
-        safeAppend({ type: "sampler-closure-audit", ...resource });
-      }
-    }
+    recordSamplerClosureAudits(unresolved, fixedSafety, rendererMemory, safeAppend);
     let stopFailure = null;
     if (!stopReport.absent || stopReport.error || unresolved.length) {
       stopFailure = {

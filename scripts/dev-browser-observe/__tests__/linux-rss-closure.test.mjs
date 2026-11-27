@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { afterEach, test, vi } from "vitest";
 import { createRendererMemoryStudy } from "../lib/renderer-memory-study.mjs";
+import { recordSamplerClosureAudits } from "../lib/run.mjs";
 import * as sampler from "../lib/linux-rss-sample.mjs";
 import { startFixedRssSafety } from "../lib/fixed-rss-safety.mjs";
 
@@ -219,6 +220,8 @@ test("delayed core cancellation starts exactly one reserve at the actual cancell
   assert.equal(d.timing.parent.deadlineNs, "750000000");
   assert.equal(d.timing.parent.deadlineDispatchNs, "810000000");
   assert.equal(d.timing.parent.closureDeadlineNs, "1010000000");
+  assert.equal(d.timing.parent.cancellationNs, "810000000");
+  assert.equal(d.timing.parent.cancellationAfterCoreDeadlineNs, "60000000");
   assert.equal(d.helper.closed, true);
   assert.equal(d.helper.pipesClosed, true);
   assert.equal(f.child.kill.mock.calls.length, 1);
@@ -258,3 +261,33 @@ test("an owned auxiliary pipe error cancels once and keeps its closure obligatio
   f.fd3.emit("close");
   assert.equal(sampler.samplerClosureAudit(d.helper).complete, true);
 });
+
+test.each(["fixed-rss-sampler", "renderer-memory-sampler"])(
+  "bounded %s stop retains evidence that becomes available by finalization",
+  async (resource) => {
+    const f = fixture();
+    f.at(750000000);
+    f.timer();
+    f.at(850000000);
+    f.events("stdin");
+    f.at(950000000);
+    f.timer();
+    const { details } = await f.result;
+    const monitor = { unresolvedHelper: null },
+      holds = [{ resource, error: "original bounded stop timeout" }],
+      audit = [];
+    const args = resource === "fixed-rss-sampler" ? [monitor, null] : [null, monitor];
+    recordSamplerClosureAudits(holds, ...args, (r) => audit.push(r));
+    assert.equal(audit.length, 0);
+    monitor.unresolvedHelper = details.helper;
+    f.at(960000000);
+    f.child.stdin.emit("close");
+    recordSamplerClosureAudits(holds, ...args, (r) => audit.push(r));
+    assert.equal(holds.length, 1);
+    assert.equal(holds[0].error, "original bounded stop timeout");
+    assert.equal(holds[0].helper, details.helper);
+    assert.equal(holds[0].helper.pipesClosed, false);
+    assert.equal(holds[0].closureAudit.complete, true);
+    assert.equal(audit.length, 1);
+  },
+);

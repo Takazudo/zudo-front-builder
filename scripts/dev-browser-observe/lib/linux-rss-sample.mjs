@@ -503,7 +503,12 @@ export function sampleRendererMemory(
     };
     const kill = () => {
       if (!child || finished || closureDeadline !== undefined) return;
-      closureDeadline = process.hrtime.bigint() + BigInt(closeMs) * 1_000_000n;
+      const cancelNs = process.hrtime.bigint();
+      parent.cancellationNs = String(cancelNs);
+      parent.cancellationAfterCoreDeadlineNs = String(
+        cancelNs > deadline ? cancelNs - deadline : 0n,
+      );
+      closureDeadline = cancelNs + BigInt(closeMs) * 1_000_000n;
       parent.closureDeadlineNs = String(closureDeadline);
       if (child.pid && child.exitCode === null && child.signalCode === null) {
         try {
