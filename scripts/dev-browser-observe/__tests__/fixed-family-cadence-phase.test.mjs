@@ -115,7 +115,16 @@ function harness(mode) {
   };
 }
 
-function batch(h, { deadlineNs, snapshot = () => [root, dev], cost = ADMISSION_COST_NS } = {}) {
+function batch(
+  h,
+  {
+    deadlineNs,
+    snapshot = () => [root, dev],
+    cost = ADMISSION_COST_NS,
+    snapshotCostNs = 0n,
+    imagesCostNs = 0n,
+  } = {},
+) {
   const audit = blankBrowserAudit(),
     ctx = new EventEmitter();
   const page0 = Object.assign(new EventEmitter(), { url: () => "about:blank" });
@@ -128,14 +137,22 @@ function batch(h, { deadlineNs, snapshot = () => [root, dev], cost = ADMISSION_C
     deps: deps({ page, fs: audit.trackFixture(fakeFs()) }),
   };
   const rows = [];
+  const calls = { snapshot: 0, verifyImages: 0 };
   const run = () =>
     runOriginalFamilyBatch(input, {
       strategy: "blank-join-owned.v2",
       safety: h.monitor,
       browserAudit: audit,
-      snapshot,
+      snapshot: () => {
+        calls.snapshot++;
+        h.block(snapshotCostNs);
+        return snapshot();
+      },
       known: new Map([root, dev, worker].map((x) => [x.pid, x])),
-      verifyImages() {},
+      verifyImages() {
+        calls.verifyImages++;
+        h.block(imagesCostNs);
+      },
       deadlineNs: deadlineNs ?? process.hrtime.bigint() + 7_000_000_000n * 1000n,
       signal: new AbortController().signal,
       append: (r) => {
@@ -143,7 +160,7 @@ function batch(h, { deadlineNs, snapshot = () => [root, dev], cost = ADMISSION_C
         if (r.status === "pre-batch-proof") h.block(cost);
       },
     });
-  return { run, rows, input, page, page0 };
+  return { run, rows, input, page, page0, calls };
 }
 
 // Run the cadence until epoch 5 (sample at T) has been accepted, then sit at T+phase.
@@ -198,6 +215,7 @@ test("the recorded slot-01 phase joins the next original cadence sample instead 
     assert(BigInt(setup.addedSettlementNs) > 0n);
     assert(BigInt(start.familyAdmission.decisionNs) < BigInt(setup.cycle.startedNs) + 1000n * MS);
     assert.equal(b.rows.filter((r) => r.status === "pre-batch-proof").length, 1);
+    assert.equal(b.calls.snapshot, 1, "the deferred join checks population only in enter()");
     assert.equal(start.familyAdmission.httpRequests, 0);
     assert.equal(value.accounting.planned, 0);
     assert.deepEqual(h.failures, []);
@@ -234,6 +252,27 @@ test.each([20, 54, 300, 473, 600, 877.311406, 999])(
     }
   },
 );
+
+// Deferred decision = dispatch + ~53 ms settlement + enter() cost, inside one
+// 1000 ms cadence period, so about 947 ms of enter() cost is admissible.
+test("a deferred join admits with about 900 ms of journal plus population cost", async () => {
+  const h = harness("slow-enter");
+  try {
+    await atProofPhase(h, SETUP_PHASE_NS);
+    const b = batch(h, { cost: 400n * MS, snapshotCostNs: 450n * MS, imagesCostNs: 40n * MS });
+    const { error } = await settleAll(b.run());
+    assert.equal(error, undefined, String(error));
+    const { setup, decisionNs } = b.input.deps.recorder.records.find(
+      (r) => r.type === "scenario-start",
+    ).familyAdmission;
+    assert.equal(setup.idleDeferral.outcome, "joined");
+    const spent = BigInt(decisionNs) - BigInt(setup.settlementObservedNs);
+    assert(spent >= 890n * MS && spent < 900n * MS, String(spent));
+    assert(BigInt(decisionNs) < BigInt(setup.cycle.startedNs) + 1000n * MS);
+  } finally {
+    await stopMonitor(h);
+  }
+});
 
 test("reserve equality admits on the idle sample without waiting", async () => {
   const h = harness("equality");
@@ -327,10 +366,16 @@ test.each([
     assert(error, "deferred admission must refuse");
     const refusal = b.rows.at(-1);
     assert.equal(refusal.admitted, false);
-    assert.equal(refusal.setup.settlementOutcome, "refused");
+    // A settlement accepted before enter() keeps that label; the row still refuses.
+    assert.equal(
+      refusal.setup.settlementOutcome,
+      mode === "population-changed" ? "accepted" : "refused",
+    );
     assert.equal(
       refusal.setup.idleDeferral.outcome,
-      ["next-fails-after-helper", "next-result-late"].includes(mode) ? "joined" : "refused",
+      ["next-fails-after-helper", "next-result-late", "population-changed"].includes(mode)
+        ? "joined"
+        : "refused",
     );
     assert.equal(refusal.setup.idleDeferral.reserveNs, String(FAMILY_IDLE_ADMISSION_RESERVE_NS));
     assert.match(

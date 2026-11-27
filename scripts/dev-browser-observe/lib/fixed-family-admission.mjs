@@ -349,7 +349,10 @@ export function runOriginalFamilyBatch(
           "family custody changed during deferral",
         );
       deferral.outcome = "joined";
-      return joinPending(captured);
+      // enter() checks population against the joined sample; a check here
+      // would only add synchronous cost before the settlement wait.
+      setup.priorCustody = captured.before;
+      return join(captured);
     } catch (error) {
       deferral.outcome = "refused";
       setup.settlementOutcome = "refused";
