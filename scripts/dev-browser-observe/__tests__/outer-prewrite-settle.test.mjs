@@ -88,6 +88,8 @@ function harness({ append = () => {}, fake = true } = {}) {
     return done.promise;
   });
   const lateTicks = new Map();
+  // Runs synchronously just before an on-time tick's dispatch (e.g. to model a clock read after a stall).
+  const beforeTick = new Map();
   let ticks = 0;
   const realSetInterval = globalThis.setInterval;
   // Model a late ordinary tick: the timer fires on time but the dispatch runs later.
@@ -95,7 +97,10 @@ function harness({ append = () => {}, fake = true } = {}) {
     realSetInterval(() => {
       const late = lateTicks.get(++ticks);
       if (late) setTimeout(cb, late);
-      else cb();
+      else {
+        beforeTick.get(ticks)?.();
+        cb();
+      }
     }, ms),
   );
   const monitor = startFixedRssSafety({
@@ -117,6 +122,7 @@ function harness({ append = () => {}, fake = true } = {}) {
     sample,
     plans,
     lateTicks,
+    beforeTick,
     get ticks() {
       return ticks;
     },
@@ -1463,3 +1469,43 @@ test("real timers: a joined dispatch that a loop stall delays past the allowance
     await h.done();
   }
 }, 20_000);
+
+// Review-4 low note 1: the dispatch-late comparison is strict. The ordinary tick
+// fires on time (before the bound timer) but its clock reads exactly at the
+// recorded dispatch bound, or 1 ns after it, as after a stall. The join accepts
+// the dispatch stamped at the bound and refuses the one stamped 1 ns later.
+test.each([
+  [0n, "joined-next-dispatch"],
+  [1n, "dispatch-late"],
+])("a joined dispatch stamped at the bound + %i ns settles as %s", async (extraNs, outcome) => {
+  const h = harness();
+  try {
+    await ready(h);
+    const base = h.sample.mock.calls.length;
+    h.plans.set(base + 1, { ms: R3_HELPER_MS });
+    h.plans.set(base + 2, { ms: R3_HELPER_MS });
+    await vi.advanceTimersByTimeAsync(1000 + 995);
+    let skew = 0n;
+    const fake = process.hrtime.bigint;
+    vi.spyOn(process.hrtime, "bigint").mockImplementation(() => fake.call(process.hrtime) + skew);
+    const entryNs = process.hrtime.bigint();
+    // Entry at the cutoff: the bound is the scheduled dispatch + 400 ms = entry + 405 ms.
+    h.beforeTick.set(h.ticks + 1, () => {
+      skew += entryNs + 405n * MS + extraNs - process.hrtime.bigint();
+    });
+    const { value: s, error } = await settled(
+      h.monitor.settleOrdinaryBeforeDecision({ deadlineNs: entryNs + 60_000n * MS }),
+      1,
+      2000,
+    );
+    assert.equal(error, undefined, String(error));
+    assert.equal(s.withinFreshMargin, false);
+    assert.equal(BigInt(s.dispatchBoundNs), entryNs + 405n * MS);
+    assert.equal(BigInt(s.dispatchedNs), BigInt(s.dispatchBoundNs) + extraNs);
+    assert.equal(s.outcome, outcome, JSON.stringify(s));
+    assert.equal(h.sample.mock.calls.length, base + 2, "only the ordinary timer dispatched");
+  } finally {
+    vi.restoreAllMocks();
+    await h.done();
+  }
+});
