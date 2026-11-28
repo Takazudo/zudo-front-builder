@@ -278,6 +278,18 @@ export async function runBatch({ scenarios, deps }) {
       return false;
     }
     deps.beforeCleanup?.({ reason });
+    // B-clean (O1′/O2′): every row before this restoration is durable first. An
+    // expired barrier still restores, because a dirty work copy under a live
+    // server is worse, but the restoration's durability stays unproven.
+    let durabilityUnproven = false;
+    if (deps.durability) {
+      const barrier = await deps.durability.barrier("clean");
+      if (!barrier.ok) {
+        durabilityUnproven = true;
+        acc.restorationDurabilityUnproven = (acc.restorationDurabilityUnproven ?? 0) + 1;
+        acc.error += 1;
+      }
+    }
     const blocks = [];
     for (const path of blocked) {
       try {
@@ -495,6 +507,7 @@ export async function runBatch({ scenarios, deps }) {
       live,
       liveSkipped,
       ...(diskOnlyControl ? { verification: "disk-only:declared-server-kill" } : {}),
+      ...(durabilityUnproven && { restorationDurability: "unproven" }),
       retry,
     };
     if (blocked.length) {
@@ -561,6 +574,17 @@ export async function runBatch({ scenarios, deps }) {
         warmOrder: scenario.warmOrder ?? "none",
         ...(scenario.cycle ? { cycle: scenario.cycle } : {}),
       });
+      if (deps.durability) {
+        // B-pre (O1′): the decision-bearing rows through scenario-start are durable
+        // before the attempt's first page operation. Nothing is awaited between the
+        // family decision and scenario-start, so the barrier stays outside W2.
+        const barrier = await deps.durability.barrier("pre");
+        if (!barrier.ok) {
+          acc.error += 1;
+          stop("durability-barrier-expired", { scenario: scenario.id, op: null });
+          break outer;
+        }
+      }
       if (scenario.warmOrder && scenario.warmOrder !== "none") {
         const paths = fs.warmPaths(scenario);
         const visits = [];
@@ -1310,6 +1334,10 @@ export async function runBatch({ scenarios, deps }) {
       activeSnapshot = null;
       if (!ok) {
         stop("restoration-failed", { scenario: scenario.id, op: null });
+        break;
+      }
+      if (acc.restorationDurabilityUnproven) {
+        stop("restoration-durability-unproven", { scenario: scenario.id, op: null });
         break;
       }
       if (deps.afterScenario) await deps.afterScenario({ scenario });

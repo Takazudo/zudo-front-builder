@@ -446,3 +446,12 @@ export function loadProfile(path) {
     },
   };
 }
+
+/**
+ * O6 (owner, 2026-11-29): the durable recorder mode (ordered writes plus
+ * barriers, O1′/O5) is on only for the original-family admission profiles. Every
+ * other protocol, Astro included, keeps a synchronous fsync per row.
+ */
+export function durableRecorderMode(profile) {
+  return Boolean(profile.fixedFamilyAdmission);
+}

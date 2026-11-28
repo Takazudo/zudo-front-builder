@@ -30,7 +30,13 @@ import {
 import { LockBusyError, acquireLock } from "./lock.mjs";
 import { hostIdentity, probeMac, sampledPeak } from "./mac-process-adapter.mjs";
 import { liveOwnedFromRegistry, shouldRegisterOwned, stopOwned } from "./process-owner.mjs";
-import { LABEL_RE, loadProfile } from "./profile.mjs";
+import { LABEL_RE, durableRecorderMode, loadProfile } from "./profile.mjs";
+import {
+  DurableSink,
+  createBarrierPoint,
+  createOwnershipJournal,
+  createReceiptWriter,
+} from "./durable-io.mjs";
 import { ControllerTiming, timed } from "./controller-timing.mjs";
 import { Recorder } from "./recorder.mjs";
 import { createRendererMemoryStudy } from "./renderer-memory-study.mjs";
@@ -410,10 +416,14 @@ async function executeLocked({
     return stoppingServer;
   };
   const tiny = profile.tinyAcceptance;
+  const durable = durableRecorderMode(profile);
+  // Durable-mode profiles also record ControllerTiming (design §5), so every
+  // write and barrier stage is attributable in controller-timing.json.
   const timing =
-    tiny || profile.rendererMemoryStudy || profile.startupAcceptance
+    tiny || profile.rendererMemoryStudy || profile.startupAcceptance || durable
       ? new ControllerTiming(hooks.rendererMemoryClock)
       : null;
+  const sink = durable ? new DurableSink() : null;
   const browserTiming = tiny?.probe === "B" ? new BrowserTiming() : null;
   const startupLoop = browserTiming ? new StartupEventLoop() : null;
   const writeBrowserStartupTiming = () => {
@@ -424,7 +434,11 @@ async function executeLocked({
       eventLoop: startupLoop.report,
     });
   };
-  const rec = new Recorder(join(labelDir, "records.jsonl"), timing);
+  const rec = new Recorder(join(labelDir, "records.jsonl"), timing, sink);
+  const workDeadlineNs = loaded.workDeadline ? BigInt(loaded.workDeadline) * 1_000_000n : null;
+  const barrier = sink
+    ? createBarrierPoint({ sink, recorder: rec, deadlineNs: workDeadlineNs, timing })
+    : null;
   const memoryProfile = profile.rendererMemoryStudy ?? null;
   const acceptance = profile.startupAcceptance ?? tiny;
   const acceptanceKey = tiny ? "tinyAcceptance" : "startupAcceptance";
@@ -526,6 +540,8 @@ async function executeLocked({
   };
   const receiptPath = join(labelDir, "receipt.json");
   const summaryPath = join(labelDir, "summary.json");
+  const receiptWriter = createReceiptWriter(receiptPath, { sink, timing });
+  const ownership = createOwnershipJournal(resolved.registryPath, { sink, timing });
 
   const verdict = fixed
     ? (hooks.fixedIdentityVerdict ?? fixedIdentityVerdict)({ profile, resolved, manifest })
@@ -545,7 +561,8 @@ async function executeLocked({
     checks: verdict.checks,
   });
   if (!verdict.ok) {
-    writeJsonSync(receiptPath, receipt);
+    if (sink) await receiptWriter.write(receipt);
+    else writeJsonSync(receiptPath, receipt);
     const acc = { ...newAccounting(planned), stopReason: "identity-rejected", error: 1 };
     writeJsonSync(summaryPath, {
       ...summarize(rec.records, acc),
@@ -564,6 +581,8 @@ async function executeLocked({
         : {}),
     });
     rec.append({ type: "run-end", exitCode: EXIT.identityRejected });
+    // Nothing is running before the server spawn, so the tail is made durable synchronously.
+    sink?.close();
     if (timing) writeJsonSync(join(labelDir, "controller-timing.json"), timing.report);
     writeBrowserStartupTiming();
     stderr("identity rejected before any workload edit; see receipt.json identity.checks");
@@ -734,7 +753,11 @@ async function executeLocked({
         ? peerBudget(profile.server.readyTimeoutMs)
         : profile.server.readyTimeoutMs;
     if (intentPath)
-      intent = reserveSession(intentPath, { labelDir, registryPath: resolved.registryPath });
+      intent = reserveSession(
+        intentPath,
+        { labelDir, registryPath: resolved.registryPath },
+        sink ? { sink, timing } : undefined,
+      );
     if (profile.fixedRssSafety === "linux-fixed-zfb.v4")
       rec.append({
         type: "fixed-controller-subreaper",
@@ -772,7 +795,7 @@ async function executeLocked({
     spawning = false;
     server.handle.onNewOwned = (p) => {
       if (shouldRegisterOwned(server.handle.native, p))
-        appendJsonlSync(resolved.registryPath, { type: "owned", label, at: isoNow(), ...p });
+        ownership.append({ type: "owned", label, at: isoNow(), ...p });
     };
     if (profile.fixedRssSafety === "linux-fixed-zfb.v4")
       fixedCustody.attachStartup(server.handle, fixedExecutables);
@@ -816,7 +839,7 @@ async function executeLocked({
       root: server.handle.native,
       pid: server.handle.child?.pid,
     });
-    appendJsonlSync(resolved.registryPath, {
+    ownership.append({
       type: "spawn",
       label,
       at: isoNow(),
@@ -1085,7 +1108,7 @@ async function executeLocked({
       rec.append({ type: "browser-ready", browser: browserHandle.identity }),
     );
     startupLoop?.browserReady();
-    writeJsonSync(receiptPath, receipt);
+    receiptWriter.checkpoint(receipt);
 
     const sampleServer = () =>
       timed(timing, "run.sampleServer", {}, () => {
@@ -1143,6 +1166,7 @@ async function executeLocked({
                   rendererMemory?.failure ?? study?.haltReason() ?? checkLateProcesses?.() ?? null
               : undefined,
           clock: { now: hrtimeNs },
+          ...(barrier && { durability: { barrier } }),
           server: {
             ...server,
             sampleResources: sampleServer,
@@ -1397,7 +1421,7 @@ async function executeLocked({
       }
       safeAppend({ type: "server-stop", report: stopReport, exit: server.handle.exit, logClose });
       try {
-        appendJsonlSync(resolved.registryPath, {
+        ownership.append({
           type: "stopped",
           label,
           at: isoNow(),
@@ -1561,8 +1585,18 @@ async function executeLocked({
         (tiny?.probe === "B" || Boolean(receipt[acceptanceKey].live?.markerMatched));
       receipt[acceptanceKey].unresolvedResources = unresolved;
     }
+    if (barrier) {
+      // B-exit: every row so far, the registry and the intent are durable before
+      // the final receipt, the summary and the exit code (O1′).
+      const exit = await barrier("exit");
+      if (!exit.ok) {
+        evidenceFailed = true;
+        stderr(`exit durability barrier: ${exit.reason}`);
+      }
+    }
     try {
-      writeJsonSync(receiptPath, receipt);
+      if (sink) await receiptWriter.write(receipt);
+      else writeJsonSync(receiptPath, receipt);
     } catch (error) {
       evidenceFailed = true;
       stderr(`receipt write failed: ${error?.message ?? error}`);
@@ -1626,6 +1660,12 @@ async function executeLocked({
     } catch (error) {
       evidenceFailed = true;
       stderr(`summary write failed: ${error?.message ?? error}`);
+    }
+    try {
+      sink?.close();
+    } catch (error) {
+      evidenceFailed = true;
+      stderr(`record close failed: ${error?.message ?? error}`);
     }
     if (evidenceFailed && !stopFailure) return exitCode || EXIT.controllerError; // eslint-disable-line no-unsafe-finally
     if (stopFailure) {
