@@ -77,6 +77,7 @@ import {
   readJson,
   readJsonl,
   writeJsonSync,
+  yieldToLoop,
 } from "./util.mjs";
 
 export const EXIT = {
@@ -95,6 +96,7 @@ export const BROWSER_CLOSE_TIMEOUT_MS = 10000;
 
 export const RECEIPT_SCHEMA = "dev-browser-observe.receipt.v1";
 const BROWSER_STARTUP_TIMING_FILE = "browser-startup-timing.json";
+const CONTROLLER_EVENT_LOOP_FILE = "controller-event-loop.json";
 
 export function notImplementedResult(profile) {
   return {
@@ -414,19 +416,27 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     return stoppingServer;
   };
   const tiny = profile.tinyAcceptance;
+  // #4856 r2: a sync controller run starved the in-flight sampler's pipe. The
+  // fixed Astro CSS cell records per-stage timing and drains/yields around it.
+  const fixedAstroCssRun = profile.fixedRssSafety === FIXED_ASTRO_CSS_PROTOCOL;
   const timing =
-    tiny || profile.rendererMemoryStudy || profile.startupAcceptance
+    tiny || profile.rendererMemoryStudy || profile.startupAcceptance || fixedAstroCssRun
       ? new ControllerTiming(hooks.rendererMemoryClock)
       : null;
   const browserTiming = tiny?.probe === "B" ? new BrowserTiming() : null;
-  const startupLoop = browserTiming ? new StartupEventLoop() : null;
+  const startupLoop = browserTiming || fixedAstroCssRun ? new StartupEventLoop() : null;
   const writeBrowserStartupTiming = () => {
-    if (!browserTiming) return;
-    writeJsonSync(join(labelDir, BROWSER_STARTUP_TIMING_FILE), {
-      schema: "dev-browser-observe.browser-startup-timing.v1",
-      browser: browserTiming.snapshot(),
-      eventLoop: startupLoop.report,
-    });
+    if (browserTiming)
+      writeJsonSync(join(labelDir, BROWSER_STARTUP_TIMING_FILE), {
+        schema: "dev-browser-observe.browser-startup-timing.v1",
+        browser: browserTiming.snapshot(),
+        eventLoop: startupLoop.report,
+      });
+    else if (startupLoop)
+      writeJsonSync(join(labelDir, CONTROLLER_EVENT_LOOP_FILE), {
+        schema: "dev-browser-observe.controller-event-loop.v1",
+        eventLoop: startupLoop.report,
+      });
   };
   const rec = new Recorder(join(labelDir, "records.jsonl"), timing);
   const memoryProfile = profile.rendererMemoryStudy ?? null;
@@ -477,6 +487,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     ...(profile.fixedRssSafety && { fixedRssSafety: profile.fixedRssSafety }),
     ...(sourceTiming && { sourceTimingSafety: profile.sourceTimingSafety }),
     ...(timing && { controllerTiming: "controller-timing.json" }),
+    ...(startupLoop && !browserTiming && { controllerEventLoop: CONTROLLER_EVENT_LOOP_FILE }),
     ...(acceptance && {
       [acceptanceKey]: {
         ...acceptance,
@@ -789,7 +800,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       receipt.sourceTimingImage = sourceImage;
     }
     spawning = true;
-    startupLoop?.start(rendererMemory.signal);
+    startupLoop?.start(rendererMemory?.signal ?? loaded.signal);
     server = (hooks.startDevServer ?? startDevServer)({
       ...(fixed
         ? {
@@ -842,6 +853,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         limits: profile.limits,
         append: (r) => rec.append(r),
         abort: abortSampling,
+        ...(fixedAstroCssRun && { yieldLoop: yieldToLoop, timing }),
       });
     }
     if (sourceTiming) {
@@ -1111,11 +1123,19 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     observer.onStray = (payload) =>
       rec.append({ type: "late-token", label: "not-success", armedToken: null, payload });
     receipt.browser = browserHandle.identity;
+    if (fixedAstroCssRun) {
+      // Start the synchronous post-launch run right after a sample settles, so
+      // no helper frame waits behind it; the next 1 Hz dispatch is ~1 s away.
+      await fixedSafety.settle();
+      browserSignal?.throwIfAborted();
+    }
     timeBrowserSync(browserTiming, "browser-ready.append", null, {}, () =>
       rec.append({ type: "browser-ready", browser: browserHandle.identity }),
     );
     startupLoop?.browserReady();
-    writeJsonSync(receiptPath, receipt);
+    if (fixedAstroCssRun) await yieldToLoop();
+    timed(timing, "run.receipt.write", {}, () => writeJsonSync(receiptPath, receipt));
+    if (fixedAstroCssRun) await yieldToLoop();
 
     const sampleServer = () =>
       timed(timing, "run.sampleServer", {}, () => {
@@ -1193,7 +1213,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           fixedAstroFooter: profile.fixedRssSafety === FIXED_ASTRO_FOOTER_PROTOCOL,
           fixedAstroCategory: profile.fixedRssSafety === FIXED_ASTRO_CATEGORY_PROTOCOL,
           fixedAstroTitle: profile.fixedRssSafety === FIXED_ASTRO_TITLE_PROTOCOL,
-          fixedAstroCss: profile.fixedRssSafety === FIXED_ASTRO_CSS_PROTOCOL,
+          fixedAstroCss: fixedAstroCssRun,
+          ...(fixedAstroCssRun && { yieldLoop: yieldToLoop }),
           beforeAstroWrite: verifyAstroCurrent,
           verifyBodyRevision:
             tiny?.probe === "B" || (!fixed && profile.fixture.kind === "field-notes"),

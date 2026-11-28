@@ -6,6 +6,7 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import { samplePeerRoles, FIXED_ASTRO_FOOTER_PROTOCOL } from "./fixed-peer-roles.mjs";
 import { sampleRendererMemory } from "./linux-rss-sample.mjs";
+import { timed } from "./controller-timing.mjs";
 
 function pin(path, digest) {
   const real = realpathSync(path);
@@ -71,6 +72,10 @@ export function startFixedRssSafety({
   custody = null,
   peer,
   checkRoles = samplePeerRoles,
+  // Optional macrotask yield between the fsynced sample append and the
+  // synchronous role check, so the loop polls between the two blocks.
+  yieldLoop = null,
+  timing = null,
 }) {
   let pending = null;
   let failure = null;
@@ -133,7 +138,7 @@ export function startFixedRssSafety({
         ? sample(server, fixedExecutables.root.path)
         : sample(server, fixedExecutables.root.path, { fixedExecutables, custody })
     )
-      .then((result) => {
+      .then(async (result) => {
         measuredCycles++;
         if (Number.isSafeInteger(result.summedRssKiB))
           peakKiB = Math.max(peakKiB ?? 0, result.summedRssKiB);
@@ -145,6 +150,10 @@ export function startFixedRssSafety({
         });
         if (peer) {
           if (failure) return;
+          if (yieldLoop) {
+            await yieldLoop();
+            if (failure) return;
+          }
           const t = result.timing.parent;
           firstSpawn ??= BigInt(result.helper.spawnHrtimeNs);
           assert(
@@ -168,7 +177,9 @@ export function startFixedRssSafety({
               sum <= limits.rssCeilingKiB,
             "invalid peer owned RSS",
           );
-          const roles = checkRoles(result, peer, Boolean(readyAtEntry));
+          const roles = timed(timing, "fixed-peer-roles.check", {}, () =>
+            checkRoles(result, peer, Boolean(readyAtEntry)),
+          );
           for (const row of roles.chain) {
             const key = [row.pid, row.ppid, row.pgid, row.bootId, row.startTicks].join("/");
             assert(!stable.has(row.role) || stable.get(row.role) === key, "peer role replaced");
@@ -278,6 +289,10 @@ export function startFixedRssSafety({
         secondaryHelperFailure,
         fixedExecutables,
       };
+    },
+    /** Resolves once no periodic sample is in flight; never rejects (failures stay in report()). */
+    async settle() {
+      while (pending) await pending;
     },
     get unresolvedHelper() {
       return unresolvedHelper;

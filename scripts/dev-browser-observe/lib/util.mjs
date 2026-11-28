@@ -21,6 +21,19 @@ import { fileURLToPath } from "node:url";
 export const HARNESS_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 export const HARNESS_VERSION = "dev-browser-observe.v1";
 
+const immediate = () => new Promise((resolve) => setImmediate(resolve));
+
+/**
+ * Let libuv poll pending I/O between synchronous controller blocks. One
+ * setImmediate called from the poll phase runs in that same turn's check phase
+ * without polling; a second one is queued from check and runs only after the
+ * next poll, so two always cross a poll phase whichever phase the caller is in.
+ */
+export async function yieldToLoop() {
+  await immediate();
+  await immediate();
+}
+
 export function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }

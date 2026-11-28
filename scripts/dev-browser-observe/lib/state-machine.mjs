@@ -610,6 +610,7 @@ export async function runBatch({ scenarios, deps }) {
         warmOrder: scenario.warmOrder ?? "none",
         ...(scenario.cycle ? { cycle: scenario.cycle } : {}),
       });
+      if (deps.yieldLoop) await deps.yieldLoop();
       if (scenario.warmOrder && scenario.warmOrder !== "none") {
         const paths = fs.warmPaths(scenario);
         const visits = [];
@@ -687,6 +688,7 @@ export async function runBatch({ scenarios, deps }) {
           });
           sample = decided;
         } else sample = server.sampleResources();
+        if (deps.yieldLoop) await deps.yieldLoop();
         const wallMs = nsToMs(clock.now() - startedNs);
         const tripped = overLimits(limits, sample, wallMs);
         if (tripped) {
