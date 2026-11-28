@@ -151,7 +151,8 @@ async function stallAfterEpoch10(h, resume = "check") {
   await RESUME[resume]();
   const blockStartNs = process.hrtime.bigint();
   // Replay preconditions: the stall must cover the tick due at L+1000 ms.
-  assert(blockStartNs >= L + BigInt(READY_PHASE_MS) * MS);
+  // setTimeout runs on the loop's whole-ms clock and can return under 1 ms early.
+  assert(blockStartNs >= L + BigInt(READY_PHASE_MS - 5) * MS);
   assert(blockStartNs < L + 1000n * MS, "the stall must start before the next tick is due");
   blockSync(SYNC_BLOCK_MS);
   const blockEndNs = process.hrtime.bigint();
