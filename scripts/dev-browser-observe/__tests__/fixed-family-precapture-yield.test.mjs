@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs";
 import { test } from "vitest";
 import {
   blankBrowserAudit,
@@ -20,6 +21,10 @@ const SYNC_BLOCK_MS = 3380;
 // Nine 1000 ms cadence periods to epoch 10, plus 3.85 s of replay and the join:
 // about 13.1 s of wall time. 30 s guards a stuck run; it is not an assertion.
 const REPLAY_TIMEOUT_MS = 30_000;
+// Upper bound on the synchronous harness code between the end of the block and
+// the capture stamp. Windows are relative to measured stamps, so only this
+// on-CPU stretch, not timer lateness, enters an assertion.
+const SYNC_TAIL_NS = 100n * MS;
 
 const identity = (pid, ppid, pgid) => ({
   pid,
@@ -37,6 +42,10 @@ const root = identity(3, 2, 3),
 const blockSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const immediate = () => new Promise((resolve) => setImmediate(resolve));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// An fs callback runs in the poll phase, where one setImmediate would run in the
+// same iteration's check phase before any timer.
+const pollPhase = () => new Promise((resolve) => readFile(import.meta.filename, () => resolve()));
+const RESUME = { check: immediate, poll: pollPhase };
 
 function realHarness() {
   const settled = [];
@@ -127,8 +136,8 @@ function familyOptions(h, rows) {
   return { input, options };
 }
 
-// Returns the epoch-10 start L and the monotonic end of the synchronous block.
-async function stallAfterEpoch10(h) {
+// Returns the epoch-10 start L and the measured bounds of the synchronous block.
+async function stallAfterEpoch10(h, resume = "check") {
   while (h.settled.length < 10) await sleep(50);
   await h.settled[9];
   await immediate();
@@ -138,12 +147,16 @@ async function stallAfterEpoch10(h) {
   const toReady = Number(L + BigInt(READY_PHASE_MS) * MS - process.hrtime.bigint()) / 1e6;
   assert(toReady > 0, "epoch 10 was accepted after the browser-ready phase");
   await sleep(Math.ceil(toReady));
-  // executeLocked resumes the post-launch chain from the check phase.
-  await immediate();
+  // Recorded slot 02: executeLocked resumed the chain from the check phase.
+  await RESUME[resume]();
   const blockStartNs = process.hrtime.bigint();
+  // Replay preconditions: the stall must cover the tick due at L+1000 ms.
+  assert(blockStartNs >= L + BigInt(READY_PHASE_MS) * MS);
   assert(blockStartNs < L + 1000n * MS, "the stall must start before the next tick is due");
   blockSync(SYNC_BLOCK_MS);
-  return { L, blockStartNs, blockEndNs: process.hrtime.bigint() };
+  const blockEndNs = process.hrtime.bigint();
+  assert(blockEndNs - blockStartNs >= BigInt(SYNC_BLOCK_MS) * MS);
+  return { L, blockStartNs, blockEndNs };
 }
 
 async function outcomeOf(promise) {
@@ -180,11 +193,13 @@ test(
       // The entry check (fixed-family-admission.mjs `begin < boundNs`) fired: the
       // wait never began, so no helper observation was stamped.
       assert.equal(deferral.helperObservedNs, undefined);
-      assert(BigInt(deferral.waitStartedNs) >= blockEndNs);
-      const overBound = BigInt(deferral.waitStartedNs) - BigInt(deferral.waitBoundNs);
-      assert(overBound >= 2090n * MS && overBound < 2400n * MS, String(overBound));
-      const remaining = BigInt(deferral.remainingCadenceNs);
-      assert(remaining <= -2840n * MS && remaining > -3150n * MS, String(remaining));
+      // The block alone carried the decision past the wait bound.
+      assert(blockEndNs > BigInt(deferral.waitBoundNs));
+      const captured = BigInt(deferral.firstCapture.capturedNs);
+      const waitStarted = BigInt(deferral.waitStartedNs);
+      assert(blockEndNs <= captured && captured <= waitStarted);
+      assert(waitStarted - blockEndNs < SYNC_TAIL_NS, String(waitStarted - blockEndNs));
+      assert.equal(BigInt(deferral.remainingCadenceNs), L + 1000n * MS - captured);
       assert(!input.deps.recorder.records.some((r) => r.type === "scenario-start"));
       assert.deepEqual(h.failures, []);
     } finally {
@@ -194,12 +209,12 @@ test(
   REPLAY_TIMEOUT_MS,
 );
 
-test(
-  "the pre-capture yield joins the overdue original dispatch and records its lateness",
-  async () => {
+test.each(["check", "poll"])(
+  "the pre-capture yield joins the overdue original dispatch after a %s-phase resume",
+  async (resume) => {
     const h = realHarness();
     try {
-      const { L, blockEndNs } = await stallAfterEpoch10(h);
+      const { L, blockEndNs } = await stallAfterEpoch10(h, resume);
       const rows = [];
       const { input, options } = familyOptions(h, rows);
       assert.equal(h.dispatches, 10);
@@ -219,6 +234,7 @@ test(
       assert.equal(setup.priorCustody.sample.cadenceDeadlineNs, String(L + 1000n * MS));
       const { startNs, endNs } = setup.preCaptureYield;
       assert(BigInt(startNs) >= blockEndNs && BigInt(endNs) >= BigInt(startNs));
+      assert(BigInt(endNs) - blockEndNs < SYNC_TAIL_NS, String(BigInt(endNs) - blockEndNs));
       assert(BigInt(setup.cycle.startedNs) >= BigInt(startNs));
       assert(BigInt(setup.cycle.startedNs) <= BigInt(endNs));
       assert(BigInt(endNs) <= BigInt(setup.capturedNs));
@@ -227,7 +243,9 @@ test(
         lateness,
         BigInt(setup.cycle.startedNs) - BigInt(setup.priorCustody.sample.cadenceDeadlineNs),
       );
-      assert(lateness >= 2840n * MS && lateness < 3150n * MS, String(lateness));
+      // The tick fired inside the yield, so its lateness is the block's overrun
+      // of the cadence deadline plus at most the synchronous tail.
+      assert(lateness >= blockEndNs - (L + 1000n * MS), String(lateness));
       assert(BigInt(decisionNs) < BigInt(setup.cycle.startedNs) + 1000n * MS);
       assert.equal(h.dispatches, 11, "the harness dispatched no sample of its own");
       assert.deepEqual(h.failures, []);
