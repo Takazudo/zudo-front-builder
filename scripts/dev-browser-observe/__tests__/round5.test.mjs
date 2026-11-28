@@ -1,4 +1,4 @@
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { createWriteStream, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,9 +33,12 @@ describe("#1 server.log never crashes on late child output", () => {
   });
 
   it("records stream errors instead of throwing", async () => {
-    const log = new ServerLog(createWriteStream(join(tmp(), "missing-dir", "server.log")));
+    const stream = createWriteStream(join(tmp(), "missing-dir", "server.log"));
+    const log = new ServerLog(stream);
+    // ServerLog registered its listener first, so it has run when this one resolves.
+    const failed = once(stream, "error");
     log.write("x\n");
-    await new Promise((r) => setTimeout(r, 50));
+    await failed;
     expect(log.errors[0]).toMatch(/ENOENT/);
   });
 

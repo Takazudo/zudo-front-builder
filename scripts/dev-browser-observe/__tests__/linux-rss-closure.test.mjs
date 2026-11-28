@@ -7,7 +7,7 @@ import * as sampler from "../lib/linux-rss-sample.mjs";
 import { startFixedRssSafety } from "../lib/fixed-rss-safety.mjs";
 
 afterEach(() => vi.restoreAllMocks());
-function fixture(writeError = false, extra = null) {
+function fixture(writeError = false, extra = null, options = {}) {
   let ns = 0n;
   vi.spyOn(process.hrtime, "bigint").mockImplementation(() => ns);
   const tasks = [];
@@ -57,7 +57,7 @@ function fixture(writeError = false, extra = null) {
         }
       : {};
   const result = sampler
-    .sampleRendererMemory(server, "/unused", { ...custodyOptions, launch: () => child })
+    .sampleRendererMemory(server, "/unused", { ...custodyOptions, ...options, launch: () => child })
     .catch((e) => e);
   return {
     result,
@@ -92,6 +92,27 @@ test("an early reserve timer leaves the final nanosecond for complete closure", 
   assert.equal(d.helper.closed, true);
   assert.equal(d.helper.pipesClosed, true);
   assert.equal(d.timing.parent.resultNs, "949999999");
+});
+test("the spawned helper is reported once, before it answers, with its spawn and deadline stamps", async () => {
+  // Source-timing safety keeps this report to name an unresolved helper (#4886).
+  const spawned = [];
+  const x = fixture(false, null, { onHelperSpawn: (h) => spawned.push(h) });
+  assert.equal(spawned.length, 1);
+  x.at(750000000);
+  x.timer();
+  x.at(949999998);
+  x.timer();
+  x.at(949999999);
+  x.events();
+  const { details: d } = await x.result;
+  assert.deepEqual(spawned, [
+    {
+      pid: 901,
+      spawnHrtimeNs: d.helper.spawnHrtimeNs,
+      entryNs: d.timing.parent.entryNs,
+      deadlineNs: d.timing.parent.deadlineNs,
+    },
+  ]);
 });
 test.each([949999999, 950000000, 950000001])(
   "closure decision at %s compares actual callbacks with the reserve",

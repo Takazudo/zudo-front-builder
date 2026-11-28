@@ -217,6 +217,13 @@ test.each([
           });
         },
       });
+      // The source-timing stage budget bounds every notification wait (#4886).
+      const waitTimeouts = [];
+      const waitNotify = page.waitNotify;
+      page.waitNotify = (token, timeoutMs, onLate) => {
+        waitTimeouts.push(timeoutMs);
+        return waitNotify(token, timeoutMs, onLate);
+      };
       page.arm = async () => {
         if (mode === "prewrite-pending") await secondStarted.promise;
         return { armed: true, docUUID: "home", actual: "original body" };
@@ -257,8 +264,20 @@ test.each([
               }
               return createHash("sha256").update("controlled nonexecutable").digest("hex");
             },
-            launchOwnedBrowser: async (_, { signal }) => {
+            launchOwnedBrowser: async (_, { signal, launchTimeoutMs }) => {
               browserStarts++;
+              if (mode === "complete") {
+                // Browser startup gets the remaining work budget, not a fixed 30 s (#4886).
+                assert.equal(typeof launchTimeoutMs, "function");
+                const nearDeadline = vi
+                  .spyOn(util, "hrtimeNs")
+                  .mockReturnValue(BigInt(now + 7140000 - 23) * 1000000n);
+                try {
+                  assert.equal(launchTimeoutMs(), 23, "browser launch allowance near the deadline");
+                } finally {
+                  nearDeadline.mockRestore();
+                }
+              }
               if (pendingCase)
                 signal.addEventListener(
                   "abort",
@@ -449,6 +468,10 @@ test.each([
           );
           assert.equal(observe().sessions[0].timingExcluded, true);
           assert.equal(summary.accounting.success, 12);
+          // attemptMs is 60000; the stage budget subtracts every started millisecond since the
+          // attempt began, so each wait is strictly shorter than the bare attempt timeout.
+          assert.equal(waitTimeouts.length, 12);
+          for (const ms of waitTimeouts) assert(ms > 0 && ms < 60000, String(ms));
           assert.equal(fs.writes.length, 12);
           // Every gated decision goes through the shared settle-then-decide helper.
           const decisions = rows.filter((r) => r.type === "source-timing-decision");

@@ -13,8 +13,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { basename, join } from "node:path";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { aggregate } from "../lib/aggregate.mjs";
 import {
   appTreeHash,
@@ -45,7 +45,7 @@ import { currentPins } from "../lib/identity.mjs";
 import { OBSERVER_PATH } from "../lib/browser.mjs";
 import { profileSchemaFor, semanticErrors, loadProfile } from "../lib/profile.mjs";
 import { stopOwned, snapshotOwnedWithArgs } from "../lib/process-owner.mjs";
-import { execute } from "./isolated-session.mjs";
+import { execute as isolatedExecute } from "./isolated-session.mjs";
 import { EXIT } from "../lib/run.mjs";
 import { validateAs } from "../lib/schema.mjs";
 import { loadSeriesPlan } from "../lib/series.mjs";
@@ -55,6 +55,32 @@ import { SPEC, makeFakeSource, makeTinyHarness } from "./fieldnotes-fake.mjs";
 import { fakePage } from "./fakes.mjs";
 
 const FIXTURE = join(HARNESS_DIR, "fixtures", "field-notes");
+
+// These sessions exercise fixed-distribution behaviour, not the batch lock, so they hold an
+// in-process lock instead of the real perl helper and its wall-clock acquire/release deadlines
+// (#4883). lock-helper-lifecycle.test.mjs owns the real helper's timing contract.
+const locks = [];
+function inProcessLock(path) {
+  const lock = { path, released: false };
+  locks.push(lock);
+  return {
+    path,
+    helperPid: null,
+    release: async () => {
+      lock.released = true;
+      return { code: 0, signal: null };
+    },
+  };
+}
+async function execute(options) {
+  const before = locks.length;
+  const code = await isolatedExecute({
+    ...options,
+    hooks: { acquireLock: async (path) => inProcessLock(path), ...options.hooks },
+  });
+  for (const lock of locks.slice(before)) expect(lock.released).toBe(true);
+  return code;
+}
 const example = (n) => JSON.parse(readFileSync(join(HARNESS_DIR, "profiles", n), "utf8"));
 const tmps = [];
 const tmp = () => {
@@ -878,7 +904,9 @@ describe("launch commands and readiness from real archive output", () => {
     const fakeSpawn =
       (lines) =>
       (cmd, args, { onStdout }) => {
-        setTimeout(() => onStdout(Buffer.from(`${lines.join("\n")}\n`)), 1);
+        // A microtask runs after startDevServer arms its ready timer and before any timer can
+        // fire, so the 2000 ms readiness deadline never races the fake output (#4883).
+        queueMicrotask(() => onStdout(Buffer.from(`${lines.join("\n")}\n`)));
         return {
           native: { pid: 1, pgid: 1 },
           exit: null,
@@ -1731,4 +1759,112 @@ describe("review fixes (fixed distributions)", () => {
       }).join("\n"),
     ).toMatch(/productSha: expected null/);
   });
+});
+
+describe("fixed Astro admission budgets and environment (#4886)", () => {
+  // A valid linux-fixed-astro-title.v1 profile over the shared fake Astro install.
+  function astroTitleProfile(label) {
+    const { s, installs } = shared();
+    const { path, profile } = fixedProfile(
+      s,
+      "astro",
+      installs.astro.out,
+      {},
+      `astro-title-${label}.json`,
+    );
+    delete profile.calibration;
+    Object.assign(profile, {
+      scenarios: [
+        {
+          id: "fn-title-detail",
+          set: "workload",
+          warmOrder: "none",
+          ops: [
+            {
+              id: "title-05-detail",
+              op: "edit-title",
+              article: "article-00005",
+              writeMethod: "in-place",
+              expect: "classify",
+            },
+          ],
+        },
+      ],
+      fixedRssSafety: "linux-fixed-astro-title.v1",
+      fixedPeerBrowser: {
+        executablePath: "/browser",
+        executableSha256: "1".repeat(64),
+        defaultExecutableSha256: "2".repeat(64),
+      },
+    });
+    profile.server.readyTimeoutMs = 300000;
+    profile.limits.wallCeilingMs = 7200000;
+    Object.assign(profile.timeouts, { attemptMs: 60000, supplementalMs: 60000, restoreMs: 120000 });
+    // Its own directory: a session that stops at launch leaves its admission record behind.
+    const own = tmp();
+    profile.outDir = join(own, "out");
+    const ownPath = join(own, basename(path));
+    writeFileSync(ownPath, JSON.stringify(profile));
+    rmSync(path);
+    return { outDir: profile.outDir, path: ownPath };
+  }
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  // Stop at the dev-server launch: everything after it is covered by the fixed-Astro cell tests.
+  async function launchAstro(label, { workBudgetMs = 120000, env = {} } = {}) {
+    const { outDir, path } = astroTitleProfile(label);
+    // The test runner's own NODE_OPTIONS would otherwise refuse every fixed-Astro launch.
+    for (const name of ["NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH"])
+      vi.stubEnv(name, undefined);
+    for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
+    const started = Number(process.hrtime.bigint() / 1_000_000n);
+    const launches = [];
+    const code = await execute({
+      profilePath: path,
+      label,
+      command: "run",
+      supervisorId: "fixture",
+      supervisorStartedMs: started,
+      workDeadline: started + workBudgetMs,
+      supervisorDeadlineMs: started + workBudgetMs + 60000,
+      stderr: () => {},
+      hooks: {
+        freePort: async () => 4559,
+        startDevServer: (opts) => {
+          launches.push(opts);
+          throw new Error("launch captured");
+        },
+        stopOwned: async () => ({ absent: true, remaining: [] }),
+      },
+    });
+    const dir = join(outDir, label);
+    const records = readFileSync(join(dir, "records.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    return { code, launches, records };
+  }
+
+  it.runIf(process.platform === "linux")(
+    "readiness gets the remaining work budget, not the profile's full readyTimeoutMs",
+    async () => {
+      const r = await launchAstro("ASTRO-READY", { workBudgetMs: 120000 });
+      expect(r.launches).toHaveLength(1);
+      // The profile allows 300000 ms; only 120000 ms of work budget remain.
+      expect(r.launches[0].readyTimeoutMs).toBeGreaterThan(0);
+      expect(r.launches[0].readyTimeoutMs).toBeLessThanOrEqual(120000);
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "NODE_OPTIONS in the controller environment refuses the launch",
+    async () => {
+      const r = await launchAstro("ASTRO-ENV", { env: { NODE_OPTIONS: "--no-warnings" } });
+      expect(r.launches).toEqual([]);
+      expect(r.records.find((x) => x.type === "controller-error")?.error).toContain(
+        "fixed Astro launch environment contains NODE_OPTIONS",
+      );
+    },
+  );
 });

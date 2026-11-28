@@ -55,7 +55,7 @@ import {
 import { runBatch } from "../lib/state-machine.mjs";
 import { summarize } from "../lib/stats.mjs";
 import { HARNESS_DIR, readJson, readJsonl, sha256File } from "../lib/util.mjs";
-import { deps, fakeClock, fakePage, fakeRecorder } from "./fakes.mjs";
+import { deps, fakeClock, fakePage, fakeRecorder, halfSpeedMonotonicClock } from "./fakes.mjs";
 import { makeFakeArchive, makeFakeSource, makeTinyHarness } from "./fieldnotes-fake.mjs";
 
 const FIXTURE = join(HARNESS_DIR, "fixtures", "field-notes");
@@ -887,6 +887,25 @@ describe("resource study", () => {
       unavailable: { rss: 0, threads: 0, sampleErrors: 0 },
     });
     expect(sum.labels.inference).toMatch(/no leak/);
+  });
+
+  it("the default idle holds its planned duration on the monotonic clock (#4886)", async () => {
+    const rec = fakeRecorder();
+    const rs = createResourceStudy({
+      study: { ...study, finalIdleMs: 20 },
+      clock: { now: () => process.hrtime.bigint() },
+      append: (r) => rec.append(r),
+      sampleNow: async () => ({ summedRssKiB: 1, processes: [] }),
+    });
+    const clock = halfSpeedMonotonicClock();
+    try {
+      await rs.finalIdle({ stopped: false, stopReason: null });
+    } finally {
+      clock.mockRestore();
+    }
+    const end = rec.records.find((r) => r.type === "idle" && r.step === "end");
+    expect(end).toMatchObject({ phase: "final", plannedMs: 20 });
+    expect(end.actualMs).toBeGreaterThanOrEqual(20);
   });
 
   it("a stopped batch skips the final idle and records why", async () => {

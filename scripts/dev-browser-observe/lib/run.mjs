@@ -315,7 +315,7 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
   }
   let lock;
   try {
-    lock = await acquireLock(resolved.lockPath, { signal: loaded.signal });
+    lock = await (hooks.acquireLock ?? acquireLock)(resolved.lockPath, { signal: loaded.signal });
   } catch (error) {
     const record = {
       type: "lock-acquisition-failure",
