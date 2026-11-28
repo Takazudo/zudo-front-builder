@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { classifyNegativeState } from "../lib/special-modes.mjs";
 import { batchExitOk, runBatch } from "../lib/state-machine.mjs";
-import { deps, fakeFs, fakePage } from "./fakes.mjs";
+import { deps, fakeFs, fakePage, halfSpeedMonotonicClock } from "./fakes.mjs";
 
 const quiet = { settled: true, reason: "no-frame-for-quietMs" };
 
@@ -222,6 +222,36 @@ describe("hidden-edit mode", () => {
     expect(rec.prefetchRequests.map((r) => r.url)).toEqual(["http://h/articles/x/"]);
     expect(rec.latencyMs).toBeUndefined();
     expect(accounting.success).toBe(1);
+  });
+
+  it("holds the observe and access-delay windows on the monotonic clock (#4886)", async () => {
+    const MS = 1_000_000n;
+    const at = { write: null, since: [] };
+    const page = modePage();
+    const since = page.since;
+    page.since = (...args) => {
+      at.since.push(process.hrtime.bigint());
+      return since(...args);
+    };
+    const fs = modeFs({ ...hiddenAttempt, observeMs: 20, accessDelayMs: 20 });
+    const performWrite = fs.performWrite;
+    fs.performWrite = (...args) => {
+      const t0 = performWrite(...args);
+      at.write = process.hrtime.bigint();
+      return t0;
+    };
+    const clock = halfSpeedMonotonicClock();
+    try {
+      await runBatch({
+        scenarios: [{ id: "h", ops: [{ id: "h1", op: "hidden-edit", article: "x" }] }],
+        deps: deps({ page, fs }),
+      });
+    } finally {
+      clock.mockRestore();
+    }
+    expect(at.since.length).toBeGreaterThanOrEqual(2);
+    expect(at.since[0] - at.write).toBeGreaterThanOrEqual(20n * MS);
+    expect(at.since[1] - at.since[0]).toBeGreaterThanOrEqual(20n * MS);
   });
 
   it("a stale body after navigation under expect classify stops with stoppedByClassifyTimeout", async () => {

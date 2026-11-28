@@ -1,3 +1,19 @@
+import { vi } from "vitest";
+
+/**
+ * Run the process monotonic clock at half speed until the returned spy is restored. A declared
+ * minimum wait held on that clock (waitAtLeast) lasts twice the real interval; a bare real timer
+ * returns when only half of it has passed on this clock, so a test can tell the two apart
+ * without a load-sensitive upper bound (#4886).
+ */
+export function halfSpeedMonotonicClock() {
+  const real = process.hrtime.bigint;
+  const base = real.call(process.hrtime);
+  return vi
+    .spyOn(process.hrtime, "bigint")
+    .mockImplementation(() => base + (real.call(process.hrtime) - base) / 2n);
+}
+
 export function fakeRecorder() {
   const records = [];
   return {
