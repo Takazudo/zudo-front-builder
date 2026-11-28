@@ -1,6 +1,6 @@
 {
   "schemaVersion": 3,
-  "checkedAt": "2026-11-23T09:48:00.642Z",
+  "checkedAt": "2026-11-28T19:45:27.964Z",
   "comment": "Anti-gaming rule: refresh this baseline only as part of a recorded triage; never bump it merely to turn the lane green.",
   "candidates": {
     "serde_yaml_ng": {
@@ -20,7 +20,7 @@
       "releases": [],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-11-23T09:48:00.642Z"
+      "checkedAt": "2026-11-28T19:45:27.964Z"
     },
     "serde_yml": {
       "crate": "serde_yml",
@@ -64,7 +64,7 @@
       "releases": ["0.0.8", "v0.0.10", "v0.0.11", "v0.0.12", "v0.0.13", "v0.0.9"],
       "pendingReleasePr": null,
       "archived": true,
-      "checkedAt": "2026-11-23T09:48:00.642Z"
+      "checkedAt": "2026-11-28T19:45:27.964Z"
     },
     "saphyr": {
       "crate": "saphyr",
@@ -93,10 +93,12 @@
         "0.3.2",
         "0.3.3",
         "0.3.4",
-        "0.4.0"
+        "0.4.0",
+        "0.4.1"
       ],
       "yanked": [],
       "versionUpdatedAt": {
+        "0.4.1": "2026-11-25T05:31:03.625618Z",
         "0.4.0": "2026-11-21T08:12:57.826803Z",
         "0.3.4": "2026-11-11T21:50:08.980422Z",
         "0.3.3": "2026-10-27T10:48:49.498196Z",
@@ -127,7 +129,7 @@
         "custom-tags": "fbe258358508cde9e12c5e3cb1342443c9f1031e",
         "ethiraric/serde_attempt": "3efbe30fe149486b23471fb46d0423ebe11e5e0a",
         "master_before_monorepo": "e6c2c99b5111c3337ff4d6206fb45b8a374721cf",
-        "master": "51baa4e7cf5d54ffe7e477c54e02d248e3439040",
+        "master": "7867251b2f34cfa0904d217fffb53a1cd0ed07b2",
         "serde": "368b865f2e583ab93fe5c2f7615696cfe850f7b0",
         "v0.1.x": "478b9f76addf0687478113e0dd3a1dba86e4d274"
       },
@@ -155,12 +157,13 @@
         "v0.3.2",
         "v0.3.3",
         "v0.3.4",
-        "v0.4.0"
+        "v0.4.0",
+        "v0.4.1"
       ],
       "releases": ["v0.0.4", "v0.0.5", "v0.0.6"],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-11-23T09:48:00.642Z"
+      "checkedAt": "2026-11-28T19:45:27.964Z"
     },
     "serde_norway": {
       "crate": "serde_norway",
@@ -288,7 +291,7 @@
       ],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-11-23T09:48:00.642Z"
+      "checkedAt": "2026-11-28T19:45:27.964Z"
     },
     "noyalib": {
       "crate": "noyalib",
@@ -352,11 +355,13 @@
         "0.0.60",
         "0.0.62",
         "0.0.63",
+        "0.0.64",
         "0.0.7",
         "0.0.8"
       ],
       "yanked": [],
       "versionUpdatedAt": {
+        "0.0.64": "2026-11-23T20:38:13.279147Z",
         "0.0.63": "2026-11-19T23:26:39.158244Z",
         "0.0.62": "2026-11-17T07:56:43.863330Z",
         "0.0.60": "2026-11-10T09:24:35.861993Z",
@@ -419,9 +424,11 @@
         "0.0.1": "2026-05-10T14:27:46.822254Z"
       },
       "branches": {
-        "dependabot/cargo/jsonschema-0.61.2": "73dafd44353a7e5f341249cfe9b246e1093d445b",
         "dependabot/github_actions/rust-toolchain-f7739596b5": "8eda040651a3a6150f52cde557479e63936ad27e",
-        "main": "5209a6522a27bee03eaf93554890dcff6ece2059"
+        "main": "f777861836f8a9939ea814fa8e93cd9030a716a0",
+        "scratch/yaml-path-perf": "26b33cd5d1a18f080266cbbe4f164f985732b21c",
+        "scratch/yaml-path-perf-2": "20a24325c7e79c0e36c04c59259f290779f94507",
+        "scratch/yaml-path-perf-3": "c9afed0dbb9a31c25c84419ed9952b5c601bc052"
       },
       "tags": [
         "v0.0.1",
@@ -482,6 +489,7 @@
         "v0.0.60",
         "v0.0.62",
         "v0.0.63",
+        "v0.0.64",
         "v0.0.7",
         "v0.0.8"
       ],
@@ -544,12 +552,13 @@
         "v0.0.60",
         "v0.0.62",
         "v0.0.63",
+        "v0.0.64",
         "v0.0.7",
         "v0.0.8"
       ],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-11-23T09:48:00.642Z"
+      "checkedAt": "2026-11-28T19:45:27.964Z"
     },
     "noyalib-serde-yaml": {
       "crate": "noyalib-serde-yaml",
@@ -588,10 +597,12 @@
         "0.0.59",
         "0.0.60",
         "0.0.62",
-        "0.0.63"
+        "0.0.63",
+        "0.0.64"
       ],
       "yanked": [],
       "versionUpdatedAt": {
+        "0.0.64": "2026-11-24T10:20:02.062183Z",
         "0.0.63": "2026-11-20T19:22:29.414852Z",
         "0.0.62": "2026-11-17T17:37:55.817426Z",
         "0.0.60": "2026-11-10T09:43:02.503155Z",
@@ -628,9 +639,9 @@
         "0.0.29": "2026-09-01T23:06:37.477636Z"
       },
       "branches": {
-        "dependabot/github_actions/github-actions-f7739596b5": "eed0e713b135c48e0b992671699f3e7e94691e44",
         "feat/v0.0.63": "0a5087cb2b29de9ee67a7bf5e9f334b698b2832c",
-        "main": "9f1f73d69f8f85ca1d176e8424bc4d324fb1c697"
+        "feat/v0.0.64": "91feda1f7c8ed51683f7ee7109e9a37080d6dbd4",
+        "main": "d67c032fac0d72dd67b463058fe76ba3d8c2b7b8"
       },
       "tags": [
         "v0.0.29",
@@ -666,7 +677,8 @@
         "v0.0.59",
         "v0.0.60",
         "v0.0.62",
-        "v0.0.63"
+        "v0.0.63",
+        "v0.0.64"
       ],
       "releases": [
         "v0.0.29",
@@ -702,11 +714,12 @@
         "v0.0.59",
         "v0.0.60",
         "v0.0.62",
-        "v0.0.63"
+        "v0.0.63",
+        "v0.0.64"
       ],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-11-23T09:48:00.642Z"
+      "checkedAt": "2026-11-28T19:45:27.964Z"
     },
     "serde-saphyr": {
       "crate": "serde-saphyr",
@@ -813,6 +826,7 @@
         "dependabot/cargo/smallvec-1.16.5": "1e05350d1f2e66d1f8a02190db4f8965a884683a",
         "docs/local-tags-as-maps": "1ef92d698198dc96f9c377121a9c41dc6be66597",
         "fix/approximate-f64-integer-inference-tests": "6d9066bc7f75343f43c08309c483b6ecbd76d5e7",
+        "fix/interpolated-null-documents": "cebeffbe2f3341eb5d0759f56fcab4cbde469362",
         "fix/key-fingerprint-preservation-278": "bfd3107f10284199be61a3163003349733ce4d81",
         "fix/local-tag-enum-precedence-231": "64c3da05863c52a820560b9919e1007109dd2fde",
         "fix/newtype-depth-ci": "e9aece444c8f69078954fc69aeb0ddcf1b01392e",
@@ -824,7 +838,7 @@
         "fix/267-null-as-string": "96b7b9dee3c216c1e31eb206ef04edd5d5f3347f",
         "fix/278-strict-numeric-underscores": "385261e8eca1cfb5208eb2b1f037e2076be3f347",
         "fix-miri-exact-float-expectations": "7c20227956b8f36cd6a82eaf46ed79dcf0bf35b3",
-        "master": "a5340cc6a8033a8107b153c5eb5ab3171cad48a3",
+        "master": "16ddae562af535ab069ad4571e1615f2a11f52c7",
         "reject-tagged-struct-fields": "7fa74dbe1f709a15a50b5eb690c1543c12ad27b7",
         "test/one-of-empty-coverage": "2cd368377183a2b5b85378261970334039e65157"
       },
@@ -914,7 +928,7 @@
       ],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-11-23T09:48:00.642Z"
+      "checkedAt": "2026-11-28T19:45:27.964Z"
     }
   }
 }

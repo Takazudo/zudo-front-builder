@@ -535,9 +535,10 @@ declaration is removable even if its package remains in `Cargo.lock`.
   `render-only` ceiling to 1,125,000 B. See the "`noyalib 0.0.58` adoption"
   section below.
   **Next trigger:** the next published lockstep pair, a yank of either
-  adopted version, or a new advisory against 0.0.58. Later pairs 0.0.60
-  0.0.62 and 0.0.63 were evaluated and kept at 0.0.58 (see their KEEP
-  sections below); the watcher baseline refresh for #4758 is still pending.
+  adopted version, or a new advisory against 0.0.58. Later pairs 0.0.60,
+  0.0.62, 0.0.63 and 0.0.64 were evaluated and kept at 0.0.58 (see their
+  KEEP sections below), and the watcher baseline was refreshed after each
+  recorded triage.
 
   Earlier rounds decided the other way, and that history stands. The released
   candidates evaluated in #2787 and #2788 each diverged from the committed
@@ -3080,6 +3081,42 @@ These are local, not GitHub-runner, bytes; the deltas match the 0.0.62 CI pair a
 **Refresh.** A `--snapshot` taken at `2026-11-23T09:48:00.642Z` with the pointer already reset was written to a new temporary file, records all seven candidates and passes `validateCandidateRecord` for each. It replaced `scripts/yaml-candidate-baseline.json` (formatter normalization only; content identical). The post-refresh live run at `2026-11-23T09:48:14.705Z` exited 0, `no-drift`, `errors: []`, with every candidate `no-drift`.
 
 **Unchanged.** Production stays on `noyalib` / `noyalib-serde-yaml` `=0.0.58`; `Cargo.toml`, `Cargo.lock`, the harness label and corpus, `shipped-sizes.json`, severity rules and candidate coverage are unchanged. #4758 closes only on a genuine `main` watch with rc=0 after this merges. **Next trigger:** a newer published pair such as 0.0.64, a yank of either 0.0.58 crate, a new release PR, or a new advisory against 0.0.58.
+
+##### `noyalib 0.0.64` / `noyalib-serde-yaml 0.0.64` released differential evaluation (#4823) — KEEP
+
+**Verdict: KEEP — retain production noyalib / noyalib-serde-yaml =0.0.58; evaluated 0.0.64 is not adopted.** Triggered by the YAML candidate watch alert [#4823](https://github.com/Takazudo/zudo-front-builder/issues/4823) (scheduled run [45762024829](https://github.com/Takazudo/zudo-front-builder/actions/runs/45762024829), `CANDIDATE_DRIFT`, `errors: []`). Decided by the #4899 program manager under the owner's delegation of ordinary dependency-adoption decisions. The probe was commit `02e4f64` on PR [#4904](https://github.com/Takazudo/zudo-front-builder/pull/4904), changing only the `Cargo.toml` pin and the two pair records in `Cargo.lock` (no incidental edge changes); it was reverted in the same PR and never reached `main`.
+
+**Inputs.** `noyalib 0.0.64` (published 2026-11-23T20:38:13Z, checksum `c3cf2ffa70c599216d9382e0d5c6be46e487ca311ad32d330b7e331246eea0ae`) and `noyalib-serde-yaml 0.0.64` (2026-11-24T10:20:02Z, `f70a9efd5af821a1d100225ca9b3418f2c72cb0c0ee933f67f3ef51d8e66b118`, pinning core `=0.0.64` with `std` and `compat-serde-yaml`, no default features); both non-yanked, MIT OR Apache-2.0, MSRV 1.89.0, and the newest versions of both crates on crates.io at 2026-11-28. The downloaded `.crate` files hash to those checksums. The RustSec database (commit `3eebb903`, 2026-11-28) still lists only RUSTSEC-2026-0333 against noyalib (patched `>= 0.0.53`) and nothing against `noyalib-serde-yaml`.
+
+**Upstream changes 0.0.63 → 0.0.64.** Two source changes in the core: a word-at-a-time printable-ASCII screen in front of the plain/block scalar printable checks (`src/parser/scanner/ascii.rs`, used by `check_unquoted_printable`), which upstream describes as cutting the x86_64 parse cost 0.0.62 added, and a doc-test `cfg` fix. The manifest adds an optional `url >= 2.5.9` floor enabled only by the `validator` feature (RUSTSEC-2026-0592); zfb does not enable `validator`, and the workspace lock already resolves `url 2.5.9`. The alias only moves its core pin. Cumulatively against production, the 0.0.59–0.0.63 notes recorded in the KEEPs above still apply.
+
+**Behavior (Cloud container, Linux x86_64, rustc 1.97.0, first runs, `cargo test -p zfb-content --tests` at the probe).** Differential harness 4/4 with the 18 baseline observations unchanged, resource budgets 5/5, error messages 2/2, `zfb-content` 1,135/1,135. All seven `wasm-md` legs (`cargo check`, clippy, isolated-graph assertion, build, npm tests, export/resource and packed assertions) passed on GitHub runners at the probe.
+
+**Size (GitHub runner, health.yml `wasm-md (default, default)`, rustc 1.100.1 on both sides).** Candidate is probe run job [141095844469](https://github.com/Takazudo/zudo-front-builder/actions/runs/46182757350/job/141095844469); control is `main` `1b5586f` push run [46084544871](https://github.com/Takazudo/zudo-front-builder/actions/runs/46084544871) job 140790979170.
+
+| Artifact | finalWasm Δ | gzip9 Δ | Candidate gzip9 |
+| --- | ---: | ---: | ---: |
+| default | +16,319 | +7,681 | 1,544,116 |
+| highlight-only | +603 | +335 | 822,715 |
+| render-only | +17,264 | +5,462 | 1,121,246 |
+| parse-only | +16,517 | +6,004 | 306,939 |
+| packed tarball | +22,433 | n/a | n/a |
+
+`render-only` stays 3,754 B under its 1,125,000 B ceiling and the tarball (3,886,607 B) 13,393 B under its 3,900,000 B ceiling. Sizes are informational since #4729.
+
+**Probe-only CI consequences.** `Check workspace wind preview assets` and health's `generate-wind-reference` test failed with `Wind source differs from reviewed support pin`, so adoption would also need the `REVIEWED_WIND_SOURCE_DIGEST` refresh 0.0.63 recorded. `Windows lib tests` failed in `zfb-build` `plugin_watch_dirs::tests::directory_moved_away_and_back_learns_children_added_meanwhile`, a filesystem-identity test with no YAML involvement; it was handed to the program manager and is not attributed to this pair.
+
+**Decision.** All behavior contracts pass, but 0.0.64 brings zfb no correctness, security or maintenance benefit: its only runtime change is a parse-speed fast path relative to 0.0.62–0.0.63, which production 0.0.58 never had, and its advisory floor is in a feature zfb does not enable. The measured cost is the same as the rejected 0.0.62 and 0.0.63 cost (about 16–17 KB raw and 5.5–7.7 KB gzip on three artifacts, plus the Wind digest refresh). This pair was evaluated on its own merits; the earlier KEEPs are precedent, not an automatic rejection.
+
+**Downstream contract.** `Cargo.toml`, `Cargo.lock`, the harness label and corpus, `shipped-sizes.json`, the detector and its severity rules are unchanged on `main`.
+
+##### YAML candidate watch baseline refresh after the 0.0.64 KEEP (#4823)
+
+**Observation.** Cloud sessions still cannot read the upstream repositories through api.github.com (401 with the session token), so the authenticated detector ran on the owner's Mac **wrath-of-god** in a throwaway detached worktree of `main` `1b5586f` (evidence posted on [PR 4904](https://github.com/Takazudo/zudo-front-builder/pull/4904#issuecomment-7244788380)). The live run at `2026-11-28T19:45:23.113Z` against the 2026-11-23 baseline was complete (`errors: []`) and exited 10, `CANDIDATE_DRIFT`, with exactly the same deltas as the scheduled run: the publish, tag and Release of 0.0.64 on both adopted crates, which the KEEP above evaluated, and informational churn only (branch additions, deletions and advances on both adopted repositories, `saphyr` 0.4.1 with its tag and a `master` advance, and `serde-saphyr` branch movement). There were no yanks, unyanks, archive changes or record touches. Neither upstream repository had an open pull request, so `CANDIDATE_CONFIG.noyalib.pendingReleasePr` stays `null` and needs no edit.
+
+**Refresh.** The `--snapshot` taken on the same Mac at `2026-11-28T19:45:27.964Z` (exit 0) records all seven candidates, passes `validateCandidateRecord` for each, and compares to itself as `no-drift`. It replaced `scripts/yaml-candidate-baseline.json` through the write-then-copy recipe (formatter normalization only). A Cloud session cannot re-run the live detector, so the post-refresh live check is the next scheduled watch on `main`; #4823 closes only on a genuine `main` watch with rc=0.
+
+**Unchanged.** Production stays on `noyalib` / `noyalib-serde-yaml` `=0.0.58`. **Next trigger:** a newer published pair such as 0.0.65, a yank of either 0.0.58 crate, a new release PR, or a new advisory against 0.0.58.
 
 ##### `serde-saphyr 1.2.0` differential evaluation (#2788) — KEEP
 
