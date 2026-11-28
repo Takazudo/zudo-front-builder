@@ -1,5 +1,5 @@
-import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { createReadStream, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, join } from "node:path";
 import { timeBrowserAsync, timeBrowserSync } from "./browser-timing.mjs";
@@ -111,7 +111,9 @@ async function executableDigest(
         readRow = row;
         if (readRow && signal) signal.addEventListener("abort", cancelled, { once: true });
         invoked = true;
-        return readExecutable(path, { signal: signal ?? undefined });
+        return readExecutable
+          ? readExecutable(path, { signal: signal ?? undefined })
+          : streamDigest(path, { signal: signal ?? undefined });
       },
       { ...details, cancelRequestedNs: null },
     );
@@ -134,11 +136,35 @@ function digestBytes(bytes, timing, parentId, details) {
     parentId,
     { ...details, bytes: bytes.length },
     (row) => {
-      const digest = sha256(bytes);
+      const digest = bytes instanceof StreamedDigest ? bytes.digest : sha256(bytes);
       if (row) row.digest = digest;
       return digest;
     },
   );
+}
+
+const STREAM_CHUNK_BYTES = 1 << 20;
+
+/** Bytes already hashed by streamDigest; `length` mirrors a Buffer's for the timing rows. */
+class StreamedDigest {
+  constructor(length, digest) {
+    this.length = length;
+    this.digest = digest;
+  }
+}
+
+/**
+ * SHA-256 of the same file bytes as sha256(await readFile(path)), hashed per chunk as
+ * each read lands so the event loop polls between chunks and no whole-image Buffer is held.
+ */
+export async function streamDigest(path, { signal, chunkBytes = STREAM_CHUNK_BYTES } = {}) {
+  const hash = createHash("sha256");
+  let length = 0;
+  for await (const chunk of createReadStream(path, { highWaterMark: chunkBytes, signal })) {
+    hash.update(chunk);
+    length += chunk.length;
+  }
+  return new StreamedDigest(length, hash.digest("hex"));
 }
 
 // A failed read must not hold the next check behind a pending Playwright navigation.
@@ -183,7 +209,7 @@ export async function launchOwnedBrowser(
   {
     chromiumImpl = null,
     observerFactory = null,
-    readExecutable = readFile,
+    readExecutable = null,
     onReadState,
     signal,
     launchTimeoutMs,
