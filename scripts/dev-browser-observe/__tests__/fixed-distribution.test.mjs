@@ -58,6 +58,7 @@ import { startDevServer } from "../lib/server.mjs";
 import { HARNESS_DIR, ensureOwnerWritable, readJson, sha256, sha256File } from "../lib/util.mjs";
 import { SPEC, makeFakeSource, makeTinyHarness } from "./fieldnotes-fake.mjs";
 import { fakePage } from "./fakes.mjs";
+import { stallFs } from "./fs-stall.mjs";
 import { traceFs } from "./fs-trace.mjs";
 
 const FIXTURE = join(HARNESS_DIR, "fixtures", "field-notes");
@@ -1753,254 +1754,296 @@ it.each([
   "failed",
   "expired",
   "hung",
-])(
-  "normal ZFB family controller reaches blank setup before full custody (release %s)",
-  async (mode) => {
-    const cancellation = new AbortController();
-    const v2 = !mode.startsWith("v1");
-    const released = ["v1-accept", "joined", "idle"].includes(mode);
-    const { s, installs } = shared();
-    const label = "family-" + mode;
-    const { path, profile } = fixedProfile(s, "zfb", installs.zfb.out, {}, label + ".json");
-    profile.fixedRssSafety = "linux-fixed-zfb.v4";
-    profile.fixedFamilyAdmission = v2 ? "blank-join-owned.v2" : "blank-before-custody.v1";
-    profile.scenarios = [
-      {
-        id: "fn-rapid-add-delete",
-        set: "workload",
-        warmOrder: "none",
-        ops: [
-          {
-            id: "rapid-add-delete",
-            op: "rapid-sequence",
-            variant: "add-then-delete",
-            writeMethod: "create",
-            spacingMs: 100,
-          },
-        ],
-      },
-    ];
-    profile.server.readyTimeoutMs = 300000;
-    profile.limits.wallCeilingMs = 7200000;
-    Object.assign(profile.timeouts, { attemptMs: 60000, supplementalMs: 60000, restoreMs: 120000 });
-    writeFileSync(path, JSON.stringify(profile));
-    const birth = (pid, ppid, pgid) => ({
-      pid,
-      ppid,
-      pgid,
-      state: "S",
-      startTicks: String(pid),
-      bootId: "boot",
-      birthVersion: "linux-proc-v1",
-      comm: "node",
-    });
-    const root = birth(100, 99, 100),
-      dev = birth(101, 100, 100),
-      worker = birth(102, 101, 102);
-    const known = new Map([root, dev, worker].map((b) => [b.pid, b])),
-      events = [],
-      subreaperClears = [];
-    const proof = {
-      root,
-      dev,
-      worker,
-      sample: {
-        live: [root, dev],
-        cadenceDeadlineNs: String(process.hrtime.bigint() + 1000000000n),
-      },
-    };
-    let context,
-      pages = [];
-    const native = join(installs.zfb.out, "apps/zfb/node_modules/@takazudo/zfb-linux-x64-gnu/zfb");
-    const live = [
-      { ...root, args: "node /node_modules/@takazudo/zfb/bin/zfb.mjs dev" },
-      { ...dev, args: native + " dev" },
-    ];
-    const page = fakePage(),
-      handle = { native: root, launcher: "none", exit: null, known };
-    const start = Number(process.hrtime.bigint() / 1000000n);
-    vi.spyOn(lockModule, "acquireLock").mockResolvedValue({
-      release: async () => events.push("lock-closed"),
-    });
-    vi.spyOn(custodyModule, "startFixedCustody").mockReturnValue({
-      ready: Promise.resolve(),
-      attachStartup() {},
-      stop: async () => events.push("holder-closed"),
-    });
-    vi.spyOn(familyModule, "verifyFamilyImages").mockImplementation(() => {});
-    vi.spyOn(safetyModule, "startFixedRssSafety").mockReturnValue({
-      async verifyFamilyBrowserReady() {
-        events.push("rss-ready");
-      },
-      captureFamilyCycle(receipt) {
-        events.push("check");
-        if (mode === "no-release") throw Error("release unavailable");
-        if (mode === "idle") return { before: proof, settlement: null };
-        const now = process.hrtime.bigint();
-        const start = String(now);
-        const deadline = String(
-          now + (mode === "expired" ? -1n : mode === "hung" ? 25_000_000n : 750_000_000n),
-        );
-        receipt.cycle = {
-          epoch: 4,
-          startedNs: start,
-          helper: {
-            pid: 103,
-            spawnHrtimeNs: start,
+])("normal ZFB family controller reaches blank setup before full custody (release %s)", (mode) =>
+  familyControllerCase(mode),
+);
+
+// `extra.before` runs just before execute(); `extra.after` receives the exit code,
+// the parsed records and the monotonic time execute() returned.
+async function familyControllerCase(mode, extra = {}) {
+  const cancellation = new AbortController();
+  const v2 = !mode.startsWith("v1");
+  const released = ["v1-accept", "joined", "idle"].includes(mode);
+  const { s, installs } = shared();
+  const label = extra.label ?? "family-" + mode;
+  const { path, profile } = fixedProfile(s, "zfb", installs.zfb.out, {}, label + ".json");
+  profile.fixedRssSafety = "linux-fixed-zfb.v4";
+  profile.fixedFamilyAdmission = v2 ? "blank-join-owned.v2" : "blank-before-custody.v1";
+  profile.scenarios = [
+    {
+      id: "fn-rapid-add-delete",
+      set: "workload",
+      warmOrder: "none",
+      ops: [
+        {
+          id: "rapid-add-delete",
+          op: "rapid-sequence",
+          variant: "add-then-delete",
+          writeMethod: "create",
+          spacingMs: 100,
+        },
+      ],
+    },
+  ];
+  profile.server.readyTimeoutMs = 300000;
+  profile.limits.wallCeilingMs = 7200000;
+  Object.assign(profile.timeouts, { attemptMs: 60000, supplementalMs: 60000, restoreMs: 120000 });
+  writeFileSync(path, JSON.stringify(profile));
+  const birth = (pid, ppid, pgid) => ({
+    pid,
+    ppid,
+    pgid,
+    state: "S",
+    startTicks: String(pid),
+    bootId: "boot",
+    birthVersion: "linux-proc-v1",
+    comm: "node",
+  });
+  const root = birth(100, 99, 100),
+    dev = birth(101, 100, 100),
+    worker = birth(102, 101, 102);
+  const known = new Map([root, dev, worker].map((b) => [b.pid, b])),
+    events = [],
+    subreaperClears = [];
+  const proof = {
+    root,
+    dev,
+    worker,
+    sample: {
+      live: [root, dev],
+      cadenceDeadlineNs: String(process.hrtime.bigint() + 1000000000n),
+    },
+  };
+  let context,
+    pages = [];
+  const native = join(installs.zfb.out, "apps/zfb/node_modules/@takazudo/zfb-linux-x64-gnu/zfb");
+  const live = [
+    { ...root, args: "node /node_modules/@takazudo/zfb/bin/zfb.mjs dev" },
+    { ...dev, args: native + " dev" },
+  ];
+  const page = fakePage(),
+    handle = { native: root, launcher: "none", exit: null, known };
+  const start = Number(process.hrtime.bigint() / 1000000n);
+  vi.spyOn(lockModule, "acquireLock").mockResolvedValue({
+    release: async () => events.push("lock-closed"),
+  });
+  vi.spyOn(custodyModule, "startFixedCustody").mockReturnValue({
+    ready: Promise.resolve(),
+    attachStartup() {},
+    stop: async () => events.push("holder-closed"),
+  });
+  vi.spyOn(familyModule, "verifyFamilyImages").mockImplementation(() => {});
+  vi.spyOn(safetyModule, "startFixedRssSafety").mockReturnValue({
+    async verifyFamilyBrowserReady() {
+      events.push("rss-ready");
+    },
+    captureFamilyCycle(receipt) {
+      events.push("check");
+      if (mode === "no-release") throw Error("release unavailable");
+      if (mode === "idle") return { before: proof, settlement: null };
+      const now = process.hrtime.bigint();
+      const start = String(now);
+      const deadline = String(
+        now + (mode === "expired" ? -1n : mode === "hung" ? 25_000_000n : 750_000_000n),
+      );
+      receipt.cycle = {
+        epoch: 4,
+        startedNs: start,
+        helper: {
+          pid: 103,
+          spawnHrtimeNs: start,
+          entryNs: start,
+          deadlineNs: deadline,
+        },
+      };
+      const before = { ...proof, sample: { ...proof.sample, epoch: 3 } };
+      const settlement = new Promise((resolve) =>
+        setImmediate(() => {
+          if (mode === "abort-join") cancellation.abort(Error("cancel pending admission"));
+          if (mode === "transient") pages[0].emit("framenavigated");
+          if (mode === "request") context.emit("request", { url: () => "http://localhost/" });
+          if (mode === "navigated") pages = [{ url: () => "http://localhost/" }];
+          if (mode === "hung") return;
+          Object.assign(proof.sample, {
+            epoch: mode === "changed" ? 5 : 4,
+            startedNs: start,
+            helperPid: 103,
+            helperSpawnNs: start,
             entryNs: start,
             deadlineNs: deadline,
-          },
-        };
-        const before = { ...proof, sample: { ...proof.sample, epoch: 3 } };
-        const settlement = new Promise((resolve) =>
-          setImmediate(() => {
-            if (mode === "abort-join") cancellation.abort(Error("cancel pending admission"));
-            if (mode === "transient") pages[0].emit("framenavigated");
-            if (mode === "request") context.emit("request", { url: () => "http://localhost/" });
-            if (mode === "navigated") pages = [{ url: () => "http://localhost/" }];
-            if (mode === "hung") return;
-            Object.assign(proof.sample, {
-              epoch: mode === "changed" ? 5 : 4,
-              startedNs: start,
-              helperPid: 103,
-              helperSpawnNs: start,
-              entryNs: start,
-              deadlineNs: deadline,
-              resultNs: String(process.hrtime.bigint()),
-            });
-            resolve();
+            resultNs: String(process.hrtime.bigint()),
+          });
+          resolve();
+        }),
+      );
+      return { before, settlement };
+    },
+    verifyFamilyAdmission() {
+      events.push("check");
+      if (mode === "v1-refuse" || mode === "failed") throw Error("release unavailable");
+      return proof;
+    },
+    async stop() {
+      events.push("sampler-closed");
+      return null;
+    },
+    report() {
+      return {};
+    },
+  });
+  const stderr = [];
+  try {
+    extra.before?.();
+    const code = await execute({
+      profilePath: path,
+      label,
+      command: "run",
+      supervisorId: "controlled",
+      signal: cancellation.signal,
+      supervisorStartedMs: start,
+      workDeadline: start + 7140000,
+      supervisorDeadlineMs: start + 7200000,
+      stderr: (s) => stderr.push(s),
+      hooks: {
+        freePort: async () => 4555,
+        enableChildSubreaper: async () => ({ enabled: true, pid: process.pid }),
+        clearChildSubreaper: async () => {
+          subreaperClears.push(events.length);
+          return { enabled: false, pid: process.pid };
+        },
+        startDevServer: () => ({
+          handle,
+          zfbEnv: {},
+          envOverrides: {},
+          removedDiagnosticEnv: [],
+          args: [],
+          startedNs: process.hrtime.bigint(),
+          ready: Promise.resolve({
+            baseUrl: "http://127.0.0.1:4555",
+            readyNs: process.hrtime.bigint(),
           }),
-        );
-        return { before, settlement };
-      },
-      verifyFamilyAdmission() {
-        events.push("check");
-        if (mode === "v1-refuse" || mode === "failed") throw Error("release unavailable");
-        return proof;
-      },
-      async stop() {
-        events.push("sampler-closed");
-        return null;
-      },
-      report() {
-        return {};
+          closeLog: async () => ({ pipes: "closed" }),
+          isAlive: () => ({ alive: true }),
+          pid: () => 100,
+          waitExit: () => new Promise(() => {}),
+          sampleResources: () => ({ summedRssKiB: 1 }),
+          sampleResourcesAsync: async () => ({ summedRssKiB: 1 }),
+        }),
+        snapshotOwned: () => live,
+        processExecutable: (pid) => ({
+          path: pid === 100 ? process.execPath : pid === 101 ? native : null,
+          method: "controlled",
+        }),
+        processAlive: (pid) => pid !== 102,
+        launchOwnedBrowser: async (_cfg, { onBlankContext }) => {
+          events.push("blank");
+          const c = new EventEmitter();
+          context = c;
+          c.pages = () => pages;
+          onBlankContext(c);
+          pages = [Object.assign(new EventEmitter(), { url: () => "about:blank" })];
+          return { observer: page, identity: { engine: "fake" } };
+        },
+        closeOwnedBrowser: async () => {
+          events.push("browser-closed");
+          return [];
+        },
+        stopOwned: async () => {
+          events.push("server-closed");
+          return { absent: true };
+        },
       },
     });
-    const stderr = [];
-    try {
-      const code = await execute({
-        profilePath: path,
-        label,
-        command: "run",
-        supervisorId: "controlled",
-        signal: cancellation.signal,
-        supervisorStartedMs: start,
-        workDeadline: start + 7140000,
-        supervisorDeadlineMs: start + 7200000,
-        stderr: (s) => stderr.push(s),
-        hooks: {
-          freePort: async () => 4555,
-          enableChildSubreaper: async () => ({ enabled: true, pid: process.pid }),
-          clearChildSubreaper: async () => {
-            subreaperClears.push(events.length);
-            return { enabled: false, pid: process.pid };
-          },
-          startDevServer: () => ({
-            handle,
-            zfbEnv: {},
-            envOverrides: {},
-            removedDiagnosticEnv: [],
-            args: [],
-            startedNs: process.hrtime.bigint(),
-            ready: Promise.resolve({
-              baseUrl: "http://127.0.0.1:4555",
-              readyNs: process.hrtime.bigint(),
-            }),
-            closeLog: async () => ({ pipes: "closed" }),
-            isAlive: () => ({ alive: true }),
-            pid: () => 100,
-            waitExit: () => new Promise(() => {}),
-            sampleResources: () => ({ summedRssKiB: 1 }),
-            sampleResourcesAsync: async () => ({ summedRssKiB: 1 }),
-          }),
-          snapshotOwned: () => live,
-          processExecutable: (pid) => ({
-            path: pid === 100 ? process.execPath : pid === 101 ? native : null,
-            method: "controlled",
-          }),
-          processAlive: (pid) => pid !== 102,
-          launchOwnedBrowser: async (_cfg, { onBlankContext }) => {
-            events.push("blank");
-            const c = new EventEmitter();
-            context = c;
-            c.pages = () => pages;
-            onBlankContext(c);
-            pages = [Object.assign(new EventEmitter(), { url: () => "about:blank" })];
-            return { observer: page, identity: { engine: "fake" } };
-          },
-          closeOwnedBrowser: async () => {
-            events.push("browser-closed");
-            return [];
-          },
-          stopOwned: async () => {
-            events.push("server-closed");
-            return { absent: true };
-          },
-        },
+    const returnedNs = process.hrtime.bigint();
+    const dir = join(s.root, "out", label);
+    const records = readFileSync(join(dir, "records.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map(JSON.parse);
+    extra.after?.({ code, records, returnedNs, dir });
+    expect(
+      events.slice(0, 3),
+      JSON.stringify({ stderr, events, errors: records.filter((r) => r.error) }),
+    ).toEqual(["rss-ready", "blank", "check"]);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        "server-closed",
+        "sampler-closed",
+        "browser-closed",
+        "holder-closed",
+        "lock-closed",
+      ]),
+    );
+    // Cleared once, after the RSS readiness and before blank setup.
+    expect(subreaperClears).toEqual([events.indexOf("blank")]);
+    // #4862: the subreaper is set before custody and cleared after the readiness census.
+    const subreaper = records.filter((r) => r.type === "fixed-controller-subreaper");
+    expect(subreaper.map((r) => [r.enabled, r.phase ?? null])).toEqual([
+      [true, null],
+      [false, "cleared-after-readiness-census"],
+    ]);
+    expect(records.indexOf(subreaper[1])).toBeLessThan(
+      records.findIndex((r) => r.type === "original-family-admission"),
+    );
+    if (released) {
+      expect(code, JSON.stringify({ stderr, errors: records.filter((r) => r.error) })).toBe(
+        EXIT.ok,
+      );
+      expect(records.find((r) => r.type === "attempt")).toMatchObject({
+        mode: "final-state",
+        writePerformed: true,
       });
-      const dir = join(s.root, "out", label);
-      const records = readFileSync(join(dir, "records.jsonl"), "utf8")
-        .trim()
-        .split("\n")
-        .map(JSON.parse);
-      expect(
-        events.slice(0, 3),
-        JSON.stringify({ stderr, events, errors: records.filter((r) => r.error) }),
-      ).toEqual(["rss-ready", "blank", "check"]);
-      expect(events).toEqual(
-        expect.arrayContaining([
-          "server-closed",
-          "sampler-closed",
-          "browser-closed",
-          "holder-closed",
-          "lock-closed",
-        ]),
-      );
-      // Cleared once, after the RSS readiness and before blank setup.
-      expect(subreaperClears).toEqual([events.indexOf("blank")]);
-      // #4862: the subreaper is set before custody and cleared after the readiness census.
-      const subreaper = records.filter((r) => r.type === "fixed-controller-subreaper");
-      expect(subreaper.map((r) => [r.enabled, r.phase ?? null])).toEqual([
-        [true, null],
-        [false, "cleared-after-readiness-census"],
-      ]);
-      expect(records.indexOf(subreaper[1])).toBeLessThan(
-        records.findIndex((r) => r.type === "original-family-admission"),
-      );
-      if (released) {
-        expect(code, JSON.stringify({ stderr, errors: records.filter((r) => r.error) })).toBe(
-          EXIT.ok,
-        );
-        expect(records.find((r) => r.type === "attempt")).toMatchObject({
-          mode: "final-state",
-          writePerformed: true,
-        });
-      } else {
-        expect(code).not.toBe(EXIT.ok);
-        expect(page.prepared).toEqual([]);
-        expect(records.some((r) => r.type === "cleanup" || r.type === "attempt")).toBe(false);
-        expect(records.find((r) => r.type === "original-family-admission")).toMatchObject({
-          admitted: false,
-          httpRequests: mode === "request" ? 1 : 0,
-          workloadWriteCalls: 0,
-          snapshots: 0,
-        });
-      }
-    } finally {
-      vi.restoreAllMocks();
+      // O6: both family strategies run the durable recorder, whose B-pre row
+      // follows scenario-start and precedes the attempt.
+      const start = records.findIndex((r) => r.type === "scenario-start");
+      const pre = records.findIndex((r) => r.type === "durability" && r.barrier === "pre");
+      expect(pre).toBe(start + 1);
+      expect(records[pre].throughSeq).toBe(records[start].seq);
+      expect(pre).toBeLessThan(records.findIndex((r) => r.type === "attempt"));
+    } else {
+      expect(code).not.toBe(EXIT.ok);
+      expect(page.prepared).toEqual([]);
+      expect(records.some((r) => r.type === "cleanup" || r.type === "attempt")).toBe(false);
+      expect(records.find((r) => r.type === "original-family-admission")).toMatchObject({
+        admitted: false,
+        httpRequests: mode === "request" ? 1 : 0,
+        workloadWriteCalls: 0,
+        snapshots: 0,
+      });
     }
-  },
-);
+  } finally {
+    vi.restoreAllMocks();
+  }
+}
+
+// B-exit (O1′): on a refused family admission the exit code is reported only
+// after the exit barrier, and every row before it is in order and covered.
+it("the exit barrier precedes the reported exit code on a refusal (T-exit, m1)", async () => {
+  const stall = stallFs();
+  let seen;
+  try {
+    await familyControllerCase("no-release", {
+      label: "family-exit-barrier",
+      before: () => stall.arm('"type":"server-stop"', 3000),
+      after: (result) => (seen = result),
+    });
+  } finally {
+    stall.stop();
+  }
+  const { code, records, returnedNs, dir } = seen;
+  expect(code).not.toBe(EXIT.ok);
+  expect(records.map((r) => r.seq)).toEqual(records.map((_, i) => i));
+  const exit = records.find((r) => r.type === "durability" && r.barrier === "exit");
+  expect(exit, JSON.stringify(records.map((r) => r.type))).toBeTruthy();
+  expect(exit.throughSeq).toBe(exit.seq - 1);
+  expect(BigInt(exit.endNs) - BigInt(exit.startNs)).toBeGreaterThanOrEqual(2_990_000_000n);
+  expect(returnedNs).toBeGreaterThan(BigInt(exit.endNs));
+  expect(records.indexOf(exit)).toBeLessThan(records.findIndex((r) => r.type === "run-end"));
+  const pre = records.find((r) => r.type === "durability" && r.barrier === "pre");
+  expect(pre).toBeUndefined();
+  expect(stall.log.map((l) => l.kind)).toEqual(["fsync"]);
+  expect(readJson(join(dir, "receipt.json")).controllerTiming).toBe("controller-timing.json");
+}, 20_000);
 
 // O6 / review R2-3: with the durable recorder flag off, every non-family profile
 // keeps today's writer byte layout and fsyncSync sequence. The fixture was

@@ -23,6 +23,9 @@ const fileName = (root, path) => relative(root, String(path)).replace(/\.tmp-\d+
 export function traceFs(root) {
   const events = [];
   const paths = new Map();
+  // Read-only fds (a directory, or a file reopened only to fsync it) appear only
+  // when they are fsynced.
+  const readOnly = new Map();
   const saved = {};
   const under = (p) => typeof p === "string" && p.startsWith(root);
   const wrap = (name, fn) => {
@@ -35,7 +38,7 @@ export function traceFs(root) {
     if (under(path) && flags !== "r" && flags !== fs.constants.O_RDONLY) {
       paths.set(fd, String(path));
       events.push(["open", fileName(root, path), String(flags)]);
-    }
+    } else if (under(path)) readOnly.set(fd, String(path));
     return fd;
   });
   wrap("writeSync", (orig) => (fd, data, ...rest) => {
@@ -51,14 +54,17 @@ export function traceFs(root) {
     return orig(fd, data, ...rest);
   });
   wrap("fsyncSync", (orig) => (fd) => {
-    if (paths.has(fd)) events.push(["fsyncSync", fileName(root, paths.get(fd))]);
+    const path = paths.get(fd) ?? readOnly.get(fd);
+    if (path) events.push(["fsyncSync", fileName(root, path)]);
     return orig(fd);
   });
   wrap("fsync", (orig) => (fd, cb) => {
-    if (paths.has(fd)) events.push(["fsync", fileName(root, paths.get(fd))]);
+    const path = paths.get(fd) ?? readOnly.get(fd);
+    if (path) events.push(["fsync", fileName(root, path)]);
     return orig(fd, cb);
   });
   wrap("closeSync", (orig) => (fd) => {
+    readOnly.delete(fd);
     if (paths.has(fd)) {
       events.push(["close", fileName(root, paths.get(fd))]);
       paths.delete(fd);
