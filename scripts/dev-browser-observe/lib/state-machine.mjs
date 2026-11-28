@@ -278,12 +278,13 @@ export async function runBatch({ scenarios, deps }) {
       return false;
     }
     deps.beforeCleanup?.({ reason });
-    // B-clean (O1′/O2′): every row before this restoration is durable first. An
-    // expired barrier still restores, because a dirty work copy under a live
+    // B-clean (O1′/O2′): every row before this restoration is durable first. It
+    // expires at min(cleanup entry + restoreMs, work deadline) (review-2 item 2).
+    // An expired barrier still restores, because a dirty work copy under a live
     // server is worse, but the restoration's durability stays unproven.
     let durabilityUnproven = false;
     if (deps.durability) {
-      const barrier = await deps.durability.barrier("clean");
+      const barrier = await deps.durability.barrier("clean", { boundMs: timeouts.restoreMs });
       if (!barrier.ok) {
         durabilityUnproven = true;
         acc.restorationDurabilityUnproven = (acc.restorationDurabilityUnproven ?? 0) + 1;

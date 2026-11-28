@@ -1603,6 +1603,15 @@ async function executeLocked({
     }
     if (evidenceFailed && exitCode === EXIT.ok) exitCode = EXIT.controllerError;
     safeAppend({ type: "run-end", exitCode });
+    // The record tail (exit barrier row, run-end) is durable before the summary is
+    // written (review-2 item 11). A close failure after run-end still changes the
+    // exit code; the summary and the supervisor exit code then carry it.
+    try {
+      sink?.close();
+    } catch (error) {
+      evidenceFailed = true;
+      stderr(`record close failed: ${error?.message ?? error}`);
+    }
     if (evidenceFailed && exitCode === EXIT.ok) exitCode = EXIT.controllerError;
     const live = summaryExtra.accountingFinal ?? accountingRef.current;
     const accounting = live ? { ...live } : { ...newAccounting(planned) };
@@ -1660,12 +1669,6 @@ async function executeLocked({
     } catch (error) {
       evidenceFailed = true;
       stderr(`summary write failed: ${error?.message ?? error}`);
-    }
-    try {
-      sink?.close();
-    } catch (error) {
-      evidenceFailed = true;
-      stderr(`record close failed: ${error?.message ?? error}`);
     }
     if (evidenceFailed && !stopFailure) return exitCode || EXIT.controllerError; // eslint-disable-line no-unsafe-finally
     if (stopFailure) {

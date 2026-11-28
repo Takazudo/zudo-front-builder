@@ -1,4 +1,4 @@
-import { closeSync, fsync, fsyncSync, openSync, renameSync, writeSync } from "node:fs";
+import { closeSync, fsync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { timed } from "./controller-timing.mjs";
 import { appendJsonlSync, writeJsonSync } from "./util.mjs";
@@ -25,6 +25,7 @@ export class DurableSink {
     this.inflight = null;
     this.queued = null;
     this.closed = false;
+    this.failure = null;
   }
 
   // Ordered write without fsync; the next barrier makes it durable.
@@ -45,25 +46,38 @@ export class DurableSink {
     this.written++;
   }
 
-  // Another durability operation (the receipt checkpoint) that a barrier awaits.
+  // Another durability operation (the receipt checkpoint) that a barrier awaits;
+  // its failure fails the round like a fsync error (review-2 item 9).
   track(promise) {
-    const tracked = promise.catch(() => {});
-    this.pending.add(tracked);
+    this.pending.add(promise);
     this.written++;
-    tracked.finally(() => this.pending.delete(tracked));
+    promise.then(
+      () => this.pending.delete(promise),
+      (error) => {
+        this.pending.delete(promise);
+        this.failure ??= Object.assign(new Error("durable sink failed: " + error.message), {
+          cause: error,
+        });
+      },
+    );
     return promise;
   }
 
   // Resolves once a fsync round that started after the latest write completed.
   // One round is in flight at a time; a write made during it is covered by the
   // next round, which every later caller shares.
+  // Sticky failure (review-2 item 1): Linux reports a writeback error once per
+  // open file description, so after one failed round a later fsync on the same fd
+  // can return 0 although the failed pages are gone. Every later barrier fails.
   barrier() {
+    if (this.failure) return Promise.reject(this.failure);
     if (this.inflight && this.inflight.gen === this.written) return this.inflight.promise;
     if (this.inflight) {
       this.queued ??= this.inflight.promise
         .catch(() => {})
         .then(() => {
           this.queued = null;
+          if (this.failure) throw this.failure;
           return this.round();
         });
       return this.queued;
@@ -104,7 +118,10 @@ export class DurableSink {
       })
       .catch((error) => {
         for (const path of renamed) this.renamed.add(path);
-        throw error;
+        this.failure ??= Object.assign(new Error("durable sink failed: " + error.message), {
+          cause: error,
+        });
+        throw this.failure;
       })
       .finally(() => {
         if (this.inflight === round) this.inflight = null;
@@ -118,22 +135,37 @@ export class DurableSink {
   close() {
     if (this.closed) return;
     this.closed = true;
-    for (const fd of this.files.values()) {
-      fsyncSync(fd);
-      closeSync(fd);
+    try {
+      for (const fd of this.files.values()) fsyncSync(fd);
+    } finally {
+      for (const fd of this.files.values()) closeSync(fd);
+      this.files.clear();
     }
-    this.files.clear();
+    if (this.failure) throw this.failure;
   }
 }
 
 /**
  * One barrier point. It expires on the run's existing work deadline (O2′; review
- * re-check R2-1 resolved to that budget, no new bound) and always appends a
- * `durability` row: on success `throughSeq` is the last row the round covered.
+ * re-check R2-1), or earlier when the caller passes its own stage bound: B-clean
+ * uses min(cleanup entry + restoreMs, work deadline) (review-2 item 2). It always
+ * appends a `durability` row: on success `throughSeq` is the last row covered.
  */
-export function createBarrierPoint({ sink, recorder, deadlineNs = null, timing = null }) {
-  return async (point) => {
+export function createBarrierPoint({
+  sink,
+  recorder,
+  deadlineNs: workDeadlineNs = null,
+  timing = null,
+}) {
+  return async (point, { boundMs = null } = {}) => {
     const startNs = sink.clock();
+    const stageNs = boundMs === null ? null : startNs + BigInt(boundMs) * 1_000_000n;
+    const deadlineNs =
+      stageNs === null
+        ? workDeadlineNs
+        : workDeadlineNs === null || stageNs < workDeadlineNs
+          ? stageNs
+          : workDeadlineNs;
     let timer;
     let outcome;
     try {
@@ -155,6 +187,7 @@ export function createBarrierPoint({ sink, recorder, deadlineNs = null, timing =
     const row = {
       type: "durability",
       barrier: point,
+      ...(deadlineNs !== null && { deadlineNs: String(deadlineNs) }),
       startNs: String(startNs),
       endNs: String(sink.clock()),
       throughSeq: outcome.done ? outcome.done.throughSeq : null,
@@ -189,6 +222,7 @@ export function createOwnershipJournal(path, { sink = null, timing = null } = {}
 export function createReceiptWriter(path, { sink = null, timing = null } = {}) {
   let n = 0;
   let inflight = Promise.resolve();
+  let checkpointFailure = null;
   const temp = () => `${path}.tmp-${process.pid}-${++n}`;
   return {
     checkpoint(value) {
@@ -200,12 +234,24 @@ export function createReceiptWriter(path, { sink = null, timing = null } = {}) {
       const previous = inflight;
       const landed = (async () => {
         try {
-          await fsyncAsync(fd);
-        } finally {
-          closeSync(fd);
+          try {
+            await fsyncAsync(fd);
+          } finally {
+            closeSync(fd);
+          }
+          await previous;
+          renameSync(tmp, path);
+        } catch (error) {
+          // A failed checkpoint leaves no temp behind and fails the evidence
+          // (review-2 item 9); the final write still lands.
+          checkpointFailure ??= error;
+          try {
+            unlinkSync(tmp);
+          } catch {
+            // already renamed or never created
+          }
+          throw error;
         }
-        await previous;
-        renameSync(tmp, path);
       })();
       inflight = landed.catch(() => {});
       return sink.track(landed);
@@ -224,6 +270,10 @@ export function createReceiptWriter(path, { sink = null, timing = null } = {}) {
         }
         renameSync(tmp, path);
       });
+      if (checkpointFailure)
+        throw new Error(
+          "receipt checkpoint failed: " + (checkpointFailure.message ?? checkpointFailure),
+        );
     },
   };
 }
