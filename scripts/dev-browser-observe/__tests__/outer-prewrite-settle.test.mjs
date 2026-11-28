@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
 import * as peerRoles from "../lib/fixed-peer-roles.mjs";
-import { PREWRITE_FRESH_MARGIN_NS, startFixedRssSafety } from "../lib/fixed-rss-safety.mjs";
+import {
+  PREWRITE_FRESH_MARGIN_NS,
+  PREWRITE_MAX_WAIT_NS,
+  startFixedRssSafety,
+} from "../lib/fixed-rss-safety.mjs";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,8 +17,8 @@ import {
   outerPrewriteDecision,
   outerTerminalGate,
 } from "../lib/next-outer-terminal.mjs";
-import { EXIT } from "../lib/run.mjs";
-import { batchExitOk, runBatch } from "../lib/state-machine.mjs";
+import { EXIT, batchExitCode, nextOuterRunOutcome } from "../lib/run.mjs";
+import { runBatch } from "../lib/state-machine.mjs";
 import { sha256 } from "../lib/util.mjs";
 import { deps, fakeFs, fakePage } from "./fakes.mjs";
 
@@ -39,7 +43,7 @@ const birth = (pid) => ({
   bootId: "8116e36c-eeea-4ca0-973f-b1af4f6144d6",
 });
 
-function harness() {
+function harness({ append = () => {} } = {}) {
   vi.useFakeTimers({
     toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "hrtime"],
   });
@@ -98,7 +102,7 @@ function harness() {
     peer: {},
     limits: { rssCeilingKiB: 4194304, sampleEveryMs: 1000 },
     sample,
-    append() {},
+    append,
     abort() {},
     checkRoles: () => ({
       chain: [{ pid: 10, role: "root", pgid: 10, ppid: 100, bootId: "boot", startTicks: "1" }],
@@ -239,41 +243,74 @@ const FRESH_UNTIL_MS = 995 - MARGIN_MS;
 // Phases inside the helper wait for it. From the fresh margin before the cadence
 // cutoff (dispatch + 995 ms) to the next dispatch nothing is in flight, so the
 // decision joins the ordinary timer's next dispatch and settles it.
-test.each([0, 1, 30, 66, 96, 97, 150, 500, FRESH_UNTIL_MS - 1, FRESH_UNTIL_MS, 900, 994, 995, 999])(
-  "decision at dispatch + %i ms",
-  async (phaseMs) => {
-    const h = harness();
-    try {
-      await ready(h);
-      const base = h.sample.mock.calls.length;
-      for (let n = base + 1; n <= base + 3; n++) h.plans.set(n, { ms: R3_HELPER_MS });
-      // The receipt is already received before the arm, as the contract requires.
-      const gate = receivedGate();
-      await vi.advanceTimersByTimeAsync(1000);
-      if (phaseMs) await vi.advanceTimersByTimeAsync(phaseMs);
-      const { value, error } = await settled(decide(h, gate), 1);
-      assert.equal(error, undefined, String(error));
-      const s = value.preDecisionSettle;
-      const joined = phaseMs >= FRESH_UNTIL_MS;
-      assert.equal(s.pendingAtDecision, phaseMs < R3_HELPER_MS);
-      assert.equal(
-        s.outcome,
-        joined ? "joined-next-dispatch" : phaseMs < R3_HELPER_MS ? "settled" : "not-pending",
-      );
-      if (!joined && phaseMs >= R3_HELPER_MS) assert.equal(s.waitedNs, "0");
-      if (joined) {
-        assert.equal(s.withinFreshMargin, phaseMs < 995);
-        assert.equal(BigInt(s.waitedNs), BigInt(1000 - phaseMs + R3_HELPER_MS) * MS);
-        assert.equal(s.settledEpoch, s.pendingEpoch);
-        assert.equal(value.outerCadence.epoch, s.pendingEpoch);
-        assert.equal(BigInt(s.dispatchBoundNs), BigInt(s.scheduledDispatchNs) + 400n * MS);
-      }
-      assert(BigInt(value.outerDecision.decisionNs) < BigInt(value.outerCadence.cadenceDeadlineNs));
-    } finally {
-      await h.done();
+test.each([
+  0,
+  1,
+  30,
+  66,
+  96,
+  97,
+  150,
+  500,
+  FRESH_UNTIL_MS - 1,
+  FRESH_UNTIL_MS,
+  900,
+  994,
+  995,
+  996,
+  999,
+])("decision at dispatch + %i ms", async (phaseMs) => {
+  const h = harness();
+  try {
+    await ready(h);
+    const base = h.sample.mock.calls.length;
+    for (let n = base + 1; n <= base + 3; n++) h.plans.set(n, { ms: R3_HELPER_MS });
+    // The receipt is already received before the arm, as the contract requires.
+    const gate = receivedGate();
+    await vi.advanceTimersByTimeAsync(1000);
+    if (phaseMs) await vi.advanceTimersByTimeAsync(phaseMs);
+    const dispatched = h.sample.mock.calls.length;
+    const { value, error } = await settled(decide(h, gate), 1);
+    // Inside the fresh margin but before the cutoff the decision refuses at
+    // once: joining could exceed the owner's maximum pre-write wait.
+    if (phaseMs >= FRESH_UNTIL_MS && phaseMs < 995) {
+      assert(error, "must refuse inside the fresh margin");
+      assert.match(error.message, /outside current RSS coverage: fresh-margin-refused/);
+      const row = error.outerRefusal;
+      assert.equal(row.stage, "prewrite-settle");
+      assert.equal(row.coverage, "fresh-margin-refused");
+      const s = row.preDecisionSettle;
+      assert.equal(s.outcome, "fresh-margin-refused");
+      assert.equal(s.withinFreshMargin, true);
+      assert.equal(s.pendingAtDecision, false);
+      assert.equal(s.waitedNs, "0");
+      assert.equal(s.maxWaitNs, String(PREWRITE_MAX_WAIT_NS));
+      assert.equal(h.sample.mock.calls.length, dispatched, "no sample awaited or dispatched");
+      assert.throws(() => gate.consume(() => true), /outer receipt unavailable/);
+      return;
     }
-  },
-);
+    assert.equal(error, undefined, String(error));
+    const s = value.preDecisionSettle;
+    const joined = phaseMs >= 995;
+    assert.equal(s.pendingAtDecision, phaseMs < R3_HELPER_MS);
+    assert.equal(
+      s.outcome,
+      joined ? "joined-next-dispatch" : phaseMs < R3_HELPER_MS ? "settled" : "not-pending",
+    );
+    if (!joined && phaseMs >= R3_HELPER_MS) assert.equal(s.waitedNs, "0");
+    assert(BigInt(s.waitedNs) <= PREWRITE_MAX_WAIT_NS, s.waitedNs);
+    if (joined) {
+      assert.equal(s.withinFreshMargin, false);
+      assert.equal(BigInt(s.waitedNs), BigInt(1000 - phaseMs + R3_HELPER_MS) * MS);
+      assert.equal(s.settledEpoch, s.pendingEpoch);
+      assert.equal(value.outerCadence.epoch, s.pendingEpoch);
+      assert.equal(BigInt(s.dispatchBoundNs), BigInt(s.scheduledDispatchNs) + 400n * MS);
+    }
+    assert(BigInt(value.outerDecision.decisionNs) < BigInt(value.outerCadence.cadenceDeadlineNs));
+  } finally {
+    await h.done();
+  }
+});
 
 test.each([
   [250, "joined"],
@@ -618,6 +655,7 @@ async function bodyCell(outcome, { operation = "body", phaseMs = 300, cost = nul
     }
     const fs = fakeFs();
     let proofs = 0;
+    const refusals = {};
     const write = fs.performWrite;
     fs.performWrite = (w, now) => {
       w.evidence = { inodeBefore: 13, inodeAfter: 13 };
@@ -673,6 +711,7 @@ async function bodyCell(outcome, { operation = "body", phaseMs = 300, cost = nul
       workDeadlineNs: d.workDeadlineNs,
       signal: new AbortController().signal,
       append: (r) => (charge(cost?.append ?? 0), d.recorder.append(r)),
+      onRefusal: (stage) => (refusals[stage] = (refusals[stage] ?? 0) + 1),
     });
     const outerPeerWriteTime = hooks.outerPeerWriteTime;
     hooks.outerPeerWriteTime = (now) => (proofs++, outerPeerWriteTime(now));
@@ -684,8 +723,8 @@ async function bodyCell(outcome, { operation = "body", phaseMs = 300, cost = nul
     );
     assert.equal(error, undefined, String(error));
     const { accounting, stopped } = value;
-    const exitCode =
-      batchExitOk(accounting, stopped) && accounting.success === 1 ? EXIT.ok : EXIT.stopped;
+    // The exit code and outcome derivations executeLocked itself uses.
+    const exitCode = batchExitCode({ accounting, stopped, fixedPeer: true });
     const decision = d.recorder.records.find((r) => r.type === "next-outer-decision");
     const terminal = (overrides = {}) =>
       nextOuterOutcomeStatus({
@@ -699,7 +738,34 @@ async function bodyCell(outcome, { operation = "body", phaseMs = 300, cost = nul
         outerDecision: decision?.outerDecision,
         ...overrides,
       });
-    return { d, fs, accounting, exitCode, proofs, decision, terminal };
+    const runOutcome = (overrides = {}) =>
+      nextOuterRunOutcome({
+        stopReport: { absent: true },
+        stopFailure: null,
+        unresolved: [],
+        evidenceFailed: false,
+        population: { ok: true },
+        safetyFailure: null,
+        operation,
+        records: d.recorder.records,
+        exitCode,
+        accounting,
+        outerDecision: decision?.outerDecision,
+        refusals,
+        ...overrides,
+      });
+    return {
+      d,
+      fs,
+      accounting,
+      stopped,
+      exitCode,
+      proofs,
+      decision,
+      terminal,
+      runOutcome,
+      refusals,
+    };
   } finally {
     await h.done();
   }
@@ -758,6 +824,37 @@ test.each([
       ),
     },
     { records: [...d.recorder.records, { type: "next-outer-no-write" }] },
+    // Review 1 finding 3 (mutants H, J, L): each gate below is load-bearing.
+    {
+      records: d.recorder.records.map((r) =>
+        r.type === "cleanup" ? { ...r, actions: [{ ...r.actions[0], path: "other.md" }] } : r,
+      ),
+    },
+    {
+      records: d.recorder.records.map((r) =>
+        r.type === "cleanup" ? { ...r, settle: { ...r.settle, settled: false } } : r,
+      ),
+    },
+    {
+      // A no-write refusal beside a successful attempt is contradictory, never a body.
+      records: [
+        ...d.recorder.records,
+        { phase: "before-mutation", writePerformed: false, outcome: "identity-rejected" },
+      ],
+    },
+    // Mutants I and T apply only to the declared classify stop.
+    ...(cls
+      ? [
+          { accounting: { ...accounting, stoppedByClassifyTimeout: false } },
+          {
+            accounting: {
+              ...accounting,
+              stale: cls === "stale" ? 0 : 1,
+              timeout: cls === "timeout" ? 0 : 1,
+            },
+          },
+        ]
+      : []),
   ])
     assert.deepEqual(
       terminal(overrides),
@@ -797,22 +894,39 @@ test("only the two declared outer operations build hooks", () => {
 // workload-free on this WSL host (campaign 4870-next-body-r1/bench, loaded.json):
 // the components of the slowest loaded iteration (232.0 ms total), rounded up.
 // Pre-truncate charges product + wiring again (36.5 ms vs 28.0 measured), so the
-// charged path is 242 ms. With the fresh margin, every phase across the cutoff
-// writes exactly once with T0 inside the decided epoch's coverage.
+// charged path is 242 ms. Every phase before the fresh margin and every phase from
+// the cutoff on writes exactly once with T0 inside the decided epoch's coverage;
+// a phase inside the margin refuses without a wait or a write (fail closed).
 const LOADED_MAX_MS = { product: 26, wiring: 11, append: 12, late: 156 };
 const sweep = [];
 for (let p = FRESH_UNTIL_MS - 12; p <= 999; p += p < 1000 - 20 ? 3 : 1) sweep.push(p);
 test.each(sweep)(
-  "a decision at dispatch + %i ms with the loaded census cost still writes",
+  "a decision at dispatch + %i ms with the loaded census cost writes or refuses in the margin",
   async (phaseMs) => {
-    const { fs, proofs, decision, d } = await bodyCell("success", { phaseMs, cost: LOADED_MAX_MS });
+    const { fs, proofs, decision, d, refusals, runOutcome } = await bodyCell("success", {
+      phaseMs,
+      cost: LOADED_MAX_MS,
+    });
     const attempt = d.recorder.records.find((r) => r.type === "attempt");
+    if (phaseMs >= FRESH_UNTIL_MS && phaseMs < 995) {
+      assert.equal(attempt.outcome, "identity-rejected");
+      assert.equal(attempt.outerRefusal.coverage, "fresh-margin-refused");
+      assert.equal(attempt.outerRefusal.preDecisionSettle.waitedNs, "0");
+      assert.equal(proofs, 0, "no pre-truncate checkpoint after the refusal");
+      assert.deepEqual(fs.writes, []);
+      assert.equal(decision, undefined);
+      assert.deepEqual(refusals, { "prewrite-settle": 1 });
+      assert.equal(runOutcome().status, "incomplete", "never a body outcome");
+      return;
+    }
     assert.equal(attempt.outcome, "success", attempt.error);
+    assert.deepEqual(refusals, {});
+    assert(BigInt(decision.preDecisionSettle.waitedNs) <= PREWRITE_MAX_WAIT_NS);
     assert.equal(proofs, 1);
     assert.deepEqual(fs.writes, ["a.md"]);
     assert.equal(
       decision.preDecisionSettle.outcome,
-      phaseMs >= FRESH_UNTIL_MS ? "joined-next-dispatch" : "not-pending",
+      phaseMs >= 995 ? "joined-next-dispatch" : "not-pending",
     );
     assert(BigInt(attempt.prewriteDecision.t0Ns) < BigInt(decision.outerCadence.cadenceDeadlineNs));
   },
@@ -822,12 +936,18 @@ test.each(sweep)(
 // just inside it, crosses the cutoff before T0 and refuses without writing.
 test("a census path longer than the margin refuses before the write (fail closed)", async () => {
   const over = { product: MARGIN_MS, wiring: 1, append: 0, late: 1 };
-  const { fs, proofs, d } = await bodyCell("success", { phaseMs: FRESH_UNTIL_MS - 1, cost: over });
+  const { fs, proofs, d, refusals, runOutcome } = await bodyCell("success", {
+    phaseMs: FRESH_UNTIL_MS - 1,
+    cost: over,
+  });
   const attempt = d.recorder.records.find((r) => r.type === "attempt");
   assert.equal(attempt.outcome, "identity-rejected");
   assert.match(attempt.error, /outside current RSS coverage: cadence-due|outer T0 expired/);
   assert.equal(proofs, 1);
   assert.deepEqual(fs.writes, []);
+  // Review 1 finding 4: the pre-truncate refusal is counted in the run outcome.
+  assert.deepEqual(refusals, { "pre-truncate": 1 });
+  assert.deepEqual(runOutcome().refusals, { "pre-truncate": 1 });
 });
 
 // F2: a millisecond timer can fire before the monotonic bound (#4878 A/A r3 woke
@@ -898,4 +1018,177 @@ test.each([
   } finally {
     await h.done();
   }
+});
+
+// Review 1 finding 1 replay. A decision entering inside the fresh margin, before
+// the cutoff, used to join the next dispatch: with the next tick late by the
+// allowance it could wait (cutoff - entry) + 5 + 400 + 950 ms, about 1.6 s from
+// entry, beyond the owner's maximum pre-write wait. It now refuses at entry. From
+// the cutoff on the join stays, and every accepted wait is within the bound.
+test.each([
+  [FRESH_UNTIL_MS, 399, 550, "refused"],
+  [994, 399, 550, "refused"],
+  [995, 0, 740, "joined"],
+  [995, 399, 550, "joined"],
+  [999, 399, 550, "joined"],
+])(
+  "from-entry bound: decision at dispatch + %i ms, next tick %i ms late, helper %i ms: %s",
+  async (phaseMs, lateMs, helperMs, verdict) => {
+    const h = harness();
+    try {
+      await ready(h);
+      const base = h.sample.mock.calls.length;
+      h.plans.set(base + 1, { ms: R3_HELPER_MS });
+      h.plans.set(base + 2, { ms: helperMs });
+      const gate = receivedGate();
+      await vi.advanceTimersByTimeAsync(1000 + phaseMs);
+      h.lateTicks.set(h.ticks + 1, lateMs);
+      const { value, error } = await settled(decide(h, gate), 1, 2000);
+      if (verdict === "refused") {
+        const s = error?.outerRefusal?.preDecisionSettle;
+        assert.equal(s?.outcome, "fresh-margin-refused", String(error));
+        assert.equal(error.outerRefusal.coverage, "fresh-margin-refused");
+        assert.equal(s.waitedNs, "0");
+        // What the join would have allowed from this entry exceeds the bound.
+        const joinWorstNs =
+          BigInt(s.scheduledDispatchNs) + 400n * MS + 950n * MS - BigInt(s.enteredNs);
+        assert(joinWorstNs > PREWRITE_MAX_WAIT_NS, String(joinWorstNs));
+        assert.equal(h.sample.mock.calls.length, base + 1, "nothing waited for a later sample");
+        await vi.advanceTimersByTimeAsync(2000);
+        assert.throws(() => gate.consume(() => true), /outer receipt unavailable/, "no retry");
+        return;
+      }
+      assert.equal(error, undefined, String(error));
+      const s = value.preDecisionSettle;
+      assert.equal(s.outcome, "joined-next-dispatch");
+      assert.equal(BigInt(s.waitedNs), BigInt(1000 - phaseMs + lateMs + helperMs) * MS);
+      assert(BigInt(s.waitedNs) <= PREWRITE_MAX_WAIT_NS);
+    } finally {
+      await h.done();
+    }
+  },
+);
+
+test("the declared maximum pre-write wait is the owner's bound from the cutoff", () => {
+  // Gap to the scheduled dispatch (5 ms) + 400 ms allowance + 950 ms settle.
+  assert.equal(PREWRITE_MAX_WAIT_NS, 1_355n * MS);
+  assert.equal(PREWRITE_FRESH_MARGIN_NS, 250n * MS, "declared margin unchanged");
+});
+
+// A wait that still runs past the declared maximum (here a stalled synchronous
+// roles append after the joined sample, modelled by a clock jump) refuses. The
+// bound itself is admitted; one nanosecond past it is not.
+async function joinedWithStall(extraNs, run) {
+  let armed = false,
+    skew = 0n,
+    entryNs;
+  const h = harness({
+    append: (r) => {
+      if (armed && r.type === "fixed-peer-roles") {
+        armed = false;
+        skew += entryNs + PREWRITE_MAX_WAIT_NS + extraNs - process.hrtime.bigint();
+      }
+    },
+  });
+  try {
+    await ready(h);
+    const base = h.sample.mock.calls.length;
+    h.plans.set(base + 1, { ms: R3_HELPER_MS });
+    h.plans.set(base + 2, { ms: R3_HELPER_MS });
+    const gate = receivedGate(60_000);
+    await vi.advanceTimersByTimeAsync(1000 + 995);
+    const fake = process.hrtime.bigint;
+    vi.spyOn(process.hrtime, "bigint").mockImplementation(() => fake.call(process.hrtime) + skew);
+    entryNs = process.hrtime.bigint();
+    armed = true;
+    return await run(h, gate, entryNs);
+  } finally {
+    vi.restoreAllMocks();
+    await h.done();
+  }
+}
+
+test.each([
+  [0n, "joined-next-dispatch"],
+  [1n, "max-wait-exceeded"],
+])("a joined wait of the maximum + %i ns settles as %s", async (extraNs, outcome) => {
+  const s = await joinedWithStall(extraNs, async (h, _gate, entryNs) => {
+    const p = h.monitor.settleOrdinaryBeforeDecision({ deadlineNs: entryNs + 60_000n * MS });
+    return (await settled(p, 1, 2000)).value;
+  });
+  assert.equal(s.outcome, outcome);
+  assert.equal(BigInt(s.waitedNs), PREWRITE_MAX_WAIT_NS + extraNs);
+});
+
+test("a decision whose wait exceeds the maximum refuses before consuming the receipt", async () => {
+  const { error, gate } = await joinedWithStall(1n, async (h, gate) => ({
+    ...(await settled(decide(h, gate, { attemptMs: 60_000 }), 1, 2000)),
+    gate,
+  }));
+  assert(error, "must refuse");
+  assert.match(error.message, /outside current RSS coverage: max-wait-exceeded/);
+  assert.equal(error.outerRefusal.stage, "prewrite-settle");
+  assert.equal(error.outerRefusal.coverage, "max-wait-exceeded");
+  assert.equal(error.outerDecision, undefined, "no receipt consumed");
+  assert.throws(() => gate.consume(() => true), /outer receipt unavailable/);
+});
+
+// Review 1 finding 2 (mutant V): executeLocked derives the exit code and the
+// next-outer-outcome.json body through these two functions.
+test.each([
+  ["success", "body", null],
+  ["timeout", "body-classified", "timeout"],
+])(
+  "the run outcome derivation for a %s body is gated by closure and proof",
+  async (outcome, status, cls) => {
+    const { runOutcome } = await bodyCell(outcome);
+    assert.deepEqual(runOutcome(), {
+      closureVerified: true,
+      proofComplete: true,
+      status,
+      classification: cls,
+      refusals: {},
+    });
+    for (const [overrides, closed, proof] of [
+      [{ stopReport: { absent: false } }, false, true],
+      [{ stopFailure: "stop failed" }, false, true],
+      [{ unresolved: [{ kind: "helper" }] }, false, true],
+      [{ evidenceFailed: true }, true, false],
+      [{ population: { ok: false } }, true, false],
+      [{ population: undefined }, true, false],
+      [{ safetyFailure: { error: "sampler failed" } }, true, false],
+    ]) {
+      const got = runOutcome(overrides);
+      const label = JSON.stringify(overrides);
+      assert.equal(got.closureVerified, closed, label);
+      assert.equal(got.proofComplete, proof, label);
+      assert.equal(got.status, "incomplete", label);
+      assert.equal(got.classification, null, label);
+    }
+  },
+);
+
+test("batchExitCode: late identity, controller and fixed-peer success gates", async () => {
+  const ok = await bodyCell("success");
+  const to = await bodyCell("timeout");
+  assert.equal(
+    batchExitCode({ accounting: ok.accounting, stopped: ok.stopped, fixedPeer: true }),
+    EXIT.ok,
+  );
+  assert.equal(
+    batchExitCode({ accounting: to.accounting, stopped: to.stopped, fixedPeer: true }),
+    EXIT.stopped,
+  );
+  const base = { accounting: ok.accounting, stopped: ok.stopped, fixedPeer: true };
+  assert.equal(batchExitCode({ ...base, lateFailure: {} }), EXIT.identityRejected);
+  assert.equal(batchExitCode({ ...base, studyFailure: {} }), EXIT.controllerError);
+  assert.equal(batchExitCode({ ...base, rendererFailure: {} }), EXIT.controllerError);
+  assert.equal(
+    batchExitCode({ ...base, lateFailure: {}, studyFailure: {} }),
+    EXIT.identityRejected,
+    "a late identity failure wins",
+  );
+  const none = { ...ok.accounting, success: 0 };
+  assert.equal(batchExitCode({ ...base, accounting: none }), EXIT.stopped);
+  assert.equal(batchExitCode({ ...base, accounting: none, fixedPeer: false }), EXIT.ok);
 });

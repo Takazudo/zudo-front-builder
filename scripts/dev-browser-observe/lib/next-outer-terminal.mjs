@@ -2,6 +2,7 @@
 // callback supplies kernel credentials. The decision consumes only cached proof.
 import assert from "node:assert/strict";
 import { sameLinuxBirth } from "./linux-birth.mjs";
+import { PREWRITE_SETTLE_REFUSALS } from "./fixed-rss-safety.mjs";
 
 // The two declared outer operations (schema profile-fixed-distribution.v1.json,
 // added in e675992bf): "decision-only" stops at the pre-O_TRUNC callback, "body"
@@ -75,6 +76,26 @@ export async function outerPrewriteDecision({
     };
     throw error;
   }
+  if (PREWRITE_SETTLE_REFUSALS.includes(preDecisionSettle?.outcome)) {
+    // A terminal refusal of this one decision: the receipt is retired unconsumed
+    // and nothing waits for a later sample.
+    gate?.retire();
+    const error = new Error(
+      "outer decision outside current RSS coverage: " + preDecisionSettle.outcome,
+    );
+    error.outerRefusal = {
+      stage: "prewrite-settle",
+      entryNs,
+      refusedNs: String(now()),
+      coverage: preDecisionSettle.outcome,
+      productGraph: "not-checked",
+      observerGraph: "not-checked",
+      lastAccepted: null,
+      pending: null,
+      preDecisionSettle,
+    };
+    throw error;
+  }
   try {
     return outerCheckpoint(
       "prewrite-decision",
@@ -129,8 +150,10 @@ export function nextOuterBatchHooks({
   signal,
   append,
   onDecision = () => {},
+  onRefusal = () => {},
 }) {
   assert(NEXT_OUTER_OPERATIONS.includes(operation), "undeclared Next outer operation");
+  const refused = (error) => onRefusal(error.outerRefusal?.stage ?? "unknown", error);
   let outerDecision, outerCadence;
   return {
     outerDecisionOnly: operation === "decision-only",
@@ -151,6 +174,7 @@ export function nextOuterBatchHooks({
           outerDecision = error.outerDecision;
           onDecision(outerDecision, outerCadence);
         }
+        refused(error);
         throw error;
       }
       ({ outerDecision, outerCadence } = decided);
@@ -163,43 +187,52 @@ export function nextOuterBatchHooks({
         preDecisionSettle: decided.preDecisionSettle,
       });
     },
-    outerPeerWriteTime: (now) =>
-      outerCheckpoint("pre-truncate", () => {
-        signal.throwIfAborted();
-        let graph;
-        const proof = gate().checkWriteTime(now, () => {
-          const current = safety.verifyOuterGraph(
-            readProductGraph,
-            () => {
-              graph = verifyWiring();
-            },
-            "pre-truncate",
-          );
-          assert.deepEqual(current, outerCadence, "outer decision RSS epoch changed");
-          return true;
-        });
-        proof.graph = graph;
-        const stamp = BigInt(proof.t0Ns);
-        assert(
-          stamp < BigInt(outerDecision.attemptDeadlineNs) &&
-            stamp < BigInt(outerCadence.cadenceDeadlineNs),
-          "outer T0 expired",
-        );
-        if (operation === "decision-only") {
-          append({
-            type: "next-outer-no-write",
-            proof,
-            outerCadence,
-            writePerformed: false,
-          });
-          throw Object.assign(
-            new Error("declared diagnostic outer decision completed before write"),
-            { code: "NEXT_OUTER_DECISION_ONLY", proof },
-          );
-        }
-        return proof;
-      }),
+    outerPeerWriteTime: (now) => {
+      try {
+        return preTruncate(now);
+      } catch (error) {
+        if (error.code !== "NEXT_OUTER_DECISION_ONLY") refused(error);
+        throw error;
+      }
+    },
   };
+  function preTruncate(now) {
+    return outerCheckpoint("pre-truncate", () => {
+      signal.throwIfAborted();
+      let graph;
+      const proof = gate().checkWriteTime(now, () => {
+        const current = safety.verifyOuterGraph(
+          readProductGraph,
+          () => {
+            graph = verifyWiring();
+          },
+          "pre-truncate",
+        );
+        assert.deepEqual(current, outerCadence, "outer decision RSS epoch changed");
+        return true;
+      });
+      proof.graph = graph;
+      const stamp = BigInt(proof.t0Ns);
+      assert(
+        stamp < BigInt(outerDecision.attemptDeadlineNs) &&
+          stamp < BigInt(outerCadence.cadenceDeadlineNs),
+        "outer T0 expired",
+      );
+      if (operation === "decision-only") {
+        append({
+          type: "next-outer-no-write",
+          proof,
+          outerCadence,
+          writePerformed: false,
+        });
+        throw Object.assign(
+          new Error("declared diagnostic outer decision completed before write"),
+          { code: "NEXT_OUTER_DECISION_ONLY", proof },
+        );
+      }
+      return proof;
+    });
+  }
 }
 
 export function outerTerminalGate({ authority, now = process.hrtime.bigint }) {

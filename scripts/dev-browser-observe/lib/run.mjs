@@ -121,6 +121,62 @@ export const EXIT = {
 
 export const BROWSER_CLOSE_TIMEOUT_MS = 10000;
 
+/** Exit code of a finished run batch, shared by executeLocked and its tests. */
+export function batchExitCode({
+  lateFailure,
+  studyFailure,
+  rendererFailure,
+  accounting,
+  stopped,
+  fixedPeer,
+}) {
+  if (lateFailure) return EXIT.identityRejected;
+  if (studyFailure || rendererFailure) return EXIT.controllerError;
+  return batchExitOk(accounting, stopped) && (!fixedPeer || accounting.success === 1)
+    ? EXIT.ok
+    : EXIT.stopped;
+}
+
+/**
+ * The v4 outer cell's next-outer-outcome.json body (less its bindings), shared
+ * by executeLocked and its tests. `refusals` counts the outer refusals by stage,
+ * so the pre-truncate count can be judged against the fresh margin.
+ */
+export function nextOuterRunOutcome({
+  stopReport,
+  stopFailure,
+  unresolved,
+  evidenceFailed,
+  population,
+  safetyFailure,
+  operation,
+  records,
+  exitCode,
+  accounting,
+  outerDecision,
+  refusals,
+}) {
+  const closed = Boolean(stopReport?.absent && !stopFailure && unresolved.length === 0);
+  const proofComplete = Boolean(!evidenceFailed && population?.ok && !safetyFailure);
+  const { status, classification = null } = nextOuterOutcomeStatus({
+    operation,
+    records,
+    closed,
+    proofComplete,
+    exitCode,
+    exit: EXIT,
+    accounting,
+    outerDecision,
+  });
+  return {
+    closureVerified: closed,
+    proofComplete,
+    status,
+    classification,
+    refusals: { ...refusals },
+  };
+}
+
 export const RECEIPT_SCHEMA = "dev-browser-observe.receipt.v1";
 const BROWSER_STARTUP_TIMING_FILE = "browser-startup-timing.json";
 
@@ -433,6 +489,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   const fixedPeer = fixedAstro || bodyPeer;
   let nextCustody = null;
   let outerReceiver, outerGate, outerDecision, outerCadence, outerWiring;
+  const outerRefusals = { "prewrite-settle": 0, "prewrite-decision": 0, "pre-truncate": 0 };
   let holderSocketOwned = false;
   let nextRegistryMark;
   const sourceTiming = Boolean(profile.sourceTimingSafety);
@@ -1420,6 +1477,9 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
                   outerDecision = decision;
                   outerCadence = cadence;
                 },
+                onRefusal: (stage) => {
+                  outerRefusals[stage] = (outerRefusals[stage] ?? 0) + 1;
+                },
               }),
             }),
             ...(decisionProtocol && {
@@ -1510,13 +1570,14 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         study = null;
       }
       summaryExtra = { accountingFinal: accounting, resourceStudyFailure: studyFailure };
-      exitCode = lateFailure
-        ? EXIT.identityRejected
-        : studyFailure || rendererMemory?.failure
-          ? EXIT.controllerError
-          : batchExitOk(accounting, stopped) && (!fixedPeer || accounting.success === 1)
-            ? EXIT.ok
-            : EXIT.stopped;
+      exitCode = batchExitCode({
+        lateFailure,
+        studyFailure,
+        rendererFailure: rendererMemory?.failure,
+        accounting,
+        stopped,
+        fixedPeer,
+      });
       if (lateFailure) {
         summaryExtra.identityRejected = true;
         receipt.identity = {
@@ -1987,27 +2048,25 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       };
       writeJsonSync(summaryPath, summary);
       if (outerProtocol) {
-        const closed = Boolean(stopReport.absent && !stopFailure && !unresolved.length);
-        const proofComplete =
-          !evidenceFailed && receipt.nextPeerPopulation?.ok && !fixedSafety?.report().failure;
-        const { status, classification = null } = nextOuterOutcomeStatus({
-          operation: profile.fixedNextOuterObserver.operation,
-          records: rec.records,
-          closed,
-          proofComplete: Boolean(proofComplete),
-          exitCode,
-          exit: EXIT,
-          accounting,
-          outerDecision,
-        });
         writeJsonSync(join(labelDir, "next-outer-outcome.json"), {
           label,
           nonce: loaded.nextOuter.nonce,
           providerPid: loaded.nextOuter.outer.pid,
           controllerPid: process.pid,
-          closureVerified: closed,
-          status,
-          classification,
+          ...nextOuterRunOutcome({
+            stopReport,
+            stopFailure,
+            unresolved,
+            evidenceFailed,
+            population: receipt.nextPeerPopulation,
+            safetyFailure: fixedSafety?.report().failure,
+            operation: profile.fixedNextOuterObserver.operation,
+            records: rec.records,
+            exitCode,
+            accounting,
+            outerDecision,
+            refusals: outerRefusals,
+          }),
         });
       }
     } catch (error) {

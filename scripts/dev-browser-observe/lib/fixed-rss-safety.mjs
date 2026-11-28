@@ -22,17 +22,31 @@ const ORDINARY_SETTLE_BOUND_NS = 950_000_000n;
 // allowance. Observed late ticks on this host: 231.6 ms (#4862 slot 01), 270.8 ms
 // (A/A s1-A epoch 6) and 81 ms (#4870 R3). A later tick refuses (fail closed).
 const DISPATCH_SKEW_ALLOWANCE_NS = 400_000_000n;
+// The v4 cadence cutoff sits this far before the next scheduled dispatch.
+const CADENCE_GAP_NS = 5_000_000n;
 // The decision-to-T0 path runs three synchronous censuses (product graph +
 // roles, outer wiring, the ps-backed late-process check) and fsynced records
 // before T0, which must still precede the same cutoff. A decision counts as
-// inside coverage only with this much left; with less it takes the approved
-// next-dispatch path, so its worst case stays dispatch + 400 ms + 950 ms.
-// Measured workload-free on WSL (3000 iterations, fake Next-shaped tree, Node
-// v26.13.1, 24 busy loops on 12 cores): p99.9 192.5 ms, max 232.0 ms, mostly the
-// ps-backed late census (max 156 ms). 250 ms clears that maximum. A settled
-// sample ending later than 745 ms into its epoch then refuses (fail closed);
-// observed helpers run about 40-97 ms.
+// inside coverage only with this much left. Measured workload-free on WSL (3000
+// iterations, fake Next-shaped tree, Node v26.13.1, 24 busy loops on 12 cores):
+// p99.9 192.5 ms, max 232.0 ms, mostly the ps-backed late census (max 156 ms).
+// 250 ms clears that maximum. A settled sample ending later than 745 ms into
+// its epoch then refuses (fail closed); observed helpers run about 40-97 ms.
 export const PREWRITE_FRESH_MARGIN_NS = 250_000_000n;
+// The owner's maximum pre-write wait (#4870, 2026-11-27, "about 1.35 s"),
+// measured from the decision's entry: a decision entering at the cutoff waits
+// up to the gap to the scheduled dispatch, the 400 ms lateness allowance and
+// the 950 ms settle bound. A decision inside the fresh margin but before the
+// cutoff would exceed it by up to the margin, so it refuses instead of joining
+// (fail closed, manager decision 2026-11-28 in the owner's absence). No
+// accepted wait may exceed this bound; one that does refuses.
+export const PREWRITE_MAX_WAIT_NS =
+  CADENCE_GAP_NS + DISPATCH_SKEW_ALLOWANCE_NS + ORDINARY_SETTLE_BOUND_NS;
+// Settle outcomes that end the decision without consuming the outer receipt.
+export const PREWRITE_SETTLE_REFUSALS = Object.freeze([
+  "fresh-margin-refused",
+  "max-wait-exceeded",
+]);
 
 function pin(path, digest) {
   const real = realpathSync(path);
@@ -206,7 +220,7 @@ export function startFixedRssSafety({
         ? {
             epoch: measuredCycles + 1,
             startedNs,
-            cadenceDeadlineNs: String(nextDispatchNs - 5000000n),
+            cadenceDeadlineNs: String(nextDispatchNs - CADENCE_GAP_NS),
             helperBirth: null,
           }
         : null;
@@ -496,6 +510,7 @@ export function startFixedRssSafety({
         boundNs: null,
         outcome: pending ? "waiting" : "not-pending",
         freshMarginNs: String(PREWRITE_FRESH_MARGIN_NS),
+        maxWaitNs: String(PREWRITE_MAX_WAIT_NS),
       };
       const capped = (ns) => (ns < deadlineNs ? ns : deadlineNs);
       let timer;
@@ -530,11 +545,18 @@ export function startFixedRssSafety({
           postCycles === 2 &&
           enteredNs + PREWRITE_FRESH_MARGIN_NS >= BigInt(acceptedOuterCycle.cadenceDeadlineNs)
         ) {
+          record.withinFreshMargin = enteredNs < BigInt(acceptedOuterCycle.cadenceDeadlineNs);
+          record.scheduledDispatchNs = String(nextDispatchNs);
+          // Before the cutoff, joining could wait up to the margin longer than
+          // the owner's bound, and the owner approved the join only after the
+          // cutoff: refuse now, recorded, without waiting.
+          if (record.withinFreshMargin) {
+            record.outcome = "fresh-margin-refused";
+            return record;
+          }
           // Nothing in flight after the cutoff: wait for the ordinary timer's own
           // next dispatch. This never dispatches a sample.
           const dispatchBoundNs = capped(nextDispatchNs + DISPATCH_SKEW_ALLOWANCE_NS);
-          record.withinFreshMargin = enteredNs < BigInt(acceptedOuterCycle.cadenceDeadlineNs);
-          record.scheduledDispatchNs = String(nextDispatchNs);
           record.dispatchBoundNs = String(dispatchBoundNs);
           record.outcome = "waiting-next-dispatch";
           const dispatched = await until(
@@ -563,9 +585,15 @@ export function startFixedRssSafety({
         return record;
       } finally {
         clearTimeout(timer);
-        record.waitedNs = String(process.hrtime.bigint() - enteredNs);
+        const waitedNs = process.hrtime.bigint() - enteredNs;
+        record.waitedNs = String(waitedNs);
         if (record.outcome === "waiting" || record.outcome === "waiting-next-dispatch")
           record.outcome = "aborted";
+        if (
+          ["settled", "joined-next-dispatch"].includes(record.outcome) &&
+          waitedNs > PREWRITE_MAX_WAIT_NS
+        )
+          record.outcome = "max-wait-exceeded";
         record.settledEpoch = acceptedOuterCycle?.epoch ?? null;
       }
     },
