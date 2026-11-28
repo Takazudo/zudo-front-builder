@@ -1,7 +1,7 @@
 import {
   blankBrowserAudit,
-  runOriginalFamilyBatch,
   verifyFamilyImages,
+  yieldThenRunOriginalFamilyBatch,
 } from "./fixed-family-admission.mjs";
 import { samplerClosureAudit } from "./linux-rss-sample.mjs";
 import { startFixedCustody } from "./fixed-rss-custody.mjs";
@@ -1175,7 +1175,7 @@ async function executeLocked({
         },
       };
       const { accounting, stopped } = await (familyAudit
-        ? runOriginalFamilyBatch(batchInput, {
+        ? yieldThenRunOriginalFamilyBatch(batchInput, {
             safety: fixedSafety,
             strategy: profile.fixedFamilyAdmission,
             verifyImages: (proof) => verifyFamilyImages(proof, fixedExecutables),

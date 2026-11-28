@@ -3,6 +3,7 @@ import { openSync, readSync, closeSync, fstatSync, readlinkSync } from "node:fs"
 import { linuxBirth, sameLinuxBirth } from "./linux-birth.mjs";
 import { interruptible } from "./session-deadline.mjs";
 import { runBatch } from "./state-machine.mjs";
+import { yieldToLoop } from "./util.mjs";
 
 // An idle capture admits on the already-accepted sample only while one full
 // cadence period (limits.sampleEveryMs) is still ahead, which no real sample
@@ -160,7 +161,18 @@ export function blankBrowserAudit() {
 // preparation navigation, restore or special-mode write can precede this gate.
 export function runOriginalFamilyBatch(
   input,
-  { safety, snapshot, known, browserAudit, signal, append, deadlineNs, verifyImages, strategy },
+  {
+    safety,
+    snapshot,
+    known,
+    browserAudit,
+    signal,
+    append,
+    deadlineNs,
+    verifyImages,
+    strategy,
+    preCaptureYield,
+  },
 ) {
   const row = { type: "original-family-admission", batchEntered: false };
   let journaled = false,
@@ -184,6 +196,7 @@ export function runOriginalFamilyBatch(
           settlementOutcome: "not-started",
           addedSettlementNs: "0",
           stages: [],
+          ...(preCaptureYield && { preCaptureYield }),
         }
       : null;
   // Monotonic setup-stage stamps, so an admission refusal is attributable from
@@ -281,6 +294,12 @@ export function runOriginalFamilyBatch(
   };
   const join = async (captured) => {
     const { cycle } = setup;
+    // Recorded only, and never a refusal path: whether a seconds-late joined
+    // dispatch is admissible awaits an owner decision (#4862 r5 slot 02
+    // diagnosis; slot 01 joined 2364 ms late).
+    const priorDeadline = setup.priorCustody?.sample?.cadenceDeadlineNs;
+    if (priorDeadline !== undefined && cycle?.startedNs !== undefined)
+      setup.dispatchLatenessNs = String(BigInt(cycle.startedNs) - BigInt(priorDeadline));
     const core = BigInt(cycle.helper.deadlineNs);
     const cutoff = core < deadlineNs ? core : deadlineNs;
     const begin = process.hrtime.bigint();
@@ -416,4 +435,15 @@ export function runOriginalFamilyBatch(
     return refuse(error);
   }
   return run();
+}
+
+// #4862 r5 slot 02: the synchronous post-launch chain (fsynced appends) held the
+// loop past the sampler's next tick, so the capture saw no pending sample and the
+// deferral bound had already passed. Two setImmediate turns let an overdue tick
+// dispatch first; the harness still never dispatches a sample itself.
+export async function yieldThenRunOriginalFamilyBatch(input, options) {
+  const startNs = String(process.hrtime.bigint());
+  await yieldToLoop();
+  const endNs = String(process.hrtime.bigint());
+  return runOriginalFamilyBatch(input, { ...options, preCaptureYield: { startNs, endNs } });
 }
