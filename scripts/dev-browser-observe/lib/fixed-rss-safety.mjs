@@ -36,17 +36,26 @@ export const PREWRITE_FRESH_MARGIN_NS = 250_000_000n;
 // The owner's maximum pre-write wait (#4870, 2026-11-27, "about 1.35 s"),
 // measured from the decision's entry: a decision entering at the cutoff waits
 // up to the gap to the scheduled dispatch, the 400 ms lateness allowance and
-// the 950 ms settle bound. A decision inside the fresh margin but before the
-// cutoff would exceed it by up to the margin, so it refuses instead of joining
-// (fail closed, manager decision 2026-11-28 in the owner's absence). No
-// accepted wait may exceed this bound; one that does refuses.
+// the 950 ms settle bound. No accepted wait may exceed it; one that does refuses.
 export const PREWRITE_MAX_WAIT_NS =
   CADENCE_GAP_NS + DISPATCH_SKEW_ALLOWANCE_NS + ORDINARY_SETTLE_BOUND_NS;
 // Settle outcomes that end the decision without consuming the outer receipt.
-export const PREWRITE_SETTLE_REFUSALS = Object.freeze([
-  "fresh-margin-refused",
-  "max-wait-exceeded",
-]);
+export const PREWRITE_SETTLE_REFUSALS = Object.freeze(["join-budget-unfit", "max-wait-exceeded"]);
+
+// Owner decision on #4870 (2026-11-28): a join entered inside the fresh margin,
+// before the cutoff, keeps the from-entry maximum by cutting the lateness
+// allowance to what the budget leaves after the 950 ms settle. A dispatch that
+// cannot fit the budget at all refuses. Entries from the cutoff on keep 400 ms.
+export function joinDispatchBound({ enteredNs, scheduledDispatchNs }) {
+  const budgetNs = enteredNs + PREWRITE_MAX_WAIT_NS - ORDINARY_SETTLE_BOUND_NS;
+  const declaredNs = scheduledDispatchNs + DISPATCH_SKEW_ALLOWANCE_NS;
+  const dispatchBoundNs = budgetNs < declaredNs ? budgetNs : declaredNs;
+  return {
+    fits: dispatchBoundNs >= scheduledDispatchNs,
+    dispatchBoundNs,
+    allowanceNs: dispatchBoundNs - scheduledDispatchNs,
+  };
+}
 
 function pin(path, digest) {
   const real = realpathSync(path);
@@ -547,16 +556,17 @@ export function startFixedRssSafety({
         ) {
           record.withinFreshMargin = enteredNs < BigInt(acceptedOuterCycle.cadenceDeadlineNs);
           record.scheduledDispatchNs = String(nextDispatchNs);
-          // Before the cutoff, joining could wait up to the margin longer than
-          // the owner's bound, and the owner approved the join only after the
-          // cutoff: refuse now, recorded, without waiting.
-          if (record.withinFreshMargin) {
-            record.outcome = "fresh-margin-refused";
+          // Nothing in flight near or after the cutoff: wait for the ordinary
+          // timer's own next dispatch, within the allowance the from-entry
+          // budget leaves. This never dispatches a sample.
+          const join = joinDispatchBound({ enteredNs, scheduledDispatchNs: nextDispatchNs });
+          record.declaredAllowanceNs = String(DISPATCH_SKEW_ALLOWANCE_NS);
+          record.allowanceNs = String(join.allowanceNs);
+          if (!join.fits) {
+            record.outcome = "join-budget-unfit";
             return record;
           }
-          // Nothing in flight after the cutoff: wait for the ordinary timer's own
-          // next dispatch. This never dispatches a sample.
-          const dispatchBoundNs = capped(nextDispatchNs + DISPATCH_SKEW_ALLOWANCE_NS);
+          const dispatchBoundNs = capped(join.dispatchBoundNs);
           record.dispatchBoundNs = String(dispatchBoundNs);
           record.outcome = "waiting-next-dispatch";
           const dispatched = await until(
