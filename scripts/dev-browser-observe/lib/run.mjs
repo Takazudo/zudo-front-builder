@@ -180,6 +180,27 @@ export function nextOuterRunOutcome({
 export const RECEIPT_SCHEMA = "dev-browser-observe.receipt.v1";
 const BROWSER_STARTUP_TIMING_FILE = "browser-startup-timing.json";
 
+/**
+ * The one v4 outcome recorder executeLocked builds: it owns the refusal counter
+ * the hooks feed and reads the sampler failure itself, so the call sites pass
+ * neither (review 2 correction C). `safety` is a getter: the monitor starts later.
+ */
+export function nextOuterOutcomeRecorder({ safety }) {
+  const refusals = { "prewrite-settle": 0, "prewrite-decision": 0, "pre-truncate": 0 };
+  return {
+    onRefusal(stage) {
+      refusals[stage] = (refusals[stage] ?? 0) + 1;
+    },
+    outcome(args) {
+      return nextOuterRunOutcome({
+        ...args,
+        safetyFailure: safety()?.report().failure ?? null,
+        refusals,
+      });
+    },
+  };
+}
+
 export function notImplementedResult(profile) {
   return {
     outcome: "not-implemented",
@@ -489,7 +510,6 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
   const fixedPeer = fixedAstro || bodyPeer;
   let nextCustody = null;
   let outerReceiver, outerGate, outerDecision, outerCadence, outerWiring;
-  const outerRefusals = { "prewrite-settle": 0, "prewrite-decision": 0, "pre-truncate": 0 };
   let holderSocketOwned = false;
   let nextRegistryMark;
   const sourceTiming = Boolean(profile.sourceTimingSafety);
@@ -499,6 +519,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
       ? AbortSignal.any([loaded.signal, fixedAbort.signal])
       : fixedAbort.signal;
   let fixedSafety = null;
+  const outerOutcome = nextOuterOutcomeRecorder({ safety: () => fixedSafety });
   let fixedCustody = null;
   let stoppingServer;
   const stopCancellation = new AbortController();
@@ -1477,9 +1498,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
                   outerDecision = decision;
                   outerCadence = cadence;
                 },
-                onRefusal: (stage) => {
-                  outerRefusals[stage] = (outerRefusals[stage] ?? 0) + 1;
-                },
+                onRefusal: outerOutcome.onRefusal,
               }),
             }),
             ...(decisionProtocol && {
@@ -2053,19 +2072,17 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           nonce: loaded.nextOuter.nonce,
           providerPid: loaded.nextOuter.outer.pid,
           controllerPid: process.pid,
-          ...nextOuterRunOutcome({
+          ...outerOutcome.outcome({
             stopReport,
             stopFailure,
             unresolved,
             evidenceFailed,
             population: receipt.nextPeerPopulation,
-            safetyFailure: fixedSafety?.report().failure,
             operation: profile.fixedNextOuterObserver.operation,
             records: rec.records,
             exitCode,
             accounting,
             outerDecision,
-            refusals: outerRefusals,
           }),
         });
       }

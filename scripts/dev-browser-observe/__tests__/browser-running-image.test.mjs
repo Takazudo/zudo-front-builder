@@ -191,3 +191,27 @@ test.skipIf(process.platform !== "linux")(
     });
   },
 );
+
+// Review 2 correction D (mutant W15): the digest is taken of the image the
+// process executes, /proc/<pid>/exe, never of the path that readlink returned,
+// which could name different bytes after a swap or an overmount.
+test.skipIf(process.platform !== "linux")(
+  "the running digest is read through /proc/<pid>/exe",
+  async () => {
+    await launchedTree(async ({ chrome, shell, start }) => {
+      const before = directChildPids();
+      const child = await start(shell);
+      const calls = [];
+      const got = await runningBrowserReceipt({
+        executablePath: chrome,
+        before,
+        digest: async (path, role) => (calls.push([path, role]), "d".repeat(64)),
+      });
+      assert.deepEqual(calls, [[`/proc/${child.pid}/exe`, "running-launched"]]);
+      assert.deepEqual(got, {
+        runningExecutablePath: shell,
+        runningExecutableSha256: "d".repeat(64),
+      });
+    });
+  },
+);
