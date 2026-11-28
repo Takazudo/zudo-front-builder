@@ -45,10 +45,11 @@ const birth = (pid) => ({
   bootId: "8116e36c-eeea-4ca0-973f-b1af4f6144d6",
 });
 
-function harness({ append = () => {} } = {}) {
-  vi.useFakeTimers({
-    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "hrtime"],
-  });
+function harness({ append = () => {}, fake = true } = {}) {
+  if (fake)
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "hrtime"],
+    });
   const worker = { pid: 13 },
     ancestors = [{ pid: 10 }, { pid: 11 }, { pid: 12 }];
   const known = new Map([...ancestors, worker].map((p) => [p.pid, p]));
@@ -123,7 +124,7 @@ function harness({ append = () => {} } = {}) {
     async done() {
       for (const d of hanging) d.reject(Error("test cleanup"));
       const stopped = monitor.stop();
-      await vi.advanceTimersByTimeAsync(1000);
+      if (fake) await vi.advanceTimersByTimeAsync(1000);
       await stopped;
     },
   };
@@ -1409,3 +1410,56 @@ test("executeLocked wires the outcome recorder to the monitor, the hooks and the
   assert.doesNotMatch(call, /safetyFailure|refusals/);
   assert.doesNotMatch(body, /nextOuterRunOutcome\(/, "no second, unrecorded derivation");
 });
+
+// Preflight-1 finding 1 (real timers). After an event-loop stall past the join's
+// bound, Node runs the overdue ordinary timer before the bound timer, so take()
+// wakes the waiting join in the same turn with a dispatch later than the
+// allowance. The owner rule is that a later tick refuses: dispatch-late.
+test("real timers: a joined dispatch that a loop stall delays past the allowance refuses", async () => {
+  const h = harness({ fake: false });
+  try {
+    await h.monitor.verifyReady(process.hrtime.bigint());
+    const base = h.sample.mock.calls.length;
+    for (let n = base + 1; n <= base + 4; n++) h.plans.set(n, { ms: 50 });
+    // Find the accepted cycle's cutoff while nothing is pending (pre-truncate has no margin).
+    let cutoff;
+    for (let i = 0; i < 400 && cutoff === undefined; i++) {
+      try {
+        cutoff = BigInt(
+          h.monitor.verifyOuterGraph(() => h.ancestors, null, "pre-truncate").cadenceDeadlineNs,
+        );
+      } catch {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    }
+    assert(cutoff !== undefined, "no accepted cycle with nothing pending");
+    const dispatchedBefore = h.sample.mock.calls.length;
+    // Enter 1 ms after the cutoff, in one synchronous turn, so the ordinary timer
+    // (due at cutoff + 5 ms) cannot run first.
+    while (process.hrtime.bigint() < cutoff + MS);
+    const settle = h.monitor.settleOrdinaryBeforeDecision({
+      deadlineNs: process.hrtime.bigint() + 60_000n * MS,
+    });
+    // Stall the loop until well past the 400 ms allowance.
+    const stallUntil = cutoff + 5n * MS + 400n * MS + 150n * MS;
+    while (process.hrtime.bigint() < stallUntil);
+    const s = await settle;
+    assert.equal(s.withinFreshMargin, false);
+    assert.equal(BigInt(s.allowanceNs), 400n * MS);
+    assert.equal(
+      h.sample.mock.calls.length,
+      dispatchedBefore + 1,
+      "the ordinary timer dispatched once",
+    );
+    assert(s.dispatchedNs, "the late dispatch is recorded");
+    assert(BigInt(s.dispatchedNs) > BigInt(s.dispatchBoundNs), JSON.stringify(s));
+    assert.equal(s.outcome, "dispatch-late", JSON.stringify(s));
+    // The decision then refuses on the in-flight sample, never decides on the late one.
+    assert.throws(
+      () => h.monitor.verifyOuterGraph(() => h.ancestors, null, "prewrite-decision"),
+      (error) => error.outerRefusal.coverage === "ordinary-sample-pending",
+    );
+  } finally {
+    await h.done();
+  }
+}, 20_000);

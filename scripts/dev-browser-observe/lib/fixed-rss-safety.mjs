@@ -575,8 +575,19 @@ export function startFixedRssSafety({
               dispatchWaiters.add(() => resolve("dispatched"));
             }),
           );
-          if (dispatched !== "dispatched" || !pending || failure || stopped) {
-            record.outcome = dispatched === "dispatched" ? "dispatch-unavailable" : "dispatch-late";
+          // After an event-loop stall past the bound, the overdue ordinary timer
+          // runs before the bound timer and wakes this wait synchronously, so a
+          // dispatch later than the allowance can still win the race. The owner
+          // rule is that a later tick refuses: judge the dispatch's own stamp.
+          const late =
+            dispatched === "dispatched" &&
+            Boolean(pendingOuterCycle) &&
+            BigInt(pendingOuterCycle.startedNs) > dispatchBoundNs;
+          if (dispatched === "dispatched" && pendingOuterCycle)
+            record.dispatchedNs = pendingOuterCycle.startedNs;
+          if (dispatched !== "dispatched" || late || !pending || failure || stopped) {
+            record.outcome =
+              dispatched === "dispatched" && !late ? "dispatch-unavailable" : "dispatch-late";
             return record;
           }
           record.pendingEpoch = pendingOuterCycle?.epoch ?? null;
