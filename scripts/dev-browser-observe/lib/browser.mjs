@@ -44,6 +44,32 @@ export function selectRunningBrowser({ before, after, browsersRoot, readLink = r
   return found[0];
 }
 
+// The running-image receipt of the one browser launched since `before`: its
+// /proc/<pid>/exe path under the ms-playwright root of the library default, and
+// the digest of the image the process actually executes. Any failure becomes an
+// unreadable receipt, which fixedPeerBrowserImageErrors refuses.
+export async function runningBrowserReceipt({
+  executablePath,
+  before,
+  digest,
+  after = () => directChildPids(),
+}) {
+  try {
+    const root = realpathSync(dirname(dirname(dirname(realpathSync(executablePath)))));
+    const child = selectRunningBrowser({ before, after: after(), browsersRoot: root });
+    return {
+      runningExecutablePath: child.path,
+      runningExecutableSha256: await digest(`/proc/${child.pid}/exe`, "running-launched"),
+    };
+  } catch (error) {
+    return {
+      runningExecutablePath: null,
+      runningExecutableSha256: null,
+      runningExecutableError: String(error?.message ?? error),
+    };
+  }
+}
+
 // The fixed peer pin names the headless shell it launches and the separate
 // library-default `chrome` it never runs. Admit only when /proc/<pid>/exe of the
 // one launched child is the pinned shell, by path and digest; a missing or
@@ -289,29 +315,11 @@ export async function launchOwnedBrowser(
     signal?.throwIfAborted();
     let running = {};
     if (childrenBefore) {
-      try {
-        const root = realpathSync(dirname(dirname(dirname(realpathSync(executablePath)))));
-        const child = selectRunningBrowser({
-          before: childrenBefore,
-          after: directChildPids(),
-          browsersRoot: root,
-        });
-        running = {
-          runningExecutablePath: child.path,
-          // /proc/<pid>/exe reads the image the process actually executes.
-          runningExecutableSha256: await executableDigest(
-            `/proc/${child.pid}/exe`,
-            "running-launched",
-            readOptions,
-          ),
-        };
-      } catch (error) {
-        running = {
-          runningExecutablePath: null,
-          runningExecutableSha256: null,
-          runningExecutableError: String(error?.message ?? error),
-        };
-      }
+      running = await runningBrowserReceipt({
+        executablePath,
+        before: childrenBefore,
+        digest: (path, role) => executableDigest(path, role, readOptions),
+      });
       signal?.throwIfAborted();
     }
     const identity = {
