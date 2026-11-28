@@ -117,7 +117,11 @@ async function executableDigest(
       },
       { ...details, cancelRequestedNs: null },
     );
-    if (readRow) readRow.bytes = bytes.length;
+    if (readRow) {
+      readRow.bytes = bytes.length;
+      if (bytes instanceof StreamedDigest)
+        Object.assign(readRow, { mode: "stream", chunks: bytes.chunks });
+    }
   } catch (error) {
     onReadState?.(details, invoked ? "rejected" : "cancelled-before-read");
     throw error;
@@ -147,9 +151,10 @@ const STREAM_CHUNK_BYTES = 1 << 20;
 
 /** Bytes already hashed by streamDigest; `length` mirrors a Buffer's for the timing rows. */
 class StreamedDigest {
-  constructor(length, digest) {
+  constructor(length, digest, chunks) {
     this.length = length;
     this.digest = digest;
+    this.chunks = chunks;
   }
 }
 
@@ -157,14 +162,19 @@ class StreamedDigest {
  * SHA-256 of the same file bytes as sha256(await readFile(path)), hashed per chunk as
  * each read lands so the event loop polls between chunks and no whole-image Buffer is held.
  */
-export async function streamDigest(path, { signal, chunkBytes = STREAM_CHUNK_BYTES } = {}) {
-  const hash = createHash("sha256");
+export async function streamDigest(
+  path,
+  { signal, chunkBytes = STREAM_CHUNK_BYTES, createHashImpl = createHash } = {},
+) {
+  const hash = createHashImpl("sha256");
   let length = 0;
+  let chunks = 0;
   for await (const chunk of createReadStream(path, { highWaterMark: chunkBytes, signal })) {
     hash.update(chunk);
     length += chunk.length;
+    chunks++;
   }
-  return new StreamedDigest(length, hash.digest("hex"));
+  return new StreamedDigest(length, hash.digest("hex"), chunks);
 }
 
 // A failed read must not hold the next check behind a pending Playwright navigation.

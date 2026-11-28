@@ -1,6 +1,6 @@
 // #4856: browser executable digests are streamed instead of readFile plus a
 // synchronous whole-image sha256. The digest must equal the old one byte for byte.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +27,29 @@ describe("streamDigest", () => {
     expect(streamed.length).toBe(bytes.length);
   });
 
+  it("hashes each chunk as it is read, never the whole image at once", async () => {
+    const size = 7 * 65536 + 3;
+    const path = join(dir, "per-chunk");
+    writeFileSync(path, randomBytes(size));
+    const updates = [];
+    const createHashImpl = (algorithm) => {
+      const hash = createHash(algorithm);
+      return {
+        update(chunk) {
+          updates.push(chunk.length);
+          hash.update(chunk);
+          return this;
+        },
+        digest: (encoding) => hash.digest(encoding),
+      };
+    };
+    const streamed = await streamDigest(path, { chunkBytes: 65536, createHashImpl });
+    expect(updates.length).toBe(Math.ceil(size / 65536));
+    expect(Math.max(...updates)).toBeLessThanOrEqual(65536);
+    expect(streamed.chunks).toBe(updates.length);
+    expect(streamed.digest).toBe(sha256(readFileSync(path)));
+  });
+
   it("rejects on abort and on a missing file", async () => {
     const path = join(dir, "abort");
     writeFileSync(path, randomBytes(8 * 65536));
@@ -34,18 +57,5 @@ describe("streamDigest", () => {
     abort.abort(new Error("stopped"));
     await expect(streamDigest(path, { signal: abort.signal, chunkBytes: 65536 })).rejects.toThrow();
     await expect(streamDigest(join(dir, "missing"))).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("lets the event loop poll between chunks", async () => {
-    const path = join(dir, "poll");
-    writeFileSync(path, randomBytes(64 * 65536));
-    let turns = 0;
-    const timer = setInterval(() => turns++, 0);
-    try {
-      await streamDigest(path, { chunkBytes: 65536 });
-    } finally {
-      clearInterval(timer);
-    }
-    expect(turns).toBeGreaterThan(0);
   });
 });

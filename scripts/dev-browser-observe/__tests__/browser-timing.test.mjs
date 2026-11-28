@@ -498,3 +498,61 @@ describe.each([false, true])("executable identity with browser timing %s", (enab
     expect(readExecutable).not.toHaveBeenCalled();
   });
 });
+
+// #4856 review C3: the default identity read streams (no whole-image Buffer,
+// per-chunk hashing) and still honours cancellation mid-read.
+describe("default executable digest path", () => {
+  it("streams the selected and library images by default", async () => {
+    const f = fixture();
+    const timing = new BrowserTiming();
+    await launchOwnedBrowser(f.config, { chromiumImpl: f.chromium, timing });
+    const reads = timing.snapshot().asyncSpans.filter((row) => row.name === "browser.file.read");
+    expect(reads.map((row) => row.role)).toEqual(["selected-launched", "library-default"]);
+    for (const row of reads)
+      expect(row).toMatchObject({
+        mode: "stream",
+        chunks: Math.max(1, Math.ceil(readFileSync(row.path).length / (1 << 20))),
+        bytes: readFileSync(row.path).length,
+      });
+  });
+
+  it("rejects the read itself when cancelled mid-read", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "dbo-midread-"));
+    const path = join(dir, "browser");
+    try {
+      writeFileSync(path, Buffer.alloc(8 << 20, 7));
+      const f = fixture({ selected: path });
+      const timing = new BrowserTiming();
+      const abort = new AbortController();
+      const states = [];
+      await expect(
+        launchOwnedBrowser(f.config, {
+          chromiumImpl: f.chromium,
+          timing,
+          signal: abort.signal,
+          onReadState(details, state) {
+            states.push([details.role, state]);
+            // Runs at the read's first await, after the stream was opened.
+            if (state === "pending")
+              queueMicrotask(() => abort.abort(new Error("cancel mid read")));
+          },
+        }),
+      ).rejects.toThrow();
+      expect(states).toEqual([
+        ["selected-launched", "pending"],
+        ["selected-launched", "rejected"],
+      ]);
+      expect(f.events).toEqual(["lookup"]);
+      expect(
+        timing.snapshot().asyncSpans.find((row) => row.name === "browser.file.read"),
+      ).toMatchObject({
+        role: "selected-launched",
+        outcome: "rejected",
+        cancelRequestedNs: expect.any(String),
+      });
+      expect(getEventListeners(abort.signal, "abort")).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

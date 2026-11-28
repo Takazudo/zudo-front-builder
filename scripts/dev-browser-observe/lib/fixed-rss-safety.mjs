@@ -72,9 +72,6 @@ export function startFixedRssSafety({
   custody = null,
   peer,
   checkRoles = samplePeerRoles,
-  // Optional macrotask yield between the fsynced sample append and the
-  // synchronous role check, so the loop polls between the two blocks.
-  yieldLoop = null,
   timing = null,
 }) {
   let pending = null;
@@ -138,7 +135,7 @@ export function startFixedRssSafety({
         ? sample(server, fixedExecutables.root.path)
         : sample(server, fixedExecutables.root.path, { fixedExecutables, custody })
     )
-      .then(async (result) => {
+      .then((result) => {
         measuredCycles++;
         if (Number.isSafeInteger(result.summedRssKiB))
           peakKiB = Math.max(peakKiB ?? 0, result.summedRssKiB);
@@ -150,10 +147,6 @@ export function startFixedRssSafety({
         });
         if (peer) {
           if (failure) return;
-          if (yieldLoop) {
-            await yieldLoop();
-            if (failure) return;
-          }
           const t = result.timing.parent;
           firstSpawn ??= BigInt(result.helper.spawnHrtimeNs);
           assert(

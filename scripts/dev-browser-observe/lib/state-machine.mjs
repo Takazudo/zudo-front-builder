@@ -765,6 +765,7 @@ export async function runBatch({ scenarios, deps }) {
                   page.prepare(attempt.targetPath, Math.min(ms, 30000)),
                 )
               : await wait(page.prepare(attempt.targetPath));
+          deps.onPrepared?.();
           page.markPre?.();
         } catch (error) {
           append({

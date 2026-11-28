@@ -374,6 +374,69 @@ async function execute2({ loaded, label, command, stderr, hooks }) {
 // A bounded stop may reject before its original in-flight helper settles.
 // At the existing finalization boundary, preserve any newly available identity
 // and closure evidence without waiting again or releasing the original hold.
+/**
+ * Controller diagnostics for a profile. #4856 r2: a synchronous controller run
+ * starved the fixed Astro CSS sampler's pipe, so that cell records per-stage
+ * ControllerTiming and an event-loop delay histogram through its first prepare.
+ */
+export function controllerDiagnostics(profile, { clock } = {}) {
+  const tiny = profile.tinyAcceptance;
+  const fixedAstroCss = profile.fixedRssSafety === FIXED_ASTRO_CSS_PROTOCOL;
+  const timing =
+    tiny || profile.rendererMemoryStudy || profile.startupAcceptance || fixedAstroCss
+      ? new ControllerTiming(clock)
+      : null;
+  const browserTiming = tiny?.probe === "B" ? new BrowserTiming() : null;
+  const startupLoop = browserTiming || fixedAstroCss ? new StartupEventLoop() : null;
+  const eventLoopOnly = Boolean(startupLoop && !browserTiming);
+  return {
+    timing,
+    browserTiming,
+    startupLoop,
+    loopThroughPrepare: fixedAstroCss,
+    receiptFields: {
+      ...(timing && { controllerTiming: "controller-timing.json" }),
+      ...(eventLoopOnly && { controllerEventLoop: CONTROLLER_EVENT_LOOP_FILE }),
+    },
+    write(labelDir) {
+      if (browserTiming)
+        writeJsonSync(join(labelDir, BROWSER_STARTUP_TIMING_FILE), {
+          schema: "dev-browser-observe.browser-startup-timing.v1",
+          browser: browserTiming.snapshot(),
+          eventLoop: startupLoop.report,
+        });
+      else if (eventLoopOnly)
+        writeJsonSync(join(labelDir, CONTROLLER_EVENT_LOOP_FILE), {
+          schema: "dev-browser-observe.controller-event-loop.v1",
+          eventLoop: startupLoop.report,
+        });
+    },
+  };
+}
+
+/**
+ * Browser-ready and receipt write after launch. With `drain`, the synchronous
+ * run starts only once the in-flight safety sample settled (the next 1 Hz
+ * dispatch is then ~1 s away); `yieldLoop` lets the loop poll between blocks.
+ */
+export async function postLaunchHandoff({
+  drain = null,
+  signal,
+  appendReady,
+  writeReceipt,
+  yieldLoop = null,
+  timing = null,
+}) {
+  if (drain) {
+    await drain();
+    signal?.throwIfAborted();
+  }
+  appendReady();
+  if (yieldLoop) await yieldLoop();
+  timed(timing, "run.receipt.write", {}, writeReceipt);
+  if (yieldLoop) await yieldLoop();
+}
+
 export function recordSamplerClosureAudits(unresolved, fixedSafety, rendererMemory, append) {
   for (const resource of unresolved) {
     if (!resource.helper) {
@@ -416,28 +479,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     return stoppingServer;
   };
   const tiny = profile.tinyAcceptance;
-  // #4856 r2: a sync controller run starved the in-flight sampler's pipe. The
-  // fixed Astro CSS cell records per-stage timing and drains/yields around it.
   const fixedAstroCssRun = profile.fixedRssSafety === FIXED_ASTRO_CSS_PROTOCOL;
-  const timing =
-    tiny || profile.rendererMemoryStudy || profile.startupAcceptance || fixedAstroCssRun
-      ? new ControllerTiming(hooks.rendererMemoryClock)
-      : null;
-  const browserTiming = tiny?.probe === "B" ? new BrowserTiming() : null;
-  const startupLoop = browserTiming || fixedAstroCssRun ? new StartupEventLoop() : null;
-  const writeBrowserStartupTiming = () => {
-    if (browserTiming)
-      writeJsonSync(join(labelDir, BROWSER_STARTUP_TIMING_FILE), {
-        schema: "dev-browser-observe.browser-startup-timing.v1",
-        browser: browserTiming.snapshot(),
-        eventLoop: startupLoop.report,
-      });
-    else if (startupLoop)
-      writeJsonSync(join(labelDir, CONTROLLER_EVENT_LOOP_FILE), {
-        schema: "dev-browser-observe.controller-event-loop.v1",
-        eventLoop: startupLoop.report,
-      });
-  };
+  const diagnostics = controllerDiagnostics(profile, { clock: hooks.rendererMemoryClock });
+  const { timing, browserTiming, startupLoop } = diagnostics;
+  const writeBrowserStartupTiming = () => diagnostics.write(labelDir);
   const rec = new Recorder(join(labelDir, "records.jsonl"), timing);
   const memoryProfile = profile.rendererMemoryStudy ?? null;
   const acceptance = profile.startupAcceptance ?? tiny;
@@ -486,8 +531,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     diagnostic: profile.diagnostic === true,
     ...(profile.fixedRssSafety && { fixedRssSafety: profile.fixedRssSafety }),
     ...(sourceTiming && { sourceTimingSafety: profile.sourceTimingSafety }),
-    ...(timing && { controllerTiming: "controller-timing.json" }),
-    ...(startupLoop && !browserTiming && { controllerEventLoop: CONTROLLER_EVENT_LOOP_FILE }),
+    ...diagnostics.receiptFields,
     ...(acceptance && {
       [acceptanceKey]: {
         ...acceptance,
@@ -853,7 +897,7 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
         limits: profile.limits,
         append: (r) => rec.append(r),
         abort: abortSampling,
-        ...(fixedAstroCssRun && { yieldLoop: yieldToLoop, timing }),
+        ...(fixedAstroCssRun && { timing }),
       });
     }
     if (sourceTiming) {
@@ -1123,19 +1167,19 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
     observer.onStray = (payload) =>
       rec.append({ type: "late-token", label: "not-success", armedToken: null, payload });
     receipt.browser = browserHandle.identity;
-    if (fixedAstroCssRun) {
-      // Start the synchronous post-launch run right after a sample settles, so
-      // no helper frame waits behind it; the next 1 Hz dispatch is ~1 s away.
-      await fixedSafety.settle();
-      browserSignal?.throwIfAborted();
-    }
-    timeBrowserSync(browserTiming, "browser-ready.append", null, {}, () =>
-      rec.append({ type: "browser-ready", browser: browserHandle.identity }),
-    );
-    startupLoop?.browserReady();
-    if (fixedAstroCssRun) await yieldToLoop();
-    timed(timing, "run.receipt.write", {}, () => writeJsonSync(receiptPath, receipt));
-    if (fixedAstroCssRun) await yieldToLoop();
+    await postLaunchHandoff({
+      drain: fixedAstroCssRun ? () => fixedSafety.settle() : null,
+      signal: browserSignal,
+      appendReady: () => {
+        timeBrowserSync(browserTiming, "browser-ready.append", null, {}, () =>
+          rec.append({ type: "browser-ready", browser: browserHandle.identity }),
+        );
+        startupLoop?.browserReady();
+      },
+      writeReceipt: () => writeJsonSync(receiptPath, receipt),
+      yieldLoop: fixedAstroCssRun ? yieldToLoop : null,
+      timing,
+    });
 
     const sampleServer = () =>
       timed(timing, "run.sampleServer", {}, () => {
@@ -1150,7 +1194,8 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
 
     if (batch) {
       if (rendererMemory) await rendererMemory.beforeEdits();
-      startupLoop?.stop("before-edits");
+      // The fixed Astro CSS histogram also spans runBatch up to the first prepared page.
+      if (!diagnostics.loopThroughPrepare) startupLoop?.stop("before-edits");
       if (profile.resourceStudy) {
         study = createResourceStudy({
           study: profile.resourceStudy,
@@ -1214,7 +1259,10 @@ async function executeLocked({ loaded, label, labelDir, command, stderr, hooks =
           fixedAstroCategory: profile.fixedRssSafety === FIXED_ASTRO_CATEGORY_PROTOCOL,
           fixedAstroTitle: profile.fixedRssSafety === FIXED_ASTRO_TITLE_PROTOCOL,
           fixedAstroCss: fixedAstroCssRun,
-          ...(fixedAstroCssRun && { yieldLoop: yieldToLoop }),
+          ...(fixedAstroCssRun && {
+            yieldLoop: yieldToLoop,
+            onPrepared: () => startupLoop?.stop("first-prepare"),
+          }),
           beforeAstroWrite: verifyAstroCurrent,
           verifyBodyRevision:
             tiny?.probe === "B" || (!fixed && profile.fixture.kind === "field-notes"),
