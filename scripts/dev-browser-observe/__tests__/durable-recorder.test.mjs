@@ -165,21 +165,30 @@ test("without a sink every writer keeps the synchronous fsync path", () => {
 });
 
 // B-pre and B-clean in runBatch, driven through a real sink and barrier point.
-// `deadlineMs` per barrier name is measured from that barrier's own start, so a
-// slow real fsync in one barrier cannot spend another barrier's budget.
-function durableBatch({ deadlineMs = {}, ops, warmOrder = "none" } = {}) {
+// One barrier point on a work deadline `workMs` from creation, as run.mjs builds
+// it; B-clean adds its own restoreMs bound. `notifyDelayMs` delays the attempt's
+// notification so the cleanup can start after the work deadline.
+function durableBatch({
+  workMs = 60_000,
+  restoreMs = 60_000,
+  notifyDelayMs = 0,
+  ops,
+  warmOrder = "none",
+} = {}) {
   const dir = scratch();
   const sink = new DurableSink();
   const order = [];
   const rec = new Recorder(join(dir, "records.jsonl"), null, sink);
-  const point = (name) =>
-    createBarrierPoint({
-      sink,
-      recorder: rec,
-      deadlineNs: process.hrtime.bigint() + BigInt(deadlineMs[name] ?? 60_000) * MS,
-    })(name);
+  const workDeadlineNs = process.hrtime.bigint() + BigInt(workMs) * MS;
+  const point = createBarrierPoint({ sink, recorder: rec, deadlineNs: workDeadlineNs });
   const page = fakePage({
-    behaviors: [{ kind: "notify", t1: 10n ** 18n }],
+    onWait: (token) =>
+      new Promise((resolve) =>
+        setTimeout(
+          () => resolve({ kind: "notify", payload: { token, docUUID: "doc-1" }, t1: 10n ** 18n }),
+          notifyDelayMs,
+        ),
+      ),
   });
   for (const name of ["prepare", "arm", "markAttempt"]) {
     const original = page[name];
@@ -195,12 +204,14 @@ function durableBatch({ deadlineMs = {}, ops, warmOrder = "none" } = {}) {
     fs.restoreNs = process.hrtime.bigint();
     return restore(snap);
   };
+  const base = deps({ page, fs, recorder: rec });
   const d = {
-    ...deps({ page, fs, recorder: rec }),
+    ...base,
+    timeouts: { ...base.timeouts, attemptMs: 60_000, restoreMs },
     durability: {
-      barrier: async (name) => {
+      barrier: async (name, options) => {
         order.push("barrier:" + name);
-        const result = await point(name);
+        const result = await point(name, options);
         order.push("barrier-end:" + name);
         return result;
       },
@@ -209,7 +220,15 @@ function durableBatch({ deadlineMs = {}, ops, warmOrder = "none" } = {}) {
   const scenarios = [
     { id: "s", warmOrder, ops: ops ?? [{ id: "e", op: "edit-body", article: "a" }] },
   ];
-  return { sink, rec, order, page, fs, run: () => runBatch({ scenarios, deps: d }) };
+  return {
+    sink,
+    rec,
+    order,
+    page,
+    fs,
+    workDeadlineNs,
+    run: () => runBatch({ scenarios, deps: d }),
+  };
 }
 
 test("B-pre precedes every page operation of the attempt (m1, m5)", async () => {
@@ -227,7 +246,7 @@ test("B-pre precedes every page operation of the attempt (m1, m5)", async () => 
 test("an expired B-pre refuses before any page operation (T-pre, O2′)", async () => {
   const stall = stalled();
   stall.arm('"type":"scenario-start"', 500);
-  const b = durableBatch({ deadlineMs: { pre: 80 }, warmOrder: "index-first" });
+  const b = durableBatch({ workMs: 80, warmOrder: "index-first" });
   const { accounting, stopped } = await b.run();
   assert.equal(stopped, true);
   assert.equal(accounting.stopReason, "durability-barrier-expired");
@@ -262,8 +281,8 @@ test("B-clean completes before the restoration starts (T-clean, m1)", async () =
 
 test("an expired B-clean still restores, but the cell fails acceptance (T-clean, O2′)", async () => {
   const stall = stalled();
-  stall.arm('"type":"attempt"', 3000);
-  const b = durableBatch({ deadlineMs: { clean: 1500 } });
+  stall.arm('"type":"attempt"', 1500);
+  const b = durableBatch({ restoreMs: 500 });
   const { accounting, stopped } = await b.run();
   assert(b.order.includes("restore"), "restoration still runs");
   const cleanup = b.rec.records.find((r) => r.type === "cleanup");
@@ -273,7 +292,7 @@ test("an expired B-clean still restores, but the cell fails acceptance (T-clean,
   assert.equal(batchExitOk(accounting, stopped), false);
   await b.sink.barrier();
   b.sink.close();
-}, 10_000);
+});
 
 test("a batch with no durability dependency takes no barrier", async () => {
   const page = fakePage({ behaviors: [{ kind: "notify", t1: 10n ** 18n }] });
@@ -284,4 +303,78 @@ test("a batch with no durability dependency takes no barrier", async () => {
   });
   assert(!recorder.records.some((r) => r.type === "durability"));
   assert(!existsSync(join(tmpdir(), "never")));
+});
+
+// Review-2 item 1: a writeback error is reported once per open file description,
+// so the sink fails permanently after the first failed round.
+test("an fsync error fails the round, the caller queued behind it, later barriers and close", async () => {
+  const dir = scratch();
+  const stall = stalled();
+  const sink = new DurableSink();
+  const rec = new Recorder(join(dir, "records.jsonl"), null, sink);
+  stall.fail('"type":"lost"', 100);
+  rec.append({ type: "lost" });
+  const failing = sink.barrier();
+  rec.append({ type: "during-failing-round" });
+  const queued = sink.barrier();
+  await assert.rejects(failing, /durable sink failed: EIO/);
+  await assert.rejects(queued, /durable sink failed: EIO/, "the queued caller cannot pass");
+  rec.append({ type: "after" });
+  await assert.rejects(sink.barrier(), /durable sink failed/, "the next barrier fails too");
+  assert.equal(stall.log.filter((l) => l.kind === "fsync-error").length, 1, "one injected error");
+  const point = createBarrierPoint({ sink, recorder: rec });
+  const row = await point("exit");
+  assert.equal(row.ok, false);
+  assert.equal(row.reason, "durability barrier failed");
+  assert.equal(row.throughSeq, null);
+  assert.throws(() => sink.close(), /durable sink failed/);
+});
+
+// Review-2 item 2: B-clean expires at min(cleanup entry + restoreMs, work deadline).
+test("B-clean expires on restoreMs although the work deadline is far", async () => {
+  const stall = stalled();
+  stall.arm('"type":"attempt"', 1000);
+  const b = durableBatch({ restoreMs: 300 });
+  const { accounting, stopped } = await b.run();
+  const clean = b.rec.records.find((r) => r.type === "durability" && r.barrier === "clean");
+  assert.equal(clean.expired, true);
+  const bound = BigInt(clean.deadlineNs) - BigInt(clean.startNs);
+  assert.equal(bound, 300n * MS, "the stage bound, not the work deadline");
+  assert(BigInt(clean.deadlineNs) < b.workDeadlineNs);
+  assert(b.order.includes("restore"), "restoration still runs");
+  assert.equal(accounting.stopReason, "restoration-durability-unproven");
+  assert.equal(batchExitOk(accounting, stopped), false);
+  await b.sink.barrier();
+  b.sink.close();
+});
+
+test("a cleanup that starts after the work deadline expires at once and still restores", async () => {
+  const b = durableBatch({ workMs: 300, notifyDelayMs: 500 });
+  const { accounting, stopped } = await b.run();
+  const clean = b.rec.records.find((r) => r.type === "durability" && r.barrier === "clean");
+  assert(BigInt(clean.startNs) > b.workDeadlineNs, "cleanup began past the work deadline");
+  assert.equal(clean.deadlineNs, String(b.workDeadlineNs));
+  assert.equal(clean.expired, true);
+  assert(BigInt(clean.endNs) - BigInt(clean.startNs) < 100n * MS, "no wait past the deadline");
+  assert(b.order.includes("restore"));
+  assert.equal(b.rec.records.find((r) => r.type === "cleanup").restorationDurability, "unproven");
+  assert.equal(batchExitOk(accounting, stopped), false);
+  await b.sink.barrier();
+  b.sink.close();
+});
+
+// Review-2 item 9: a failed receipt checkpoint fails the evidence and leaves no temp.
+test("a failed receipt checkpoint removes its temp, fails the barrier and the final write", async () => {
+  const dir = scratch();
+  const stall = stalled();
+  const sink = new DurableSink();
+  const path = join(dir, "receipt.json");
+  const writer = createReceiptWriter(path, { sink });
+  stall.fail('"stage": "checkpoint"', 50);
+  const checkpoint = writer.checkpoint({ stage: "checkpoint" });
+  await assert.rejects(checkpoint, /EIO/);
+  await assert.rejects(sink.barrier(), /durable sink failed/);
+  await assert.rejects(writer.write({ stage: "final" }), /receipt checkpoint failed/);
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { stage: "final" });
+  assert.deepEqual(readdirSync(dir), ["receipt.json"], "the failed checkpoint's temp is gone");
 });

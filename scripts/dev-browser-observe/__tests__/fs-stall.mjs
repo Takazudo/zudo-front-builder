@@ -7,10 +7,12 @@ const blockSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),
 // makes the next fsync of the fd that receives a write containing `match` take
 // `ms`: fsyncSync blocks the event loop (today's writer), while an async fsync
 // completes late on the threadpool side and leaves the loop free (durable mode).
-// Delays armed on the same fd before its fsync add up.
+// Delays armed on the same fd before its fsync add up. fail(match, ms) instead
+// makes that fd's next async fsync report EIO after `ms`.
 export function stallFs() {
   const rules = [];
   const armed = new Map();
+  const failing = new Map();
   const log = [];
   const saved = { writeSync: fs.writeSync, fsyncSync: fs.fsyncSync, fsync: fs.fsync };
   fs.writeSync = (fd, data, ...rest) => {
@@ -18,7 +20,8 @@ export function stallFs() {
       for (const rule of rules)
         if (!rule.used && data.includes(rule.match)) {
           rule.used = true;
-          armed.set(fd, (armed.get(fd) ?? 0) + rule.ms);
+          if (rule.fail) failing.set(fd, rule.ms);
+          else armed.set(fd, (armed.get(fd) ?? 0) + rule.ms);
         }
     return saved.writeSync(fd, data, ...rest);
   };
@@ -33,6 +36,16 @@ export function stallFs() {
     return saved.fsyncSync(fd);
   };
   fs.fsync = (fd, cb) => {
+    if (failing.has(fd)) {
+      const ms = failing.get(fd);
+      failing.delete(fd);
+      log.push({ kind: "fsync-error", ms, startNs: process.hrtime.bigint() });
+      setTimeout(
+        () => cb(Object.assign(new Error("EIO: injected writeback error"), { code: "EIO" })),
+        ms,
+      );
+      return;
+    }
     const ms = armed.get(fd);
     if (!ms) return saved.fsync(fd, cb);
     armed.delete(fd);
@@ -51,6 +64,9 @@ export function stallFs() {
     log,
     arm(match, ms) {
       rules.push({ match, ms, used: false });
+    },
+    fail(match, ms = 0) {
+      rules.push({ match, ms, used: false, fail: true });
     },
     stop() {
       Object.assign(fs, saved);
