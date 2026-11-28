@@ -1,0 +1,1259 @@
+{
+  "next-non-family": {
+    "code": 0,
+    "events": [
+      ["open", "out/.dev-browser-observe.lock", "a"],
+      ["close", "out/.dev-browser-observe.lock"],
+      ["open", "out/golden-next/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-next/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "run-start",
+          "command": "<string>",
+          "label": "golden-next",
+          "profilePath": "<string>",
+          "profileSha256": "<string>",
+          "scenarioSelection": null,
+          "schedule": [
+            {
+              "scenario": "<string>",
+              "scenarioBase": "<string>",
+              "opId": "<string>",
+              "baseOpId": "<string>",
+              "op": "edit-body",
+              "kind": "<string>",
+              "index": "<number>"
+            },
+            {
+              "scenario": "<string>",
+              "scenarioBase": "<string>",
+              "opId": "<string>",
+              "baseOpId": "<string>",
+              "op": "edit-body",
+              "kind": "<string>",
+              "index": "<number>"
+            }
+          ],
+          "resourceStudy": null
+        }
+      ],
+      ["fsyncSync", "out/golden-next/records.jsonl"],
+      ["close", "out/golden-next/records.jsonl"],
+      ["open", "out/golden-next/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-next/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "identity",
+          "ok": true,
+          "checks": [
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "scale": "<number>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "scale": "<number>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "scale": "<number>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "scale": "<number>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "scale": "<number>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<number>",
+              "actual": "<number>",
+              "scale": "<number>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "label": "archive external-content sidecar (research/next-dev-prototype/launcher.mjs): fs.watch on ../../content/articles, 20 ms debounce, rewrites lib/content-revision.js; its work is inside the measured latency"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "provenance": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "provenance": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": true,
+              "actual": true
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": {
+                "installed": "<string>",
+                "locked": "<string>"
+              }
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": {
+                "installed": "<string>",
+                "locked": "<string>"
+              }
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": {
+                "installed": "<string>",
+                "locked": "<string>"
+              }
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": [],
+              "actual": []
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": {
+                "role": "<string>",
+                "path": "<string>",
+                "realpath": "<string>",
+                "sha256": "<string>",
+                "ok": true
+              }
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": {
+                "role": "<string>",
+                "path": "<string>",
+                "realpath": "<string>",
+                "sha256": "<string>",
+                "ok": true
+              }
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": [],
+              "actual": []
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": null,
+              "actual": null
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": null,
+              "actual": null
+            }
+          ]
+        }
+      ],
+      ["fsyncSync", "out/golden-next/records.jsonl"],
+      ["close", "out/golden-next/records.jsonl"],
+      ["open", "out/golden-next/work/apps/next/app/layout.jsx", "w"],
+      ["write", "out/golden-next/work/apps/next/app/layout.jsx"],
+      ["close", "out/golden-next/work/apps/next/app/layout.jsx"],
+      ["open", "out/golden-next/work/apps/next/app/site.imported.css", "w"],
+      ["write", "out/golden-next/work/apps/next/app/site.imported.css"],
+      ["close", "out/golden-next/work/apps/next/app/site.imported.css"],
+      ["open", "active-session.json", "wx"],
+      ["close", "active-session.json"],
+      ["open", "active-session.json.tmp", "w"],
+      ["write", "active-session.json.tmp"],
+      ["fsyncSync", "active-session.json.tmp"],
+      ["close", "active-session.json.tmp"],
+      ["rename", "active-session.json.tmp", "active-session.json"],
+      ["open", "active-session.json.tmp", "w"],
+      ["write", "active-session.json.tmp"],
+      ["fsyncSync", "active-session.json.tmp"],
+      ["close", "active-session.json.tmp"],
+      ["rename", "active-session.json.tmp", "active-session.json"],
+      ["open", "out/.dev-browser-observe-owned.jsonl", "a"],
+      [
+        "write",
+        "out/.dev-browser-observe-owned.jsonl",
+        {
+          "type": "spawn",
+          "label": "golden-next",
+          "at": "<string>",
+          "pid": "<number>",
+          "pgid": "<number>",
+          "lstart": "<string>",
+          "comm": "<string>"
+        }
+      ],
+      ["fsyncSync", "out/.dev-browser-observe-owned.jsonl"],
+      ["close", "out/.dev-browser-observe-owned.jsonl"],
+      ["open", "out/golden-next/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-next/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "server-ready",
+          "baseUrl": "<string>",
+          "readyMs": "<number>",
+          "native": {
+            "pid": "<number>",
+            "pgid": "<number>",
+            "lstart": "<string>",
+            "comm": "<string>"
+          },
+          "launcher": "<string>",
+          "roles": [
+            {
+              "pid": "<number>",
+              "ppid": "<number>",
+              "comm": "<string>",
+              "role": "<string>"
+            },
+            {
+              "pid": "<number>",
+              "ppid": "<number>",
+              "comm": "<string>",
+              "role": "<string>"
+            },
+            {
+              "pid": "<number>",
+              "ppid": "<number>",
+              "comm": "<string>",
+              "role": "<string>"
+            }
+          ]
+        }
+      ],
+      ["fsyncSync", "out/golden-next/records.jsonl"],
+      ["close", "out/golden-next/records.jsonl"],
+      ["open", "out/golden-next/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-next/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "browser-ready",
+          "browser": {
+            "engine": "<string>"
+          }
+        }
+      ],
+      ["fsyncSync", "out/golden-next/records.jsonl"],
+      ["close", "out/golden-next/records.jsonl"],
+      ["open", "out/golden-next/receipt.json.tmp", "w"],
+      ["write", "out/golden-next/receipt.json.tmp"],
+      ["fsyncSync", "out/golden-next/receipt.json.tmp"],
+      ["close", "out/golden-next/receipt.json.tmp"],
+      ["rename", "out/golden-next/receipt.json.tmp", "out/golden-next/receipt.json"],
+      ["open", "out/golden-next/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-next/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "scenario-start",
+          "scenario": "<string>",
+          "ops": ["<string>", "<string>"],
+          "warmOrder": "<string>"
+        }
+      ],
+      ["fsyncSync", "out/golden-next/records.jsonl"],
+      ["close", "out/golden-next/records.jsonl"],
+      ["open", "out/golden-next/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-next/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "attempt",
+          "label": "warmup",
+          "scenario": "<string>",
+          "opId": "<string>",
+          "op": "edit-body",
+          "article": "<string>",
+          "expect": "<string>",
+          "iteration": {
+            "opId": "<string>",
+            "kind": "<string>",
+            "index": "<number>",
+            "of": "<number>"
+          },
+          "token": "<string>",
+          "targetPath": "<string>",
+          "predicate": {
+            "kind": "<string>",
+            "selector": "<string>",
+            "includes": "<string>"
+          },
+          "write": {
+            "method": "<string>",
+            "path": "<string>",
+            "to": null
+          },
+          "sampleBefore": {
+            "summedRssKiB": "<number>"
+          },
+          "inject": null,
+          "targetSha256Before": "<string>",
+          "writeMethods": ["<string>"],
+          "declared": null,
+          "preDocUUID": "<string>",
+          "t0Ns": "<string>",
+          "serverPidBefore": "<number>",
+          "serverPidAfter": "<number>",
+          "evidence": {
+            "mainFrameNavigations": "<number>",
+            "newDocuments": "<number>",
+            "livereloadEvents": []
+          },
+          "writeEvidence": {
+            "method": "<string>",
+            "inodeBefore": "<number>",
+            "inodeAfter": "<number>"
+          },
+          "serverLog": {
+            "lineCount": "<number>",
+            "lines": []
+          },
+          "lateTokensDuringAttempt": "<number>",
+          "waitSamples": {
+            "count": "<number>",
+            "peakSummedRssKiB": "<number>",
+            "everyMs": "<number>",
+            "label": "sampled during the armed wait; not a lifetime peak"
+          },
+          "injectKill": null,
+          "t1Ns": "<string>",
+          "latencyMs": "<number>",
+          "endpoint": "<string>",
+          "notify": {
+            "docUUID": "<string>"
+          },
+          "mechanism": "<string>",
+          "outcome": "success",
+          "sampleAfter": {
+            "summedRssKiB": "<number>"
+          }
+        }
+      ],
+      ["fsyncSync", "out/golden-next/records.jsonl"],
+      ["close", "out/golden-next/records.jsonl"],
+      ["open", "out/golden-next/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-next/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "attempt",
+          "label": "measured",
+          "scenario": "<string>",
+          "opId": "<string>",
+          "op": "edit-body",
+          "article": "<string>",
+          "expect": "<string>",
+          "iteration": {
+            "opId": "<string>",
+            "kind": "<string>",
+            "index": "<number>",
+            "of": "<number>"
+          },
+          "token": "<string>",
+          "targetPath": "<string>",
+          "predicate": {
+            "kind": "<string>",
+            "selector": "<string>",
+            "includes": "<string>"
+          },
+          "write": {
+            "method": "<string>",
+            "path": "<string>",
+            "to": null
+          },
+          "sampleBefore": {
+            "summedRssKiB": "<number>"
+          },
+          "inject": null,
+          "targetSha256Before": "<string>",
+          "writeMethods": ["<string>"],
+          "declared": null,
+          "preDocUUID": "<string>",
+          "t0Ns": "<string>",
+          "serverPidBefore": "<number>",
+          "serverPidAfter": "<number>",
+          "evidence": {
+            "mainFrameNavigations": "<number>",
+            "newDocuments": "<number>",
+            "livereloadEvents": []
+          },
+          "writeEvidence": {
+            "method": "<string>",
+            "inodeBefore": "<number>",
+            "inodeAfter": "<number>"
+          },
+          "serverLog": {
+            "lineCount": "<number>",
+            "lines": []
+          },
+          "lateTokensDuringAttempt": "<number>",
+          "waitSamples": {
+            "count": "<number>",
+            "peakSummedRssKiB": "<number>",
+            "everyMs": "<number>",
+            "label": "sampled during the armed wait; not a lifetime peak"
+          },
+          "injectKill": null,
+          "t1Ns": "<string>",
+          "latencyMs": "<number>",
+          "endpoint": "<string>",
+          "notify": {
+            "docUUID": "<string>"
+          },
+          "mechanism": "<string>",
+          "outcome": "success",
+          "sampleAfter": {
+            "summedRssKiB": "<number>"
+          }
+        }
+      ],
+      ["fsyncSync", "out/golden-next/records.jsonl"],
+      ["close", "out/golden-next/records.jsonl"],
+      ["open", "out/golden-next/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-next/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "cleanup",
+          "label": "cleanup",
+          "measured": false,
+          "reason": "scenario-end",
+          "ok": true,
+          "restored": ["<string>"],
+          "restorationWriteMethod": "<string>",
+          "actions": [
+            {
+              "path": "<string>",
+              "method": "<string>",
+              "evidence": {
+                "method": "<string>",
+                "inodeBefore": "<number>",
+                "inodeAfter": "<number>"
+              }
+            }
+          ],
+          "mismatches": [],
+          "settle": {
+            "settled": true,
+            "reason": "no-frame-for-quietMs",
+            "nativeUpdateObserved": false
+          },
+          "quiet": {
+            "quietMs": "<number>",
+            "mainFrameNavigations": "<number>",
+            "newDocuments": "<number>",
+            "livereloadEvents": []
+          },
+          "live": [
+            {
+              "path": "<string>",
+              "predicate": {
+                "kind": "<string>",
+                "of": [
+                  {
+                    "kind": "<string>",
+                    "selector": "<string>",
+                    "equals": "<string>"
+                  },
+                  {
+                    "kind": "<string>",
+                    "selector": "<string>",
+                    "name": "<string>",
+                    "equals": [
+                      "<string>",
+                      "<string>",
+                      "<string>",
+                      "<string>",
+                      "<string>",
+                      "<string>",
+                      "<string>",
+                      "<string>",
+                      "<string>",
+                      "<string>",
+                      "<string>",
+                      "<string>"
+                    ]
+                  }
+                ]
+              },
+              "ok": true
+            },
+            {
+              "path": "<string>",
+              "predicate": {
+                "kind": "<string>",
+                "of": [
+                  {
+                    "kind": "<string>",
+                    "selector": "<string>",
+                    "equals": "<string>"
+                  },
+                  {
+                    "kind": "<string>",
+                    "selector": "<string>",
+                    "equals": "<string>"
+                  }
+                ]
+              },
+              "ok": true
+            },
+            {
+              "path": "<string>",
+              "predicate": {
+                "kind": "<string>",
+                "of": [
+                  {
+                    "kind": "<string>",
+                    "selector": "<string>",
+                    "equals": "<string>"
+                  },
+                  {
+                    "kind": "<string>",
+                    "selector": "<string>",
+                    "equals": "<string>"
+                  }
+                ]
+              },
+              "ok": true
+            },
+            {
+              "path": "<string>",
+              "predicate": {
+                "kind": "<string>",
+                "selector": "<string>",
+                "name": "<string>",
+                "equals": [
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>",
+                  "<string>"
+                ]
+              },
+              "ok": true
+            },
+            {
+              "path": "<string>",
+              "predicate": {
+                "kind": "<string>",
+                "selector": "<string>",
+                "name": "<string>",
+                "equals": ["<string>", "<string>"]
+              },
+              "ok": true
+            }
+          ],
+          "liveSkipped": null,
+          "retry": false
+        }
+      ],
+      ["fsyncSync", "out/golden-next/records.jsonl"],
+      ["close", "out/golden-next/records.jsonl"],
+      ["open", "out/golden-next/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-next/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "batch-end",
+          "stopped": false,
+          "accounting": {
+            "planned": "<number>",
+            "attempted": "<number>",
+            "success": "<number>",
+            "stale": "<number>",
+            "timeout": "<number>",
+            "error": "<number>",
+            "notAttempted": "<number>",
+            "lateTokens": "<number>",
+            "expectedControlPasses": "<number>",
+            "expectedErrors": "<number>",
+            "expectedTimeouts": "<number>",
+            "controlsNotFired": "<number>",
+            "expectedNegativePasses": "<number>",
+            "recoveryPasses": "<number>",
+            "recoverySameTickProvenPasses": "<number>",
+            "recoveryNoTickPremisePasses": "<number>",
+            "recoveryUnprovenTick": "<number>",
+            "restorationFailures": "<number>",
+            "supplementalFailures": "<number>",
+            "lastArmedUnknownOperation": null,
+            "stoppedByExpectedControl": false,
+            "stoppedByClassifyTimeout": false,
+            "stopReason": null,
+            "stoppedAfter": null
+          }
+        }
+      ],
+      ["fsyncSync", "out/golden-next/records.jsonl"],
+      ["close", "out/golden-next/records.jsonl"],
+      ["open", "out/golden-next/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-next/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "server-stop",
+          "report": {
+            "absent": true
+          },
+          "exit": {
+            "exitCode": "<number>",
+            "signalCode": null
+          },
+          "logClose": {}
+        }
+      ],
+      ["fsyncSync", "out/golden-next/records.jsonl"],
+      ["close", "out/golden-next/records.jsonl"],
+      ["open", "out/.dev-browser-observe-owned.jsonl", "a"],
+      [
+        "write",
+        "out/.dev-browser-observe-owned.jsonl",
+        {
+          "type": "stopped",
+          "label": "golden-next",
+          "at": "<string>",
+          "pid": "<number>",
+          "absent": true
+        }
+      ],
+      ["fsyncSync", "out/.dev-browser-observe-owned.jsonl"],
+      ["close", "out/.dev-browser-observe-owned.jsonl"],
+      ["unlink", "active-session.json"],
+      ["open", "out/golden-next/receipt.json.tmp", "w"],
+      ["write", "out/golden-next/receipt.json.tmp"],
+      ["fsyncSync", "out/golden-next/receipt.json.tmp"],
+      ["close", "out/golden-next/receipt.json.tmp"],
+      ["rename", "out/golden-next/receipt.json.tmp", "out/golden-next/receipt.json"],
+      ["open", "out/golden-next/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-next/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "run-end",
+          "exitCode": "<number>"
+        }
+      ],
+      ["fsyncSync", "out/golden-next/records.jsonl"],
+      ["close", "out/golden-next/records.jsonl"],
+      ["open", "out/golden-next/summary.json.tmp", "w"],
+      ["write", "out/golden-next/summary.json.tmp"],
+      ["fsyncSync", "out/golden-next/summary.json.tmp"],
+      ["close", "out/golden-next/summary.json.tmp"],
+      ["rename", "out/golden-next/summary.json.tmp", "out/golden-next/summary.json"]
+    ]
+  },
+  "astro-footer-protocol": {
+    "code": 7,
+    "events": [
+      ["open", "out/.dev-browser-observe.lock", "a"],
+      ["close", "out/.dev-browser-observe.lock"],
+      ["open", "out/golden-astro/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-astro/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "run-start",
+          "command": "<string>",
+          "label": "golden-astro",
+          "profilePath": "<string>",
+          "profileSha256": "<string>",
+          "scenarioSelection": null,
+          "schedule": [
+            {
+              "scenario": "<string>",
+              "scenarioBase": "<string>",
+              "opId": "<string>",
+              "baseOpId": "<string>",
+              "op": "edit-shared-component",
+              "kind": "<string>",
+              "index": "<number>"
+            }
+          ],
+          "resourceStudy": null,
+          "fixedRssSafety": "<string>"
+        }
+      ],
+      ["fsyncSync", "out/golden-astro/records.jsonl"],
+      ["close", "out/golden-astro/records.jsonl"],
+      ["open", "out/golden-astro/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-astro/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "identity",
+          "ok": true,
+          "checks": [
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "scale": "<number>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "scale": "<number>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "scale": "<number>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "scale": "<number>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "scale": "<number>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<number>",
+              "actual": "<number>",
+              "scale": "<number>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "provenance": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>",
+              "provenance": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": true,
+              "actual": true
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": {
+                "installed": "<string>",
+                "locked": "<string>"
+              }
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": {
+                "installed": "<string>",
+                "locked": "<string>"
+              }
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": [],
+              "actual": []
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": {
+                "role": "<string>",
+                "path": "<string>",
+                "realpath": "<string>",
+                "sha256": "<string>",
+                "ok": true
+              }
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": [],
+              "actual": []
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": "<string>",
+              "actual": "<string>"
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": null,
+              "actual": null
+            },
+            {
+              "name": "<string>",
+              "ok": true,
+              "expected": null,
+              "actual": null
+            }
+          ]
+        }
+      ],
+      ["fsyncSync", "out/golden-astro/records.jsonl"],
+      ["close", "out/golden-astro/records.jsonl"],
+      ["open", "out/golden-astro/work/apps/astro/src/layouts/Site.astro", "w"],
+      ["write", "out/golden-astro/work/apps/astro/src/layouts/Site.astro"],
+      ["close", "out/golden-astro/work/apps/astro/src/layouts/Site.astro"],
+      ["open", "out/golden-astro/work/apps/astro/src/styles/site.imported.css", "w"],
+      ["write", "out/golden-astro/work/apps/astro/src/styles/site.imported.css"],
+      ["close", "out/golden-astro/work/apps/astro/src/styles/site.imported.css"],
+      ["open", "active-session.json", "wx"],
+      ["close", "active-session.json"],
+      ["open", "active-session.json.tmp", "w"],
+      ["write", "active-session.json.tmp"],
+      ["fsyncSync", "active-session.json.tmp"],
+      ["close", "active-session.json.tmp"],
+      ["rename", "active-session.json.tmp", "active-session.json"],
+      ["open", "active-session.json.tmp", "w"],
+      ["write", "active-session.json.tmp"],
+      ["fsyncSync", "active-session.json.tmp"],
+      ["close", "active-session.json.tmp"],
+      ["rename", "active-session.json.tmp", "active-session.json"],
+      ["open", "out/.dev-browser-observe-owned.jsonl", "a"],
+      [
+        "write",
+        "out/.dev-browser-observe-owned.jsonl",
+        {
+          "type": "spawn",
+          "label": "golden-astro",
+          "at": "<string>",
+          "pid": "<number>",
+          "pgid": "<number>",
+          "lstart": "<string>",
+          "comm": "<string>"
+        }
+      ],
+      ["fsyncSync", "out/.dev-browser-observe-owned.jsonl"],
+      ["close", "out/.dev-browser-observe-owned.jsonl"],
+      ["open", "out/golden-astro/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-astro/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "server-ready",
+          "outcome": "ready-failed",
+          "error": "<string>",
+          "exit": null
+        }
+      ],
+      ["fsyncSync", "out/golden-astro/records.jsonl"],
+      ["close", "out/golden-astro/records.jsonl"],
+      ["open", "out/golden-astro/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-astro/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "astro-terminal-population",
+          "valid": false,
+          "resourceAbsent": true
+        }
+      ],
+      ["fsyncSync", "out/golden-astro/records.jsonl"],
+      ["close", "out/golden-astro/records.jsonl"],
+      ["open", "out/golden-astro/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-astro/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "server-stop",
+          "report": {
+            "absent": true
+          },
+          "exit": {
+            "exitCode": "<number>",
+            "signalCode": null
+          },
+          "logClose": {}
+        }
+      ],
+      ["fsyncSync", "out/golden-astro/records.jsonl"],
+      ["close", "out/golden-astro/records.jsonl"],
+      ["open", "out/.dev-browser-observe-owned.jsonl", "a"],
+      [
+        "write",
+        "out/.dev-browser-observe-owned.jsonl",
+        {
+          "type": "stopped",
+          "label": "golden-astro",
+          "at": "<string>",
+          "pid": "<number>",
+          "absent": true
+        }
+      ],
+      ["fsyncSync", "out/.dev-browser-observe-owned.jsonl"],
+      ["close", "out/.dev-browser-observe-owned.jsonl"],
+      ["unlink", "active-session.json"],
+      ["open", "out/golden-astro/receipt.json.tmp", "w"],
+      ["write", "out/golden-astro/receipt.json.tmp"],
+      ["fsyncSync", "out/golden-astro/receipt.json.tmp"],
+      ["close", "out/golden-astro/receipt.json.tmp"],
+      ["rename", "out/golden-astro/receipt.json.tmp", "out/golden-astro/receipt.json"],
+      ["open", "out/golden-astro/records.jsonl", "a"],
+      [
+        "write",
+        "out/golden-astro/records.jsonl",
+        {
+          "seq": "<number>",
+          "at": "<string>",
+          "type": "run-end",
+          "exitCode": "<number>"
+        }
+      ],
+      ["fsyncSync", "out/golden-astro/records.jsonl"],
+      ["close", "out/golden-astro/records.jsonl"],
+      ["open", "out/golden-astro/summary.json.tmp", "w"],
+      ["write", "out/golden-astro/summary.json.tmp"],
+      ["fsyncSync", "out/golden-astro/summary.json.tmp"],
+      ["close", "out/golden-astro/summary.json.tmp"],
+      ["rename", "out/golden-astro/summary.json.tmp", "out/golden-astro/summary.json"]
+    ]
+  }
+}

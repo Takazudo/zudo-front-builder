@@ -58,6 +58,7 @@ import { startDevServer } from "../lib/server.mjs";
 import { HARNESS_DIR, ensureOwnerWritable, readJson, sha256, sha256File } from "../lib/util.mjs";
 import { SPEC, makeFakeSource, makeTinyHarness } from "./fieldnotes-fake.mjs";
 import { fakePage } from "./fakes.mjs";
+import { traceFs } from "./fs-trace.mjs";
 
 const FIXTURE = join(HARNESS_DIR, "fixtures", "field-notes");
 const example = (n) => JSON.parse(readFileSync(join(HARNESS_DIR, "profiles", n), "utf8"));
@@ -2000,3 +2001,185 @@ it.each([
     }
   },
 );
+
+// O6 / review R2-3: with the durable recorder flag off, every non-family profile
+// keeps today's writer byte layout and fsyncSync sequence. The fixture was
+// generated from 4eb3ea357, before the durable recorder existed.
+describe("flag-off durability golden", () => {
+  const GOLDEN = join(HARNESS_DIR, "__tests__", "fixtures", "durable-flag-off-golden.json");
+  const nextServer = (handle, resolveExit) => (opts) => ({
+    handle,
+    args: opts.args,
+    envOverrides: opts.env,
+    zfbEnv: {},
+    removedDiagnosticEnv: [],
+    diagnostic: false,
+    startedNs: process.hrtime.bigint(),
+    ready: Promise.resolve({ baseUrl: "http://127.0.0.1:4555", readyNs: process.hrtime.bigint() }),
+    closeLog: async () => ({}),
+    isAlive: () => ({ alive: true, exit: null }),
+    pid: () => 100,
+    waitExit: () => handle.exited,
+    sampleResources: () => ({ summedRssKiB: 1 }),
+    sampleResourcesAsync: async () => ({ summedRssKiB: 1 }),
+    logMark: () => 0,
+    logSince: () => ({ lineCount: 0, lines: [] }),
+    resolveExit,
+  });
+  const traceRun = async (s, label, path, hooks, extra = {}) => {
+    const trace = traceFs(s.root);
+    let code;
+    try {
+      code = await execute({
+        profilePath: path,
+        label,
+        command: "run",
+        stderr: () => {},
+        hooks,
+        ...extra,
+      });
+    } finally {
+      trace.stop();
+    }
+    return { code, events: trace.events };
+  };
+  const goldenCase = async (name) => {
+    const { s, installs } = shared();
+    let resolveExit;
+    const handle = {
+      native: { pid: 100, pgid: 100, lstart: "x", comm: "node" },
+      launcher: "none",
+      exit: null,
+      known: new Map(),
+    };
+    handle.exited = new Promise((r) => (resolveExit = r));
+    const common = {
+      freePort: async () => 4555,
+      processExecutable: () => ({ path: process.execPath, method: "fake" }),
+      processAlive: () => true,
+      closeOwnedBrowser: async () => [],
+      stopOwned: async () => {
+        resolveExit((handle.exit = { exitCode: 0, signalCode: null }));
+        return { absent: true };
+      },
+    };
+    if (name === "next-non-family") {
+      const { path, profile } = fixedProfile(s, "next", installs.next.out, {}, "golden-next.json");
+      profile.scenarios = [
+        {
+          id: "body",
+          set: "workload",
+          warmOrder: "none",
+          ops: [
+            {
+              id: "b",
+              op: "edit-body",
+              article: "article-00005",
+              writeMethod: "in-place",
+              repeat: { warmups: 1, measured: 1 },
+            },
+          ],
+        },
+      ];
+      writeFileSync(path, JSON.stringify(profile));
+      const page = fakePage({
+        onWait: () =>
+          Promise.resolve({
+            kind: "notify",
+            payload: { docUUID: "doc-1" },
+            t1: process.hrtime.bigint() + 1_000_000n,
+          }),
+      });
+      return traceRun(s, "golden-next", path, {
+        ...common,
+        startDevServer: nextServer(handle),
+        snapshotOwned: () => [
+          {
+            pid: 100,
+            ppid: 1,
+            comm: "node",
+            args: "node /w/apps/next/scripts/dev-content.mjs --port 4555",
+          },
+          {
+            pid: 101,
+            ppid: 100,
+            comm: "node",
+            args: "node /w/node_modules/next/dist/bin/next dev",
+          },
+          { pid: 102, ppid: 101, comm: "node", args: "next-server (v16.4.6)" },
+        ],
+        launchOwnedBrowser: async () => ({ observer: page, identity: { engine: "fake" } }),
+      });
+    }
+    const { path, profile } = fixedProfile(s, "astro", installs.astro.out, {}, "golden-astro.json");
+    profile.fixedRssSafety = "linux-fixed-astro-footer.v1";
+    profile.fixedPeerBrowser = {
+      executablePath: "/pinned/browser",
+      executableSha256: "1".repeat(64),
+      defaultExecutableSha256: "2".repeat(64),
+    };
+    delete profile.calibration;
+    profile.scenarios = [
+      {
+        id: "fn-shared-component",
+        set: "workload",
+        warmOrder: "none",
+        ops: [
+          { id: "footer", op: "edit-shared-component", writeMethod: "in-place", targetPath: "/" },
+        ],
+      },
+    ];
+    profile.server.readyTimeoutMs = 300000;
+    profile.limits.wallCeilingMs = 7200000;
+    Object.assign(profile.timeouts, { attemptMs: 60000, supplementalMs: 60000, restoreMs: 120000 });
+    writeFileSync(path, JSON.stringify(profile));
+    vi.spyOn(safetyModule, "startFixedRssSafety").mockReturnValue({
+      async verifyReady() {
+        throw Error("golden: peer readiness refused");
+      },
+      async stop() {
+        return null;
+      },
+      report: () => ({}),
+      unresolvedHelper: null,
+    });
+    const start = Number(process.hrtime.bigint() / 1000000n);
+    // The fixed Astro launch refuses an inherited NODE_PATH; pnpm sets one for the
+    // test process on some hosts, so clear it to keep the traced path host-independent.
+    const nodePath = process.env.NODE_PATH;
+    delete process.env.NODE_PATH;
+    try {
+      return await traceRun(
+        s,
+        "golden-astro",
+        path,
+        {
+          ...common,
+          startDevServer: nextServer(handle),
+          snapshotOwned: () => [{ pid: 100, ppid: 1, comm: "node", args: "node astro dev" }],
+        },
+        {
+          supervisorId: "golden",
+          supervisorStartedMs: start,
+          workDeadline: start + 7140000,
+          supervisorDeadlineMs: start + 7200000,
+        },
+      );
+    } finally {
+      if (nodePath !== undefined) process.env.NODE_PATH = nodePath;
+      vi.restoreAllMocks();
+    }
+  };
+  it.each(["next-non-family", "astro-footer-protocol"])(
+    "%s keeps the flag-off record bytes and fsyncSync sequence",
+    async (name) => {
+      const actual = await goldenCase(name);
+      if (process.env.DBO_GOLDEN_OUT)
+        writeFileSync(
+          join(process.env.DBO_GOLDEN_OUT, name + ".json"),
+          JSON.stringify(actual, null, 1),
+        );
+      expect(actual).toEqual(JSON.parse(readFileSync(GOLDEN, "utf8"))[name]);
+    },
+  );
+});
